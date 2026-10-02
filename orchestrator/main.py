@@ -886,6 +886,33 @@ def _approved_chat_model(model: str | None = None, *, profile: str = "routine") 
 _LOGGABLE_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,119}")
 
 
+#: User-visible routing reason codes (a fixed vocabulary; O6). Fallback codes are
+#: appended at runtime as ``fallback_<cause>``.
+ROUTING_REASON_CODES = frozenset(
+    {
+        "explicit",
+        "council",
+        "complexity_signal",
+        "research_signal",
+        "default",
+        "fallback_capability_unavailable",
+        "fallback_budget_exceeded",
+    }
+)
+
+
+def _routing_reason_codes(decision: ModelDecision, profile: str) -> list[str]:
+    if decision.tier == "explicit":
+        return ["explicit"]
+    if profile == "council":
+        return ["council"]
+    if profile == "reasoning":
+        return ["complexity_signal"]
+    if profile == "research":
+        return ["research_signal"]
+    return ["default"]
+
+
 def _admit_and_log_decision(
     model: str | None,
     *,
@@ -2107,6 +2134,9 @@ async def chat(
         "model": selected_model if model_decision.tier == "explicit" else "auto",
         "tier": model_decision.tier,
         "reason": model_decision.reason,
+        # Additive, user-visible routing reasons (optional work O6).
+        "profile": admission_profile,
+        "reason_codes": _routing_reason_codes(model_decision, admission_profile),
     }
 
     has_image_input = _content_has_image(prepared_user_content)

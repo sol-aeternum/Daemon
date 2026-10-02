@@ -106,12 +106,12 @@ A-core completion or Package B.
 
 | ID | Work | Notes |
 | --- | --- | --- |
-| O1 (D1) | Disclosed routine answer when *inferred* reasoning is unavailable because of capability or budget | Explicit picks and transient outages keep refusing. Needs an SSE disclosure contract decision |
+| O1 (D1) | Disclosed routine answer when *inferred* reasoning is unavailable because of capability or budget | Implemented 2 October 2026 on native chat (routing event `fallback` + notice); explicit picks, the compatibility endpoint, outages and background work keep refusing |
 | O2 (D3a) | Output target fitted to remaining budget, `max_tokens` equal to the hold, not below the profile floor | Addresses #342 hold-based refusal; keeps spending enforceable |
 | O3 (D3c′) | Provisional full-hold settlement reconciled down to the provider receipt | Addresses #342 unknown-usage charge; new outbound read needs approval |
 | O4 (D7) | Make the compatibility endpoint parameter-faithful | Not a confirmed defect; Open WebUI is being removed |
 | O5 | Prune over-broad signals (`vs`, `should i`, `plan for`) | Implemented 2 October 2026; a bare "should I …?" now runs on routine |
-| O6 | Externally visible routing reason codes | Needs SSE compatibility tests |
+| O6 | Externally visible routing reason codes | Implemented 2 October 2026: additive `profile`, `reason_codes`, `effort` on the routing event, with bridge compatibility tests |
 | O7 | Ledger columns for profile and effort | Needs a migration |
 
 ## PR sequence

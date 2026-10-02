@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from orchestrator.compute_runtime import guarded_completion
-from orchestrator.compute_runtime import ComputeUnavailable
+from orchestrator.compute_runtime import ComputeUnavailable, current_scope
+from orchestrator import model_routing, routing_log
 from orchestrator.entitlements.errors import EntitlementsError
 
+import contextlib
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -356,6 +358,71 @@ async def _accumulate_stream_with_tools(
     return "".join(content_parts), tool_calls_list
 
 
+#: Refusals of an automatic reasoning dispatch that may be served, disclosed, under the
+#: routine profile instead (optional work O1). Provider outages and every other
+#: refusal keep their existing behaviour.
+_FALLBACK_CAUSES = frozenset({"capability_unavailable", "budget_exceeded"})
+
+
+def _reasoning_fallback_cause(refusal: ComputeUnavailable) -> str | None:
+    """The disclosed-fallback cause for ``refusal``, or ``None`` when it must stand.
+
+    Only an *inferred* reasoning request qualifies: an automatic chat scope whose
+    active profile is ``reasoning``. Explicit selections and background work keep
+    their refusal.
+    """
+    if refusal.code not in _FALLBACK_CAUSES:
+        return None
+    routing = model_routing.active_routing()
+    if routing is None or routing.profile != "reasoning":
+        return None
+    try:
+        scope = current_scope()
+    except ComputeUnavailable:
+        return None
+    if not scope.auto_route or scope.operation != "chat":
+        return None
+    return refusal.code
+
+
+async def _under_profile(profile: str, call: Callable[[], Awaitable[Any]]) -> Any:
+    """Run ``call`` under ``profile`` and keep the turn's attribution current."""
+    outer = model_routing.active_routing()
+    with model_routing.routing_context(profile) as inner:
+        result = await call()
+    if (
+        outer is not None
+        and inner.selected_model is not None
+        and inner.selected_route_id is not None
+    ):
+        outer.record_selection(
+            model=inner.selected_model,
+            route_id=inner.selected_route_id,
+            group=inner.selected_group,
+            explicit=inner.explicit,
+            effort=inner.selected_effort,
+        )
+    return result
+
+
+def _fallback_event(cause: str) -> dict[str, Any]:
+    with contextlib.suppress(ComputeUnavailable):
+        routing_log.emit(
+            "profile_fallback",
+            scope_id=str(current_scope().scope_id),
+            from_profile="reasoning",
+            to_profile="routine",
+            cause=cause,
+        )
+    return {
+        "type": "routing_fallback",
+        "from_profile": "reasoning",
+        "to_profile": "routine",
+        "cause": cause,
+        "id": str(uuid.uuid4()),
+    }
+
+
 async def completion_with_tools(
     settings: Settings,
     provider_config: ProviderConfig,
@@ -365,11 +432,21 @@ async def completion_with_tools(
     max_tool_rounds: int = 5,
     *,
     completion_dispatch: Callable[..., Awaitable[Any]] | None = None,
+    reasoning_fallback: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     # The evaluation adapter observes this exact loop and keeps its dispatches
     # inside the ordinary qualification/accounting runtime. Normal callers use
     # the same guarded completion as before; no provider request is reimplemented.
     dispatch = completion_dispatch or guarded_completion
+    # Once a turn falls back to the routine profile it stays there, so later rounds
+    # and the context budget are computed for the model that is actually answering.
+    fallback_profile: str | None = None
+
+    async def routed(call: Callable[[], Awaitable[Any]]) -> Any:
+        if fallback_profile is None:
+            return await call()
+        return await _under_profile(fallback_profile, call)
+
     executor = ToolExecutor(registry)
     tools = registry.list_schemas() if len(registry) > 0 else None
     native_tools_enabled = tools is not None
@@ -437,7 +514,19 @@ async def completion_with_tools(
         content_buffer: list[str] = []
 
         try:
-            response_stream = await dispatch(**call_params)
+            try:
+                response_stream = await routed(lambda: dispatch(**call_params))
+            except ComputeUnavailable as refusal:
+                cause = (
+                    _reasoning_fallback_cause(refusal)
+                    if reasoning_fallback and fallback_profile is None
+                    else None
+                )
+                if cause is None:
+                    raise
+                fallback_profile = "routine"
+                yield _fallback_event(cause)
+                response_stream = await routed(lambda: dispatch(**call_params))
             stream_iter = cast(AsyncIterator[Any], response_stream)
 
             async with _closing_stream(stream_iter):
@@ -558,8 +647,8 @@ async def completion_with_tools(
                 _tool_result_message(tc, SKIPPED_RESULT + " " * 256, native_tools_enabled)
                 for tc in tool_calls
             ]
-            last_context_budget = await tool_context_budget(
-                call_params, [*current_messages, *placeholders]
+            last_context_budget = await routed(
+                lambda: tool_context_budget(call_params, [*current_messages, *placeholders])
             )
 
             for tool_index, tc in enumerate(tool_calls):
@@ -774,7 +863,19 @@ async def completion_with_tools(
         if last_context_budget is not None and last_context_budget.output_tokens > 0:
             synthesis_params["max_tokens"] = last_context_budget.output_tokens
 
-        synthesis_stream = await guarded_completion(**synthesis_params)
+        try:
+            synthesis_stream = await routed(lambda: guarded_completion(**synthesis_params))
+        except ComputeUnavailable as refusal:
+            cause = (
+                _reasoning_fallback_cause(refusal)
+                if reasoning_fallback and fallback_profile is None
+                else None
+            )
+            if cause is None:
+                raise
+            fallback_profile = "routine"
+            yield _fallback_event(cause)
+            synthesis_stream = await routed(lambda: guarded_completion(**synthesis_params))
         synthesis_iter = cast(AsyncIterator[Any], synthesis_stream)
 
         async with _closing_stream(synthesis_iter):

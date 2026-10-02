@@ -78,6 +78,43 @@ function readOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function readStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .map(readOptionalString)
+    .filter((item): item is string => item !== undefined);
+  return items.length > 0 ? items : undefined;
+}
+
+/**
+ * Optional, additive routing fields (profile, reason codes, sent effort and a
+ * disclosed fallback). Each is forwarded only when well-formed, so older
+ * backends and malformed payloads keep the original routing event shape.
+ */
+function readRoutingDetails(data: unknown): Record<string, unknown> {
+  const record = toRecord(data);
+  if (!record) return {};
+  const details: Record<string, unknown> = {};
+  const profile = readOptionalString(record.profile);
+  if (profile) details.profile = profile;
+  const reasonCodes = readStringList(record.reason_codes);
+  if (reasonCodes) details.reason_codes = reasonCodes;
+  const effort = readOptionalString(record.effort);
+  if (effort) details.effort = effort;
+  const fallback = toRecord(record.fallback);
+  const fromProfile = readOptionalString(fallback?.from_profile);
+  const toProfile = readOptionalString(fallback?.to_profile);
+  const cause = readOptionalString(fallback?.cause);
+  if (fromProfile && toProfile && cause) {
+    details.fallback = {
+      from_profile: fromProfile,
+      to_profile: toProfile,
+      cause,
+    };
+  }
+  return details;
+}
+
 function toRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return null;
@@ -351,6 +388,7 @@ export async function POST(req: Request) {
                           }
                         : {}),
                       reason: payload?.data?.reason,
+                      ...readRoutingDetails(payload?.data),
                       id: payload?.id ?? payload?.data?.id,
                       request_id:
                         payload?.request_id ?? payload?.data?.request_id,

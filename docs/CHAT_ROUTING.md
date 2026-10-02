@@ -45,7 +45,7 @@ flowchart TD
     CRE --> G
 
     G["Filter eligible routes<br/>Approval and ZDR policy<br/>Required capabilities and supported parameters<br/>Context/output fit and account entitlements<br/>Bounded request cost and available budget"] --> OK{"Eligible route exists?"}
-    OK -->|No| ERR["Return unavailable / denied result<br/>Missing premium capability: capability_unavailable"]
+    OK -->|No| ERR["Return unavailable / denied result<br/>Inferred reasoning on native chat: disclosed routine answer"]
     OK -->|Yes| SEL["Select first eligible preference group<br/>Honor soft preference, then lowest bounded cost"]
     SEL --> RES["Apply reviewed model preset<br/>Reserve account capacity"]
     RES --> LLM["Dispatch pinned endpoint<br/>OpenRouter through LiteLLM"]
@@ -100,9 +100,11 @@ flowchart TD
   endpoints, so it receives that model's default effort whatever the wording. It
   bypasses the automatic shortlist, not qualification, capability, parameter,
   entitlement, context or budget checks.
-- When an automatic request has no eligible route only because the account lacks
-  premium routing, it is refused with `capability_unavailable` (not retryable),
-  never answered by a cheaper model.
+- On native chat, an inferred reasoning request refused for missing premium routing
+  or budget is answered on the routine profile with a disclosure (routing event
+  `fallback`, a notice under the reply), and the turn stays on routine. Explicit
+  selections, the compatibility endpoint, provider outages and background work keep
+  the refusal (`capability_unavailable` for a missing capability, not retryable).
 - Each inference attempt reserves capacity separately. Failure or unknown usage
   does not make an attempt free. Automatic streaming fallback stops once any
   upstream chunk has been emitted.

@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.compute_runtime import compute_error
+from orchestrator.compute_runtime import selected_effort as active_compute_effort
 from orchestrator.compute_runtime import selected_model as active_compute_model
 from orchestrator.compute_runtime import tool_round_limit
 from orchestrator.services.fetch.url_extract import extract_urls
@@ -527,6 +528,9 @@ async def stream_sse_chat(
                     registry=registry,
                     actual_model=model_to_call,
                     max_tool_rounds=max_tool_rounds,
+                    # Fallback is disclosed on the routing event, so it is only
+                    # enabled where that event exists (native chat).
+                    reasoning_fallback=routing_info is not None,
                 ):
                     if await is_disconnected():
                         forced_terminal_status = "cancelled"
@@ -535,13 +539,42 @@ async def stream_sse_chat(
 
                     now = asyncio.get_event_loop().time()
                     event_type = str(event.get("type") or "")
+                    if event_type == "routing_fallback":
+                        # Disclosed fallback (O1): inferred reasoning was unavailable to
+                        # this account, so the turn continues on the routine profile.
+                        if routing_info is not None:
+                            cause = str(event.get("cause") or "")
+                            codes = routing_info.get("reason_codes")
+                            routing_info = {
+                                **routing_info,
+                                "profile": "routine",
+                                "fallback": {
+                                    "from_profile": "reasoning",
+                                    "to_profile": "routine",
+                                    "cause": cause,
+                                },
+                                "reason_codes": [
+                                    *(codes if isinstance(codes, list) else []),
+                                    f"fallback_{cause}",
+                                ],
+                            }
+                            yield sse("routing", make_envelope("routing", routing_info))
+                            routing_emitted = True
+                        continue
                     approved_model = active_compute_model()
                     if approved_model:
                         model_for_events = approved_model
+                        approved_effort = active_compute_effort()
                         if routing_info and (
-                            not routing_emitted or routing_info.get("model") != approved_model
+                            not routing_emitted
+                            or routing_info.get("model") != approved_model
+                            or routing_info.get("effort") != approved_effort
                         ):
                             routing_info = {**routing_info, "model": approved_model}
+                            if approved_effort:
+                                routing_info["effort"] = approved_effort
+                            else:
+                                routing_info.pop("effort", None)
                             yield sse("routing", make_envelope("routing", routing_info))
                             routing_emitted = True
 

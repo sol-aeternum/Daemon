@@ -122,6 +122,7 @@ EVENT_FIELDS: Final[Mapping[str, frozenset[str]]] = {
             "overage",
         }
     ),
+    "profile_fallback": frozenset({"scope_id", "from_profile", "to_profile", "cause"}),
     "scope_close": frozenset(
         {
             "request_id",
