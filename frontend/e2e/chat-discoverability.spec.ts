@@ -168,3 +168,49 @@ for (const width of [375, 768, 1440]) {
     });
   });
 }
+
+test('an unsent draft and its attachment survive a page reload in the same tab', async ({
+  page,
+}) => {
+  await page.goto('/?id=conversation-1');
+  const composer = page.locator('textarea');
+  await composer.fill('Half-written question');
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('attached notes'),
+  });
+  await expect(
+    page.getByRole('button', { name: 'Remove notes.txt' }),
+  ).toBeVisible();
+  // Let the attachment write reach IndexedDB before reloading.
+  await page.waitForFunction(
+    () =>
+      new Promise<boolean>((resolve) => {
+        const req = indexedDB.open('daemon-chat-drafts');
+        req.onsuccess = () => {
+          const tx = req.result.transaction('attachments', 'readonly');
+          const count = tx.objectStore('attachments').count();
+          count.onsuccess = () => resolve(count.result === 1);
+          count.onerror = () => resolve(false);
+        };
+        req.onerror = () => resolve(false);
+      }),
+  );
+
+  await page.reload();
+
+  await expect(composer).toHaveValue('Half-written question');
+  await expect(
+    page.getByRole('button', { name: 'Remove notes.txt' }),
+  ).toBeVisible();
+
+  // Removing the attachment and clearing the text leaves nothing to restore.
+  await page.getByRole('button', { name: 'Remove notes.txt' }).click();
+  await composer.fill('');
+  await page.reload();
+  await expect(composer).toHaveValue('');
+  await expect(
+    page.getByRole('button', { name: 'Remove notes.txt' }),
+  ).toHaveCount(0);
+});

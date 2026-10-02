@@ -1,5 +1,7 @@
 'use client';
 
+import { discardAllPersistedDrafts } from './draftPersistence';
+
 export interface AuthTokens {
   accessToken: string;
   expiresAt: number;
@@ -58,6 +60,7 @@ export function getAccessToken(): string | null {
 }
 
 export function setAccessToken(token: string, expiresAtMs: number): void {
+  discardAllPersistedDrafts();
   _authGeneration += 1;
   _authMutation += 1;
   _accessToken = token;
@@ -66,6 +69,7 @@ export function setAccessToken(token: string, expiresAtMs: number): void {
 }
 
 export function clearLocalAuthState(): void {
+  discardAllPersistedDrafts();
   _authGeneration += 1;
   _authMutation += 1;
   _accessToken = null;
