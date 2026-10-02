@@ -267,3 +267,16 @@ def test_pilot_manifest_planning_bound_fits_its_cap() -> None:
     totals = runner.planning_bound(schedule, fixtures.by_id(), _routes(manifest))
     assert sum(totals.values()) <= manifest.incremental_cap_microusd <= 25_000_000
     assert profile.experiment == "reasoning-eval/b2-pilot-20261002"
+
+
+def test_b3_test_manifest_runs_only_the_untouched_test_split() -> None:
+    manifest, fixtures, schedule, _ = runner.load_plan(MANIFEST.with_name("b3_test_20261002.json"))
+    assert {a.stage for a in schedule} == {"test"} and len(schedule) == 20 * 4 * 3
+    assert {a.configuration for a in schedule} == {
+        "luna-low",
+        "luna-medium",
+        "sonnet-5-high",
+        "sol-6.1-high",
+    }
+    totals = runner.planning_bound(schedule, fixtures.by_id(), _routes(manifest))
+    assert sum(totals.values()) <= manifest.incremental_cap_microusd == 10_500_000

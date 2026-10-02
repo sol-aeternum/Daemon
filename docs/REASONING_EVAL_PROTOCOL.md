@@ -197,6 +197,63 @@ USD 1.019.
   600) in the private run directories. ICC, rubric agreement, per-slice frontiers and
   the B3 sample size need those verdicts; nothing here measures answer quality.
 
+## B3 pre-registration (2 October 2026, before any test-split run)
+
+Operator decisions on 2 October 2026:
+- **Success rule:** the chosen policy passes if both hold.
+  - On `hard` and `deceptively_hard` test cases, its acceptance rate is at most
+    **5 percentage points** below the always-deliberate baseline (always Sol 6.1 high).
+  - Its cost per acceptable answer is at most **25%** of that baseline's.
+- **Verdicts:** a panel of three blind AI reviewers decides by majority. The operator
+  adjudicates every disagreement, plus the hard `planning`, `revealed_by_tools` and
+  `synthesis` cases; an adjudication replaces the majority.
+- **Test cap:** USD 10.50.
+
+**Policies, simplest first:**
+- P0 current: Luna low for routine work, reasoning in the current order (Sonnet 5 first).
+- P1 uniform Luna medium default, reasoning unchanged.
+- P2 cost-ordered reasoning: Sol 6.1 first.
+- P1 + P2.
+- References: always Sonnet 5 high, always Luna medium.
+
+**Simulation:** each case is classified with the current
+`orchestrator.model_router.select_model_tier`, using its prompt and a turn count of
+history + 1. Routine and research cases take the policy's routine configuration;
+reasoning cases take its first reasoning configuration. No fallback is modelled: a
+content-filter refusal is a completed, unacceptable response under every policy.
+The classifier routes one case per split to reasoning (COD-2, PLN-4 and one test
+case).
+
+**Validation scores** (pilot, one blind AI reviewer; the panel is pending):
+
+| Policy | Dev | Validation | Validation cost per success (USD) |
+| --- | --- | --- | --- |
+| P0 | 50/60 | 58/60 | 0.00042 |
+| P1 | 53/60 | 60/60 | 0.00043 |
+| P2 | 49/60 | 58/60 | 0.00035 |
+| P1 + P2 | 52/60 | 60/60 | 0.00037 |
+| Always Sonnet 5 high | 60/60 | 58/60 | 0.00457 |
+| Always Sol 6.1 high | 56/60 | 60/60 | 0.00275 |
+| Always Luna medium | 53/60 | 60/60 | 0.00013 |
+
+**Selection:** P1, the simplest policy at the best validation score. It needs a
+preset change only, no code. It is re-selected only if the three-reviewer panel
+changes the validation ranking, and any re-selection is recorded here before test
+verdicts are unblinded.
+
+**Test confirmation:** manifest `b3_test_20261002.json` runs 20 untouched test cases
+× Luna low, Luna medium, Sonnet 5 high and Sol 6.1 high × 3 repeats: 240 attempts,
+planning bound USD 10.37.
+
+**Reporting:** P1 is checked against the success rule. Missed escalations are
+routine-routed cases where P1 fails and always-Sol passes. Unnecessary escalations
+are reasoning-routed cases the routine configuration also passes. Both are reported
+separately. If P1 fails the rule, the current policy stays.
+
+**Observation recorded before the test:** on dev and validation, the cases where a
+premium model helps (PLN-2, RBT-1, SYN-2) are routed to routine, and the cases the
+classifier escalates are ones Luna medium already passes.
+
 ## Stop conditions
 
 - Rubric ambiguity found in review: revise the corpus (new version) before any calls.
