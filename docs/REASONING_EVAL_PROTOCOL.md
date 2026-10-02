@@ -175,6 +175,28 @@ with no full-hold settlements and no unknown charges.
   on these single non-streaming calls, including tool rounds.
 - Semantic verdicts are pending human review of the blinded packet.
 
+## Pilot result (2 October 2026)
+
+Run `b2-pilot-20261002` (600 attempts, merged `main` `22080085`, cap USD 21.40):
+all attempts recorded, no stops. The ledger moved by exactly the recorded
+USD 0.881, with no open holds. Every call reported usage; there were no full-hold
+settlements and no unknown charges. Total B2 spend, including the calibration, is
+USD 1.019.
+
+| Configuration | Calls | Mean completion / reasoning tokens per call | Charge (USD) | Mean per attempt (USD) | Median / p95 latency (s) |
+| --- | --- | --- | --- | --- | --- |
+| Luna low | 135 | 73 / 29 | 0.0104 | 0.00009 | 2.8 / 4.7 |
+| Luna medium | 138 | 113 / 68 | 0.0152 | 0.00013 | 3.1 / 6.4 |
+| Luna high | 136 | 142 / 93 | 0.0182 | 0.00015 | 3.1 / 6.8 |
+| Sonnet 5 high | 138 | 296 / 57 | 0.5099 | 0.00425 | 3.8 / 15.9 |
+| Sol 6.1 high | 138 | 123 / 66 | 0.3268 | 0.00272 | 4.7 / 9.5 |
+
+- The only failures are `QIN-2`'s Azure content-filter refusals: all 3 repeats on
+  Luna low, medium and high and on Sol 6.1. Sonnet 5 answered every attempt.
+- **Pending:** human verdicts on the blinded packets (calibration 100 answers, pilot
+  600) in the private run directories. ICC, rubric agreement, per-slice frontiers and
+  the B3 sample size need those verdicts; nothing here measures answer quality.
+
 ## Stop conditions
 
 - Rubric ambiguity found in review: revise the corpus (new version) before any calls.
