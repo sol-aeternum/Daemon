@@ -9,7 +9,7 @@ import pytest
 from orchestrator.entitlements.policy import RouteNotApproved, parse_inference_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEWED = datetime(2026, 9, 30, tzinfo=timezone.utc)
+REVIEWED = datetime(2026, 10, 3, tzinfo=timezone.utc)
 EXPIRES = datetime(2026, 10, 6, tzinfo=timezone.utc)
 
 
@@ -31,6 +31,10 @@ def test_deployment_policy_is_opt_in_and_expires_closed() -> None:
     assert sol.model == "openrouter/openai/gpt-6.1-sol"
     assert sol.review.reviewed_at == datetime(2026, 9, 30, tzinfo=timezone.utc)
     assert all(r.model != "openrouter/openai/gpt-6-sol" for r in policy.routes.values())
+    sonnet = policy.routes["sonnet-vertex-europe"]
+    assert sonnet.model == "openrouter/anthropic/claude-sonnet-5.5"
+    assert sonnet.review.reviewed_at == datetime(2026, 10, 3, tzinfo=timezone.utc)
+    assert all(r.model != "openrouter/anthropic/claude-sonnet-5" for r in policy.routes.values())
     for route in policy.routes.values():
         assert route.is_approved(policy.requirements, now=REVIEWED)
         provider = route.transport_payload(policy.requirements, now=REVIEWED)["extra_body"][
@@ -85,6 +89,7 @@ def test_approved_deployment_resolves_profiles_and_denies_excluded_models(monkey
     )
     for model in (
         "openrouter/openai/gpt-6-sol",
+        "openrouter/anthropic/claude-sonnet-5",
         "openrouter/qwen/qwen3.8-max-0902",
         "openrouter/google/gemini-3.8-flash",
         "openrouter/z-ai/glm-5.3",

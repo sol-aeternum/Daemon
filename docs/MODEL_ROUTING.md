@@ -39,6 +39,18 @@ retains its limits, price ceilings, privacy controls and 6 October expiry; see
 [INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026).
 Routine/background/research remain Luna-only for automatic selection.
 
+### Sonnet 5.5 replaces Sonnet 5 — 3 October 2026
+
+The operator approved replacing `anthropic/claude-sonnet-5` with
+`anthropic/claude-sonnet-5.5` at the same high presets and placements:
+- the reasoning demanding group;
+- the council diverse group and analyst seat;
+- exact manual selection.
+
+The evidence and limits are in
+[INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#sonnet-55-replacement--3-october-2026).
+Rollback is reverting the route model, catalog entry and roster seat.
+
 ### Luna medium default — 3 October 2026
 
 The operator approved Luna's default effort moving from `low` to `medium` for

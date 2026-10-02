@@ -18,7 +18,7 @@
 roles:
   analyst:
     description: "Analyzes information critically, identifies patterns and inconsistencies"
-    model_id: "openrouter/anthropic/claude-sonnet-5"
+    model_id: "openrouter/anthropic/claude-sonnet-5.5"
     timeout_s: 120
     seat: 1
 
