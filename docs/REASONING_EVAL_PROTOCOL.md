@@ -143,9 +143,10 @@ per attempt; 2 October 2026 price ceilings):
 
 Actual spend is expected to be well below these bounds; the calibration run measures it.
 
-**Decision needed before B2:** a USD cap for the calibration run (and, after it, for
-the pilot). Nothing in B2 runs until a cap is approved and route approvals are valid
-at run time.
+**Approved 2 October 2026:** the calibration cap is its worst case, USD 4.65
+(manifest `b2_calibration_20261002.json`). The pilot runs, under its own manifest,
+only if the calibration's measured costs project it within its USD 27.98 worst case.
+Route approvals must still be valid at run time.
 
 ## Stop conditions
 
@@ -156,11 +157,34 @@ at run time.
   sample needed to detect the declared effect is unaffordable: stop Package B, keep
   the current policy, and consider explicit user controls alone.
 
-## What B2 needs to build
+## B2 runner
 
-The existing runners (`scripts/model_routing_followup.py`, `scripts/model_upgrade.py`)
-validate the earlier frozen experiments only (fixed case ids and call counts). B2
-needs a generalised loader for this corpus schema (multi-turn `history`, per-case
-call limits, `split`/`slice`/`stratum`), reusing the existing isolated-catalog,
-accounting and journaling path through `guarded_completion`. That is implementation
-work inside B2, after the cap is approved.
+`scripts/reasoning_eval.py` runs one manifest under
+`tests/fixtures/reasoning_eval/` (calibration: `b2_calibration_20261002.json`). It
+loads this corpus strictly (digest-checked, multi-turn `history`, per-case call
+limits: 3 calls and 4 tool calls for tool cases, 1 call otherwise) and reuses the
+shared executor in `scripts/model_routing_followup.py` for pinned dispatch through
+`guarded_completion`, pre-dispatch journaling, per-call settlement, cap admission,
+ledger exclusivity and no replay. Each configuration sends its effort explicitly
+through an isolated catalog with empty presets.
+
+- `--dry-run` checks every scheduled request against the isolated account and
+  policies and refuses a whole-run planning bound above the manifest cap. The
+  calibration's planning bound is USD 3.56 (no system prompt is sent, unlike the
+  planner's allowance).
+- A completed run writes `results.json`, `summary.json`, `human-review.md` and
+  `human-verdicts.json` (blinded: random labels, no model, effort, cost or latency)
+  and a separate `review-map.json`. `--report` re-renders them offline, including
+  for a partial run.
+- `summary.json` reports, per planned configuration, planned, recorded, terminal,
+  stopped and missing attempts, tokens, calls, charges and latency. It keeps three
+  accounting rates apart:
+  - `f_unknown_usage`, calls without provider usage; this is the formula's
+    `f_unknown`, and such calls settle at the full hold;
+  - `f_full_hold`, calls charged their whole hold;
+  - `f_unknown_charge`, calls with no recorded ledger charge.
+- The pilot projection is withheld, with reasons, unless every planned calibration
+  attempt is recorded and terminal and every charge is known.
+- Limits: single non-streaming calls with no system prompt or memory, so this
+  measures the models on the cases, not the production chat path; first-token time
+  is not recorded. Answers can still reveal their model by style.

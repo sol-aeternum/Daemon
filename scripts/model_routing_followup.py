@@ -401,6 +401,9 @@ class CaseFixture:
     schema: JsonObject | None
     expected: JsonObject
     sha256: str
+    #: Prior user/assistant turns sent before ``prompt``. This experiment's own
+    #: fixtures have none; a reused executor may supply a multi-turn corpus.
+    history: tuple[JsonObject, ...] = ()
 
     @property
     def prompt_sha256(self) -> str:
@@ -1131,6 +1134,11 @@ def request_for(
     return params
 
 
+def initial_messages(case: CaseFixture) -> list[JsonObject]:
+    """The conversation an attempt opens with: any frozen history, then the prompt."""
+    return [*(dict(turn) for turn in case.history), {"role": "user", "content": case.prompt}]
+
+
 def case_tools(case: CaseFixture) -> list[JsonObject]:
     """The exact tool payload sent to the provider, unmodified."""
     return [dict(tool.function) for tool in case.tools]
@@ -1507,7 +1515,7 @@ async def run_attempt(ctx: RunContext, attempt: Attempt) -> None:
     }
     ctx.state["attempts"][attempt.attempt_id] = entry
     write_state(ctx.state_path, ctx.state)
-    messages: list[JsonObject] = [{"role": "user", "content": case.prompt}]
+    messages = initial_messages(case)
     cursors: dict[str, int] = {}
     started = time.monotonic()
     deadline = started + ATTEMPT_DEADLINE_S
@@ -1960,7 +1968,7 @@ async def dry_run_report(
     for attempt in schedule:
         case = cases[attempt.case_id]
         route = routes[attempt.candidate_label]
-        params = request_for(case, route, attempt, [{"role": "user", "content": case.prompt}])
+        params = request_for(case, route, attempt, initial_messages(case))
         verify_candidate(case, route, resolved, params)
         conditions.add(attempt.condition)
         by_candidate[attempt.candidate_label] = (

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "experiment": "b2-calibration-20261002",
+  "notes": "B2 calibration run (docs/REASONING_EVAL_PROTOCOL.md): 20 dev cases x 5 configurations x 1 repeat. Cap approved by the operator on 2 October 2026 at the dry-run worst case, USD 4.65. Routes are the deployment-approved endpoints, valid until 2026-10-06T00:00:00Z.",
+  "period": "2026-10",
+  "corpus": {
+    "path": "tests/fixtures/reasoning_eval/corpus_v1.json",
+    "sha256": "cd58fdc4751bd3f1b487434208d0e174a090fc9c4cb765aaf23690fc0c9b149b"
+  },
+  "splits": ["dev"],
+  "repeats": 1,
+  "candidates": [
+    {"label": "luna", "model": "openrouter/openai/gpt-6-luna", "route_id": "luna-azure-eu", "provider_pin": "azure/eu"},
+    {"label": "sonnet5", "model": "openrouter/anthropic/claude-sonnet-5", "route_id": "sonnet-vertex-europe", "provider_pin": "google-vertex/europe"},
+    {"label": "sol61", "model": "openrouter/openai/gpt-6.1-sol", "route_id": "sol-azure-eu", "provider_pin": "azure/eu"}
+  ],
+  "configurations": [
+    {"label": "luna-low", "candidate": "luna", "effort": "low"},
+    {"label": "luna-medium", "candidate": "luna", "effort": "medium"},
+    {"label": "luna-high", "candidate": "luna", "effort": "high"},
+    {"label": "sonnet-5-high", "candidate": "sonnet5", "effort": "high"},
+    {"label": "sol-6.1-high", "candidate": "sol61", "effort": "high"}
+  ],
+  "bounds": {"incremental_cap_microusd": 4650000}
+}
