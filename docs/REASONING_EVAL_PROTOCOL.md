@@ -197,6 +197,147 @@ USD 1.019.
   600) in the private run directories. ICC, rubric agreement, per-slice frontiers and
   the B3 sample size need those verdicts; nothing here measures answer quality.
 
+## B3 pre-registration (2 October 2026, before any test-split run)
+
+Operator decisions on 2 October 2026:
+- **Success rule:** the chosen policy passes if both hold.
+  - On `hard` and `deceptively_hard` test cases, its acceptance rate is at most
+    **5 percentage points** below the always-deliberate baseline (always Sol 6.1 high).
+  - Its cost per acceptable answer is at most **25%** of that baseline's.
+- **Verdicts:** a panel of three blind AI reviewers decides by majority. The operator
+  adjudicates every disagreement, plus the hard `planning`, `revealed_by_tools` and
+  `synthesis` cases; an adjudication replaces the majority.
+- **Test cap:** USD 10.50.
+
+**Policies, simplest first:**
+- P0 current: Luna low for routine work, reasoning in the current order (Sonnet 5 first).
+- P1 uniform Luna medium default, reasoning unchanged.
+- P2 cost-ordered reasoning: Sol 6.1 first.
+- P1 + P2.
+- References: always Sonnet 5 high, always Luna medium.
+
+**Simulation:** each case is classified with the current
+`orchestrator.model_router.select_model_tier`, using its prompt and a turn count of
+history + 1. Routine and research cases take the policy's routine configuration;
+reasoning cases take its first reasoning configuration. No fallback is modelled: a
+content-filter refusal is a completed, unacceptable response under every policy.
+The classifier routes one case per split to reasoning (COD-2, PLN-4 and one test
+case).
+
+**Validation scores** (pilot, one blind AI reviewer; the panel is pending):
+
+| Policy | Dev | Validation | Validation cost per success (USD) |
+| --- | --- | --- | --- |
+| P0 | 50/60 | 58/60 | 0.00042 |
+| P1 | 53/60 | 60/60 | 0.00043 |
+| P2 | 49/60 | 58/60 | 0.00035 |
+| P1 + P2 | 52/60 | 60/60 | 0.00037 |
+| Always Sonnet 5 high | 60/60 | 58/60 | 0.00457 |
+| Always Sol 6.1 high | 56/60 | 60/60 | 0.00275 |
+| Always Luna medium | 53/60 | 60/60 | 0.00013 |
+
+**Selection:** P1, the simplest policy at the best validation score. It needs a
+preset change only, no code. It is re-selected only if the three-reviewer panel
+changes the validation ranking, and any re-selection is recorded here before test
+verdicts are unblinded.
+
+**Test confirmation:** manifest `b3_test_20261002.json` runs 20 untouched test cases
+× Luna low, Luna medium, Sonnet 5 high and Sol 6.1 high × 3 repeats: 240 attempts,
+planning bound USD 10.37.
+
+**Reporting:** P1 is checked against the success rule. Missed escalations are
+routine-routed cases where P1 fails and always-Sol passes. Unnecessary escalations
+are reasoning-routed cases the routine configuration also passes. Both are reported
+separately. If P1 fails the rule, the current policy stays.
+
+**Observation recorded before the test:** on dev and validation, the cases where a
+premium model helps (PLN-2, RBT-1, SYN-2) are routed to routine, and the cases the
+classifier escalates are ones Luna medium already passes.
+
+## B3 result (3 October 2026)
+
+**Pre-test re-selection check** (recorded 2026-10-02T14:29Z, before any test
+verdict existed):
+- The pilot panel was three blind AI reviewers: two Opus sessions and one Sonnet
+  session. Pairwise Cohen's κ was 0.81–0.88.
+- A Haiku reviewer was excluded for heuristic judging. Its rationales were
+  boilerplate and its κ against the others was 0.29–0.31.
+- Majority verdicts left the validation ranking unchanged, so P1 stays selected.
+
+**Test run** (`b3-test-20261002`, merged `main` `baf13275`):
+- 240 attempts, all completed, no stops.
+- USD 0.425, matching the ledger exactly; every call reported usage.
+- No content-filter refusals on the test split.
+- The test panel, with the same reviewer composition, was unanimous except on
+  three NEN-6 answers listing *maçã*, accepted 2–1.
+
+| Policy | All (60) | Hard + deceptively hard (36) | Cost per success (USD) |
+| --- | --- | --- | --- |
+| P0 current | 60 | 36 | 0.00062 |
+| **P1 Luna medium** | **60** | **36** | **0.00064** |
+| P2 Sol first | 60 | 36 | 0.00038 |
+| P1 + P2 | 60 | 36 | 0.00040 |
+| Always Sonnet 5 high | 60 | 36 | 0.00409 |
+| Always Sol 6.1 high | 60 | 36 | 0.00280 |
+
+**Rule outcome: P1 passes.**
+- It is 0 points below always-Sol, against 5 allowed.
+- Its cost per success is 22.8% of always-Sol's, against 25% allowed.
+- Most of P1's cost comes from the one escalated test case (COD-5), which runs on
+  Sonnet 5.
+
+**Limits of this result:**
+- Every policy scored 60/60 on the test split, including the current policy. The
+  test therefore confirms that P1 is non-inferior, but it cannot separate P1 from
+  P0.
+- The evidence for P1 over P0 rests on dev (53 vs 50 of 60) and validation (60 vs 58
+  of 60). That gain comes mainly from two tool cases (RBT-1, RBT-3) and one planning
+  case (PLN-2), and is not significant on its own.
+- Corpus v1's test split is too easy to discriminate between policies. A harder,
+  larger corpus (v2) is needed before claims beyond non-inferiority.
+
+**Escalation accounting:**
+- Unnecessary escalations: COD-2, PLN-4 and COD-5, every case the classifier
+  escalated across dev, validation and test. The routine configuration also passed
+  each one.
+- Missed escalations: none on test. On dev and validation, premium helped on PLN-2,
+  RBT-1, RBT-3 and SYN-2, all routed to routine.
+
+**Spend:** USD 0.425 for B3; Package B total USD 1.444.
+
+**Pending:**
+- Operator adjudication: the 15 pilot disagreements (PLN-2, EVD-3, PLN-1, COD-2),
+  the 3 NEN-6 test answers, and the hard planning, revealed-by-tools and synthesis
+  cases.
+- B4 needs separate approval of the preset change: Luna medium as the routine,
+  background and research default.
+
+## Sonnet 5.5 evaluation (approved 3 October 2026)
+
+The operator approved an evaluation-only route and one additional configuration
+over the pilot cases. Only the new model runs: manifest `b2_sonnet55_20261003.json`
+(40 dev+val cases × Sonnet 5.5 high × 3 repeats, 120 attempts, planning bound
+USD 7.60, cap USD 8). It pairs with `b2-pilot-20261002` by case and repeat.
+
+- **Route:** `eval-sonnet55-vertex-europe` serves `openrouter/anthropic/claude-sonnet-5.5`
+  (`claude-sonnet-5.5-20260928`).
+  - It is pinned to `google-vertex/europe` with fallbacks disabled, the same
+    transport and privacy block as the approved Sonnet 5 route.
+  - Price ceiling is USD 2.2 / 11 per million prompt / completion tokens, equal to
+    the listed price.
+  - Approval expires 2026-10-06. The route lives only in the private evaluation
+    policy and is not a serving route.
+- **Evidence** was fetched 2026-10-02T11:38Z from public OpenRouter metadata, with
+  SHA-256 provenance kept privately:
+  - the endpoint listing;
+  - the ZDR listing, which includes `google-vertex/europe` for this model;
+  - Google's provider policy (no training, no prompt retention).
+- **Known risk:** the 29 September screen kept Sonnet 5 after Sonnet 5.5
+  content-filtered a benign case on this endpoint (#344).
+- **Verdicts:** the same three-reviewer blind panel as the pilot. The comparison with
+  Sonnet 5 is paired by case but a day apart, so provider-side drift is not
+  controlled.
+
 ## Stop conditions
 
 - Rubric ambiguity found in review: revise the corpus (new version) before any calls.

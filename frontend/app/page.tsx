@@ -360,6 +360,7 @@ function ChatContent() {
     setConversationModel,
     searchQuery,
     setSearchQuery,
+    conversationSearch,
     refreshConversations,
   } = useConversationHistoryContext();
 
@@ -1137,6 +1138,7 @@ function ChatContent() {
           }}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
+          search={conversationSearch}
           isLoading={!isLoaded}
           activeSection="home"
           onNavigate={handleSidebarNavigate}

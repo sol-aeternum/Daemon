@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "experiment": "b2-sonnet55-20261003",
+  "notes": "Additional configuration over the B2 pilot cases (docs/REASONING_EVAL_PROTOCOL.md, \"Sonnet 5.5 evaluation\"): 40 dev+val cases x Sonnet 5.5 high x 3 repeats, paired with b2-pilot-20261002 by case and repeat. The operator approved this run and its evaluation-only route on 3 October 2026. Route eval-sonnet55-vertex-europe is evaluation-only, not a serving route, and is valid until 2026-10-06T00:00:00Z.",
+  "period": "2026-10",
+  "corpus": {
+    "path": "tests/fixtures/reasoning_eval/corpus_v1.json",
+    "sha256": "cd58fdc4751bd3f1b487434208d0e174a090fc9c4cb765aaf23690fc0c9b149b"
+  },
+  "splits": [
+    "dev",
+    "val"
+  ],
+  "repeats": 3,
+  "candidates": [
+    {
+      "label": "sonnet55",
+      "model": "openrouter/anthropic/claude-sonnet-5.5",
+      "route_id": "eval-sonnet55-vertex-europe",
+      "provider_pin": "google-vertex/europe"
+    }
+  ],
+  "configurations": [
+    {
+      "label": "sonnet-5.5-high",
+      "candidate": "sonnet55",
+      "effort": "high"
+    }
+  ],
+  "bounds": {
+    "incremental_cap_microusd": 8000000
+  }
+}

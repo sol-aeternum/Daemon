@@ -189,15 +189,15 @@ def test_approved_luna_first_placement_is_the_only_automatic_candidate() -> None
     ]:
         profile = config.profile(name)
         assert profile.ranked_models() == (LUNA,), name
-        assert profile.group_names() == ("luna-low",), name
+        assert profile.group_names() == ("luna",), name
         # The comparable output floor and the account contract are unchanged.
         assert profile.min_output_tokens == floor, name
         assert profile.allow_premium is premium, name
         for unplaced in (DEEPSEEK, FLASH, GOOGLE, GLM, SOL, SONNET, OPUS, ASTRA):
             assert model_routing.profile_candidate(name, unplaced) is None, (name, unplaced)
-    # Luna is served at the effort the accepted screen actually measured.
+    # Luna is served at the effort approved after the B3 evaluation (3 October 2026).
     for name in ("routine", "background", "research"):
-        assert model_routing.model_parameter_presets(LUNA, name) == {"reasoning_effort": "low"}
+        assert model_routing.model_parameter_presets(LUNA, name) == {"reasoning_effort": "medium"}
     # Bounded escalation survives the operator-approved Qwen removal.
     assert config.profile("reasoning").group_names() == ("demanding", "escalation")
     assert config.profile("council").group_names() == ("diverse", "escalation")
@@ -237,10 +237,10 @@ async def test_cheaper_qualified_route_never_displaces_the_accepted_luna_candida
             with model_routing.routing_context(profile) as state:
                 await runtime.guarded_completion(messages=[{"role": "user", "content": "hello"}])
                 assert (state.selected_model, state.selected_route_id) == (LUNA, LUNA)
-                assert state.selected_group == "luna-low"
+                assert state.selected_group == "luna"
             assert last_kwargs(provider)["model"] == LUNA
             assert [call.kwargs["model"] for call in service.reserve.await_args_list] == [LUNA]
-            assert last_kwargs(provider)["reasoning_effort"] == "low"
+            assert last_kwargs(provider)["reasoning_effort"] == "medium"
 
 
 @pytest.mark.asyncio

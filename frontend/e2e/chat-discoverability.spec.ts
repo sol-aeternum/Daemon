@@ -214,3 +214,55 @@ test('an unsent draft and its attachment survive a page reload in the same tab',
     page.getByRole('button', { name: 'Remove notes.txt' }),
   ).toHaveCount(0);
 });
+
+test('sidebar search finds older conversations through the server and pages results', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const requests: URLSearchParams[] = [];
+  const older = (id: string, title: string) => ({
+    ...conversation,
+    id,
+    title,
+    updated_at: '2024-01-01T00:00:00Z',
+    last_activity_at: '2024-01-01T00:00:00Z',
+    message_count: 4,
+  });
+  await page.route(
+    (url) =>
+      url.pathname.endsWith('/conversations') && url.searchParams.has('search'),
+    (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      requests.push(params);
+      const offset = Number(params.get('offset'));
+      const conversations =
+        offset === 0
+          ? Array.from({ length: 50 }, (_, i) =>
+              older(`old-${i}`, `Budget ${i}`),
+            )
+          : [older('old-extra', 'Budget archive')];
+      return route.fulfill({ json: { conversations } });
+    },
+  );
+  await page.goto('/?id=conversation-1');
+  const search = page.getByRole('searchbox', {
+    name: 'Search conversation titles',
+  });
+  await search.fill('budget');
+
+  await expect(page.getByText('Budget 0', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('conversation-search-status')).toHaveText(
+    '50+ titles match',
+  );
+  expect(requests.map((p) => p.get('search'))).toEqual(['budget']);
+
+  await page.getByRole('button', { name: 'Load more results' }).click();
+  await expect(page.getByText('Budget archive')).toBeVisible();
+  expect(requests.at(-1)?.get('offset')).toBe('50');
+
+  await search.press('Escape');
+  await expect(search).toHaveValue('');
+  await expect(page.getByText('Budget archive')).toHaveCount(0);
+  await expect(page.getByTestId('conversation-search-status')).toHaveCount(0);
+  await expect(page.getByText('Budget 0', { exact: true })).toHaveCount(0);
+});

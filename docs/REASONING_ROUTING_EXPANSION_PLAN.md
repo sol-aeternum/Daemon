@@ -194,7 +194,7 @@ Before any authorized Package B stage:
 | --- | --- | --- |
 | B1 | Done (2 October 2026) | Commencement authorized 2 October 2026; revalidated against `main` `9fca6139`; protocol and corpus v1 frozen in [REASONING_EVAL_PROTOCOL.md](REASONING_EVAL_PROTOCOL.md) |
 | B2 | In progress | Budget approved 2 October 2026: calibration at its USD 4.65 worst case; pilot (worst case USD 27.98) only if calibration-measured costs project it within that. Runner `scripts/reasoning_eval.py`; A-core deployed 2 October 2026. Calibration (USD 0.138) and pilot (600 attempts, USD 0.881) run 2 October 2026, see the protocol. Waiting on human verdicts for the blinded review packets |
-| B3 | Blocked | |
-| B4 | Blocked | |
+| B3 | Done (3 October 2026) | P1 (Luna medium default) passed the pre-registered rule on the test split (0 points below always-Sol, 22.8% of its cost per success); the test split could not separate P1 from the current policy. See the protocol's B3 result. Operator adjudication pending |
+| B4 | Done (3 October 2026) | Operator approved the preset change; Luna's default effort is `medium` for routine, background and research (group renamed `luna`); rollback is reverting the preset |
 | B5 | Blocked | Also needs A-core deployed |
 | B6 | Blocked | |

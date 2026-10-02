@@ -1,5 +1,17 @@
 # Self-hosted speech rendering
 
+## Local rollout evidence boundary
+
+The owner authorized completing the local rollout after the frontend-only
+deployment. PR #409 preserves the newer deployed routing configuration and
+full-history sidebar title search alongside the speech lifecycle fixes. The
+private runtime was staged successfully before an interrupted rollout; staging
+alone is not backend/worker activation or live-account acceptance. Final local
+activation, source/image identities, rollback references and checks are recorded
+in the dated PR rollout report rather than inferred from this architecture spec.
+Real-account read-aloud and human listening acceptance are separate from real
+private-provider synthesis and fictional desktop/mobile browser fixtures.
+
 ## Boundary and default
 
 The approved MVP is ordinary authenticated read-aloud, not sound-effects
