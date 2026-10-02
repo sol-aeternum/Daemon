@@ -93,12 +93,9 @@ async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
         async with pool.acquire() as conn:
             await conn.execute("CREATE TABLE users (id UUID PRIMARY KEY)")
             await conn.execute("INSERT INTO users (id) VALUES ($1)", user_id)
-            sql = (
-                Path(__file__).resolve().parents[1]
-                / "migrations"
-                / "039_entitlements_commercial.sql"
-            ).read_text()
-            await conn.execute(sql)
+            migrations = Path(__file__).resolve().parents[1] / "migrations"
+            for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
+                await conn.execute((migrations / name).read_text())
         yield pool, user_id
     finally:
         if pool is not None:
