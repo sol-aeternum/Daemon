@@ -697,6 +697,8 @@ class RoutingState:
     explicit: bool = False
     #: The reasoning effort actually sent with the selected model, if any.
     selected_effort: str | None = None
+    #: Whether the selected route's output was fitted to the remaining budget (O2).
+    selected_budget_fitted: bool = False
     resolution: ModelRouting | None = field(default=None, repr=False, compare=False)
 
     def record_selection(
@@ -707,12 +709,14 @@ class RoutingState:
         group: str | None,
         explicit: bool,
         effort: str | None = None,
+        budget_fitted: bool = False,
     ) -> None:
         self.selected_model = model
         self.selected_route_id = route_id
         self.selected_group = group
         self.explicit = explicit
         self.selected_effort = effort
+        self.selected_budget_fitted = budget_fitted
 
 
 _routing: ContextVar[RoutingState | None] = ContextVar("model_routing_state", default=None)

@@ -16,7 +16,9 @@ a paid turn is bounded by the qualified route's own context and output limits,
 the global tool-round safety ceiling (`TOOL_ROUND_SAFETY_CEILING`, a runaway-loop
 guard rather than a commercial limit) and the recurring budget. The budget hold
 for an uncapped call is sized on the route's maximum output and settled to
-actual usage. The trial's premium overlay can raise a Free ceiling but never
+actual usage; when that full-size hold no longer fits the remaining budget, the
+call is admitted at the largest output the remaining budget covers (never below
+the workload's output floor), with `max_tokens` set to match the hold. The trial's premium overlay can raise a Free ceiling but never
 caps an uncapped plan.
 
 A premium trial is a finite, usage-based grant on an account whose base plan is

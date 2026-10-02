@@ -90,6 +90,7 @@ EVENT_FIELDS: Final[Mapping[str, frozenset[str]]] = {
             "include_reasoning",
             "max_tokens",
             "hold_bound",
+            "budget_fitted",
             "reservation_id",
             "stream",
         }

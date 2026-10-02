@@ -602,3 +602,30 @@ async def test_compatibility_endpoint_does_not_fall_back_without_a_disclosure_ch
     )
     assert response.status_code == 200
     assert seen == [False]
+
+
+@pytest.mark.asyncio
+async def test_budget_fitted_output_is_disclosed_with_a_reason_code(client, monkeypatch):
+    """O2: a reply whose output was fitted to the remaining budget says so."""
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **_kwargs):
+        yield {"type": "content_delta", "content": "Partial"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
+    monkeypatch.setattr(
+        daemon_module, "active_compute_model", lambda: "openrouter/openai/gpt-6-luna"
+    )
+    monkeypatch.setattr(daemon_module, "active_compute_effort", lambda: "low")
+    monkeypatch.setattr(daemon_module, "active_budget_fitted", lambda: True)
+
+    response = await client.post("/chat", json={"message": "hello"})
+    assert response.status_code == 200
+    payloads = _routing_payloads(response.text)
+    assert payloads[-1]["reason_codes"] == ["default", "budget_fitted_output"]
+    # The code is added once, not on every streamed event.
+    assert all(p["reason_codes"].count("budget_fitted_output") <= 1 for p in payloads)

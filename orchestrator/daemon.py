@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.compute_runtime import compute_error
+from orchestrator.compute_runtime import selected_budget_fitted as active_budget_fitted
 from orchestrator.compute_runtime import selected_effort as active_compute_effort
 from orchestrator.compute_runtime import selected_model as active_compute_model
 from orchestrator.compute_runtime import tool_round_limit
@@ -565,12 +566,23 @@ async def stream_sse_chat(
                     if approved_model:
                         model_for_events = approved_model
                         approved_effort = active_compute_effort()
+                        codes = routing_info.get("reason_codes") if routing_info else None
+                        fitted_now = active_budget_fitted() and not (
+                            isinstance(codes, list) and "budget_fitted_output" in codes
+                        )
                         if routing_info and (
                             not routing_emitted
                             or routing_info.get("model") != approved_model
                             or routing_info.get("effort") != approved_effort
+                            or fitted_now
                         ):
                             routing_info = {**routing_info, "model": approved_model}
+                            if fitted_now:
+                                # O2: the answer's length was fitted to the budget.
+                                routing_info["reason_codes"] = [
+                                    *(codes if isinstance(codes, list) else []),
+                                    "budget_fitted_output",
+                                ]
                             if approved_effort:
                                 routing_info["effort"] = approved_effort
                             else:

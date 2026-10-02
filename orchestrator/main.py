@@ -897,6 +897,7 @@ ROUTING_REASON_CODES = frozenset(
         "default",
         "fallback_capability_unavailable",
         "fallback_budget_exceeded",
+        "budget_fitted_output",
     }
 )
 

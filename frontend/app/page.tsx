@@ -1306,6 +1306,10 @@ function ChatContent() {
                         : persistedDuration;
                     const persistedModel = reasoningMessage.reasoning_model;
                     const routingEvent = msgEvents.find(isRoutingEvent);
+                    // Disclosures (fallback, budget-fitted output) arrive as later
+                    // routing updates, so the notice reads the latest one.
+                    const latestRoutingEvent =
+                      msgEvents.findLast(isRoutingEvent);
                     const routingModel = routingEvent?.model;
                     const fallbackThought =
                       thoughtFallbackByMessageId[message.id];
@@ -1364,7 +1368,8 @@ function ChatContent() {
                                 <ToolCallLog events={msgEvents} />
                               )}
                               <RoutingNotice
-                                fallback={routingEvent?.fallback}
+                                fallback={latestRoutingEvent?.fallback}
+                                reasonCodes={latestRoutingEvent?.reason_codes}
                               />
                             </div>
                           )}

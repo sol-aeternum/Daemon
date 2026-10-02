@@ -174,7 +174,13 @@ target, so a smaller-cap route cannot win on price by offering a shorter answer,
 while a group whose routes all fall short of the account allowance still serves
 at its best feasible size rather than refusing or escalating. A route that cannot
 fit the budget at that size is ineligible, and the target falls to the group's
-next-largest capacity. The profile's `min_output_tokens` is a suitability floor,
+next-largest capacity. If no route of the group fits the remaining budget at any
+capacity size, each is offered at the largest output its hold can cover, provided
+that still meets the profile's `min_output_tokens` (approved 2 October 2026). That
+output is sent as `max_tokens`, so the hold still bounds what the provider can bill;
+the routing event adds the `budget_fitted_output` reason code and the chat notes
+that the reply may stop early. An explicit model with no caller output limit is
+fitted the same way. The profile's `min_output_tokens` is a suitability floor,
 not the dispatched answer cap. Explicit caller output limits remain exact and
 still require route/account admission.
 

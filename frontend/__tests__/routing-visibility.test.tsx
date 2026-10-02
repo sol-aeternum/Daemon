@@ -157,3 +157,27 @@ describe('routing visibility in the UI', () => {
     );
   });
 });
+
+describe('budget-fitted output disclosure', () => {
+  it('tells the user the reply was sized to the remaining budget', () => {
+    render(<RoutingNotice reasonCodes={['default', 'budget_fitted_output']} />);
+    expect(
+      screen.getByTestId('routing-budget-fitted-notice').textContent,
+    ).toContain('ask me to continue');
+  });
+
+  it('uses generic copy for an unknown cause, including prototype keys', () => {
+    render(
+      <RoutingNotice
+        fallback={{
+          from_profile: 'reasoning',
+          to_profile: 'routine',
+          cause: '__proto__',
+        }}
+      />,
+    );
+    expect(screen.getByTestId('routing-fallback-notice').textContent).toContain(
+      "wasn't available for this reply",
+    );
+  });
+});

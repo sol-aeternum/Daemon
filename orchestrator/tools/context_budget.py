@@ -109,6 +109,7 @@ async def tool_context_budget(
             model,
             scope.extended,
             account_allow_premium=scope.account_allow_premium,
+            fit_to_budget=True,
         )
     except compute_runtime.ComputeUnavailable:
         candidates = []
