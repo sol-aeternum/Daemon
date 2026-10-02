@@ -32,6 +32,7 @@ from orchestrator.worker.jobs import (
     extract_memories,
     garbage_collect,
     cleanup_web_snapshots,
+    reconcile_settlement_receipts,
     generate_conversation_title_job,
     generate_title,
     generate_summary_job,
@@ -166,6 +167,11 @@ cron_jobs.extend(
     [
         cron(cleanup_web_snapshots, hour=3, minute=45, keep_result=3600),
         cron(
+            reconcile_settlement_receipts,
+            minute={0, 10, 20, 30, 40, 50},
+            keep_result=3600,
+        ),
+        cron(
             garbage_collect,
             hour=3,
             minute=0,
@@ -195,6 +201,7 @@ worker = AuditedWorker(
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
         func(cleanup_web_snapshots, max_tries=_worker_settings.retry_attempts),
+        func(reconcile_settlement_receipts, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
         func(consolidate_memories, max_tries=_worker_settings.retry_attempts),

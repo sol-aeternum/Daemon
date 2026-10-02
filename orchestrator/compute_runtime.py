@@ -26,6 +26,7 @@ import json
 import math
 import inspect
 import logging
+import re
 import uuid
 import asyncio
 import time
@@ -385,7 +386,7 @@ class ComputeScope:
         reservation: Any,
         amount: int,
         *,
-        usage: dict[str, int] | None = None,
+        usage: dict[str, Any] | None = None,
         path: str = "unspecified",
     ) -> None:
         key = _hold_key(reservation)
@@ -1638,6 +1639,21 @@ def _chunk_usage(chunk: Any) -> Any:
 
 _ESTIMATED: dict[str, int] = {"estimated_cost": True}
 
+#: Shape of a provider generation id (OpenRouter ``gen-...``), the key of its receipt.
+_GENERATION_ID = re.compile(r"gen-[A-Za-z0-9_-]{1,100}")
+
+
+def _generation_id(chunk: Any) -> str | None:
+    value = chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
+    return value if isinstance(value, str) and _GENERATION_ID.fullmatch(value) else None
+
+
+def _estimated_usage(generation_id: str | None) -> dict[str, Any]:
+    """Usage for a conservative full-hold settlement, keyed for receipt reconciliation."""
+    if generation_id is None:
+        return dict(_ESTIMATED)
+    return {**_ESTIMATED, "generation_id": generation_id}
+
 
 async def guarded_completion(
     *,
@@ -2079,6 +2095,7 @@ async def guarded_completion(
             completed = False
             emitted = False
             failed = False
+            generation_id: str | None = None
             try:
                 chunks = aiter(cast(AsyncIterator[Any], response))
                 while True:
@@ -2093,6 +2110,8 @@ async def guarded_completion(
                     parsed = _usage_settlement(_chunk_usage(chunk), route, bound)
                     if parsed is not None:
                         settlement = parsed
+                    if generation_id is None:
+                        generation_id = _generation_id(chunk)
                     if not emitted and scope.first_output_at is None:
                         scope.first_output_at = time.monotonic()
                     emitted = True
@@ -2127,7 +2146,11 @@ async def guarded_completion(
                 await scope.settle(
                     reservation,
                     settlement[0] if completed and settlement is not None else bound,
-                    usage=settlement[1] if completed and settlement is not None else _ESTIMATED,
+                    usage=(
+                        settlement[1]
+                        if completed and settlement is not None
+                        else _estimated_usage(generation_id)
+                    ),
                     path="stream_end",
                 )
             if not failed:
