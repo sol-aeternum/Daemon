@@ -57,6 +57,7 @@ import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { refreshIfNeeded, getAuthHeader, getAuthGeneration } from '../lib/auth';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
+import { RoutingNotice } from '../components/RoutingNotice';
 import MarkdownMessage from '../components/MarkdownMessage';
 import { FileDownloadCard } from '../components/FileDownloadCard';
 import { SkeletonBlock } from '../components/ui/Skeleton';
@@ -1362,6 +1363,9 @@ function ChatContent() {
                               {!hideToolCalls && (
                                 <ToolCallLog events={msgEvents} />
                               )}
+                              <RoutingNotice
+                                fallback={routingEvent?.fallback}
+                              />
                             </div>
                           )}
 

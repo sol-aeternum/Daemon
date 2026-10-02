@@ -572,3 +572,33 @@ async def test_routing_fallback_is_disclosed_on_the_routing_event(client, monkey
     }
     assert routing["reason_codes"] == ["complexity_signal", "fallback_capability_unavailable"]
     assert "event: final" in response.text
+
+
+@pytest.mark.asyncio
+async def test_compatibility_endpoint_does_not_fall_back_without_a_disclosure_channel(
+    client, monkeypatch
+):
+    """O1 is disclosed on the native routing event; the OpenAI-compatible endpoint has
+    none, so it keeps the truthful refusal instead of a silent routine answer."""
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+    seen: list[bool] = []
+
+    async def fake_completion_with_tools(*_args, **kwargs):
+        seen.append(kwargs["reasoning_fallback"])
+        yield {"type": "content_delta", "content": "Done"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
+    response = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "messages": [{"role": "user", "content": "compare these"}],
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200
+    assert seen == [False]

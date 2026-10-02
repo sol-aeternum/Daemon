@@ -92,7 +92,7 @@
 <text x="727" y="1065" text-anchor="middle" font-size="15" fill="#0f172a">Eligible route exists?</text>
 <rect x="32" y="1032" width="360" height="64" rx="9" fill="#fff1f2" stroke="#e11d48" stroke-width="2"/>
 <text x="212" y="1059" text-anchor="middle" font-size="15" fill="#0f172a">Return unavailable / denied result</text>
-<text x="212" y="1080" text-anchor="middle" font-size="15" fill="#0f172a">No premium capability: capability_unavailable</text>
+<text x="212" y="1080" text-anchor="middle" font-size="15" fill="#0f172a">Inferred reasoning: disclosed routine answer</text>
 <rect x="485" y="1129" width="484" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
 <text x="727" y="1156" text-anchor="middle" font-size="15" fill="#0f172a">Select first eligible preference group</text>
 <text x="727" y="1177" text-anchor="middle" font-size="15" fill="#0f172a">Honor soft preference, then lowest bounded cost</text>

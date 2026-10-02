@@ -18,11 +18,27 @@ type AdvisorUsage = {
   latency_ms?: number;
 };
 
+/** A disclosed fallback from inferred reasoning to the routine profile. */
+export type RoutingFallback = {
+  from_profile: string;
+  to_profile: string;
+  cause: string;
+};
+
 export type ChatEvent = BaseEvent &
   (
     | { type: 'text'; content: string }
     | ({ type: 'thinking'; content: string; agent?: string } & TraceMeta)
-    | { type: 'routing'; model: string; route_class?: string; reason?: string }
+    | {
+        type: 'routing';
+        model: string;
+        route_class?: string;
+        reason?: string;
+        profile?: string;
+        reason_codes?: string[];
+        effort?: string;
+        fallback?: RoutingFallback;
+      }
     | { type: 'agent_spawn'; agent: string; agentType: string; task: string }
     | {
         type: 'agent_status';

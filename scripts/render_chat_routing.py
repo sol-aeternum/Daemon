@@ -178,7 +178,7 @@ def render_mermaid(facts: Facts) -> str:
         "supported parameters<br/>Context/output fit and account entitlements<br/>Bounded "
         'request cost and available budget"] --> OK{"Eligible route exists?"}\n'
         '    OK -->|No| ERR["Return unavailable / denied result<br/>'
-        'Missing premium capability: capability_unavailable"]\n'
+        'Inferred reasoning on native chat: disclosed routine answer"]\n'
         '    OK -->|Yes| SEL["Select first eligible preference group<br/>Honor soft preference, '
         'then lowest bounded cost"]\n'
         '    SEL --> RES["Apply reviewed model preset<br/>Reserve account capacity"]\n'
@@ -395,7 +395,10 @@ def render_svg(facts: Facts) -> str:
         212,
         below(980),
         360,
-        ["Return unavailable / denied result", "No premium capability: capability_unavailable"],
+        [
+            "Return unavailable / denied result",
+            "Inferred reasoning: disclosed routine answer",
+        ],
         "error",
     )
     select = Box(

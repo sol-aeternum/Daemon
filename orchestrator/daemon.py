@@ -528,7 +528,9 @@ async def stream_sse_chat(
                     registry=registry,
                     actual_model=model_to_call,
                     max_tool_rounds=max_tool_rounds,
-                    reasoning_fallback=True,
+                    # Fallback is disclosed on the routing event, so it is only
+                    # enabled where that event exists (native chat).
+                    reasoning_fallback=routing_info is not None,
                 ):
                     if await is_disconnected():
                         forced_terminal_status = "cancelled"

@@ -19,6 +19,7 @@ export function ChatActivityStatus({
   ).length;
   const modelName =
     routing?.type === 'routing' ? routing.model.split('/').at(-1) : undefined;
+  const effort = routing?.type === 'routing' ? routing.effort : undefined;
 
   return (
     <span
@@ -29,7 +30,11 @@ export function ChatActivityStatus({
         className="block max-w-xs truncate font-mono"
         title={routing?.type === 'routing' ? routing.model : undefined}
       >
-        {modelName || 'Choosing model…'}
+        {modelName
+          ? effort
+            ? `${modelName} · ${effort}`
+            : modelName
+          : 'Choosing model…'}
       </span>
       <span>
         {activeCount > 0

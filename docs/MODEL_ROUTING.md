@@ -187,12 +187,21 @@ routes. Premium eligibility does not itself authorize spending: every attempt
 must reserve capacity. Explicit model selections stay exact and still pass
 capability, privacy and accounting checks.
 
-When an automatic request has no eligible route only because the account lacks
-`premium_routing` (for example a reasoning-classified request on a Free account
-after its trial), it is refused with `capability_unavailable`, the same code as an
-explicit premium pick, and is not marked retryable. It is never answered by a
-cheaper model. When several blockers apply, capability is reported before budget,
-and budget before context.
+When an automatic (inferred) reasoning request on native chat is refused because the
+account lacks `premium_routing` or the budget cannot cover any reasoning route, it is
+answered under the routine profile instead, and the rest of the turn stays on routine
+(approved 2 October 2026). The routing SSE event discloses it with a `fallback`
+object and a `fallback_<cause>` reason code, the chat shows a notice under the reply,
+and routing telemetry writes a `profile_fallback` record. Explicit selections, the
+OpenAI-compatible endpoint (which has no routing event to disclose on), provider
+outages, other refusals and background work keep the refusal: a missing capability
+is reported as `capability_unavailable`, not retryable. When several blockers apply,
+capability is reported before budget, and budget before context.
+
+The native routing SSE event carries the original `model`, `tier` and `reason`
+fields plus additive ones: `profile`, `reason_codes` (`explicit`, `council`,
+`complexity_signal`, `research_signal`, `default`, `fallback_<cause>`), `effort`
+(the reasoning effort actually sent) and, after a fallback, `fallback`.
 
 Nested automatic helpers inherit the enclosing account scope's premium ceiling:
 entering a reasoning profile inside a routine/background account scope cannot

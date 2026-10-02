@@ -79,7 +79,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Sound Effects Generation (ElevenLabs) | Retired | Retired | Not started | Not started | POST /sound-effects denied pending a qualified, bounded adapter | No |
 | Voice Settings (TTS voice/model/speed/format, STT language) | Cross-client stable | Cross-client stable | Not started | Not started | Client settings storage + PATCH /users/me/settings | No |
 | **Models & Routing** | — | — | — | — | — | — |
-| Model Selector UI (catalog + full search) | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/catalog, GET /v1/models; desktop chat header shows the running model and active subagent count from the current response | No |
+| Model Selector UI (catalog + full search) | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/catalog, GET /v1/models; desktop chat header shows the running model, the reasoning effort actually sent and active subagent count from the current response; a reply answered with standard reasoning after an inferred-reasoning fallback shows a disclosure notice (routing SSE `effort`/`fallback`) | No |
 | **Settings** | — | — | — | — | — | — |
 | Account Plan & Premium Trial Capacity | Web experimental | Web experimental | Not started | Not started | Authenticated /users/me/entitlements; centralized Free/Pro/Power policy and usage-based trial (deployment qualification required) | No |
 | Appearance Settings (Dark/Light/System theme) | Cross-client stable | Cross-client stable | Not started | Not started | Client theme settings (no backend) | No |
