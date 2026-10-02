@@ -1,0 +1,7 @@
+{
+  "corpus": "corpus_v1.json",
+  "artifact_version": "reasoning-eval-corpus-v1",
+  "sha256": "cd58fdc4751bd3f1b487434208d0e174a090fc9c4cb765aaf23690fc0c9b149b",
+  "cases": 60,
+  "frozen": "2026-10-02"
+}
