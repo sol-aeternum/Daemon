@@ -301,3 +301,14 @@ async def test_schema_behind_the_code_is_refused_before_any_dispatch() -> None:
         await runner.require_current_schema(_Pool(_Conn(True, names[:-1])))
     with pytest.raises(runner.EvalError, match="no migration record"):
         await runner.require_current_schema(_Pool(_Conn(False, [])))
+
+
+def test_pilot_manifest_planning_bound_fits_its_cap() -> None:
+    manifest, fixtures, schedule, profile = runner.load_plan(
+        MANIFEST.with_name("b2_pilot_20261002.json")
+    )
+    assert len(schedule) == 40 * 5 * 3
+    assert {a.stage for a in schedule} == {"dev", "val"}
+    totals = runner.planning_bound(schedule, fixtures.by_id(), _routes(manifest))
+    assert sum(totals.values()) <= manifest.incremental_cap_microusd <= 25_000_000
+    assert profile.experiment == "reasoning-eval/b2-pilot-20261002"
