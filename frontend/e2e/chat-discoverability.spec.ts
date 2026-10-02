@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 
 const conversation = {
@@ -265,4 +266,72 @@ test('sidebar search finds older conversations through the server and pages resu
   await expect(page.getByText('Budget archive')).toHaveCount(0);
   await expect(page.getByTestId('conversation-search-status')).toHaveCount(0);
   await expect(page.getByText('Budget 0', { exact: true })).toHaveCount(0);
+});
+
+test('settings lets a person add a memory and export portable JSON', async ({
+  page,
+}) => {
+  const created: unknown[] = [];
+  await page.route(
+    /^http:\/\/[^/]+\/(?:api\/)?memories(?:\/|\?|$)/,
+    async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === 'POST' && path.endsWith('/memories/export')) {
+        return route.fulfill({
+          json: {
+            memories: [
+              {
+                id: 'm1',
+                user_id: 'u1',
+                content: 'Prefers metric units',
+                category: 'preference',
+                embedding: [0.1, 0.2, 0.3],
+                created_at: '2026-01-01T00:00:00Z',
+                updated_at: '2026-01-01T00:00:00Z',
+              },
+            ],
+          },
+        });
+      }
+      if (request.method() === 'POST' && path.endsWith('/memories')) {
+        created.push(request.postDataJSON());
+        return route.fulfill({ json: { id: 'new-1', status: 'created' } });
+      }
+      return route.fulfill({ json: { memories: [], total: 0 } });
+    },
+  );
+  await page.goto('/settings/memory');
+
+  const field = page.getByLabel('Add a memory');
+  await field.fill('  I live in Adelaide  ');
+  await page.getByLabel('Category').selectOption('fact');
+  await page.getByRole('button', { name: 'Save memory' }).click();
+  await expect(page.getByTestId('memory-action-outcome')).toContainText(
+    'Saved to memory',
+  );
+  await expect(field).toHaveValue('');
+  expect(created).toEqual([
+    { content: 'I live in Adelaide', category: 'fact' },
+  ]);
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export JSON' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(
+    /^daemon-memories-\d{4}-\d{2}-\d{2}\.json$/,
+  );
+  const body = JSON.parse(readFileSync(await download.path(), 'utf8'));
+  expect(body.memories).toEqual([
+    {
+      content: 'Prefers metric units',
+      category: 'preference',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+  ]);
+  expect(JSON.stringify(body)).not.toContain('embedding');
+  await expect(page.getByTestId('memory-action-outcome')).toHaveText(
+    'Exported 1 active memory.',
+  );
 });

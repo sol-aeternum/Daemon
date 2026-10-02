@@ -47,9 +47,10 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Long Conversation Controls | Mobile eligible | Mobile eligible | Not started | Not started | Client-side collapse of messages over 1,200 characters outside the latest five, kept findable by browser search via `hidden="until-found"` (never collapsed where unsupported), persisted tool-log visibility, recoverable spawn history, and jump-to-latest during streaming; compact tool disclosure groups all actions with source pills and source-matched inline citations (local gates, review and desktop/mobile browser smoke pass; deployed to local Compose 2026-09-30); legacy repeated-name trace correlation follow-up is [#366](https://github.com/sol-aeternum/Daemon/issues/366); virtual scrolling at 50+ loaded messages is deferred to [#298](https://github.com/sol-aeternum/Daemon/issues/298) | No |
 | **Memory (user-visible)** | — | — | — | — | — | — |
 | Memory Read (account-scoped retrieval) | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories; lexical fallback while embeddings are unqualified | No |
-| Memory Write (explicit storage) | Backend stable | Backend stable | Not started | Not started | POST /memories | No |
+| Memory Write (explicit storage) | Web experimental | Web experimental | Not started | Not started | POST /memories; Settings → Memory "Add a memory" form (fact/preference/project/correction, ≤2,000 characters; the server may merge a duplicate, and the confirmation says so) | No |
 | Memory Correction | Cross-client stable | Cross-client stable | Not started | Not started | POST /memories/{id}/confirm | No |
-| Memory Export/Import | Backend stable | Backend stable | Not started | Not started | POST /memories/export, POST /memories/import | No |
+| Memory Export | Web experimental | Web experimental | Not started | Not started | POST /memories/export; Settings → Memory "Export JSON" downloads active memories as portable records (content, category, created/updated dates; no IDs or embeddings) | No |
+| Memory Import | Backend stable | Backend stable | Not started | Not started | POST /memories/import; no UI until the import contract is hardened (field allowlist, size caps, dedup) | No |
 | Memory Reflect (non-persistent synthesis) | Backend stable | Backend stable | Not started | Not started | Memory reflection service | No |
 | Memory Clear All | Cross-client stable | Cross-client stable | Not started | Not started | DELETE /memories?confirm=true | No |
 | **Subagents** | — | — | — | — | — | — |

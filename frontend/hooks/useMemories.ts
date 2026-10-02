@@ -35,6 +35,53 @@ export interface FetchMemoriesParams {
   offset?: number;
 }
 
+/** Categories a person may assign by hand; `summary` is system-generated. */
+export const USER_MEMORY_CATEGORIES = [
+  'fact',
+  'preference',
+  'project',
+  'correction',
+] as const;
+export type UserMemoryCategory = (typeof USER_MEMORY_CATEGORIES)[number];
+export const MAX_USER_MEMORY_LENGTH = 2000;
+
+/** Portable export record: no IDs, embeddings or internal bookkeeping. */
+export interface ExportedMemory {
+  content: string;
+  category: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MemoryExport {
+  format: 'daemon-memories';
+  version: 1;
+  exported_at: string;
+  status: 'active';
+  memories: ExportedMemory[];
+}
+
+export function toMemoryExport(
+  rows: Array<Record<string, unknown>>,
+  now: Date = new Date(),
+): MemoryExport {
+  const text = (value: unknown) => (typeof value === 'string' ? value : null);
+  return {
+    format: 'daemon-memories',
+    version: 1,
+    exported_at: now.toISOString(),
+    status: 'active',
+    memories: rows
+      .filter((row) => typeof row.content === 'string' && row.content)
+      .map((row) => ({
+        content: row.content as string,
+        category: text(row.category) ?? 'fact',
+        created_at: text(row.created_at),
+        updated_at: text(row.updated_at),
+      })),
+  };
+}
+
 export function useMemories() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
@@ -297,6 +344,70 @@ export function useMemories() {
     return () => clearInterval(interval);
   }, [fetchMemories]);
 
+  /** Save a memory written by the person; the server may merge a duplicate. */
+  const createMemory = useCallback(
+    async (
+      content: string,
+      category: UserMemoryCategory,
+    ): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
+      const trimmed = content.trim();
+      if (!trimmed) return { ok: false, error: 'Write something to remember.' };
+      if (trimmed.length > MAX_USER_MEMORY_LENGTH) {
+        return {
+          ok: false,
+          error: `Keep it under ${MAX_USER_MEMORY_LENGTH.toLocaleString()} characters.`,
+        };
+      }
+      try {
+        const response = await apiFetch('/memories', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(await getAuthHeaders()),
+          },
+          body: JSON.stringify({ content: trimmed, category }),
+        });
+        if (!response.ok) {
+          return {
+            ok: false,
+            error:
+              response.status === 503
+                ? 'Memory is unavailable right now. Please try again later.'
+                : "Couldn't save the memory. Please try again.",
+          };
+        }
+        const data: { id?: string } = await response.json();
+        return { ok: true, id: String(data.id ?? '') };
+      } catch {
+        return {
+          ok: false,
+          error: "Couldn't save the memory. Please try again.",
+        };
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
+  /** Active memories in a portable shape, for download by the person. */
+  const exportMemories = useCallback(async (): Promise<MemoryExport> => {
+    const response = await apiFetch(
+      '/memories/export',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders()),
+        },
+        body: JSON.stringify({ status: 'active' }),
+      },
+      30000,
+    );
+    if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+    const data: { memories?: Array<Record<string, unknown>> } =
+      await response.json();
+    return toMemoryExport(data.memories ?? []);
+  }, [apiFetch, getAuthHeaders]);
+
   return {
     memories,
     loading,
@@ -308,5 +419,7 @@ export function useMemories() {
     deleteMemory,
     correctMemory,
     fetchTrail,
+    createMemory,
+    exportMemories,
   };
 }
