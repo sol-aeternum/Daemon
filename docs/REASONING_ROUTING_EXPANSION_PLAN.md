@@ -193,7 +193,7 @@ Before any authorized Package B stage:
 | Stage | State | Notes |
 | --- | --- | --- |
 | B1 | Done (2 October 2026) | Commencement authorized 2 October 2026; revalidated against `main` `9fca6139`; protocol and corpus v1 frozen in [REASONING_EVAL_PROTOCOL.md](REASONING_EVAL_PROTOCOL.md) |
-| B2 | Blocked | Needs an approved USD cap for the calibration run, valid route approvals at run time, and a generalised runner |
+| B2 | In progress | Budget approved 2 October 2026: calibration at its USD 4.65 worst case; pilot (worst case USD 27.98) only if calibration-measured costs project it within that. Runner `scripts/reasoning_eval.py`; A-core deployed 2 October 2026 |
 | B3 | Blocked | |
 | B4 | Blocked | |
 | B5 | Blocked | Also needs A-core deployed |
