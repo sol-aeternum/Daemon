@@ -254,6 +254,64 @@ separately. If P1 fails the rule, the current policy stays.
 premium model helps (PLN-2, RBT-1, SYN-2) are routed to routine, and the cases the
 classifier escalates are ones Luna medium already passes.
 
+## B3 result (3 October 2026)
+
+**Pre-test re-selection check** (recorded 2026-10-02T14:29Z, before any test
+verdict existed):
+- The pilot panel was three blind AI reviewers: two Opus sessions and one Sonnet
+  session. Pairwise Cohen's κ was 0.81–0.88.
+- A Haiku reviewer was excluded for heuristic judging. Its rationales were
+  boilerplate and its κ against the others was 0.29–0.31.
+- Majority verdicts left the validation ranking unchanged, so P1 stays selected.
+
+**Test run** (`b3-test-20261002`, merged `main` `baf13275`):
+- 240 attempts, all completed, no stops.
+- USD 0.425, matching the ledger exactly; every call reported usage.
+- No content-filter refusals on the test split.
+- The test panel, with the same reviewer composition, was unanimous except on
+  three NEN-6 answers listing *maçã*, accepted 2–1.
+
+| Policy | All (60) | Hard + deceptively hard (36) | Cost per success (USD) |
+| --- | --- | --- | --- |
+| P0 current | 60 | 36 | 0.00062 |
+| **P1 Luna medium** | **60** | **36** | **0.00064** |
+| P2 Sol first | 60 | 36 | 0.00038 |
+| P1 + P2 | 60 | 36 | 0.00040 |
+| Always Sonnet 5 high | 60 | 36 | 0.00409 |
+| Always Sol 6.1 high | 60 | 36 | 0.00280 |
+
+**Rule outcome: P1 passes.**
+- It is 0 points below always-Sol, against 5 allowed.
+- Its cost per success is 22.8% of always-Sol's, against 25% allowed.
+- Most of P1's cost comes from the one escalated test case (COD-5), which runs on
+  Sonnet 5.
+
+**Limits of this result:**
+- Every policy scored 60/60 on the test split, including the current policy. The
+  test therefore confirms that P1 is non-inferior, but it cannot separate P1 from
+  P0.
+- The evidence for P1 over P0 rests on dev (53 vs 50 of 60) and validation (60 vs 58
+  of 60). That gain comes mainly from two tool cases (RBT-1, RBT-3) and one planning
+  case (PLN-2), and is not significant on its own.
+- Corpus v1's test split is too easy to discriminate between policies. A harder,
+  larger corpus (v2) is needed before claims beyond non-inferiority.
+
+**Escalation accounting:**
+- Unnecessary escalations: COD-2, PLN-4 and COD-5, every case the classifier
+  escalated across dev, validation and test. The routine configuration also passed
+  each one.
+- Missed escalations: none on test. On dev and validation, premium helped on PLN-2,
+  RBT-1, RBT-3 and SYN-2, all routed to routine.
+
+**Spend:** USD 0.425 for B3; Package B total USD 1.444.
+
+**Pending:**
+- Operator adjudication: the 15 pilot disagreements (PLN-2, EVD-3, PLN-1, COD-2),
+  the 3 NEN-6 test answers, and the hard planning, revealed-by-tools and synthesis
+  cases.
+- B4 needs separate approval of the preset change: Luna medium as the routine,
+  background and research default.
+
 ## Stop conditions
 
 - Rubric ambiguity found in review: revise the corpus (new version) before any calls.
