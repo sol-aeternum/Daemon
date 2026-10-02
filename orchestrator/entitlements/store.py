@@ -52,7 +52,7 @@ _ACCOUNT_COLUMNS: Final[str] = """
 _RESERVATION_COLUMNS: Final[str] = """
     id, user_id, period_key, plan, operation, charge_kind, premium, extended,
     extended_run, background, scope_id, status, reserved_microusd, actual_microusd, overage_microusd, provider, model, route_id,
-    usage, created_at, settled_at
+    workload_profile, reasoning_effort, usage, created_at, settled_at
 """
 
 _PERIOD_STATE_SQL: Final[str] = """
@@ -559,6 +559,8 @@ class EntitlementStore:
         extended_run: bool | None = None,
         background: bool = False,
         scope_id: uuid.UUID | None = None,
+        workload_profile: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> Mapping[str, Any]:
         row = await conn.fetchrow(
             f"""
@@ -566,9 +568,11 @@ class EntitlementStore:
                 user_id, period_key, plan, operation, charge_kind,
                 premium, extended, reserved_microusd,
                 provider, model, route_id, created_at, updated_at,
-                extended_run, background, scope_id
+                extended_run, background, scope_id, workload_profile, reasoning_effort
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13, $14, $15)
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13, $14, $15, $16, $17
+            )
             RETURNING {_RESERVATION_COLUMNS}
             """,
             user_id,
@@ -586,6 +590,8 @@ class EntitlementStore:
             extended if extended_run is None else extended_run,
             background,
             scope_id,
+            workload_profile,
+            reasoning_effort,
         )
         if row is None:  # pragma: no cover - INSERT ... RETURNING always yields a row
             raise RuntimeError("reservation insert returned no row")

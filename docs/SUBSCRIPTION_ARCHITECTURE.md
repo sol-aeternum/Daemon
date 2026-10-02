@@ -136,7 +136,10 @@ The grant is stored when the account's entitlement record is first initialized;
 changing development trial defaults must not silently refill existing accounts.
 
 Before outbound execution, reserve a conservative maximum cost under an account
-row lock. Include open reservations when admitting concurrent work. Each
+row lock. Include open reservations when admitting concurrent work. Each inference
+reservation records unit-economics labels that never affect admission or
+settlement: provider, model, route, and (migration `042_reservation_routing_labels`)
+the workload profile it was dispatched under and the reasoning effort actually sent. Each
 reservation belongs to its original period, even when it settles after rollover.
 Use validated usage and centralized prices for successful settlement; when usage
 is unknown after cancellation or failure, retain the conservative charge rather

@@ -307,6 +307,8 @@ class EntitlementService:
         background: bool = False,
         scope_id: uuid.UUID | None = None,
         expected_period: str | None = None,
+        workload_profile: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> Reservation:
         """Hold ``amount_microusd`` for one in-flight operation.
 
@@ -323,9 +325,10 @@ class EntitlementService:
         open, the others share its concurrency slot. ``background`` work is
         charged to the budget but takes no rate or concurrency slot.
 
-        ``provider``/``model``/``route_id`` are optional unit-economics labels
-        recorded with the reservation. They are never interpreted here: which
-        routes are usable at all is the inference policy's decision.
+        ``provider``/``model``/``route_id`` and ``workload_profile``/
+        ``reasoning_effort`` are optional unit-economics labels recorded with the
+        reservation. They are never interpreted here: which routes are usable at all
+        is the inference policy's decision.
 
         A refused operation raises a
         :class:`~orchestrator.entitlements.errors.LimitExceeded` or
@@ -357,6 +360,8 @@ class EntitlementService:
                 route_id=route_id,
                 now=now,
                 period=period,
+                workload_profile=workload_profile,
+                reasoning_effort=reasoning_effort,
             )
         except (LimitExceeded, CapabilityDenied) as exc:
             await self._record_encounter(
@@ -403,6 +408,8 @@ class EntitlementService:
         route_id: str | None,
         now: datetime,
         period: str,
+        workload_profile: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> Reservation:
         receipts: list[ReservationReceipt] = []
         async with self._reservation_connection(receipts) as conn:
@@ -496,6 +503,8 @@ class EntitlementService:
                     extended_run=extended_run,
                     background=background,
                     scope_id=scope_id,
+                    workload_profile=workload_profile,
+                    reasoning_effort=reasoning_effort,
                 )
                 if kind is ChargeKind.TRIAL:
                     await self._store.hold_trial(

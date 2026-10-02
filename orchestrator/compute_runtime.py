@@ -1902,6 +1902,8 @@ async def guarded_completion(
                     extended_run=first_extended,
                     background=scope.background,
                     scope_id=scope.scope_id,
+                    workload_profile=routing.profile,
+                    reasoning_effort=_label(resolved.get("reasoning_effort")),
                     **reserve_options,
                 )
                 if first_extended:

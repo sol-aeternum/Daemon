@@ -45,12 +45,9 @@ async def account_database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
             user_id = uuid.uuid4()
             await conn.execute("INSERT INTO users VALUES ($1)", user_id)
             await conn.execute("INSERT INTO memories VALUES ($1, 'retained fixture')", user_id)
-            migration = (
-                Path(__file__).resolve().parents[1]
-                / "migrations"
-                / "039_entitlements_commercial.sql"
-            )
-            await conn.execute(migration.read_text())
+            migrations = Path(__file__).resolve().parents[1] / "migrations"
+            for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
+                await conn.execute((migrations / name).read_text())
         yield pool, user_id
     finally:
         if pool is not None:

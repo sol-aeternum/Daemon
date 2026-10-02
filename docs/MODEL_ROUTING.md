@@ -252,7 +252,9 @@ defaults drop INFO from application loggers.
 | `settlement` | Only after settlement | Actual amount, hold bound, estimated or metered, tokens, overage, path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery) |
 
 Records join to the ledger by `scope_id` (the reservation row's scope) and
-`reservation_id`; `request_id` joins them to the HTTP request. They never contain
+`reservation_id`; `request_id` joins them to the HTTP request. The reservation row
+itself also stores `workload_profile` and `reasoning_effort` (the effort actually
+sent), so cost by profile and effort can be read from the ledger alone. They never contain
 message or tool content, reasoning text, credentials, endpoints, headers, email or
 raw user ids. Signal ids are words from the fixed classifier vocabulary. An
 invalid record is dropped and emitting never raises into dispatch or settlement.

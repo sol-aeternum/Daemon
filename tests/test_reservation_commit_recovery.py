@@ -55,12 +55,9 @@ async def recovery_database() -> AsyncIterator[tuple[Any, uuid.UUID]]:
         async with pool.acquire() as conn:
             await conn.execute("CREATE TABLE users (id UUID PRIMARY KEY)")
             await conn.execute("INSERT INTO users VALUES ($1)", uid)
-            await conn.execute(
-                (
-                    Path(__file__).resolve().parents[1]
-                    / "migrations/039_entitlements_commercial.sql"
-                ).read_text()
-            )
+            migrations = Path(__file__).resolve().parents[1] / "migrations"
+            for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
+                await conn.execute((migrations / name).read_text())
         yield pool, uid
     finally:
         if pool is not None:

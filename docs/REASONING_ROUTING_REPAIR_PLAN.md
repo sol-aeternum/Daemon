@@ -112,7 +112,7 @@ A-core completion or Package B.
 | O4 (D7) | Make the compatibility endpoint parameter-faithful | Not a confirmed defect; Open WebUI is being removed |
 | O5 | Prune over-broad signals (`vs`, `should i`, `plan for`) | Implemented 2 October 2026; a bare "should I …?" now runs on routine |
 | O6 | Externally visible routing reason codes | Implemented 2 October 2026: additive `profile`, `reason_codes`, `effort` on the routing event, with bridge compatibility tests |
-| O7 | Ledger columns for profile and effort | Needs a migration |
+| O7 | Ledger columns for profile and effort | Implemented 2 October 2026: migration `042_reservation_routing_labels` (additive, nullable, with rollback); verified against an isolated Postgres |
 
 ## PR sequence
 
