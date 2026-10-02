@@ -119,7 +119,7 @@ traces. `TTS_TIMEOUT_SECONDS` is the API's whole-call deadline (default 125s).
 Raising that API deadline does not raise the runtime's fixed 120-second ceiling.
 Cancellation is not rollback of a completed artifact write: an already-started
 atomic cache write may finish after disconnect, within the same owner/TTL/capacity
-bounds. Runtime audio-size/duration rejection remains a sanitized HTTP 413 at
+bounds. Runtime audio-duration rejection remains a sanitized HTTP 413 at
 the public API rather than being reported as temporary provider unavailability.
 
 Only new audio is stored under `data/tts_cache/self-hosted`, using existing
