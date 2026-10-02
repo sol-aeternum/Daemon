@@ -2,7 +2,10 @@
 
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Conversation } from '../hooks/useConversationHistory';
+import type {
+  Conversation,
+  ConversationSearch,
+} from '../hooks/useConversationHistory';
 import { AccountWidget } from './AccountWidget';
 import { SkeletonCircle, SkeletonLine } from './ui/Skeleton';
 import {
@@ -35,6 +38,8 @@ interface ConversationListProps {
   className?: string;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  /** Server title search; without it, search filters loaded titles only. */
+  search?: ConversationSearch;
   isLoading?: boolean;
   activeSection?: SidebarSection;
   onNavigate?: (section: SidebarSection) => void;
@@ -51,6 +56,7 @@ export function ConversationList({
   className = '',
   searchQuery,
   setSearchQuery,
+  search,
   isLoading = false,
   activeSection = 'home',
   onNavigate,
@@ -67,25 +73,66 @@ export function ConversationList({
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const isBrowser = typeof document !== 'undefined';
 
-  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const trimmedSearchQuery = searchQuery.trim();
+  const normalizedSearchQuery = trimmedSearchQuery.toLowerCase();
+  // Server results apply only once they answer the query currently typed.
+  const serverSearch =
+    search &&
+    trimmedSearchQuery &&
+    search.query === trimmedSearchQuery.slice(0, 200)
+      ? search
+      : undefined;
+  const searchPending =
+    Boolean(search && trimmedSearchQuery) &&
+    (!serverSearch || serverSearch.status === 'searching');
+
   const visibleConversations = useMemo(() => {
-    const filteredConversations = conversations.filter((conversation) => {
+    const isListable = (conversation: Conversation) => {
       if (conversation.id === currentId) return true;
       if (conversation.messageCount && conversation.messageCount > 0)
         return true;
       if (conversation.title && conversation.title !== 'New conversation')
         return true;
       return false;
-    });
+    };
+    const filteredConversations = conversations.filter(isListable);
 
     if (!normalizedSearchQuery) {
       return filteredConversations;
     }
 
-    return filteredConversations.filter((conversation) =>
+    const localMatches = filteredConversations.filter((conversation) =>
       (conversation.title || '').toLowerCase().includes(normalizedSearchQuery),
     );
-  }, [conversations, normalizedSearchQuery, currentId]);
+    if (!serverSearch || serverSearch.results.length === 0) {
+      return serverSearch?.status === 'ready' ? [] : localMatches;
+    }
+    // Loaded conversations carry the freshest edits; prefer them by ID.
+    const loaded = new Map(conversations.map((c) => [c.id, c]));
+    const merged = serverSearch.results
+      .map((conversation) => loaded.get(conversation.id) ?? conversation)
+      .filter(isListable);
+    const mergedIds = new Set(merged.map((c) => c.id));
+    for (const conversation of localMatches) {
+      if (!mergedIds.has(conversation.id)) merged.push(conversation);
+    }
+    return merged;
+  }, [conversations, normalizedSearchQuery, currentId, serverSearch]);
+
+  let searchStatusText = '';
+  if (search && trimmedSearchQuery) {
+    if (searchPending) {
+      searchStatusText = 'Searching all conversation titles…';
+    } else if (serverSearch?.status === 'error') {
+      searchStatusText =
+        "Couldn't search older conversations. Showing loaded matches only.";
+    } else {
+      const count = visibleConversations.length;
+      searchStatusText = `${count}${serverSearch?.hasMore ? '+' : ''} ${
+        count === 1 ? 'title matches' : 'titles match'
+      }`;
+    }
+  }
 
   const pinnedConversations = useMemo(
     () => visibleConversations.filter((c) => c.pinned),
@@ -380,13 +427,40 @@ export function ConversationList({
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
           <input
-            type="text"
-            placeholder="Search conversations..."
+            type="search"
+            aria-label="Search conversation titles"
+            placeholder="Search conversation titles…"
             value={searchQuery}
+            maxLength={200}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && searchQuery) {
+                e.preventDefault();
+                setSearchQuery('');
+              }
+            }}
             className="w-full min-h-touch pl-9 pr-3 py-2 text-sm bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:border-transparent"
           />
         </div>
+        {searchStatusText && (
+          <p
+            role="status"
+            aria-live="polite"
+            data-testid="conversation-search-status"
+            className="mt-2 flex items-center gap-2 px-1 text-xs text-[var(--color-text-muted)]"
+          >
+            <span>{searchStatusText}</span>
+            {serverSearch?.status === 'error' && (
+              <button
+                type="button"
+                onClick={serverSearch.retry}
+                className="font-semibold text-[var(--color-accent-primary)] hover:underline"
+              >
+                Retry
+              </button>
+            )}
+          </p>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto pb-safe">
@@ -407,7 +481,11 @@ export function ConversationList({
           </div>
         ) : visibleConversations.length === 0 ? (
           <div className="p-4 text-center text-[var(--color-text-muted)] text-sm">
-            No conversations found
+            {searchPending
+              ? 'Searching…'
+              : trimmedSearchQuery
+                ? `No conversation titles match “${trimmedSearchQuery}”`
+                : 'No conversations found'}
           </div>
         ) : (
           <div className="divide-y divide-[var(--color-border-muted)]">
@@ -438,6 +516,20 @@ export function ConversationList({
                     ) : null,
                 )}
               </>
+            )}
+            {serverSearch?.hasMore && (
+              <div className="p-3">
+                <button
+                  type="button"
+                  onClick={serverSearch.loadMore}
+                  disabled={serverSearch.status === 'searching'}
+                  className="w-full rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-60"
+                >
+                  {serverSearch.status === 'searching'
+                    ? 'Loading more…'
+                    : 'Load more results'}
+                </button>
+              </div>
             )}
           </div>
         )}

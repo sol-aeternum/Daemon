@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
 import {
@@ -36,10 +36,61 @@ interface ApiConversation {
   metadata: Record<string, any>;
 }
 
+export type ConversationSearchStatus = 'idle' | 'searching' | 'ready' | 'error';
+
+export interface ConversationSearch {
+  /** The trimmed query these results answer. */
+  query: string;
+  status: ConversationSearchStatus;
+  /** Server title matches across all conversations, newest activity first. */
+  results: Conversation[];
+  hasMore: boolean;
+  loadMore: () => void;
+  retry: () => void;
+}
+
+export const SEARCH_PAGE_SIZE = 50;
+export const SEARCH_DEBOUNCE_MS = 250;
+const MAX_SEARCH_LENGTH = 200;
+
+function toConversation(conv: ApiConversation): Conversation {
+  return {
+    id: conv.id,
+    title: conv.title,
+    messages: [], // Messages are fetched individually
+    selectedModel: conv.metadata?.model || 'auto',
+    createdAt: conv.created_at,
+    updatedAt: conv.updated_at,
+    messageCount: conv.message_count,
+    lastActivityAt: conv.last_activity_at,
+    pinned: conv.pinned,
+    title_locked: conv.title_locked,
+    status: conv.status,
+    metadata: conv.metadata || {},
+  };
+}
+
+interface SearchState {
+  query: string;
+  status: ConversationSearchStatus;
+  results: Conversation[];
+  hasMore: boolean;
+}
+
+const IDLE_SEARCH: SearchState = {
+  query: '',
+  status: 'idle',
+  results: [],
+  hasMore: false,
+};
+
 export function useConversationHistory() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [search, setSearch] = useState<SearchState>(IDLE_SEARCH);
+  // Only the latest search request may publish results.
+  const searchRequest = useRef(0);
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentId = searchParams.get('id');
@@ -133,22 +184,8 @@ export function useConversationHistory() {
       const data = await response.json();
       const conversationsArray: ApiConversation[] = data.conversations || [];
 
-      const formattedConversations: Conversation[] = conversationsArray.map(
-        (conv) => ({
-          id: conv.id,
-          title: conv.title,
-          messages: [], // Messages are fetched individually
-          selectedModel: conv.metadata?.model || 'auto',
-          createdAt: conv.created_at,
-          updatedAt: conv.updated_at,
-          messageCount: conv.message_count,
-          lastActivityAt: conv.last_activity_at,
-          pinned: conv.pinned,
-          title_locked: conv.title_locked,
-          status: conv.status,
-          metadata: conv.metadata || {},
-        }),
-      );
+      const formattedConversations: Conversation[] =
+        conversationsArray.map(toConversation);
 
       setConversations(formattedConversations);
     } catch (error) {
@@ -160,6 +197,82 @@ export function useConversationHistory() {
       setIsLoaded(true);
     }
   }, [apiFetch, getAuthHeaders]);
+
+  const runSearch = useCallback(
+    async (query: string, offset: number) => {
+      const request = ++searchRequest.current;
+      setSearch((prev) =>
+        offset === 0
+          ? { query, status: 'searching', results: [], hasMore: false }
+          : { ...prev, status: 'searching' },
+      );
+      try {
+        const params = new URLSearchParams({
+          search: query,
+          limit: String(SEARCH_PAGE_SIZE),
+          offset: String(offset),
+        });
+        const response = await apiFetch(`/conversations?${params}`, {
+          headers: await getAuthHeaders(),
+        });
+        if (request !== searchRequest.current) return;
+        if (!response.ok) throw new Error(`Search failed: ${response.status}`);
+        const data = await response.json();
+        if (request !== searchRequest.current) return;
+        const page: Conversation[] = (
+          (data.conversations || []) as ApiConversation[]
+        ).map(toConversation);
+        setSearch((prev) => {
+          const seen = new Set(
+            offset === 0 ? [] : prev.results.map((c) => c.id),
+          );
+          const merged = offset === 0 ? [] : [...prev.results];
+          for (const conv of page) {
+            if (!seen.has(conv.id)) merged.push(conv);
+          }
+          return {
+            query,
+            status: 'ready',
+            results: merged,
+            hasMore: page.length === SEARCH_PAGE_SIZE,
+          };
+        });
+      } catch {
+        if (request !== searchRequest.current) return;
+        setSearch((prev) => ({ ...prev, query, status: 'error' }));
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
+  useEffect(() => {
+    const query = searchQuery.trim().slice(0, MAX_SEARCH_LENGTH);
+    if (!query) {
+      searchRequest.current += 1;
+      setSearch(IDLE_SEARCH);
+      return;
+    }
+    const timer = setTimeout(
+      () => void runSearch(query, 0),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [searchQuery, runSearch]);
+
+  const loadMoreSearch = useCallback(() => {
+    if (search.status !== 'ready' || !search.hasMore) return;
+    void runSearch(search.query, search.results.length);
+  }, [runSearch, search]);
+
+  const retrySearch = useCallback(() => {
+    if (search.query) void runSearch(search.query, 0);
+  }, [runSearch, search.query]);
+
+  const conversationSearch: ConversationSearch = {
+    ...search,
+    loadMore: loadMoreSearch,
+    retry: retrySearch,
+  };
 
   // Initial fetch and polling
   useEffect(() => {
@@ -214,6 +327,12 @@ export function useConversationHistory() {
       setConversations((prev) =>
         prev.map((conv) => (conv.id === id ? { ...conv, ...updates } : conv)),
       );
+      setSearch((prev) => ({
+        ...prev,
+        results: prev.results.map((conv) =>
+          conv.id === id ? { ...conv, ...updates } : conv,
+        ),
+      }));
 
       try {
         const payload: any = {};
@@ -258,6 +377,10 @@ export function useConversationHistory() {
     async (id: string) => {
       // Optimistic update
       setConversations((prev) => prev.filter((conv) => conv.id !== id));
+      setSearch((prev) => ({
+        ...prev,
+        results: prev.results.filter((conv) => conv.id !== id),
+      }));
       if (currentId === id) {
         router.push('/');
       }
@@ -359,6 +482,7 @@ export function useConversationHistory() {
     fetchConversationById,
     searchQuery,
     setSearchQuery,
+    conversationSearch,
     refreshConversations: fetchConversations,
   };
 }
