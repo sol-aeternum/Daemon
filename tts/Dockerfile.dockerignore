@@ -1,0 +1,10 @@
+**
+!tts/
+!tts/**
+tts/.venv/
+tts/__pycache__/
+!orchestrator/
+!orchestrator/models.py
+!orchestrator/request_body_limit.py
+!orchestrator/speech/
+!orchestrator/speech/contracts.py

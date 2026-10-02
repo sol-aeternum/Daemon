@@ -20,6 +20,7 @@ import {
   type DetailTurn,
 } from '../lib/conversationDetails';
 import { CopyResponseButton } from '../components/CopyResponseButton';
+import { TextToSpeechButton } from '../components/TextToSpeechButton';
 import { useChatDraft } from '../hooks/useChatDraft';
 import { useAuthGeneration } from '../hooks/useAuthGeneration';
 import { openChatDraft, resetChatDraft } from '../lib/chatDrafts';
@@ -1439,7 +1440,12 @@ function ChatContent() {
                                 sources={citationSources}
                               />
                               {messageContent.trim() && (
-                                <CopyResponseButton content={messageContent} />
+                                <>
+                                  <CopyResponseButton
+                                    content={messageContent}
+                                  />
+                                  <TextToSpeechButton text={messageContent} />
+                                </>
                               )}
                             </div>
                             {stoppedMessageIds.has(message.id) && (

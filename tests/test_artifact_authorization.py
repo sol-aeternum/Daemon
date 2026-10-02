@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 import hashlib
 from pathlib import Path
 import uuid
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -151,7 +152,11 @@ def test_default_tool_registry_propagates_authenticated_owner() -> None:
 async def test_cached_tts_is_denied_even_to_its_owner(
     artifact_roots: dict[str, Path],
     switching_owner_client: tuple[AsyncClient, dict[str, uuid.UUID]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        main_module, "get_rate_limiter", lambda request: SimpleNamespace(is_redis_available=False)
+    )
     client, current_owner = switching_owner_client
     text = "same text"
     cache_key = hashlib.sha256(
@@ -167,7 +172,7 @@ async def test_cached_tts_is_denied_even_to_its_owner(
         current_owner["user_id"] = owner
         response = await client.post("/tts", json={"text": text})
         assert response.status_code == 503
-        assert response.json()["detail"]["code"] == "route_unavailable"
+        assert response.json()["detail"]["code"] == "speech_admission_unavailable"
     assert owner_file.read_bytes() == b"legacy cached audio"
     assert list(artifact_roots["TTS_CACHE_DIR"].iterdir()) == [owner_file.parent]
 

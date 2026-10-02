@@ -42,6 +42,9 @@ async function buildResponseWithCookies(res: Response): Promise<NextResponse> {
   const data = await res.json();
   const responseHeaders = new Headers();
   responseHeaders.set('Content-Type', 'application/json');
+  responseHeaders.set('Cache-Control', 'no-store');
+  const retryAfter = res.headers.get('retry-after');
+  if (retryAfter) responseHeaders.set('Retry-After', retryAfter);
 
   res.headers.forEach((value, key) => {
     if (key.toLowerCase() === 'set-cookie') {
@@ -70,10 +73,17 @@ export async function POST(req: Request) {
         method: 'POST',
         headers: proxyHeaders,
         credentials: 'include',
+        signal: req.signal,
         body: JSON.stringify({ text, voice, model, speed, format, cache }),
       });
       break;
     } catch (error) {
+      if (req.signal.aborted) {
+        return NextResponse.json(
+          { detail: { code: 'speech_cancelled' } },
+          { status: 499 },
+        );
+      }
       lastError = error instanceof Error ? error : new Error(String(error));
     }
   }

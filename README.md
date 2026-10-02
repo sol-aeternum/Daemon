@@ -181,7 +181,7 @@ Execution remains subject to account capacity and provider/service qualification
 - Next.js 16 PWA with streaming chat (Vercel AI SDK `useChat`)
 - Conversation list with CRUD, search, pinning, rename
 - Retained Studio UI and video-credit history; generation is currently denied
-- Retained voice settings; TTS/STT execution and direct vendor tokens are currently denied
+- Self-hosted Kokoro speech playback via the bundled private CPU service; no TTS API key or first-use download ([architecture](docs/TTS_ARCHITECTURE.md)). STT and direct vendor tokens remain denied.
 - Settings panel: TTS voice/model/speed, STT language, memory management
 - Rich inline rendering: images (lightbox + download), audio player, tool call blocks
 - Error boundary for crash recovery

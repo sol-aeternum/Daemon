@@ -51,6 +51,7 @@ include = [
     "providers/**/*.py",
     "scripts/**/*.py",
     "tests/**/*.py",
+    "tts/**/*.py",
 ]
 
 [tool.ruff.lint]

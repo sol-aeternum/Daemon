@@ -109,7 +109,7 @@ AMBIENT_SUBCONFIG_CLASSES: tuple[type[BaseSettings], ...] = (
 
 # Inventory pins. A change here is a deliberate review trigger: the coverage
 # test reports the resolved name of the new field in the same run.
-EXPECTED_SETTINGS_FIELD_COUNT = 120
+EXPECTED_SETTINGS_FIELD_COUNT = 124
 EXPECTED_VIDEO_PRICING_FIELD_COUNT = 6
 
 # --------------------------------------------------------------------------
@@ -241,7 +241,7 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
     ),
     "NEXT_PUBLIC_API_URL": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/proxy.ts:86",),
+        sources=("frontend/proxy.ts:85",),
         reason="public build-time backend URL; also a Docker build arg and a runtime entry",
     ),
     "NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE": NonFieldConsumer(

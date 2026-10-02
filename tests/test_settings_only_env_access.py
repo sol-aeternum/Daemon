@@ -40,6 +40,7 @@ SCAN_DIRS = (
     REPO_ROOT / "db",
     REPO_ROOT / "council",
     REPO_ROOT / "backend",
+    REPO_ROOT / "tts",
 )
 ALLOWLIST = frozenset(
     {

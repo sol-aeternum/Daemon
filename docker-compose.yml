@@ -32,7 +32,12 @@ services:
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-brave}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      # Optional legacy STT/SFX input; ordinary speech never reads this key.
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - TTS_MODEL=${TTS_MODEL:-kokoro-82m-v1.0}
+      - TTS_SERVICE_URL=${TTS_SERVICE_URL:-http://tts:8080}
+      - TTS_TIMEOUT_SECONDS=${TTS_TIMEOUT_SECONDS:-125}
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
@@ -107,8 +112,11 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      tts:
+        condition: service_healthy
     networks:
       - daemon-network
+      - speech-network
 
   worker:
     build:
@@ -121,7 +129,11 @@ services:
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-brave}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - TTS_MODEL=${TTS_MODEL:-kokoro-82m-v1.0}
+      - TTS_SERVICE_URL=${TTS_SERVICE_URL:-http://tts:8080}
+      - TTS_TIMEOUT_SECONDS=${TTS_TIMEOUT_SECONDS:-125}
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
@@ -190,6 +202,32 @@ services:
         condition: service_completed_successfully
     networks:
       - daemon-network
+
+  # Private CPU speech runtime. Baked assets; no host port or runtime egress.
+  tts:
+    build:
+      context: .
+      dockerfile: tts/Dockerfile
+    mem_limit: 1536m
+    cpus: 2.0
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      # Phonemizer loads its private copied eSpeak shared library from /tmp.
+      - /tmp:size=64m,mode=1777,exec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks:
+      - speech-network
 
   frontend:
     build:
@@ -272,6 +310,8 @@ services:
       - daemon-network
 
 networks:
+  speech-network:
+    internal: true
   daemon-network:
     driver: bridge
 

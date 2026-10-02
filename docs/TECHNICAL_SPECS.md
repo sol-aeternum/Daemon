@@ -184,13 +184,14 @@ rejection ratio above 10%.
 
 ## Infrastructure
 
-### Docker Compose (7 services)
+### Docker Compose (8 services)
 - `backend`: FastAPI app (port 8000).
 - `worker`: arq background job processor.
 - `frontend`: Next.js 16 (port 3000).
 - `postgres`: pgvector/pg16 (port 5432).
 - `redis`: Redis 7 (port 6379).
 - `crawl4ai`: Web scraping service.
+- `tts`: Private offline Kokoro runtime; ready only after warm synthesis. See [TTS architecture](TTS_ARCHITECTURE.md).
 - `migrate`: One-shot migration runner.
 
 ### Key Environment Variables

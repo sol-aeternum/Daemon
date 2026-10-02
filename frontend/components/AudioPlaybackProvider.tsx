@@ -21,9 +21,7 @@ import { getProtectedMediaUrl } from '../hooks/useAuthenticatedImageUrl';
  * Previously, this was implemented with module-level refs and 100ms polling intervals.
  * Now, state updates propagate reactively via React context.
  *
- * NOTE: This provider is for the CACHED playback path (HTMLAudioElement).
- * Streaming TTS (WebSocket + AudioContext) is handled separately in useStreamingTts hook
- * and should NOT be merged here - it uses a different playback mechanism.
+ * The MVP uses server-synthesized audio and authenticated buffered playback.
  */
 
 interface AudioPlaybackContextValue {
@@ -70,6 +68,7 @@ export function AudioPlaybackProvider({
   const [isLoading, setIsLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const fetchControllerRef = useRef<AbortController | null>(null);
 
   const revokeObjectUrl = useCallback(() => {
     if (objectUrlRef.current) {
@@ -79,6 +78,8 @@ export function AudioPlaybackProvider({
   }, []);
 
   const stop = useCallback(() => {
+    fetchControllerRef.current?.abort();
+    fetchControllerRef.current = null;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
@@ -98,6 +99,8 @@ export function AudioPlaybackProvider({
     async (text: string, audioUrl: string, playbackRate: number = 1.0) => {
       // Stop any currently playing audio
       stop();
+      const controller = new AbortController();
+      fetchControllerRef.current = controller;
 
       const protectedUrl = getProtectedMediaUrl(audioUrl);
       let playableUrl = audioUrl;
@@ -108,12 +111,18 @@ export function AudioPlaybackProvider({
           const authHeader = await ensureAuthHeader();
           const headers: HeadersInit = {};
           if (authHeader) headers.Authorization = authHeader;
-          const response = await fetch(protectedUrl, { headers });
+          if (controller.signal.aborted) return;
+          const response = await fetch(protectedUrl, {
+            headers,
+            signal: controller.signal,
+          });
           if (!response.ok) throw new Error(`fetch ${response.status}`);
           const blob = await response.blob();
+          if (controller.signal.aborted) return;
           playableUrl = URL.createObjectURL(blob);
           objectUrlRef.current = playableUrl;
         } catch (err) {
+          if (controller.signal.aborted) return;
           console.error('Failed to load authenticated audio:', err);
           stop();
           return;
@@ -121,6 +130,7 @@ export function AudioPlaybackProvider({
       }
 
       // Create new audio element
+      if (controller.signal.aborted) return;
       const audio = new Audio(playableUrl);
       audioRef.current = audio;
       setCurrentlyPlayingText(text);

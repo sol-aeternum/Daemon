@@ -113,38 +113,12 @@ export default function SettingsPanel({
             </label>
             <select
               className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
-              value={ttsSettings.voice}
+              value="daemon-default"
               onChange={(e) =>
                 setTtsSettings({ ...ttsSettings, voice: e.target.value })
               }
             >
-              <option value="rachel">Rachel</option>
-              <option value="sam">Sam</option>
-              <option value="james">James</option>
-              <option value="ari">Ari</option>
-              <option value="adam">Adam</option>
-              <option value="drew">Drew</option>
-              <option value="clyde">Clyde</option>
-              <option value="diana">Diana</option>
-              <option value="ellen">Ellen</option>
-              <option value="fiona">Fiona</option>
-              <option value="george">George</option>
-              <option value="grace">Grace</option>
-              <option value="henry">Henry</option>
-              <option value="io">Io</option>
-              <option value="jenny">Jenny</option>
-              <option value="kevin">Kevin</option>
-              <option value="lily">Lily</option>
-              <option value="marcus">Marcus</option>
-              <option value="michelle">Michelle</option>
-              <option value="patrick">Patrick</option>
-              <option value="rachel">Rachel</option>
-              <option value="sam">Sam</option>
-              <option value="sarah">Sarah</option>
-              <option value="steve">Steve</option>
-              <option value="tiffany">Tiffany</option>
-              <option value="tim">Tim</option>
-              <option value="will">Will</option>
+              <option value="daemon-default">Daemon default voice</option>
             </select>
           </div>
 
@@ -154,18 +128,12 @@ export default function SettingsPanel({
             </label>
             <select
               className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
-              value={ttsSettings.model}
+              value="daemon-default"
               onChange={(e) =>
                 setTtsSettings({ ...ttsSettings, model: e.target.value })
               }
             >
-              <option value="eleven_multilingual_v2">
-                Eleven v2 (Multilingual)
-              </option>
-              <option value="eleven_monolingual_v1">
-                Eleven v1 (English only)
-              </option>
-              <option value="eleven_turbo_v2">Turbo v2 (Fast)</option>
+              <option value="daemon-default">Daemon server default</option>
             </select>
           </div>
 

@@ -7,6 +7,19 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Self-hosted speech amendment — 2 October 2026
+
+MIGRATION: ordinary TTS no longer consumes `ELEVENLABS_API_KEY`. The key remains
+optional for retained, retired STT/SFX code; do not delete it merely to enable
+speech. No API key is required for the bundled TTS service. Both backend and
+worker now receive `TTS_PROVIDER`, `TTS_MODEL`, `TTS_SERVICE_URL`, and
+`TTS_TIMEOUT_SECONDS` with defaults documented in `.env.example`. Absence uses
+code defaults outside Compose; absent **or empty** host inputs use Compose's
+explicit defaults. An empty value explicitly injected outside Compose is invalid,
+not a request to disable speech. No existing production environment was changed.
+The private service has baked assets and needs no model-path/credential inputs.
+See [TTS architecture](TTS_ARCHITECTURE.md) for build/readiness and client migration.
+
 ### Luna-first routing amendment — 28 September 2026
 
 `DAEMON_MODEL_ROUTING` is an optional Settings-backed path to workload groups and

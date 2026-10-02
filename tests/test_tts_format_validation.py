@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -116,6 +117,10 @@ async def test_tts_endpoint_rejects_invalid_format(
     cache_dir = tmp_path / "tts_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("orchestrator.main.TTS_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(
+        "orchestrator.main.get_rate_limiter",
+        lambda request: SimpleNamespace(is_redis_available=False),
+    )
 
     before = set(cache_dir.iterdir())
 
@@ -161,6 +166,10 @@ async def test_tts_endpoint_denies_supported_formats_without_writing_cache(
     cache_dir = tmp_path / "tts_cache"
     cache_dir.mkdir()
     monkeypatch.setattr("orchestrator.main.TTS_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(
+        "orchestrator.main.get_rate_limiter",
+        lambda request: SimpleNamespace(is_redis_available=False),
+    )
 
     async def override_auth() -> AuthenticatedDevice:
         return AuthenticatedDevice(
@@ -178,7 +187,7 @@ async def test_tts_endpoint_denies_supported_formats_without_writing_cache(
                 request_json["format"] = requested_format
             response = await client.post("/tts", json=request_json)
         assert response.status_code == 503, response.text
-        assert response.json()["detail"]["code"] == "route_unavailable"
+        assert response.json()["detail"]["code"] == "speech_admission_unavailable"
         assert not list(cache_dir.iterdir())
     finally:
         app.dependency_overrides.pop(require_device_auth, None)
