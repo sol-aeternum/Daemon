@@ -153,9 +153,15 @@ with no message is model-facing only and is never classified, so such an upload
 runs on the routine profile on both endpoints. An explicit model selection is exact
 and runs under the `routine` scope on both endpoints, so it receives that model's
 `default` preset whatever the message says (approved 1 October 2026). The
-OpenAI-compatible `/v1/chat/completions` endpoint is a last-message adapter: it
-uses only the latest user message and does not apply conversation history,
-`max_tokens`, sampling parameters or `n` from the request.
+OpenAI-compatible `/v1/chat/completions` endpoint (approved 2 October 2026)
+replays the request's prior user and assistant turns as conversation history,
+classifies only the latest user message, and caps the answer at `max_tokens` (a
+cap only lowers the output budget the runtime would otherwise use). `n` other than
+1 and a non-positive `max_tokens` are refused with 400. Sampling parameters and
+`stop` are forwarded only when explicitly set with an explicit model, and then
+still pass the model's supported-parameter check; with automatic routing they are
+ignored, because the automatically chosen model may not accept them. The endpoint
+has no routing event, so it does not use the disclosed reasoning fallback.
 
 Automatic selection intersects the workload's acceptable model groups with
 independently qualified endpoints, required tools/structured-output capabilities,

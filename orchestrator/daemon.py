@@ -332,6 +332,8 @@ async def stream_sse_chat(
     trusted_spawn_context: dict[str, Any] | None = None,
     disable_memory_write: bool = False,
     user_timezone: str | None = None,
+    max_output_tokens: int | None = None,
+    call_overrides: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     provider, model = effective_provider_and_model(settings, provider_config)
     model_for_events = reported_model or actual_model or model
@@ -529,6 +531,8 @@ async def stream_sse_chat(
                     registry=registry,
                     actual_model=model_to_call,
                     max_tool_rounds=max_tool_rounds,
+                    max_output_tokens=max_output_tokens,
+                    call_overrides=call_overrides,
                     # Fallback is disclosed on the routing event, so it is only
                     # enabled where that event exists (native chat).
                     reasoning_fallback=routing_info is not None,

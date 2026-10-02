@@ -405,6 +405,26 @@ async def _under_profile(profile: str, call: Callable[[], Awaitable[Any]]) -> An
     return result
 
 
+def _apply_caller_controls(
+    params: dict[str, Any],
+    max_output_tokens: int | None,
+    call_overrides: dict[str, Any] | None,
+) -> None:
+    """Apply a caller's own output cap and explicit-model request controls.
+
+    The cap only ever lowers an output budget the loop already chose. Overrides are
+    the compatibility endpoint's explicitly set request parameters for an explicit
+    model; the guarded runtime still validates every one of them.
+    """
+    if max_output_tokens is not None:
+        current = params.get("max_tokens")
+        params["max_tokens"] = (
+            max_output_tokens if not isinstance(current, int) else min(current, max_output_tokens)
+        )
+    if call_overrides:
+        params.update(call_overrides)
+
+
 def _fallback_event(cause: str) -> dict[str, Any]:
     with contextlib.suppress(ComputeUnavailable):
         routing_log.emit(
@@ -433,6 +453,8 @@ async def completion_with_tools(
     *,
     completion_dispatch: Callable[..., Awaitable[Any]] | None = None,
     reasoning_fallback: bool = False,
+    max_output_tokens: int | None = None,
+    call_overrides: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     # The evaluation adapter observes this exact loop and keeps its dispatches
     # inside the ordinary qualification/accounting runtime. Normal callers use
@@ -508,6 +530,7 @@ async def completion_with_tools(
         )
         if last_context_budget is not None and last_context_budget.output_tokens > 0:
             call_params["max_tokens"] = last_context_budget.output_tokens
+        _apply_caller_controls(call_params, max_output_tokens, call_overrides)
 
         # Buffer for accumulating tool calls across stream chunks
         tool_calls_buffer: dict[int, dict[str, Any]] = {}
@@ -862,6 +885,7 @@ async def completion_with_tools(
         )
         if last_context_budget is not None and last_context_budget.output_tokens > 0:
             synthesis_params["max_tokens"] = last_context_budget.output_tokens
+        _apply_caller_controls(synthesis_params, max_output_tokens, call_overrides)
 
         try:
             synthesis_stream = await routed(lambda: guarded_completion(**synthesis_params))

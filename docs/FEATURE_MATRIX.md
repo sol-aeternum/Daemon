@@ -38,7 +38,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
 | Model Discovery | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/models, GET /v1/catalog | No |
 | Typed SSE Event Protocol | Cross-client stable | Cross-client stable | Not started | Not started | Chat and council streaming services | No |
-| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint; same user/deployment prompt timezone precedence as native chat | No |
+| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint (conversation history, `max_tokens` cap, explicit-model sampling/stop; `n`>1 refused); same user/deployment prompt timezone precedence as native chat | No |
 | **Conversations** | — | — | — | — | — | — |
 | Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id}; counts/activity derive from saved messages so stale cached counts do not hide chats after navigation; local gates and fresh review pass, deployed to local Compose 2026-09-30 (#361) | Yes |
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |

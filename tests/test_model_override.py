@@ -313,3 +313,125 @@ async def test_council_partial_progress_is_saved_as_error_on_abort(monkeypatch) 
     assert saved["status"] == "error"
     assert saved["content"] == "Partial result"
     assert saved["metadata"]["council_events"][0]["type"] == "council_output"
+
+
+# --------------------------------------------------------------------------- O4
+from orchestrator import daemon as daemon_module  # noqa: E402
+from orchestrator.tools.completion import _apply_caller_controls  # noqa: E402  # pyright: ignore[reportPrivateUsage]
+
+
+def _capture_tool_loop(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+    calls: list[dict] = []
+
+    async def fake_completion_with_tools(*_args, **kwargs):
+        calls.append(kwargs)
+        yield {"type": "content_delta", "content": "ok"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False])
+async def test_compatibility_endpoint_replays_the_conversation_and_caps_output(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    calls = _capture_tool_loop(monkeypatch)
+    response = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": stream,
+            "max_tokens": 64,
+            "messages": [
+                {"role": "system", "content": "Be brief."},
+                {"role": "user", "content": "My name is Ada."},
+                {"role": "assistant", "content": "Hello Ada."},
+                {"role": "user", "content": "What is my name?"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    (call,) = calls
+    turns = [(m["role"], m["content"]) for m in call["messages"] if m["role"] != "system"]
+    assert turns[-3:] == [
+        ("user", "My name is Ada."),
+        ("assistant", "Hello Ada."),
+        ("user", "What is my name?"),
+    ]
+    assert call["max_output_tokens"] == 64
+    assert call["call_overrides"] is None
+
+
+@pytest.mark.asyncio
+async def test_compatibility_sampling_is_forwarded_only_for_explicit_models(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_tool_loop(monkeypatch)
+    for model in ("auto", "openrouter/test/explicit-model"):
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": model,
+                "stream": True,
+                "temperature": 0.2,
+                "stop": ["END"],
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200
+    automatic, explicit = calls
+    assert automatic["call_overrides"] is None
+    assert explicit["call_overrides"] == {"temperature": 0.2, "stop": ["END"]}
+
+
+@pytest.mark.asyncio
+async def test_compatibility_defaults_are_not_treated_as_caller_intent(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_tool_loop(monkeypatch)
+    response = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "openrouter/test/explicit-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 200
+    assert calls[0]["call_overrides"] is None
+    assert calls[0]["max_output_tokens"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "code"),
+    [({"n": 2}, "unsupported_parameter"), ({"max_tokens": 0}, "invalid_parameter")],
+)
+async def test_compatibility_unsupported_parameters_are_refused_not_ignored(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, extra: dict, code: str
+) -> None:
+    _capture_tool_loop(monkeypatch)
+    response = await client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "hi"}], **extra},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == code
+
+
+def test_caller_output_cap_only_lowers_the_loop_budget() -> None:
+    params: dict = {"max_tokens": 4_000}
+    _apply_caller_controls(params, 64, None)
+    assert params["max_tokens"] == 64
+    params = {"max_tokens": 32}
+    _apply_caller_controls(params, 64, None)
+    assert params["max_tokens"] == 32
+    params = {}
+    _apply_caller_controls(params, 64, {"temperature": 0.2})
+    assert params == {"max_tokens": 64, "temperature": 0.2}
