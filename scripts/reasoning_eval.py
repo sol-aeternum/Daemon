@@ -651,9 +651,11 @@ def _call_accounting(call: Mapping[str, Any]) -> tuple[bool, bool, bool]:
     the protocol's ``f_unknown``. A missing ledger charge is a different gap (the
     executor keeps the full bound in its own accounting for such a call).
     """
-    usage_reported = (
-        _usage_tokens(call, "prompt_tokens") is not None
-        and _usage_tokens(call, "completion_tokens") is not None
+    # Same test as the runtime's own usage validation (compute_runtime._usage_counts):
+    # anything else settles at the full reservation hold.
+    usage_reported = all(
+        (value := _usage_tokens(call, key)) is not None and value >= 0
+        for key in ("prompt_tokens", "completion_tokens")
     )
     charge = _int_or_none(call.get("account_charge_microusd"))
     bound = _int_or_none(call.get("reservation_bound_microusd"))
