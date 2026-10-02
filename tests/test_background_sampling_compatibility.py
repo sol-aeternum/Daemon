@@ -225,10 +225,10 @@ async def test_automatic_background_call_sends_no_legacy_sampling(
     sent = last_kwargs(provider)
     for control in LEGACY_SAMPLING:
         assert control not in sent, f"{helper} leaked {control} to the transport"
-    # Luna serves the accepted background screen at its low default effort, and
-    # the seed it does declare is never invented by the helper.
+    # Luna serves background work at its default effort (medium since the B3
+    # evaluation), and the seed it does declare is never invented by the helper.
     assert sent["model"] == LUNA
-    assert sent["reasoning_effort"] == "low"
+    assert sent["reasoning_effort"] == "medium"
     assert "seed" not in sent
 
     # Exactly one reservation and one settlement: no fallback, no double charge.
