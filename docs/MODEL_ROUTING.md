@@ -255,7 +255,7 @@ defaults drop INFO from application loggers.
 | `candidates` | Before dispatch, per completion | Ordered route ids and exclusion counts by reason |
 | `attempt` | At dispatch | Route, model, group, requested, preset and **sent** reasoning effort, `max_tokens`, hold bound, reservation id |
 | `attempt_outcome` | After a response or failure | Outcome, failure category, retryability, whether output was released, next action |
-| `settlement` | Only after settlement | Actual amount, hold bound, estimated or metered, tokens, overage, path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery) |
+| `settlement` | Only after settlement | Actual amount, hold bound, estimated or metered, tokens, overage, path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery, receipt reconciliation) |
 
 Records join to the ledger by `scope_id` (the reservation row's scope) and
 `reservation_id`; `request_id` joins them to the HTTP request. The reservation row

@@ -143,7 +143,14 @@ the workload profile it was dispatched under and the reasoning effort actually s
 reservation belongs to its original period, even when it settles after rollover.
 Use validated usage and centralized prices for successful settlement; when usage
 is unknown after cancellation or failure, retain the conservative charge rather
-than assume the provider did no work. A zero-cost route still consumes rate and
+than assume the provider did no work. When such a stream carried an OpenRouter
+generation id, a worker sweep (every 10 minutes) later fetches that generation's
+receipt from the route's pinned endpoint and lowers the charge to
+`max(ceiling price of the receipt's tokens, the receipt's own cost)` if that is
+smaller, refunding the difference to the original period or trial (approved
+2 October 2026). Reconciliation applies once, never raises a charge, skips
+settlements with overage, and after 24 hours without a receipt the full charge
+stands. A zero-cost route still consumes rate and
 concurrency capacity, but must remain admissible after the funded balance reaches
 zero. Clients cannot submit their own authoritative cost, plan, or allowance.
 An expired hold left by a killed process is recovered at its full reserved cost,

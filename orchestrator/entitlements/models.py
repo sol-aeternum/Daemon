@@ -48,6 +48,12 @@ ALLOWED_USAGE_KEYS: Final[frozenset[str]] = frozenset(
         "route_id",
         "estimated_cost",
         "recovered_after_timeout",
+        # Receipt reconciliation (optional work O3): the provider generation id of
+        # an estimated settlement, and whether its provider receipt was applied or
+        # is permanently unavailable.
+        "generation_id",
+        "receipt_reconciled",
+        "receipt_unavailable",
     }
 )
 

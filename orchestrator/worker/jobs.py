@@ -1025,6 +1025,39 @@ async def cleanup_web_snapshots(ctx: WorkerContext) -> dict[str, int]:
     return {"deleted": deleted}
 
 
+async def reconcile_settlement_receipts(ctx: WorkerContext) -> dict[str, int]:
+    """Lower conservative full-hold settlements to provider receipts (optional work O3)."""
+    import httpx
+
+    from orchestrator.entitlements.policy import load_inference_policy
+    from orchestrator.entitlements.receipts import reconcile_receipts
+    from orchestrator.entitlements.service import EntitlementService
+
+    pool = ctx.get("db_pool")
+    settings = ctx.get("settings")
+    api_key = getattr(settings, "openrouter_api_key", None)
+    if pool is None or not api_key:
+        return {"examined": 0}
+    try:
+        routes = dict(load_inference_policy().routes)
+    except Exception:
+        logger.warning("Receipt reconciliation skipped: inference policy unavailable")
+        return {"examined": 0}
+    service = EntitlementService(pool)
+    async with httpx.AsyncClient() as client:
+        result = await reconcile_receipts(
+            service, routes=routes, client=client, api_key=api_key, now=service.now()
+        )
+    return {
+        "examined": result.examined,
+        "reconciled": result.reconciled,
+        "refunded_microusd": result.refunded_microusd,
+        "pending": result.pending,
+        "unavailable": result.unavailable,
+        "errors": result.errors,
+    }
+
+
 def _iter_generated_artifact_files(base_dir: Path) -> Iterator[Path]:
     """Yield legacy root files and files in canonical owner namespaces."""
     for entry in base_dir.iterdir():

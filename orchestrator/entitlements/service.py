@@ -761,6 +761,122 @@ class EntitlementService:
             overage_microusd=overage,
         )
 
+    async def receipt_candidates(
+        self, *, settled_after: datetime, limit: int
+    ) -> list[Mapping[str, Any]]:
+        """Estimated settlements still awaiting a provider receipt (O3)."""
+        async with self._pool.acquire() as conn:
+            return await self._store.list_receipt_candidates(
+                conn, settled_after=settled_after, limit=limit
+            )
+
+    async def reconcile_to_receipt(
+        self,
+        reservation: Reservation | uuid.UUID | str,
+        receipt_charge_microusd: int,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> int:
+        """Lower an estimated full-hold settlement to its provider receipt.
+
+        Optional work O3. Applies at most once, only to a settled reservation whose
+        usage is ``estimated_cost`` with a ``generation_id`` and no overage, and only
+        ever *lowers* the charge: ``new = min(settled, receipt)``. The difference is
+        returned to the original period's plan spend or to trial consumption, exactly
+        reversing what settlement recorded. Returns the microusd refunded.
+        """
+        rid = _reservation_id(reservation)
+        charge = _require_amount(receipt_charge_microusd, field="receipt_charge_microusd")
+        now = self.now()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                existing = await self._store.get_reservation(conn, rid)
+                if existing is None:
+                    raise ReservationNotFound(str(rid))
+                await self._store.lock_account(conn, existing["user_id"])
+                current = await self._store.get_reservation(conn, rid, for_update=True)
+                if current is None:  # pragma: no cover - row read a moment ago
+                    raise ReservationNotFound(str(rid))
+                usage = _as_json_mapping(current["usage"])
+                if (
+                    ReservationStatus(current["status"]) is not ReservationStatus.SETTLED
+                    or usage.get("estimated_cost") is not True
+                    or not usage.get("generation_id")
+                    or usage.get("receipt_reconciled")
+                    or usage.get("receipt_unavailable")
+                    or int(current["overage_microusd"]) != 0
+                ):
+                    return 0
+                settled = int(current["actual_microusd"])
+                reconciled = min(settled, charge)
+                refund = settled - reconciled
+                updated = {**usage, "receipt_reconciled": True}
+                if input_tokens is not None:
+                    updated["input_tokens"] = input_tokens
+                if output_tokens is not None:
+                    updated["output_tokens"] = output_tokens
+                await self._store.update_reservation_receipt(
+                    conn,
+                    reservation_id=rid,
+                    actual=reconciled,
+                    usage=validate_usage(updated),
+                    now=now,
+                )
+                if refund:
+                    kind = ChargeKind(current["charge_kind"])
+                    if kind is ChargeKind.PLAN:
+                        await self._store.refund_period_spend(
+                            conn,
+                            user_id=current["user_id"],
+                            period_key=current["period_key"],
+                            amount=refund,
+                            extended=bool(current["extended"]),
+                            now=now,
+                        )
+                    elif kind is ChargeKind.TRIAL:
+                        await self._store.refund_trial_consumption(
+                            conn, user_id=current["user_id"], amount=refund, now=now
+                        )
+                routing_log.emit(
+                    "settlement",
+                    scope_id=str(current["scope_id"]) if current["scope_id"] else None,
+                    reservation_id=str(rid),
+                    path="receipt_reconciliation",
+                    status=ReservationStatus.SETTLED.value,
+                    actual=reconciled,
+                    hold_bound=int(current["reserved_microusd"]),
+                    estimated=False,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    overage=0,
+                )
+                return refund
+
+    async def mark_receipt_unavailable(self, reservation: Reservation | uuid.UUID | str) -> bool:
+        """Stop reconciling an estimated settlement whose receipt never arrived.
+
+        The conservative full-hold charge stands. Returns whether the row changed.
+        """
+        rid = _reservation_id(reservation)
+        now = self.now()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                current = await self._store.get_reservation(conn, rid, for_update=True)
+                if current is None:
+                    raise ReservationNotFound(str(rid))
+                usage = _as_json_mapping(current["usage"])
+                if usage.get("receipt_reconciled") or usage.get("receipt_unavailable"):
+                    return False
+                await self._store.update_reservation_receipt(
+                    conn,
+                    reservation_id=rid,
+                    actual=int(current["actual_microusd"]),
+                    usage=validate_usage({**usage, "receipt_unavailable": True}),
+                    now=now,
+                )
+                return True
+
     async def release(
         self,
         reservation: Reservation | uuid.UUID | str,

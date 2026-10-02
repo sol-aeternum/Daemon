@@ -539,6 +539,114 @@ class EntitlementStore:
         if row is None:
             raise RuntimeError("period hold missing during settlement")
 
+    # ------------------------------------------------- receipt reconciliation
+    async def list_receipt_candidates(
+        self, conn: Connection, *, settled_after: datetime, limit: int
+    ) -> list[Mapping[str, Any]]:
+        """Estimated full-hold settlements that carry a provider generation id.
+
+        Only settled rows without overage qualify, and only once: a row marked
+        ``receipt_reconciled`` or ``receipt_unavailable`` is never selected again.
+        """
+        return list(
+            await conn.fetch(
+                """
+                SELECT id, route_id, actual_microusd, settled_at,
+                       usage->>'generation_id' AS generation_id
+                FROM entitlement_reservations
+                WHERE status = 'settled'
+                  AND overage_microusd = 0
+                  AND usage->>'estimated_cost' = 'true'
+                  AND usage ? 'generation_id'
+                  AND NOT (usage ? 'receipt_reconciled')
+                  AND NOT (usage ? 'receipt_unavailable')
+                  AND settled_at > $1
+                ORDER BY settled_at
+                LIMIT $2
+                """,
+                settled_after,
+                limit,
+            )
+        )
+
+    async def update_reservation_receipt(
+        self,
+        conn: Connection,
+        *,
+        reservation_id: uuid.UUID,
+        actual: int,
+        usage: Mapping[str, Any],
+        now: datetime,
+    ) -> None:
+        await conn.execute(
+            """
+            UPDATE entitlement_reservations
+            SET actual_microusd = $2, usage = $3::jsonb, updated_at = $4
+            WHERE id = $1 AND status = 'settled'
+            """,
+            reservation_id,
+            actual,
+            json.dumps(dict(usage), sort_keys=True),
+            now,
+        )
+
+    async def refund_period_spend(
+        self,
+        conn: Connection,
+        *,
+        user_id: uuid.UUID,
+        period_key: str,
+        amount: int,
+        extended: bool,
+        now: datetime,
+    ) -> None:
+        """Return ``amount`` of settled plan spend to its original period."""
+        row = await conn.fetchrow(
+            """
+            UPDATE entitlement_usage_periods
+            SET spent_microusd = spent_microusd - $3,
+                extended_spent_microusd = extended_spent_microusd
+                    - CASE WHEN $4::boolean THEN $3 ELSE 0 END,
+                updated_at = $5
+            WHERE user_id = $1 AND period_key = $2
+              AND spent_microusd >= $3
+              AND (NOT $4::boolean OR extended_spent_microusd >= $3)
+            RETURNING spent_microusd
+            """,
+            user_id,
+            period_key,
+            amount,
+            extended,
+            now,
+        )
+        if row is None:
+            raise RuntimeError("period spend missing during receipt reconciliation")
+
+    async def refund_trial_consumption(
+        self, conn: Connection, *, user_id: uuid.UUID, amount: int, now: datetime
+    ) -> None:
+        """Return ``amount`` of settled trial consumption, reactivating the trial if funded."""
+        row = await conn.fetchrow(
+            """
+            UPDATE entitlement_accounts
+            SET trial_consumed_microusd = trial_consumed_microusd - $2,
+                trial_state = CASE
+                    WHEN trial_budget_microusd - (trial_consumed_microusd - $2)
+                         - trial_reserved_microusd > 0
+                    THEN 'active'
+                    ELSE trial_state
+                END,
+                updated_at = $3
+            WHERE user_id = $1 AND trial_consumed_microusd >= $2
+            RETURNING trial_consumed_microusd
+            """,
+            user_id,
+            amount,
+            now,
+        )
+        if row is None:
+            raise RuntimeError("trial consumption missing during receipt reconciliation")
+
     # ----------------------------------------------------------- reservations
     async def insert_reservation(
         self,
