@@ -1,11 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { subscribeAuthGeneration } from '@/lib/auth';
 import { Download, Loader2, Plus } from 'lucide-react';
 import {
   MAX_USER_MEMORY_LENGTH,
+  MemoryExportFormatError,
+  MemoryRequestSupersededError,
   USER_MEMORY_CATEGORIES,
   type MemoryExport,
+  type MemoryRequestOptions,
   type UserMemoryCategory,
 } from '@/hooks/useMemories';
 
@@ -22,8 +26,9 @@ interface MemoryActionsProps {
   createMemory: (
     content: string,
     category: UserMemoryCategory,
+    options?: MemoryRequestOptions,
   ) => Promise<{ ok: true; id: string } | { ok: false; error: string }>;
-  exportMemories: () => Promise<MemoryExport>;
+  exportMemories: (options?: MemoryRequestOptions) => Promise<MemoryExport>;
   /** Called after a memory is saved so lists and counts can refresh. */
   onSaved: () => void;
 }
@@ -53,35 +58,91 @@ export function MemoryActions({
   const [exporting, setExporting] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
 
+  // In-flight operations. Leaving the view or any sign-in change aborts them,
+  // so a late response can never download, save or report for another scope.
+  const operations = useRef(new Set<AbortController>());
+
+  useEffect(() => {
+    const active = operations.current;
+    const abortAll = () => {
+      for (const operation of active) operation.abort();
+      active.clear();
+    };
+    const unsubscribe = subscribeAuthGeneration(() => {
+      abortAll();
+      setContent('');
+      setCategory('fact');
+      setOutcome(null);
+      setSaving(false);
+      setExporting(false);
+    });
+    return () => {
+      unsubscribe();
+      abortAll();
+    };
+  }, []);
+
+  const beginOperation = () => {
+    const operation = new AbortController();
+    operations.current.add(operation);
+    return operation;
+  };
+
+  const endOperation = (operation: AbortController) => {
+    operations.current.delete(operation);
+  };
+
   const trimmedLength = content.trim().length;
   const tooLong = trimmedLength > MAX_USER_MEMORY_LENGTH;
 
   const handleSave = async (event: React.FormEvent) => {
     event.preventDefault();
     if (saving || trimmedLength === 0 || tooLong) return;
+    const operation = beginOperation();
+    const submitted = content;
     setSaving(true);
     setOutcome(null);
-    const result = await createMemory(content, category);
-    setSaving(false);
-    if (result.ok) {
-      setContent('');
-      setOutcome({
-        kind: 'success',
-        message:
-          'Saved to memory. If it repeated something already remembered, the two were merged.',
+    try {
+      const result = await createMemory(submitted, category, {
+        signal: operation.signal,
       });
-      onSaved();
-    } else {
-      setOutcome({ kind: 'error', message: result.error });
+      if (operation.signal.aborted) return;
+      if (result.ok) {
+        // Fields are locked while saving; still clear only the exact text sent.
+        setContent((current) => (current === submitted ? '' : current));
+        setOutcome({
+          kind: 'success',
+          message:
+            'Saved to memory. If it repeated something already remembered, the two were merged.',
+        });
+        onSaved();
+      } else {
+        setOutcome({ kind: 'error', message: result.error });
+      }
+    } catch (error) {
+      if (
+        operation.signal.aborted ||
+        error instanceof MemoryRequestSupersededError
+      )
+        return;
+      setOutcome({
+        kind: 'error',
+        message: "Couldn't save the memory. Please try again.",
+      });
+    } finally {
+      endOperation(operation);
+      if (!operation.signal.aborted) setSaving(false);
     }
   };
 
   const handleExport = async () => {
     if (exporting) return;
+    const operation = beginOperation();
     setExporting(true);
     setOutcome(null);
     try {
-      const data = await exportMemories();
+      const data = await exportMemories({ signal: operation.signal });
+      if (operation.signal.aborted) return;
       const day = data.exported_at.slice(0, 10);
       downloadJson(data, `daemon-memories-${day}.json`);
       const count = data.memories.length;
@@ -91,13 +152,22 @@ export function MemoryActions({
           count === 1 ? 'memory' : 'memories'
         }.`,
       });
-    } catch {
+    } catch (error) {
+      if (
+        operation.signal.aborted ||
+        error instanceof MemoryRequestSupersededError
+      )
+        return;
       setOutcome({
         kind: 'error',
-        message: "Couldn't export memories. Please try again.",
+        message:
+          error instanceof MemoryExportFormatError
+            ? 'Daemon sent an unexpected export, so nothing was downloaded. Please try again.'
+            : "Couldn't export memories. Please try again.",
       });
     } finally {
-      setExporting(false);
+      endOperation(operation);
+      if (!operation.signal.aborted) setExporting(false);
     }
   };
 
@@ -116,8 +186,12 @@ export function MemoryActions({
         <textarea
           id="memory-add-content"
           value={content}
-          onChange={(event) => setContent(event.target.value)}
+          onChange={(event) => {
+            if (!saving) setContent(event.target.value);
+          }}
           rows={3}
+          readOnly={saving}
+          aria-busy={saving}
           placeholder="e.g. I prefer metric units"
           aria-describedby="memory-add-count"
           aria-invalid={tooLong}
@@ -130,9 +204,11 @@ export function MemoryActions({
           <select
             id="memory-add-category"
             value={category}
-            onChange={(event) =>
-              setCategory(event.target.value as UserMemoryCategory)
-            }
+            disabled={saving}
+            onChange={(event) => {
+              if (!saving)
+                setCategory(event.target.value as UserMemoryCategory);
+            }}
             className="rounded-md border border-border-primary bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-border-focus/50"
           >
             {USER_MEMORY_CATEGORIES.map((value) => (

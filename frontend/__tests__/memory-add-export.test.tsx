@@ -11,14 +11,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryActions } from '../components/settings/memory/MemoryActions';
 import {
   MAX_USER_MEMORY_LENGTH,
+  MemoryExportFormatError,
+  MemoryRequestSupersededError,
   toMemoryExport,
   useMemories,
   type MemoryExport,
 } from '../hooks/useMemories';
 
+const authState = vi.hoisted(() => ({
+  generation: 1,
+  listeners: new Set<() => void>(),
+}));
 vi.mock('../lib/auth', () => ({
   ensureAuthHeader: async () => 'Bearer test-memory',
+  getAuthGeneration: () => authState.generation,
+  subscribeAuthGeneration: (listener: () => void) => {
+    authState.listeners.add(listener);
+    return () => authState.listeners.delete(listener);
+  },
 }));
+
+/** Simulates sign-out, cross-tab sign-out or a new sign-in. */
+function changeSignIn() {
+  authState.generation += 1;
+  for (const listener of [...authState.listeners]) listener();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -65,8 +88,7 @@ describe('memory export shape', () => {
           created_at: '2026-01-01T00:00:00Z',
           updated_at: '2026-01-02T00:00:00Z',
         },
-        { id: 'm2', content: '', category: 'fact' },
-        { id: 'm3', content: 'No category' },
+        { id: 'm3', content: 'No dates', category: 'fact' },
       ],
       new Date('2026-10-03T00:00:00Z'),
     );
@@ -83,13 +105,33 @@ describe('memory export shape', () => {
           updated_at: '2026-01-02T00:00:00Z',
         },
         {
-          content: 'No category',
+          content: 'No dates',
           category: 'fact',
           created_at: null,
           updated_at: null,
         },
       ],
     });
+  });
+
+  it('treats an empty array as a valid empty export', () => {
+    expect(toMemoryExport([]).memories).toEqual([]);
+  });
+
+  it.each([
+    ['missing list', undefined],
+    ['null list', null],
+    ['object instead of list', { memories: [] }],
+    ['non-object row', ['text']],
+    ['row without content', [{ category: 'fact' }]],
+    ['row with empty content', [{ content: '', category: 'fact' }]],
+    ['row without category', [{ content: 'x' }]],
+    [
+      'row with a non-string date',
+      [{ content: 'x', category: 'fact', created_at: 7 }],
+    ],
+  ])('rejects a malformed payload: %s', (_name, rows) => {
+    expect(() => toMemoryExport(rows)).toThrow(MemoryExportFormatError);
   });
 });
 
@@ -165,6 +207,45 @@ describe('useMemories create and export', () => {
       },
     ]);
   });
+  it.each([
+    ['missing memories', {}],
+    ['null memories', { memories: null }],
+    ['non-array memories', { memories: 'none' }],
+  ])(
+    'rejects a successful response with %s instead of exporting nothing',
+    async (_name, body) => {
+      respond = () => json(body);
+      const { result } = renderHook(() => useMemories());
+      await expect(result.current.exportMemories()).rejects.toBeInstanceOf(
+        MemoryExportFormatError,
+      );
+    },
+  );
+
+  it('drops an export whose sign-in changed before the response arrived', async () => {
+    const gate = deferred<Response>();
+    respond = () => gate.promise as unknown as Response;
+    const { result } = renderHook(() => useMemories());
+    const pending = result.current.exportMemories();
+    await waitFor(() => expect(requests).toHaveLength(1));
+    act(() => changeSignIn());
+    gate.resolve(json({ memories: [{ content: 'Old', category: 'fact' }] }));
+    await expect(pending).rejects.toBeInstanceOf(MemoryRequestSupersededError);
+  });
+
+  it('drops a save whose caller was aborted', async () => {
+    const gate = deferred<Response>();
+    respond = () => gate.promise as unknown as Response;
+    const { result } = renderHook(() => useMemories());
+    const controller = new AbortController();
+    const pending = result.current.createMemory('note', 'fact', {
+      signal: controller.signal,
+    });
+    await waitFor(() => expect(requests).toHaveLength(1));
+    controller.abort();
+    gate.resolve(json({ id: 'x' }));
+    await expect(pending).rejects.toBeInstanceOf(MemoryRequestSupersededError);
+  });
 });
 
 describe('MemoryActions', () => {
@@ -173,7 +254,10 @@ describe('MemoryActions', () => {
       createMemory: vi.fn(async () => ({ ok: true as const, id: 'id' })),
       exportMemories: vi.fn(async () =>
         toMemoryExport(
-          [{ content: 'A' }, { content: 'B' }],
+          [
+            { content: 'A', category: 'fact' },
+            { content: 'B', category: 'fact' },
+          ],
           new Date('2026-10-03T12:00:00Z'),
         ),
       ),
@@ -203,6 +287,7 @@ describe('MemoryActions', () => {
     expect(props.createMemory).toHaveBeenCalledWith(
       'Allergic to peanuts',
       'preference',
+      expect.anything(),
     );
     expect((field as HTMLTextAreaElement).value).toBe('');
     expect(props.onSaved).toHaveBeenCalledTimes(1);
@@ -272,5 +357,111 @@ describe('MemoryActions', () => {
         "Couldn't export memories. Please try again.",
       ),
     );
+  });
+});
+
+describe('MemoryActions lifecycle', () => {
+  function stubDownload() {
+    const downloads: string[] = [];
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:x');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloads.push(this.download);
+    });
+    return downloads;
+  }
+
+  function renderActions(overrides: Record<string, unknown> = {}) {
+    const props = {
+      createMemory: vi.fn(),
+      exportMemories: vi.fn(),
+      onSaved: vi.fn(),
+      ...overrides,
+    } as unknown as Parameters<typeof MemoryActions>[0];
+    return { props, ...render(<MemoryActions {...props} />) };
+  }
+
+  it('locks the draft while saving and never erases text it did not send', async () => {
+    const gate = deferred<{ ok: true; id: string }>();
+    const createMemory = vi.fn(() => gate.promise);
+    renderActions({ createMemory });
+    const field = screen.getByLabelText('Add a memory') as HTMLTextAreaElement;
+    const select = screen.getByLabelText('Category') as HTMLSelectElement;
+    fireEvent.change(field, { target: { value: 'A' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save memory' }));
+
+    expect(field.readOnly).toBe(true);
+    expect(select.disabled).toBe(true);
+    fireEvent.change(field, { target: { value: 'B typed during save' } });
+    fireEvent.change(select, { target: { value: 'project' } });
+    expect(field.value).toBe('A');
+    expect(select.value).toBe('fact');
+
+    await act(async () => gate.resolve({ ok: true, id: 'a' }));
+    expect(createMemory).toHaveBeenCalledWith('A', 'fact', expect.anything());
+    expect(field.value).toBe('');
+    expect(field.readOnly).toBe(false);
+  });
+
+  it.each([
+    ['the view unmounts', 'unmount'],
+    ['the person signs out or another tab signs out', 'signout'],
+    ['a different account signs in', 'signin'],
+  ])('does not download or report an export after %s', async (_name, how) => {
+    const downloads = stubDownload();
+    const gate = deferred<MemoryExport>();
+    let signal: AbortSignal | undefined;
+    const exportMemories = vi.fn((options?: { signal?: AbortSignal }) => {
+      signal = options?.signal;
+      return gate.promise;
+    });
+    const { unmount } = renderActions({ exportMemories });
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
+    await waitFor(() => expect(exportMemories).toHaveBeenCalled());
+
+    if (how === 'unmount') unmount();
+    else act(() => changeSignIn());
+    expect(signal?.aborted).toBe(true);
+    await act(async () =>
+      gate.resolve(
+        toMemoryExport([{ content: 'Old account', category: 'fact' }]),
+      ),
+    );
+
+    expect(downloads).toEqual([]);
+    if (how !== 'unmount') {
+      expect(screen.queryByTestId('memory-action-outcome')).toBeNull();
+      expect(
+        (
+          screen.getByRole('button', {
+            name: 'Export JSON',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    }
+  });
+
+  it('clears an unsaved draft when the sign-in changes', () => {
+    renderActions();
+    const field = screen.getByLabelText('Add a memory') as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: 'previous account note' } });
+    act(() => changeSignIn());
+    expect(field.value).toBe('');
+  });
+
+  it('reports a malformed export without downloading anything', async () => {
+    const downloads = stubDownload();
+    renderActions({
+      exportMemories: vi.fn(async () => {
+        throw new MemoryExportFormatError();
+      }),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Daemon sent an unexpected export, so nothing was downloaded. Please try again.',
+    );
+    expect(downloads).toEqual([]);
   });
 });
