@@ -192,8 +192,8 @@ Before any authorized Package B stage:
 
 | Stage | State | Notes |
 | --- | --- | --- |
-| B1 | Blocked | A-core merged with the PR that adds this note; waiting for explicit authorization, then rebase and revalidation |
-| B2 | Blocked | |
+| B1 | Done (2 October 2026) | Commencement authorized 2 October 2026; revalidated against `main` `9fca6139`; protocol and corpus v1 frozen in [REASONING_EVAL_PROTOCOL.md](REASONING_EVAL_PROTOCOL.md) |
+| B2 | Blocked | Needs an approved USD cap for the calibration run, valid route approvals at run time, and a generalised runner |
 | B3 | Blocked | |
 | B4 | Blocked | |
 | B5 | Blocked | Also needs A-core deployed |
