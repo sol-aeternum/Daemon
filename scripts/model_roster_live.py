@@ -27,7 +27,7 @@ import os
 import sys
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +50,7 @@ DB_MARKER = "daemon-model-roster-evaluation-only"
 ACCOUNT_MARKER = "Synthetic roster pilot"
 USERNAME_MARKER = "roster_pilot_20260927"
 STATE_VERSION = "model-roster-live-state/1"
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 
 class LiveError(Exception):
@@ -268,6 +269,30 @@ def verify_candidate(
     return candidates[0][0]
 
 
+def pending_migrations(applied: Iterable[str]) -> list[str]:
+    """Repository migrations (the top-level files ``scripts/migrate.py`` applies) that
+    the evaluation database has not recorded, in apply order."""
+    recorded = set(applied)
+    return [path.name for path in sorted(MIGRATIONS_DIR.glob("*.sql")) if path.name not in recorded]
+
+
+async def require_current_schema(conn: Any) -> None:
+    """Refuse an evaluation database whose schema lags the code under evaluation.
+
+    A dry run never writes a reservation, so a missing ledger column would otherwise
+    surface only as a refused first call during a paid run (#403).
+    """
+    tracked = await conn.fetchval("SELECT to_regclass('_migrations') IS NOT NULL")
+    require(bool(tracked), "evaluation database has no migration record")
+    applied = [row["filename"] for row in await conn.fetch("SELECT filename FROM _migrations")]
+    pending = pending_migrations(applied)
+    require(
+        not pending,
+        f"evaluation database schema is behind the code: {len(pending)} unapplied "
+        f"migration(s), first {pending[0] if pending else ''}; run scripts/migrate.py against it",
+    )
+
+
 async def validate_database(
     pool: Any, account: uuid.UUID, service: EntitlementService, expected_period: str
 ) -> str:
@@ -281,6 +306,7 @@ async def validate_database(
             row["name"].startswith(DB_PREFIX) and row["marker"] == DB_MARKER,
             "evaluation DB marker/name required",
         )
+        await require_current_schema(conn)
         user = await conn.fetchrow("SELECT id, name, username FROM users WHERE id = $1", account)
         require(
             user is not None

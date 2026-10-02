@@ -216,7 +216,12 @@ async def test_isolated_db_account_and_period_preflight():
             return user if "FROM users WHERE" in sql else row
 
         async def fetchval(self, sql, *args):
+            if "_migrations" in sql:
+                return True
             return funded[0] if "entitlement_accounts" in sql else duplicate[0]
+
+        async def fetch(self, sql, *args):
+            return [{"filename": name} for name in applied]
 
     @asynccontextmanager
     async def acquire():
@@ -224,6 +229,7 @@ async def test_isolated_db_account_and_period_preflight():
 
     pool = SimpleNamespace(acquire=acquire)
     duplicate, funded = [0], [0]
+    applied = [path.name for path in sorted(live.MIGRATIONS_DIR.glob("*.sql"))]
     service = SimpleNamespace(
         store=SimpleNamespace(get_account=AsyncMock(return_value=record)),
         policy=SimpleNamespace(
@@ -249,6 +255,11 @@ async def test_isolated_db_account_and_period_preflight():
     with pytest.raises(live.LiveError, match="marker"):
         await live.validate_database(pool, account, service_double(service), "2026-09")
     row["marker"] = live.DB_MARKER
+    # A schema behind the code is refused before any account or ledger check (#403).
+    latest = applied.pop()
+    with pytest.raises(live.LiveError, match="behind the code: 1 unapplied"):
+        await live.validate_database(pool, account, service_double(service), "2026-09")
+    applied.append(latest)
     record.trial_budget_microusd = 1
     with pytest.raises(live.LiveError, match="trial"):
         await live.validate_database(pool, account, service_double(service), "2026-09")
@@ -528,3 +539,21 @@ async def test_served_model_drift_fails_and_keeps_raw_evidence(
     entry = state["attempts"][attempt.attempt_id]
     assert entry["status"] == "uncertain"
     assert entry["calls"][0]["raw_response"]["model"] == "vendor/other"
+
+
+def test_pending_migrations_lists_unapplied_files_in_apply_order():
+    names = [path.name for path in sorted(live.MIGRATIONS_DIR.glob("*.sql"))]
+    assert names and live.pending_migrations(names) == []
+    assert live.pending_migrations(names[:-2]) == names[-2:]
+    # Rollback scripts live in a subdirectory and are never expected.
+    assert not any("rollback" in name or name.endswith("down.sql") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_untracked_schema_is_refused():
+    class Connection:
+        async def fetchval(self, sql, *args):
+            return False
+
+    with pytest.raises(live.LiveError, match="no migration record"):
+        await live.require_current_schema(Connection())
