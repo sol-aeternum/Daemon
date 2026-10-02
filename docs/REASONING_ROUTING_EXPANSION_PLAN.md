@@ -194,7 +194,7 @@ Before any authorized Package B stage:
 | --- | --- | --- |
 | B1 | Done (2 October 2026) | Commencement authorized 2 October 2026; revalidated against `main` `9fca6139`; protocol and corpus v1 frozen in [REASONING_EVAL_PROTOCOL.md](REASONING_EVAL_PROTOCOL.md) |
 | B2 | In progress | Budget approved 2 October 2026: calibration at its USD 4.65 worst case; pilot (worst case USD 27.98) only if calibration-measured costs project it within that. Runner `scripts/reasoning_eval.py`; A-core deployed 2 October 2026. Calibration (USD 0.138) and pilot (600 attempts, USD 0.881) run 2 October 2026, see the protocol. Waiting on human verdicts for the blinded review packets |
-| B3 | Blocked | |
+| B3 | In progress | Pre-registered 2 October 2026 (success rule, verdict panel, USD 10.50 test cap); P1 (Luna medium default) selected on validation; test confirmation `b3_test_20261002.json` |
 | B4 | Blocked | |
 | B5 | Blocked | Also needs A-core deployed |
 | B6 | Blocked | |
