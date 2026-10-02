@@ -280,3 +280,18 @@ def test_b3_test_manifest_runs_only_the_untouched_test_split() -> None:
     }
     totals = runner.planning_bound(schedule, fixtures.by_id(), _routes(manifest))
     assert sum(totals.values()) <= manifest.incremental_cap_microusd == 10_500_000
+
+
+def test_sonnet55_manifest_adds_one_configuration_over_the_pilot_cases() -> None:
+    manifest, fixtures, schedule, profile = runner.load_plan(
+        MANIFEST.with_name("b2_sonnet55_20261003.json")
+    )
+    pilot = runner.load_plan(MANIFEST.with_name("b2_pilot_20261002.json"))[2]
+    assert {a.configuration for a in schedule} == {"sonnet-5.5-high"}
+    # Pairs with the pilot by case and repeat; nothing already run is repeated.
+    assert {(a.case_id, a.repeat) for a in schedule} == {(a.case_id, a.repeat) for a in pilot}
+    assert profile.experiment == "reasoning-eval/b2-sonnet55-20261003"
+    # The evaluation-only route is priced like the approved Sonnet 5 route.
+    sonnet5 = load_inference_policy(POLICY).routes["sonnet-vertex-europe"]
+    totals = runner.planning_bound(schedule, fixtures.by_id(), {"sonnet55": sonnet5})
+    assert sum(totals.values()) <= manifest.incremental_cap_microusd == 8_000_000
