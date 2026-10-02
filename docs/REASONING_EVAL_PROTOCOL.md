@@ -338,6 +338,40 @@ USD 7.60, cap USD 8). It pairs with `b2-pilot-20261002` by case and repeat.
   Sonnet 5 is paired by case but a day apart, so provider-side drift is not
   controlled.
 
+## Sonnet 5.5 result (3 October 2026)
+
+Run `b2-sonnet55-20261003` (120 attempts, merged `main` `2a32ffb7`): all attempts
+completed with no stops and no content-filter refusals, including QIN-2. It cost
+USD 0.460, matching the ledger exactly, and every call reported usage. Verdicts come
+from the same three-reviewer blind panel, which was unanimous (119/120). Pilot
+configurations use the pilot panel's majority verdicts.
+
+| Configuration | All (120) | Excluding QIN-2 (117) | Hard + deceptively hard (60) | USD per success | Median / p95 latency (s) |
+| --- | --- | --- | --- | --- | --- |
+| Luna low | 108 | 108 | 48 | 0.00010 | 2.8 / 4.7 |
+| Luna medium | 113 | 113 | 53 | 0.00013 | 3.1 / 6.4 |
+| Luna high | 112 | 112 | 52 | 0.00016 | 3.1 / 6.8 |
+| Sonnet 5 high | 115 | 112 | 58 | 0.00443 | 3.8 / 15.9 |
+| **Sonnet 5.5 high** | **119** | **116** | **60** | **0.00387** | **3.1 / 8.2** |
+| Sol 6.1 high | 116 | 116 | 56 | 0.00282 | 4.7 / 9.5 |
+
+**Paired by case and repeat:**
+- **Against Sonnet 5:** Sonnet 5.5 was better on 4 attempts (EVD-3, PLN-1 ×2, PLN-3)
+  and worse on none. A sign test gives p = 0.125, so this is not significant.
+- **Against Sol 6.1:** Sonnet 5.5 was better on 4 attempts and worse on 1. Three of
+  the four are QIN-2, which Sol could not answer because of the Azure content filter.
+- **Cost:** Sonnet 5.5 cost 10% less per attempt than Sonnet 5, because it produced
+  fewer completion tokens at the same listed price.
+
+**Limits:**
+- Sonnet 5.5 ran a day after the pilot, so provider-side drift is not controlled.
+- Its verdicts come from new panel sessions with the same composition.
+- There are 40 cases.
+- This run did not reproduce the content-filter refusals from the 29 September screen
+  (#344); that screen used a different corpus.
+- The route is evaluation-only and expires 2026-10-06. Serving Sonnet 5.5 would need
+  production route qualification and a separate placement decision.
+
 ## Stop conditions
 
 - Rubric ambiguity found in review: revise the corpus (new version) before any calls.
