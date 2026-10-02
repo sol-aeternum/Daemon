@@ -59,7 +59,7 @@ async def test_dispatch_records_the_profile_and_effort_actually_sent(
     sent = provider.await_args.kwargs["reasoning_effort"]
     kwargs: dict[str, Any] = service.reserve.await_args.kwargs
     assert kwargs["workload_profile"] == "routine"
-    assert kwargs["reasoning_effort"] == sent == "low"
+    assert kwargs["reasoning_effort"] == sent == "medium"
 
 
 @pytest_asyncio.fixture
