@@ -18,6 +18,12 @@ import pytest
 
 from scripts.web_fetch_pilot_browser_entrypoint import (
     CONTENT_LIMIT,
+    EXIT_BROWSE,
+    EXIT_OK,
+    EXIT_SANDBOX,
+    STAGES,
+    EntrypointRefused,
+    browse_exit,
     SANDBOX_REQUIRED,
     SYNTHETIC_HTML,
     RunConfig,
@@ -268,3 +274,14 @@ def test_bootstrap_never_writes_stdout_and_imports_entrypoint_statically() -> No
         for alias in node.names
     )
     assert "sys.stdin" not in BOOTSTRAP_SOURCE and "sys.stdout = sys.stderr" in BOOTSTRAP_SOURCE
+
+
+def test_browse_exit_is_zero_only_without_unexpected_failure() -> None:
+    assert browse_exit(None) == EXIT_OK == 0
+    assert browse_exit(EntrypointRefused(EXIT_SANDBOX)) == EXIT_SANDBOX == 4
+    for failure in (RuntimeError("TargetClosedError"), TimeoutError(), OSError()):
+        assert browse_exit(failure) == EXIT_BROWSE == 5
+    assert STAGES[0] == "start" and "navigate" in STAGES
+    source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
+    for name in STAGES[1:]:
+        assert f'stage[0] = "{name}"' in source  # Every stage is actually recorded.

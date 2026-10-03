@@ -18,6 +18,8 @@ supervisor never interprets them. Exit codes are the supervisor's signal:
 - 0: RESULT committed after every check passed (not article success).
 - 1: RESULT not committed or relay cleanup failed.
 - 3: isolation refused; 4: sandbox/synthetic check refused (no navigation).
+- 5: browser automation failed unexpectedly (RESULT ``error``); the bounded
+  diagnostic names only the stage reached, never error text.
 """
 
 from __future__ import annotations
@@ -40,7 +42,8 @@ MAX_DEADLINE = 40.0  # Inside the 45-second run; leaves room for RESULT and tear
 CONTENT_LIMIT = 1_000_000  # Bytes; with chunk tags and final, under the 1 MiB quota.
 TITLE_LIMIT = 512
 DIAGNOSTIC_LIMIT = 8192
-EXIT_OK, EXIT_RESULT, EXIT_ISOLATION, EXIT_SANDBOX = 0, 1, 3, 4
+EXIT_OK, EXIT_RESULT, EXIT_ISOLATION, EXIT_SANDBOX, EXIT_BROWSE = 0, 1, 3, 4, 5
+STAGES = ("start", "launch", "context", "stealth", "synthetic", "sandbox", "navigate", "extract")
 SYNTHETIC_HTML = (
     "<html><head><title>Daemon offline reader</title></head><body><article>"
     "<h1>Offline fixture</h1><p>Expected synthetic article.</p></article></body></html>"
@@ -187,11 +190,23 @@ def own_frame_descriptors() -> tuple[int, int]:
     return frame_in, frame_out
 
 
-async def _browse(run: RunConfig, proxy_port: int, deadline: float) -> tuple[bytes, bytes]:
+def browse_exit(failed: BaseException | None) -> int:
+    """Pure: exit 0 only when browsing ended without an unexpected failure."""
+    if failed is None:
+        return EXIT_OK
+    if isinstance(failed, EntrypointRefused):
+        return failed.code
+    return EXIT_BROWSE
+
+
+async def _browse(
+    run: RunConfig, proxy_port: int, deadline: float, stage: list[str]
+) -> tuple[bytes, bytes]:
     # Container-only dependency (image site-packages), loaded by fixed name.
     async_playwright = importlib.import_module("playwright.async_api").async_playwright
     loop = asyncio.get_running_loop()
     async with async_playwright() as runtime:
+        stage[0] = "launch"
         browser = await runtime.chromium.launch(
             executable_path=EXECUTABLE,
             headless=True,
@@ -200,26 +215,31 @@ async def _browse(run: RunConfig, proxy_port: int, deadline: float) -> tuple[byt
             timeout=10000,
         )
         try:
+            stage[0] = "context"
             context = await browser.new_context(
                 ignore_https_errors=False, accept_downloads=False, service_workers="block"
             )
             try:
                 page = await context.new_page()
                 if run.mode == "basic-stealth":
+                    stage[0] = "stealth"
                     adapter = importlib.import_module("crawl4ai.browser_adapter").StealthAdapter()
                     if not adapter._stealth_available:
                         raise EntrypointRefused(EXIT_SANDBOX)
                     await adapter.apply_stealth(page)
+                stage[0] = "synthetic"
                 await page.goto("about:blank", timeout=5000)
                 await page.set_content(SYNTHETIC_HTML, timeout=5000)
                 synthetic = synthetic_ok(
                     await page.locator("article").inner_text(timeout=5000), await page.title()
                 )
+                stage[0] = "sandbox"
                 await page.goto("chrome://sandbox", timeout=5000)
                 sandbox = sandbox_ok(await page.locator("body").inner_text(timeout=5000))
                 diagnostic({"mode": run.mode, "synthetic_ok": synthetic, "sandbox_ok": sandbox})
                 if not (synthetic and sandbox):
                     raise EntrypointRefused(EXIT_SANDBOX)
+                stage[0] = "navigate"
                 remaining_ms = max(1.0, (deadline - loop.time()) * 1000)
                 try:
                     await page.goto(
@@ -228,6 +248,7 @@ async def _browse(run: RunConfig, proxy_port: int, deadline: float) -> tuple[byt
                 except Exception as exc:  # Category only; never error text in RESULT.
                     diagnostic({"navigation": type(exc).__name__})
                     return classify(run, True, run.original_url, "", "")
+                stage[0] = "extract"
                 title = await page.title()
                 text = await page.evaluate(EXTRACT_JS)
                 return classify(run, False, page.url, str(title), str(text))
@@ -262,16 +283,16 @@ async def main(raw_run: object) -> int:
         deadline=run.deadline_seconds + 4.0,
     )
     relay_task = asyncio.create_task(relay.run())
-    code = EXIT_OK
+    stage = ["start"]
+    failed: BaseException | None = None
     try:
         async with asyncio.timeout_at(deadline):
-            content, final = await _browse(run, acceptor.address[1], deadline)
-    except EntrypointRefused as refused:
-        code = refused.code
+            content, final = await _browse(run, acceptor.address[1], deadline, stage)
+    except Exception as exc:  # Including EntrypointRefused; classified below.
+        failed = exc
+        diagnostic({"browse": type(exc).__name__, "stage": stage[0]})
         content, final = b"", final_record(run, "error", run.original_url, "")
-    except Exception as exc:
-        diagnostic({"browse": type(exc).__name__})
-        content, final = b"", final_record(run, "error", run.original_url, "")
+    code = browse_exit(failed)
     try:
         await relay.finish_result(content, final)
     except Exception as exc:

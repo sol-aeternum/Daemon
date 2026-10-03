@@ -1932,3 +1932,44 @@ never gained a `1.2.3.x` route or address before, during or after. Exit 0; conta
 network removed and verified absent; no owner-labelled leftovers, no attach CLI, fd/task
 sets restored. Pilot run without opt-in **1016 passed, 8 skipped**. This establishes the
 E3 addressing premise; the gateway and TLS fixture roles are next (E3c).
+
+### Stage E3c gateway entrypoint and two-container gate — prepared (2026-10-03)
+
+`scripts/web_fetch_pilot_gateway_entrypoint.py` constructs the unchanged `Gateway` with
+the real `DNSResolver(StdlibSpawner(sys.executable))` and `NumericConnector`, an explicit
+inventory (empty only for this non-live fixture run) and framed stdio on private
+non-inheritable descriptors; it refuses (exit 3) unless non-root with only `eth0`/`lo`
+and no default route, always closes the resolver, and exits 0 only with clean gateway and
+resolver ownership. The gateway bundle and command (`-I -S -u`, `PATH`/`LANG` only) reuse
+the browser builder; the gateway bootstrap is derived from the qualified browser bootstrap
+by four exact, once-only substitutions (the browser bootstrap bytes are unchanged, and
+reversing the substitutions restores them exactly). 7 pure tests pass; pilot run **1023
+passed, 8 skipped**. The opt-in gate `tests/web_fetch_pilot_two_container_pending.py`
+(`4d3949b01bee9db9fcab65e6cfb976ea6682887e77489b011032d157e8e9dbf2`) runs one owned
+network, a TLS fixture container aliased `openai.com` on port 443, the gateway container
+and the network-none browser container under one run token, with no test-only transport
+anywhere. It awaits owner approval.
+
+### Stage E3c first run failed; exit-code defect corrected (2026-10-03)
+
+The owner approved one run of `tests/test_web_fetch_pilot_two_container_io.py`
+(`4d3949b01bee9db9fcab65e6cfb976ea6682887e77489b011032d157e8e9dbf2`). It **failed** after
+37.33 s and was not retried. The network was created and all three containers started;
+the TLS fixture reported ready. The browser's automation raised Playwright
+`TargetClosedError` before any CONNECT: relay OPENs 0, gateway read/written 0 bytes and
+ended on EOF with clean ownership, the fixture saw **0 handshake attempts**, and the
+final RESULT was `error` without content. All three containers exited 0 and, with the
+network, were removed and verified absent; no attach CLI survived and parent fd/task sets
+were restored. The cause is not determined: the diagnostic recorded only the exception
+type, and the same browser configuration passed twice in E2c.
+
+The run exposed a real defect: the browser entrypoint's generic failure path sent the
+`error` RESULT but left the exit code 0, contradicting the documented meaning "every
+in-container check passed". All browse failures now go through a pure `browse_exit`
+(0 only without an unexpected failure; refusals keep codes 3/4; anything else is the new
+code 5), and the bounded diagnostic adds the last stage reached (`launch`, `context`,
+`stealth`, `synthetic`, `sandbox`, `navigate`, `extract`), never error text. A pure test
+covers the classification and that every stage is recorded. Pilot run **1024 passed,
+9 skipped**. Entrypoint SHA-256
+`755dc5e3ea7fcd16af097695184aa62ec7456e2e6d43bbfeb14205a80e28c75e`. The E2c browser gate
+has not been re-run against this change. A second E3c run needs owner approval.

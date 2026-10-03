@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import os
 import struct
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from scripts.web_fetch_pilot_browser_entrypoint import parse_run
+from scripts.web_fetch_pilot_gateway_entrypoint import parse_run as parse_gateway_run
 
 MODULE_NAMES = (
     "web_fetch_pilot_acceptor.py",
@@ -48,7 +49,21 @@ ENVIRONMENT = (
 
 def make_bundle(modules: Mapping[str, bytes], run: Mapping[str, object]) -> bytes:
     """Length-prefixed strict JSON bundle of exact trusted module bytes + run."""
-    if type(modules) is not dict or tuple(sorted(modules)) != MODULE_NAMES:
+    return _bundle(modules, run, MODULE_NAMES, parse_run)
+
+
+def make_gateway_bundle(modules: Mapping[str, bytes], run: Mapping[str, object]) -> bytes:
+    """Gateway variant: exact gateway module set, gateway run checks."""
+    return _bundle(modules, run, GATEWAY_MODULE_NAMES, parse_gateway_run)
+
+
+def _bundle(
+    modules: Mapping[str, bytes],
+    run: Mapping[str, object],
+    names: tuple[str, ...],
+    check: Callable[[object], object],
+) -> bytes:
+    if type(modules) is not dict or tuple(sorted(modules)) != names:
         raise ValueError("exact trusted module set required")
     texts: dict[str, str] = {}
     for name, data in modules.items():
@@ -57,7 +72,7 @@ def make_bundle(modules: Mapping[str, bytes], run: Mapping[str, object]) -> byte
         texts[name] = data.decode("utf-8")
     if type(run) is not dict:
         raise ValueError("run configuration refused")
-    parse_run(dict(run))  # The same strict check the entrypoint applies.
+    check(dict(run))  # The same strict check the entrypoint applies.
     body = json.dumps(
         {"modules": texts, "run": run}, sort_keys=True, ensure_ascii=True, separators=(",", ":")
     ).encode("ascii")
@@ -181,3 +196,43 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 '''
+
+
+GATEWAY_MODULE_NAMES = (
+    "web_fetch_pilot_core.py",
+    "web_fetch_pilot_dns.py",
+    "web_fetch_pilot_gateway.py",
+    "web_fetch_pilot_gateway_entrypoint.py",
+    "web_fetch_pilot_io.py",
+    "web_fetch_pilot_tunnels.py",
+)
+GATEWAY_ENVIRONMENT = ENVIRONMENT[:2]  # PATH and LANG; no site, home or caches needed.
+
+
+def _derive_gateway_bootstrap(source: str) -> str:
+    """Exact substitutions on the qualified browser bootstrap; each must match once."""
+    names = "".join(f'    "{name}",\n' for name in GATEWAY_MODULE_NAMES)
+    browser_names = "".join(f'    "{name}",\n' for name in MODULE_NAMES)
+    for old, new in (
+        ('"""Browser container bootstrap:', '"""Gateway container bootstrap:'),
+        ("NAMES = (\n" + browser_names + ")", "NAMES = (\n" + names + ")"),
+        ('prefix="wfp-browser-"', 'prefix="wfp-gateway-"'),
+        (
+            "import scripts.web_fetch_pilot_browser_entrypoint as entrypoint",
+            "import scripts.web_fetch_pilot_gateway_entrypoint as entrypoint",
+        ),
+    ):
+        if source.count(old) != 1:
+            raise RuntimeError("browser bootstrap drifted; gateway derivation refused")
+        source = source.replace(old, new)
+    return source
+
+
+GATEWAY_BOOTSTRAP_SOURCE = _derive_gateway_bootstrap(BOOTSTRAP_SOURCE)
+
+
+def gateway_command(python: str = PYTHON) -> tuple[str, ...]:
+    """Gateway ``env -i`` arguments: minimal environment, isolated, no site."""
+    if type(python) is not str or not os.path.isabs(python) or "\x00" in python:
+        raise ValueError("absolute interpreter required")
+    return ("-i", *GATEWAY_ENVIRONMENT, python, "-I", "-S", "-u", "-c", GATEWAY_BOOTSTRAP_SOURCE)
