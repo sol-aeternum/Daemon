@@ -2161,3 +2161,16 @@ activity) and correctly exited 5 with an `error` RESULT; gateway and fixture end
 E3c run. Observed so far: the browser launched in all 5 single-container E2c runs, while
 E3c failed at launch in 2 of 5 runs (the other runs reached the fixture). The cause is not
 determined: the bounded diagnostics deliberately omit Chromium's log lines.
+
+### Launch-log capture and E3c repeat runs (2026-10-03)
+
+On the owner's choice the browser entrypoint now records, for launch-stage failures only, the
+last 2 KiB of the launch error in printable ASCII (Playwright appends Chromium's own startup log;
+no page content exists yet), as stderr diagnostics only. E3c was then run up to three times,
+stopping at the first failure: **all three passed** (9.19 s, 6.79 s, 6.18 s), each with one
+fixture attempt rejected (`certificate_unknown`), a clean gateway EOF, all three entrypoints
+exiting 0 and no leftovers. The intermittent launch failure did not recur, so its cause remains
+uncaptured. Tally across E3c runs whose code included the per-stream abort and the peer-record
+fix: 6 passed, 1 failed at Chromium launch; the earlier pre-fix failures were the explained
+transport issues. The launch flake is a known open item for stage F, not a containment failure:
+the browser refuses cleanly (exit 5, `error` RESULT) and nothing is left behind.
