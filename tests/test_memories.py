@@ -143,6 +143,7 @@ async def test_get_memories_returns_memories_array(auth_client, monkeypatch) -> 
         create_mock_memory(),
     ]
     mock_store.list_memories = AsyncMock(return_value=mock_memories)
+    mock_store.count_listed_memories = AsyncMock(return_value=len(mock_memories))
 
     mock_app_state = create_mock_app_state(mock_store)
     set_app_state(mock_app_state)
@@ -166,6 +167,7 @@ async def test_get_memories_with_category_filter(auth_client, monkeypatch) -> No
         create_mock_memory(category="preference"),
     ]
     mock_store.list_memories = AsyncMock(return_value=mock_memories)
+    mock_store.count_listed_memories = AsyncMock(return_value=len(mock_memories))
 
     mock_app_state = create_mock_app_state(mock_store)
     set_app_state(mock_app_state)
@@ -186,6 +188,7 @@ async def test_get_memories_with_confirmed_filter(auth_client, monkeypatch) -> N
     mock_store = AsyncMock()
     mock_memories = [create_mock_memory(confirmed=True)]
     mock_store.list_memories = AsyncMock(return_value=mock_memories)
+    mock_store.count_listed_memories = AsyncMock(return_value=len(mock_memories))
 
     mock_app_state = create_mock_app_state(mock_store)
     set_app_state(mock_app_state)
@@ -206,6 +209,7 @@ async def test_get_memories_with_search_query(auth_client, monkeypatch) -> None:
     mock_store = AsyncMock()
     mock_memories = [create_mock_memory(content="Python is awesome")]
     mock_store.list_memories = AsyncMock(return_value=mock_memories)
+    mock_store.count_listed_memories = AsyncMock(return_value=len(mock_memories))
 
     mock_app_state = create_mock_app_state(mock_store)
     set_app_state(mock_app_state)
@@ -226,6 +230,7 @@ async def test_get_memories_with_limit_offset(auth_client, monkeypatch) -> None:
     mock_store = AsyncMock()
     mock_memories = [create_mock_memory() for _ in range(5)]
     mock_store.list_memories = AsyncMock(return_value=mock_memories)
+    mock_store.count_listed_memories = AsyncMock(return_value=len(mock_memories))
 
     mock_app_state = create_mock_app_state(mock_store)
     set_app_state(mock_app_state)
@@ -1049,3 +1054,98 @@ async def test_import_memories_rolls_back_an_unclassified_item(auth_client) -> N
     detail = response.json()["detail"]
     assert detail["processed"] == 1
     assert detail["created"] + detail["merged"] + detail["superseded"] == detail["processed"]
+
+
+# --- GET /memories paging and filter contract (#249) -------------------------------
+
+
+def _list_store(page: list[dict[str, Any]], total: int) -> AsyncMock:
+    store = AsyncMock()
+    store.list_memories = AsyncMock(return_value=page)
+    store.count_listed_memories = AsyncMock(return_value=total)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_list_memories_reports_true_total_and_continuation(auth_client) -> None:
+    store = _list_store([create_mock_memory() for _ in range(20)], total=21)
+    set_app_state(create_mock_app_state(store))
+
+    first = await auth_client.get("/memories?limit=20&offset=0")
+    assert first.status_code == 200
+    body = first.json()
+    assert (len(body["memories"]), body["total"], body["has_more"]) == (20, 21, True)
+    assert (body["limit"], body["offset"]) == (20, 0)
+
+    store.list_memories = AsyncMock(return_value=[create_mock_memory()])
+    last = (await auth_client.get("/memories?limit=20&offset=20")).json()
+    assert (len(last["memories"]), last["total"], last["has_more"]) == (1, 21, False)
+
+
+@pytest.mark.asyncio
+async def test_list_memories_empty_result(auth_client) -> None:
+    set_app_state(create_mock_app_state(_list_store([], total=0)))
+    body = (await auth_client.get("/memories?search=nothing")).json()
+    assert (body["memories"], body["total"], body["has_more"]) == ([], 0, False)
+
+
+@pytest.mark.asyncio
+async def test_list_memories_count_uses_the_same_filters_as_the_page(auth_client) -> None:
+    store = _list_store([], total=0)
+    set_app_state(create_mock_app_state(store))
+
+    response = await auth_client.get(
+        "/memories?category=preference&status=superseded&source_type=import&search=tea"
+    )
+
+    assert response.status_code == 200
+    page_kwargs = dict(store.list_memories.call_args.kwargs)
+    count_kwargs = dict(store.count_listed_memories.call_args.kwargs)
+    page_kwargs.pop("limit")
+    page_kwargs.pop("offset")
+    assert page_kwargs == count_kwargs
+    assert count_kwargs["category"] == "preference"
+    assert count_kwargs["status"] == "superseded"
+    assert count_kwargs["source_type"] == "import"
+    assert count_kwargs["search"] == "tea"
+
+
+@pytest.mark.asyncio
+async def test_list_memories_all_status_means_every_non_deleted_status(auth_client) -> None:
+    store = _list_store([], total=0)
+    set_app_state(create_mock_app_state(store))
+
+    await auth_client.get("/memories?status=all")
+
+    status = store.count_listed_memories.call_args.kwargs["status"]
+    assert sorted(status) == ["active", "inactive", "pending", "rejected", "superseded"]
+    assert "deleted" not in status
+
+
+@pytest.mark.asyncio
+async def test_list_memories_defaults_to_active(auth_client) -> None:
+    store = _list_store([], total=0)
+    set_app_state(create_mock_app_state(store))
+    await auth_client.get("/memories")
+    assert store.list_memories.call_args.kwargs["status"] == "active"
+    assert store.list_memories.call_args.kwargs["source_type"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "status=deleted",
+        "status=bogus",
+        "source_type=system",
+        "category=secret",
+        "limit=101",
+        "offset=-1",
+    ],
+)
+async def test_list_memories_rejects_unsupported_filters(auth_client, query) -> None:
+    store = _list_store([], total=0)
+    set_app_state(create_mock_app_state(store))
+    response = await auth_client.get(f"/memories?{query}")
+    assert response.status_code == 422
+    store.list_memories.assert_not_called()

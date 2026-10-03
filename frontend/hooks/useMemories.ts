@@ -1,7 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { ensureAuthHeader, getAuthGeneration } from '@/lib/auth';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ensureAuthHeader,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
 
 export interface Memory {
   id: string;
@@ -284,6 +288,45 @@ export function parseMemoryImport(text: string): ParsedMemoryImport {
   return parsed;
 }
 
+export const MEMORY_PAGE_SIZE = 20;
+const MEMORY_REFRESH_PAGE_SIZE = 100;
+
+/** Filters the list API accepts; status "all" means every non-deleted row. */
+export interface ListFilters {
+  category?: string;
+  source_type?: string;
+  status?: string;
+  search?: string;
+}
+
+export interface MemoryPage {
+  memories: Memory[];
+  total: number;
+  has_more: boolean;
+}
+
+/** Validates GET /memories; the total is the filtered count, not the page. */
+export function parseMemoryPage(body: unknown): MemoryPage {
+  if (!body || typeof body !== 'object') {
+    throw new Error('Unexpected memory list response');
+  }
+  const record = body as Record<string, unknown>;
+  if (
+    !Array.isArray(record.memories) ||
+    typeof record.total !== 'number' ||
+    !Number.isInteger(record.total) ||
+    record.total < record.memories.length ||
+    typeof record.has_more !== 'boolean'
+  ) {
+    throw new Error('Unexpected memory list response');
+  }
+  return {
+    memories: record.memories as Memory[],
+    total: record.total,
+    has_more: record.has_more,
+  };
+}
+
 export function useMemories() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
@@ -385,99 +428,262 @@ export function useMemories() {
     [apiCandidates],
   );
 
-  const fetchMemories = useCallback(
-    async (params: FetchMemoriesParams = {}) => {
-      setLoading(true);
-      setError(null);
+  // The list view: current filters, request ordering and loaded span.
+  // Polling and "Load more" always reuse the filters last applied, and only
+  // the newest request for the current sign-in may publish results.
+  const filtersRef = useRef<ListFilters>({ status: 'active' });
+  const listRequest = useRef(0);
+  const loadedCount = useRef(0);
+  // The foreground request (filter fetch or "Load more") that owns `loading`.
+  // A background refresh never retires it; it waits and runs afterwards.
+  const foreground = useRef<number | null>(null);
+  const refreshPending = useRef(false);
+  // Which kind of foreground request owns loading, and how many deletes are
+  // pending. While a delete is pending no background refresh publishes.
+  const foregroundKind = useRef<'fetch' | 'loadMore' | null>(null);
+  const pendingDeletes = useRef(0);
+  const refreshRef = useRef<() => Promise<void>>(async () => undefined);
 
-      try {
-        const queryParams = new URLSearchParams();
-        if (params.category) queryParams.set('category', params.category);
-        if (params.source_type)
-          queryParams.set('source_type', params.source_type);
-        if (params.status) queryParams.set('status', params.status);
-        if (params.search) queryParams.set('search', params.search);
-        if (params.limit) queryParams.set('limit', params.limit.toString());
-        if (params.offset) queryParams.set('offset', params.offset.toString());
+  const beginForeground = (kind: 'fetch' | 'loadMore') => {
+    const request = ++listRequest.current;
+    foreground.current = request;
+    foregroundKind.current = kind;
+    setLoading(true);
+    setError(null);
+    return request;
+  };
 
-        const queryString = queryParams.toString();
-        const url = `/memories${queryString ? `?${queryString}` : ''}`;
+  /** Only the current foreground request settles loading. */
+  const settleForeground = (request: number) => {
+    if (foreground.current !== request) return;
+    foreground.current = null;
+    foregroundKind.current = null;
+    setLoading(false);
+    if (refreshPending.current && pendingDeletes.current === 0) {
+      refreshPending.current = false;
+      void refreshRef.current();
+    }
+  };
 
-        const response = await apiFetch(url, {
-          headers: await getAuthHeaders(),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch memories: ${response.status}`);
-        }
-
-        const data: { memories: Memory[]; total: number } =
-          await response.json();
-
-        if (params.offset && params.offset > 0) {
-          // Append for pagination
-          setMemories((prev) => [...prev, ...data.memories]);
-        } else {
-          // Replace for initial fetch
-          setMemories(data.memories);
-        }
-
-        setTotal(data.total);
-        setHasMore(
-          data.memories.length > 0 &&
-            data.memories.length >= (params.limit || 20),
-        );
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          return;
-        }
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
+  const requestPage = useCallback(
+    async (
+      filters: ListFilters,
+      offset: number,
+      limit: number,
+    ): Promise<MemoryPage> => {
+      const query = new URLSearchParams();
+      if (filters.category) query.set('category', filters.category);
+      if (filters.source_type) query.set('source_type', filters.source_type);
+      query.set('status', filters.status ?? 'active');
+      if (filters.search) query.set('search', filters.search);
+      query.set('limit', String(limit));
+      query.set('offset', String(offset));
+      const response = await apiFetch(`/memories?${query}`, {
+        headers: await getAuthHeaders(),
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch memories: ${response.status}`);
       }
+      return parseMemoryPage(await response.json());
     },
     [apiFetch, getAuthHeaders],
   );
 
-  const loadMore = useCallback(
+  const publish = useCallback((rows: Memory[], page: MemoryPage) => {
+    loadedCount.current = rows.length;
+    setMemories(rows);
+    setTotal(page.total);
+    setHasMore(page.has_more);
+  }, []);
+
+  /** Apply filters (or reapply the current ones) from the first page. */
+  const fetchMemories = useCallback(
     async (params: FetchMemoriesParams = {}) => {
-      const currentParams = {
-        ...params,
-        limit: params.limit || 20,
-        offset: params.offset ?? memories.length,
-      };
-      await fetchMemories(currentParams);
+      const { limit: _limit, offset: _offset, ...filters } = params;
+      if (Object.keys(params).length > 0) {
+        filtersRef.current = { status: 'active', ...filters };
+      }
+      const request = beginForeground('fetch');
+      const generation = getAuthGeneration();
+      const current = filtersRef.current;
+      try {
+        const page = await requestPage(current, 0, MEMORY_PAGE_SIZE);
+        if (
+          request !== listRequest.current ||
+          generation !== getAuthGeneration()
+        )
+          return;
+        publish(page.memories, page);
+      } catch (err) {
+        if (request !== listRequest.current) return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      } finally {
+        settleForeground(request);
+      }
     },
-    [fetchMemories, memories.length],
+    [publish, requestPage],
+  );
+
+  /** Append the next page for the current filters. */
+  const loadMore = useCallback(async () => {
+    const request = beginForeground('loadMore');
+    const generation = getAuthGeneration();
+    const current = filtersRef.current;
+    const offset = loadedCount.current;
+    try {
+      const page = await requestPage(current, offset, MEMORY_PAGE_SIZE);
+      if (request !== listRequest.current || generation !== getAuthGeneration())
+        return;
+      // The next offset is the server rows consumed, set now (not inside a
+      // lazy state updater) so a refresh starting right after sees the span.
+      loadedCount.current = offset + page.memories.length;
+      setMemories((previous) => {
+        const seen = new Set(previous.map((memory) => memory.id));
+        return [
+          ...previous,
+          ...page.memories.filter((memory) => !seen.has(memory.id)),
+        ];
+      });
+      setTotal(page.total);
+      setHasMore(page.has_more);
+    } catch (err) {
+      if (request !== listRequest.current) return;
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      settleForeground(request);
+    }
+  }, [requestPage]);
+
+  /**
+   * Re-read the span already loaded (at least one page) for the current
+   * filters, so polling or a save never collapses the list back to page one.
+   */
+  const refreshMemories = useCallback(async () => {
+    if (foreground.current !== null || pendingDeletes.current > 0) {
+      // Never retire a foreground request, and never publish a snapshot that
+      // may predate a pending delete; refresh once both settle.
+      refreshPending.current = true;
+      return;
+    }
+    const request = ++listRequest.current;
+    const generation = getAuthGeneration();
+    const current = filtersRef.current;
+    const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
+    try {
+      const rows: Memory[] = [];
+      const seen = new Set<string>();
+      let last: MemoryPage | null = null;
+      while (rows.length < span) {
+        const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
+        last = await requestPage(current, rows.length, limit);
+        if (
+          request !== listRequest.current ||
+          generation !== getAuthGeneration()
+        )
+          return;
+        for (const memory of last.memories) {
+          if (!seen.has(memory.id)) {
+            seen.add(memory.id);
+            rows.push(memory);
+          }
+        }
+        if (!last.has_more || last.memories.length === 0) break;
+      }
+      if (last) {
+        publish(rows, {
+          ...last,
+          has_more: last.has_more && rows.length < last.total,
+        });
+      }
+    } catch {
+      // A failed background refresh keeps the current list.
+    }
+  }, [publish, requestPage]);
+
+  useEffect(() => {
+    refreshRef.current = refreshMemories;
+  }, [refreshMemories]);
+
+  // A sign-in change retires in-flight list requests and clears the list.
+  useEffect(
+    () =>
+      subscribeAuthGeneration(() => {
+        listRequest.current += 1;
+        foreground.current = null;
+        foregroundKind.current = null;
+        refreshPending.current = false;
+        loadedCount.current = 0;
+        setMemories([]);
+        setTotal(0);
+        setHasMore(false);
+        setLoading(false);
+      }),
+    [],
   );
 
   const deleteMemory = useCallback(
     async (id: string): Promise<boolean> => {
-      // Optimistic update
+      // A delete takes part in list ordering. Starting it retires in-flight
+      // list responses, which may predate it; a retired "Load more" is kept
+      // as intent by widening the span the reconcile refresh reads. While it
+      // is pending, background refreshes wait. On settle it restores its
+      // snapshot only if no newer list activity happened; otherwise, and
+      // whenever a refresh waited, it re-reads the current filters and span.
+      const generation = getAuthGeneration();
       const previousMemories = memories;
-      setMemories((prev) => prev.filter((mem) => mem.id !== id));
-      setTotal((prev) => Math.max(0, prev - 1));
+      const wasLoaded = previousMemories.some((memory) => memory.id === id);
+      const retiredKind = foregroundKind.current;
+      const version = ++listRequest.current;
+      if (foreground.current !== null) {
+        foreground.current = null;
+        foregroundKind.current = null;
+        setLoading(false);
+        refreshPending.current = true;
+      }
+      const previousCount = loadedCount.current;
+      pendingDeletes.current += 1;
+      if (wasLoaded) {
+        loadedCount.current = Math.max(0, previousCount - 1);
+        setMemories((prev) => prev.filter((mem) => mem.id !== id));
+        setTotal((prev) => Math.max(0, prev - 1));
+      }
+      if (retiredKind === 'loadMore') {
+        loadedCount.current += MEMORY_PAGE_SIZE;
+      }
 
+      let ok = false;
       try {
         const response = await apiFetch(`/memories/${id}`, {
           method: 'DELETE',
           headers: await getAuthHeaders(),
         });
+        ok = response.ok;
+      } catch {
+        ok = false;
+      }
 
-        if (!response.ok) {
-          // Revert on error
+      pendingDeletes.current -= 1;
+      if (generation !== getAuthGeneration()) return ok;
+      const untouched = listRequest.current === version && retiredKind === null;
+      if (!ok) {
+        setError('Failed to delete memory');
+        if (untouched && !refreshPending.current) {
+          loadedCount.current = previousCount;
           setMemories(previousMemories);
-          setError('Failed to delete memory');
+          if (wasLoaded) setTotal((prev) => prev + 1);
           return false;
         }
-
-        return true;
-      } catch {
-        // Revert on error
-        setMemories(previousMemories);
-        setError('Failed to delete memory');
-        return false;
       }
+      if (!untouched || refreshPending.current || !ok) {
+        refreshPending.current = false;
+        if (foreground.current !== null || pendingDeletes.current > 0) {
+          refreshPending.current = true;
+        } else {
+          void refreshRef.current();
+        }
+      }
+      return ok;
     },
     [apiFetch, getAuthHeaders, memories],
   );
@@ -560,10 +766,10 @@ export function useMemories() {
 
   // Initial fetch and polling every 30 seconds
   useEffect(() => {
-    fetchMemories();
-    const interval = setInterval(fetchMemories, 30000);
+    void fetchMemories();
+    const interval = setInterval(() => void refreshMemories(), 30000);
     return () => clearInterval(interval);
-  }, [fetchMemories]);
+  }, [fetchMemories, refreshMemories]);
 
   /** Save a memory written by the person; the server may merge a duplicate. */
   const createMemory = useCallback(
@@ -781,6 +987,7 @@ export function useMemories() {
     total,
     fetchMemories,
     loadMore,
+    refreshMemories,
     deleteMemory,
     correctMemory,
     fetchTrail,

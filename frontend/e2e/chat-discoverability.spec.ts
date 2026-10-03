@@ -298,7 +298,9 @@ test('settings lets a person add a memory and export portable JSON', async ({
         created.push(request.postDataJSON());
         return route.fulfill({ json: { id: 'new-1', status: 'created' } });
       }
-      return route.fulfill({ json: { memories: [], total: 0 } });
+      return route.fulfill({
+        json: { memories: [], total: 0, has_more: false },
+      });
     },
   );
   await page.goto('/settings/memory');
@@ -361,7 +363,9 @@ test('settings imports memories only after the person reviews the file', async (
           },
         });
       }
-      return route.fulfill({ json: { memories: [], total: 0 } });
+      return route.fulfill({
+        json: { memories: [], total: 0, has_more: false },
+      });
     },
   );
   await page.goto('/settings/memory');
@@ -400,4 +404,50 @@ test('settings imports memories only after the person reviews the file', async (
       ],
     },
   ]);
+});
+
+test('the memory browser shows the true total and loads every memory', async ({
+  page,
+}) => {
+  const all = Array.from({ length: 21 }, (_, i) => ({
+    id: `m-${i + 1}`,
+    content: `Browser memory ${i + 1}`,
+    category: 'fact',
+    status: 'active',
+    source_type: 'extracted',
+    conversation_id: null,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    confirmed: true,
+  }));
+  await page.route(
+    /^http:\/\/[^/]+\/(?:api\/)?memories(?:\/|\?|$)/,
+    async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const limit = Number(params.get('limit') ?? 20);
+      const offset = Number(params.get('offset') ?? 0);
+      const memories = all.slice(offset, offset + limit);
+      return route.fulfill({
+        json: {
+          memories,
+          total: all.length,
+          has_more: offset + memories.length < all.length,
+          limit,
+          offset,
+        },
+      });
+    },
+  );
+  await page.goto('/settings/memory');
+  await expect(page.getByText('Showing 20 of 21 memories')).toBeVisible();
+  await expect(
+    page.getByText('Browser memory 21', { exact: true }),
+  ).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Load more (1 remaining)' }).click();
+  await expect(
+    page.getByText('Browser memory 21', { exact: true }),
+  ).toHaveCount(1);
+  await expect(page.getByText('Showing 21 of 21 memories')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
 });

@@ -94,32 +94,57 @@ class MemoryReembedRequest(BaseModel):
     batch_size: int = 50
 
 
+# Browser status filter. "all" is every status except deleted: exactly the rows
+# DELETE /memories (soft) would mark deleted.
+ListStatus = Literal["active", "superseded", "rejected", "pending", "all"]
+NON_DELETED_STATUSES = ["active", "pending", "superseded", "inactive", "rejected"]
+# Stored provenance values a person can filter by.
+ListSource = Literal["extracted", "user_created", "import"]
+
+
 @router.get("")
 async def list_memories(
-    category: str | None = None,
+    category: ImportCategory | None = None,
+    status: ListStatus = "active",
+    source_type: ListSource | None = None,
     confirmed: bool | None = None,
-    search: str | None = None,
+    search: str | None = Query(None, max_length=200),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
-    """List memories with optional filters."""
+    """List memories with optional filters and truthful paging metadata.
+
+    ``total`` counts every row matching the same filters (not the page), and
+    ``has_more`` says whether rows remain after this page.
+    """
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
+    filters: dict[str, Any] = {
+        "category": category,
+        "status": NON_DELETED_STATUSES if status == "all" else status,
+        "source_type": source_type,
+        "confirmed": confirmed,
+        "search": search or None,
+        "include_local": True,
+    }
     memories = await store.list_memories(
         user_id=auth.user_id,
-        category=category,
-        confirmed=confirmed,
-        search=search,
-        include_local=True,
         limit=limit,
         offset=offset,
+        **filters,
     )
-
-    return {"memories": memories, "total": len(memories)}
+    total = await store.count_listed_memories(user_id=auth.user_id, **filters)
+    return {
+        "memories": memories,
+        "total": total,
+        "has_more": offset + len(memories) < total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post("/export")

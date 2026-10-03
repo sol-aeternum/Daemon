@@ -6,7 +6,7 @@ import {
   SkeletonBlock,
   SkeletonCircle,
 } from '@/components/ui/Skeleton';
-import { useMemories, Memory } from '@/hooks/useMemories';
+import { useMemories, Memory, parseMemoryPage } from '@/hooks/useMemories';
 import MemoryFilters from './memory/MemoryFilters';
 import { MemoryCard } from './memory/MemoryCard';
 import { MemoryDetail } from './memory/MemoryDetail';
@@ -26,14 +26,10 @@ import {
 import { ensureAuthHeader } from '@/lib/auth';
 
 interface MemoryStats {
-  total: number;
-  memories: Array<{
-    id: string;
-    content: string;
-    category: string;
-    status: string;
-    created_at: string;
-  }>;
+  /** Memories Daemon currently uses. */
+  active: number;
+  /** Every non-deleted memory: exactly what Clear All affects. */
+  all: number;
 }
 
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -65,6 +61,9 @@ export default function MemoryTab() {
     loading: memoriesLoading,
     error: memoriesError,
     fetchMemories,
+    loadMore,
+    refreshMemories,
+    hasMore,
     deleteMemory,
     correctMemory,
     createMemory,
@@ -146,19 +145,23 @@ export default function MemoryTab() {
   // Fetch memory count on mount
   const fetchMemoryStats = useCallback(async () => {
     try {
-      const response = await fetchWithFallback('/memories?limit=1', {
-        headers: await getAuthHeaders(),
-      });
-      if (!response.ok) {
+      const headers = await getAuthHeaders();
+      const [activeResponse, allResponse] = await Promise.all([
+        fetchWithFallback('/memories?limit=1&status=active', { headers }),
+        fetchWithFallback('/memories?limit=1&status=all', { headers }),
+      ]);
+      if (!activeResponse.ok || !allResponse.ok) {
         setActionStatus('error');
         setActionMessage(
           'Failed to load memories. Please verify API connectivity.',
         );
-        setStats({ total: 0, memories: [] });
+        setStats(null);
         return;
       }
-      const data = await response.json();
-      setStats(data);
+      setStats({
+        active: parseMemoryPage(await activeResponse.json()).total,
+        all: parseMemoryPage(await allResponse.json()).total,
+      });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         setActionStatus('error');
@@ -242,8 +245,11 @@ export default function MemoryTab() {
 
       const data = await response.json();
       setActionStatus('success');
-      setActionMessage(`Successfully cleared ${data.deleted} memories`);
-      setStats((prev) => (prev ? { ...prev, total: 0 } : null));
+      setActionMessage(
+        `Removed ${Number(data.deleted ?? 0).toLocaleString()} memories. Daemon no longer uses them; they are kept for at least 30 days, then permanently erased by routine cleanup.`,
+      );
+      setStats({ active: 0, all: 0 });
+      void refreshMemories();
 
       // Reset status after 5 seconds
       setTimeout(() => {
@@ -356,9 +362,9 @@ export default function MemoryTab() {
                   </div>
                   <div>
                     <p className="text-3xl font-bold text-text-primary">
-                      {stats?.total?.toLocaleString() ?? 0}
+                      {stats?.active?.toLocaleString() ?? '–'}
                     </p>
-                    <p className="text-sm text-text-muted">stored memories</p>
+                    <p className="text-sm text-text-muted">active memories</p>
                   </div>
                 </div>
                 <div className="text-right">
@@ -375,7 +381,7 @@ export default function MemoryTab() {
               exportMemories={exportMemories}
               importMemories={importMemories}
               onSaved={() => {
-                void fetchMemories(filters);
+                void refreshMemories();
                 void fetchMemoryStats();
               }}
             />
@@ -395,7 +401,9 @@ export default function MemoryTab() {
                       </h3>
                       <p className="text-xs text-text-muted">
                         {memoriesTotal > 0
-                          ? `${memoriesTotal} memories found`
+                          ? `Showing ${memories.length.toLocaleString()} of ${memoriesTotal.toLocaleString()} ${
+                              memoriesTotal === 1 ? 'memory' : 'memories'
+                            }`
                           : 'View, search, and manage individual memories'}
                       </p>
                     </div>
@@ -453,6 +461,18 @@ export default function MemoryTab() {
                             onSelect={handleSelectMemory}
                           />
                         ))}
+                        {hasMore && (
+                          <button
+                            type="button"
+                            onClick={() => void loadMore()}
+                            disabled={memoriesLoading}
+                            className="mt-2 w-full rounded-md border border-border-primary px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-border-focus/50"
+                          >
+                            {memoriesLoading
+                              ? 'Loading more…'
+                              : `Load more (${(memoriesTotal - memories.length).toLocaleString()} remaining)`}
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -485,17 +505,16 @@ export default function MemoryTab() {
                     Clear All Memories
                   </label>
                   <p className="text-xs text-text-muted">
-                    Permanently delete all stored memories. This action cannot
-                    be undone.
+                    Remove every memory, including older and pending ones.
+                    Daemon stops using them at once. They are kept for at least
+                    30 days, then permanently erased by routine cleanup.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowConfirmDialog(true)}
-                disabled={
-                  actionStatus === 'loading' || (stats?.total ?? 0) === 0
-                }
+                disabled={actionStatus === 'loading' || (stats?.all ?? 0) === 0}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-status-error-bg border border-status-error/50 text-status-error hover:bg-status-error hover:text-[var(--color-text-on-status)] font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
               >
                 {actionStatus === 'loading' ? (
@@ -541,10 +560,12 @@ export default function MemoryTab() {
 
               {/* Dialog Body */}
               <p className="text-sm text-text-secondary mb-6">
-                This will permanently delete all{' '}
-                {stats?.total?.toLocaleString() ?? 0} stored memories. This
-                action cannot be undone and all learned facts, preferences, and
-                conversation context will be lost.
+                This removes all {stats?.all?.toLocaleString() ?? 0} of your
+                memories ({stats?.active?.toLocaleString() ?? 0} active, the
+                rest older, pending or rejected). Daemon stops using them
+                immediately. They are kept for at least 30 days, then
+                permanently erased by routine cleanup. You can&apos;t restore
+                them from here.
               </p>
 
               {/* Dialog Actions */}
@@ -570,7 +591,7 @@ export default function MemoryTab() {
                   ) : (
                     <>
                       <Trash2 className="w-4 h-4" />
-                      <span>Yes, Clear All</span>
+                      <span>Yes, remove all</span>
                     </>
                   )}
                 </button>
