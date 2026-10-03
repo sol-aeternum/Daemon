@@ -51,6 +51,7 @@ export type TtsPhase =
   | 'downloading'
   | 'starting'
   | 'playing'
+  | 'paused'
   | 'error';
 
 export interface TtsOwner {
@@ -75,26 +76,38 @@ export interface TtsScope {
 
 interface TtsState {
   phase: TtsPhase;
+  requestId: number | null;
   messageId: string | null;
   conversationId: string | null;
   errorMessage: string | null;
+  currentTime: number;
+  duration: number;
 }
 
 interface AudioPlaybackContextValue {
   phase: TtsPhase;
   ownerMessageId: string | null;
   ownerConversationId: string | null;
+  ownerRequestId: number | null;
   errorMessage: string | null;
+  currentTime: number;
+  duration: number;
   /** Returns the new request id, or null when the request is refused. */
   startSpeech: (request: TtsRequest) => number | null;
   stopSpeech: (owner: TtsOwner) => void;
+  pauseSpeech: (owner: TtsOwner) => void;
+  resumeSpeech: (owner: TtsOwner) => void;
+  seekSpeech: (owner: TtsOwner, seconds: number) => void;
 }
 
 const IDLE_STATE: TtsState = {
   phase: 'idle',
+  requestId: null,
   messageId: null,
   conversationId: null,
   errorMessage: null,
+  currentTime: 0,
+  duration: 0,
 };
 
 const AudioPlaybackContext = createContext<AudioPlaybackContextValue | null>(
@@ -204,6 +217,8 @@ interface ActiveSpeech {
   controller: AbortController;
   audio: HTMLAudioElement | null;
   objectUrl: string | null;
+  /** Retires pending play promises without releasing the buffered audio. */
+  playAttempt: number;
 }
 
 export function AudioPlaybackProvider({
@@ -248,6 +263,11 @@ export function AudioPlaybackProvider({
       audio.onplaying = null;
       audio.onpause = null;
       audio.onstalled = null;
+      audio.onloadedmetadata = null;
+      audio.ondurationchange = null;
+      audio.ontimeupdate = null;
+      audio.onseeking = null;
+      audio.onseeked = null;
       try {
         audio.pause();
       } catch {
@@ -286,12 +306,17 @@ export function AudioPlaybackProvider({
     (active: ActiveSpeech, phase: TtsPhase, errorMessage: string | null) => {
       if (activeRef.current !== active) return;
       if (!mountedRef.current) return;
-      setState({
+      setState((previous) => ({
         phase,
+        requestId: active.requestId,
         messageId: active.messageId,
         conversationId: active.conversationId,
         errorMessage,
-      });
+        currentTime:
+          previous.requestId === active.requestId ? previous.currentTime : 0,
+        duration:
+          previous.requestId === active.requestId ? previous.duration : 0,
+      }));
     },
     [],
   );
@@ -303,7 +328,13 @@ export function AudioPlaybackProvider({
       errorMessage: string,
     ) => {
       if (!mountedRef.current) return;
-      setState({ phase: 'error', messageId, conversationId, errorMessage });
+      setState({
+        ...IDLE_STATE,
+        phase: 'error',
+        messageId,
+        conversationId,
+        errorMessage,
+      });
     },
     [],
   );
@@ -317,17 +348,74 @@ export function AudioPlaybackProvider({
     [publishError, releaseActive],
   );
 
+  const isCurrent = useCallback(
+    (active: ActiveSpeech) =>
+      mountedRef.current &&
+      activeRef.current === active &&
+      scopeRef.current.conversationId === active.conversationId &&
+      scopeRef.current.authGeneration === active.authGeneration &&
+      getAuthGeneration() === active.authGeneration,
+    [],
+  );
+
+  const publishPosition = useCallback(
+    (active: ActiveSpeech) => {
+      if (!isCurrent(active) || !active.audio) return;
+      const { currentTime, duration } = active.audio;
+      const finiteDuration =
+        Number.isFinite(duration) && duration > 0 ? duration : 0;
+      const finiteTime = Number.isFinite(currentTime)
+        ? Math.max(0, currentTime)
+        : 0;
+      setState((previous) =>
+        previous.requestId === active.requestId
+          ? {
+              ...previous,
+              currentTime: finiteDuration
+                ? Math.min(finiteTime, finiteDuration)
+                : finiteTime,
+              duration: finiteDuration,
+            }
+          : previous,
+      );
+    },
+    [isCurrent],
+  );
+
+  const playActive = useCallback(
+    (active: ActiveSpeech) => {
+      const audio = active.audio;
+      if (!audio || !isCurrent(active)) return;
+      const attempt = ++active.playAttempt;
+      const guard = () => isCurrent(active) && active.playAttempt === attempt;
+      publishPhase(active, 'starting', null);
+      const failed = (error: unknown) => {
+        if (!guard()) return;
+        failActive(
+          active,
+          error instanceof Error && error.message
+            ? `${TTS_PLAY_ERROR_MESSAGE}: ${error.message}`
+            : TTS_PLAY_ERROR_MESSAGE,
+        );
+      };
+      try {
+        // Resume the existing attached media and position. Speed is server-side.
+        void Promise.resolve(audio.play()).then(() => {
+          if (guard() && !audio.paused) publishPhase(active, 'playing', null);
+        }, failed);
+      } catch (error) {
+        failed(error);
+      }
+    },
+    [failActive, isCurrent, publishPhase],
+  );
+
   const runSpeech = useCallback(
     async (active: ActiveSpeech, request: TtsRequest) => {
       const signal = active.controller.signal;
       // Auth generation is captured per request: a sign-in/logout or remote
       // invalidation retires the request instead of reporting a stale failure.
-      const guard = () =>
-        mountedRef.current &&
-        activeRef.current === active &&
-        scopeRef.current.conversationId === active.conversationId &&
-        scopeRef.current.authGeneration === active.authGeneration &&
-        getAuthGeneration() === active.authGeneration;
+      const guard = () => isCurrent(active);
 
       try {
         const authHeader = await ensureAuthHeader();
@@ -421,9 +509,22 @@ export function AudioPlaybackProvider({
         publishPhase(active, 'starting', null);
 
         audio.onplaying = () => {
-          if (!guard()) return;
+          if (!guard() || audio.paused) return;
           publishPhase(active, 'playing', null);
         };
+        audio.onpause = () => {
+          if (!guard() || !audio.paused || audio.ended) return;
+          active.playAttempt += 1;
+          publishPosition(active);
+          publishPhase(active, 'paused', null);
+        };
+        const updatePosition = () => publishPosition(active);
+        audio.onloadedmetadata = updatePosition;
+        audio.ondurationchange = updatePosition;
+        audio.ontimeupdate = updatePosition;
+        audio.onseeking = updatePosition;
+        audio.onseeked = updatePosition;
+        updatePosition();
         audio.onended = () => {
           if (!guard()) return;
           releaseActive(active);
@@ -434,34 +535,7 @@ export function AudioPlaybackProvider({
           failActive(active, TTS_DECODE_ERROR_MESSAGE);
         };
 
-        let playPromise: Promise<void>;
-        try {
-          // Speed is applied on the server only; playback rate stays 1.
-          playPromise = audio.play();
-        } catch (error) {
-          if (!guard()) return;
-          failActive(
-            active,
-            error instanceof Error && error.message
-              ? `${TTS_PLAY_ERROR_MESSAGE}: ${error.message}`
-              : TTS_PLAY_ERROR_MESSAGE,
-          );
-          return;
-        }
-        void Promise.resolve(playPromise).then(
-          () => {
-            if (guard()) publishPhase(active, 'playing', null);
-          },
-          (error: unknown) => {
-            if (!guard()) return;
-            failActive(
-              active,
-              error instanceof Error && error.message
-                ? `${TTS_PLAY_ERROR_MESSAGE}: ${error.message}`
-                : TTS_PLAY_ERROR_MESSAGE,
-            );
-          },
-        );
+        playActive(active);
       } catch (error) {
         // A superseded owner must not report or stop its successor.
         if (!guard()) return;
@@ -469,7 +543,15 @@ export function AudioPlaybackProvider({
         failActive(active, describeUnexpectedFailure(error));
       }
     },
-    [failActive, publishIdle, publishPhase, releaseActive],
+    [
+      failActive,
+      isCurrent,
+      playActive,
+      publishIdle,
+      publishPhase,
+      publishPosition,
+      releaseActive,
+    ],
   );
 
   const startSpeech = useCallback(
@@ -507,6 +589,7 @@ export function AudioPlaybackProvider({
         controller: new AbortController(),
         audio: null,
         objectUrl: null,
+        playAttempt: 0,
       };
       activeRef.current = active;
       publishPhase(active, 'synthesizing', null);
@@ -528,6 +611,58 @@ export function AudioPlaybackProvider({
       cancelSpeech();
     },
     [cancelSpeech],
+  );
+
+  const ownedAudio = useCallback(
+    (owner: TtsOwner) => {
+      const active = activeRef.current;
+      if (!active?.audio || !isCurrent(active)) return null;
+      if (
+        active.messageId !== owner.messageId ||
+        active.conversationId !== owner.conversationId
+      )
+        return null;
+      if (owner.requestId != null && owner.requestId !== active.requestId)
+        return null;
+      return active;
+    },
+    [isCurrent],
+  );
+
+  const pauseSpeech = useCallback(
+    (owner: TtsOwner) => {
+      const active = ownedAudio(owner);
+      if (!active?.audio) return;
+      active.playAttempt += 1;
+      active.audio.pause();
+      publishPosition(active);
+      publishPhase(active, 'paused', null);
+    },
+    [ownedAudio, publishPhase, publishPosition],
+  );
+
+  const resumeSpeech = useCallback(
+    (owner: TtsOwner) => {
+      const active = ownedAudio(owner);
+      if (active?.audio?.paused) playActive(active);
+    },
+    [ownedAudio, playActive],
+  );
+
+  const seekSpeech = useCallback(
+    (owner: TtsOwner, seconds: number) => {
+      const active = ownedAudio(owner);
+      if (!active?.audio || !Number.isFinite(seconds)) return;
+      const duration = active.audio.duration;
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      try {
+        active.audio.currentTime = Math.max(0, Math.min(seconds, duration));
+        publishPosition(active);
+      } catch {
+        failActive(active, 'Speech position could not be changed');
+      }
+    },
+    [failActive, ownedAudio, publishPosition],
   );
 
   useLayoutEffect(() => {
@@ -570,11 +705,17 @@ export function AudioPlaybackProvider({
       phase: state.phase,
       ownerMessageId: state.messageId,
       ownerConversationId: state.conversationId,
+      ownerRequestId: state.requestId,
       errorMessage: state.errorMessage,
+      currentTime: state.currentTime,
+      duration: state.duration,
       startSpeech,
       stopSpeech,
+      pauseSpeech,
+      resumeSpeech,
+      seekSpeech,
     }),
-    [state, startSpeech, stopSpeech],
+    [state, startSpeech, stopSpeech, pauseSpeech, resumeSpeech, seekSpeech],
   );
 
   return (
