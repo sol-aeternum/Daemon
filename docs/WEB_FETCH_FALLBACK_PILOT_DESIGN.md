@@ -2147,3 +2147,17 @@ checks, the request guard and three rejected seccomp option forms; the E3c gate'
 now declares `topology: internal`. Pilot run **1053 passed, 9 skipped**; scoped types, lint and
 high-severity Bandit pass. The E2c and E3c native gates have not yet been re-run against these
 changes.
+
+### Post-hardening gate runs (2026-10-03)
+
+With owner approval, after the hardening commit: **E2c 2 passed in 6.00 s**. The real
+daemon passed the stricter seccomp provenance check, both browser entrypoints passed the new
+status check, and the request guard blocked 0 page requests (the two extra relay CONNECTs
+per run come from Chromium's own connection handling, not page requests, and are refused
+before any dial). **E3c failed in 36.38 s**, not retried: the browser entrypoint reported
+`TargetClosedError` at stage **`launch`** (Chromium died before any page or network
+activity) and correctly exited 5 with an `error` RESULT; gateway and fixture ended cleanly
+(fixture 0 attempts); everything was removed with no leftovers. This matches the very first
+E3c run. Observed so far: the browser launched in all 5 single-container E2c runs, while
+E3c failed at launch in 2 of 5 runs (the other runs reached the fixture). The cause is not
+determined: the bounded diagnostics deliberately omit Chromium's log lines.
