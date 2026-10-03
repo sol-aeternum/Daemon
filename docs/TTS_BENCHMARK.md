@@ -67,3 +67,45 @@ it is not the clean current-main PR branch. Final clean-branch gate evidence is
 recorded separately in the PR; these historical failures are not its gate results.
 No live-stack deployment, restart, real-browser playback acceptance or human
 listening adjudication was performed.
+
+## CPU tuning investigation — 3 October 2026
+
+The owner subsequently reported longer replies preparing until `speech_timeout`
+([#433](https://github.com/sol-aeternum/Daemon/issues/433)); short playback success
+did not verify long-message recovery. On the exact final image above, an offline
+fictional 2,800-character input reproduced HTTP 504 at 120.020 seconds. A
+650-character control took 61.835 seconds, illustrating shared-host variability.
+
+Same-image experiments kept the FP32 graph, bundled `af_heart` voice, speed 1,
+MP3, two CPUs, 1536 MiB, sequential execution and existing deadlines. The only
+candidate change disabled ONNX intra/inter-op worker spinning. Balanced
+confirmation reversed the screen order, discarded the same 80-character shape
+warmup per arm and used identical input hashes:
+
+| Input | Current spinning settings (s) | No spinning (s) | Reduction |
+|---|---:|---:|---:|
+| 650 characters, two runs per arm (median) | 24.222 | 18.361 | 24.2% |
+| 2,800 characters, one run per arm | 109.219 | 75.898 | 30.5% |
+
+All confirmation outputs decoded finite and non-silent, with decoded duration
+within 50 ms of the reported duration. Both long outputs were about 169.106
+seconds. The baseline long request had 1,045 throttled CPU periods versus five
+without spinning; these counts support reduced quota contention, not an exact
+attribution of wall-time savings. One inference thread was slower and rejected.
+
+An owner-approved isolated upstream INT8 screen was also rejected on this
+hardware/runtime: with identical no-spinning settings, median 650-character time
+was 90.164 seconds versus tuned FP32's 21.057 seconds, and 2,800 characters timed
+out at 120.033 seconds. Tuned FP32's additional 3,000-character control completed
+in 97.434 seconds. No model, voice, precision, dependency, resource or deadline
+switch is part of the CPU tuning change.
+
+These are buffered private HTTP measurements, not browser startup, sustained-load
+capacity or a guarantee that every accepted reply finishes within the deadline.
+Only one long replicate per arm was used; host variability, slower speech and
+content shape remain relevant. Decoder validity does not establish equivalent
+pronunciation or perceptual quality. The change remains FP32; any future precision
+switch needs distinct model/cache identity and separate qualification. Updated
+runtime source or an isolated successful benchmark does not establish local
+deployment or owner acceptance. The issue remains open until its remaining
+long-message usability requirements are resolved.
