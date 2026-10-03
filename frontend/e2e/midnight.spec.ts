@@ -111,7 +111,7 @@ async function mockApi(page: Page) {
     }),
   );
   await page.route('**/memories?*', (route) =>
-    route.fulfill({ json: { memories: [], total: 0 } }),
+    route.fulfill({ json: { memories: [], total: 0, has_more: false } }),
   );
 }
 

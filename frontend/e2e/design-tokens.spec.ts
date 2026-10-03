@@ -67,7 +67,7 @@ async function mockApi(page: Page) {
     route.fulfill({ json: { skills: [] } }),
   );
   await page.route(/^http:\/\/[^/]+\/(?:api\/)?memories(?:\/|\?|$)/, (route) =>
-    route.fulfill({ json: { memories: [], total: 0 } }),
+    route.fulfill({ json: { memories: [], total: 0, has_more: false } }),
   );
   await page.route('**/video-credits/balance*', (route) =>
     route.fulfill({ json: { balance: 100 } }),

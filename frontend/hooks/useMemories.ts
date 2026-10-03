@@ -1,7 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { ensureAuthHeader, getAuthGeneration } from '@/lib/auth';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ensureAuthHeader,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
 
 export interface Memory {
   id: string;
@@ -284,6 +288,45 @@ export function parseMemoryImport(text: string): ParsedMemoryImport {
   return parsed;
 }
 
+export const MEMORY_PAGE_SIZE = 20;
+const MEMORY_REFRESH_PAGE_SIZE = 100;
+
+/** Filters the list API accepts; status "all" means every non-deleted row. */
+export interface ListFilters {
+  category?: string;
+  source_type?: string;
+  status?: string;
+  search?: string;
+}
+
+export interface MemoryPage {
+  memories: Memory[];
+  total: number;
+  has_more: boolean;
+}
+
+/** Validates GET /memories; the total is the filtered count, not the page. */
+export function parseMemoryPage(body: unknown): MemoryPage {
+  if (!body || typeof body !== 'object') {
+    throw new Error('Unexpected memory list response');
+  }
+  const record = body as Record<string, unknown>;
+  if (
+    !Array.isArray(record.memories) ||
+    typeof record.total !== 'number' ||
+    !Number.isInteger(record.total) ||
+    record.total < record.memories.length ||
+    typeof record.has_more !== 'boolean'
+  ) {
+    throw new Error('Unexpected memory list response');
+  }
+  return {
+    memories: record.memories as Memory[],
+    total: record.total,
+    has_more: record.has_more,
+  };
+}
+
 export function useMemories() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
@@ -385,70 +428,157 @@ export function useMemories() {
     [apiCandidates],
   );
 
-  const fetchMemories = useCallback(
-    async (params: FetchMemoriesParams = {}) => {
-      setLoading(true);
-      setError(null);
+  // The list view: current filters, request ordering and loaded span.
+  // Polling and "Load more" always reuse the filters last applied, and only
+  // the newest request for the current sign-in may publish results.
+  const filtersRef = useRef<ListFilters>({ status: 'active' });
+  const listRequest = useRef(0);
+  const loadedCount = useRef(0);
 
-      try {
-        const queryParams = new URLSearchParams();
-        if (params.category) queryParams.set('category', params.category);
-        if (params.source_type)
-          queryParams.set('source_type', params.source_type);
-        if (params.status) queryParams.set('status', params.status);
-        if (params.search) queryParams.set('search', params.search);
-        if (params.limit) queryParams.set('limit', params.limit.toString());
-        if (params.offset) queryParams.set('offset', params.offset.toString());
-
-        const queryString = queryParams.toString();
-        const url = `/memories${queryString ? `?${queryString}` : ''}`;
-
-        const response = await apiFetch(url, {
-          headers: await getAuthHeaders(),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch memories: ${response.status}`);
-        }
-
-        const data: { memories: Memory[]; total: number } =
-          await response.json();
-
-        if (params.offset && params.offset > 0) {
-          // Append for pagination
-          setMemories((prev) => [...prev, ...data.memories]);
-        } else {
-          // Replace for initial fetch
-          setMemories(data.memories);
-        }
-
-        setTotal(data.total);
-        setHasMore(
-          data.memories.length > 0 &&
-            data.memories.length >= (params.limit || 20),
-        );
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          return;
-        }
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
+  const requestPage = useCallback(
+    async (
+      filters: ListFilters,
+      offset: number,
+      limit: number,
+    ): Promise<MemoryPage> => {
+      const query = new URLSearchParams();
+      if (filters.category) query.set('category', filters.category);
+      if (filters.source_type) query.set('source_type', filters.source_type);
+      query.set('status', filters.status ?? 'active');
+      if (filters.search) query.set('search', filters.search);
+      query.set('limit', String(limit));
+      query.set('offset', String(offset));
+      const response = await apiFetch(`/memories?${query}`, {
+        headers: await getAuthHeaders(),
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch memories: ${response.status}`);
       }
+      return parseMemoryPage(await response.json());
     },
     [apiFetch, getAuthHeaders],
   );
 
-  const loadMore = useCallback(
+  const publish = useCallback((rows: Memory[], page: MemoryPage) => {
+    loadedCount.current = rows.length;
+    setMemories(rows);
+    setTotal(page.total);
+    setHasMore(page.has_more);
+  }, []);
+
+  /** Apply filters (or reapply the current ones) from the first page. */
+  const fetchMemories = useCallback(
     async (params: FetchMemoriesParams = {}) => {
-      const currentParams = {
-        ...params,
-        limit: params.limit || 20,
-        offset: params.offset ?? memories.length,
-      };
-      await fetchMemories(currentParams);
+      const { limit: _limit, offset: _offset, ...filters } = params;
+      if (Object.keys(params).length > 0) {
+        filtersRef.current = { status: 'active', ...filters };
+      }
+      const request = ++listRequest.current;
+      const generation = getAuthGeneration();
+      const current = filtersRef.current;
+      setLoading(true);
+      setError(null);
+      try {
+        const page = await requestPage(current, 0, MEMORY_PAGE_SIZE);
+        if (
+          request !== listRequest.current ||
+          generation !== getAuthGeneration()
+        )
+          return;
+        publish(page.memories, page);
+      } catch (err) {
+        if (request !== listRequest.current) return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      } finally {
+        if (request === listRequest.current) setLoading(false);
+      }
     },
-    [fetchMemories, memories.length],
+    [publish, requestPage],
+  );
+
+  /** Append the next page for the current filters. */
+  const loadMore = useCallback(async () => {
+    const request = ++listRequest.current;
+    const generation = getAuthGeneration();
+    const current = filtersRef.current;
+    const offset = loadedCount.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await requestPage(current, offset, MEMORY_PAGE_SIZE);
+      if (request !== listRequest.current || generation !== getAuthGeneration())
+        return;
+      setMemories((previous) => {
+        const seen = new Set(previous.map((memory) => memory.id));
+        const rows = [
+          ...previous,
+          ...page.memories.filter((memory) => !seen.has(memory.id)),
+        ];
+        loadedCount.current = rows.length;
+        return rows;
+      });
+      setTotal(page.total);
+      setHasMore(page.has_more);
+    } catch (err) {
+      if (request !== listRequest.current) return;
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      if (request === listRequest.current) setLoading(false);
+    }
+  }, [requestPage]);
+
+  /**
+   * Re-read the span already loaded (at least one page) for the current
+   * filters, so polling or a save never collapses the list back to page one.
+   */
+  const refreshMemories = useCallback(async () => {
+    const request = ++listRequest.current;
+    const generation = getAuthGeneration();
+    const current = filtersRef.current;
+    const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
+    try {
+      const rows: Memory[] = [];
+      const seen = new Set<string>();
+      let last: MemoryPage | null = null;
+      while (rows.length < span) {
+        const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
+        last = await requestPage(current, rows.length, limit);
+        if (
+          request !== listRequest.current ||
+          generation !== getAuthGeneration()
+        )
+          return;
+        for (const memory of last.memories) {
+          if (!seen.has(memory.id)) {
+            seen.add(memory.id);
+            rows.push(memory);
+          }
+        }
+        if (!last.has_more || last.memories.length === 0) break;
+      }
+      if (last) {
+        publish(rows, {
+          ...last,
+          has_more: last.has_more && rows.length < last.total,
+        });
+      }
+    } catch {
+      // A failed background refresh keeps the current list.
+    }
+  }, [publish, requestPage]);
+
+  // A sign-in change retires in-flight list requests and clears the list.
+  useEffect(
+    () =>
+      subscribeAuthGeneration(() => {
+        listRequest.current += 1;
+        loadedCount.current = 0;
+        setMemories([]);
+        setTotal(0);
+        setHasMore(false);
+      }),
+    [],
   );
 
   const deleteMemory = useCallback(
@@ -560,10 +690,10 @@ export function useMemories() {
 
   // Initial fetch and polling every 30 seconds
   useEffect(() => {
-    fetchMemories();
-    const interval = setInterval(fetchMemories, 30000);
+    void fetchMemories();
+    const interval = setInterval(() => void refreshMemories(), 30000);
     return () => clearInterval(interval);
-  }, [fetchMemories]);
+  }, [fetchMemories, refreshMemories]);
 
   /** Save a memory written by the person; the server may merge a duplicate. */
   const createMemory = useCallback(
@@ -781,6 +911,7 @@ export function useMemories() {
     total,
     fetchMemories,
     loadMore,
+    refreshMemories,
     deleteMemory,
     correctMemory,
     fetchTrail,

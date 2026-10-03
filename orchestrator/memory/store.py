@@ -1303,37 +1303,40 @@ class MemoryStore:
         result["content"] = self._enc.decrypt(result["content"])
         return result
 
-    async def list_memories(
-        self,
+    @staticmethod
+    def _memory_list_filter(
         user_id: uuid.UUID,
         *,
-        category: str | None = None,
-        status: str | list[str] | None = "active",
-        confirmed: bool | None = None,
-        search: str | None = None,
-        include_local: bool = True,
-        created_after: datetime | None = None,
-        created_before: datetime | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
+        category: str | None,
+        status: str | list[str] | None,
+        confirmed: bool | None,
+        search: str | None,
+        include_local: bool,
+        created_after: datetime | None,
+        created_before: datetime | None,
+        source_type: str | None,
+    ) -> tuple[list[str], list[Any]]:
+        """WHERE fragments and parameters shared by listing and counting.
+
+        One builder keeps a page and its total on identical predicates.
+        """
         conditions = ["user_id = $1", "($2::bool OR local_only = FALSE)"]
         params: list[Any] = [user_id, include_local]
-
         if category is not None:
             params.append(category)
             conditions.append(f"category = ${len(params)}")
+        if source_type is not None:
+            params.append(source_type)
+            conditions.append(f"source_type = ${len(params)}")
         if created_after is not None:
             params.append(created_after)
             conditions.append(f"created_at >= ${len(params)}::timestamptz")
         if created_before is not None:
             params.append(created_before)
             conditions.append(f"created_at <= ${len(params)}::timestamptz")
-
         if search is not None:
             params.append(f"%{search}%")
             conditions.append(f"content ILIKE ${len(params)}")
-
         if confirmed is True:
             conditions.append("valid_to IS NULL")
         elif confirmed is False:
@@ -1350,7 +1353,68 @@ class MemoryStore:
             if status_list is not None:
                 params.append(status_list)
                 conditions.append(f"status = ANY(${len(params)}::text[])")
+        return conditions, params
 
+    async def count_listed_memories(
+        self,
+        user_id: uuid.UUID,
+        *,
+        category: str | None = None,
+        status: str | list[str] | None = "active",
+        confirmed: bool | None = None,
+        search: str | None = None,
+        include_local: bool = True,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        source_type: str | None = None,
+    ) -> int:
+        """Total rows ``list_memories`` would return without paging."""
+        conditions, params = self._memory_list_filter(
+            user_id,
+            category=category,
+            status=status,
+            confirmed=confirmed,
+            search=search,
+            include_local=include_local,
+            created_after=created_after,
+            created_before=created_before,
+            source_type=source_type,
+        )
+        # Every SQL fragment in conditions is selected from fixed clauses;
+        # all caller-controlled values remain asyncpg parameters.
+        where_clause = " AND ".join(conditions)
+        total = await self._pool.fetchval(
+            f"SELECT COUNT(*) FROM memories WHERE {where_clause}",  # nosec B608
+            *params,
+        )
+        return int(total or 0)
+
+    async def list_memories(
+        self,
+        user_id: uuid.UUID,
+        *,
+        category: str | None = None,
+        status: str | list[str] | None = "active",
+        confirmed: bool | None = None,
+        search: str | None = None,
+        include_local: bool = True,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        source_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions, params = self._memory_list_filter(
+            user_id,
+            category=category,
+            status=status,
+            confirmed=confirmed,
+            search=search,
+            include_local=include_local,
+            created_after=created_after,
+            created_before=created_before,
+            source_type=source_type,
+        )
         params.extend([limit, offset])
         # Every SQL fragment in conditions is selected from fixed clauses
         # above; all caller-controlled values remain asyncpg parameters.
@@ -1359,7 +1423,8 @@ class MemoryStore:
             (
                 "SELECT * FROM memories",
                 f"WHERE {where_clause}",
-                "ORDER BY created_at DESC",
+                # id breaks created_at ties so offset pages are stable.
+                "ORDER BY created_at DESC, id DESC",
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
             )
         )

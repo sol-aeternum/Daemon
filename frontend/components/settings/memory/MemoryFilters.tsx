@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search } from 'lucide-react';
 
 interface FilterState {
@@ -15,17 +15,39 @@ interface MemoryFiltersProps {
 }
 
 const CATEGORIES = ['All', 'Fact', 'Preference', 'Project', 'Summary'] as const;
-const SOURCES = ['All', 'Extracted', 'Manual', 'Tool'] as const;
-const STATUSES = ['All', 'Active', 'Superseded', 'Rejected'] as const;
+// Labels map to stored provenance. Memories saved from Settings and those
+// Daemon saved when asked in chat are stored identically ("user_created").
+const SOURCES = ['All', 'Extracted', 'Added by you', 'Imported'] as const;
+const SOURCE_VALUES: Record<string, string | undefined> = {
+  All: undefined,
+  Extracted: 'extracted',
+  'Added by you': 'user_created',
+  Imported: 'import',
+};
+// "All" is sent explicitly: every status except deleted.
+const STATUSES = [
+  'All',
+  'Active',
+  'Superseded',
+  'Pending',
+  'Rejected',
+] as const;
 
 export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedSource, setSelectedSource] = useState<string>('All');
   const [selectedStatus, setSelectedStatus] = useState<string>('Active');
+  // The list already loads with these defaults; re-emitting them on mount
+  // would reset it to page one and discard an early "Load more".
+  const initialRun = useRef(true);
 
   // Debounced search
   useEffect(() => {
+    if (initialRun.current) {
+      initialRun.current = false;
+      return;
+    }
     const timer = setTimeout(() => {
       const filters: FilterState = {};
 
@@ -35,12 +57,11 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
       if (selectedCategory !== 'All') {
         filters.category = selectedCategory.toLowerCase();
       }
-      if (selectedSource !== 'All') {
-        filters.source_type = selectedSource.toLowerCase();
+      const source = SOURCE_VALUES[selectedSource];
+      if (source) {
+        filters.source_type = source;
       }
-      if (selectedStatus !== 'All') {
-        filters.status = selectedStatus.toLowerCase();
-      }
+      filters.status = selectedStatus.toLowerCase();
 
       onFilterChange(filters);
     }, 300);
