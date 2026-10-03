@@ -9,8 +9,13 @@ against still holds, and is revoked when that changes:
 * the pinned provider's published data policy must keep the values recorded in
   the route's ``zdr_baseline`` (revocation reason ``provider_policy_changed:<key>``).
 
-Each check appends one row per monitored route to ``inference_route_attestations``
-(migration 043). Admission reads an in-process snapshot of those rows:
+Backend and worker each run the check themselves (at start and every
+:data:`CHECK_INTERVAL`), so neither depends on the other to enforce a revocation.
+An observed revocation applies to that process's admission immediately, before any
+database I/O, and is kept for the life of the process even if it cannot be
+persisted. Each check also appends one row per monitored route to
+``inference_route_attestations`` (migration 043), which carries sticky revocations
+across restarts and to the other process. Admission reads an in-process snapshot:
 
 * a revocation is sticky for the approved baseline. Re-approval is an operator act
   that changes the baseline (for example the review date), never an automatic
@@ -49,6 +54,12 @@ STALE_AFTER: Final[timedelta] = timedelta(hours=72)
 
 #: How often each process reloads the attestation snapshot from the database.
 REFRESH_INTERVAL_S: Final[float] = 60.0
+
+#: How often each process re-checks the public metadata itself.
+CHECK_INTERVAL: Final[timedelta] = timedelta(hours=6)
+
+#: Attempts to persist one check's results before the check is reported failed.
+RECORD_ATTEMPTS: Final[int] = 3
 
 FETCH_TIMEOUT_S: Final[float] = 30.0
 
@@ -120,11 +131,12 @@ def _provider_policies(payload: object) -> dict[str, Mapping[str, Any]] | None:
 
 
 def _is_listed(entries: Iterable[tuple[str, str]], model: str, tag: str) -> bool:
-    """Exact model id, or a dated revision of it (``<model>-<date>``), at the exact tag."""
-    return any(
-        entry_tag == tag and (entry_model == model or entry_model.startswith(model + "-"))
-        for entry_model, entry_tag in entries
-    )
+    """The exact requested model id at the exact pinned provider tag.
+
+    Neither a sibling model (``<model>-pro``) nor a dated revision listed without the
+    requested id is evidence that the requested model is still served ZDR there.
+    """
+    return (model, tag) in set(entries)
 
 
 def evaluate(
@@ -204,6 +216,9 @@ class AttestationSnapshot:
 
 _snapshot = AttestationSnapshot()
 _tasks: set[asyncio.Task[None]] = set()
+#: Revocations this process has observed. Monotonic for the life of the process and
+#: merged into every snapshot, so a failed write or refresh never re-admits a route.
+_local_revoked: set[tuple[str, str]] = set()
 
 
 def snapshot() -> AttestationSnapshot:
@@ -211,9 +226,41 @@ def snapshot() -> AttestationSnapshot:
 
 
 def set_snapshot(value: AttestationSnapshot) -> None:
-    """Replace the admission snapshot atomically (also used by tests)."""
+    """Replace the admission snapshot atomically, keeping local revocations."""
     global _snapshot
+    if _local_revoked - value.revoked:
+        value = AttestationSnapshot(
+            loaded=value.loaded,
+            attested_at=value.attested_at,
+            revoked=value.revoked | frozenset(_local_revoked),
+        )
     _snapshot = value
+
+
+def reset_local_revocations() -> None:
+    """Forget locally observed revocations (tests only; a process never does this)."""
+    _local_revoked.clear()
+
+
+def apply_observed(checks: Iterable[RouteCheck], *, now: datetime) -> None:
+    """Apply a check's results to this process's admission before any I/O.
+
+    A revocation takes effect immediately and permanently for this process. A fresh
+    confirmation only extends an already loaded snapshot: without the persisted
+    history, an earlier sticky revocation could be missed, so it never admits a
+    route on its own.
+    """
+    current = _snapshot
+    attested = dict(current.attested_at)
+    for check in checks:
+        key = (check.route_id, check.baseline_sha256)
+        if check.outcome == "revoked":
+            _local_revoked.add(key)
+        elif check.outcome == "attested":
+            attested[key] = now
+    set_snapshot(
+        AttestationSnapshot(loaded=current.loaded, attested_at=attested, revoked=current.revoked)
+    )
 
 
 def attestation_reasons(route: RoutePolicy, *, now: datetime) -> tuple[str, ...]:
@@ -268,15 +315,56 @@ async def _refresh_loop(pool: Any, interval_s: float) -> None:
             logger.warning("Route attestation refresh failed; keeping previous snapshot")
 
 
-async def start(pool: Any, *, interval_s: float = REFRESH_INTERVAL_S) -> None:
-    """Load the snapshot now, then keep it current in the background."""
+def _monitored_routes() -> list[RoutePolicy]:
+    from orchestrator.entitlements.policy import load_inference_policy
+
+    return [route for route in load_inference_policy().routes.values() if is_monitored(route)]
+
+
+async def check_once(pool: Any) -> dict[str, int]:
+    """One scheduled check of the configured monitored routes. Never raises."""
+    import httpx
+
+    try:
+        routes = _monitored_routes()
+    except Exception:
+        logger.warning("Route attestation check skipped: inference policy unavailable")
+        return {"routes": 0}
+    if not routes:
+        return {"routes": 0}
+    try:
+        async with httpx.AsyncClient() as client:
+            return await run_check(pool, client, routes)
+    except Exception:
+        logger.exception("Route attestation check failed")
+        return {"routes": len(routes), "error": 1}
+
+
+async def _check_loop(pool: Any, interval_s: float) -> None:
+    while True:
+        await check_once(pool)
+        await asyncio.sleep(interval_s)
+
+
+def _spawn(coro: Any) -> None:
+    task = asyncio.create_task(coro)
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+async def start(
+    pool: Any,
+    *,
+    interval_s: float = REFRESH_INTERVAL_S,
+    check_interval_s: float = CHECK_INTERVAL.total_seconds(),
+) -> None:
+    """Load the snapshot now, then refresh it and run this process's own checks."""
     try:
         await refresh(pool)
     except Exception:
         logger.warning("Route attestation snapshot unavailable; monitored routes fail closed")
-    task = asyncio.create_task(_refresh_loop(pool, interval_s))
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    _spawn(_refresh_loop(pool, interval_s))
+    _spawn(_check_loop(pool, check_interval_s))
 
 
 # --------------------------------------------------------------------------- #
@@ -291,6 +379,7 @@ _INSERT_SQL: Final[str] = """
 
 
 async def record(pool: Any, checks: Iterable[RouteCheck], evidence_sha256: str | None) -> None:
+    checks = list(checks)
     async with pool.acquire() as conn, conn.transaction():
         for check in checks:
             await conn.execute(
@@ -325,14 +414,28 @@ async def run_check(pool: Any, client: Any, routes: Iterable[RoutePolicy]) -> di
     except Exception as exc:
         logger.warning("Route attestation check could not read metadata: %s", type(exc).__name__)
         checks = failed_checks(candidates, "metadata_unavailable")
-    for check in checks:
-        if check.outcome == "revoked":
-            logger.warning(
-                "Inference route %s revoked by ZDR attestation: %s",
-                check.route_id,
-                ", ".join(check.reasons),
-            )
-    await record(pool, checks, evidence)
+    # Enforce what was observed before any fallible I/O.
+    apply_observed(checks, now=utcnow())
+    revoked = [check for check in checks if check.outcome == "revoked"]
+    for check in revoked:
+        logger.warning(
+            "Inference route %s revoked by ZDR attestation: %s",
+            check.route_id,
+            ", ".join(check.reasons),
+        )
+    for attempt in range(1, RECORD_ATTEMPTS + 1):
+        try:
+            await record(pool, checks, evidence)
+            break
+        except Exception:
+            if attempt == RECORD_ATTEMPTS:
+                if revoked:
+                    logger.critical(
+                        "Route revocation enforced in this process but not persisted: %s",
+                        ", ".join(check.route_id for check in revoked),
+                    )
+                raise
+            await asyncio.sleep(attempt)
     await refresh(pool)
     counts = {"routes": len(checks)}
     for outcome in sorted(OUTCOMES):
@@ -342,3 +445,29 @@ async def run_check(pool: Any, client: Any, routes: Iterable[RoutePolicy]) -> di
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+#: Exit codes for the deploy-time bootstrap (scripts/attest_inference_routes.py).
+BOOTSTRAP_ADMITTED: Final[int] = 0
+BOOTSTRAP_NOT_ADMITTED: Final[int] = 1
+BOOTSTRAP_NO_MONITORED_ROUTES: Final[int] = 3
+
+
+def bootstrap_status(
+    routes: Iterable[RoutePolicy], *, now: datetime
+) -> tuple[int, dict[str, tuple[str, ...]]]:
+    """Effective admission of every monitored route, as the deploy gate.
+
+    Success means every monitored route would be admitted now, including routes a
+    clean latest check cannot re-admit because their baseline was revoked earlier.
+    """
+    status = {
+        route.route_id: attestation_reasons(route, now=now)
+        for route in routes
+        if is_monitored(route)
+    }
+    if not status:
+        return BOOTSTRAP_NO_MONITORED_ROUTES, status
+    if any(status.values()):
+        return BOOTSTRAP_NOT_ADMITTED, status
+    return BOOTSTRAP_ADMITTED, status

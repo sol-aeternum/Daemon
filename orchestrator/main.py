@@ -286,7 +286,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 logger.warning("Failed to backfill memory content hashes", exc_info=True)
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
-        # Monitored inference routes are admitted from the ZDR attestation snapshot.
+        # Monitored inference routes are admitted from the ZDR attestation snapshot,
+        # and this process runs its own ZDR checks so it enforces revocations itself.
         from orchestrator.entitlements import attestation
 
         await attestation.start(state.db_pool)

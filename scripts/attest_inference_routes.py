@@ -10,6 +10,11 @@ Usage (inside the backend or worker container, or with DATABASE_URL and
 DAEMON_INFERENCE_POLICY exported):
 
     python scripts/attest_inference_routes.py
+
+Exit status reflects effective admission, not only this check: 0 when every
+monitored route would be admitted now, 1 when any is stale, unknown or revoked
+(including a baseline revoked by an earlier check), 3 when the policy has no
+monitored routes, 2 when the database is not configured.
 """
 
 from __future__ import annotations
@@ -41,18 +46,21 @@ async def main() -> int:
     routes = list(load_inference_policy().routes.values())
     pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=1)
     try:
+        await attestation.refresh(pool)
         async with httpx.AsyncClient() as client:
             counts = await attestation.run_check(pool, client, routes)
-        now = attestation.utcnow()
-        status = {
-            route.route_id: attestation.attestation_reasons(route, now=now) or "attested"
-            for route in routes
-            if attestation.is_monitored(route)
-        }
+        code, status = attestation.bootstrap_status(routes, now=attestation.utcnow())
     finally:
         await pool.close()
-    print(json.dumps({"counts": counts, "routes": status}, indent=2, default=list))
-    return 0 if counts.get("check_failed", 0) == 0 and counts.get("revoked", 0) == 0 else 1
+    report = {
+        "counts": counts,
+        "admitted": code == attestation.BOOTSTRAP_ADMITTED,
+        "routes": {route_id: list(reasons) or "admitted" for route_id, reasons in status.items()},
+    }
+    if code == attestation.BOOTSTRAP_NO_MONITORED_ROUTES:
+        report["error"] = "the configured inference policy has no monitored routes"
+    print(json.dumps(report, indent=2))
+    return code
 
 
 if __name__ == "__main__":

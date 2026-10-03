@@ -176,15 +176,21 @@ future. Its `zdr_baseline` records what it was approved against:
 - `data_policy`: the approved values of `training`, `retainsPrompts` and, where
   relevant, `retentionDays`.
 
-**Check.** A worker job (`attest_inference_routes`) runs at worker start and every 6
-hours. It fetches two public OpenRouter listings with no credentials: the ZDR
-endpoint listing and provider data policies. It records one row per monitored route
-in `inference_route_attestations` (migration 043). Two changes revoke a route:
-- the exact model at the pinned provider endpoint leaves the ZDR listing
-  (`left_zdr_listing`);
+**Check.** The backend and the worker each run the check themselves, at start and
+every 6 hours. Neither depends on the other to enforce a revocation. Each fetches two
+public OpenRouter listings with no credentials: the ZDR endpoint listing and provider
+data policies. Two changes revoke a route:
+- the **exact** requested model id at the pinned provider tag leaves the ZDR listing
+  (`left_zdr_listing`). A sibling model such as `<model>-pro`, or a dated revision
+  listed without the requested id, does not count as listed;
 - any baseline data-policy value changes (`provider_policy_changed:<key>`).
 
-An unreadable check records `check_failed` and revokes nothing.
+An observed revocation applies to that process's admission immediately, before any
+database I/O, and lasts for the life of the process even if it cannot be recorded.
+Results are then recorded, one row per monitored route, in
+`inference_route_attestations` (migration 043). The write is retried, and a revocation
+that cannot be persisted is logged as critical. An unreadable check records
+`check_failed` and revokes nothing.
 
 **Admission.** Backend and worker read a snapshot of those rows, refreshed every
 minute. A monitored route is admitted only if:
@@ -204,8 +210,15 @@ transport price cap still refuses dispatch when a listed price exceeds the pinne
 ceiling (see #421).
 
 **Deploy.** Apply migration 043. Run `python scripts/attest_inference_routes.py`
-once against the deployment database before restarting the backend and worker
-onto a monitored policy. Expiring approvals keep their existing behaviour.
+once against the deployment database before restarting the backend and worker onto
+a monitored policy. Its exit status reflects effective admission, not just that
+check:
+- `0`: every monitored route would be admitted now;
+- `1`: some route is stale, unknown or revoked, including a baseline revoked by an
+  earlier check;
+- `3`: the policy has no monitored routes.
+
+Restart only on `0`. Expiring approvals keep their existing behaviour.
 
 ## GLM Flash input ceiling — 3 October 2026
 

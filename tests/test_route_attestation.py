@@ -63,10 +63,17 @@ LISTED = _zdr(("openai/gpt-6-luna", "azure/eu"))
 
 
 @pytest.fixture(autouse=True)
-def _reset_snapshot() -> Iterator[None]:
+def _reset_snapshot(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     previous = attestation.snapshot()
+    attestation.reset_local_revocations()
+    monkeypatch.setattr(attestation.asyncio, "sleep", _no_sleep)
     yield
+    attestation.reset_local_revocations()
     attestation.set_snapshot(previous)
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
 
 
 def _attest(route: RoutePolicy, *, at: datetime = NOW, revoked: bool = False) -> None:
@@ -189,10 +196,20 @@ def test_unchanged_listing_and_policy_attest() -> None:
     }
 
 
-def test_dated_model_revision_counts_as_listed() -> None:
-    [check] = attestation.evaluate(
-        [_route()], _zdr(("openai/gpt-6-luna-20260922", "azure/eu")), _providers()
-    )
+@pytest.mark.parametrize(
+    "listing",
+    [
+        # A sibling model at the same endpoint is not the approved model.
+        _zdr(("openai/gpt-6-luna-pro", "azure/eu")),
+        # A dated revision listed without the requested id is not evidence either.
+        _zdr(("openai/gpt-6-luna-20260922", "azure/eu")),
+    ],
+)
+def test_only_the_exact_model_id_keeps_a_route_listed(listing: dict[str, Any]) -> None:
+    [check] = attestation.evaluate([_route()], listing, _providers())
+    assert (check.outcome, check.reasons) == ("revoked", ("left_zdr_listing",))
+    both = _zdr(("openai/gpt-6-luna-pro", "azure/eu"), ("openai/gpt-6-luna", "azure/eu"))
+    [check] = attestation.evaluate([_route()], both, _providers())
     assert check.outcome == "attested"
 
 
@@ -280,11 +297,17 @@ class _Conn:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
         self.inserted: list[tuple[Any, ...]] = []
+        self.fail_execute = False
+        self.fail_fetch = False
 
     async def fetch(self, _sql: str) -> list[dict[str, Any]]:
-        return self.rows
+        if self.fail_fetch:
+            raise ConnectionError("database unavailable")
+        return list(self.rows)
 
     async def execute(self, _sql: str, *args: Any) -> None:
+        if self.fail_execute:
+            raise ConnectionError("database unavailable")
         self.inserted.append(args)
         self.rows.append(
             {"route_id": args[0], "baseline_sha256": args[1], "outcome": args[2], "checked_at": NOW}
@@ -398,3 +421,108 @@ def test_migration_is_additive_and_rollback_drops_only_its_table() -> None:
     down = _sql(ROLLBACK).upper()
     assert "DROP TABLE IF EXISTS INFERENCE_ROUTE_ATTESTATIONS" in down
     assert "ALTER TABLE" not in down
+
+
+# --------------------------------------------------------------------------- faults
+
+
+async def _attested_pool(route: RoutePolicy) -> _Pool:
+    pool = _Pool()
+    await attestation.run_check(pool, _Client(LISTED, _providers()), [route])
+    policy = parse_inference_policy(_monitored_policy())
+    assert route.rejection_reasons(policy.requirements, now=attestation.utcnow()) == ()
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_revocation_is_enforced_even_when_it_cannot_be_recorded() -> None:
+    route = _route()
+    pool = await _attested_pool(route)
+    pool.conn.fail_execute = True
+    with pytest.raises(ConnectionError):
+        await attestation.run_check(pool, _Client(LISTED, _providers(training=True)), [route])
+    policy = parse_inference_policy(_monitored_policy())
+    now = attestation.utcnow()
+    assert route.rejection_reasons(policy.requirements, now=now) == ("zdr_attestation_revoked",)
+    # A later successful refresh from a database that never saw it keeps the denial.
+    pool.conn.fail_execute = False
+    await attestation.refresh(pool)
+    assert route.rejection_reasons(policy.requirements, now=now) == ("zdr_attestation_revoked",)
+
+
+@pytest.mark.asyncio
+async def test_revocation_is_enforced_when_the_post_record_refresh_fails() -> None:
+    route = _route()
+    pool = await _attested_pool(route)
+    pool.conn.fail_fetch = True
+    with pytest.raises(ConnectionError):
+        await attestation.run_check(pool, _Client(LISTED, _providers(retainsPrompts=True)), [route])
+    assert any(row[2] == "revoked" for row in pool.conn.inserted)
+    policy = parse_inference_policy(_monitored_policy())
+    assert route.rejection_reasons(policy.requirements, now=attestation.utcnow()) == (
+        "zdr_attestation_revoked",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_never_admits_before_the_history_is_loaded() -> None:
+    route = _route()
+    attestation.set_snapshot(attestation.AttestationSnapshot())
+    attestation.apply_observed(
+        attestation.evaluate([route], LISTED, _providers()), now=attestation.utcnow()
+    )
+    policy = parse_inference_policy(_monitored_policy())
+    assert route.rejection_reasons(policy.requirements, now=attestation.utcnow()) == (
+        "zdr_attestation_unknown",
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduled_check_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(attestation, "_monitored_routes", lambda: [_route()])
+
+    async def broken(*_args: Any, **_kwargs: Any) -> dict[str, int]:
+        raise ConnectionError("database unavailable")
+
+    monkeypatch.setattr(attestation, "run_check", broken)
+    assert await attestation.check_once(_Pool()) == {"routes": 1, "error": 1}
+    monkeypatch.setattr(attestation, "_monitored_routes", list)
+    assert await attestation.check_once(_Pool()) == {"routes": 0}
+
+
+# --------------------------------------------------------------------------- bootstrap
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_reports_effective_admission_not_the_latest_counts() -> None:
+    route = _route()
+    pool = _Pool()
+    await attestation.run_check(pool, _Client(LISTED, _providers(training=True)), [route])
+    attestation.reset_local_revocations()  # a fresh process: history comes from the DB
+    await attestation.refresh(pool)
+    counts = await attestation.run_check(pool, _Client(LISTED, _providers()), [route])
+    assert counts["attested"] == 1 and counts["revoked"] == 0
+    code, status = attestation.bootstrap_status([route], now=attestation.utcnow())
+    assert code == attestation.BOOTSTRAP_NOT_ADMITTED
+    assert status == {"luna-azure-eu": ("zdr_attestation_revoked",)}
+    # Explicit re-approval: a new review date is a new baseline, attested afresh.
+    reapproved_doc = _monitored_policy()
+    reapproved_doc["routes"][0]["operator_review"]["reviewed_at"] = "2026-10-03T06:00:00Z"
+    reapproved = parse_inference_policy(reapproved_doc).routes["luna-azure-eu"]
+    await attestation.run_check(pool, _Client(LISTED, _providers()), [reapproved])
+    code, status = attestation.bootstrap_status([reapproved], now=attestation.utcnow())
+    assert (code, status) == (attestation.BOOTSTRAP_ADMITTED, {"luna-azure-eu": ()})
+
+
+def test_bootstrap_distinguishes_a_policy_without_monitored_routes() -> None:
+    doc = _production()
+    for item in doc["routes"]:
+        item.pop("approval_mode", None)
+        item.pop("zdr_baseline", None)
+        item["approval_expires_at"] = "2026-10-17T00:00:00Z"
+        item["operator_review"]["review_expires_at"] = "2026-10-17T00:00:00Z"
+    routes = parse_inference_policy(doc).routes.values()
+    assert attestation.bootstrap_status(routes, now=NOW) == (
+        attestation.BOOTSTRAP_NO_MONITORED_ROUTES,
+        {},
+    )

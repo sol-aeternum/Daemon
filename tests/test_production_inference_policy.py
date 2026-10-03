@@ -49,8 +49,10 @@ def _attested_snapshot(*, revoked: bool = False) -> attestation.AttestationSnaps
 def _attested() -> Iterator[None]:
     """Every production route confirmed by a ZDR check at review time."""
     previous = attestation.snapshot()
+    attestation.reset_local_revocations()
     attestation.set_snapshot(_attested_snapshot())
     yield
+    attestation.reset_local_revocations()
     attestation.set_snapshot(previous)
 
 
