@@ -1,0 +1,453 @@
+"""Pure offline gateway/browser preflight; not a launcher or containment authority.
+
+Only trusted supervisor values and bounded, parsed Docker inspect records belong
+here. A match never proves actual namespace/cgroup enforcement or child cleanup.
+No Docker, filesystem, process, network or import-time I/O is performed.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+from collections.abc import Mapping
+
+IMAGE = "sha256:4d8b065bf185962733cb5f9701f4122d03383fa1ab6b5f6a9873f04fa0416a84"
+OWNER_LABEL = "daemon.reader-pilot.owner"
+# Per-run scope: a fresh 128-bit token stamped on every resource a run creates.
+RUN_LABEL = "daemon.reader-pilot.run"
+_RUN = re.compile(r"[0-9a-f]{32}\Z")
+MEMORY = 128 * 1024 * 1024
+TMPFS = {"/tmp": "rw,nosuid,nodev,size=16m,mode=1777"}
+_NAME = re.compile(r"daemon-dns-offline-[0-9a-f]{24}\Z")
+BROWSER_NAME = re.compile(r"daemon-browser-offline-[0-9a-f]{24}\Z")
+BROWSER_MEMORY = 1024 * 1024 * 1024
+BROWSER_SHM = 256 * 1024 * 1024
+BROWSER_TMPFS = {"/tmp": "rw,nosuid,nodev,size=128m,mode=1777"}
+# Qualified offline browser profile (pinned moby default plus exact clone flags),
+# stored byte-for-byte at scripts/web_fetch_pilot_browser_seccomp.json.
+BROWSER_SECCOMP_SHA256 = "ec97bb9f172a136a19a3af5eb0f6ed1236476e015e6c2966196f4a85bd9f1915"
+_ID = re.compile(r"[0-9a-f]{64}\Z")
+
+
+class PreflightError(ValueError):
+    """Fixed-message refusal; never include raw configuration or environment."""
+
+
+def _require(condition: bool) -> None:
+    if not condition:
+        raise PreflightError("offline gateway preflight refused")
+
+
+def _map(value: object) -> Mapping[str, object]:
+    _require(type(value) is dict)
+    return value  # type: ignore[return-value]
+
+
+def _equal(record: Mapping[str, object], key: str, expected: object) -> None:
+    value = record.get(key)
+    _require(type(value) is type(expected) and value == expected)
+
+
+def _empty(record: Mapping[str, object], key: str) -> None:
+    _require(key in record)
+    value = record[key]
+    _require(value is None or type(value) in (list, dict) and not value)
+
+
+def _run_label(run_token: str | None) -> tuple[str, ...]:
+    if run_token is None:
+        return ()
+    _require(type(run_token) is str and _RUN.fullmatch(run_token) is not None)
+    return ("--label", RUN_LABEL + "=" + run_token)
+
+
+def create_arguments(
+    name: str, command: tuple[str, ...], *, run_token: str | None = None
+) -> tuple[str, ...]:
+    """Pure fixed Docker subcommand vector; does not execute or select a daemon.
+
+    Only a supervisor-reviewed bootstrap may supply command. Its first argument
+    is env's -i, not a shell fragment. The future command runner must explicitly
+    target the qualified local daemon and scrub its own host environment.
+    """
+    _require(type(name) is str and _NAME.fullmatch(name) is not None)
+    _require(type(command) is tuple and len(command) > 1 and command[0] == "-i")
+    _require(all(type(arg) is str and "\x00" not in arg for arg in command))
+    return (
+        "create",
+        "--pull",
+        "never",
+        "--attach",
+        "stdin",
+        "--attach",
+        "stdout",
+        "--attach",
+        "stderr",
+        "--interactive",  # OpenStdin: the bootstrap reads its payload from stdin.
+        "--name",
+        name,
+        "--label",
+        OWNER_LABEL + "=" + name,
+        *_run_label(run_token),
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "appuser",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "128m",
+        "--memory-swap",
+        "128m",
+        "--cpus",
+        "0.5",
+        "--pids-limit",
+        "32",
+        "--ipc",
+        "none",
+        "--cgroupns",
+        "private",
+        "--tmpfs",
+        "/tmp:" + TMPFS["/tmp"],
+        "--restart",
+        "no",
+        "--log-driver",
+        "none",
+        "--no-healthcheck",
+        "--entrypoint",
+        "/usr/bin/env",
+        "-i",
+        IMAGE,
+        *command,
+    )
+
+
+def require_identity(
+    record: object,
+    name: str,
+    *,
+    container_id: str | None = None,
+    run_token: str | None = None,
+) -> str:
+    """Minimal authority check for cleanup, independent of configuration success.
+
+    Never delete by a child-supplied ID/name. The owning launcher must choose a
+    fresh unpredictable name and retain the returned full ID. This function only
+    checks a supplied record; discovery, local-daemon provenance and removal
+    observation remain the launcher's responsibility.
+    """
+    return _require_identity(record, name, _NAME, container_id, run_token)
+
+
+def _require_identity(
+    record: object,
+    name: str,
+    pattern: re.Pattern[str],
+    container_id: str | None,
+    run_token: str | None,
+) -> str:
+    _require(type(name) is str and pattern.fullmatch(name) is not None)
+    item = _map(record)
+    identifier = item.get("Id")
+    _require(type(identifier) is str and _ID.fullmatch(identifier) is not None)
+    if container_id is not None:
+        _require(type(container_id) is str and identifier == container_id)
+    _equal(item, "Name", "/" + name)
+    _equal(item, "Image", IMAGE)
+    config = _map(item.get("Config"))
+    labels = _map(config.get("Labels"))
+    _equal(labels, OWNER_LABEL, name)
+    if run_token is not None:
+        _require(type(run_token) is str and _RUN.fullmatch(run_token) is not None)
+        _equal(labels, RUN_LABEL, run_token)
+    return identifier  # type: ignore[return-value]
+
+
+def require_offline_gateway(
+    record: object,
+    name: str,
+    command: tuple[str, ...],
+    *,
+    container_id: str | None = None,
+    run_token: str | None = None,
+) -> str:
+    """Check the offline allocation before start and after execution.
+
+    command is an immutable TRUSTED supervisor vector, not a record-derived
+    expectation. Its bootstrap must separately receive source review. Inherited
+    image Config.Env is not persisted here; /usr/bin/env -i scrubs runtime env.
+    IPC must be disabled: this DNS-only fixture needs no /dev/shm allocation.
+    """
+    identifier = require_identity(record, name, container_id=container_id, run_token=run_token)
+    _require(type(command) is tuple and len(command) > 1 and command[0] == "-i")
+    _require(all(type(arg) is str and "\x00" not in arg for arg in command))
+    item = _map(record)
+    config, host = _map(item.get("Config")), _map(item.get("HostConfig"))
+    for key, value in (
+        ("User", "appuser"),
+        ("Entrypoint", ["/usr/bin/env"]),
+        ("Cmd", list(command)),
+        ("Tty", False),
+        ("OpenStdin", True),
+        ("StdinOnce", True),  # Daemon closes stdin when the attach client ends it.
+        ("AttachStdin", True),
+        ("AttachStdout", True),
+        ("AttachStderr", True),
+    ):
+        _equal(config, key, value)
+    _empty(config, "Volumes")
+    _equal(_map(config.get("Healthcheck")), "Test", ["NONE"])
+    for key, value in (
+        ("NetworkMode", "none"),
+        ("ReadonlyRootfs", True),
+        ("Privileged", False),
+        ("CapDrop", ["ALL"]),
+        ("SecurityOpt", ["no-new-privileges"]),
+        ("Memory", MEMORY),
+        ("MemorySwap", MEMORY),
+        ("NanoCpus", 500_000_000),
+        ("PidsLimit", 32),
+        ("Tmpfs", TMPFS),
+        ("IpcMode", "none"),
+        ("PidMode", ""),
+        ("UTSMode", ""),
+        ("UsernsMode", ""),
+        ("CgroupnsMode", "private"),
+        ("PublishAllPorts", False),
+        ("AutoRemove", False),
+    ):
+        _equal(host, key, value)
+    for key in (
+        "CapAdd",
+        "Binds",
+        "PortBindings",
+        "Devices",
+        "DeviceRequests",
+        "VolumesFrom",
+        "Links",
+        "ExtraHosts",
+        "Dns",
+        "DnsSearch",
+        "DnsOptions",
+    ):
+        _empty(host, key)
+    restart = _map(host.get("RestartPolicy"))
+    _equal(restart, "Name", "no")
+    _equal(restart, "MaximumRetryCount", 0)
+    log = _map(host.get("LogConfig"))
+    _equal(log, "Type", "none")
+    _equal(log, "Config", {})
+    mounts = item.get("Mounts")
+    _require(type(mounts) is list)
+    for mount in mounts:  # type: ignore[union-attr]
+        fields = _map(mount)
+        _equal(fields, "Type", "tmpfs")
+        _equal(fields, "Destination", "/tmp")
+        _equal(fields, "RW", True)
+        _equal(fields, "Source", "")
+        _equal(fields, "Mode", "")
+        _equal(fields, "Propagation", "")
+    _require(len(mounts) <= 1)  # type: ignore[arg-type]
+    network = _map(item.get("NetworkSettings"))
+    networks = _map(network.get("Networks"))
+    _require(set(networks) == {"none"})
+    none = _map(networks["none"])
+    _equal(none, "IPAddress", "")
+    _equal(none, "GlobalIPv6Address", "")
+    ports = network.get("Ports")
+    _require(ports is None or type(ports) is dict and all(v is None for v in ports.values()))
+    return identifier
+
+
+def browser_seccomp_option(profile: bytes) -> str:
+    """Pure: the exact ``SecurityOpt`` entry Docker stores for the pinned profile.
+
+    The CLI inlines the profile file as compact JSON (key order preserved), so
+    the record must equal ``seccomp=`` plus this compaction of the pinned bytes.
+    """
+    _require(type(profile) is bytes)
+    _require(hashlib.sha256(profile).hexdigest() == BROWSER_SECCOMP_SHA256)
+    return "seccomp=" + json.dumps(json.loads(profile), separators=(",", ":"))
+
+
+def browser_create_arguments(
+    name: str, command: tuple[str, ...], profile_path: str, *, run_token: str | None = None
+) -> tuple[str, ...]:
+    """Pure fixed browser create vector; the caller verifies the profile bytes.
+
+    ``profile_path`` must be the absolute path whose bytes the caller has just
+    hash-checked with :func:`browser_seccomp_option`; the CLI reads it at create.
+    """
+    _require(type(name) is str and BROWSER_NAME.fullmatch(name) is not None)
+    _require(type(command) is tuple and len(command) > 1 and command[0] == "-i")
+    _require(all(type(arg) is str and "\x00" not in arg for arg in command))
+    _require(type(profile_path) is str and os.path.isabs(profile_path))
+    _require("\x00" not in profile_path and os.path.normpath(profile_path) == profile_path)
+    return (
+        "create",
+        "--pull",
+        "never",
+        "--attach",
+        "stdin",
+        "--attach",
+        "stdout",
+        "--attach",
+        "stderr",
+        "--interactive",
+        "--name",
+        name,
+        "--label",
+        OWNER_LABEL + "=" + name,
+        *_run_label(run_token),
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "appuser",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "seccomp=" + profile_path,
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "1g",
+        "--memory-swap",
+        "1g",
+        "--cpus",
+        "1",
+        "--pids-limit",
+        "128",
+        "--shm-size",
+        "256m",
+        "--ipc",
+        "private",
+        "--cgroupns",
+        "private",
+        "--tmpfs",
+        "/tmp:" + BROWSER_TMPFS["/tmp"],
+        "--restart",
+        "no",
+        "--log-driver",
+        "none",
+        "--no-healthcheck",
+        "--entrypoint",
+        "/usr/bin/env",
+        "-i",
+        IMAGE,
+        *command,
+    )
+
+
+def require_browser_identity(
+    record: object,
+    name: str,
+    *,
+    container_id: str | None = None,
+    run_token: str | None = None,
+) -> str:
+    """Browser-name identity check for cleanup, independent of configuration."""
+    return _require_identity(record, name, BROWSER_NAME, container_id, run_token)
+
+
+def require_offline_browser(
+    record: object,
+    name: str,
+    command: tuple[str, ...],
+    seccomp_option: str,
+    *,
+    container_id: str | None = None,
+    run_token: str | None = None,
+) -> str:
+    """Check the offline browser allocation before start and after execution.
+
+    ``seccomp_option`` comes from :func:`browser_seccomp_option` over the pinned
+    bytes, never from the record. Matching never proves runtime enforcement.
+    """
+    identifier = require_browser_identity(
+        record, name, container_id=container_id, run_token=run_token
+    )
+    _require(type(command) is tuple and len(command) > 1 and command[0] == "-i")
+    _require(type(seccomp_option) is str and seccomp_option.startswith("seccomp={"))
+    item = _map(record)
+    config, host = _map(item.get("Config")), _map(item.get("HostConfig"))
+    for key, value in (
+        ("User", "appuser"),
+        ("Entrypoint", ["/usr/bin/env"]),
+        ("Cmd", list(command)),
+        ("Tty", False),
+        ("OpenStdin", True),
+        ("StdinOnce", True),
+        ("AttachStdin", True),
+        ("AttachStdout", True),
+        ("AttachStderr", True),
+    ):
+        _equal(config, key, value)
+    _empty(config, "Volumes")
+    _equal(_map(config.get("Healthcheck")), "Test", ["NONE"])
+    for key, value in (
+        ("NetworkMode", "none"),
+        ("ReadonlyRootfs", True),
+        ("Privileged", False),
+        ("CapDrop", ["ALL"]),
+        ("SecurityOpt", [seccomp_option, "no-new-privileges"]),
+        ("Memory", BROWSER_MEMORY),
+        ("MemorySwap", BROWSER_MEMORY),
+        ("NanoCpus", 1_000_000_000),
+        ("PidsLimit", 128),
+        ("ShmSize", BROWSER_SHM),
+        ("Tmpfs", BROWSER_TMPFS),
+        ("IpcMode", "private"),
+        ("PidMode", ""),
+        ("UTSMode", ""),
+        ("UsernsMode", ""),
+        ("CgroupnsMode", "private"),
+        ("PublishAllPorts", False),
+        ("AutoRemove", False),
+    ):
+        _equal(host, key, value)
+    for key in (
+        "CapAdd",
+        "Binds",
+        "PortBindings",
+        "Devices",
+        "DeviceRequests",
+        "VolumesFrom",
+        "Links",
+        "ExtraHosts",
+        "Dns",
+        "DnsSearch",
+        "DnsOptions",
+    ):
+        _empty(host, key)
+    restart = _map(host.get("RestartPolicy"))
+    _equal(restart, "Name", "no")
+    _equal(restart, "MaximumRetryCount", 0)
+    log = _map(host.get("LogConfig"))
+    _equal(log, "Type", "none")
+    _equal(log, "Config", {})
+    mounts = item.get("Mounts")
+    _require(type(mounts) is list)
+    for mount in mounts:  # type: ignore[union-attr]
+        fields = _map(mount)
+        _equal(fields, "Type", "tmpfs")
+        _equal(fields, "Destination", "/tmp")
+        _equal(fields, "RW", True)
+        _equal(fields, "Source", "")
+        _equal(fields, "Mode", "")
+        _equal(fields, "Propagation", "")
+    _require(len(mounts) <= 1)  # type: ignore[arg-type]
+    network = _map(item.get("NetworkSettings"))
+    networks = _map(network.get("Networks"))
+    _require(set(networks) == {"none"})
+    none = _map(networks["none"])
+    _equal(none, "IPAddress", "")
+    _equal(none, "GlobalIPv6Address", "")
+    ports = network.get("Ports")
+    _require(ports is None or type(ports) is dict and all(v is None for v in ports.values()))
+    return identifier
