@@ -2191,3 +2191,74 @@ pre-existing reasons outside the pilot, which changes none of the files involved
 Evidence was added to #376, #379 and #418. The Definition of Done is therefore not met for
 reasons outside the pilot; rebasing onto current `main` resolves #418, while #376 and #379
 need their own fixes. Production remains direct-only.
+
+### Rebased onto main: full-project gates pass (2026-10-03)
+
+The earlier comparison used a stale local `main`. The 14 pilot commits (they touch only
+pilot scripts, pilot tests and this document) were replayed without conflicts onto current
+`origin/main` (`6a68b800`) as branch `feat/web-fetch-fallback-pilot-main`, leaving the original
+branch and its two unrelated unmerged `fix:` commits untouched. In that clean worktree the pilot
+suite passes (**1054 passed, 9 skipped**) and `scripts/local_ci.sh` reports **all blocking gates
+passed**: ruff check and format, basedpyright, high-severity Bandit, pip-audit, pytest (**5340
+passed, 139 skipped**), npm ci, the braces guard, type-check, lint, format, npm audit, Vitest
+(**666 passed**), build, feature matrix and pre-commit. Only the non-blocking Bandit inventory
+reports existing low findings. The three earlier failures (#376, #379, #418) were already fixed
+on `main`; the #376 comment comparing against the stale `main` was corrected.
+
+### Proposed: stage F bounded live comparison — plan awaiting owner approval (2026-10-03)
+
+Nothing below has run. Offline stages A–E are qualified; live readiness needs the
+prerequisites in (1) implemented, reviewed and gated offline first, then a single
+explicitly approved live session (2). Production stays direct-only throughout, and success
+does not authorize production activation.
+
+**Target (recovered, not inferred).** The incident record in #373 (from the user's
+screenshot) gives the exact URL `https://openai.com/index/introducing-dots/`. The direct
+client received `403`, `server=cloudflare`, `cf-mitigated=challenge`; whether the article
+exists behind the challenge is unknown. Initial manifest: `openai.com` only; any
+subresource or redirect host is reported as blocked, never auto-added.
+
+**(1) Prerequisites (offline, each reviewed before use)**
+
+1. *Challenge and status classification (must-fix).* Today the browser entrypoint reports
+   any page with text as `success`; Playwright does not throw on a `403`, so a Cloudflare
+   challenge page would be reported as article content, which the design forbids. Record
+   the main-document HTTP status and classify non-2xx as `blocked` (403/429/503) or
+   `error`, plus a fixed, reviewed challenge-marker check (status header/title markers,
+   names only), before any content is returned. Pure tests with synthetic pages.
+2. *Egress topology.* An owned, run-scoped, IPv4-only Docker bridge network with egress
+   (not `--internal`), no other containers, no published ports, masquerade as required for
+   egress, created/inspected/removed by the existing lifecycle discipline; the gateway is
+   its only member and the browser stays network-none. The gateway entrypoint accepts
+   `topology: egress` only with a non-empty inventory, exactly one default route via that
+   network, and the same seccomp/no-new-privs/capability checks.
+3. *Deployment-owned inventory.* The gateway must refuse this host's own addresses and every
+   deployment-owned public address. Host interface and Docker network ranges can be
+   gathered; the external NAT/public addresses of this machine and of the production
+   deployment cannot be discovered reliably and **must be supplied by the owner**. The
+   inventory is recorded by hash in the evidence, gathered fresh at run start.
+4. *Browser-confinement probes.* From inside the browser container (network-none), owned
+   probe attempts for direct TCP, UDP, DNS and QUIC to public, private, metadata and gateway
+   addresses must all fail; recorded as counts.
+5. *Evidence without content.* Per run record only: mode, status class, HTTP status class,
+   OPEN attempts/refusals, blocked hosts (names), bytes read/written, frame counts, exit
+   codes, image/profile/config hashes, cleanup evidence. No page text, cookies, query
+   strings or response bodies are persisted; any successful text is measured (length/hash)
+   in memory and discarded unless a separate retention decision is made.
+
+**(2) The live session (one approval covers exactly this)**
+
+- Two runs, one browser each: ordinary, then basic-stealth. Patchright is excluded until
+  independently qualified.
+- 45-second run deadline; 40 OPEN attempts; four concurrent tunnels; 32 MiB TCP payload;
+  existing container limits; no retries of a failed run within the session.
+- Stop conditions: any containment-check failure, unknown cleanup, unexpected host, or a
+  non-zero exit outside the documented codes stops the session immediately.
+- Truthful outcome reporting: `success` only for coherent article text behind a 2xx main
+  document; challenge/denial reported as `blocked`; no CAPTCHA services, paid proxies,
+  credentials, login/paywall bypass or manifest widening.
+- Results recorded in this design doc and #373.
+
+**Decisions needed from the owner:** approve building prerequisites (1)–(5); supply the
+deployment-owned public address inventory; confirm the single URL and `openai.com`-only
+manifest; then, separately, approve the two-run live session.
