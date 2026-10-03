@@ -9,3 +9,6 @@ bun.lock
 next-env.d.ts
 public/sw.js
 public/workbox-*.js
+# Preserve reviewed third-party bytes; mandatory security:braces validates them.
+vendor/braces/
+vendor/braces-test-tools/package-lock.json
