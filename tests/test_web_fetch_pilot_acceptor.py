@@ -91,15 +91,18 @@ async def test_fake_accepted_socket_ownership_and_actual_peer(
     listener = Listener()
     owned = listener.accepted
     seen: list[Accepted] = []
+    peers: list[object] = []
 
-    def connection(sock: Accepted) -> Accepted:
+    def connection(sock: Accepted, *, peer: object) -> Accepted:
         seen.append(sock)
+        peers.append(peer)
         return sock
 
     monkeypatch.setattr(adapters, "SocketConnection", connection)
     acceptor = adapters.LoopbackAcceptor(cast(socket.socket, listener))
     assert acceptor.address == ("127.0.0.1", 12345)
     assert await acceptor.accept() is owned and seen == [owned]
+    assert peers == [("127.0.0.1", 23456)]  # The actual verified peer, never accept() metadata.
     acceptor.close()
     acceptor.close()
     assert listener.closed and owned is not None and not owned.closed
@@ -133,7 +136,7 @@ async def test_fake_construction_error_reclaims_accepted_socket(
     listener = Listener()
     owned = listener.accepted
 
-    def fail(sock: Accepted) -> None:
+    def fail(sock: Accepted, *, peer: object) -> None:
         raise ValueError("injected connection construction failure")
 
     monkeypatch.setattr(adapters, "SocketConnection", fail)
@@ -211,3 +214,35 @@ async def test_fake_listener_state_and_address_stability(fakes: None) -> None:
         assert listener.accept_calls == 0
     finally:
         acceptor.close()
+
+
+class ResetAccepted(Accepted):
+    def getpeername(self) -> object:
+        raise OSError(107, "ENOTCONN")  # Client reset before we looked.
+
+
+@pytest.mark.asyncio
+async def test_fake_client_reset_before_peer_check_is_skipped(
+    fakes: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    listener = Listener()
+    vanished = ResetAccepted()
+    listener.accepted = vanished
+    good = Accepted()
+    original = listener.accept
+
+    def accept() -> tuple[Accepted, tuple[str, int]]:
+        pair = original()
+        if pair[0] is vanished:
+            listener.accepted = good  # The next client is queued behind it.
+        return pair
+
+    listener.accept = accept  # type: ignore[method-assign]
+    monkeypatch.setattr(adapters, "SocketConnection", lambda sock, *, peer: sock)
+    acceptor = adapters.LoopbackAcceptor(cast(socket.socket, listener))
+    try:
+        assert await acceptor.accept() is good  # The run keeps accepting.
+        assert vanished.closed and not good.closed
+    finally:
+        acceptor.close()
+        good.close()

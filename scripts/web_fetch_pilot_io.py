@@ -225,22 +225,36 @@ class FDFrameIO:
 
 
 class SocketConnection:
-    """Own an already connected IPv4 TCP socket; counts actual syscall bytes."""
+    """Own an already connected IPv4 TCP socket; counts actual syscall bytes.
 
-    def __init__(self, sock: socket.socket) -> None:
+    The peer is recorded ONCE: either the caller's actual post-connect/accept
+    verification (``peer``) or one ``getpeername`` here. A connected TCP
+    socket's peer is immutable, and re-querying after a peer reset fails with
+    ENOTCONN, which would mask the reset that read/write must report.
+    """
+
+    def __init__(self, sock: socket.socket, *, peer: tuple[str, int] | None = None) -> None:
         if sock.family != socket.AF_INET or sock.type != socket.SOCK_STREAM:
             raise ValueError("connection requires IPv4 TCP")
+        actual = sock.getpeername() if peer is None else peer
+        if (
+            type(actual) is not tuple
+            or len(actual) != 2
+            or type(actual[0]) is not str
+            or type(actual[1]) is not int
+        ):
+            raise ValueError("verified IPv4 peer sockaddr required")
+        self._peer: tuple[str, int] = (actual[0], actual[1])
         self._socket = sock
         self._fd = AsyncFD(sock.fileno(), owns_fd=False)
         self._closed = False
 
     @property
     def peer_ip(self) -> str:
-        return self.getpeername()[0]
+        return self._peer[0]
 
     def getpeername(self) -> tuple[str, int]:
-        host, port = self._socket.getpeername()
-        return host, port
+        return self._peer
 
     async def read(self, maxsize: int) -> bytes:
         return await self._fd.read(maxsize)
@@ -288,11 +302,12 @@ class NumericConnector:
                 result = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if result:
                 raise OSError(result, "numeric TCP connect failed")
-            if sock.getpeername() != (ip, port):
+            peer = sock.getpeername()
+            if peer != (ip, port):
                 raise TransportError("connected socket peer mismatch")
             pending.close()
             pending = None
-            return SocketConnection(sock)
+            return SocketConnection(sock, peer=(ip, port))
         except BaseException:
             if pending is not None:
                 pending.close()

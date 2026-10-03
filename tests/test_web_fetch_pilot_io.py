@@ -15,6 +15,7 @@ from contextlib import ExitStack, contextmanager
 from collections.abc import Iterator
 
 import pytest
+from typing import cast
 
 from scripts.web_fetch_pilot_core import Frame, FrameCodecError, FrameType, encode_frame
 from scripts.web_fetch_pilot_io import (
@@ -300,3 +301,39 @@ async def test_fake_numeric_sockaddr_and_owned_cleanup(
         connection.close()
     assert addresses == [("8.8.8.8", 443)]
     assert sock.closed and all(wrapper.closed for wrapper in wrappers)
+
+
+def test_socket_connection_records_peer_once_and_never_requeries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OnceSocket:
+        family = socket.AF_INET
+        type = socket.SOCK_STREAM
+        calls = 0
+
+        def fileno(self) -> int:
+            return 999999
+
+        def getpeername(self) -> tuple[str, int]:
+            OnceSocket.calls += 1
+            if OnceSocket.calls > 1:
+                raise OSError(107, "ENOTCONN")  # What Linux returns after a peer reset.
+            return ("8.8.8.8", 443)
+
+    class InertFD:
+        def __init__(self, fd: int, *, owns_fd: bool) -> None:
+            assert fd == 999999 and not owns_fd
+
+    import scripts.web_fetch_pilot_io as adapters
+
+    monkeypatch.setattr(adapters, "AsyncFD", InertFD)
+    recorded = SocketConnection(cast(socket.socket, OnceSocket()))
+    assert OnceSocket.calls == 1
+    for _ in range(3):
+        assert recorded.peer_ip == "8.8.8.8" and recorded.getpeername() == ("8.8.8.8", 443)
+    assert OnceSocket.calls == 1  # Never re-queried, so a reset cannot masquerade as ENOTCONN.
+    supplied = SocketConnection(cast(socket.socket, OnceSocket()), peer=("1.2.3.2", 443))
+    assert supplied.getpeername() == ("1.2.3.2", 443) and OnceSocket.calls == 1
+    for bad in (("8.8.8.8",), ("8.8.8.8", "443"), ["8.8.8.8", 443]):
+        with pytest.raises(ValueError):
+            SocketConnection(cast(socket.socket, OnceSocket()), peer=bad)  # type: ignore[arg-type]

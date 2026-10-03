@@ -2071,3 +2071,24 @@ retirement). Relay and gateway suites pass **185 tests three times in a row**; t
 pass. Gateway SHA-256 `4c2cead4d83c21d4d2e31a8937dbb9d0a14056cfeffe47c3b07305992fce0bb3`;
 relay `0687f23b32a89d442b0f334b36c1554f927fe3e2745e269411b83677ddfe6acf`. The E2c and E3c
 native gates have not been re-run against this change.
+
+### Per-stream abort reruns: E2c passes, E3c still failed; peer-recheck cause found (2026-10-03)
+
+With owner approval the gates were re-run once each against the abort implementation.
+**E2c: 2 passed in 5.88 s** (browser frames now include the single reply CLOSE). **E3c:
+failed in 6.03 s** exactly as before (gateway `transport_error` after the fixture's TLS
+rejection; browser exit 1; no leftovers), not retried. A loopback-only check confirmed the
+cause: after a TCP reset, `recv` raises `ECONNRESET` (now handled), but `getpeername()`
+raises `OSError ENOTCONN`, and both actors re-checked the peer through
+`SocketConnection.getpeername()` before every tunnel operation, so the reset surfaced as an
+ordinary fatal `OSError` one step before the syscall the abort handles. The acceptor had the
+same exposure for a client resetting just after `accept`.
+
+Correction: `SocketConnection` records the peer once (the connector's verified
+`(ip, 443)` after connect, the acceptor's verified loopback peer after accept, or a single
+`getpeername` at construction) and never re-queries; a connected TCP socket's peer is
+immutable, and the actors' per-operation check still runs against that record (fake
+peer-mutation tests unchanged). The acceptor closes and skips a client whose
+`getpeername` fails before verification and keeps accepting. New fake tests cover both.
+Pilot run passes **1045, 9 skipped** including the approved E1 loopback fixtures. E2c and
+E3c need another owner-approved run.

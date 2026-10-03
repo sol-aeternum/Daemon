@@ -74,7 +74,13 @@ class LoopbackAcceptor:
                 except InterruptedError:
                     continue
                 # Check the actual connected socket, not accept()'s claimed peer.
-                peer = accepted.getpeername()
+                try:
+                    peer = accepted.getpeername()
+                except OSError:
+                    # The client reset before we looked (ENOTCONN): it is gone.
+                    accepted.close()
+                    accepted = None
+                    continue
                 if (
                     type(peer) is not tuple
                     or len(peer) != 2
@@ -84,7 +90,7 @@ class LoopbackAcceptor:
                     or not 1 <= peer[1] <= 65535
                 ):
                     raise TransportError("non-loopback accepted peer")
-                connection = SocketConnection(accepted)
+                connection = SocketConnection(accepted, peer=peer)
                 accepted = None  # Connection now owns the socket; no await before return.
                 return connection
             return None
