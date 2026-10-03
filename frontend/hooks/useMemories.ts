@@ -130,6 +130,160 @@ function assertCurrent(generation: number, signal?: AbortSignal): void {
   }
 }
 
+/** Categories the import route accepts; unknown ones are imported as facts. */
+export const IMPORT_MEMORY_CATEGORIES = [
+  'fact',
+  'preference',
+  'project',
+  'summary',
+  'correction',
+] as const;
+export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
+export const IMPORT_REQUEST_SIZE = 500;
+
+export interface ImportableMemory {
+  content: string;
+  category: string;
+}
+
+export interface ParsedMemoryImport {
+  memories: ImportableMemory[];
+  /** Entries left out, by reason, so the preview can say why. */
+  skipped: { empty: number; tooLong: number; duplicate: number };
+  /** Entries whose unknown category was imported as `fact`. */
+  recategorized: number;
+}
+
+export interface MemoryImportResult {
+  /** Confirmed by the server: each counted entry is saved. */
+  created: number;
+  merged: number;
+  superseded: number;
+  /** Entries the server confirmed it processed (all saved). */
+  processed: number;
+  total: number;
+  /**
+   * Entries sent whose outcome Daemon never confirmed (lost or malformed
+   * acknowledgement). Some of them may have been saved.
+   */
+  unconfirmed: number;
+  /** Set when the import stopped early. */
+  error?: string;
+}
+
+interface ImportCounts {
+  processed: number;
+  created: number;
+  merged: number;
+  superseded: number;
+}
+
+function count(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+/**
+ * Accepts an import acknowledgement only if it is internally consistent for
+ * the chunk that was sent; otherwise the chunk's outcome is unknown.
+ */
+export function readImportCounts(
+  body: unknown,
+  sent: number,
+  complete: boolean,
+): ImportCounts | null {
+  if (!body || typeof body !== 'object') return null;
+  const record = body as Record<string, unknown>;
+  const received = count(record.received);
+  const processed = count(record.processed);
+  const created = count(record.created);
+  const merged = count(record.merged);
+  const superseded = count(record.superseded);
+  if (
+    received === null ||
+    processed === null ||
+    created === null ||
+    merged === null ||
+    superseded === null ||
+    received !== sent ||
+    processed > received ||
+    (complete && processed !== received) ||
+    // Every processed entry is created, merged or superseded; nothing else.
+    created + merged + superseded !== processed
+  ) {
+    return null;
+  }
+  return { processed, created, merged, superseded };
+}
+
+/**
+ * Accepts a Daemon export ({format: 'daemon-memories', memories: [...]}) or a
+ * plain array of {content, category}. Throws a person-readable Error for files
+ * that are not JSON or have no memories array.
+ */
+export function parseMemoryImport(text: string): ParsedMemoryImport {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("That file isn't valid JSON.");
+  }
+  const rows = Array.isArray(data)
+    ? data
+    : data &&
+        typeof data === 'object' &&
+        Array.isArray((data as { memories?: unknown }).memories)
+      ? (data as { memories: unknown[] }).memories
+      : null;
+  if (!rows) {
+    throw new Error(
+      'No memories found. Use a Daemon memory export or a JSON array of {"content", "category"}.',
+    );
+  }
+  const allowed = new Set<string>(IMPORT_MEMORY_CATEGORIES);
+  const seen = new Set<string>();
+  const parsed: ParsedMemoryImport = {
+    memories: [],
+    skipped: { empty: 0, tooLong: 0, duplicate: 0 },
+    recategorized: 0,
+  };
+  for (const row of rows) {
+    const record =
+      typeof row === 'string'
+        ? { content: row }
+        : row && typeof row === 'object'
+          ? (row as Record<string, unknown>)
+          : {};
+    const content =
+      typeof record.content === 'string' ? record.content.trim() : '';
+    if (!content) {
+      parsed.skipped.empty += 1;
+      continue;
+    }
+    if (content.length > MAX_USER_MEMORY_LENGTH) {
+      parsed.skipped.tooLong += 1;
+      continue;
+    }
+    let category =
+      typeof record.category === 'string'
+        ? record.category.trim().toLowerCase()
+        : 'fact';
+    if (!allowed.has(category)) {
+      category = 'fact';
+      parsed.recategorized += 1;
+    }
+    const key = `${category}\u0000${content}`;
+    if (seen.has(key)) {
+      parsed.skipped.duplicate += 1;
+      continue;
+    }
+    seen.add(key);
+    parsed.memories.push({ content, category });
+  }
+  return parsed;
+}
+
 export function useMemories() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
@@ -166,7 +320,14 @@ export function useMemories() {
   );
 
   const apiFetch = useCallback(
-    async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
+    async (
+      path: string,
+      init: RequestInit = {},
+      timeoutMs = 12000,
+      // Non-idempotent writes must not be replayed on the next candidate URL
+      // after a network failure: the first request may already have committed.
+      { retryAfterError = true }: { retryAfterError?: boolean } = {},
+    ) => {
       const candidates = apiCandidates(path);
       let lastError: unknown = null;
 
@@ -206,7 +367,11 @@ export function useMemories() {
           clearTimeout(timeoutId);
           external?.removeEventListener('abort', forwardAbort);
           lastError = error;
-          if (external?.aborted || index === candidates.length - 1) {
+          if (
+            external?.aborted ||
+            !retryAfterError ||
+            index === candidates.length - 1
+          ) {
             throw error;
           }
         }
@@ -417,15 +582,20 @@ export function useMemories() {
         };
       }
       try {
-        const response = await apiFetch('/memories', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(await getAuthHeaders()),
+        const response = await apiFetch(
+          '/memories',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(await getAuthHeaders()),
+            },
+            body: JSON.stringify({ content: trimmed, category }),
+            signal: options.signal,
           },
-          body: JSON.stringify({ content: trimmed, category }),
-          signal: options.signal,
-        });
+          12000,
+          { retryAfterError: false },
+        );
         assertCurrent(generation, options.signal);
         if (!response.ok) {
           return {
@@ -498,6 +668,111 @@ export function useMemories() {
     [apiFetch, getAuthHeaders],
   );
 
+  /**
+   * Import in server-sized requests; stops at the first failure. The sign-in
+   * that started the import is re-checked before every request, so a later
+   * chunk can never be sent with another account's credentials.
+   */
+  const importMemories = useCallback(
+    async (
+      items: ImportableMemory[],
+      options: MemoryRequestOptions = {},
+    ): Promise<MemoryImportResult> => {
+      const generation = getAuthGeneration();
+      const result: MemoryImportResult = {
+        created: 0,
+        merged: 0,
+        superseded: 0,
+        processed: 0,
+        total: items.length,
+        unconfirmed: 0,
+      };
+      const add = (counts: ImportCounts) => {
+        result.processed += counts.processed;
+        result.created += counts.created;
+        result.merged += counts.merged;
+        result.superseded += counts.superseded;
+      };
+      const unknownOutcome = (chunk: ImportableMemory[], error: string) => ({
+        ...result,
+        unconfirmed: chunk.length,
+        error,
+      });
+      for (let start = 0; start < items.length; start += IMPORT_REQUEST_SIZE) {
+        assertCurrent(generation, options.signal);
+        const chunk = items.slice(start, start + IMPORT_REQUEST_SIZE);
+        let response: Response;
+        try {
+          response = await apiFetch(
+            '/memories/import',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(await getAuthHeaders()),
+              },
+              body: JSON.stringify({ memories: chunk }),
+              signal: options.signal,
+            },
+            120000,
+            { retryAfterError: false },
+          );
+        } catch {
+          assertCurrent(generation, options.signal);
+          // The request may have reached Daemon and committed before the
+          // connection failed; its outcome is unknown, not "nothing saved".
+          return unknownOutcome(
+            chunk,
+            "Daemon didn't confirm the last part of the import.",
+          );
+        }
+        let body: unknown;
+        let parsed = true;
+        try {
+          body = await response.json();
+        } catch {
+          parsed = false;
+        }
+        assertCurrent(generation, options.signal);
+        if (response.ok) {
+          const counts = parsed
+            ? readImportCounts(body, chunk.length, true)
+            : null;
+          if (!counts) {
+            return unknownOutcome(
+              chunk,
+              'Daemon sent an unexpected reply to part of the import.',
+            );
+          }
+          add(counts);
+          continue;
+        }
+        if (response.status === 422) {
+          // Validation happens before anything is stored.
+          return { ...result, error: 'Daemon rejected part of this file.' };
+        }
+        const detail =
+          parsed && body && typeof body === 'object'
+            ? (body as { detail?: unknown }).detail
+            : undefined;
+        const counts =
+          response.status === 503
+            ? readImportCounts(detail, chunk.length, false)
+            : null;
+        if (!counts) {
+          return unknownOutcome(chunk, "Couldn't finish the import.");
+        }
+        add(counts);
+        return {
+          ...result,
+          error: 'The import stopped because a memory service was unavailable.',
+        };
+      }
+      return result;
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
   return {
     memories,
     loading,
@@ -511,5 +786,6 @@ export function useMemories() {
     fetchTrail,
     createMemory,
     exportMemories,
+    importMemories,
   };
 }

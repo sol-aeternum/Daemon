@@ -66,18 +66,18 @@ flowchart TD
 
 | Profile | Group | Candidate | Effort | Deployment route | Review expires |
 | --- | --- | --- | --- | --- | --- |
-| routine | 1. luna | `openai/gpt-6-luna` | medium | routine | 2026-10-06 |
-| research | 1. luna | `openai/gpt-6-luna` | medium | routine | 2026-10-06 |
+| routine | 1. luna | `openai/gpt-6-luna` | medium | routine | 2026-10-17 |
+| research | 1. luna | `openai/gpt-6-luna` | medium | routine | 2026-10-17 |
 | reasoning | 1. demanding | `z-ai/glm-5.3` | high | none | — |
-| reasoning | 1. demanding | `openai/gpt-6.1-sol` | high | premium | 2026-10-06 |
-| reasoning | 1. demanding | `anthropic/claude-sonnet-5.5` | high | premium | 2026-10-06 |
-| reasoning | 2. escalation | `anthropic/claude-opus-5.5` | high | premium | 2026-10-06 |
-| reasoning | 2. escalation | `openai/gpt-6-astra` | high | premium | 2026-10-06 |
+| reasoning | 1. demanding | `openai/gpt-6.1-sol` | high | premium | 2026-10-17 |
+| reasoning | 1. demanding | `anthropic/claude-sonnet-5.5` | high | premium | 2026-10-17 |
+| reasoning | 2. escalation | `anthropic/claude-opus-5.5` | high | premium | 2026-10-17 |
+| reasoning | 2. escalation | `openai/gpt-6-astra` | high | premium | 2026-10-17 |
 
 - Within a group, the lowest bounded cost for the request is tried first; list order is not priority.
 - Effort is the preset applied after selection (`default`, overlaid by the profile's own preset).
 - Candidates without a deployment route are filtered out at dispatch: `z-ai/glm-5.3`.
-- The earliest operator review expiry among these deployment routes is 2026-10-06; an expired route fails closed.
+- The earliest operator review expiry among these deployment routes is 2026-10-17; an expired route fails closed.
 - A route listed here is configuration, not proof of live availability or model quality.
 
 <!-- END GENERATED: chat-routing -->

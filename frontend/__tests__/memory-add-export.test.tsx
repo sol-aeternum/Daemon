@@ -10,7 +10,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryActions } from '../components/settings/memory/MemoryActions';
 import {
+  IMPORT_REQUEST_SIZE,
   MAX_USER_MEMORY_LENGTH,
+  parseMemoryImport,
+  type ImportableMemory,
   MemoryExportFormatError,
   MemoryRequestSupersededError,
   toMemoryExport,
@@ -261,6 +264,14 @@ describe('MemoryActions', () => {
           new Date('2026-10-03T12:00:00Z'),
         ),
       ),
+      importMemories: vi.fn(async (items: ImportableMemory[]) => ({
+        created: items.length,
+        merged: 0,
+        superseded: 0,
+        processed: items.length,
+        total: items.length,
+        unconfirmed: 0,
+      })),
       onSaved: vi.fn(),
       ...overrides,
     };
@@ -377,6 +388,7 @@ describe('MemoryActions lifecycle', () => {
     const props = {
       createMemory: vi.fn(),
       exportMemories: vi.fn(),
+      importMemories: vi.fn(),
       onSaved: vi.fn(),
       ...overrides,
     } as unknown as Parameters<typeof MemoryActions>[0];
@@ -463,5 +475,575 @@ describe('MemoryActions lifecycle', () => {
       'Daemon sent an unexpected export, so nothing was downloaded. Please try again.',
     );
     expect(downloads).toEqual([]);
+  });
+});
+
+describe('memory import parsing', () => {
+  it('reads a Daemon export, trims, dedupes and maps unknown categories', () => {
+    const parsed = parseMemoryImport(
+      JSON.stringify({
+        format: 'daemon-memories',
+        version: 1,
+        memories: [
+          { content: '  Likes tea  ', category: 'Preference', created_at: 'x' },
+          { content: 'Likes tea', category: 'preference' },
+          { content: 'Owns a bike', category: 'hobby' },
+          { content: '   ' },
+          { content: 'x'.repeat(MAX_USER_MEMORY_LENGTH + 1) },
+          'Plain string memory',
+        ],
+      }),
+    );
+    expect(parsed.memories).toEqual([
+      { content: 'Likes tea', category: 'preference' },
+      { content: 'Owns a bike', category: 'fact' },
+      { content: 'Plain string memory', category: 'fact' },
+    ]);
+    expect(parsed.skipped).toEqual({ empty: 1, tooLong: 1, duplicate: 1 });
+    expect(parsed.recategorized).toBe(1);
+  });
+
+  it('accepts a plain array and rejects files without memories', () => {
+    expect(
+      parseMemoryImport('[{"content":"A","category":"fact"}]').memories,
+    ).toHaveLength(1);
+    expect(() => parseMemoryImport('not json')).toThrow("isn't valid JSON");
+    expect(() => parseMemoryImport('{"items":[]}')).toThrow(
+      'No memories found',
+    );
+  });
+});
+
+describe('useMemories import', () => {
+  it('sends server-sized chunks and totals the results', async () => {
+    const sizes: number[] = [];
+    respond = (_url, init) => {
+      const body = JSON.parse(String(init!.body));
+      sizes.push(body.memories.length);
+      return json({
+        received: body.memories.length,
+        processed: body.memories.length,
+        created: body.memories.length - 1,
+        merged: 1,
+        superseded: 0,
+      });
+    };
+    const { result } = renderHook(() => useMemories());
+    const items = Array.from({ length: IMPORT_REQUEST_SIZE + 3 }, (_, i) => ({
+      content: `m${i}`,
+      category: 'fact',
+    }));
+    let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+    await act(async () => {
+      outcome = await result.current.importMemories(items);
+    });
+    expect(sizes).toEqual([IMPORT_REQUEST_SIZE, 3]);
+    expect(outcome).toEqual({
+      created: IMPORT_REQUEST_SIZE + 1,
+      merged: 2,
+      superseded: 0,
+      processed: IMPORT_REQUEST_SIZE + 3,
+      total: IMPORT_REQUEST_SIZE + 3,
+      unconfirmed: 0,
+    });
+  });
+
+  it('stops at a failure and reports exactly what was saved', async () => {
+    respond = () =>
+      json(
+        {
+          detail: {
+            message: 'stopped',
+            received: 3,
+            processed: 2,
+            created: 1,
+            merged: 1,
+            superseded: 0,
+          },
+        },
+        503,
+      );
+    const { result } = renderHook(() => useMemories());
+    let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+    await act(async () => {
+      outcome = await result.current.importMemories([
+        { content: 'a', category: 'fact' },
+        { content: 'b', category: 'fact' },
+        { content: 'c', category: 'fact' },
+      ]);
+    });
+    expect(outcome).toMatchObject({
+      created: 1,
+      merged: 1,
+      processed: 2,
+      total: 3,
+      unconfirmed: 0,
+      error: 'The import stopped because a memory service was unavailable.',
+    });
+  });
+});
+
+describe('MemoryActions import', () => {
+  function chooseFile(text: string, name = 'memories.json') {
+    const input = screen.getByLabelText('Import memories from a JSON file');
+    fireEvent.change(input, {
+      target: { files: [new File([text], name, { type: 'application/json' })] },
+    });
+  }
+
+  it('previews before saving and imports only after confirmation', async () => {
+    const importMemories = vi.fn(async (items: ImportableMemory[]) => ({
+      created: items.length - 1,
+      merged: 1,
+      superseded: 0,
+      processed: items.length,
+      total: items.length,
+      unconfirmed: 0,
+    }));
+    const onSaved = vi.fn();
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={importMemories}
+        onSaved={onSaved}
+      />,
+    );
+    chooseFile(
+      JSON.stringify([
+        { content: 'Likes tea', category: 'preference' },
+        { content: 'Owns a bike' },
+        { content: 'Owns a bike' },
+      ]),
+    );
+    const review = await screen.findByRole('group', { name: 'Review import' });
+    expect(review.textContent).toContain(
+      'Ready to import 2 memories from memories.json',
+    );
+    expect(review.textContent).toContain('Skipping 1 duplicate in the file.');
+    expect(importMemories).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    expect((await screen.findByRole('status')).textContent).toBe(
+      'Imported 2 memories: 1 new memory, 1 merged with an existing one, 0 replaced older versions.',
+    );
+    expect(importMemories).toHaveBeenCalledWith(
+      [
+        { content: 'Likes tea', category: 'preference' },
+        { content: 'Owns a bike', category: 'fact' },
+      ],
+      expect.anything(),
+    );
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelling the review saves nothing', async () => {
+    const importMemories = vi.fn();
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={importMemories}
+        onSaved={vi.fn()}
+      />,
+    );
+    chooseFile('[{"content":"A"}]');
+    await screen.findByRole('group', { name: 'Review import' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('group', { name: 'Review import' })).toBeNull();
+    expect(importMemories).not.toHaveBeenCalled();
+  });
+
+  it('explains unreadable files without importing', async () => {
+    const importMemories = vi.fn();
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={importMemories}
+        onSaved={vi.fn()}
+      />,
+    );
+    chooseFile('{oops');
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      "That file isn't valid JSON.",
+    );
+    expect(importMemories).not.toHaveBeenCalled();
+  });
+
+  it('reports a partial import truthfully', async () => {
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={vi.fn(async () => ({
+          created: 1,
+          merged: 0,
+          superseded: 0,
+          processed: 1,
+          total: 2,
+          unconfirmed: 0,
+          error: 'The import stopped because a memory service was unavailable.',
+        }))}
+        onSaved={vi.fn()}
+      />,
+    );
+    chooseFile('[{"content":"A"},{"content":"B"}]');
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'The import stopped because a memory service was unavailable. Confirmed saved before stopping: 1 new memory, 0 merged with existing ones, 0 replaced older versions (1 of 2 processed).',
+    );
+  });
+});
+
+describe('memory import lifecycle', () => {
+  it('stops sending chunks once the sign-in changes', async () => {
+    const gate = deferred<Response>();
+    let calls = 0;
+    respond = () => {
+      calls += 1;
+      return gate.promise as unknown as Response;
+    };
+    const { result } = renderHook(() => useMemories());
+    const items = Array.from({ length: IMPORT_REQUEST_SIZE + 1 }, (_, i) => ({
+      content: `m${i}`,
+      category: 'fact',
+    }));
+    const pending = result.current.importMemories(items);
+    await waitFor(() => expect(calls).toBe(1));
+    act(() => changeSignIn());
+    gate.resolve(
+      json({ received: IMPORT_REQUEST_SIZE, created: IMPORT_REQUEST_SIZE }),
+    );
+    await expect(pending).rejects.toBeInstanceOf(MemoryRequestSupersededError);
+    expect(calls).toBe(1);
+  });
+
+  it('drops the review and any late result when the sign-in changes', async () => {
+    const gate = deferred<{
+      created: number;
+      merged: number;
+      superseded: number;
+      processed: number;
+      total: number;
+      unconfirmed: number;
+    }>();
+    let signal: AbortSignal | undefined;
+    const importMemories = vi.fn(
+      (_items: ImportableMemory[], options?: { signal?: AbortSignal }) => {
+        signal = options?.signal;
+        return gate.promise;
+      },
+    );
+    const onSaved = vi.fn();
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={importMemories}
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.change(
+      screen.getByLabelText('Import memories from a JSON file'),
+      {
+        target: {
+          files: [
+            new File(['[{"content":"A"}]'], 'm.json', {
+              type: 'application/json',
+            }),
+          ],
+        },
+      },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(importMemories).toHaveBeenCalled());
+    act(() => changeSignIn());
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByRole('group', { name: 'Review import' })).toBeNull();
+    await act(async () =>
+      gate.resolve({
+        created: 1,
+        merged: 0,
+        superseded: 0,
+        processed: 1,
+        total: 1,
+        unconfirmed: 0,
+      }),
+    );
+    expect(screen.queryByTestId('memory-action-outcome')).toBeNull();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+});
+
+describe('import acknowledgement integrity', () => {
+  const two = [
+    { content: 'a', category: 'fact' },
+    { content: 'b', category: 'fact' },
+  ];
+
+  it.each([
+    ['an empty object', () => json({})],
+    [
+      'a non-JSON body',
+      () => new Response('<html>proxy</html>', { status: 200 }),
+    ],
+    [
+      'a received count for a different chunk',
+      () =>
+        json({
+          received: 5,
+          processed: 5,
+          created: 5,
+          merged: 0,
+          superseded: 0,
+        }),
+    ],
+    [
+      'more outcomes than processed entries',
+      () =>
+        json({
+          received: 2,
+          processed: 2,
+          created: 2,
+          merged: 1,
+          superseded: 0,
+        }),
+    ],
+    [
+      'negative or fractional counts',
+      () =>
+        json({
+          received: 2,
+          processed: 2,
+          created: -1,
+          merged: 1.5,
+          superseded: 0,
+        }),
+    ],
+    [
+      'outcomes that account for fewer entries than processed',
+      () =>
+        json({
+          received: 2,
+          processed: 2,
+          created: 0,
+          merged: 0,
+          superseded: 0,
+        }),
+    ],
+    [
+      'a success that processed fewer entries than sent',
+      () =>
+        json({
+          received: 2,
+          processed: 1,
+          created: 1,
+          merged: 0,
+          superseded: 0,
+        }),
+    ],
+  ])(
+    'treats a 2xx with %s as an unconfirmed outcome, not success',
+    async (_n, reply) => {
+      respond = reply;
+      const { result } = renderHook(() => useMemories());
+      let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+      await act(async () => {
+        outcome = await result.current.importMemories(two);
+      });
+      expect(outcome).toMatchObject({
+        created: 0,
+        processed: 0,
+        unconfirmed: 2,
+        error: 'Daemon sent an unexpected reply to part of the import.',
+      });
+    },
+  );
+
+  it('reports a lost response as unconfirmed and never replays the POST elsewhere', async () => {
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://api.test');
+    let posts = 0;
+    respond = () => {
+      posts += 1;
+      throw new TypeError('connection reset after commit');
+    };
+    try {
+      const { result } = renderHook(() => useMemories());
+      let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+      await act(async () => {
+        outcome = await result.current.importMemories(two);
+      });
+      expect(posts).toBe(1);
+      expect(outcome).toMatchObject({
+        processed: 0,
+        unconfirmed: 2,
+        error: "Daemon didn't confirm the last part of the import.",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps confirmed earlier chunks and marks only the lost chunk unconfirmed', async () => {
+    let call = 0;
+    respond = (_url, init) => {
+      call += 1;
+      const sent = JSON.parse(String(init!.body)).memories.length;
+      if (call === 1) {
+        return json({
+          received: sent,
+          processed: sent,
+          created: sent,
+          merged: 0,
+          superseded: 0,
+        });
+      }
+      throw new TypeError('lost');
+    };
+    const { result } = renderHook(() => useMemories());
+    const items = Array.from({ length: IMPORT_REQUEST_SIZE + 2 }, (_, i) => ({
+      content: `m${i}`,
+      category: 'fact',
+    }));
+    let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+    await act(async () => {
+      outcome = await result.current.importMemories(items);
+    });
+    expect(outcome).toMatchObject({
+      created: IMPORT_REQUEST_SIZE,
+      processed: IMPORT_REQUEST_SIZE,
+      unconfirmed: 2,
+    });
+  });
+
+  it('treats a partial 503 whose outcomes undercount processed as unconfirmed', async () => {
+    respond = () =>
+      json(
+        {
+          detail: {
+            message: 'stopped',
+            received: 2,
+            processed: 1,
+            created: 0,
+            merged: 0,
+            superseded: 0,
+          },
+        },
+        503,
+      );
+    const { result } = renderHook(() => useMemories());
+    let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+    await act(async () => {
+      outcome = await result.current.importMemories(two);
+    });
+    expect(outcome).toMatchObject({ processed: 0, created: 0, unconfirmed: 2 });
+  });
+
+  it('treats a 503 without a consistent progress report as unconfirmed', async () => {
+    respond = () => json({ detail: 'unavailable' }, 503);
+    const { result } = renderHook(() => useMemories());
+    let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+    await act(async () => {
+      outcome = await result.current.importMemories(two);
+    });
+    expect(outcome).toMatchObject({ unconfirmed: 2, processed: 0 });
+  });
+
+  it('says plainly when some outcomes are unknown', async () => {
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={vi.fn(async () => ({
+          created: 1,
+          merged: 0,
+          superseded: 0,
+          processed: 1,
+          total: 3,
+          unconfirmed: 2,
+          error: "Daemon didn't confirm the last part of the import.",
+        }))}
+        onSaved={vi.fn()}
+      />,
+    );
+    fireEvent.change(
+      screen.getByLabelText('Import memories from a JSON file'),
+      {
+        target: {
+          files: [
+            new File(
+              ['[{"content":"A"},{"content":"B"},{"content":"C"}]'],
+              'm.json',
+            ),
+          ],
+        },
+      },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      "Daemon didn't confirm the last part of the import. Confirmed saved before stopping: 1 new memory, 0 merged with existing ones, 0 replaced older versions (1 of 3 processed). Daemon didn't confirm what happened to 2 more memories, so some may have been saved. Check your memories before importing them again.",
+    );
+  });
+});
+
+describe('import file selection ordering', () => {
+  function slowFile(name: string, text: string) {
+    const gate = deferred<string>();
+    const file = new File([text], name, { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: () => gate.promise });
+    return { file, release: () => gate.resolve(text) };
+  }
+
+  function renderImport() {
+    render(
+      <MemoryActions
+        createMemory={vi.fn()}
+        exportMemories={vi.fn()}
+        importMemories={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+    return screen.getByLabelText('Import memories from a JSON file');
+  }
+
+  it('a slower earlier file never replaces the newer file’s review', async () => {
+    const input = renderImport();
+    const a = slowFile('older.json', '[{"content":"From A"}]');
+    const b = slowFile('newer.json', '[{"content":"From B"},{"content":"B2"}]');
+    fireEvent.change(input, { target: { files: [a.file] } });
+    fireEvent.change(input, { target: { files: [b.file] } });
+    await act(async () => b.release());
+    const review = await screen.findByRole('group', { name: 'Review import' });
+    expect(review.textContent).toContain('newer.json');
+    await act(async () => a.release());
+    expect(
+      screen.getByRole('group', { name: 'Review import' }).textContent,
+    ).toContain('newer.json');
+  });
+
+  it('a pending earlier read cannot resurrect a review after Cancel', async () => {
+    const input = renderImport();
+    const a = slowFile('older.json', '[{"content":"From A"}]');
+    const b = slowFile('newer.json', '[{"content":"From B"}]');
+    fireEvent.change(input, { target: { files: [a.file] } });
+    fireEvent.change(input, { target: { files: [b.file] } });
+    await act(async () => b.release());
+    await screen.findByRole('group', { name: 'Review import' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await act(async () => a.release());
+    expect(screen.queryByRole('group', { name: 'Review import' })).toBeNull();
+  });
+
+  it('a stale read error is not shown over the newer file', async () => {
+    const input = renderImport();
+    const a = slowFile('broken.json', '{oops');
+    const b = slowFile('good.json', '[{"content":"Good"}]');
+    fireEvent.change(input, { target: { files: [a.file] } });
+    fireEvent.change(input, { target: { files: [b.file] } });
+    await act(async () => b.release());
+    await screen.findByRole('group', { name: 'Review import' });
+    await act(async () => a.release());
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

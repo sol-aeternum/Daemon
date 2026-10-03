@@ -335,3 +335,69 @@ test('settings lets a person add a memory and export portable JSON', async ({
     'Exported 1 active memory.',
   );
 });
+
+test('settings imports memories only after the person reviews the file', async ({
+  page,
+}) => {
+  const imported: unknown[] = [];
+  await page.route(
+    /^http:\/\/[^/]+\/(?:api\/)?memories(?:\/|\?|$)/,
+    async (route) => {
+      const request = route.request();
+      if (
+        request.method() === 'POST' &&
+        new URL(request.url()).pathname.endsWith('/memories/import')
+      ) {
+        const body = request.postDataJSON();
+        imported.push(body);
+        return route.fulfill({
+          json: {
+            received: body.memories.length,
+            processed: body.memories.length,
+            inserted: 1,
+            created: 1,
+            merged: 1,
+            superseded: 0,
+          },
+        });
+      }
+      return route.fulfill({ json: { memories: [], total: 0 } });
+    },
+  );
+  await page.goto('/settings/memory');
+  await page.getByLabel('Import memories from a JSON file').setInputFiles({
+    name: 'daemon-memories-2026-10-03.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        format: 'daemon-memories',
+        version: 1,
+        memories: [
+          { content: 'Prefers metric units', category: 'preference' },
+          { content: 'Lives in Adelaide', category: 'fact' },
+          { content: 'Lives in Adelaide', category: 'fact' },
+        ],
+      }),
+    ),
+  });
+
+  const review = page.getByRole('group', { name: 'Review import' });
+  await expect(review).toContainText(
+    'Ready to import 2 memories from daemon-memories-2026-10-03.json',
+  );
+  await expect(review).toContainText('Skipping 1 duplicate in the file.');
+  expect(imported).toHaveLength(0);
+
+  await page.getByRole('button', { name: 'Import', exact: true }).click();
+  await expect(page.getByTestId('memory-action-outcome')).toHaveText(
+    'Imported 2 memories: 1 new memory, 1 merged with an existing one, 0 replaced older versions.',
+  );
+  expect(imported).toEqual([
+    {
+      memories: [
+        { content: 'Prefers metric units', category: 'preference' },
+        { content: 'Lives in Adelaide', category: 'fact' },
+      ],
+    },
+  ]);
+});

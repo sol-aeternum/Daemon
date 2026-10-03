@@ -69,6 +69,7 @@ export default function MemoryTab() {
     correctMemory,
     createMemory,
     exportMemories,
+    importMemories,
     total: memoriesTotal,
   } = useMemories();
 
@@ -372,6 +373,7 @@ export default function MemoryTab() {
             <MemoryActions
               createMemory={createMemory}
               exportMemories={exportMemories}
+              importMemories={importMemories}
               onSaved={() => {
                 void fetchMemories(filters);
                 void fetchMemoryStats();

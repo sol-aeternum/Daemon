@@ -10,7 +10,7 @@ from orchestrator.entitlements.policy import RouteNotApproved, parse_inference_p
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEWED = datetime(2026, 10, 3, tzinfo=timezone.utc)
-EXPIRES = datetime(2026, 10, 6, tzinfo=timezone.utc)
+EXPIRES = datetime(2026, 10, 17, tzinfo=timezone.utc)
 
 
 def test_deployment_policy_is_opt_in_and_expires_closed() -> None:
@@ -29,7 +29,7 @@ def test_deployment_policy_is_opt_in_and_expires_closed() -> None:
     assert policy.default_route_id is None
     sol = policy.routes["sol-azure-eu"]
     assert sol.model == "openrouter/openai/gpt-6.1-sol"
-    assert sol.review.reviewed_at == datetime(2026, 9, 30, tzinfo=timezone.utc)
+    assert sol.review.reviewed_at == datetime(2026, 10, 3, tzinfo=timezone.utc)
     assert all(r.model != "openrouter/openai/gpt-6-sol" for r in policy.routes.values())
     sonnet = policy.routes["sonnet-vertex-europe"]
     assert sonnet.model == "openrouter/anthropic/claude-sonnet-5.5"

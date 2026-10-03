@@ -260,6 +260,50 @@ class MemoryReadTool(Tool):
         return "\n".join(formatted)
 
 
+async def apply_deferred_supersede_effects(
+    store: MemoryStore,
+    effects: list[DeferredSupersedeEffects],
+) -> None:
+    """Run provider and pool-backed supersede side effects after commit.
+
+    Shared by the memory tool and the import route: both commit dedup writes
+    in a transaction first, then run contradiction checks and trust signals.
+    Failures here are logged and never undo the committed write.
+    """
+    from orchestrator.memory.trust_signals import apply_explicit_negative_signal
+
+    for effect in effects:
+        try:
+            contradiction_detected, explanation = await check_contradiction(
+                effect.existing_content,
+                effect.new_content,
+            )
+            if contradiction_detected:
+                await store.update_memory_metadata(
+                    effect.new_memory_id,
+                    {
+                        "contradiction_detected": True,
+                        "contradiction_explanation": explanation,
+                    },
+                )
+        except Exception as error:
+            logger.warning(
+                "Failed to annotate deferred contradiction metadata: %s",
+                error,
+            )
+
+        try:
+            await apply_explicit_negative_signal(
+                superseded_memory_id=effect.superseded_memory_id,
+                store=store,
+            )
+        except Exception as error:
+            logger.warning(
+                "Failed to apply deferred supersede trust signal: %s",
+                error,
+            )
+
+
 class MemoryWriteTool(Tool):
     name = "memory_write"
     description = "Create, update, or delete memories"
@@ -336,38 +380,7 @@ class MemoryWriteTool(Tool):
         effects: list[DeferredSupersedeEffects],
     ) -> None:
         """Run provider and pool-backed supersede side effects after commit."""
-        from orchestrator.memory.trust_signals import apply_explicit_negative_signal
-
-        for effect in effects:
-            try:
-                contradiction_detected, explanation = await check_contradiction(
-                    effect.existing_content,
-                    effect.new_content,
-                )
-                if contradiction_detected:
-                    await self.store.update_memory_metadata(
-                        effect.new_memory_id,
-                        {
-                            "contradiction_detected": True,
-                            "contradiction_explanation": explanation,
-                        },
-                    )
-            except Exception as error:
-                logger.warning(
-                    "Failed to annotate deferred contradiction metadata: %s",
-                    error,
-                )
-
-            try:
-                await apply_explicit_negative_signal(
-                    superseded_memory_id=effect.superseded_memory_id,
-                    store=self.store,
-                )
-            except Exception as error:
-                logger.warning(
-                    "Failed to apply deferred supersede trust signal: %s",
-                    error,
-                )
+        await apply_deferred_supersede_effects(self.store, effects)
 
     async def _check_write_quota(
         self,
