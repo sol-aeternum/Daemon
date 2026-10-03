@@ -438,11 +438,16 @@ export function useMemories() {
   // A background refresh never retires it; it waits and runs afterwards.
   const foreground = useRef<number | null>(null);
   const refreshPending = useRef(false);
+  // Which kind of foreground request owns loading, and how many deletes are
+  // pending. While a delete is pending no background refresh publishes.
+  const foregroundKind = useRef<'fetch' | 'loadMore' | null>(null);
+  const pendingDeletes = useRef(0);
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
 
-  const beginForeground = () => {
+  const beginForeground = (kind: 'fetch' | 'loadMore') => {
     const request = ++listRequest.current;
     foreground.current = request;
+    foregroundKind.current = kind;
     setLoading(true);
     setError(null);
     return request;
@@ -452,8 +457,9 @@ export function useMemories() {
   const settleForeground = (request: number) => {
     if (foreground.current !== request) return;
     foreground.current = null;
+    foregroundKind.current = null;
     setLoading(false);
-    if (refreshPending.current) {
+    if (refreshPending.current && pendingDeletes.current === 0) {
       refreshPending.current = false;
       void refreshRef.current();
     }
@@ -497,7 +503,7 @@ export function useMemories() {
       if (Object.keys(params).length > 0) {
         filtersRef.current = { status: 'active', ...filters };
       }
-      const request = beginForeground();
+      const request = beginForeground('fetch');
       const generation = getAuthGeneration();
       const current = filtersRef.current;
       try {
@@ -521,7 +527,7 @@ export function useMemories() {
 
   /** Append the next page for the current filters. */
   const loadMore = useCallback(async () => {
-    const request = beginForeground();
+    const request = beginForeground('loadMore');
     const generation = getAuthGeneration();
     const current = filtersRef.current;
     const offset = loadedCount.current;
@@ -554,8 +560,9 @@ export function useMemories() {
    * filters, so polling or a save never collapses the list back to page one.
    */
   const refreshMemories = useCallback(async () => {
-    if (foreground.current !== null) {
-      // Never retire a foreground request; refresh once it settles.
+    if (foreground.current !== null || pendingDeletes.current > 0) {
+      // Never retire a foreground request, and never publish a snapshot that
+      // may predate a pending delete; refresh once both settle.
       refreshPending.current = true;
       return;
     }
@@ -604,6 +611,7 @@ export function useMemories() {
       subscribeAuthGeneration(() => {
         listRequest.current += 1;
         foreground.current = null;
+        foregroundKind.current = null;
         refreshPending.current = false;
         loadedCount.current = 0;
         setMemories([]);
@@ -616,43 +624,66 @@ export function useMemories() {
 
   const deleteMemory = useCallback(
     async (id: string): Promise<boolean> => {
-      // Optimistic removal keeps the next-page offset and total in step with
-      // the rows shown; a failure restores all three together.
+      // A delete takes part in list ordering. Starting it retires in-flight
+      // list responses, which may predate it; a retired "Load more" is kept
+      // as intent by widening the span the reconcile refresh reads. While it
+      // is pending, background refreshes wait. On settle it restores its
+      // snapshot only if no newer list activity happened; otherwise, and
+      // whenever a refresh waited, it re-reads the current filters and span.
+      const generation = getAuthGeneration();
       const previousMemories = memories;
       const wasLoaded = previousMemories.some((memory) => memory.id === id);
+      const retiredKind = foregroundKind.current;
+      const version = ++listRequest.current;
+      if (foreground.current !== null) {
+        foreground.current = null;
+        foregroundKind.current = null;
+        setLoading(false);
+        refreshPending.current = true;
+      }
       const previousCount = loadedCount.current;
-      const generation = getAuthGeneration();
-      const restore = () => {
-        if (generation !== getAuthGeneration()) return;
-        loadedCount.current = previousCount;
-        setMemories(previousMemories);
-        if (wasLoaded) setTotal((prev) => prev + 1);
-        setError('Failed to delete memory');
-      };
+      pendingDeletes.current += 1;
       if (wasLoaded) {
         loadedCount.current = Math.max(0, previousCount - 1);
         setMemories((prev) => prev.filter((mem) => mem.id !== id));
         setTotal((prev) => Math.max(0, prev - 1));
       }
+      if (retiredKind === 'loadMore') {
+        loadedCount.current += MEMORY_PAGE_SIZE;
+      }
 
+      let ok = false;
       try {
         const response = await apiFetch(`/memories/${id}`, {
           method: 'DELETE',
           headers: await getAuthHeaders(),
         });
+        ok = response.ok;
+      } catch {
+        ok = false;
+      }
 
-        if (!response.ok) {
-          restore();
+      pendingDeletes.current -= 1;
+      if (generation !== getAuthGeneration()) return ok;
+      const untouched = listRequest.current === version && retiredKind === null;
+      if (!ok) {
+        setError('Failed to delete memory');
+        if (untouched && !refreshPending.current) {
+          loadedCount.current = previousCount;
+          setMemories(previousMemories);
+          if (wasLoaded) setTotal((prev) => prev + 1);
           return false;
         }
-        // A "Load more" that started before this delete used the old offset;
-        // re-read the loaded span once it settles.
-        if (foreground.current !== null) refreshPending.current = true;
-        return true;
-      } catch {
-        restore();
-        return false;
       }
+      if (!untouched || refreshPending.current || !ok) {
+        refreshPending.current = false;
+        if (foreground.current !== null || pendingDeletes.current > 0) {
+          refreshPending.current = true;
+        } else {
+          void refreshRef.current();
+        }
+      }
+      return ok;
     },
     [apiFetch, getAuthHeaders, memories],
   );

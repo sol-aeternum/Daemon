@@ -67,6 +67,7 @@ let rows: Row[];
 let listRequests: URLSearchParams[];
 let gate: ((params: URLSearchParams) => Promise<void> | void) | null;
 let failDelete: boolean;
+let deleteGate: Promise<void> | null;
 let failList: boolean;
 
 function json(body: unknown, status = 200) {
@@ -79,8 +80,8 @@ function json(body: unknown, status = 200) {
 /** In-memory GET /memories with the server's filter and paging contract. */
 async function serveList(params: URLSearchParams) {
   listRequests.push(params);
-  if (gate) await gate(params);
-  if (failList) return json({ detail: 'down' }, 503);
+  // Snapshot first, then wait: a held response reflects the data as it was
+  // when the request was read, like a read that happened before a commit.
   const status = params.get('status') ?? 'active';
   const source = params.get('source_type');
   const matching = rows.filter(
@@ -93,6 +94,9 @@ async function serveList(params: URLSearchParams) {
   const limit = Number(params.get('limit') ?? 20);
   const offset = Number(params.get('offset') ?? 0);
   const page = matching.slice(offset, offset + limit);
+  const failed = failList;
+  if (gate) await gate(params);
+  if (failed) return json({ detail: 'down' }, 503);
   return json({
     memories: page,
     total: matching.length,
@@ -108,6 +112,7 @@ beforeEach(() => {
   gate = null;
   failDelete = false;
   failList = false;
+  deleteGate = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -120,6 +125,7 @@ beforeEach(() => {
       }
       const single = url.pathname.match(/\/memories\/([^/]+)$/);
       if (single && init?.method === 'DELETE') {
+        if (deleteGate) await deleteGate;
         if (failDelete) return json({ detail: 'nope' }, 500);
         rows = rows.filter((r) => r.id !== single[1]);
         return json({ deleted: true });
@@ -466,5 +472,144 @@ describe('useMemories loading ownership and deletes (#432 review)', () => {
     expect(listRequests.at(-1)?.get('offset')).toBe('20');
     expect(result.current.memories.map((m) => m.id)).toContain('m-021');
     expect(result.current.memories).toHaveLength(21);
+  });
+});
+
+describe('deletes take part in list ordering (#432 re-review)', () => {
+  async function loadedHook() {
+    const hook = renderHook(() => useMemories());
+    await waitFor(() => expect(hook.result.current.memories).toHaveLength(20));
+    return hook;
+  }
+
+  function holdDelete() {
+    let release!: () => void;
+    deleteGate = new Promise<void>((resolve) => (release = resolve));
+    return () => release();
+  }
+
+  function consistent(result: { current: ReturnType<typeof useMemories> }) {
+    const ids = result.current.memories.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(result.current.hasMore).toBe(ids.length < result.current.total);
+  }
+
+  it('a poll during a pending delete waits, then reconciles without the row', async () => {
+    const { result } = await loadedHook();
+    const release = holdDelete();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.deleteMemory('m-005');
+    });
+    const before = listRequests.length;
+    await act(async () => result.current.refreshMemories());
+    expect(listRequests.length).toBe(before); // deferred while the delete is pending
+    await act(async () => {
+      release();
+      expect(await pending).toBe(true);
+    });
+    await waitFor(() => expect(listRequests.length).toBe(before + 1));
+    expect(result.current.memories.map((m) => m.id)).not.toContain('m-005');
+    expect(result.current.total).toBe(20);
+    consistent(result);
+  });
+
+  it('a failed delete after a deferred poll does not inflate the total', async () => {
+    const { result } = await loadedHook();
+    failDelete = true;
+    const release = holdDelete();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.deleteMemory('m-005');
+    });
+    await act(async () => result.current.refreshMemories());
+    await act(async () => {
+      release();
+      expect(await pending).toBe(false);
+    });
+    await waitFor(() => expect(result.current.memories).toHaveLength(20));
+    expect(result.current.total).toBe(21);
+    expect(result.current.memories.map((m) => m.id)).toContain('m-005');
+    consistent(result);
+  });
+
+  it('a failed delete never overwrites a newer filter result with its old snapshot', async () => {
+    const { result } = await loadedHook();
+    rows.push(
+      row(300, { status: 'superseded' }),
+      row(301, { status: 'superseded' }),
+    );
+    failDelete = true;
+    const release = holdDelete();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.deleteMemory('m-005');
+    });
+    await act(async () =>
+      result.current.fetchMemories({ status: 'superseded' }),
+    );
+    expect(result.current.memories.map((m) => m.id)).toEqual([
+      'm-300',
+      'm-301',
+    ]);
+    await act(async () => {
+      release();
+      await pending;
+    });
+    await waitFor(() => expect(result.current.total).toBe(2));
+    expect(result.current.memories.map((m) => m.id)).toEqual([
+      'm-300',
+      'm-301',
+    ]);
+    consistent(result);
+  });
+
+  it('an older in-flight list response cannot resurrect the deleted row', async () => {
+    const { result } = await loadedHook();
+    let releaseList!: () => void;
+    gate = () => new Promise<void>((resolve) => (releaseList = resolve));
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = result.current.refreshMemories(); // reads before the delete
+    });
+    await waitFor(() => expect(releaseList).toBeDefined());
+    gate = null;
+    await act(async () => {
+      expect(await result.current.deleteMemory('m-005')).toBe(true);
+    });
+    await act(async () => {
+      releaseList();
+      await refresh;
+    });
+    await waitFor(() => expect(result.current.total).toBe(20));
+    expect(result.current.memories.map((m) => m.id)).not.toContain('m-005');
+    consistent(result);
+  });
+
+  it('a "Load more" retired by a delete still lands its page', async () => {
+    const { result } = await loadedHook();
+    let releaseList!: () => void;
+    gate = (params) =>
+      params.get('offset') === String(MEMORY_PAGE_SIZE)
+        ? new Promise<void>((resolve) => (releaseList = resolve))
+        : undefined;
+    let more!: Promise<void>;
+    act(() => {
+      more = result.current.loadMore();
+    });
+    await waitFor(() => expect(releaseList).toBeDefined());
+    gate = null;
+    await act(async () => {
+      expect(await result.current.deleteMemory('m-005')).toBe(true);
+    });
+    await act(async () => {
+      releaseList();
+      await more;
+    });
+    await waitFor(() => expect(result.current.memories).toHaveLength(20));
+    expect(result.current.memories.map((m) => m.id)).toContain('m-021');
+    expect(result.current.memories.map((m) => m.id)).not.toContain('m-005');
+    expect(result.current.loading).toBe(false);
+    consistent(result);
   });
 });
