@@ -10,6 +10,7 @@ import { useMemories, Memory } from '@/hooks/useMemories';
 import MemoryFilters from './memory/MemoryFilters';
 import { MemoryCard } from './memory/MemoryCard';
 import { MemoryDetail } from './memory/MemoryDetail';
+import { MemoryActions } from './memory/MemoryActions';
 import {
   Brain,
   Database,
@@ -66,6 +67,8 @@ export default function MemoryTab() {
     fetchMemories,
     deleteMemory,
     correctMemory,
+    createMemory,
+    exportMemories,
     total: memoriesTotal,
   } = useMemories();
 
@@ -365,6 +368,15 @@ export default function MemoryTab() {
                 </div>
               </div>
             </div>
+
+            <MemoryActions
+              createMemory={createMemory}
+              exportMemories={exportMemories}
+              onSaved={() => {
+                void fetchMemories(filters);
+                void fetchMemoryStats();
+              }}
+            />
 
             {/* Memory Browser */}
             <div className="bg-bg-secondary rounded-lg border border-border-primary">

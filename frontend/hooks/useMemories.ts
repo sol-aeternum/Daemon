@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ensureAuthHeader } from '@/lib/auth';
+import { ensureAuthHeader, getAuthGeneration } from '@/lib/auth';
 
 export interface Memory {
   id: string;
@@ -33,6 +33,101 @@ export interface FetchMemoriesParams {
   search?: string;
   limit?: number;
   offset?: number;
+}
+
+/** Categories a person may assign by hand; `summary` is system-generated. */
+export const USER_MEMORY_CATEGORIES = [
+  'fact',
+  'preference',
+  'project',
+  'correction',
+] as const;
+export type UserMemoryCategory = (typeof USER_MEMORY_CATEGORIES)[number];
+export const MAX_USER_MEMORY_LENGTH = 2000;
+
+/** Portable export record: no IDs, embeddings or internal bookkeeping. */
+export interface ExportedMemory {
+  content: string;
+  category: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MemoryExport {
+  format: 'daemon-memories';
+  version: 1;
+  exported_at: string;
+  status: 'active';
+  memories: ExportedMemory[];
+}
+
+/** The account or view that started a request is gone; drop its result. */
+export class MemoryRequestSupersededError extends Error {
+  constructor() {
+    super('Memory request superseded');
+    this.name = 'MemoryRequestSupersededError';
+  }
+}
+
+/** The server answered, but not with a usable memory export. */
+export class MemoryExportFormatError extends Error {
+  constructor() {
+    super('Unexpected memory export response');
+    this.name = 'MemoryExportFormatError';
+  }
+}
+
+function isOptionalDate(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+/**
+ * Validates the export payload before anything is offered for download. An
+ * empty array is a valid (empty) export; a missing, null or malformed list is
+ * not.
+ */
+export function toMemoryExport(
+  rows: unknown,
+  now: Date = new Date(),
+): MemoryExport {
+  if (!Array.isArray(rows)) throw new MemoryExportFormatError();
+  const memories: ExportedMemory[] = rows.map((row: unknown) => {
+    if (!row || typeof row !== 'object') throw new MemoryExportFormatError();
+    const record = row as Record<string, unknown>;
+    if (
+      typeof record.content !== 'string' ||
+      !record.content ||
+      typeof record.category !== 'string' ||
+      !isOptionalDate(record.created_at) ||
+      !isOptionalDate(record.updated_at)
+    ) {
+      throw new MemoryExportFormatError();
+    }
+    return {
+      content: record.content,
+      category: record.category,
+      created_at: (record.created_at as string | null | undefined) ?? null,
+      updated_at: (record.updated_at as string | null | undefined) ?? null,
+    };
+  });
+  return {
+    format: 'daemon-memories',
+    version: 1,
+    exported_at: now.toISOString(),
+    status: 'active',
+    memories,
+  };
+}
+
+/** Caller-owned cancellation: abort when the view or sign-in goes away. */
+export interface MemoryRequestOptions {
+  signal?: AbortSignal;
+}
+
+function assertCurrent(generation: number, signal?: AbortSignal): void {
+  if (signal?.aborted || generation !== getAuthGeneration()) {
+    throw new MemoryRequestSupersededError();
+  }
 }
 
 export function useMemories() {
@@ -78,6 +173,12 @@ export function useMemories() {
       for (let index = 0; index < candidates.length; index += 1) {
         const candidate = candidates[index];
         const controller = new AbortController();
+        const external = init.signal ?? undefined;
+        if (external?.aborted) {
+          throw new DOMException('Request aborted', 'AbortError');
+        }
+        const forwardAbort = () => controller.abort(external?.reason);
+        external?.addEventListener('abort', forwardAbort, { once: true });
         const timeoutId = setTimeout(() => {
           try {
             controller.abort(
@@ -94,6 +195,7 @@ export function useMemories() {
             signal: controller.signal,
           });
           clearTimeout(timeoutId);
+          external?.removeEventListener('abort', forwardAbort);
 
           if (response.status === 404 && index < candidates.length - 1) {
             continue;
@@ -102,8 +204,9 @@ export function useMemories() {
           return response;
         } catch (error) {
           clearTimeout(timeoutId);
+          external?.removeEventListener('abort', forwardAbort);
           lastError = error;
-          if (index === candidates.length - 1) {
+          if (external?.aborted || index === candidates.length - 1) {
             throw error;
           }
         }
@@ -297,6 +400,104 @@ export function useMemories() {
     return () => clearInterval(interval);
   }, [fetchMemories]);
 
+  /** Save a memory written by the person; the server may merge a duplicate. */
+  const createMemory = useCallback(
+    async (
+      content: string,
+      category: UserMemoryCategory,
+      options: MemoryRequestOptions = {},
+    ): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
+      const generation = getAuthGeneration();
+      const trimmed = content.trim();
+      if (!trimmed) return { ok: false, error: 'Write something to remember.' };
+      if (trimmed.length > MAX_USER_MEMORY_LENGTH) {
+        return {
+          ok: false,
+          error: `Keep it under ${MAX_USER_MEMORY_LENGTH.toLocaleString()} characters.`,
+        };
+      }
+      try {
+        const response = await apiFetch('/memories', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(await getAuthHeaders()),
+          },
+          body: JSON.stringify({ content: trimmed, category }),
+          signal: options.signal,
+        });
+        assertCurrent(generation, options.signal);
+        if (!response.ok) {
+          return {
+            ok: false,
+            error:
+              response.status === 503
+                ? 'Memory is unavailable right now. Please try again later.'
+                : "Couldn't save the memory. Please try again.",
+          };
+        }
+        const data: { id?: string } = await response.json();
+        assertCurrent(generation, options.signal);
+        return { ok: true, id: String(data.id ?? '') };
+      } catch (error) {
+        if (
+          error instanceof MemoryRequestSupersededError ||
+          options.signal?.aborted ||
+          generation !== getAuthGeneration()
+        ) {
+          throw new MemoryRequestSupersededError();
+        }
+        return {
+          ok: false,
+          error: "Couldn't save the memory. Please try again.",
+        };
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
+  /** Active memories in a portable shape, for download by the person. */
+  const exportMemories = useCallback(
+    async (options: MemoryRequestOptions = {}): Promise<MemoryExport> => {
+      const generation = getAuthGeneration();
+      let response: Response;
+      try {
+        response = await apiFetch(
+          '/memories/export',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(await getAuthHeaders()),
+            },
+            body: JSON.stringify({ status: 'active' }),
+            signal: options.signal,
+          },
+          30000,
+        );
+      } catch (error) {
+        assertCurrent(generation, options.signal);
+        throw error;
+      }
+      assertCurrent(generation, options.signal);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      let data: unknown;
+      try {
+        data = await response.json();
+      } catch {
+        assertCurrent(generation, options.signal);
+        throw new MemoryExportFormatError();
+      }
+      assertCurrent(generation, options.signal);
+      const rows =
+        data && typeof data === 'object'
+          ? (data as { memories?: unknown }).memories
+          : undefined;
+      return toMemoryExport(rows);
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
   return {
     memories,
     loading,
@@ -308,5 +509,7 @@ export function useMemories() {
     deleteMemory,
     correctMemory,
     fetchTrail,
+    createMemory,
+    exportMemories,
   };
 }
