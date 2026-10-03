@@ -68,6 +68,10 @@ RECORD_ATTEMPTS: Final[int] = 3
 
 FETCH_TIMEOUT_S: Final[float] = 30.0
 
+#: Largest decoded listing accepted (the ZDR listing was about 0.9 MB on 3 October
+#: 2026). A larger body is unreadable metadata, never buffered without bound.
+MAX_METADATA_BYTES: Final[int] = 8 * 1024 * 1024
+
 OUTCOMES: Final[frozenset[str]] = frozenset({"attested", "revoked", "check_failed"})
 
 
@@ -456,11 +460,36 @@ async def record(pool: Any, checks: Iterable[RouteCheck], evidence_sha256: str |
             )
 
 
+class MetadataError(ValueError):
+    """A listing that cannot be trusted as evidence (too large, ambiguous JSON)."""
+
+
+def _reject_duplicate_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """JSON object hook: a repeated member name is ambiguous evidence, not last-wins."""
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise MetadataError(f"duplicate JSON member {name!r}")
+        result[name] = value
+    return result
+
+
 async def _fetch_json(client: Any, url: str) -> tuple[object, bytes]:
-    response = await client.get(url, timeout=FETCH_TIMEOUT_S)
-    response.raise_for_status()
-    body = response.content
-    return json.loads(body), body
+    """Stream one public listing with a decoded-size bound and strict JSON parsing."""
+    async with client.stream("GET", url, timeout=FETCH_TIMEOUT_S) as response:
+        response.raise_for_status()
+        declared = response.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > MAX_METADATA_BYTES:
+            raise MetadataError("listing exceeds the metadata size limit")
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > MAX_METADATA_BYTES:
+                raise MetadataError("listing exceeds the metadata size limit")
+            chunks.append(chunk)
+    body = b"".join(chunks)
+    return json.loads(body, object_pairs_hook=_reject_duplicate_names), body
 
 
 async def run_check(pool: Any, client: Any, routes: Iterable[RoutePolicy]) -> dict[str, int]:

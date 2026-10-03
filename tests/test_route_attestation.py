@@ -359,31 +359,56 @@ class _Pool:
 
 
 class _Response:
-    def __init__(self, payload: object, *, status: int = 200) -> None:
-        self.content = json.dumps(payload).encode()
+    def __init__(
+        self,
+        payload: object,
+        *,
+        status: int = 200,
+        raw: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.content = raw if raw is not None else json.dumps(payload).encode()
         self.status = status
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status >= 400:
             raise RuntimeError("http error")
 
+    async def aiter_bytes(self) -> Any:
+        for start in range(0, len(self.content), 65536):
+            yield self.content[start : start + 65536]
+
+    async def __aenter__(self) -> _Response:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
 
 class _Client:
     def __init__(
-        self, zdr_payload: object, providers_payload: object, *, fail: bool = False
+        self,
+        zdr_payload: object,
+        providers_payload: object,
+        *,
+        fail: bool = False,
+        responses: dict[str, _Response] | None = None,
     ) -> None:
         self.payloads = {
             attestation.ZDR_LISTING_URL: zdr_payload,
             attestation.PROVIDERS_URL: providers_payload,
         }
+        self.responses = responses or {}
         self.fail = fail
         self.urls: list[str] = []
 
-    async def get(self, url: str, timeout: float) -> _Response:
+    def stream(self, method: str, url: str, timeout: float) -> _Response:
+        assert method == "GET"
         self.urls.append(url)
         if self.fail:
             raise TimeoutError("unreachable")
-        return _Response(self.payloads[url])
+        return self.responses.get(url) or _Response(self.payloads[url])
 
 
 @pytest.mark.asyncio
@@ -742,3 +767,31 @@ def test_a_baseline_must_pin_both_core_privacy_fields(pinned: dict[str, bool]) -
                 extra={"zdr_baseline": {"provider_slug": "azure", "data_policy": pinned}}
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        # Duplicate member names inside one object: last-wins would hide "training": true.
+        _Response(
+            None,
+            raw=b'{"data": [{"slug": "azure", "dataPolicy": '
+            b'{"training": true, "training": false, "retainsPrompts": false}}]}',
+        ),
+        # Declared too large: refused before reading the body.
+        _Response(
+            None,
+            raw=b"{}",
+            headers={"content-length": str(attestation.MAX_METADATA_BYTES + 1)},
+        ),
+        # Undeclared but too large once decoded.
+        _Response(None, raw=b" " * (attestation.MAX_METADATA_BYTES + 1)),
+    ],
+)
+async def test_untrustworthy_metadata_is_a_failed_check(response: _Response) -> None:
+    pool, route = _Pool(), _route()
+    client = _Client(LISTED, _providers(), responses={attestation.PROVIDERS_URL: response})
+    counts = await attestation.run_check(pool, client, [route])
+    assert counts["check_failed"] == 1 and counts["attested"] == 0
+    assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
