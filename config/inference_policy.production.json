@@ -167,7 +167,7 @@
     {
       "route_id": "sonnet-vertex-europe",
       "provider": "openrouter",
-      "model": "openrouter/anthropic/claude-sonnet-5",
+      "model": "openrouter/anthropic/claude-sonnet-5.5",
       "endpoint": "https://openrouter.ai/api/v1",
       "route_class": "premium",
       "model_capabilities": ["text", "tools", "json_schema"],
@@ -187,17 +187,19 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
         "review_expires_at": "2026-10-06T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
-          "https://openrouter.ai/api/v1/models/anthropic/claude-sonnet-5/endpoints",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#sonnet-55-replacement--3-october-2026",
+          "docs/REASONING_EVAL_PROTOCOL.md#sonnet-55-result-3-october-2026",
+          "https://openrouter.ai/api/v1/models/anthropic/claude-sonnet-5.5/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://openrouter.ai/api/frontend/v1/all-providers"
         ]
       },
       "price_ceiling": {"microusd_per_1m_prompt": 2200000, "microusd_per_1m_completion": 11000000},
-      "notes": "Exact Vertex Europe ZDR endpoint; no Global fallback, provider-native tools or explicit cache writes authorized. Endpoint qualification does not certify general task quality."
+      "notes": "Sonnet 5.5 replacement authorized 3 October 2026 at high effort; stable route ID, transport pin, native limits, price ceilings and 6 October expiry retained. Exact Vertex Europe ZDR endpoint (claude-sonnet-5.5-20260928); 119/120 blind-panel-acceptable on the reasoning evaluation pilot cases. No Global fallback, provider-native tools or explicit cache writes authorized. Endpoint qualification does not certify general task quality."
     },
     {
       "route_id": "opus-vertex-europe",

@@ -79,7 +79,7 @@
 <text x="1130" y="667" text-anchor="middle" font-size="15" fill="#0f172a">Reasoning candidate groups</text>
 <text x="1130" y="688" text-anchor="middle" font-size="15" fill="#0f172a">1. z-ai/glm-5.3 · high (no deployment route)</text>
 <text x="1130" y="709" text-anchor="middle" font-size="15" fill="#0f172a">1. openai/gpt-6.1-sol · high</text>
-<text x="1130" y="730" text-anchor="middle" font-size="15" fill="#0f172a">1. anthropic/claude-sonnet-5 · high</text>
+<text x="1130" y="730" text-anchor="middle" font-size="15" fill="#0f172a">1. anthropic/claude-sonnet-5.5 · high</text>
 <text x="1130" y="751" text-anchor="middle" font-size="15" fill="#0f172a">2. anthropic/claude-opus-5.5 · high</text>
 <text x="1130" y="772" text-anchor="middle" font-size="15" fill="#0f172a">2. openai/gpt-6-astra · high</text>
 <rect x="395" y="865" width="664" height="127" rx="9" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>

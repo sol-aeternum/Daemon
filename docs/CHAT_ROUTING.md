@@ -38,7 +38,7 @@ flowchart TD
 
     RT --> CRT["Routine and research candidates<br/>openai/gpt-6-luna · medium<br/>Only automatic candidate"]
     RS --> CRT
-    RE --> CRE["Reasoning candidate groups<br/>1. z-ai/glm-5.3 · high (no deployment route)<br/>1. openai/gpt-6.1-sol · high<br/>1. anthropic/claude-sonnet-5 · high<br/>2. anthropic/claude-opus-5.5 · high<br/>2. openai/gpt-6-astra · high"]
+    RE --> CRE["Reasoning candidate groups<br/>1. z-ai/glm-5.3 · high (no deployment route)<br/>1. openai/gpt-6.1-sol · high<br/>1. anthropic/claude-sonnet-5.5 · high<br/>2. anthropic/claude-opus-5.5 · high<br/>2. openai/gpt-6-astra · high"]
 
     PIN --> G
     CRT --> G
@@ -70,7 +70,7 @@ flowchart TD
 | research | 1. luna | `openai/gpt-6-luna` | medium | routine | 2026-10-06 |
 | reasoning | 1. demanding | `z-ai/glm-5.3` | high | none | — |
 | reasoning | 1. demanding | `openai/gpt-6.1-sol` | high | premium | 2026-10-06 |
-| reasoning | 1. demanding | `anthropic/claude-sonnet-5` | high | premium | 2026-10-06 |
+| reasoning | 1. demanding | `anthropic/claude-sonnet-5.5` | high | premium | 2026-10-06 |
 | reasoning | 2. escalation | `anthropic/claude-opus-5.5` | high | premium | 2026-10-06 |
 | reasoning | 2. escalation | `openai/gpt-6-astra` | high | premium | 2026-10-06 |
 

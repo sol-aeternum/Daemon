@@ -38,7 +38,7 @@ the short-prompt base price. Each route supports text, tools and JSON schema.
 | `deepseek/deepseek-v4.1-flash` | `coreweave/fp8` | routine | 1,048,576 / 393,216 | 0.20 / 0.65 |
 | `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.15 / 0.45 |
 | `openai/gpt-6.1-sol` | `azure/eu` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
-| `anthropic/claude-sonnet-5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
+| `anthropic/claude-sonnet-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
 | `anthropic/claude-opus-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 4.4 / 22 |
 | `openai/gpt-6-astra` | `azure/us` | premium | 1,050,000 / 128,000 | 22 / 82.5 |
 | `x-ai/grok-4.7` | `xai/zdr/us` | premium | 500,000 / 450,000 | 4.4 / 13.2 |
@@ -97,6 +97,41 @@ after disclosure that their shared checkout contains newer uncommitted accountin
 and search changes. The Sol rollout applies only its three runtime configuration
 files to that checkout, preserving the unrelated work. No additional paid smoke
 test is included; verify effective policy, presets, roster and service health.
+
+## Sonnet 5.5 replacement — 3 October 2026
+
+After the [Sonnet 5.5 evaluation](REASONING_EVAL_PROTOCOL.md#sonnet-55-result-3-october-2026),
+the operator directed: **“swap out sonnet 5 for 5.5”**.
+
+**Evaluation basis:**
+- On the reasoning-evaluation pilot cases, Sonnet 5.5 high scored 119/120 with a
+  unanimous three-reviewer blind AI panel. Sonnet 5 scored 115/120.
+- It cost 10% less per attempt and had a lower p95 latency (8.2 s against 15.9 s).
+- Paired gains were not statistically significant, the verdicts are AI-judged rather
+  than human, and council use was not evaluated.
+
+The existing `sonnet-vertex-europe` route now serves `anthropic/claude-sonnet-5.5`.
+
+**Retained unchanged:**
+- the `google-vertex/europe` pin with fallbacks disabled;
+- the ZDR, no-training and account controls;
+- the native context and output limits;
+- the premium class;
+- the USD 2.2 / 11 price ceilings, equal to the listed price;
+- the **6 October 00:00 UTC expiry**.
+
+Only this route's operator-review date advances, to 3 October. The other approvals
+are not renewed. Presets are unchanged: high for default and reasoning, and high
+with reasoning included for council. Sonnet 5.5 takes Sonnet 5's places in the
+reasoning demanding group, the council diverse group and the council analyst seat.
+The old Sonnet 5 ID is no longer routable.
+
+**Endpoint evidence:** exact Vertex Europe endpoint and ZDR metadata were fetched on
+2 October 2026 at 11:38 UTC (`claude-sonnet-5.5-20260928`; Google's policy states
+no training and no prompt retention). The 29 September screen recorded
+content-filter refusals on this endpoint for one benign fixture (#344), and the
+3 October run had none across 138 calls. Account attestation above continues to
+apply; no privacy exception is introduced.
 
 ## CoreWeave location decision
 

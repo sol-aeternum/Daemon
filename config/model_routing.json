@@ -89,7 +89,7 @@
       "notes": "Operator-selected Sol 6.1 replacement at high effort on 30 September 2026, including reasoning and council. The bounded comparison completed, but human semantic verdicts remain pending; this rollout is not a claim of measured quality superiority. See docs/SOL_UPGRADE_EVALUATION.md."
     },
     {
-      "model": "openrouter/anthropic/claude-sonnet-5",
+      "model": "openrouter/anthropic/claude-sonnet-5.5",
       "sampling_parameters": ["stop"],
       "developer": "anthropic",
       "suitability": ["council", "reasoning", "research", "routine"],
@@ -98,7 +98,7 @@
         "default": {"reasoning_effort": "high"},
         "council": {"reasoning_effort": "high", "include_reasoning": true}
       },
-      "notes": "Provisional demanding tier placement and a distinct developer from the OpenAI demanding models, so a demanding round is not pinned to one vendor."
+      "notes": "Operator-selected Sonnet 5.5 replacement for Sonnet 5 on 3 October 2026, at the same high presets and placements. On the reasoning evaluation pilot cases it scored 119/120 with a three-reviewer blind AI panel (Sonnet 5: 115/120) at lower cost per attempt; paired gains were not significant and council use was not evaluated. A distinct developer from the OpenAI demanding models, so a demanding round is not pinned to one vendor. See docs/REASONING_EVAL_PROTOCOL.md."
     },
     {
       "model": "openrouter/anthropic/claude-opus-5.5",
@@ -168,7 +168,7 @@
           "models": [
             "openrouter/z-ai/glm-5.3",
             "openrouter/openai/gpt-6.1-sol",
-            "openrouter/anthropic/claude-sonnet-5"
+            "openrouter/anthropic/claude-sonnet-5.5"
           ]
         },
         {
@@ -212,7 +212,7 @@
             "openrouter/x-ai/grok-4.7",
             "openrouter/z-ai/glm-5.3",
             "openrouter/openai/gpt-6.1-sol",
-            "openrouter/anthropic/claude-sonnet-5"
+            "openrouter/anthropic/claude-sonnet-5.5"
           ]
         },
         {
