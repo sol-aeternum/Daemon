@@ -15,6 +15,7 @@ import {
   getAuthGeneration,
   subscribeAuthGeneration,
 } from '../lib/auth';
+import { MAX_TTS_TEXT_CODE_POINTS } from '../lib/constants';
 
 /**
  * AudioPlaybackProvider owns the whole buffered read-aloud lifecycle:
@@ -34,8 +35,7 @@ import {
  * - Speed is synthesized once on the server; playback rate is left at 1.
  */
 
-/** Matches the API's `text: str = Field(max_length=3000)` bound. */
-export const MAX_TTS_TEXT_CODE_POINTS = 3000;
+export { MAX_TTS_TEXT_CODE_POINTS } from '../lib/constants';
 
 export const TTS_TEXT_TOO_LONG_MESSAGE = `Speech is limited to ${MAX_TTS_TEXT_CODE_POINTS} characters`;
 
@@ -217,6 +217,7 @@ export function AudioPlaybackProvider({
 
   const [state, setState] = useState<TtsState>(IDLE_STATE);
   const activeRef = useRef<ActiveSpeech | null>(null);
+  const audioHostRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<TtsScope>(resolvedScope);
   const nextRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
@@ -252,6 +253,18 @@ export function AudioPlaybackProvider({
       } catch {
         // A detached element cannot pause; nothing else to release.
       }
+      try {
+        // Cancel queued native play events and release decoder resources before
+        // unparenting. Otherwise an extension's late play listener could see a
+        // retired player as detached and try to replay it after Stop.
+        audio.removeAttribute('src');
+        audio.load();
+      } catch {
+        // Continue DOM/blob cleanup even if a browser cannot reset its player.
+      }
+      // Owner identity and media handlers have already been retired. Removing
+      // this element cannot turn an intentional Stop into a playback error.
+      audio.remove();
     }
     if (objectUrl) {
       try {
@@ -397,6 +410,14 @@ export function AudioPlaybackProvider({
 
         const audio = new Audio(source);
         active.audio = audio;
+        const host = audioHostRef.current;
+        if (!host?.isConnected) {
+          throw new TtsRequestError(TTS_PLAY_ERROR_MESSAGE);
+        }
+        // KDE Plasma Integration briefly inserts/removes otherwise detached
+        // players when play fires. That removal rejects the pending play promise.
+        // Give each owner a stable document parent BEFORE playback instead.
+        host.appendChild(audio);
         publishPhase(active, 'starting', null);
 
         audio.onplaying = () => {
@@ -558,6 +579,7 @@ export function AudioPlaybackProvider({
 
   return (
     <AudioPlaybackContext.Provider value={value}>
+      <div ref={audioHostRef} hidden aria-hidden="true" />
       {children}
     </AudioPlaybackContext.Provider>
   );

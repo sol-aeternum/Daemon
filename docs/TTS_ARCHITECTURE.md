@@ -125,6 +125,25 @@ a disabled control with an explanation above it; it neither truncates nor issues
 sequential client chunks. POST validation, download/authentication, decoder and
 playback failures are visible, accessible and request-scoped, with retry.
 
+Each media element is attached to a hidden, stable provider-owned DOM host before
+`play()`. This avoids KDE Plasma Integration's detached-player discovery hook,
+which briefly inserts/removes media and interrupts its pending play promise
+([#417](https://github.com/sol-aeternum/Daemon/issues/417)). Retirement first
+invalidates ownership, clears handlers, pauses and resets the media resource to
+cancel queued native play events, then removes only that element and revokes its
+blob URL. The extension can remain enabled; no global media override, hidden error
+suppression or automatic synthesis retry is used.
+
+The web `/api/tts` bridge converts CommonMark/GFM to readable content using the
+same installed parser as the response UI, on the server rather than adding a
+client parser bundle. It drops formatting delimiters, list markers and link
+destinations, reads labels/image alt text, and separates table cells/rows. At the
+owner's request, inline/fenced code, literal operators, underscores and raw HTML
+text are retained, not interpreted or executed. Displayed Markdown is unchanged.
+The raw 3,000-code-point bound is checked before parsing; cleaned text still goes
+through the backend's existing validation/admission/cache path. Other API clients
+continue to supply their intended speech text to `/tts`; its contract is unchanged.
+
 `tts_settings` remains the local preference key. A dedicated subscribed store
 validates partial/legacy/corrupt values against defaults and updates mounted
 consumers after same-tab setters, cross-tab storage changes and storage clears.

@@ -7,6 +7,9 @@ export type TtsSettings = {
   format: string;
 };
 
+/** Matches the API's raw Unicode code-point text bound before Markdown cleanup. */
+export const MAX_TTS_TEXT_CODE_POINTS = 3000;
+
 export type SttSettings = {
   language: string;
   enablePartials: boolean;

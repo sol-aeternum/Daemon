@@ -17,7 +17,7 @@ export default defineConfig({
     },
     {
       name: 'chat-discoverability',
-      testMatch: 'chat-discoverability.spec.ts',
+      testMatch: ['chat-discoverability.spec.ts', 'tts-plasma.spec.ts'],
       use: { baseURL: 'http://127.0.0.1:3101' },
     },
     {

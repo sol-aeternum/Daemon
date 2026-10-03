@@ -51,12 +51,14 @@ vi.mock('@/lib/auth', () => ({
 }));
 
 interface MediaInstance {
+  isConnected: boolean;
   src: string;
   playbackRate: number;
   currentTime: number;
   paused: boolean;
   playCalls: number;
   pauseCalls: number;
+  loadCalls: number;
   onended: (() => void) | null;
   onerror: (() => void) | null;
   oncanplay: (() => void) | null;
@@ -102,6 +104,7 @@ const media = vi.hoisted(() => {
     paused = true;
     playCalls = 0;
     pauseCalls = 0;
+    loadCalls = 0;
     onended: (() => void) | null = null;
     onerror: (() => void) | null = null;
     oncanplay: (() => void) | null = null;
@@ -110,7 +113,36 @@ const media = vi.hoisted(() => {
 
     constructor(src: string) {
       this.src = src;
-      instances.push(this);
+      // Keep a real DOM node so provider attachment/retirement is exercised,
+      // while only decoder events and the asynchronous play promise are fake.
+      const element = document.createElement('audio');
+      element.src = src;
+      for (const [key, value] of Object.entries(this)) {
+        if (key === 'src') continue;
+        Object.defineProperty(element, key, {
+          configurable: true,
+          writable: true,
+          value,
+        });
+      }
+      for (const key of [
+        'play',
+        'pause',
+        'load',
+        'resolvePlay',
+        'rejectPlay',
+        'canplay',
+        'playing',
+        'ended',
+        'fail',
+      ] as const) {
+        Object.defineProperty(element, key, {
+          value: FakeAudio.prototype[key],
+        });
+      }
+      const instance = element as unknown as FakeAudio;
+      instances.push(instance as unknown as MediaInstance);
+      return instance;
     }
 
     play(): Promise<void> {
@@ -122,6 +154,10 @@ const media = vi.hoisted(() => {
     pause(): void {
       this.pauseCalls += 1;
       this.paused = true;
+    }
+
+    load(): void {
+      this.loadCalls += 1;
     }
 
     resolvePlay(): void {
@@ -411,7 +447,34 @@ it('runs one provider-owned POST to protected download to Audio generation', asy
   expect(media.last().playbackRate).toBe(1);
   expect(media.last().src).toBe(media.createdUrls[0]);
   expect(media.last().playCalls).toBe(1);
+  expect(media.last().isConnected).toBe(true);
   expect(media.revokedUrls).toHaveLength(0);
+});
+
+it('keeps media parented through rerenders and detaches only when retired', async () => {
+  const { mock, calls } = createFetchController();
+  vi.stubGlobal('fetch', mock);
+  const props = { buttons: [{ messageId: 'm1', text: 'Attached speech' }] };
+  const { rerender, unmount } = render(<Harness {...props} />);
+  fireEvent.click(buttonByLabel('Play TTS'));
+  await flush();
+  await resolveCall(calls[0], ttsResponse('/generated-audio/m1.mp3'));
+  await resolveCall(calls[1], audioResponse(200));
+  const audio = media.last();
+  expect(audio.isConnected).toBe(true);
+  expect(document.querySelectorAll('audio')).toHaveLength(1);
+  rerender(<Harness {...props} />);
+  expect(audio.isConnected).toBe(true);
+  fireEvent.click(buttonByLabel('Stop TTS'));
+  expect(audio.isConnected).toBe(false);
+  expect(audio.paused).toBe(true);
+  expect(audio.loadCalls).toBe(1);
+  expect(document.querySelectorAll('audio')).toHaveLength(0);
+  await act(async () =>
+    audio.rejectPlay(new DOMException('Removed', 'AbortError')),
+  );
+  expect(screen.queryByRole('alert')).toBeNull();
+  unmount();
 });
 
 const pendingStages = [
