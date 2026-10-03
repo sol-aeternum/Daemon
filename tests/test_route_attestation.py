@@ -403,8 +403,11 @@ class _Client:
         self.fail = fail
         self.urls: list[str] = []
 
-    def stream(self, method: str, url: str, timeout: float) -> _Response:
+    def stream(
+        self, method: str, url: str, timeout: float, headers: dict[str, str] | None = None
+    ) -> _Response:
         assert method == "GET"
+        assert headers == {"Accept-Encoding": "identity"}
         self.urls.append(url)
         if self.fail:
             raise TimeoutError("unreachable")
@@ -785,8 +788,10 @@ def test_a_baseline_must_pin_both_core_privacy_fields(pinned: dict[str, bool]) -
             raw=b"{}",
             headers={"content-length": str(attestation.MAX_METADATA_BYTES + 1)},
         ),
-        # Undeclared but too large once decoded.
+        # Undeclared but too large once read.
         _Response(None, raw=b" " * (attestation.MAX_METADATA_BYTES + 1)),
+        # Any content encoding: a decoder could expand one chunk without bound.
+        _Response(None, raw=b"{}", headers={"content-encoding": "gzip"}),
     ],
 )
 async def test_untrustworthy_metadata_is_a_failed_check(response: _Response) -> None:
@@ -838,3 +843,14 @@ def test_a_monitored_baseline_must_forbid_training() -> None:
                 }
             )
         )
+
+
+def test_observed_values_are_recorded_jsonb_safe() -> None:
+    hostile = {
+        "data": [{"slug": "azure", "dataPolicy": {"training": "\u0000", "retainsPrompts": 2**80}}]
+    }
+    [check] = attestation.evaluate([_route()], LISTED, hostile)
+    assert check.outcome == "revoked"
+    assert check.observed["data_policy"] == {"training": "<str>", "retainsPrompts": "<int>"}
+    json.dumps(check.observed)  # serialisable, with no NUL-bearing strings
+    assert "\u0000" not in json.dumps(check.observed)

@@ -162,6 +162,20 @@ def _is_listed(entries: Iterable[tuple[str, str]], model: str, tag: str) -> bool
     return (model, tag) in set(entries)
 
 
+def _storable(value: object) -> object:
+    """A bounded, JSONB-safe record of an observed value.
+
+    Approved baselines only hold booleans, null or small integers; anything else is
+    recorded by type alone, so a hostile or malformed value can never make the
+    revocation that records it unpersistable.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int) and abs(value) < 2**53:
+        return value
+    return f"<{type(value).__name__}>"
+
+
 def _same_value(observed: object, approved: object) -> bool:
     """Type-strict equality: ``False`` is not ``0`` and ``True`` is not ``1``."""
     return type(observed) is type(approved) and observed == approved
@@ -223,7 +237,7 @@ def evaluate(
         model = route.model.removeprefix("openrouter/")
         tag = pins[0]
         listed = _is_listed(entries, model, tag)
-        observed = {key: policy[key] for key in baseline.data_policy}
+        observed = {key: _storable(policy[key]) for key in baseline.data_policy}
         reasons: list[str] = [] if listed else ["left_zdr_listing"]
         reasons.extend(
             f"provider_policy_changed:{key}"
@@ -492,9 +506,19 @@ def _reject_duplicate_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 async def _fetch_json(client: Any, url: str) -> tuple[object, bytes]:
-    """Stream one public listing with a decoded-size bound and strict JSON parsing."""
-    async with client.stream("GET", url, timeout=FETCH_TIMEOUT_S) as response:
+    """Stream one public listing with a size bound and strict JSON parsing.
+
+    Only an unencoded body is accepted: decoders expand each chunk before any size
+    check can run, so a small compressed response could still allocate without
+    bound. With identity encoding the bytes read are the bytes kept.
+    """
+    async with client.stream(
+        "GET", url, timeout=FETCH_TIMEOUT_S, headers={"Accept-Encoding": "identity"}
+    ) as response:
         response.raise_for_status()
+        encoding = response.headers.get("content-encoding", "identity").strip().lower()
+        if encoding not in {"", "identity"}:
+            raise MetadataError("listing was sent with a content encoding")
         declared = response.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > MAX_METADATA_BYTES:
             raise MetadataError("listing exceeds the metadata size limit")
