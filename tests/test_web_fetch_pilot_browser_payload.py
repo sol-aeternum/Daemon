@@ -18,7 +18,9 @@ import pytest
 
 from scripts.web_fetch_pilot_browser_entrypoint import (
     CONTENT_LIMIT,
+    DIAGNOSTIC_LIMIT,
     EXIT_BROWSE,
+    LAUNCH_EXCERPT,
     EXIT_OK,
     EXIT_SANDBOX,
     STAGES,
@@ -29,6 +31,7 @@ from scripts.web_fetch_pilot_browser_entrypoint import (
     RunConfig,
     classify,
     final_record,
+    launch_excerpt,
     parse_run,
     request_allowed,
     sandbox_ok,
@@ -315,3 +318,14 @@ def test_browser_status_requires_seccomp_nnp_and_no_capabilities() -> None:
     assert not status_ok(good.replace("0000000000000000", "0000000000000400"))
     source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
     assert "not status_ok(status)" in source and 'context.route("**/*", guard)' in source
+
+
+def test_launch_excerpt_is_bounded_printable_and_launch_only() -> None:
+    long = "Browser logs:\n" + "x" * 5000 + "\n[err] FATAL:zygote\x00\x1b[31m end"
+    excerpt = launch_excerpt(long)
+    assert len(excerpt) == LAUNCH_EXCERPT and excerpt.endswith("FATAL:zygote??[31m end")
+    assert all(" " <= c <= "~" or c == "\n" for c in excerpt)
+    assert launch_excerpt(None) == "" and launch_excerpt("short") == "short"
+    source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
+    assert 'if stage[0] == "launch":' in source  # Never excerpted after a page exists.
+    assert LAUNCH_EXCERPT < DIAGNOSTIC_LIMIT

@@ -147,6 +147,21 @@ def classify(
     return content, final_record(run, "success", final_url, title)
 
 
+LAUNCH_EXCERPT = 2048
+
+
+def launch_excerpt(text: object) -> str:
+    """Pure: the last bounded printable-ASCII slice of a LAUNCH failure message.
+
+    Only launch-stage failures are excerpted: Playwright appends Chromium's own
+    startup log there, and no page content exists yet. Diagnostics only.
+    """
+    if type(text) is not str:
+        return ""
+    printable = "".join(c if " " <= c <= "~" or c == "\n" else "?" for c in text)
+    return printable[-LAUNCH_EXCERPT:]
+
+
 def request_allowed(url: object, allowed_hosts: frozenset[str]) -> bool:
     """Pure: only https to a manifest host on 443 may leave the page.
 
@@ -329,7 +344,10 @@ async def main(raw_run: object) -> int:
             content, final = await _browse(run, acceptor.address[1], deadline, stage)
     except Exception as exc:  # Including EntrypointRefused; classified below.
         failed = exc
-        diagnostic({"browse": type(exc).__name__, "stage": stage[0]})
+        record: dict[str, object] = {"browse": type(exc).__name__, "stage": stage[0]}
+        if stage[0] == "launch":
+            record["launch_log"] = launch_excerpt(str(exc))  # Chromium startup log only.
+        diagnostic(record)
         content, final = b"", final_record(run, "error", run.original_url, "")
     code = browse_exit(failed)
     try:
