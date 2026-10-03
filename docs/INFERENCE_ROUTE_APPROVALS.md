@@ -271,17 +271,30 @@ sending `provider.max_price={"prompt":0.225,"completion":0.45}` (USD per million
 not per-token prices). User pricing, accounting multipliers and budgets are
 unchanged; reservations continue using the configured ceiling and existing ledger.
 
-Both approval and review expiry remain **2026-10-17T00:00:00Z**, preserving merged
-[#423](https://github.com/sol-aeternum/Daemon/pull/423). The separate in-flight
-[#424](https://github.com/sol-aeternum/Daemon/pull/424) monitored-approval change is
-not incorporated here. Exact provider/model pins, ZDR/no-training controls,
+*As merged in [#427](https://github.com/sol-aeternum/Daemon/pull/427), before
+integration with monitoring:* both approval and review expiry remained
+**2026-10-17T00:00:00Z**, preserving [#423](https://github.com/sol-aeternum/Daemon/pull/423).
+
+**Current combined state (with [#424](https://github.com/sol-aeternum/Daemon/pull/424)):**
+- **Ceiling:** GLM Flash keeps this 225000 / 450000 ceiling and the evidence link above.
+- **Approval:** like every production route, it is now a
+  [monitored approval](#monitored-approvals-operator-decision-3-october-2026) with no
+  calendar expiry. It does not shut off on 17 October.
+- **Revocation:** it is revoked only if `z-ai/glm-5.3-flash` at `inceptron/fp8`
+  leaves the ZDR listing or Inceptron's published `training`/`retainsPrompts` change.
+  It fails closed if no check has succeeded for 72 hours.
+- **Bootstrap:** deployment follows the monitored bootstrap in that section.
+
+Exact provider/model pins, ZDR/no-training controls,
 disabled fallbacks, capabilities and native limits are unchanged. Qualified exact
 manual selection and the existing council diverse group remain available; GLM
 Flash is not added to routine/background/research/reasoning automatic groups.
 Full `z-ai/glm-5.3` remains unapproved.
 
-Mocked regression tests verify the production payload and existing admission paths,
-including denial of expired/unapproved routes and broader fallback. No paid
+Mocked regression tests verify the production payload and existing admission paths.
+#427 tested denial of expired and unapproved routes and of broader fallback. In the
+combined state, the expiry cases are replaced by monitored denials: a revoked
+attestation, a future review date, an unapproved route and broader fallback. No paid
 inference or live dispatch test is authorized or performed. No restart or deployment
 is part of this change: backend and worker cache policy and still require a
 separately approved rollout/reload before this configuration can affect dispatch.
