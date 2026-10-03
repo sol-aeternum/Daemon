@@ -121,13 +121,14 @@
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#glm-flash-input-ceiling--3-october-2026",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://www.inceptron.io/privacy",
           "https://www.inceptron.io/termsofservice",
           "https://docs.z.ai/guides/vlm/glm-5.3-flash"
         ]
       },
-      "price_ceiling": {"microusd_per_1m_prompt": 150000, "microusd_per_1m_completion": 450000},
+      "price_ceiling": {"microusd_per_1m_prompt": 225000, "microusd_per_1m_completion": 450000},
       "notes": "Inceptron commits API payload processing to EU/EEA and default zero retention/no training. Exact FP8 endpoint retained. Output is limited to the documented 128K model maximum (131072), not host catalog's 943718."
     },
     {
