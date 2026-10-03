@@ -1973,3 +1973,101 @@ covers the classification and that every stage is recorded. Pilot run **1024 pas
 9 skipped**. Entrypoint SHA-256
 `755dc5e3ea7fcd16af097695184aa62ec7456e2e6d43bbfeb14205a80e28c75e`. The E2c browser gate
 has not been re-run against this change. A second E3c run needs owner approval.
+
+### E2c requalified; E3c second run reached the fixture, then failed (2026-10-03)
+
+On the owner's direction the single-container E2c gate was re-run once against the fixed
+entrypoint: **2 passed in 6.86 s** with the same supervisor-side evidence as before. E3c was
+then re-run once: **failed in 7.18 s**, no leftovers, not retried. This time the full
+production path worked: the gateway container's real `DNSResolver` resolved `openai.com`
+through Docker's embedded DNS, the real `NumericConnector` dialed the fixture container and
+the real peer check passed, Chromium's handshake reached the fixture through relay, bridge
+and gateway (1 attempt), and Chromium rejected the certificate (`certificate_unknown`,
+0 handshakes). The gateway then ended its whole run with reason `transport_error`
+(717 bytes read, 1846 written), closing its stdout before the browser's final RESULT; the
+bridge ended `gateway_eof`, the browser's `finish_result` raised `RelayFailure` and the
+browser correctly exited 1 (the corrected exit classification at work). Gateway and fixture
+exited 0; everything was removed.
+
+Cause, verified in code: any exception on one tunnel's socket read or write
+(`Gateway._transfer_read`/`_transfer_write`) closes the byte budget and ends the entire run
+with `IO`, by the fail-closed rule that unknown-count operations are never refunded. The
+specific exception in this run is not recorded (diagnostics carry no error detail);
+a TCP reset from the fixture's close after the TLS error is the likely but unconfirmed
+trigger. Consequence for live readiness: one peer resetting one tunnel would abort the whole
+fetch. This is an owner decision because per-stream abort changes reviewed gateway/relay
+protocol semantics.
+
+### Proposed: per-stream abort (owner chose the approach; design awaiting approval)
+
+Current behavior (verified in code): any exception on a tunnel socket ends the whole run on
+**both** endpoints: `Gateway._transfer_read/_transfer_write` close the budget and finish
+`IO`; the relay's guarded stream tasks finish `IO` too (e.g. when Chromium cancels a
+request). The tunnel ledger already accepts CLOSE from either side in any non-terminal
+state and discards queues; the gateway already treats an incoming browser CLOSE
+abortively; the relay accepts CLOSE only when fully drained.
+
+Proposal, no codec or frame-type change:
+
+1. **Known-zero resets only.** A tunnel socket operation that raises
+   `ConnectionResetError`, `BrokenPipeError` or `ConnectionAbortedError` from the actual
+   read/write syscall transferred no bytes (AsyncFD/SocketConnection return a count or
+   raise; no partial result is lost), so its reservation reconciles to zero. Every other
+   failure (cancellation, `TransportError`, wrong count, budget, protocol) stays fatal for
+   the run, unchanged.
+2. **Abort handshake on one stream.** The endpoint that sees such a reset aborts only that
+   stream: closes its socket, cancels that stream's tasks, drops its queued rows, and sends
+   CLOSE. A CLOSE received outside the normal fully-drained conditions is an abort: the
+   receiver tears that stream down the same way and replies with exactly one CLOSE once it
+   has stopped emitting for that ID. The initiator discards, but still shape-checks and
+   counts against the frame/DATA limits, frames for that ID until the reply CLOSE, then
+   retires it. Normal gateway CLOSE (both halves closed and drained) keeps its current
+   no-reply meaning; frame order on the pipe keeps both endpoints' views consistent.
+3. **Bounds unchanged.** At most four streams can be aborting; aborted streams still count
+   toward the 40 OPEN attempts, frame limits and the 32 MiB budget; IDs are never reused;
+   a second abort, a reply for an unknown ID or any frame after the reply is a protocol
+   failure for the run.
+4. **Changes** are confined to `Gateway` and `Relay` (plus their tests); bridge, collector,
+   ledger and codec are unchanged. Fake tests must cover reset-on-read and reset-on-write at
+   each endpoint, crossing aborts, in-flight DATA/WINDOW discarded during the handshake,
+   abort while OPEN is pending, and that non-reset failures remain fatal. Then the E1
+   loopback, E2c and E3c gates are re-run with approval.
+
+### Per-stream abort implemented — fakes pass (2026-10-03)
+
+The owner approved the design reusing CLOSE. Implementation in `Gateway` and `Relay` only
+(codec, ledger, bridge and collector unchanged):
+
+- A `ConnectionResetError`/`BrokenPipeError`/`ConnectionAbortedError` raised by a tunnel
+  socket's read, write or `shutdown_write` reconciles its reservation to zero (the relay
+  does not count it as an unknown write) and aborts only that stream. Every other socket
+  failure remains fatal for the run, unchanged.
+- An owned abort task cancels that stream's tasks, drops rows still queued, lets a row the
+  sender is already publishing complete, sends one CLOSE, and retires the stream. Emitters
+  now await their row through `asyncio.shield`, so cancelling an emitter never cancels an
+  in-flight row (without this, an abort racing a publication failed the whole run).
+- **Refinements found during implementation, recorded for review:** (1) for a stream already
+  being torn down, a `CancelledError` or closed-descriptor `TransportError` from its own
+  pending read/write also reconciles to zero: the qualified adapters move bytes only inside
+  the synchronous syscall, so an interrupted readiness wait moved nothing; elsewhere the
+  unknown-count rule is unchanged (including the existing partial-write-before-cancel test).
+  (2) The relay replies with exactly one CLOSE to **every** gateway CLOSE, normal or abort,
+  because it cannot reliably tell them apart (a gateway reset during its final
+  `shutdown_write` looks drained to the relay); the gateway records a normally closed ID at
+  commit, before publication, and consumes exactly one reply for it.
+- Each endpoint discards (still shape-checked and counted; relay-side DATA still counts
+  toward the IPC DATA ceiling) frames for an ID awaiting its abort reply; crossing CLOSEs
+  answer each other; OPEN reusing an aborting ID, a second reply or any frame after the
+  reply is a protocol failure; at most four unanswered aborts per endpoint; a stream with no
+  published OPEN is torn down locally without frames; `finish_result` also waits for
+  outstanding aborts so RESULT stays last.
+
+Tests: 12 new gateway and 9 new relay abort cases; four existing tests updated to the
+approved contract (a gateway CLOSE before full drain is now an abort with one reply; a
+browser CLOSE during admission gets one reply; interop waits for the reply-driven
+retirement). Relay and gateway suites pass **185 tests three times in a row**; the pilot run
+(including the approved E1 loopback fixtures against the changed actors) passes **1043,
+9 skipped**; scoped types, lint/format, doc freshness, gitleaks and high-severity Bandit
+pass. Gateway SHA-256 `4c2cead4d83c21d4d2e31a8937dbb9d0a14056cfeffe47c3b07305992fce0bb3`;
+relay `0687f23b32a89d442b0f334b36c1554f927fe3e2745e269411b83677ddfe6acf`. The E2c and E3c
+native gates have not been re-run against this change.

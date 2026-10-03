@@ -44,8 +44,12 @@ from scripts.web_fetch_pilot_core import (
     parse_connect_headers,
 )
 from scripts.web_fetch_pilot_gateway import Connection, EndReason, FrameIO
+from scripts.web_fetch_pilot_io import TransportError
 
 CREDIT = 64 * 1024
+# Raised by the actual local socket syscall: it transferred no bytes.
+_RESETS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
+MAX_ABORTING = 4
 RESULT_LIMIT = 1024 * 1024  # Matches the supervisor collector's RESULT quotas.
 FINAL_LIMIT = 4096
 HTTP_OK = b"HTTP/1.1 200 Connection Established\r\n\r\n"
@@ -96,6 +100,10 @@ class RelayOutcome:
     pending_tasks: int
 
 
+class _StreamReset(Exception):
+    """Known-zero-count reset on one local connection; aborts only that stream."""
+
+
 class RelayFailure(Exception):
     def __init__(self, reason: EndReason = EndReason.PROTOCOL) -> None:
         super().__init__(reason.value)
@@ -134,6 +142,8 @@ class _Stream:
     granted: int = 0
     local_half: bool = False
     remote_half: bool = False
+    resetting: bool = False  # Abort teardown in progress.
+    peer_closed: bool = False  # Gateway CLOSE crossed our abort: it is the reply.
 
 
 class Relay:
@@ -181,6 +191,7 @@ class Relay:
         self._result_started = False
         self._result_committed = False
         self._idle = asyncio.Event()  # Set when no local stream remains, or on stop.
+        self._aborting: set[int] = set()  # Our abort CLOSE sent; awaiting the reply.
         # Covers an accepted socket before stream construction or during refusal.
         self._accept_connection: Connection | None = None
 
@@ -202,16 +213,23 @@ class Relay:
             try:
                 await work()
             except asyncio.CancelledError:
-                if not self._stopping and (stream is None or not stream.terminal):
+                if not self._stopping and (
+                    stream is None or not (stream.terminal or stream.resetting)
+                ):
                     self._finish(EndReason.IO)
                 raise
+            except _StreamReset:
+                if stream is None:
+                    self._finish(EndReason.IO)
+                else:
+                    self._start_abort(stream, reply=False)
             except (FrameCodecError, RelayFailure) as exc:
-                if stream is None or not stream.terminal:
+                if stream is None or not (stream.terminal or stream.resetting):
                     self._finish(
                         exc.reason if isinstance(exc, RelayFailure) else EndReason.PROTOCOL
                     )
             except Exception:
-                if stream is None or not stream.terminal:
+                if stream is None or not (stream.terminal or stream.resetting):
                     self._finish(EndReason.IO)
 
         task = asyncio.create_task(guarded(), name="pilot-relay")
@@ -304,7 +322,9 @@ class Relay:
         self._verify_peer(stream.connection)
         return stream.connection
 
-    async def _write_count(self, connection: Connection, data: bytes) -> int:
+    async def _write_count(
+        self, connection: Connection, data: bytes, stream: _Stream | None = None
+    ) -> int:
         self._inflight_writes += len(data)
         try:
             self._verify_peer(connection)
@@ -312,6 +332,12 @@ class Relay:
             self._verify_peer(connection)
             if type(actual) is not int or not 0 <= actual <= len(data):
                 raise RelayFailure(EndReason.IO)
+        except _RESETS:
+            raise _StreamReset from None  # The syscall raised: nothing was written.
+        except (asyncio.CancelledError, TransportError):
+            if stream is None or not stream.resetting:
+                self._unknown_writes += len(data)
+            raise  # Our teardown interrupting a readiness wait moved nothing.
         except BaseException:
             self._unknown_writes += len(data)
             raise
@@ -328,7 +354,10 @@ class Relay:
 
     async def _read_count(self, connection: Connection, amount: int) -> bytes:
         self._verify_peer(connection)
-        data = await connection.read(amount)
+        try:
+            data = await connection.read(amount)
+        except _RESETS:
+            raise _StreamReset from None
         self._verify_peer(connection)
         if type(data) is not bytes or len(data) > amount:
             raise RelayFailure(EndReason.IO)
@@ -338,6 +367,8 @@ class Relay:
         try:
             async with asyncio.timeout(2):
                 await self._write_all(connection, response)
+        except _StreamReset:
+            pass  # The client already went away; the connection is closed below.
         finally:
             connection.close()
 
@@ -456,6 +487,8 @@ class Relay:
                 FrameType.CLOSE,
             ):
                 raise RelayFailure()
+            if self._abort_frame(frame):
+                continue
             stream = self._streams.get(frame.stream_id)
             if stream is None or stream.terminal or not stream.open_emitted:
                 raise RelayFailure()
@@ -491,20 +524,9 @@ class Relay:
                         raise RelayFailure()
                     stream.remote_half = True
                 elif kind is FrameType.CLOSE:
-                    if (
-                        not stream.local_half
-                        or not stream.remote_half
-                        or stream.queued_send
-                        or stream.queued_receive
-                        or stream.emitted != stream.acked
-                        or stream.consumed != stream.granted
-                    ):
-                        raise RelayFailure()
-                    # Do not require shutdown_write: CLOSE itself delivers EOF.
-                    stream.terminal = True
-                    self._close(stream)
-                    if not stream.emissions:
-                        self._retire(stream)
+                    # Normal or abort, the gateway's CLOSE ends this stream; reply
+                    # exactly once so the gateway never has to infer which it was.
+                    self._start_abort(stream, reply=True)
             stream.wake.set()
 
     async def _read(self, stream: _Stream, leftover: bytes) -> None:
@@ -532,7 +554,7 @@ class Relay:
             stream.wake.clear()
             if stream.chunks:
                 data = stream.chunks[0]
-                actual = await self._write_count(self._connection(stream), data)
+                actual = await self._write_count(self._connection(stream), data, stream)
                 if actual == len(data):
                     stream.chunks.popleft()
                 else:
@@ -556,7 +578,10 @@ class Relay:
         try:
             await stream.output.put(row)
             self._ready.set()
-            await row.done
+            # Shield: cancelling this emitter (e.g. an abort) must never cancel a
+            # row the sender may already be publishing; queued rows are dropped
+            # explicitly by their owner instead.
+            await asyncio.shield(row.done)
         finally:
             stream.emissions -= 1
             if stream.terminal and not stream.emissions:
@@ -588,6 +613,9 @@ class Relay:
             if stream.local_half or stream.queued_send:
                 raise RelayFailure()
             stream.local_half = True
+        elif kind is FrameType.CLOSE:
+            if not stream.resetting or not stream.stream_id:
+                raise RelayFailure()
         elif kind is FrameType.RESULT:
             if stream.stream_id != 0 or not self._result_started:
                 raise RelayFailure()
@@ -650,7 +678,7 @@ class Relay:
         self._result_started = True
         try:
             self._acceptor.close()
-            while self._locals:
+            while self._locals or self._aborting:
                 self._idle.clear()
                 await self._idle.wait()
                 if self._stopping:
@@ -668,6 +696,65 @@ class Relay:
             raise RelayFailure() from None  # Teardown cancelled a queued RESULT row.
         self._result_committed = True
         self._finish(EndReason.EOF)
+
+    def _abort_frame(self, frame: Frame) -> bool:
+        """Consume gateway frames for streams in an abort handshake."""
+        stream_id = frame.stream_id
+        stream = self._streams.get(stream_id)
+        if stream_id in self._aborting:
+            if frame.frame_type is FrameType.CLOSE:
+                self._aborting.discard(stream_id)  # The reply: handshake complete.
+                if not self._aborting:
+                    self._idle.set()
+            elif frame.frame_type is FrameType.DATA:
+                self._count_stale(frame)
+            return True
+        if stream is not None and stream.resetting:
+            if frame.frame_type is FrameType.CLOSE:
+                if stream.peer_closed:
+                    raise RelayFailure()
+                stream.peer_closed = True  # Crossing: each CLOSE answers the other.
+            elif frame.frame_type is FrameType.DATA:
+                self._count_stale(frame)
+            return True
+        return False
+
+    def _count_stale(self, frame: Frame) -> None:
+        # Dropped DATA still counts toward the shared IPC DATA ceiling.
+        self._check_data_budget(len(frame.payload))
+        self._data_received += len(frame.payload)
+
+    def _start_abort(self, stream: _Stream, *, reply: bool) -> None:
+        """Begin aborting ONE stream; the run continues. Synchronous, no await."""
+        if stream.resetting or stream.terminal or self._stopping:
+            return
+        if not reply and stream.open_emitted and len(self._aborting) >= MAX_ABORTING:
+            self._finish(EndReason.PROTOCOL)  # Gateway is not answering aborts.
+            return
+        stream.resetting = True
+        self._close(stream)
+        self._spawn(partial(self._abort, stream, reply))
+
+    async def _abort(self, stream: _Stream, reply: bool) -> None:
+        tasks = tuple(stream.tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=self._cleanup_grace)
+            if pending:
+                raise RelayFailure(EndReason.IO)  # Uncertain teardown is fatal.
+        while not stream.output.empty():
+            stream.output.get_nowait().done.cancel()  # Queued, never published.
+        if not stream.reply.done():
+            stream.reply.cancel()
+        if stream.open_emitted:
+            await self._emit(stream, FrameType.CLOSE)  # Any in-flight row publishes first.
+            if not reply and not stream.peer_closed:
+                self._aborting.add(stream.stream_id)
+        # Without a published OPEN the gateway never knew this stream: local only.
+        stream.terminal = True
+        if not stream.emissions:
+            self._retire(stream)
 
     @staticmethod
     def _close(stream: _Stream) -> None:

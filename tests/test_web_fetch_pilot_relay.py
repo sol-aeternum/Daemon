@@ -657,11 +657,10 @@ async def test_pending_stream_cannot_receive_data_or_controls_before_reply(bad: 
     [
         frame(FrameType.DATA, b"x"),
         frame(FrameType.HALF_CLOSE),
-        frame(FrameType.CLOSE),
         frame(FrameType.OPEN_OK),
     ],
 )
-async def test_half_closed_data_duplicate_half_or_reply_premature_close_fails(bad: Frame) -> None:
+async def test_half_closed_data_duplicate_half_or_reply_fails(bad: Frame) -> None:
     h = Harness()
     task = h.start()
     await h.connect()
@@ -671,13 +670,18 @@ async def test_half_closed_data_duplicate_half_or_reply_premature_close_fails(ba
 
 
 @pytest.mark.asyncio
-async def test_stale_closed_identity_and_unacknowledged_close_fail() -> None:
+async def test_early_gateway_close_is_abort_with_one_reply_and_stale_close_fails() -> None:
     h = Harness()
     task = h.start()
-    await h.connect(Conn((header(tail=b"abc"), b"")))
+    conn = await h.connect(Conn((header(tail=b"abc"), b"")))
     await h.pipe.until(FrameType.HALF_CLOSE)
     await h.pipe.feed(frame(FrameType.HALF_CLOSE))
-    await h.pipe.feed(frame(FrameType.CLOSE))
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Unacknowledged DATA: an abort now.
+    await h.pipe.until(FrameType.CLOSE)  # Exactly one reply.
+    await settle(lambda: not h.relay._streams)
+    assert conn.closed and not task.done() and not h.relay._aborting
+    assert [f.frame_type for f in h.pipe.sent].count(FrameType.CLOSE) == 1
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Stale identity after the reply.
     assert (await task).reason is EndReason.PROTOCOL
     h = Harness()
     task = h.start()
@@ -1044,7 +1048,10 @@ async def test_gateway_and_relay_independent_state_interoperate_in_memory(
     await acceptor.input.put(local)
     await settle(lambda: local.closed and remote.closed)
     assert local.written == HTTP_OK + b"reply" and remote.written == b"hello"
-    assert relay._terminal_ids == ({1, 2} if refuse_first else {1})
+    expected = {1, 2} if refuse_first else {1}
+    # The relay retires after its single reply to the gateway's CLOSE is published.
+    await settle(lambda: relay._terminal_ids == expected and not gateway._streams)
+    assert not gateway._closed_ids  # The reply was consumed exactly once.
     assert len(gateway.ledger.snapshot().attempts) == (2 if refuse_first else 1)
     assert [f.stream_id for f in browser_pipe.sent if f.frame_type is FrameType.OPEN] == (
         [1, 2] if refuse_first else [1]
@@ -1190,3 +1197,163 @@ async def test_deadline_before_final_commit_raises_and_stays_incomplete() -> Non
     assert outcome.status is RelayStatus.INCOMPLETE
     assert outcome.reason is EndReason.DEADLINE
     assert not results(h.pipe)
+
+
+class ResetConn(Conn):
+    """Local client connection whose read/write syscall raises a peer reset."""
+
+    def __init__(
+        self,
+        reads: Sequence[bytes] = (),
+        *,
+        read_reset: OSError | None = None,
+        write_reset: OSError | None = None,
+        reset_gate: asyncio.Event | None = None,
+    ) -> None:
+        super().__init__(reads)
+        self.read_reset = read_reset
+        self.write_reset = write_reset
+        self.reset_gate = reset_gate
+
+    async def read(self, maxsize: int) -> bytes:
+        if self.read_reset is not None and not self.reads:
+            self.read_entered.set()
+            if self.reset_gate is not None:
+                await self.reset_gate.wait()
+            raise self.read_reset
+        return await super().read(maxsize)
+
+    async def write(self, data: bytes) -> int:
+        if self.write_reset is not None and bytes(self.written).startswith(HTTP_OK):
+            raise self.write_reset
+        return await super().write(data)
+
+
+def sent_kinds(h: Harness, stream: int = 1) -> list[FrameType]:
+    return [f.frame_type for f in h.pipe.sent if f.stream_id == stream]
+
+
+@pytest.mark.asyncio
+async def test_local_read_reset_aborts_only_that_stream() -> None:
+    h = Harness(deadline=3)
+    task = h.start()
+    conn = await h.connect(ResetConn((header(),), read_reset=ConnectionResetError(104, "reset")))
+    await h.pipe.until(FrameType.CLOSE)
+    assert sent_kinds(h) == [FrameType.OPEN, FrameType.CLOSE] and conn.closed
+    await settle(lambda: h.relay._aborting == {1} and not h.relay._streams)
+    await h.pipe.feed(frame(FrameType.DATA, b"stale"))  # Counted and dropped.
+    await h.pipe.feed(window(1))
+    await h.pipe.feed(frame(FrameType.CLOSE))  # The gateway's reply.
+    await settle(lambda: not h.relay._aborting)
+    await h.connect(stream=2)  # The run is alive.
+    result = await h.stop(task)
+    assert result.data_received == 5 and result.unknown_write_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_local_write_reset_aborts_without_window() -> None:
+    h = Harness(deadline=3)
+    task = h.start()
+    conn = await h.connect(ResetConn((header(),), write_reset=BrokenPipeError(32, "pipe")))
+    await h.pipe.feed(frame(FrameType.DATA, b"abc"))
+    await h.pipe.until(FrameType.CLOSE)
+    assert FrameType.WINDOW not in sent_kinds(h) and conn.closed
+    await h.pipe.feed(frame(FrameType.CLOSE))
+    await settle(lambda: not h.relay._aborting and not h.relay._streams)
+    result = await h.stop(task)
+    assert result.unknown_write_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_reset_before_open_is_local_only() -> None:
+    h = Harness(deadline=3)
+    task = h.start()
+    conn = ResetConn(read_reset=ConnectionResetError(104, "reset"))  # Dies mid-header.
+    await h.acceptor.input.put(conn)
+    await settle(lambda: conn.closed and not h.relay._locals)
+    assert h.pipe.sent == [] and not h.relay._aborting
+    await h.connect()  # Stream 1 is still the first IPC identity.
+    await h.stop(task)
+
+
+class GoneConn(Conn):
+    """Client that vanished while OPEN was pending: the 200 write is reset."""
+
+    async def write(self, data: bytes) -> int:
+        raise ConnectionResetError(104, "reset")
+
+
+@pytest.mark.asyncio
+async def test_client_gone_during_open_aborts_and_discards_late_gateway_frames() -> None:
+    h = Harness(deadline=3)
+    task = h.start()
+    conn = GoneConn((header(),))
+    await h.acceptor.input.put(conn)
+    await h.pipe.until(FrameType.OPEN)
+    await h.pipe.feed(frame(FrameType.OPEN_OK))
+    await h.pipe.until(FrameType.CLOSE)  # The 200 write was reset: abort.
+    assert sent_kinds(h) == [FrameType.OPEN, FrameType.CLOSE] and conn.closed
+    await settle(lambda: h.relay._aborting == {1})
+    await h.pipe.feed(frame(FrameType.DATA, b"late"))  # In flight before our CLOSE.
+    await h.pipe.feed(frame(FrameType.CLOSE))
+    await settle(lambda: not h.relay._aborting and not h.relay._locals)
+    result = await h.stop(task)
+    assert result.unknown_write_bytes == 0 and result.data_received == 4
+
+
+@pytest.mark.asyncio
+async def test_crossing_abort_and_gateway_close_answer_each_other() -> None:
+    h = Harness(deadline=3)
+    task = h.start()
+    release = asyncio.Event()
+    await h.connect(
+        ResetConn((header(),), read_reset=ConnectionResetError(104, "reset"), reset_gate=release)
+    )
+    h.pipe.gate = asyncio.Event()
+    h.pipe.gated_kind = FrameType.CLOSE  # Hold our abort CLOSE unpublished.
+    release.set()
+    await settle(lambda: 1 in h.relay._streams and h.relay._streams[1].resetting)
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Gateway CLOSE crosses ours.
+    await settle(lambda: h.relay._streams[1].peer_closed)
+    h.pipe.gate.set()
+    await settle(lambda: not h.relay._streams)
+    assert not h.relay._aborting  # Its CLOSE was the reply; nothing to wait for.
+    await h.stop(task)
+
+
+@pytest.mark.asyncio
+async def test_generic_local_errors_remain_fatal() -> None:
+    h = Harness()
+    task = h.start()
+    conn = await h.connect()
+    conn.read_error = True
+    conn.read_gate.set()
+    assert (await task).reason is EndReason.IO
+
+
+@pytest.mark.asyncio
+async def test_finish_result_waits_for_outstanding_aborts() -> None:
+    h = Harness(deadline=3)
+    task = h.start()
+    await h.connect(ResetConn((header(),), read_reset=ConnectionResetError(104, "reset")))
+    await settle(lambda: h.relay._aborting == {1})
+    finishing = asyncio.create_task(h.relay.finish_result(b"", FINAL))
+    await asyncio.sleep(0.05)
+    assert not finishing.done() and FrameType.RESULT not in [f.frame_type for f in h.pipe.sent]
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Reply arrives; RESULT may follow.
+    await asyncio.wait_for(finishing, 1)
+    assert (await asyncio.wait_for(task, 1)).status is RelayStatus.RESULT_COMMITTED
+    assert h.pipe.sent[-1].frame_type is FrameType.RESULT
+
+
+@pytest.mark.asyncio
+async def test_unanswered_relay_aborts_are_bounded() -> None:
+    h = Harness(deadline=5)
+    task = h.start()
+    for stream in range(1, 5):
+        await h.connect(
+            ResetConn((header(),), read_reset=ConnectionResetError(104, "reset")), stream=stream
+        )
+        await settle(lambda stream=stream: stream in h.relay._aborting)
+    await h.connect(ResetConn((header(),), read_reset=ConnectionResetError(104, "reset")), stream=5)
+    assert (await asyncio.wait_for(task, 1)).reason is EndReason.PROTOCOL

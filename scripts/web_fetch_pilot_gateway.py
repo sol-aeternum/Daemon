@@ -51,7 +51,9 @@ from scripts.web_fetch_pilot_core import (
     parse_owned_inventory,
     validate_dns_answers,
 )
+from scripts.web_fetch_pilot_io import TransportError
 from scripts.web_fetch_pilot_tunnels import (
+    MAX_PENDING_OR_OPEN,
     Peer,
     TunnelLedger,
     TunnelLedgerError,
@@ -118,6 +120,14 @@ class GatewayFailure(Exception):
         self.reason = reason
 
 
+# Raised by the actual tunnel socket syscall: it transferred no bytes.
+_RESETS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
+
+
+class _StreamReset(Exception):
+    """Known-zero-count peer reset on one tunnel; aborts only that stream."""
+
+
 @dataclass
 class _Output:
     frame: Frame
@@ -136,6 +146,8 @@ class _Stream:
     sink_eof: bool = False
     closing: bool = False
     aborted: bool = False
+    resetting: bool = False  # Abort teardown in progress; ledger already terminal.
+    peer_closed: bool = False  # Browser CLOSE crossed our abort: it is the reply.
     emissions: int = 0
 
 
@@ -181,6 +193,8 @@ class Gateway:
         self._sent = 0
         self._used = False
         self._stopping = False
+        self._aborting: set[int] = set()  # Our abort CLOSE sent; awaiting the reply.
+        self._closed_ids: set[int] = set()  # Normal CLOSE sent; one crossing CLOSE ok.
 
     @property
     def budget(self) -> ByteBudget:
@@ -201,17 +215,27 @@ class Gateway:
             try:
                 await work()
             except asyncio.CancelledError:
-                if not self._stopping and (stream is None or not stream.aborted):
+                if not self._stopping and (
+                    stream is None or not (stream.aborted or stream.resetting)
+                ):
                     self._finish(EndReason.IO)
                 raise
-            except (TunnelLedgerError, FrameCodecError):
-                self._finish(EndReason.PROTOCOL)
-            except BudgetError:
-                self._finish(EndReason.BUDGET)
-            except GatewayFailure as exc:
-                self._finish(exc.reason)
-            except Exception:
-                self._finish(EndReason.IO)
+            except _StreamReset:
+                if stream is None:
+                    self._finish(EndReason.IO)
+                else:
+                    self._start_abort(stream, reply=False)
+            except Exception as exc:
+                if stream is not None and stream.resetting:
+                    return  # Sibling of an aborting stream: its teardown owns it.
+                if isinstance(exc, (TunnelLedgerError, FrameCodecError)):
+                    self._finish(EndReason.PROTOCOL)
+                elif isinstance(exc, BudgetError):
+                    self._finish(EndReason.BUDGET)
+                elif isinstance(exc, GatewayFailure):
+                    self._finish(exc.reason)
+                else:
+                    self._finish(EndReason.IO)
 
         task = asyncio.create_task(guarded(), name="pilot-gateway")
         self._tasks.add(task)
@@ -319,6 +343,8 @@ class Gateway:
                 FrameType.CLOSE,
             ):
                 raise GatewayFailure(EndReason.PROTOCOL)
+            if self._abort_frame(frame):
+                continue
             admitted = self.ledger.handle(Peer.BROWSER, frame)
             if frame.frame_type is FrameType.OPEN:
                 stream = self._new_stream(frame.stream_id)
@@ -334,16 +360,9 @@ class Gateway:
             if stream is None:
                 raise GatewayFailure(EndReason.PROTOCOL)
             if frame.frame_type is FrameType.CLOSE:
-                stream.aborted = True
-                self._close_connection(stream)
-                for task in tuple(stream.tasks):
-                    task.cancel()
-                # A pending CLOSE cancels resolver/connect before capacity is
-                # recycled; tasks retain their own stream object, never its ID.
-                await asyncio.gather(*tuple(stream.tasks), return_exceptions=True)
-                if stream.emissions:
-                    raise GatewayFailure(EndReason.PROTOCOL)
-                self._retire(stream)
+                # Browser-initiated abort (the relay never sends a normal CLOSE).
+                # The ledger is already terminal; tear down and reply once.
+                self._start_abort(stream, reply=True)
             else:
                 stream.wake.set()
                 self._maybe_close(stream)
@@ -430,6 +449,21 @@ class Gateway:
         token, amount = self._reserve(amount, "read")
         try:
             data = await connection.read(amount)
+        except _RESETS:
+            self._budget.reconcile(token, 0)  # The syscall raised: nothing was read.
+            raise _StreamReset from None
+        except (asyncio.CancelledError, TransportError):
+            if not stream.resetting:
+                self._budget.close("read count unknown")
+                self._finish(EndReason.IO)
+                raise
+            self._budget.reconcile(token, 0)  # Our teardown interrupted a readiness wait.
+            raise
+        except BaseException:
+            self._budget.close("read count unknown")
+            self._finish(EndReason.IO)
+            raise
+        try:
             self._connection(stream)
             if type(data) is not bytes or len(data) > amount:
                 raise GatewayFailure(EndReason.IO)
@@ -447,6 +481,21 @@ class Gateway:
         token, amount = self._reserve(len(data), "write")
         try:
             actual = await connection.write(data[:amount])
+        except _RESETS:
+            self._budget.reconcile(token, 0)  # The syscall raised: nothing was written.
+            raise _StreamReset from None
+        except (asyncio.CancelledError, TransportError):
+            if not stream.resetting:
+                self._budget.close("write count unknown")
+                self._finish(EndReason.IO)
+                raise
+            self._budget.reconcile(token, 0)  # Our teardown interrupted a readiness wait.
+            raise
+        except BaseException:
+            self._budget.close("write count unknown")
+            self._finish(EndReason.IO)
+            raise
+        try:
             self._connection(stream)
             if type(actual) is not int or not 0 <= actual <= amount:
                 raise GatewayFailure(EndReason.IO)
@@ -491,7 +540,10 @@ class Gateway:
                 await self._emit(stream, FrameType.WINDOW, struct.pack("!I", actual))
                 self._maybe_close(stream)
             elif half.half_closed:
-                await self._connection(stream).shutdown_write()
+                try:
+                    await self._connection(stream).shutdown_write()
+                except _RESETS:
+                    raise _StreamReset from None  # No payload bytes move on shutdown.
                 stream.sink_eof = True
                 self._maybe_close(stream)
                 return
@@ -508,7 +560,10 @@ class Gateway:
         try:
             await stream.output.put(row)
             self._ready.set()
-            await row.done
+            # Shield: cancelling this emitter (e.g. an abort) must never cancel a
+            # row the sender may already be publishing; queued rows are dropped
+            # explicitly by their owner instead.
+            await asyncio.shield(row.done)
         finally:
             stream.emissions -= 1
 
@@ -516,9 +571,20 @@ class Gateway:
         if row.committed or stream.aborted or self._stopping:
             raise GatewayFailure(EndReason.PROTOCOL)
         frame = row.frame
+        if stream.resetting:
+            # Ledger already terminal: publish the in-flight row or the abort/reply
+            # CLOSE without ledger effects; the relay discards stale rows.
+            if frame.frame_type is FrameType.CLOSE:
+                self._close_connection(stream)
+            row.committed = True
+            self._sent += 1
+            stream.wake.set()
+            return
         if frame.frame_type is FrameType.CLOSE:
             # Release the actual socket BEFORE publishing terminal capacity.
             self._close_connection(stream)
+            # Record before publication: the relay's single reply may arrive at once.
+            self._closed_ids.add(stream.stream_id)
         if frame.frame_type is FrameType.DATA:
             self.ledger.drain(Peer.GATEWAY, stream.stream_id, len(frame.payload))
         elif frame.frame_type is FrameType.OPEN_ERROR and not any(
@@ -584,6 +650,62 @@ class Gateway:
     async def _normal_close(self, stream: _Stream) -> None:
         await self._emit(stream, FrameType.CLOSE)
         self._close_connection(stream)
+        self._retire(stream)
+
+    def _abort_frame(self, frame: Frame) -> bool:
+        """Consume frames for IDs in an abort handshake; True when consumed."""
+        stream_id = frame.stream_id
+        if stream_id in self._aborting:
+            if frame.frame_type is FrameType.OPEN:
+                raise GatewayFailure(EndReason.PROTOCOL)  # IDs are never reused.
+            if frame.frame_type is FrameType.CLOSE:
+                self._aborting.discard(stream_id)  # The reply: handshake complete.
+            return True  # Stale DATA/WINDOW/HALF_CLOSE: counted, shape-checked, dropped.
+        if frame.frame_type is FrameType.CLOSE and stream_id in self._closed_ids:
+            self._closed_ids.discard(stream_id)  # Crossed our normal CLOSE; no reply.
+            return True
+        stream = self._streams.get(stream_id)
+        if stream is not None and stream.resetting:
+            if frame.frame_type is FrameType.OPEN:
+                raise GatewayFailure(EndReason.PROTOCOL)  # IDs are never reused.
+            if frame.frame_type is FrameType.CLOSE:
+                if stream.peer_closed:
+                    raise GatewayFailure(EndReason.PROTOCOL)
+                stream.peer_closed = True  # Crossing aborts: each CLOSE answers the other.
+            return True
+        return False
+
+    def _start_abort(self, stream: _Stream, *, reply: bool) -> None:
+        """Begin aborting ONE stream; the run continues. Synchronous, no await."""
+        if stream.resetting or stream.aborted or stream.closing or self._stopping:
+            return
+        if not reply and len(self._aborting) >= MAX_PENDING_OR_OPEN:
+            self._finish(EndReason.PROTOCOL)  # Relay is not answering aborts.
+            return
+        stream.resetting = True
+        if not reply:
+            try:
+                self.ledger.handle(Peer.GATEWAY, Frame(FrameType.CLOSE, stream.stream_id, b""))
+            except TunnelLedgerError:
+                self._finish(EndReason.PROTOCOL)
+                return
+        self._close_connection(stream)
+        self._spawn(partial(self._abort, stream, reply))
+
+    async def _abort(self, stream: _Stream, reply: bool) -> None:
+        tasks = tuple(stream.tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=self._cleanup_grace)
+            if pending:
+                raise GatewayFailure(EndReason.IO)  # Uncertain teardown is fatal.
+        while not stream.output.empty():
+            stream.output.get_nowait().done.cancel()  # Queued, never published.
+        await self._emit(stream, FrameType.CLOSE)  # Any in-flight row publishes first.
+        stream.aborted = True
+        if not reply and not stream.peer_closed:
+            self._aborting.add(stream.stream_id)
         self._retire(stream)
 
     @staticmethod

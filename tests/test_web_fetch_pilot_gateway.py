@@ -458,7 +458,8 @@ async def test_pending_close_cancels_no_late_success(stage: str) -> None:
     await entered.wait()
     await h.pipe.feed(frame(FrameType.CLOSE))
     await settle(lambda: not h.gateway._streams)
-    assert not h.pipe.sent
+    # Abort handshake: exactly one CLOSE reply, never a late OPEN_OK/OPEN_ERROR.
+    assert [f.frame_type for f in h.pipe.sent] == [FrameType.CLOSE]
     assert h.cancelled_resolutions + h.cancelled_connections == 1
     assert (await h.stop(task)).reason is EndReason.EOF
 
@@ -902,3 +903,190 @@ async def test_cleanup_grace_reports_and_retains_slow_cooperative_task() -> None
             task.cancel()
             await task
     assert not gateway.pending_tasks
+
+
+class ResetSocket(Socket):
+    """Fake peer reset raised by the read/write syscall itself (zero bytes moved)."""
+
+    def __init__(
+        self,
+        reads: Sequence[bytes] = (),
+        *,
+        read_reset: OSError | None = None,
+        write_reset: OSError | None = None,
+        shutdown_reset: OSError | None = None,
+        reset_gate: asyncio.Event | None = None,
+    ) -> None:
+        super().__init__(reads)
+        self.reset_gate = reset_gate
+        self.read_reset = read_reset
+        self.write_reset = write_reset
+        self.shutdown_reset = shutdown_reset
+
+    async def read(self, maxsize: int) -> bytes:
+        if self.read_reset is not None:
+            self.read_entered.set()
+            if self.reset_gate is not None:
+                await self.reset_gate.wait()
+            raise self.read_reset
+        return await super().read(maxsize)
+
+    async def write(self, data: bytes) -> int:
+        if self.write_reset is not None:
+            self.write_entered.set()
+            raise self.write_reset
+        return await super().write(data)
+
+    async def shutdown_write(self) -> None:
+        if self.shutdown_reset is not None:
+            raise self.shutdown_reset
+        await super().shutdown_write()
+
+
+def kinds(h: Harness, stream: int = 1) -> list[FrameType]:
+    return [f.frame_type for f in h.pipe.sent if f.stream_id == stream]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reset",
+    [ConnectionResetError(104, "reset"), BrokenPipeError(32, "pipe"), ConnectionAbortedError()],
+)
+async def test_read_reset_aborts_only_that_stream_and_refunds(reset: OSError) -> None:
+    h = Harness(ResetSocket(read_reset=reset))
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.CLOSE)
+    assert kinds(h) == [FrameType.OPEN_OK, FrameType.CLOSE]
+    await settle(lambda: h.gateway._aborting == {1} and not h.gateway._streams)
+    assert h.sock.closed and not task.done()
+    # In-flight browser frames for the aborting ID are counted and dropped.
+    await h.pipe.feed(frame(FrameType.DATA, payload=b"stale"))
+    await h.pipe.feed(window(1))
+    await h.pipe.feed(frame(FrameType.HALF_CLOSE))
+    await h.pipe.feed(frame(FrameType.CLOSE))  # The reply completes the handshake.
+    await settle(lambda: not h.gateway._aborting)
+    # The run is alive: a new tunnel is admitted on a fresh socket.
+    h.sock = Socket((b"",))
+    await h.pipe.feed(opening(2))
+    await h.pipe.until(FrameType.OPEN_OK, 2)
+    result = await h.stop(task)
+    assert result.reason is EndReason.EOF and not result.cleanup_failed
+    assert result.unresolved_bytes == 0  # Reset reservation reconciled to zero.
+
+
+@pytest.mark.asyncio
+async def test_write_reset_aborts_stream_without_window() -> None:
+    h = Harness(ResetSocket(write_reset=BrokenPipeError(32, "pipe")))
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.OPEN_OK)
+    await h.pipe.feed(frame(FrameType.DATA, payload=b"hello"))
+    await h.pipe.until(FrameType.CLOSE)
+    assert FrameType.WINDOW not in kinds(h) and h.sock.closed
+    await h.pipe.feed(frame(FrameType.CLOSE))
+    await settle(lambda: not h.gateway._aborting)
+    result = await h.stop(task)
+    assert result.reason is EndReason.EOF
+    assert (result.written_bytes, result.unresolved_bytes) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_reset_aborts_stream() -> None:
+    h = Harness(ResetSocket((b"",), shutdown_reset=ConnectionResetError(104, "reset")))
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.HALF_CLOSE)
+    await h.pipe.feed(frame(FrameType.HALF_CLOSE))
+    await h.pipe.until(FrameType.CLOSE)
+    await h.pipe.feed(frame(FrameType.CLOSE))
+    await settle(lambda: not h.gateway._aborting)
+    assert (await h.stop(task)).reason is EndReason.EOF
+
+
+@pytest.mark.asyncio
+async def test_generic_socket_errors_remain_fatal_for_the_run() -> None:
+    h = Harness(ResetSocket(read_reset=OSError(5, "io")))
+    task = h.start()
+    await h.pipe.feed(opening())
+    result = await asyncio.wait_for(task, 1)
+    assert result.reason is EndReason.IO and result.unresolved_bytes > 0
+
+
+@pytest.mark.asyncio
+async def test_browser_abort_gets_exactly_one_reply_and_stale_frames_are_protocol() -> None:
+    h = Harness(Socket())
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.OPEN_OK)
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Browser-initiated abort.
+    await h.pipe.until(FrameType.CLOSE)
+    assert kinds(h).count(FrameType.CLOSE) == 1 and h.sock.closed
+    await settle(lambda: not h.gateway._streams)
+    assert not h.gateway._aborting  # We replied; we do not wait for anything.
+    await h.pipe.feed(frame(FrameType.DATA, payload=b"late"))  # After the handshake.
+    result = await asyncio.wait_for(task, 1)
+    assert result.reason is EndReason.PROTOCOL
+
+
+@pytest.mark.asyncio
+async def test_crossing_aborts_each_close_answers_the_other() -> None:
+    release = asyncio.Event()
+    h = Harness(ResetSocket(read_reset=ConnectionResetError(104, "reset"), reset_gate=release))
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.OPEN_OK)
+    h.pipe.send_gate = asyncio.Event()  # Hold our abort CLOSE unpublished.
+    release.set()
+    await settle(lambda: bool(h.gateway._streams) and h.gateway._streams[1].resetting)
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Browser abort crosses ours.
+    await settle(lambda: h.gateway._streams[1].peer_closed)
+    h.pipe.send_gate.set()
+    await settle(lambda: not h.gateway._streams)
+    assert kinds(h)[-1] is FrameType.CLOSE and not h.gateway._aborting
+    result = await h.stop(task)
+    assert result.reason is EndReason.EOF
+
+
+@pytest.mark.asyncio
+async def test_crossing_close_after_normal_close_tolerated_exactly_once() -> None:
+    h = Harness(Socket((b"",)))
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.HALF_CLOSE)
+    await h.pipe.feed(frame(FrameType.HALF_CLOSE))
+    await h.pipe.until(FrameType.CLOSE)  # Normal close.
+    await h.pipe.feed(frame(FrameType.CLOSE))  # Browser abort crossed it: no reply.
+    await settle(lambda: not h.gateway._closed_ids)
+    assert kinds(h).count(FrameType.CLOSE) == 1
+    await h.pipe.feed(frame(FrameType.CLOSE))  # A second one is a protocol failure.
+    assert (await asyncio.wait_for(task, 1)).reason is EndReason.PROTOCOL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late", ["open", "duplicate_reply"])
+async def test_aborted_id_reuse_or_second_reply_is_protocol(late: str) -> None:
+    h = Harness(ResetSocket(read_reset=ConnectionResetError(104, "reset")))
+    task = h.start()
+    await h.pipe.feed(opening())
+    await h.pipe.until(FrameType.CLOSE)
+    if late == "open":
+        await h.pipe.feed(opening(1))
+    else:
+        await h.pipe.feed(frame(FrameType.CLOSE))
+        await settle(lambda: not h.gateway._aborting)
+        await h.pipe.feed(frame(FrameType.CLOSE))
+    assert (await asyncio.wait_for(task, 1)).reason is EndReason.PROTOCOL
+
+
+@pytest.mark.asyncio
+async def test_unanswered_aborts_are_bounded() -> None:
+    h = Harness(ResetSocket(read_reset=ConnectionResetError(104, "reset")), deadline=5)
+    task = h.start()
+    for stream in range(1, 5):
+        await h.pipe.feed(opening(stream))
+        await h.pipe.until(FrameType.CLOSE, stream)
+        await settle(lambda stream=stream: stream in h.gateway._aborting)
+    assert h.gateway._aborting == {1, 2, 3, 4}
+    await h.pipe.feed(opening(5))  # A fifth abort while four await replies.
+    assert (await asyncio.wait_for(task, 1)).reason is EndReason.PROTOCOL
