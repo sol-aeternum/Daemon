@@ -1,0 +1,82 @@
+{
+  "original": {
+    "name": "braces",
+    "version": "3.0.3",
+    "tarball": "https://registry.npmjs.org/braces/-/braces-3.0.3.tgz",
+    "sha256": "1cd18e862c8640b4568b1425a7df4ee030ff201d45b2da8f9f222d2987494ffc",
+    "integrity": "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==",
+    "sha1": "490332f40919452272d55a8480adc0c441358789",
+    "license_sha256": "35bdd8a44339719441900fb50fbefc5e2dca1ca662cbaed7a687de842c8b70f2"
+  },
+  "patch": {
+    "sha256": "fbe3698e830716a3dab2481f674deaeacaa01e1c48c1c777b3f8084640828cb6",
+    "upstream_pr": "https://github.com/micromatch/braces/pull/72",
+    "upstream_pr_head": "d0d575e55e74a4e0218e5248fafb79efc3e54ebb",
+    "minimal_backport": true,
+    "code_files": {
+      "index.js": "332ea07c7b006361aad12aa994ca75dc1db8e8382b884909e2f38f10b85c88a4",
+      "lib/compile.js": "b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195",
+      "lib/constants.js": "f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c",
+      "lib/expand.js": "2974d5b8763a358d81dfa5b4b804329f525239f34429c396b93a540219504809",
+      "lib/parse.js": "ef9b3851f848460daaf91ff248222a43e266f97c4f2df7010cb7858e1e39a107",
+      "lib/stringify.js": "49dc2d8bafa74f34715a18a845bcb82ce66caaf3bab4cf117998e06b1f9a50a9",
+      "lib/utils.js": "b5a7596aa67730412b3c029ef09e84e6b67b8e445cffd35d1d295549c89066c7"
+    }
+  },
+  "derivative": {
+    "name": "@daemon-internal/braces",
+    "version": "3.0.3-daemon.1",
+    "private": true,
+    "archive_sha256": "f21f13fe2460f146df7dd483f046def84553b678c4e1ca284ea8ff0366338dd2",
+    "integrity": "sha512-kh7EoDGNkp7JXVRs7p1ZII2S3XTLQZFIlkrarCguIMg1HhqV2DYnsGeaI9lGsOMI+5J6ZSzkU9baMq/ziy410g==",
+    "files": {
+      "LICENSE": "35bdd8a44339719441900fb50fbefc5e2dca1ca662cbaed7a687de842c8b70f2",
+      "README.md": "25c48a99dd52dfeba273ed6e7430782b1fb38c67d6d0eb8afe26a32ae42316ee",
+      "index.js": "332ea07c7b006361aad12aa994ca75dc1db8e8382b884909e2f38f10b85c88a4",
+      "package.json": "16d60f1d38fe0719277c8125b8558b60f3f529e25e38c34c80175a7a22cc3426",
+      "lib/compile.js": "b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195",
+      "lib/constants.js": "f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c",
+      "lib/expand.js": "2974d5b8763a358d81dfa5b4b804329f525239f34429c396b93a540219504809",
+      "lib/parse.js": "ef9b3851f848460daaf91ff248222a43e266f97c4f2df7010cb7858e1e39a107",
+      "lib/stringify.js": "49dc2d8bafa74f34715a18a845bcb82ce66caaf3bab4cf117998e06b1f9a50a9",
+      "lib/utils.js": "b5a7596aa67730412b3c029ef09e84e6b67b8e445cffd35d1d295549c89066c7"
+    }
+  },
+  "release_tests": {
+    "commit": "74b2db2938fad48a2ea54a9c8bf27a37a62c350d",
+    "files": {
+      "bash-compiled-ranges.js": "7e8a10ed467f19dd3723ebcb02c33ff13c973115ea101c8504b2fd32f9b3e9e3",
+      "bash-compiled-sets.js": "ff2dda0bdd8d1db4994f814d75117494e53b2a83cafd957048ddc9bca619d669",
+      "bash-expanded-ranges.js": "69c55956b57fe27160ce9dfab92a0a552001ee7aa992dc8d077410a282b92097",
+      "bash-expanded-sets.js": "b0759bb53728d98a71e4b06f566301f5aa3ccf28e8f99eaa2634fda8d877f96c",
+      "bash-spec.js": "c5208d38999e0fd0ac12e4bde7240b8e93890dff160ddb78ac62883f7ef632f4",
+      "braces.compile.js": "c47a9565c0be7287958667f31f64a060a38f91fbe98d27953b770ee2736ff077",
+      "braces.expand.js": "a6d70d8bec87025c58a6e14fffa9dcb3c0ae890fc2232e8b0af0966190fa733b",
+      "braces.parse.js": "4688e08098264b7851f03ea894d30bd992fea307f8a334bf833a4e2bdae30a87",
+      "minimatch.js": "6b65901c2a0a2b680dbe1178311578037ee6601eab1631929ac2d10b2e37dd08",
+      "multiples.js": "d0b779166faf40693b5898a3766ae6c91aec600a714cf1b36a8b85067e90b7ac",
+      "readme.js": "91202e5e3e926d47b11ebe5f2b04db560c1048aac97e67f61d521ce0cb220b15",
+      "regression.js": "1595ae9cea47947b1ea258673151c2428a780859fc1efd5d9d92b035f1887470"
+    },
+    "count": 764
+  },
+  "coverage": {
+    "advisory": "GHSA-vfj7-8cjw-p6xm",
+    "cve": "CVE-2026-93687",
+    "scope": "Nesting stack exhaustion only; no general expansion-bomb or arbitrary parent-cycle claim",
+    "candidate_review_session": "ses_f0087ebe8ffeuvpC57U12exbCv",
+    "strategy_review_session": "ses_f007293eaffePSkK1j8DfTkutd",
+    "baseline_golden_sha256": "47e23bf5ceed0395305812f0cdc5eba92743cbf02ffd23073f1b97842bbb84c7"
+  },
+  "watch": {
+    "advisories": [
+      {
+        "ghsa_id": "GHSA-vfj7-8cjw-p6xm",
+        "updated_at": "2026-10-02T22:36:34Z",
+        "withdrawn_at": null
+      }
+    ],
+    "responsible_maintainer": "sol-aeternum",
+    "tracking_issue": "https://github.com/sol-aeternum/Daemon/issues/418"
+  }
+}

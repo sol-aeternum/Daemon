@@ -15,10 +15,12 @@ ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
 ENV NEXT_PUBLIC_EMAIL_ENABLED=$NEXT_PUBLIC_EMAIL_ENABLED
 
 COPY package*.json ./
+COPY vendor/ ./vendor/
 RUN npm ci
 
 COPY . .
 ENV NODE_ENV=production
+RUN node scripts/check-braces-security.cjs
 RUN npm run build
 
 EXPOSE 3000

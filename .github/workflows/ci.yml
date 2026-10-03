@@ -77,6 +77,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Vendored braces integrity and security regressions
+        run: npm run security:braces
+
       - name: Type check
         run: npm run type-check
 

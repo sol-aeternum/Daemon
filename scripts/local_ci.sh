@@ -64,6 +64,7 @@ backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
 backend|pip-audit|blocking|uv run pip-audit
 backend|pytest|blocking|PYTHONPATH=. uv run pytest -q
 frontend|npm-ci|blocking|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
+frontend|braces-security|blocking|npm --prefix frontend run security:braces
 frontend|type-check|blocking|npm --prefix frontend run type-check
 frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
