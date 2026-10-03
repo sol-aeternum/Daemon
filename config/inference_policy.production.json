@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Deployment-specific inference approval by the Daemon operator on 2026-09-29, expiring 2026-10-06T00:00:00Z. Select explicitly with DAEMON_INFERENCE_POLICY only for the reviewed OpenRouter account/workspace. The portable default remains deny-by-default. Inference evidence and rollout: docs/INFERENCE_ROUTE_APPROVALS.md. Separate Brave search-only standard-retention exception has manual review with no hard cutoff; Tavily remains unapproved. Search evidence and revocation: docs/SEARCH_SERVICE_APPROVALS.md. Configuration approval is not a live-dispatch or workload-quality certification.",
+  "notes": "Deployment-specific inference approval by the Daemon operator on 2026-09-29, renewed on 2026-10-03 after a refreshed ZDR and provider-policy check, expiring 2026-10-17T00:00:00Z. Select explicitly with DAEMON_INFERENCE_POLICY only for the reviewed OpenRouter account/workspace. The portable default remains deny-by-default. Inference evidence and rollout: docs/INFERENCE_ROUTE_APPROVALS.md. Separate Brave search-only standard-retention exception has manual review with no hard cutoff; Tavily remains unapproved. Search evidence and revocation: docs/SEARCH_SERVICE_APPROVALS.md. Configuration approval is not a live-dispatch or workload-quality certification.",
   "requirements": {
     "require_approval": true,
     "require_unexpired_approval": true,
@@ -29,7 +29,7 @@
       "max_output_tokens": 128000,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["azure/eu"], "provider_order": ["azure/eu"],
@@ -41,10 +41,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
@@ -64,7 +65,7 @@
       "max_output_tokens": 393216,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["coreweave/fp8"], "provider_order": ["coreweave/fp8"],
@@ -76,10 +77,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#coreweave-location-decision",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://www.coreweave.com/products/serverless-inference",
@@ -101,7 +103,7 @@
       "max_output_tokens": 131072,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["inceptron/fp8"], "provider_order": ["inceptron/fp8"],
@@ -113,10 +115,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://www.inceptron.io/privacy",
@@ -138,7 +141,7 @@
       "max_output_tokens": 128000,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["azure/eu"], "provider_order": ["azure/eu"],
@@ -150,10 +153,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-30T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "docs/INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026",
           "docs/SOL_UPGRADE_EVALUATION.md",
           "https://openrouter.ai/api/v1/models/openai/gpt-6.1-sol/endpoints",
@@ -162,7 +166,7 @@
         ]
       },
       "price_ceiling": {"microusd_per_1m_prompt": 4400000, "microusd_per_1m_completion": 16500000},
-      "notes": "Sol 6.1 replacement authorized 30 September 2026 at high effort; stable route ID, existing native limits, long-prompt price ceilings and 6 October expiry retained. Exact Azure EU ZDR listing and bounded live comparison verified; human semantic review remains pending. Provider attestation, not independent inspection of Azure resource logging."
+      "notes": "Sol 6.1 replacement authorized 30 September 2026 at high effort; stable route ID, existing native limits, long-prompt price ceilings retained (approval renewed to 17 October on 3 October 2026). Exact Azure EU ZDR listing and bounded live comparison verified; human semantic review remains pending. Provider attestation, not independent inspection of Azure resource logging."
     },
     {
       "route_id": "sonnet-vertex-europe",
@@ -175,7 +179,7 @@
       "max_output_tokens": 128000,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["google-vertex/europe"], "provider_order": ["google-vertex/europe"],
@@ -188,9 +192,10 @@
       "operator_review": {
         "reviewer": "Daemon deployment operator",
         "reviewed_at": "2026-10-03T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "docs/INFERENCE_ROUTE_APPROVALS.md#sonnet-55-replacement--3-october-2026",
           "docs/REASONING_EVAL_PROTOCOL.md#sonnet-55-result-3-october-2026",
           "https://openrouter.ai/api/v1/models/anthropic/claude-sonnet-5.5/endpoints",
@@ -199,7 +204,7 @@
         ]
       },
       "price_ceiling": {"microusd_per_1m_prompt": 2200000, "microusd_per_1m_completion": 11000000},
-      "notes": "Sonnet 5.5 replacement authorized 3 October 2026 at high effort; stable route ID, transport pin, native limits, price ceilings and 6 October expiry retained. Exact Vertex Europe ZDR endpoint (claude-sonnet-5.5-20260928); 119/120 blind-panel-acceptable on the reasoning evaluation pilot cases. No Global fallback, provider-native tools or explicit cache writes authorized. Endpoint qualification does not certify general task quality."
+      "notes": "Sonnet 5.5 replacement authorized 3 October 2026 at high effort; stable route ID, transport pin, native limits and price ceilings retained (approval renewed to 17 October on 3 October 2026). Exact Vertex Europe ZDR endpoint (claude-sonnet-5.5-20260928); 119/120 blind-panel-acceptable on the reasoning evaluation pilot cases. No Global fallback, provider-native tools or explicit cache writes authorized. Endpoint qualification does not certify general task quality."
     },
     {
       "route_id": "opus-vertex-europe",
@@ -212,7 +217,7 @@
       "max_output_tokens": 128000,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["google-vertex/europe"], "provider_order": ["google-vertex/europe"],
@@ -224,10 +229,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/anthropic/claude-opus-5.5/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://openrouter.ai/api/frontend/v1/all-providers"
@@ -247,7 +253,7 @@
       "max_output_tokens": 128000,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["azure/us"], "provider_order": ["azure/us"],
@@ -259,10 +265,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/openai/gpt-6-astra/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
@@ -282,7 +289,7 @@
       "max_output_tokens": 450000,
       "approved": true,
       "availability": "verified",
-      "approval_expires_at": "2026-10-06T00:00:00Z",
+      "approval_expires_at": "2026-10-17T00:00:00Z",
       "privacy": {
         "transport": {
           "provider_only": ["xai/zdr/us"], "provider_order": ["xai/zdr/us"],
@@ -294,10 +301,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
-        "review_expires_at": "2026-10-06T00:00:00Z",
+        "reviewed_at": "2026-10-03T00:00:00Z",
+        "review_expires_at": "2026-10-17T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
           "https://openrouter.ai/api/v1/models/x-ai/grok-4.7/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://docs.x.ai/developers/faq/security",
