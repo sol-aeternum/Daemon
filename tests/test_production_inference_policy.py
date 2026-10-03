@@ -1,9 +1,10 @@
-"""Deployment approval must remain opt-in, pinned, and time-bounded."""
+"""Deployment approval must remain opt-in, pinned, and monitored for ZDR changes."""
 
 import json
 import uuid
+from collections.abc import Iterator
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -12,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orchestrator import compute_runtime, model_routing
-from orchestrator.entitlements import EntitlementService
+from orchestrator.entitlements import EntitlementService, attestation
 from orchestrator.entitlements.policy import (
     InferencePolicy,
     RouteNotApproved,
@@ -21,9 +22,38 @@ from orchestrator.entitlements.policy import (
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEWED = datetime(2026, 10, 3, tzinfo=timezone.utc)
-EXPIRES = datetime(2026, 10, 17, tzinfo=timezone.utc)
+STALE = REVIEWED + attestation.STALE_AFTER + timedelta(minutes=1)
 GLM_FLASH = "openrouter/z-ai/glm-5.3-flash"
 GLM_ROUTE = "glm-flash-inceptron-fp8"
+
+
+def _production() -> InferencePolicy:
+    return parse_inference_policy(
+        json.loads((ROOT / "config/inference_policy.production.json").read_text())
+    )
+
+
+def _attested_snapshot(*, revoked: bool = False) -> attestation.AttestationSnapshot:
+    keys = {
+        (route.route_id, attestation.baseline_fingerprint(route))
+        for route in _production().routes.values()
+    }
+    return attestation.AttestationSnapshot(
+        loaded=True,
+        attested_at=dict.fromkeys(keys, REVIEWED),
+        revoked=frozenset(keys) if revoked else frozenset(),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _attested() -> Iterator[None]:
+    """Every production route confirmed by a ZDR check at review time."""
+    previous = attestation.snapshot()
+    attestation.reset_local_revocations()
+    attestation.set_snapshot(_attested_snapshot())
+    yield
+    attestation.reset_local_revocations()
+    attestation.set_snapshot(previous)
 
 
 @pytest.fixture
@@ -123,17 +153,26 @@ async def test_glm_flash_existing_selection_sends_production_caps(mocked_dispatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("denial", ["unapproved", "approval_expired", "review_expired", "fallback"])
+@pytest.mark.parametrize(
+    "denial", ["unapproved", "attestation_revoked", "review_in_future", "fallback"]
+)
 async def test_glm_flash_disqualified_route_never_reserves_or_dispatches(
     monkeypatch, production_policy: InferencePolicy, mocked_dispatch, denial
 ):
     route = production_policy.routes[GLM_ROUTE]
     if denial == "unapproved":
         route = replace(route, approved=False)
-    elif denial == "approval_expired":
-        route = replace(route, approval_expires_at=REVIEWED)
-    elif denial == "review_expired":
-        route = replace(route, review=replace(route.review, review_expires_at=REVIEWED))
+    elif denial == "attestation_revoked":
+        key = (route.route_id, attestation.baseline_fingerprint(route))
+        current = attestation.snapshot()
+        attestation.set_snapshot(
+            attestation.AttestationSnapshot(
+                loaded=True, attested_at=current.attested_at, revoked=frozenset({key})
+            )
+        )
+    elif denial == "review_in_future":
+        later = REVIEWED + timedelta(days=1)
+        route = replace(route, review=replace(route.review, reviewed_at=later))
     else:
         route = replace(
             route,
@@ -190,7 +229,7 @@ async def test_glm_flash_not_added_as_automatic_fallback(
     provider.assert_not_awaited()
 
 
-def test_deployment_policy_is_opt_in_and_expires_closed() -> None:
+def test_deployment_policy_is_opt_in_and_fails_closed_without_attestation() -> None:
     default = parse_inference_policy(
         json.loads((ROOT / "config/inference_policy.json").read_text())
     )
@@ -223,14 +262,15 @@ def test_deployment_policy_is_opt_in_and_expires_closed() -> None:
         assert provider["require_parameters"] is True
         assert provider["data_collection"] == "deny"
         assert provider["zdr"] is True
-        assert route.approval_expires_at == EXPIRES
-        assert route.review.review_expires_at == EXPIRES
-        assert "operator_review_expired" in route.rejection_reasons(
-            policy.requirements, now=EXPIRES
-        )
-        assert "approval_expired" in route.rejection_reasons(policy.requirements, now=EXPIRES)
+        # Monitored: no calendar expiry, a ZDR baseline, and fail-closed attestation.
+        assert route.approval_mode == "monitored"
+        assert route.approval_expires_at is None
+        assert route.review.review_expires_at is None
+        assert route.zdr_baseline is not None
+        assert route.zdr_baseline.data_policy["training"] is False
+        assert route.rejection_reasons(policy.requirements, now=STALE) == ("zdr_attestation_stale",)
         with pytest.raises(RouteNotApproved):
-            route.transport_payload(policy.requirements, now=EXPIRES)
+            route.transport_payload(policy.requirements, now=STALE)
         assert route.supports(
             required_capabilities=frozenset({"text", "tools", "json_schema"}),
             input_tokens=route.max_context_tokens - route.max_output_tokens,
@@ -273,3 +313,30 @@ def test_approved_deployment_resolves_profiles_and_denies_excluded_models(monkey
     ):
         with pytest.raises(compute_runtime.ComputeUnavailable):
             compute_runtime.choose_route(model)
+
+
+def test_unknown_or_revoked_attestation_closes_every_route() -> None:
+    policy = _production()
+    attestation.set_snapshot(attestation.AttestationSnapshot())
+    assert not any(r.is_approved(policy.requirements, now=REVIEWED) for r in policy.routes.values())
+    attestation.set_snapshot(_attested_snapshot(revoked=True))
+    for route in policy.routes.values():
+        assert route.rejection_reasons(policy.requirements, now=REVIEWED) == (
+            "zdr_attestation_revoked",
+        )
+
+
+def test_only_grok_was_approved_with_known_provider_retention() -> None:
+    baselines = {
+        route.route_id: dict(route.zdr_baseline.data_policy)
+        for route in _production().routes.values()
+        if route.zdr_baseline is not None
+    }
+    assert baselines.pop("grok-zdr-us") == {
+        "training": False,
+        "retainsPrompts": True,
+        "retentionDays": 30,
+    }
+    assert all(
+        policy == {"training": False, "retainsPrompts": False} for policy in baselines.values()
+    )

@@ -39,6 +39,7 @@ BEGIN = "<!-- BEGIN GENERATED: chat-routing (scripts/render_chat_routing.py) -->
 END = "<!-- END GENERATED: chat-routing -->"
 CHAT_PROFILES = ("routine", "research", "reasoning")
 OPENROUTER = "openrouter/"
+MONITORED = "monitored"
 
 
 @dataclass(frozen=True)
@@ -81,9 +82,17 @@ class Facts:
             for groups in self.profiles.values()
             for group in groups
             for candidate in group.candidates
-            if candidate.review_expires
+            if candidate.review_expires and candidate.review_expires != MONITORED
         ]
         return min(dates) if dates else None
+
+    def monitored(self) -> bool:
+        return any(
+            candidate.review_expires == MONITORED
+            for groups in self.profiles.values()
+            for group in groups
+            for candidate in group.candidates
+        )
 
     def without_route(self) -> list[str]:
         return sorted(
@@ -109,7 +118,13 @@ def collect(routing_path: Path = ROUTING_PATH, policy_path: Path = POLICY_PATH) 
         if route.route_class not in {"routine", "premium"} or route.model in routes:
             continue
         expires = route.review.review_expires_at
-        routes[route.model] = (route.route_class, expires.date().isoformat() if expires else None)
+        if route.approval_mode == "monitored":
+            # No calendar expiry: revoked only if its ZDR listing or provider
+            # data policy changes, or its attestation goes stale.
+            label: str | None = MONITORED
+        else:
+            label = expires.date().isoformat() if expires else None
+        routes[route.model] = (route.route_class, label)
     profiles: dict[str, tuple[Group, ...]] = {}
     for name in CHAT_PROFILES:
         groups: list[Group] = []
@@ -236,6 +251,12 @@ def render_section(facts: Facts) -> str:
         notes.append(
             f"The earliest operator review expiry among these deployment routes is {expiry}; "
             "an expired route fails closed."
+        )
+    if facts.monitored():
+        notes.append(
+            "Routes marked monitored have no calendar expiry: they fail closed if their "
+            "ZDR listing or provider data policy changes, or if no ZDR check has "
+            "succeeded for 72 hours."
         )
     notes.append(
         "A route listed here is configuration, not proof of live availability or model quality."

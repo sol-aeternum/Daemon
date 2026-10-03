@@ -102,12 +102,20 @@ async def on_startup(ctx: WorkerContext) -> None:
     await initialize_development_pepper(app_settings, db_pool)
     ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
     logger.info("Worker DB pool created")
+    # Background inference admits monitored routes from the attestation snapshot;
+    # the worker also runs its own ZDR checks so it enforces revocations itself.
+    from orchestrator.entitlements import attestation
+
+    await attestation.start(db_pool)
 
 
 async def on_shutdown(ctx: WorkerContext) -> None:
     set_shared_encryption_failure_counter(None)
     db_pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
     if db_pool is not None:
+        from orchestrator.entitlements import attestation
+
+        await attestation.stop()
         await db_pool.close()
         logger.info("Worker DB pool closed")
 

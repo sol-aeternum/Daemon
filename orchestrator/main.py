@@ -286,6 +286,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 logger.warning("Failed to backfill memory content hashes", exc_info=True)
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
+        # Monitored inference routes are admitted from the ZDR attestation snapshot,
+        # and this process runs its own ZDR checks so it enforces revocations itself.
+        from orchestrator.entitlements import attestation
+
+        await attestation.start(state.db_pool)
         await _check_first_boot_setup(state)
 
         try:
@@ -312,6 +317,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         cleanup_shutdown_event.set()
     if cleanup_task is not None:
         await asyncio.shield(cleanup_task)
+    if state.db_pool is not None:
+        from orchestrator.entitlements import attestation
+
+        await attestation.stop()
     await close_app_state(state)
     logger.info("AppState shut down")
 

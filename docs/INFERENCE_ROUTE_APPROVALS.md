@@ -164,6 +164,68 @@ operator-approved change is recorded below.
 The account-side attestation (prompt logging disabled, training opt-out) is carried
 forward unchanged; it cannot be checked from public metadata. Tool-service approvals
 are unchanged.
+## Monitored approvals (operator decision, 3 October 2026)
+
+The operator decided that an inference route approval should not lapse on a
+calendar. It should be revoked only when the endpoint's ZDR status changes. A route
+with `"approval_mode": "monitored"` has no `approval_expires_at` or
+`review_expires_at`; a date alongside monitoring is refused as ambiguous. It still
+needs a named operator review with evidence and a review date that is not in the
+future. Monitored mode is valid only for routes on the OpenRouter gateway
+(`provider: openrouter`, endpoint `https://openrouter.ai/api/v1`), because the
+evidence comes from OpenRouter's listings and says nothing about any other host. Its
+`zdr_baseline` records what it was approved against:
+- `provider_slug`: the pinned provider whose published data policy applies;
+- `data_policy`: the approved values of `training`, `retainsPrompts` and, where
+  relevant, `retentionDays`.
+
+**Check.** The backend and the worker each run the check themselves, at start and
+every 6 hours. Neither depends on the other to enforce a revocation. Each fetches two
+public OpenRouter listings with no credentials: the ZDR endpoint listing and provider
+data policies. Two changes revoke a route:
+- the **exact** requested model id at the pinned provider tag leaves the ZDR listing
+  (`left_zdr_listing`). A sibling model such as `<model>-pro`, or a dated revision
+  listed without the requested id, does not count as listed;
+- any baseline data-policy value changes (`provider_policy_changed:<key>`).
+
+An observed revocation applies to that process's admission immediately, before any
+database I/O, and lasts for the life of the process even if it cannot be recorded.
+A confirmation takes effect only after it is recorded and the shared history is read
+back. A process that cannot reconcile that history cannot renew a baseline another
+process has revoked; its approval simply goes stale.
+Results are then recorded, one row per monitored route, in
+`inference_route_attestations` (migration 043). The write is retried, and a revocation
+that cannot be persisted is logged as critical. An unreadable check records
+`check_failed` and revokes nothing.
+
+**Admission.** Backend and worker read a snapshot of those rows, refreshed every
+minute. A monitored route is admitted only if:
+- its current baseline has been confirmed within **72 hours**; and
+- that baseline has **never been revoked**.
+
+Otherwise it fails closed (`zdr_attestation_stale`, `zdr_attestation_revoked`, or
+`zdr_attestation_unknown` before the first snapshot loads). Revocation is sticky for
+the approved baseline. Re-approval is an explicit operator change to the route,
+normally a new review date after requalification; the route never recovers on its
+own.
+
+**Not monitored.** The account-side attestation (prompt logging disabled, training
+opt-out) cannot be checked from public metadata and is carried by the operator
+review. Price, limits and capability changes are not revocation triggers. The
+transport price cap still refuses dispatch when a listed price exceeds the pinned
+ceiling (see #421).
+
+**Deploy.** Apply migration 043. Run `python scripts/attest_inference_routes.py`
+once against the deployment database before restarting the backend and worker onto
+a monitored policy. Its exit status reflects effective admission, not just that
+check:
+- `0`: every monitored route would be admitted now;
+- `1`: some route would be refused, because it is stale, unknown or revoked
+  (including a baseline revoked by an earlier check), or unusable for any other
+  policy reason;
+- `3`: the policy has no monitored routes.
+
+Restart only on `0`. Expiring approvals keep their existing behaviour.
 
 ## GLM Flash input ceiling — 3 October 2026
 
@@ -209,17 +271,30 @@ sending `provider.max_price={"prompt":0.225,"completion":0.45}` (USD per million
 not per-token prices). User pricing, accounting multipliers and budgets are
 unchanged; reservations continue using the configured ceiling and existing ledger.
 
-Both approval and review expiry remain **2026-10-17T00:00:00Z**, preserving merged
-[#423](https://github.com/sol-aeternum/Daemon/pull/423). The separate in-flight
-[#424](https://github.com/sol-aeternum/Daemon/pull/424) monitored-approval change is
-not incorporated here. Exact provider/model pins, ZDR/no-training controls,
+*As merged in [#427](https://github.com/sol-aeternum/Daemon/pull/427), before
+integration with monitoring:* both approval and review expiry remained
+**2026-10-17T00:00:00Z**, preserving [#423](https://github.com/sol-aeternum/Daemon/pull/423).
+
+**Current combined state (with [#424](https://github.com/sol-aeternum/Daemon/pull/424)):**
+- **Ceiling:** GLM Flash keeps this 225000 / 450000 ceiling and the evidence link above.
+- **Approval:** like every production route, it is now a
+  [monitored approval](#monitored-approvals-operator-decision-3-october-2026) with no
+  calendar expiry. It does not shut off on 17 October.
+- **Revocation:** it is revoked only if `z-ai/glm-5.3-flash` at `inceptron/fp8`
+  leaves the ZDR listing or Inceptron's published `training`/`retainsPrompts` change.
+  It fails closed if no check has succeeded for 72 hours.
+- **Bootstrap:** deployment follows the monitored bootstrap in that section.
+
+Exact provider/model pins, ZDR/no-training controls,
 disabled fallbacks, capabilities and native limits are unchanged. Qualified exact
 manual selection and the existing council diverse group remain available; GLM
 Flash is not added to routine/background/research/reasoning automatic groups.
 Full `z-ai/glm-5.3` remains unapproved.
 
-Mocked regression tests verify the production payload and existing admission paths,
-including denial of expired/unapproved routes and broader fallback. No paid
+Mocked regression tests verify the production payload and existing admission paths.
+#427 tested denial of expired and unapproved routes and of broader fallback. In the
+combined state, the expiry cases are replaced by monitored denials: a revoked
+attestation, a future review date, an unapproved route and broader fallback. No paid
 inference or live dispatch test is authorized or performed. No restart or deployment
 is part of this change: backend and worker cache policy and still require a
 separately approved rollout/reload before this configuration can affect dispatch.
@@ -267,7 +342,10 @@ or media service is approved by this inference decision.
 
 1. Before rollout, verify the intended OpenRouter account/workspace still has
    the attested privacy settings. Refresh exact endpoint/ZDR membership, prices,
-   capabilities and hosting evidence, and confirm both expiries are still valid.
+   capabilities and hosting evidence. Monitored routes carry no expiry dates (the
+   parser rejects them). Instead, apply migration 043 and run
+   `python scripts/attest_inference_routes.py`; proceed only on exit 0, which means
+   every monitored route is currently attested and admitted.
 2. For this deployment only, set the existing setting to
    `DAEMON_INFERENCE_POLICY=/app/config/inference_policy.production.json`.
    Compose already injects this setting into both backend and worker; no new
@@ -280,9 +358,10 @@ or media service is approved by this inference decision.
 4. Any paid synthetic smoke test needs its own bounded call count and USD cap.
    Exercise the application accounting path, streaming/usage, tools and JSON
    compatibility; public metadata and local tests do not replace this check.
-5. Renew both approval and operator review before **2026-10-17T00:00:00Z** (renewed
-   on 3 October; see above), with refreshed evidence. At expiry all eight routes
-   fail closed. Do not merely extend dates without requalification.
+5. All eight routes are monitored approvals (see above): they carry no calendar
+   expiry and fail closed if a ZDR check revokes them or none has succeeded for 72
+   hours. Re-approving a revoked route requires requalification and a new review
+   date; never re-approve without refreshed evidence.
 6. To roll back, restore the prior policy selection (or remove the override to
    select the portable deny-by-default policy) and recreate both processes.
    Returning to that default deliberately restores route-unavailable behavior.
