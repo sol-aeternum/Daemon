@@ -77,7 +77,12 @@ async function mockApi(page: Page) {
           tagline: 'Automatic routing',
           icon: 'zap',
         },
-        featured: [],
+        featured: Array.from({ length: 8 }, (_, index) => ({
+          id: `fixture-model-${index + 1}`,
+          name: `Fixture model ${index + 1}`,
+          tagline: 'Fictional catalog option',
+          badges: [],
+        })),
       },
     }),
   );
@@ -163,6 +168,128 @@ test('browser find reveals text inside a collapsed message', async ({
   await expect(oldDetail).toBeVisible();
   await expect(old.getByRole('button', { name: 'Show less' })).toBeVisible();
 });
+
+for (const width of [390, 1440]) {
+  test(`long-chat reload keeps scrolling inside messages at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto('/?id=conversation-1');
+    const messages = page.getByRole('main', { name: 'Conversation messages' });
+    const wrapper = page
+      .locator('[data-panel] > div')
+      .filter({ has: messages });
+    const footer = page.locator('footer');
+    const header = page.locator('header').filter({ visible: true });
+    const assertBoundary = async () => {
+      await expect(wrapper).toHaveCSS('overflow-y', 'clip');
+      await expect(messages).toHaveCSS('overscroll-behavior-y', 'contain');
+      expect(await wrapper.evaluate((element) => element.scrollTop)).toBe(0);
+      const bounds = await page.evaluate(() => ({
+        pageY: scrollY,
+        excess: document.documentElement.scrollHeight - innerHeight,
+        headerTop: [...document.querySelectorAll('header')]
+          .find((element) => element.getBoundingClientRect().height > 0)!
+          .getBoundingClientRect().top,
+        footerBottom: document.querySelector('footer')!.getBoundingClientRect()
+          .bottom,
+      }));
+      expect(bounds.pageY).toBe(0);
+      expect(bounds.excess).toBeLessThanOrEqual(1);
+      expect(bounds.headerTop).toBeGreaterThanOrEqual(0);
+      expect(bounds.footerBottom).toBeLessThanOrEqual(1001);
+    };
+    for (let reload = 0; reload < 2; reload++) {
+      if (reload) await page.reload();
+      await expect(messages.locator('article')).toHaveCount(100);
+      await expect
+        .poll(() =>
+          messages.evaluate(
+            (element) =>
+              element.scrollHeight - element.clientHeight - element.scrollTop,
+          ),
+        )
+        .toBeLessThan(64);
+      expect(
+        await wrapper.evaluate(
+          (element) => element.scrollHeight - element.clientHeight,
+        ),
+      ).toBeLessThanOrEqual(1);
+      await messages.hover();
+      await page.mouse.wheel(0, 3000);
+      await assertBoundary();
+      const old = messages.locator('[data-message-id="message-2"]');
+      await old.scrollIntoViewIfNeeded();
+      await old.getByRole('button', { name: 'Show more', exact: true }).focus();
+      await page.keyboard.press('Enter');
+      await expect(old.getByText('Full content 2.')).toBeVisible();
+      await assertBoundary();
+      await footer.getByRole('button', { name: 'Model: Auto' }).click();
+      await expect(
+        page.getByText('Smart routing based on your message'),
+      ).toBeVisible();
+      const menuChoices = page.getByRole('button', {
+        name: /Fixture model \d/,
+      });
+      await expect(menuChoices).toHaveCount(8);
+      for (const choice of await menuChoices.all()) {
+        const box = (await choice.boundingBox())!;
+        expect(box.y).toBeGreaterThanOrEqual(0);
+        expect(box.y + box.height).toBeLessThanOrEqual(1000);
+      }
+      await page
+        .getByRole('button', { name: /Smart routing based on your message/ })
+        .click();
+      await page
+        .getByRole('button', { name: 'Open conversation details', exact: true })
+        .click();
+      await expect(
+        page.getByRole('heading', { name: 'Conversation details' }),
+      ).toBeVisible();
+      await page
+        .getByRole('button', { name: 'Close conversation details' })
+        .click();
+      await assertBoundary();
+
+      // The real overflow-producing descendant is not yet isolated (#428).
+      // Inject excess wrapper content to prove this boundary stays non-scrollable
+      // even then; unlike overflow:hidden, clip must reject programmatic scroll.
+      const headerBefore = await header.boundingBox();
+      const footerBefore = await footer.boundingBox();
+      await wrapper.evaluate((element) => {
+        const excess = document.createElement('div');
+        excess.dataset.scrollBoundaryProbe = 'true';
+        // The chat content is already positioned. Add overflowing paint, not a
+        // flex sibling that would shrink the chat and invalidate the fixture.
+        excess.style.cssText =
+          'position:absolute;top:100%;height:1800px;width:1px';
+        element.firstElementChild!.appendChild(excess);
+      });
+      expect(
+        await wrapper.evaluate(
+          (element) => element.scrollHeight - element.clientHeight,
+        ),
+      ).toBeGreaterThan(1000);
+      await wrapper.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+        element.scrollTo({ top: element.scrollHeight });
+      });
+      await messages.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      await messages.hover();
+      await page.mouse.wheel(0, 3000);
+      await page.getByRole('textbox', { name: 'Message Daemon' }).focus();
+      await page.keyboard.press('Tab');
+      await assertBoundary();
+      expect(await header.boundingBox()).toEqual(headerBefore);
+      expect(await footer.boundingBox()).toEqual(footerBefore);
+      await wrapper
+        .locator('[data-scroll-boundary-probe]')
+        .evaluate((element) => element.remove());
+    }
+  });
+}
 
 for (const width of [375, 1440]) {
   test(`tool-log preference persists after reload at ${width}px`, async ({

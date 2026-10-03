@@ -192,6 +192,13 @@ test('bottom player pauses, seeks and resumes one native audio without another r
     .getByRole('button', { name: 'Pause speech', exact: true })
     .click();
   await expect(player.getByText('Paused', { exact: true })).toBeVisible();
+  const messages = page.getByRole('main', { name: 'Conversation messages' });
+  const wrapper = page.locator('[data-panel] > div').filter({ has: messages });
+  await expect(wrapper).toHaveCSS('overflow-y', 'clip');
+  await wrapper.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  expect(await wrapper.evaluate((element) => element.scrollTop)).toBe(0);
   const playerBox = await player.boundingBox();
   const composerBox = await page
     .getByRole('textbox', { name: 'Message Daemon' })
