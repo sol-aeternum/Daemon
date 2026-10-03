@@ -164,6 +164,48 @@ operator-approved change is recorded below.
 The account-side attestation (prompt logging disabled, training opt-out) is carried
 forward unchanged; it cannot be checked from public metadata. Tool-service approvals
 are unchanged.
+## Monitored approvals (operator decision, 3 October 2026)
+
+The operator decided that an inference route approval should not lapse on a
+calendar. It should be revoked only when the endpoint's ZDR status changes. A route
+with `"approval_mode": "monitored"` has no `approval_expires_at` or
+`review_expires_at`; a date alongside monitoring is refused as ambiguous. It still
+needs a named operator review with evidence and a review date that is not in the
+future. Its `zdr_baseline` records what it was approved against:
+- `provider_slug`: the pinned provider whose published data policy applies;
+- `data_policy`: the approved values of `training`, `retainsPrompts` and, where
+  relevant, `retentionDays`.
+
+**Check.** A worker job (`attest_inference_routes`) runs at worker start and every 6
+hours. It fetches two public OpenRouter listings with no credentials: the ZDR
+endpoint listing and provider data policies. It records one row per monitored route
+in `inference_route_attestations` (migration 043). Two changes revoke a route:
+- the exact model at the pinned provider endpoint leaves the ZDR listing
+  (`left_zdr_listing`);
+- any baseline data-policy value changes (`provider_policy_changed:<key>`).
+
+An unreadable check records `check_failed` and revokes nothing.
+
+**Admission.** Backend and worker read a snapshot of those rows, refreshed every
+minute. A monitored route is admitted only if:
+- its current baseline has been confirmed within **72 hours**; and
+- that baseline has **never been revoked**.
+
+Otherwise it fails closed (`zdr_attestation_stale`, `zdr_attestation_revoked`, or
+`zdr_attestation_unknown` before the first snapshot loads). Revocation is sticky for
+the approved baseline. Re-approval is an explicit operator change to the route,
+normally a new review date after requalification; the route never recovers on its
+own.
+
+**Not monitored.** The account-side attestation (prompt logging disabled, training
+opt-out) cannot be checked from public metadata and is carried by the operator
+review. Price, limits and capability changes are not revocation triggers. The
+transport price cap still refuses dispatch when a listed price exceeds the pinned
+ceiling (see #421).
+
+**Deploy.** Apply migration 043. Run `python scripts/attest_inference_routes.py`
+once against the deployment database before restarting the backend and worker
+onto a monitored policy. Expiring approvals keep their existing behaviour.
 
 ## GLM Flash input ceiling — 3 October 2026
 

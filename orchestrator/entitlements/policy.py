@@ -27,6 +27,11 @@ overspend:
 * a pinned https endpoint and a pinned maximum price, so spend is bounded
   without fetching a live price at request time;
 * a dated approval **and** a dated operator review with recorded evidence.
+  An ``expiring`` route (the default) fails closed when either date passes. A
+  ``monitored`` route has no calendar expiry: it stays approved only while a
+  recent ZDR attestation (``orchestrator.entitlements.attestation``) finds its
+  endpoint still ZDR-listed and its provider's data policy unchanged from the
+  approved baseline, and fails closed when that check revokes it or goes stale.
 
 Tool services (web search, embeddings, speech, ...) carry their own price
 policy and are **deny by default**: a service that is absent from the file, or
@@ -87,6 +92,16 @@ REQUIRED_DATA_COLLECTION: Final[str] = "deny"
 
 #: Availability value that means "someone actually checked".
 VERIFIED_AVAILABILITY: Final[str] = "verified"
+
+#: How an inference route's approval stays valid: until its dates pass, or for as
+#: long as the ZDR attestation keeps confirming the approved baseline.
+ROUTE_APPROVAL_MODES: Final[frozenset[str]] = frozenset({"expiring", "monitored"})
+
+#: Provider data-policy fields a monitored baseline may pin. A change in any pinned
+#: field revokes the route.
+ZDR_BASELINE_POLICY_KEYS: Final[frozenset[str]] = frozenset(
+    {"training", "retainsPrompts", "retentionDays"}
+)
 
 _LIMIT_FIELDS: Final[tuple[str, ...]] = (
     "max_concurrent_operations",
@@ -581,6 +596,7 @@ class PolicyRequirements:
     require_pinned_endpoint: bool = True
     require_pinned_transport: bool = True
     require_pinned_provider_selection: bool = True
+    require_zdr_attestation: bool = True
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -597,6 +613,7 @@ class PolicyRequirements:
             "require_pinned_endpoint": self.require_pinned_endpoint,
             "require_pinned_transport": self.require_pinned_transport,
             "require_pinned_provider_selection": self.require_pinned_provider_selection,
+            "require_zdr_attestation": self.require_zdr_attestation,
         }
 
 
@@ -727,6 +744,20 @@ class PriceCeiling:
 
 
 @dataclass(frozen=True, slots=True)
+class ZdrBaseline:
+    """What a monitored route was approved against, checked by the ZDR attestation.
+
+    ``provider_slug`` is the provider whose published data policy applies to the
+    pinned endpoint; ``data_policy`` holds the approved values of the pinned
+    fields (see :data:`ZDR_BASELINE_POLICY_KEYS`). ZDR listing membership of the
+    exact model and pinned provider endpoint is always required.
+    """
+
+    provider_slug: str
+    data_policy: Mapping[str, bool | int | None]
+
+
+@dataclass(frozen=True, slots=True)
 class RoutePolicy:
     """One candidate provider/model route plus every approval fact about it."""
 
@@ -747,6 +778,8 @@ class RoutePolicy:
     model_capabilities: frozenset[str] = frozenset()
     max_context_tokens: int = 0
     max_output_tokens: int = 0
+    approval_mode: str = "expiring"
+    zdr_baseline: ZdrBaseline | None = None
 
     def supports(
         self,
@@ -816,6 +849,9 @@ class RoutePolicy:
             reasons.append("free_model_training_opt_out_missing")
         if requirements.require_price_ceiling and self.price_ceiling is None:
             reasons.append("price_ceiling_missing")
+        if self.approval_mode == "monitored":
+            reasons.extend(self._monitored_reasons(requirements, moment))
+            return tuple(reasons)
         if requirements.require_unexpired_approval:
             if self.approval_expires_at is None:
                 reasons.append("approval_expiry_missing")
@@ -828,6 +864,30 @@ class RoutePolicy:
                 require=requirements.require_operator_review,
             )
         )
+        return tuple(reasons)
+
+    def _monitored_reasons(
+        self, requirements: PolicyRequirements, moment: datetime
+    ) -> tuple[str, ...]:
+        """No calendar expiry: a dated sign-off plus a current ZDR attestation.
+
+        The operator review still needs a named reviewer, recorded evidence and a
+        review date that is not in the future. In place of expiry dates, the
+        route needs an attestation that confirmed its baseline within the
+        staleness window and has never revoked it.
+        """
+        reasons: list[str] = []
+        if requirements.require_operator_review:
+            if not self.review.reviewer or not self.review.evidence:
+                reasons.append("operator_review_missing_evidence")
+            if self.review.reviewed_at is None or self.review.reviewed_at > moment:
+                reasons.append("operator_review_date_invalid")
+        if self.zdr_baseline is None:
+            reasons.append("zdr_baseline_missing")
+        elif requirements.require_zdr_attestation:
+            from orchestrator.entitlements import attestation
+
+            reasons.extend(attestation.attestation_reasons(self, now=moment))
         return tuple(reasons)
 
     def is_approved(self, requirements: PolicyRequirements, *, now: datetime | None = None) -> bool:
@@ -1152,7 +1212,58 @@ def _parse_route(raw: object, *, index: int) -> RoutePolicy:
             route_map.get("price_ceiling"), field=f"routes.{route_id}.price_ceiling"
         ),
         notes=str(route_map.get("notes", "")),
+        **_parse_approval_mode(route_map, privacy, route_id=route_id),
     )
+
+
+def _parse_approval_mode(
+    route_map: Mapping[str, Any], privacy: Mapping[str, Any], *, route_id: str
+) -> dict[str, Any]:
+    """Approval mode and, for monitored routes, the ZDR baseline.
+
+    A monitored route carries no expiry dates: a date alongside monitoring would be
+    ambiguous about which rule revokes the approval, so it is refused.
+    """
+    mode = _require_str(
+        route_map.get("approval_mode", "expiring"), field=f"routes.{route_id}.approval_mode"
+    )
+    if mode not in ROUTE_APPROVAL_MODES:
+        raise PolicyError(f"routes.{route_id}.approval_mode must be expiring or monitored")
+    raw_baseline = route_map.get("zdr_baseline")
+    if mode == "expiring":
+        if raw_baseline is not None:
+            raise PolicyError(f"routes.{route_id}.zdr_baseline requires approval_mode monitored")
+        return {"approval_mode": mode, "zdr_baseline": None}
+    review = route_map.get("operator_review")
+    if route_map.get("approval_expires_at") is not None or (
+        isinstance(review, Mapping) and review.get("review_expires_at") is not None
+    ):
+        raise PolicyError(f"routes.{route_id}: a monitored approval cannot carry expiry dates")
+    baseline = _require_mapping(raw_baseline, field=f"routes.{route_id}.zdr_baseline")
+    slug = _require_str(
+        baseline.get("provider_slug"), field=f"routes.{route_id}.zdr_baseline.provider_slug"
+    )
+    transport = privacy.get("transport")
+    only = transport.get("provider_only") if isinstance(transport, Mapping) else None
+    if not isinstance(only, list) or len(only) != 1 or str(only[0]).split("/")[0] != slug:
+        raise PolicyError(
+            f"routes.{route_id}.zdr_baseline.provider_slug must match the single pinned provider"
+        )
+    policy = _require_mapping(
+        baseline.get("data_policy"), field=f"routes.{route_id}.zdr_baseline.data_policy"
+    )
+    if not policy or not set(policy) <= ZDR_BASELINE_POLICY_KEYS:
+        raise PolicyError(
+            f"routes.{route_id}.zdr_baseline.data_policy must pin one or more of "
+            f"{sorted(ZDR_BASELINE_POLICY_KEYS)}"
+        )
+    for key, value in policy.items():
+        if value is not None and not isinstance(value, (bool, int)):
+            raise PolicyError(f"routes.{route_id}.zdr_baseline.data_policy.{key} is invalid")
+    return {
+        "approval_mode": mode,
+        "zdr_baseline": ZdrBaseline(provider_slug=slug, data_policy=MappingProxyType(dict(policy))),
+    }
 
 
 def _parse_tool_service(raw: object, *, index: int) -> ToolServicePolicy:

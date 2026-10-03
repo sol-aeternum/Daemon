@@ -1025,6 +1025,25 @@ async def cleanup_web_snapshots(ctx: WorkerContext) -> dict[str, int]:
     return {"deleted": deleted}
 
 
+async def attest_inference_routes(ctx: WorkerContext) -> dict[str, int]:
+    """Re-check ZDR listing and provider data policy for monitored route approvals."""
+    import httpx
+
+    from orchestrator.entitlements import attestation
+    from orchestrator.entitlements.policy import load_inference_policy
+
+    pool = ctx.get("db_pool")
+    if pool is None:
+        return {"routes": 0}
+    try:
+        routes = list(load_inference_policy().routes.values())
+    except Exception:
+        logger.warning("Route attestation skipped: inference policy unavailable")
+        return {"routes": 0}
+    async with httpx.AsyncClient() as client:
+        return await attestation.run_check(pool, client, routes)
+
+
 async def reconcile_settlement_receipts(ctx: WorkerContext) -> dict[str, int]:
     """Lower conservative full-hold settlements to provider receipts (optional work O3)."""
     import httpx

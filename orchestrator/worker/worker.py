@@ -33,6 +33,7 @@ from orchestrator.worker.jobs import (
     garbage_collect,
     cleanup_web_snapshots,
     reconcile_settlement_receipts,
+    attest_inference_routes,
     generate_conversation_title_job,
     generate_title,
     generate_summary_job,
@@ -102,6 +103,10 @@ async def on_startup(ctx: WorkerContext) -> None:
     await initialize_development_pepper(app_settings, db_pool)
     ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
     logger.info("Worker DB pool created")
+    # Background inference admits monitored routes from the attestation snapshot.
+    from orchestrator.entitlements import attestation
+
+    await attestation.start(db_pool)
 
 
 async def on_shutdown(ctx: WorkerContext) -> None:
@@ -172,6 +177,13 @@ cron_jobs.extend(
             keep_result=3600,
         ),
         cron(
+            attest_inference_routes,
+            hour={0, 6, 12, 18},
+            minute=5,
+            run_at_startup=True,
+            keep_result=3600,
+        ),
+        cron(
             garbage_collect,
             hour=3,
             minute=0,
@@ -202,6 +214,7 @@ worker = AuditedWorker(
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
         func(cleanup_web_snapshots, max_tries=_worker_settings.retry_attempts),
         func(reconcile_settlement_receipts, max_tries=_worker_settings.retry_attempts),
+        func(attest_inference_routes, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
         func(consolidate_memories, max_tries=_worker_settings.retry_attempts),
