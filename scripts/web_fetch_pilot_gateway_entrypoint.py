@@ -10,8 +10,9 @@ only as a non-live fixture run and makes no live-readiness claim.
 
 Framed IPC owns duplicated non-inheritable stdin/stdout descriptors; fds 0/1
 point at ``/dev/null``/stderr so no DNS helper or stray print can touch frames.
-Before any frame is read it refuses (exit 3) unless it runs non-root with only
-``eth0``/``lo`` and no default route. Diagnostics are bounded stderr only and
+Before any frame is read it refuses (exit 3) unless the run's topology is the
+internal one and it runs non-root with only ``eth0``/``lo``, no default route,
+seccomp filtering, no-new-privileges and no effective capabilities. Diagnostics are bounded stderr only and
 never interpreted by the supervisor. Exit codes: 0 gateway and resolver ended
 with clean ownership (never a fetch success claim); 1 cleanup uncertainty;
 3 isolation refused.
@@ -24,7 +25,11 @@ import os
 import sys
 from dataclasses import dataclass
 
-RUN_KEYS = frozenset({"allowed_hosts", "inventory", "deadline_seconds"})
+RUN_KEYS = frozenset({"allowed_hosts", "inventory", "deadline_seconds", "topology"})
+# "internal": owned --internal network, no route out; an empty inventory is allowed
+# only here. "egress": any run with a route out; it MUST carry a non-empty owned
+# inventory and is refused at runtime until live egress is separately approved.
+TOPOLOGIES = ("internal", "egress")
 MAX_DEADLINE = 44.0
 DIAGNOSTIC_LIMIT = 8192
 EXIT_OK, EXIT_CLEANUP, EXIT_ISOLATION = 0, 1, 3
@@ -35,6 +40,7 @@ class GatewayRun:
     allowed_hosts: tuple[str, ...]
     inventory: tuple[str, ...]
     deadline_seconds: float
+    topology: str
 
 
 def parse_run(raw: object) -> GatewayRun:
@@ -53,7 +59,35 @@ def parse_run(raw: object) -> GatewayRun:
     deadline = raw["deadline_seconds"]
     if type(deadline) is not float or not 1.0 <= deadline <= MAX_DEADLINE:
         raise ValueError("run configuration refused")
-    return GatewayRun(tuple(hosts), tuple(inventory), deadline)
+    topology = raw["topology"]
+    if topology not in TOPOLOGIES:
+        raise ValueError("run configuration refused")
+    if topology == "egress":
+        from scripts.web_fetch_pilot_core import DestinationPolicyError, parse_owned_inventory
+
+        if not inventory:
+            raise ValueError("egress requires a non-empty owned-address inventory")
+        try:
+            parse_owned_inventory(list(inventory))
+        except DestinationPolicyError:
+            raise ValueError("run configuration refused") from None
+    return GatewayRun(tuple(hosts), tuple(inventory), deadline, topology)
+
+
+def status_ok(text: str) -> bool:
+    """Pure: /proc/self/status shows seccomp filtering, no-new-privs, no capabilities."""
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            fields[key.strip()] = value.strip()
+    cap_eff = fields.get("CapEff", "")
+    return (
+        fields.get("Seccomp") == "2"
+        and fields.get("NoNewPrivs") == "1"
+        and bool(cap_eff)
+        and set(cap_eff) <= {"0"}
+    )
 
 
 def routes_ok(table: str) -> bool:
@@ -87,10 +121,13 @@ def own_frame_descriptors() -> tuple[int, int]:
 def isolation_ok() -> bool:
     with open("/proc/net/route", encoding="ascii") as handle:
         table = handle.read(65536)
+    with open("/proc/self/status", encoding="ascii") as handle:
+        status = handle.read(65536)
     return (
         os.getuid() != 0
         and sorted(os.listdir("/sys/class/net")) == ["eth0", "lo"]
         and routes_ok(table)
+        and status_ok(status)
     )
 
 
@@ -102,6 +139,9 @@ async def main(raw_run: object) -> int:
 
     run = parse_run(raw_run)
     frame_in, frame_out = own_frame_descriptors()
+    if run.topology != "internal":
+        diagnostic({"refused": "egress topology not enabled"})
+        return EXIT_ISOLATION
     if not isolation_ok():
         diagnostic({"refused": "isolation"})
         return EXIT_ISOLATION

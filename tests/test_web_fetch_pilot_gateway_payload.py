@@ -26,10 +26,15 @@ from scripts.web_fetch_pilot_browser_payload import (
     make_gateway_bundle,
 )
 from scripts.web_fetch_pilot_container_policy import networked_create_arguments
-from scripts.web_fetch_pilot_gateway_entrypoint import parse_run, routes_ok
+from scripts.web_fetch_pilot_gateway_entrypoint import parse_run, routes_ok, status_ok
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = {"allowed_hosts": ["openai.com"], "inventory": [], "deadline_seconds": 40.0}
+RUN = {
+    "allowed_hosts": ["openai.com"],
+    "inventory": [],
+    "deadline_seconds": 40.0,
+    "topology": "internal",
+}
 HEADER = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
 SUBNET_ROW = "eth0\t00030201\t00000000\t0001\t0\t0\t0\tF8FFFFFF\t0\t0\t0\n"
 
@@ -161,3 +166,41 @@ def test_gateway_bootstrap_reads_exactly_one_bundle() -> None:
     loaded, run = namespace["load"]()  # type: ignore[operator]
     assert run == RUN and set(loaded) == set(GATEWAY_MODULE_NAMES)
     assert bytes(buffer) == frames
+
+
+STATUS = "Name:\tpython\nNoNewPrivs:\t1\nSeccomp:\t2\nCapEff:\t0000000000000000\n"
+
+
+def test_egress_topology_requires_a_nonempty_wellformed_inventory() -> None:
+    assert parse_run(dict(RUN)).topology == "internal"
+    egress = {**RUN, "topology": "egress"}
+    with pytest.raises(ValueError, match="non-empty"):
+        parse_run(egress)  # Empty inventory can never accompany a route out.
+    with pytest.raises(ValueError):
+        parse_run({**egress, "inventory": ["not-an-address"]})
+    assert parse_run({**egress, "inventory": ["203.0.113.7", "198.51.100.0/24"]}).inventory
+    for bad in ("public", "", None):
+        with pytest.raises(ValueError):
+            parse_run({**RUN, "topology": bad})
+    with pytest.raises(ValueError):
+        parse_run({k: v for k, v in RUN.items() if k != "topology"})
+
+
+def test_egress_topology_is_refused_at_runtime_before_any_frame() -> None:
+    source = (ROOT / "scripts/web_fetch_pilot_gateway_entrypoint.py").read_text()
+    main = source[source.index("async def main(") :]
+    assert main.index('if run.topology != "internal":') < main.index("if not isolation_ok():")
+    assert main.index("if not isolation_ok():") < main.index("DNSResolver(")
+
+
+def test_gateway_status_requires_seccomp_nnp_and_no_capabilities() -> None:
+    assert status_ok(STATUS)
+    for old, new in (
+        ("Seccomp:\t2", "Seccomp:\t0"),
+        ("Seccomp:\t2", "Seccomp:\t1"),
+        ("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+        ("CapEff:\t0000000000000000", "CapEff:\t00000000a80425fb"),
+        ("CapEff:\t0000000000000000", "CapEff:\t"),
+    ):
+        assert not status_ok(STATUS.replace(old, new))
+    assert not status_ok("Name:\tpython\n")

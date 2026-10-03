@@ -206,7 +206,12 @@ async def test_native_browser_gateway_fixture_on_internal_network(tmp_path: Path
             stderr_tasks.append(asyncio.create_task(drain(fixture.stderr)))
 
             gateway = await gateway_driver.start(gateway_command())
-            gateway_run = {"allowed_hosts": [HOST], "inventory": [], "deadline_seconds": 40.0}
+            gateway_run = {
+                "allowed_hosts": [HOST],
+                "inventory": [],
+                "deadline_seconds": 40.0,
+                "topology": "internal",
+            }
             await send(gateway, make_gateway_bundle(trusted(GATEWAY_MODULE_NAMES), gateway_run))
             gateway_errors = asyncio.create_task(drain(gateway.stderr))
             stderr_tasks.append(gateway_errors)

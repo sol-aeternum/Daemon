@@ -30,7 +30,9 @@ from scripts.web_fetch_pilot_browser_entrypoint import (
     classify,
     final_record,
     parse_run,
+    request_allowed,
     sandbox_ok,
+    status_ok,
     synthetic_ok,
     url_host,
 )
@@ -285,3 +287,31 @@ def test_browse_exit_is_zero_only_without_unexpected_failure() -> None:
     source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
     for name in STAGES[1:]:
         assert f'stage[0] = "{name}"' in source  # Every stage is actually recorded.
+
+
+def test_request_guard_allows_only_https_manifest_hosts_on_443() -> None:
+    allowed = frozenset({"openai.com"})
+    assert request_allowed("https://openai.com/index/x?y=1", allowed)
+    assert request_allowed("https://openai.com:443/", allowed)
+    for url in (
+        "http://openai.com/",
+        "https://cdn.openai.com/a.js",  # Subdomains are not implied.
+        "https://evil.example/",
+        "https://openai.com:8443/",
+        "https://user@openai.com/",
+        "wss://openai.com/socket",
+        "data:text/html,x",
+        "chrome-error://chromewebdata/",
+        None,
+    ):
+        assert not request_allowed(url, allowed)
+
+
+def test_browser_status_requires_seccomp_nnp_and_no_capabilities() -> None:
+    good = "NoNewPrivs:\t1\nSeccomp:\t2\nCapEff:\t0000000000000000\n"
+    assert status_ok(good)
+    assert not status_ok(good.replace("Seccomp:\t2", "Seccomp:\t0"))
+    assert not status_ok(good.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"))
+    assert not status_ok(good.replace("0000000000000000", "0000000000000400"))
+    source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
+    assert "not status_ok(status)" in source and 'context.route("**/*", guard)' in source

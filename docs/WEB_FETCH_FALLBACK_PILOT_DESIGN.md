@@ -2117,3 +2117,33 @@ deployment-address inventory, successful extraction against a real page, Patchri
 full-project gates. Production remains direct-only. Next is handoff stage F: fresh security
 review of the actual runner/gateway/relay code and full-project gates, then — only with
 explicit owner approval — the bounded fixed-URL live comparison.
+
+### Security review and hardening (2026-10-03)
+
+A focused security review of the pilot commits (the security-review skill, scoped to
+`scripts/web_fetch_pilot_*` and the pinned profile) found **no high-confidence
+vulnerabilities**. It checked destination policy, frame and RESULT handling, Docker argument
+injection, preflight and seccomp scope, owned-resource removal, bootstrap staging, TLS and
+secrets. On the owner's request its three below-the-bar items are now implemented:
+
+1. **Inventory.** The gateway run carries an explicit `topology`. `internal` (the owned
+   `--internal` network, no route out) is the only topology that runs and may carry an empty
+   inventory. `egress` must carry a non-empty, well-formed owned inventory (parsed by the
+   gateway's own `parse_owned_inventory`) and is still refused at runtime, before any frame,
+   until live egress is separately approved. An empty inventory can therefore never accompany
+   a run with a route out.
+2. **Seccomp.** Daemon provenance now requires a `name=seccomp` entry with an explicit profile
+   that is not `unconfined`. Both container entrypoints check their own `/proc/self/status`
+   (`Seccomp: 2`, `NoNewPrivs: 1`, `CapEff` all zero) as part of the isolation refusal (exit 3)
+   before any network or frame work.
+3. **Requests for other sites inside a tunnel.** The browser cannot resolve DNS, so browser-side
+   IP pooling cannot occur. As defence in depth for reuse of an open tunnel, the browser context
+   routes every request through a guard that aborts anything that is not `https` to a manifest
+   host on port 443 (subdomains are not implied); only a blocked count reaches diagnostics. The
+   gateway's CONNECT allowlist remains the enforcement boundary.
+
+New pure tests cover the topology and inventory rule, the runtime refusal ordering, both status
+checks, the request guard and three rejected seccomp option forms; the E3c gate's gateway run
+now declares `topology: internal`. Pilot run **1059 passed, 9 skipped**; scoped types, lint and
+high-severity Bandit pass. The E2c and E3c native gates have not yet been re-run against these
+changes.

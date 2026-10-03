@@ -31,6 +31,7 @@ import os
 import socket
 import sys
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 EXECUTABLE = "/home/appuser/.cache/ms-playwright/chromium-1200/chrome-linux64/chrome"
@@ -146,6 +147,32 @@ def classify(
     return content, final_record(run, "success", final_url, title)
 
 
+def request_allowed(url: object, allowed_hosts: frozenset[str]) -> bool:
+    """Pure: only https to a manifest host on 443 may leave the page.
+
+    Defence in depth against requests for other sites travelling inside an
+    already-open tunnel (e.g. connection reuse); the gateway's CONNECT allowlist
+    remains the enforcement boundary.
+    """
+    return url_host(url) in allowed_hosts
+
+
+def status_ok(text: str) -> bool:
+    """Pure: /proc/self/status shows seccomp filtering, no-new-privs, no capabilities."""
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            fields[key.strip()] = value.strip()
+    cap_eff = fields.get("CapEff", "")
+    return (
+        fields.get("Seccomp") == "2"
+        and fields.get("NoNewPrivs") == "1"
+        and bool(cap_eff)
+        and set(cap_eff) <= {"0"}
+    )
+
+
 def sandbox_ok(text: object) -> bool:
     if type(text) is not str:
         return False
@@ -169,7 +196,9 @@ def isolation_check() -> None:
     interfaces = sorted(os.listdir("/sys/class/net"))
     with open("/proc/net/route", "rb") as handle:
         routes = [row for row in handle.read(65536).split(b"\n")[1:] if row]
-    if os.getuid() == 0 or interfaces != ["lo"] or routes:
+    with open("/proc/self/status", encoding="ascii") as handle:
+        status = handle.read(65536)
+    if os.getuid() == 0 or interfaces != ["lo"] or routes or not status_ok(status):
         raise EntrypointRefused(EXIT_ISOLATION)
 
 
@@ -219,7 +248,17 @@ async def _browse(
             context = await browser.new_context(
                 ignore_https_errors=False, accept_downloads=False, service_workers="block"
             )
+            blocked = [0]
+
+            async def guard(route: Any) -> None:  # Playwright Route, container-only type.
+                if request_allowed(route.request.url, run.allowed_hosts):
+                    await route.continue_()
+                else:
+                    blocked[0] += 1
+                    await route.abort("blockedbyclient")
+
             try:
+                await context.route("**/*", guard)
                 page = await context.new_page()
                 if run.mode == "basic-stealth":
                     stage[0] = "stealth"
@@ -246,7 +285,7 @@ async def _browse(
                         run.original_url, wait_until="domcontentloaded", timeout=remaining_ms
                     )
                 except Exception as exc:  # Category only; never error text in RESULT.
-                    diagnostic({"navigation": type(exc).__name__})
+                    diagnostic({"navigation": type(exc).__name__, "blocked": blocked[0]})
                     return classify(run, True, run.original_url, "", "")
                 stage[0] = "extract"
                 title = await page.title()

@@ -331,6 +331,9 @@ def test_docker_argv_is_pinned_client_and_daemon() -> None:
         ("CpuCfsQuota", 1),
         ("SecurityOptions", ["name=apparmor"]),
         ("SecurityOptions", None),
+        ("SecurityOptions", ["name=seccomp,profile=unconfined"]),
+        ("SecurityOptions", ["name=seccomp"]),
+        ("SecurityOptions", ["name=seccompx,profile=builtin"]),
     ],
 )
 def test_require_daemon_refuses_each_missing_provenance_field(key: str, value: object) -> None:

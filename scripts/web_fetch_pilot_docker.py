@@ -234,10 +234,20 @@ def require_daemon(info: object) -> None:
         if type(value) is not type(expected) or value != expected:
             raise _refuse("daemon provenance refused")
     options = info.get("SecurityOptions")
-    if type(options) is not list or not any(
-        type(item) is str and item.startswith("name=seccomp") for item in options
-    ):
+    if type(options) is not list or not any(_seccomp_enforcing(item) for item in options):
         raise _refuse("daemon provenance refused")
+
+
+def _seccomp_enforcing(item: object) -> bool:
+    """``name=seccomp`` with an explicit profile that is not ``unconfined``."""
+    if not isinstance(item, str):
+        return False
+    fields: dict[str, str] = {}
+    for part in item.split(","):
+        key, _, value = part.partition("=")
+        fields[key] = value
+    profile = fields.get("profile", "")
+    return fields.get("name") == "seccomp" and bool(profile) and profile != "unconfined"
 
 
 def parse_ids(stdout: bytes) -> tuple[str, ...]:
