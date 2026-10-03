@@ -44,8 +44,11 @@ from scripts.web_fetch_pilot_container_policy import (
     create_arguments,
     require_browser_identity,
     require_identity,
+    network_create_arguments,
+    require_network_identity,
     require_offline_browser,
     require_offline_gateway,
+    require_offline_network,
 )
 from scripts.web_fetch_pilot_process import (
     ProcessCleanupFailure,
@@ -122,6 +125,10 @@ def docker_argv(*args: str) -> tuple[str, ...]:
 
 def fresh_name() -> str:
     return NAME_PREFIX + secrets.token_hex(12)
+
+
+def fresh_network_name() -> str:
+    return "daemon-net-offline-" + secrets.token_hex(12)
 
 
 def fresh_browser_name() -> str:
@@ -612,3 +619,203 @@ class OfflineContainerDriver:
             await self._release(allocation)
         if self._failed:
             raise DockerCleanupFailure("driver cleanup failed; allocation retained visible")
+
+
+class OwnedNetwork:
+    """One disposable internal network for one run; same fatal contract as containers.
+
+    Single use. Ownership intent (fresh name) precedes ``network create``; an
+    unknown create outcome is resolved by exact name plus identity inspection.
+    The policy preflight runs on the created record. Teardown re-inspects
+    identity, removes only the retained full ID and verifies absence; it runs as
+    an owned task that caller cancellation never cancels. Any uncertain step
+    latches fatal and keeps the network visible in ``retained``. Containers on
+    the network must be removed first; a refused removal is fatal, not retried.
+    """
+
+    def __init__(
+        self,
+        runner: CommandRunner,
+        *,
+        config_dir: str,
+        run_token: str,
+        name_factory: Callable[[], str] = fresh_network_name,
+    ) -> None:
+        if not callable(getattr(runner, "run", None)) or not callable(name_factory):
+            raise ValueError("command runner and name factory required")
+        if type(config_dir) is not str or not os.path.isabs(config_dir):
+            raise ValueError("absolute docker config directory required")
+        if type(run_token) is not str or _RUN_TOKEN.fullmatch(run_token) is None:
+            raise ValueError("128-bit lowercase hex run token required")
+        self._runner = runner
+        self._env = {"DOCKER_CONFIG": config_dir}
+        self._run = run_token
+        self._name_factory = name_factory
+        self._name: str | None = None
+        self._id: str | None = None
+        self._create_unknown = False
+        self._used = False
+        self._released = False
+        self._failed = False
+        self._teardown: asyncio.Task[None] | None = None
+
+    @property
+    def cleanup_failed(self) -> bool:
+        return self._failed
+
+    @property
+    def name(self) -> str | None:
+        return self._name
+
+    @property
+    def network_id(self) -> str | None:
+        return self._id
+
+    @property
+    def retained(self) -> tuple[str, str | None] | None:
+        if self._name is None or self._released:
+            return None
+        return self._name, self._id
+
+    async def _docker(self, *args: str, timeout: float = COMMAND_SECONDS) -> CommandResult:
+        return await self._runner.run(docker_argv(*args), dict(self._env), timeout=timeout)
+
+    async def _listed(
+        self, network_filter: str, *, timeout: float = COMMAND_SECONDS
+    ) -> tuple[str, ...]:
+        result = await self._docker(
+            "network",
+            "ls",
+            "--no-trunc",
+            "--filter",
+            network_filter,
+            "--format",
+            "{{.ID}}",
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise _refuse("network listing refused")
+        return parse_ids(result.stdout)
+
+    async def owned_ids(self) -> tuple[str, ...]:
+        return await self._listed("label=" + OWNER_LABEL)
+
+    async def foreign_ids(self) -> tuple[str, ...]:
+        everything = await self.owned_ids()
+        ours = set(await self._listed("label=" + RUN_LABEL + "=" + self._run))
+        return tuple(identifier for identifier in everything if identifier not in ours)
+
+    async def _inspect(self, identifier: str, *, timeout: float) -> dict[str, object]:
+        result = await self._docker("network", "inspect", identifier, timeout=timeout)
+        if result.returncode != 0:
+            raise _refuse("network inspect refused")
+        return parse_inspect(result.stdout)
+
+    async def create(self) -> str:
+        """Create, preflight and return the full network ID; see class docs."""
+        if self._failed:
+            raise DockerCleanupFailure("network owner fatal; new allocation prohibited")
+        if self._used:
+            raise _refuse("network owner is single use")
+        self._used = True
+        name = self._name_factory()
+        arguments = network_create_arguments(name, self._run)  # Shape-checked.
+        orphans = await self.foreign_ids()
+        if orphans:
+            raise OrphansPresent(orphans)
+        self._name = name
+        self._create_unknown = True  # Ownership intent precedes create.
+        failure: BaseException | None = None
+        try:
+            result = await self._docker(*arguments)
+            if result.returncode != 0:
+                raise _refuse("network create refused")
+            ids = parse_ids(result.stdout)
+            if len(ids) != 1:
+                raise _refuse("network create returned no single full id")
+            self._id = ids[0]
+            self._create_unknown = False
+            record = await self._inspect(self._id, timeout=COMMAND_SECONDS)
+            require_offline_network(record, name, self._run, network_id=self._id)
+            return self._id
+        except BaseException as exc:
+            failure = exc
+        teardown = self._start_teardown()
+        if isinstance(failure, asyncio.CancelledError):
+            raise failure  # Teardown stays owned; aclose awaits it.
+        try:
+            await asyncio.shield(teardown)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            raise DockerCleanupFailure("network create failed with ownership uncertainty") from None
+        if isinstance(failure, (DockerLifecycleFailure, PreflightError, CommandLimitFailure)):
+            raise _refuse("network create refused; owned network verified removed") from None
+        raise failure
+
+    def _start_teardown(self) -> asyncio.Task[None]:
+        if self._teardown is None:
+            task = asyncio.get_running_loop().create_task(
+                self._remove_all(), name="pilot-network-teardown"
+            )
+            owner = self
+
+            def settled(done: asyncio.Task[None]) -> None:
+                if done.cancelled() or done.exception() is not None:
+                    owner._failed = True  # Backstop; _remove_all publishes state itself.
+
+            task.add_done_callback(settled)
+            self._teardown = task
+        return self._teardown
+
+    async def _resolve_by_name(self, name: str) -> str | None:
+        candidates = await self._listed("name=" + name, timeout=CLEANUP_COMMAND_SECONDS)
+        if len(candidates) > MAX_NAME_CANDIDATES:
+            raise DockerCleanupFailure("ambiguous owned network identity")
+        owned: list[str] = []
+        for candidate in candidates:
+            record = await self._inspect(candidate, timeout=CLEANUP_COMMAND_SECONDS)
+            try:
+                owned.append(
+                    require_network_identity(record, name, self._run, network_id=candidate)
+                )
+            except PreflightError:
+                continue  # Similar or same-name foreign network: never removed.
+        if len(owned) > 1:
+            raise DockerCleanupFailure("ambiguous owned network identity")
+        return owned[0] if owned else None
+
+    async def _remove_all(self) -> None:
+        try:
+            name = self._name
+            identifier = self._id
+            if name is not None and identifier is None and self._create_unknown:
+                identifier = await self._resolve_by_name(name)
+                self._id = identifier
+            if name is not None and identifier is not None:
+                record = await self._inspect(identifier, timeout=CLEANUP_COMMAND_SECONDS)
+                require_network_identity(record, name, self._run, network_id=identifier)
+                removed = await self._docker(
+                    "network", "rm", identifier, timeout=CLEANUP_COMMAND_SECONDS
+                )
+                if removed.returncode != 0:
+                    raise DockerCleanupFailure("owned network removal refused")
+                if await self._listed("id=" + identifier, timeout=CLEANUP_COMMAND_SECONDS):
+                    raise DockerCleanupFailure("owned network still present after removal")
+        except BaseException:
+            self._failed = True  # Published synchronously; retained stays visible.
+            raise
+        self._released = True
+
+    async def aclose(self) -> None:
+        """Remove the owned network; fatal DockerCleanupFailure on uncertainty."""
+        self._used = True
+        if not self._released and not self._failed:
+            try:
+                await asyncio.shield(self._start_teardown())
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                self._failed = True  # _remove_all already latched; never ordinary.
+        if self._failed:
+            raise DockerCleanupFailure("network cleanup failed; network retained visible")

@@ -16,6 +16,8 @@ from scripts.web_fetch_pilot_container_policy import (
     BROWSER_TMPFS,
     IMAGE,
     MEMORY,
+    NETWORK_OPTIONS,
+    NETWORK_SUBNET,
     OWNER_LABEL,
     TMPFS,
     RUN_LABEL,
@@ -23,10 +25,13 @@ from scripts.web_fetch_pilot_container_policy import (
     browser_create_arguments,
     browser_seccomp_option,
     create_arguments,
+    network_create_arguments,
     require_browser_identity,
     require_identity,
+    require_network_identity,
     require_offline_browser,
     require_offline_gateway,
+    require_offline_network,
 )
 
 NAME = "daemon-dns-offline-" + "a" * 24
@@ -500,3 +505,92 @@ def test_run_label_follows_owner_label_and_identity_requires_matching_run() -> N
     assert require_offline_browser(browser_item, BROWSER, COMMAND, option, run_token=RUN)
     with pytest.raises(PreflightError):
         require_browser_identity(browser_item, BROWSER, run_token="f" * 32)
+
+
+NET = "daemon-net-offline-" + "1" * 24
+NET_ID = "9" * 64
+
+
+def network_fixture() -> dict:
+    return {
+        "Id": NET_ID,
+        "Name": NET,
+        "Driver": "bridge",
+        "Scope": "local",
+        "Internal": True,
+        "EnableIPv6": False,
+        "Attachable": False,
+        "Ingress": False,
+        "ConfigOnly": False,
+        "Options": dict(NETWORK_OPTIONS),
+        "IPAM": {"Driver": "default", "Config": [{"Subnet": NETWORK_SUBNET, "Gateway": "1.2.3.1"}]},
+        "Labels": {OWNER_LABEL: NET, RUN_LABEL: RUN},
+        "Containers": {},
+    }
+
+
+def test_network_vector_exact_and_refusals() -> None:
+    assert network_create_arguments(NET, RUN) == (
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--internal",
+        "--ipv6=false",
+        "--subnet",
+        "1.2.3.0/29",
+        "--opt",
+        "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+        "--opt",
+        "com.docker.network.bridge.enable_ip_masquerade=false",
+        "--label",
+        OWNER_LABEL + "=" + NET,
+        "--label",
+        RUN_LABEL + "=" + RUN,
+        NET,
+    )
+    for name, run in ((NAME, RUN), (NET + "x", RUN), (NET, None), (NET, "E" * 32)):
+        with pytest.raises(PreflightError):
+            network_create_arguments(name, run)  # type: ignore[arg-type]
+
+
+def test_offline_network_record_and_identity() -> None:
+    assert require_offline_network(network_fixture(), NET, RUN, network_id=NET_ID) == NET_ID
+    no_gateway = network_fixture()
+    del no_gateway["IPAM"]["Config"][0]["Gateway"]
+    assert require_offline_network(no_gateway, NET, RUN) == NET_ID
+    with pytest.raises(PreflightError):
+        require_network_identity(network_fixture(), NET, "f" * 32)
+    with pytest.raises(PreflightError):
+        require_network_identity(network_fixture(), NET, RUN, network_id="8" * 64)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("Internal", False),
+        ("EnableIPv6", True),
+        ("Driver", "overlay"),
+        ("Scope", "swarm"),
+        ("Attachable", True),
+        ("Ingress", True),
+        ("Name", "daemon-net-offline-" + "2" * 24),
+        ("Options", {"com.docker.network.bridge.enable_ip_masquerade": "false"}),
+        ("Options", {**NETWORK_OPTIONS, "com.docker.network.bridge.enable_icc": "true"}),
+        ("IPAM", {"Driver": "default", "Config": [{"Subnet": "10.0.0.0/29"}]}),
+        (
+            "IPAM",
+            {"Driver": "default", "Config": [{"Subnet": NETWORK_SUBNET, "Gateway": "1.2.3.2"}]},
+        ),
+        (
+            "IPAM",
+            {"Driver": "default", "Config": [{"Subnet": NETWORK_SUBNET}, {"Subnet": "1.2.3.8/29"}]},
+        ),
+        ("Labels", {OWNER_LABEL: NET}),
+    ],
+)
+def test_offline_network_refuses_mutations(key: str, value: object) -> None:
+    record = network_fixture()
+    record[key] = value
+    with pytest.raises(PreflightError):
+        require_offline_network(record, NET, RUN)

@@ -36,6 +36,7 @@ from scripts.web_fetch_pilot_docker import (
     DockerLifecycleFailure,
     OfflineContainerDriver,
     OrphansPresent,
+    OwnedNetwork,
     browser_policy,
     check_config_dir,
     docker_argv,
@@ -45,7 +46,11 @@ from scripts.web_fetch_pilot_docker import (
 )
 from scripts.web_fetch_pilot_process import ProcessCleanupFailure, ProcessLaunchFailure
 from tests.test_web_fetch_pilot_container_policy import COMMAND
-from tests.test_web_fetch_pilot_container_policy import PROFILE_PATH, browser_fixture
+from tests.test_web_fetch_pilot_container_policy import (
+    PROFILE_PATH,
+    browser_fixture,
+    network_fixture,
+)
 from tests.test_web_fetch_pilot_container_policy import fixture as policy_record
 
 CONFIG_DIR = "/run/user/fake/daemon-pilot-docker-config"
@@ -81,6 +86,7 @@ class FakeDocker:
         self.info: object = good_info()
         self.hooks: dict[str, Hook] = {}
         self.record_factory: Callable[[], dict] = policy_record
+        self.networks: dict[str, dict] = {}
         self._serial = 0
 
     async def run(
@@ -159,6 +165,49 @@ class FakeDocker:
         else:
             assert kind == "id"
             ids = [i for i in self.containers if i == value]
+        return result(stdout="".join(i + "\n" for i in ids).encode())
+
+    def add_network(self, name: str, labels: dict[str, str]) -> str:
+        self._serial += 1
+        identifier = f"{self._serial:064x}"
+        record = network_fixture()
+        record.update(Id=identifier, Name=name, Labels=dict(labels))
+        self.networks[identifier] = record
+        return identifier
+
+    def do_network(self, args: tuple[str, ...]) -> CommandResult:
+        action = args[1]
+        if action == "create":
+            name = args[-1]
+            if any(r["Name"] == name for r in self.networks.values()):
+                return result(1)
+            labels = dict(
+                args[i + 1].split("=", 1) for i in range(len(args)) if args[i] == "--label"
+            )
+            return result(stdout=(self.add_network(name, labels) + "\n").encode())
+        if action == "inspect":
+            record = self.networks.get(args[2])
+            return (
+                result(1, b"[]\n")
+                if record is None
+                else result(stdout=json.dumps([record]).encode())
+            )
+        if action == "rm":
+            return result(0 if self.networks.pop(args[2], None) is not None else 1)
+        assert args[1:3] == ("ls", "--no-trunc") and args[-2:] == ("--format", "{{.ID}}")
+        kind, _, value = args[4].partition("=")
+        if kind == "label":
+            key, _, wanted = value.partition("=")
+            ids = [
+                i
+                for i, r in self.networks.items()
+                if key in r["Labels"] and (not wanted or r["Labels"][key] == wanted)
+            ]
+        elif kind == "name":
+            ids = [i for i, r in self.networks.items() if value in r["Name"]]  # Substring.
+        else:
+            assert kind == "id"
+            ids = [i for i in self.networks if i == value]
         return result(stdout="".join(i + "\n" for i in ids).encode())
 
     def do_rm(self, args: tuple[str, ...]) -> CommandResult:
@@ -752,3 +801,153 @@ def test_run_token_default_is_fresh_and_malformed_refused() -> None:
                 config_dir=CONFIG_DIR,
                 run_token=bad,  # type: ignore[arg-type]
             )
+
+
+NET_RUN = "b" * 32
+NET_NAMES = ["daemon-net-offline-" + c * 24 for c in "1234"]
+
+
+def network_owner(docker: FakeDocker, name: str = NET_NAMES[0]) -> OwnedNetwork:
+    return OwnedNetwork(docker, config_dir=CONFIG_DIR, run_token=NET_RUN, name_factory=lambda: name)
+
+
+def network_calls(docker: FakeDocker) -> list[str]:
+    return [call[1] for call in docker.calls if call[0] == "network"]
+
+
+@pytest.mark.asyncio
+async def test_network_create_preflight_then_identity_checked_removal() -> None:
+    docker = FakeDocker()
+    owner = network_owner(docker)
+    identifier = await owner.create()
+    assert network_calls(docker) == ["ls", "ls", "create", "inspect"]
+    assert docker.calls[2][:2] == ("network", "create") and docker.calls[2][-1] == NET_NAMES[0]
+    assert owner.retained == (NET_NAMES[0], identifier)
+    await owner.aclose()
+    assert network_calls(docker)[4:] == ["inspect", "rm", "ls"]
+    assert docker.networks == {} and owner.retained is None and not owner.cleanup_failed
+    await owner.aclose()  # Idempotent.
+    with pytest.raises(DockerLifecycleFailure, match="single use"):
+        await owner.create()
+
+
+@pytest.mark.asyncio
+async def test_foreign_run_network_reports_and_blocks_never_removed() -> None:
+    docker = FakeDocker()
+    foreign = docker.add_network(NET_NAMES[3], {OWNER_LABEL: NET_NAMES[3], RUN_LABEL: "c" * 32})
+    sibling = docker.add_network(NET_NAMES[2], {OWNER_LABEL: NET_NAMES[2], RUN_LABEL: NET_RUN})
+    owner = network_owner(docker)
+    with pytest.raises(OrphansPresent) as raised:
+        await owner.create()
+    assert raised.value.ids == (foreign,)  # Same-run sibling is not an orphan.
+    assert set(docker.networks) == {foreign, sibling}
+    assert "create" not in network_calls(docker)
+
+
+@pytest.mark.asyncio
+async def test_network_create_timeout_after_daemon_created_is_resolved_and_removed() -> None:
+    docker = FakeDocker()
+
+    async def created_then_timeout(args: tuple[str, ...]) -> CommandResult | None:
+        if args[1] != "create":
+            return None
+        docker.do_network(args)
+        raise CommandLimitFailure("command deadline exceeded; owned child stopped")
+
+    docker.hooks["network"] = created_then_timeout
+    owner = network_owner(docker)
+    with pytest.raises(DockerLifecycleFailure, match="verified removed"):
+        await owner.create()
+    assert docker.networks == {} and owner.retained is None
+
+
+@pytest.mark.asyncio
+async def test_similar_or_same_name_foreign_network_is_never_removed() -> None:
+    docker = FakeDocker()
+    foreign = docker.add_network(NET_NAMES[0] + "-x", {OWNER_LABEL: "someone-else"})
+
+    async def refuse(args: tuple[str, ...]) -> CommandResult | None:
+        return result(1) if args[1] == "create" else None
+
+    docker.hooks["network"] = refuse
+    owner = network_owner(docker)
+    with pytest.raises(DockerLifecycleFailure):
+        await owner.create()
+    assert foreign in docker.networks and "rm" not in network_calls(docker)
+
+
+@pytest.mark.asyncio
+async def test_network_policy_mismatch_removes_owned_network() -> None:
+    docker = FakeDocker()
+
+    async def no_isolation(args: tuple[str, ...]) -> CommandResult | None:
+        if args[1] != "create":
+            return None
+        outcome = docker.do_network(args)
+        for record in docker.networks.values():
+            record["Options"] = {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+        return outcome
+
+    docker.hooks["network"] = no_isolation
+    owner = network_owner(docker)
+    with pytest.raises(DockerLifecycleFailure, match="verified removed"):
+        await owner.create()
+    assert docker.networks == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["refused", "still-present"])
+async def test_network_removal_uncertainty_is_fatal_and_retained(mode: str) -> None:
+    docker = FakeDocker()
+    owner = network_owner(docker)
+    identifier = await owner.create()
+
+    async def bad_rm(args: tuple[str, ...]) -> CommandResult | None:
+        if args[1] != "rm":
+            return None
+        return result(1) if mode == "refused" else result(0)
+
+    docker.hooks["network"] = bad_rm
+    with pytest.raises(DockerCleanupFailure):
+        await owner.aclose()
+    assert owner.cleanup_failed and owner.retained == (NET_NAMES[0], identifier)
+    assert identifier in docker.networks
+    with pytest.raises(DockerCleanupFailure):
+        await owner.aclose()
+    with pytest.raises(DockerCleanupFailure):
+        await owner.create()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_network_create_keeps_teardown_owned() -> None:
+    docker = FakeDocker()
+    entered = asyncio.Event()
+
+    async def created_then_stall(args: tuple[str, ...]) -> CommandResult | None:
+        if args[1] != "create":
+            return None
+        docker.do_network(args)
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    docker.hooks["network"] = created_then_stall
+    owner = network_owner(docker)
+    task = asyncio.create_task(owner.create())
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(owner.aclose(), 1)
+    assert docker.networks == {} and owner.retained is None and not owner.cleanup_failed
+
+
+def test_network_owner_constructor_refusals() -> None:
+    docker = FakeDocker()
+    for kwargs in (
+        {"config_dir": "relative", "run_token": NET_RUN},
+        {"config_dir": CONFIG_DIR, "run_token": "B" * 32},
+    ):
+        with pytest.raises(ValueError):
+            OwnedNetwork(docker, **kwargs)  # type: ignore[arg-type]
+    assert docker.calls == []

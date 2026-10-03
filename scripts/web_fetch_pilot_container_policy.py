@@ -451,3 +451,88 @@ def require_offline_browser(
     ports = network.get("Ports")
     _require(ports is None or type(ports) is dict and all(v is None for v in ports.values()))
     return identifier
+
+
+NETWORK_NAME = re.compile(r"daemon-net-offline-[0-9a-f]{24}\Z")
+NETWORK_SUBNET = "1.2.3.0/29"  # Global unicast (APNIC research range), never routed here.
+NETWORK_OPTIONS = {
+    # No host-side bridge address, so the host gains no route to the subnet.
+    "com.docker.network.bridge.gateway_mode_ipv4": "isolated",
+    "com.docker.network.bridge.enable_ip_masquerade": "false",
+}
+
+
+def network_create_arguments(name: str, run_token: str) -> tuple[str, ...]:
+    """Pure fixed vector for one disposable internal, IPv4-only bridge network."""
+    _require(type(name) is str and NETWORK_NAME.fullmatch(name) is not None)
+    run = _run_label(run_token)
+    _require(bool(run))
+    options: list[str] = []
+    for key, value in NETWORK_OPTIONS.items():
+        options.extend(("--opt", key + "=" + value))
+    return (
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--internal",
+        "--ipv6=false",
+        "--subnet",
+        NETWORK_SUBNET,
+        *options,
+        "--label",
+        OWNER_LABEL + "=" + name,
+        *run,
+        name,
+    )
+
+
+def require_network_identity(
+    record: object, name: str, run_token: str, *, network_id: str | None = None
+) -> str:
+    """Owned-network identity for cleanup, independent of configuration."""
+    _require(type(name) is str and NETWORK_NAME.fullmatch(name) is not None)
+    _require(type(run_token) is str and _RUN.fullmatch(run_token) is not None)
+    item = _map(record)
+    identifier = item.get("Id")
+    _require(type(identifier) is str and _ID.fullmatch(identifier) is not None)
+    if network_id is not None:
+        _require(type(network_id) is str and identifier == network_id)
+    _equal(item, "Name", name)
+    labels = _map(item.get("Labels"))
+    _equal(labels, OWNER_LABEL, name)
+    _equal(labels, RUN_LABEL, run_token)
+    return identifier  # type: ignore[return-value]
+
+
+def require_offline_network(
+    record: object, name: str, run_token: str, *, network_id: str | None = None
+) -> str:
+    """Internal, IPv4-only, isolated-gateway bridge on the fixed subnet, nothing else.
+
+    Exact option equality fails closed if the daemon adds or drops an option.
+    A matching record is configuration evidence, not proof of host routing.
+    """
+    identifier = require_network_identity(record, name, run_token, network_id=network_id)
+    item = _map(record)
+    for key, value in (
+        ("Driver", "bridge"),
+        ("Scope", "local"),
+        ("Internal", True),
+        ("EnableIPv6", False),
+        ("Attachable", False),
+        ("Ingress", False),
+        ("ConfigOnly", False),
+    ):
+        _equal(item, key, value)
+    _equal(item, "Options", NETWORK_OPTIONS)
+    ipam = _map(item.get("IPAM"))
+    _equal(ipam, "Driver", "default")
+    configs = ipam.get("Config")
+    _require(type(configs) is list and len(configs) == 1)  # type: ignore[arg-type]
+    config = _map(configs[0])  # type: ignore[index]
+    _equal(config, "Subnet", NETWORK_SUBNET)
+    _require(set(config) <= {"Subnet", "Gateway"})
+    gateway = config.get("Gateway")
+    _require(gateway is None or gateway == "1.2.3.1")
+    return identifier

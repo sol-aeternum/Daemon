@@ -1871,3 +1871,24 @@ lint/format, doc freshness, gitleaks and high-severity Bandit pass. Policy SHA-2
 `37752bd629e10a8ae83d914767a3bdd4276c7f808dcb736f6aa87574523b63c0`; driver
 `c1ea48e015518e7234b93ac1cc3a3ca82581468fd124e2c776127b8afb55497a`. The opt-in native
 Docker fixtures were not re-run against this change.
+
+### Stage E3a-2 owned internal network — fakes pass (2026-10-03)
+
+The owner approved E3a-1 and committing the pilot on `feat/web-fetch-fallback-pilot`.
+The container policy adds pure network functions: `network_create_arguments` (bridge,
+`--internal`, `--ipv6=false`, subnet `1.2.3.0/29`, owner and run labels, and two options:
+`gateway_mode_ipv4=isolated` so the host-side bridge gets no address and the host gains
+no route to the subnet, and masquerade disabled), `require_network_identity` and
+`require_offline_network` (exact driver/scope/internal/IPv6/attachable/ingress values,
+exact option equality failing closed, one IPAM config on the fixed subnet with gateway
+absent or `1.2.3.1`). Whether Docker 29.8.1 accepts and records the isolated gateway
+mode exactly this way is unverified until the native probe. `OwnedNetwork` mirrors the
+container lifecycle: run-scoped orphan check (report and block), name recorded before
+create, unknown create resolved by exact name plus identity (at most two candidates;
+substring and foreign same-name networks never removed), exact preflight, then
+identity-checked `network rm` of the full ID with verified absence; teardown is an owned
+task, state is published synchronously, and any uncertainty is fatal and retained.
+16 new policy and 9 new lifecycle fake tests pass; pilot run **1002 passed, 7 skipped**;
+scoped types and high-severity Bandit pass. Policy SHA-256
+`edcc232fbee532db94886a2c8acb0bf26091cc0b75179a3032b9baedd454d471`; driver
+`1aeacd94bfbf522d968b2fd76a1ff129761f9f2194eb42ddb2545ad9c2717f31`. No network was created.
