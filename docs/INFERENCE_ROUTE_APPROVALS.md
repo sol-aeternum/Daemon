@@ -36,7 +36,7 @@ the short-prompt base price. Each route supports text, tools and JSON schema.
 |---|---|---|---|---|
 | `openai/gpt-6-luna` | `azure/eu` | routine | 1,050,000 / 128,000 | 0.22 / 0.825 |
 | `deepseek/deepseek-v4.1-flash` | `coreweave/fp8` | routine | 1,048,576 / 393,216 | 0.20 / 0.65 |
-| `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.15 / 0.45 |
+| `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.225 / 0.45 |
 | `openai/gpt-6.1-sol` | `azure/eu` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
 | `anthropic/claude-sonnet-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
 | `anthropic/claude-opus-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 4.4 / 22 |
@@ -158,11 +158,71 @@ SHA-256 provenance kept privately:
 **Not a renewal criterion, recorded for the operator:** the GLM 5.3 Flash
 (`inceptron/fp8`) listed prompt price is now USD 0.225 per million, above its pinned
 USD 0.15 ceiling (#421). The transport price cap refuses that route until the ceiling
-or the price changes.
+or the price changes. This was the renewal-time finding; the subsequent narrow
+operator-approved change is recorded below.
 
 The account-side attestation (prompt logging disabled, training opt-out) is carried
 forward unchanged; it cannot be checked from public metadata. Tool-service approvals
 are unchanged.
+
+## GLM Flash input ceiling — 3 October 2026
+
+For [#421](https://github.com/sol-aeternum/Daemon/issues/421), the operator explicitly
+approved raising **only** `glm-flash-inceptron-fp8`'s input ceiling from USD 0.15 to
+**USD 0.225 per million prompt tokens**, retaining the **USD 0.45 per million
+completion tokens** ceiling. This is not approval for broader spending, a new
+provider, automatic-routing placement, or a live inference test.
+
+Read-only public evidence was refreshed **2026-10-03T05:56:07–05:56:08Z**:
+
+- The [model endpoint listing](https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints)
+  and [ZDR listing](https://openrouter.ai/api/v1/endpoints/zdr) both contain the exact
+  `z-ai/glm-5.3-flash` → `inceptron/fp8` pair (served name
+  `z-ai/glm-5.3-flash-20260826`, status `0`, FP8). Listed per-token prices are
+  `0.000000225` prompt and `0.00000045` completion, exactly USD 0.225 / 0.45 per million.
+- The endpoint declares 1,048,576 context tokens, tools, structured outputs and
+  reasoning support. The configured 131,072 output-token limit is retained, not
+  expanded to the host's advertised 943,718.
+- The [provider catalog](https://openrouter.ai/api/frontend/v1/all-providers)
+  still reports Inceptron `training=false`, `trainingOpenRouter=false`,
+  `retainsPrompts=false`, `canPublish=false`, Sweden headquarters and Finland
+  datacenters. The [privacy policy](https://www.inceptron.io/privacy) still commits
+  Customer Content to EU/EEA processing, default immediate payload discard and no
+  training; the [terms](https://www.inceptron.io/termsofservice) still state default
+  zero retention and no training without explicit opt-in. This matches the
+  previously approved posture; it is provider attestation, not independent
+  inspection. Existing account-side attestations are carried forward unchanged.
+
+SHA-256 fingerprints of the fetched response bytes (raw evidence retained privately):
+
+| Source | SHA-256 |
+|---|---|
+| Model endpoints | `c5807b340ddccf86ef0fac528d35080cb9a0a1776e3b2f14e76953a24da5b61b` |
+| ZDR endpoints | `67c6ecb903788f4781d899aa2786be6d3b08ed5d652413ba2e22494ad8391e9d` |
+| Provider catalog | `37bb8ac9a752685c7b90352fbf0bae280291c519009f629ffbba77bb2944090d` |
+| Inceptron privacy | `a119bf0ef9acc9798407168c759039476132dc9ef218ae4a4a28a9736a41f6cd` |
+| Inceptron terms | `b077e18e0dffda0f65a9fc9c1b27c076d25ceba309b5462cd641eecd42664390` |
+
+The production JSON stores **225000 / 450000 microusd per million tokens**.
+The existing transport conversion divides each by 1,000,000 microusd per USD,
+sending `provider.max_price={"prompt":0.225,"completion":0.45}` (USD per million,
+not per-token prices). User pricing, accounting multipliers and budgets are
+unchanged; reservations continue using the configured ceiling and existing ledger.
+
+Both approval and review expiry remain **2026-10-17T00:00:00Z**, preserving merged
+[#423](https://github.com/sol-aeternum/Daemon/pull/423). The separate in-flight
+[#424](https://github.com/sol-aeternum/Daemon/pull/424) monitored-approval change is
+not incorporated here. Exact provider/model pins, ZDR/no-training controls,
+disabled fallbacks, capabilities and native limits are unchanged. Qualified exact
+manual selection and the existing council diverse group remain available; GLM
+Flash is not added to routine/background/research/reasoning automatic groups.
+Full `z-ai/glm-5.3` remains unapproved.
+
+Mocked regression tests verify the production payload and existing admission paths,
+including denial of expired/unapproved routes and broader fallback. No paid
+inference or live dispatch test is authorized or performed. No restart or deployment
+is part of this change: backend and worker cache policy and still require a
+separately approved rollout/reload before this configuration can affect dispatch.
 
 ## CoreWeave location decision
 
