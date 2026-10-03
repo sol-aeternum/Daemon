@@ -49,6 +49,7 @@ from tests.test_web_fetch_pilot_container_policy import COMMAND
 from tests.test_web_fetch_pilot_container_policy import (
     PROFILE_PATH,
     browser_fixture,
+    egress_network_fixture,
     network_fixture,
 )
 from tests.test_web_fetch_pilot_container_policy import fixture as policy_record
@@ -87,6 +88,7 @@ class FakeDocker:
         self.hooks: dict[str, Hook] = {}
         self.record_factory: Callable[[], dict] = policy_record
         self.networks: dict[str, dict] = {}
+        self.network_record_factory: Callable[[], dict] = network_fixture
         self._serial = 0
 
     async def run(
@@ -170,7 +172,7 @@ class FakeDocker:
     def add_network(self, name: str, labels: dict[str, str]) -> str:
         self._serial += 1
         identifier = f"{self._serial:064x}"
-        record = network_fixture()
+        record = self.network_record_factory()
         record.update(Id=identifier, Name=name, Labels=dict(labels))
         self.networks[identifier] = record
         return identifier
@@ -954,3 +956,25 @@ def test_network_owner_constructor_refusals() -> None:
         with pytest.raises(ValueError):
             OwnedNetwork(docker, **kwargs)  # type: ignore[arg-type]
     assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_egress_network_lifecycle_uses_egress_kind_preflight() -> None:
+    docker = FakeDocker()
+    docker.network_record_factory = egress_network_fixture
+    name = "daemon-net-egress-" + "9" * 24
+    owner = network_owner(docker, name)
+    identifier = await owner.create()
+    create = next(c for c in docker.calls if c[:2] == ("network", "create"))
+    assert "--internal" not in create and "10.251.248.0/29" in create
+    await owner.aclose()
+    assert identifier not in docker.networks and owner.retained is None
+
+
+@pytest.mark.asyncio
+async def test_egress_name_with_internal_record_is_refused_and_removed() -> None:
+    docker = FakeDocker()  # Daemon returns internal-shaped config for an egress name.
+    owner = network_owner(docker, "daemon-net-egress-" + "a" * 24)
+    with pytest.raises(DockerLifecycleFailure, match="verified removed"):
+        await owner.create()
+    assert docker.networks == {}

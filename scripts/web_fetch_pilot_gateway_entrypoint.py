@@ -90,14 +90,15 @@ def status_ok(text: str) -> bool:
     )
 
 
-def routes_ok(table: str) -> bool:
-    """Pure: /proc/net/route text with rows only for eth0 and no default route."""
+def routes_ok(table: str, *, egress: bool = False) -> bool:
+    """Pure: /proc/net/route rows only on eth0; internal has NO default route, egress
+    exactly ONE (via the owned egress network). Egress runs stay refused in ``main``
+    until a live session is separately approved."""
     rows = [row.split() for row in table.splitlines()[1:] if row.strip()]
-    return (
-        bool(rows)
-        and all(len(row) >= 8 and row[0] == "eth0" for row in rows)
-        and all(row[1] != "00000000" for row in rows)
-    )
+    if not rows or not all(len(row) >= 8 and row[0] == "eth0" for row in rows):
+        return False
+    defaults = sum(1 for row in rows if row[1] == "00000000")
+    return defaults == (1 if egress else 0)
 
 
 def diagnostic(record: dict[str, object]) -> None:

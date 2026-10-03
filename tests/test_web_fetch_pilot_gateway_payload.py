@@ -204,3 +204,12 @@ def test_gateway_status_requires_seccomp_nnp_and_no_capabilities() -> None:
     ):
         assert not status_ok(STATUS.replace(old, new))
     assert not status_ok("Name:\tpython\n")
+
+
+def test_egress_route_check_requires_exactly_one_default_route() -> None:
+    default = "eth0\t00000000\t01F8FB0A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+    assert routes_ok(HEADER + SUBNET_ROW + default, egress=True)
+    assert not routes_ok(HEADER + SUBNET_ROW, egress=True)  # Egress without a route out.
+    assert not routes_ok(HEADER + SUBNET_ROW + default + default, egress=True)
+    assert not routes_ok(HEADER + SUBNET_ROW + default)  # Internal never has one.
+    assert not routes_ok(HEADER + SUBNET_ROW + default.replace("eth0", "eth1"), egress=True)

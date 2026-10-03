@@ -2275,3 +2275,29 @@ reaches `page.evaluate(EXTRACT_JS)`; `blocked` and `error` carry no content and 
 trusted original URL. Diagnostics add only the status class (`4xx`) and outcome. The #373 shape
 (`403`, `cf-mitigated: challenge`, "Just a moment...") is a test case. 20 new pure tests; pilot
 run **1074 passed, 9 skipped**. The E2c native gate has not been re-run against this change.
+
+### Live prerequisites 2, 3 and 5 implemented offline (2026-10-03)
+
+No egress network has been created and the gateway still refuses `topology: egress` at
+runtime; these are pure, fake-tested pieces for a separately approved live session.
+
+- **Egress topology (2).** Network policy is now a small table of kinds sharing one vector and
+  preflight: `daemon-net-offline-*` (internal, unchanged byte-for-byte) and
+  `daemon-net-egress-*` (bridge with a route out, IPv4-only, fixed private subnet
+  `10.251.248.0/29` chosen clear of the local Docker networks and host routes, inter-container
+  traffic disabled, masquerade on, exact option and IPAM checks). `require_offline_network`
+  still accepts the internal kind only; `require_owned_network` checks whichever kind the name
+  selects, refusing an egress name with internal configuration and vice versa. Networked roles
+  are held to their own network's subnet. `OwnedNetwork` uses the kind-aware preflight; the
+  gateway's pure route check requires zero default routes for internal and exactly one for
+  egress.
+- **Deployment-owned inventory (3).** `scripts/web_fetch_pilot_live.py` parses host-local IPv4
+  addresses from `/proc/net/fib_trie` (loopback excluded) and merges them with owner-supplied
+  deployment-owned addresses, which are required (empty refused, at least one IPv4 entry),
+  validated with the gateway's own parser, bounded, and recorded by content hash and gather time.
+- **Content-free evidence (5).** `run_evidence` reduces a run to mode, URL host plus full-URL
+  hash (never path or query), RESULT status, content byte length plus SHA-256, exit codes,
+  integer counters, configuration hashes and the inventory hash and size.
+
+Prerequisite 4 (browser network-layer confinement probes) is an opt-in native gate prepared
+under a pending name and awaiting approval. Pilot run **1084 passed, 9 skipped**.

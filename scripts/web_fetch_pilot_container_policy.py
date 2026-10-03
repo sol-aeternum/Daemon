@@ -13,6 +13,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 IMAGE = "sha256:4d8b065bf185962733cb5f9701f4122d03383fa1ab6b5f6a9873f04fa0416a84"
 OWNER_LABEL = "daemon.reader-pilot.owner"
@@ -480,23 +481,59 @@ NETWORK_OPTIONS = {
 }
 
 
+EGRESS_NETWORK_NAME = re.compile(r"daemon-net-egress-[0-9a-f]{24}\Z")
+EGRESS_SUBNET = "10.251.248.0/29"  # Private; unused by local Docker networks and host routes.
+EGRESS_OPTIONS = {
+    # The gateway is the only member; no container-to-container traffic at all.
+    "com.docker.network.bridge.enable_icc": "false",
+    "com.docker.network.bridge.enable_ip_masquerade": "true",
+}
+
+
+@dataclass(frozen=True)
+class _NetworkKind:
+    pattern: re.Pattern[str]
+    subnet: str
+    gateway: str
+    options: Mapping[str, str]
+    internal: bool
+
+
+_KINDS = (
+    _NetworkKind(NETWORK_NAME, NETWORK_SUBNET, "1.2.3.1", NETWORK_OPTIONS, True),
+    _NetworkKind(EGRESS_NETWORK_NAME, EGRESS_SUBNET, "10.251.248.1", EGRESS_OPTIONS, False),
+)
+
+
+def _kind_for(name: object) -> _NetworkKind:
+    _require(type(name) is str)
+    for kind in _KINDS:
+        if kind.pattern.fullmatch(name) is not None:  # type: ignore[arg-type]
+            return kind
+    raise PreflightError("offline gateway preflight refused")
+
+
 def network_create_arguments(name: str, run_token: str) -> tuple[str, ...]:
-    """Pure fixed vector for one disposable internal, IPv4-only bridge network."""
-    _require(type(name) is str and NETWORK_NAME.fullmatch(name) is not None)
+    """Pure fixed vector for one disposable IPv4-only bridge network of a known kind.
+
+    ``daemon-net-offline-*`` is internal (no route out); ``daemon-net-egress-*`` has a
+    route out and exists only for a separately approved live session.
+    """
+    kind = _kind_for(name)
     run = _run_label(run_token)
     _require(bool(run))
     options: list[str] = []
-    for key, value in NETWORK_OPTIONS.items():
+    for key, value in kind.options.items():
         options.extend(("--opt", key + "=" + value))
     return (
         "network",
         "create",
         "--driver",
         "bridge",
-        "--internal",
+        *(("--internal",) if kind.internal else ()),
         "--ipv6=false",
         "--subnet",
-        NETWORK_SUBNET,
+        kind.subnet,
         *options,
         "--label",
         OWNER_LABEL + "=" + name,
@@ -509,7 +546,7 @@ def require_network_identity(
     record: object, name: str, run_token: str, *, network_id: str | None = None
 ) -> str:
     """Owned-network identity for cleanup, independent of configuration."""
-    _require(type(name) is str and NETWORK_NAME.fullmatch(name) is not None)
+    _kind_for(name)
     _require(type(run_token) is str and _RUN.fullmatch(run_token) is not None)
     item = _map(record)
     identifier = item.get("Id")
@@ -526,33 +563,42 @@ def require_network_identity(
 def require_offline_network(
     record: object, name: str, run_token: str, *, network_id: str | None = None
 ) -> str:
-    """Internal, IPv4-only, isolated-gateway bridge on the fixed subnet, nothing else.
+    """Internal kind ONLY: isolated-gateway bridge on the fixed subnet, nothing else."""
+    _require(_kind_for(name).internal)
+    return require_owned_network(record, name, run_token, network_id=network_id)
+
+
+def require_owned_network(
+    record: object, name: str, run_token: str, *, network_id: str | None = None
+) -> str:
+    """Exact configuration for the kind the name selects; fails closed on any drift.
 
     Exact option equality fails closed if the daemon adds or drops an option.
     A matching record is configuration evidence, not proof of host routing.
     """
+    kind = _kind_for(name)
     identifier = require_network_identity(record, name, run_token, network_id=network_id)
     item = _map(record)
     for key, value in (
         ("Driver", "bridge"),
         ("Scope", "local"),
-        ("Internal", True),
+        ("Internal", kind.internal),
         ("EnableIPv6", False),
         ("Attachable", False),
         ("Ingress", False),
         ("ConfigOnly", False),
     ):
         _equal(item, key, value)
-    _equal(item, "Options", NETWORK_OPTIONS)
+    _equal(item, "Options", dict(kind.options))
     ipam = _map(item.get("IPAM"))
     _equal(ipam, "Driver", "default")
     configs = ipam.get("Config")
     _require(type(configs) is list and len(configs) == 1)  # type: ignore[arg-type]
     config = _map(configs[0])  # type: ignore[index]
-    _equal(config, "Subnet", NETWORK_SUBNET)
+    _equal(config, "Subnet", kind.subnet)
     _require(set(config) <= {"Subnet", "Gateway"})
     gateway = config.get("Gateway")
-    _require(gateway is None or gateway == "1.2.3.1")
+    _require(gateway is None or gateway == kind.gateway)
     return identifier
 
 
@@ -570,7 +616,7 @@ def networked_create_arguments(
 ) -> tuple[str, ...]:
     """Gateway-limit container attached only to the owned internal network."""
     _require(type(name) is str and NETWORKED_NAME.fullmatch(name) is not None)
-    _require(type(network) is str and NETWORK_NAME.fullmatch(network) is not None)
+    _kind_for(network)
     _require(bool(_run_label(run_token)))
     attachment: tuple[str, ...] = ("--network", network)
     if alias is not None:
@@ -609,7 +655,7 @@ def require_networked(
     identifier = require_networked_identity(
         record, name, container_id=container_id, run_token=run_token
     )
-    _require(type(network) is str and NETWORK_NAME.fullmatch(network) is not None)
+    subnet = _kind_for(network).subnet
     _require(type(network_id) is str and _ID.fullmatch(network_id) is not None)
     item = _require_gateway_limits(record, command, network)
     settings = _map(item.get("NetworkSettings"))
@@ -625,7 +671,7 @@ def require_networked(
             parsed = ipaddress.ip_address(address)
         except ValueError:
             raise PreflightError("offline gateway preflight refused") from None
-        _require(parsed in ipaddress.ip_network(NETWORK_SUBNET))
+        _require(parsed in ipaddress.ip_network(subnet))
     _equal(endpoint, "GlobalIPv6Address", "")
     aliases = endpoint.get("Aliases")
     if alias is None:

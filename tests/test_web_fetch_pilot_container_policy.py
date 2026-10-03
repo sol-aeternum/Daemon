@@ -14,6 +14,8 @@ from scripts.web_fetch_pilot_container_policy import (
     BROWSER_SECCOMP_SHA256,
     BROWSER_SHM,
     BROWSER_TMPFS,
+    EGRESS_OPTIONS,
+    EGRESS_SUBNET,
     IMAGE,
     MEMORY,
     NETWORK_OPTIONS,
@@ -35,6 +37,7 @@ from scripts.web_fetch_pilot_container_policy import (
     require_offline_browser,
     require_offline_gateway,
     require_offline_network,
+    require_owned_network,
 )
 
 NAME = "daemon-dns-offline-" + "a" * 24
@@ -691,3 +694,89 @@ def test_networked_record_refuses_mutations(mutate: object) -> None:
         require_networked(
             item, FIXTURE_NAME, COMMAND, NET, run_token=RUN, network_id=NET_ID, alias="openai.com"
         )
+
+
+EGRESS_NET = "daemon-net-egress-" + "7" * 24
+
+
+def egress_network_fixture() -> dict:
+    item = network_fixture()
+    item.update(
+        Name=EGRESS_NET,
+        Internal=False,
+        Options=dict(EGRESS_OPTIONS),
+        IPAM={
+            "Driver": "default",
+            "Config": [{"Subnet": EGRESS_SUBNET, "Gateway": "10.251.248.1"}],
+        },
+        Labels={OWNER_LABEL: EGRESS_NET, RUN_LABEL: RUN},
+    )
+    return item
+
+
+def test_egress_network_vector_has_no_internal_flag_and_fixed_options() -> None:
+    assert network_create_arguments(EGRESS_NET, RUN) == (
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--ipv6=false",
+        "--subnet",
+        "10.251.248.0/29",
+        "--opt",
+        "com.docker.network.bridge.enable_icc=false",
+        "--opt",
+        "com.docker.network.bridge.enable_ip_masquerade=true",
+        "--label",
+        OWNER_LABEL + "=" + EGRESS_NET,
+        "--label",
+        RUN_LABEL + "=" + RUN,
+        EGRESS_NET,
+    )
+    assert "--internal" in network_create_arguments(NET, RUN)  # Internal kind unchanged.
+
+
+def test_egress_network_preflight_and_kind_separation() -> None:
+    assert require_owned_network(egress_network_fixture(), EGRESS_NET, RUN) == NET_ID
+    assert require_owned_network(network_fixture(), NET, RUN) == NET_ID
+    with pytest.raises(PreflightError):
+        require_offline_network(egress_network_fixture(), EGRESS_NET, RUN)  # Internal only.
+    crossed = egress_network_fixture()
+    crossed["Internal"] = True  # An egress name must never carry internal config, or vice versa.
+    with pytest.raises(PreflightError):
+        require_owned_network(crossed, EGRESS_NET, RUN)
+    for key, value in (
+        ("Options", dict(NETWORK_OPTIONS)),
+        ("Options", {**EGRESS_OPTIONS, "com.docker.network.bridge.enable_icc": "true"}),
+        ("EnableIPv6", True),
+        ("IPAM", {"Driver": "default", "Config": [{"Subnet": NETWORK_SUBNET}]}),
+        (
+            "IPAM",
+            {"Driver": "default", "Config": [{"Subnet": EGRESS_SUBNET, "Gateway": "1.2.3.1"}]},
+        ),
+    ):
+        record = egress_network_fixture()
+        record[key] = value
+        with pytest.raises(PreflightError):
+            require_owned_network(record, EGRESS_NET, RUN)
+
+
+def test_networked_role_is_held_to_its_network_kinds_subnet() -> None:
+    item = networked_fixture(alias=None, started=True)
+    item["HostConfig"]["NetworkMode"] = EGRESS_NET
+    endpoint = item["NetworkSettings"]["Networks"].pop(NET)
+    endpoint["IPAddress"] = "10.251.248.2"
+    item["NetworkSettings"]["Networks"][EGRESS_NET] = endpoint
+    gateway_name = "daemon-gateway-" + "8" * 24
+    item["Name"] = "/" + gateway_name
+    item["Config"]["Labels"] = {OWNER_LABEL: gateway_name, RUN_LABEL: RUN}
+    assert require_networked(
+        item, gateway_name, COMMAND, EGRESS_NET, run_token=RUN, network_id=NET_ID
+    )
+    endpoint["IPAddress"] = "1.2.3.2"  # The internal subnet is not this network's.
+    with pytest.raises(PreflightError):
+        require_networked(item, gateway_name, COMMAND, EGRESS_NET, run_token=RUN, network_id=NET_ID)
+    vector = networked_create_arguments(gateway_name, COMMAND, EGRESS_NET, run_token=RUN)
+    assert ("--network", EGRESS_NET) == vector[
+        vector.index("--network") : vector.index("--network") + 2
+    ]

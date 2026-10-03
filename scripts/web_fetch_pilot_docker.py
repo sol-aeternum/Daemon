@@ -51,7 +51,7 @@ from scripts.web_fetch_pilot_container_policy import (
     require_networked_identity,
     require_offline_browser,
     require_offline_gateway,
-    require_offline_network,
+    require_owned_network,
 )
 from scripts.web_fetch_pilot_process import (
     ProcessCleanupFailure,
@@ -132,6 +132,11 @@ def fresh_name() -> str:
 
 def fresh_network_name() -> str:
     return "daemon-net-offline-" + secrets.token_hex(12)
+
+
+def fresh_egress_network_name() -> str:
+    """Egress kind: exists only for a separately approved live session."""
+    return "daemon-net-egress-" + secrets.token_hex(12)
 
 
 def fresh_browser_name() -> str:
@@ -776,7 +781,7 @@ class OwnedNetwork:
             self._id = ids[0]
             self._create_unknown = False
             record = await self._inspect(self._id, timeout=COMMAND_SECONDS)
-            require_offline_network(record, name, self._run, network_id=self._id)
+            require_owned_network(record, name, self._run, network_id=self._id)
             return self._id
         except BaseException as exc:
             failure = exc
