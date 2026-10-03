@@ -193,15 +193,28 @@ def evaluate(
                 RouteCheck(route.route_id, fingerprint, "check_failed", ("provider_pin_invalid",))
             )
             continue
+        missing = sorted(key for key in baseline.data_policy if key not in policy)
+        if missing:
+            # A pinned field the provider no longer publishes is unreadable evidence,
+            # not an unchanged value: never attest it, and never read it as None.
+            checks.append(
+                RouteCheck(
+                    route.route_id,
+                    fingerprint,
+                    "check_failed",
+                    tuple(f"provider_policy_field_missing:{key}" for key in missing),
+                )
+            )
+            continue
         model = route.model.removeprefix("openrouter/")
         tag = pins[0]
         listed = _is_listed(entries, model, tag)
-        observed = {key: policy.get(key) for key in baseline.data_policy}
+        observed = {key: policy[key] for key in baseline.data_policy}
         reasons: list[str] = [] if listed else ["left_zdr_listing"]
         reasons.extend(
             f"provider_policy_changed:{key}"
             for key, approved in sorted(baseline.data_policy.items())
-            if not _same_value(policy.get(key), approved)
+            if not _same_value(policy[key], approved)
         )
         checks.append(
             RouteCheck(

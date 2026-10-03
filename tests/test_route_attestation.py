@@ -637,3 +637,25 @@ async def test_stop_cancels_and_awaits_the_background_tasks() -> None:
     await attestation.start(pool, interval_s=3600, check_interval_s=3600)
     assert len(attestation._tasks) == 2  # pyright: ignore[reportPrivateUsage]
     await attestation.stop()
+
+
+def test_a_missing_pinned_policy_field_is_a_failed_check_not_a_value() -> None:
+    # Baseline pins retentionDays as null; upstream omits the field entirely.
+    route = _route(
+        extra={"zdr_baseline": {"provider_slug": "azure", "data_policy": {"retentionDays": None}}}
+    )
+    [check] = attestation.evaluate([route], LISTED, _providers())
+    assert (check.outcome, check.reasons) == (
+        "check_failed",
+        ("provider_policy_field_missing:retentionDays",),
+    )
+    # An explicit null upstream matches the approved null.
+    [check] = attestation.evaluate([route], LISTED, _providers(retentionDays=None))
+    assert check.outcome == "attested"
+    # A pinned flag that disappears is unreadable evidence, not a sticky revocation.
+    providers = {"data": [{"slug": "azure", "dataPolicy": {"retainsPrompts": False}}]}
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == (
+        "check_failed",
+        ("provider_policy_field_missing:training",),
+    )
