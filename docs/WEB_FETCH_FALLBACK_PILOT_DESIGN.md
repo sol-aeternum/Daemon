@@ -2144,6 +2144,6 @@ secrets. On the owner's request its three below-the-bar items are now implemente
 
 New pure tests cover the topology and inventory rule, the runtime refusal ordering, both status
 checks, the request guard and three rejected seccomp option forms; the E3c gate's gateway run
-now declares `topology: internal`. Pilot run **1059 passed, 9 skipped**; scoped types, lint and
+now declares `topology: internal`. Pilot run **1053 passed, 9 skipped**; scoped types, lint and
 high-severity Bandit pass. The E2c and E3c native gates have not yet been re-run against these
 changes.
