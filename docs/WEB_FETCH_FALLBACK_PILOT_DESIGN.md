@@ -2174,3 +2174,20 @@ uncaptured. Tally across E3c runs whose code included the per-stream abort and t
 fix: 4 passed, 1 failed at Chromium launch. Across all 8 E3c runs, Chromium died at launch
 twice; the other two failures were the explained, since-fixed transport issues. The launch flake is a known open item for stage F, not a containment failure:
 the browser refuses cleanly (exit 5, `error` RESULT) and nothing is left behind.
+
+### Full-project gates in a clean worktree (2026-10-03)
+
+`scripts/local_ci.sh` ran in a clean detached worktree of the branch at `805d32ce` (no local
+changes; locked `uv sync`, `npm ci`), so unrelated uncommitted work in the main checkout could
+not affect results. **Every gate covering pilot code passed; three blocking gates failed for
+pre-existing reasons outside the pilot, which changes none of the files involved:**
+
+| Family | Result |
+|---|---|
+| Backend | ruff check, ruff format, basedpyright, high-severity Bandit pass; Bandit inventory reports existing low findings (non-blocking); **pip-audit fails**: `litellm 1.96.0`, `urllib3 2.7.0`, `virtualenv 21.4.1` advisories, which current `main` locks identically (#376); **pytest fails**: 4994 passed, 125 skipped, 2 failed, both in `tests/test_model_roster_live.py`, whose fixtures hard-code period `2026-09` while the clock is in `2026-10` (#379); no pilot test failed |
+| Frontend | npm ci, type-check, lint, format, tests and build pass; **audit fails** on the `braces` advisory (#418), already fixed on `main` by `d3f50d58` but not on this branch's base |
+| Aggregate | feature matrix and pre-commit across all files (doc freshness, ruff, gitleaks) pass |
+
+Evidence was added to #376, #379 and #418. The Definition of Done is therefore not met for
+reasons outside the pilot; rebasing onto current `main` resolves #418, while #376 and #379
+need their own fixes. Production remains direct-only.
