@@ -73,13 +73,14 @@ def is_monitored(route: RoutePolicy) -> bool:
 def baseline_fingerprint(route: RoutePolicy) -> str:
     """Identity of what was approved. Any change makes a new, unattested baseline.
 
-    Covers the route, exact model, pinned provider, the baseline data policy and the
-    operator review date, so re-approval after a revocation is an explicit config
+    Covers the route, gateway endpoint, exact model, pinned provider, the baseline
+    data policy and the operator review date, so re-approval after a revocation is an explicit config
     change, never a silent recovery.
     """
     baseline = route.zdr_baseline
     payload = {
         "route_id": route.route_id,
+        "endpoint": route.endpoint,
         "model": route.model,
         "provider_only": list(route.transport.provider_only or ()),
         "provider_slug": baseline.provider_slug if baseline else None,
@@ -109,12 +110,15 @@ def _listing_entries(payload: object) -> list[tuple[str, str]] | None:
         return None
     entries: list[tuple[str, str]] = []
     for item in data:
+        # Any unreadable entry makes the whole listing unreadable: skipping it could
+        # turn missing metadata into a sticky "left the listing" revocation.
         if not isinstance(item, dict):
             return None
         model_id, tag = item.get("model_id"), item.get("tag")
-        if isinstance(model_id, str) and isinstance(tag, str):
-            entries.append((model_id, tag))
-    return entries or None
+        if not isinstance(model_id, str) or not isinstance(tag, str) or not model_id or not tag:
+            return None
+        entries.append((model_id, tag))
+    return entries
 
 
 def _provider_policies(payload: object) -> dict[str, Mapping[str, Any]] | None:
@@ -137,6 +141,11 @@ def _is_listed(entries: Iterable[tuple[str, str]], model: str, tag: str) -> bool
     requested id is evidence that the requested model is still served ZDR there.
     """
     return (model, tag) in set(entries)
+
+
+def _same_value(observed: object, approved: object) -> bool:
+    """Type-strict equality: ``False`` is not ``0`` and ``True`` is not ``1``."""
+    return type(observed) is type(approved) and observed == approved
 
 
 def evaluate(
@@ -178,7 +187,7 @@ def evaluate(
         reasons.extend(
             f"provider_policy_changed:{key}"
             for key, approved in sorted(baseline.data_policy.items())
-            if policy.get(key) != approved
+            if not _same_value(policy.get(key), approved)
         )
         checks.append(
             RouteCheck(

@@ -150,6 +150,10 @@ def test_monitored_review_still_needs_a_dated_named_sign_off() -> None:
         {"zdr_baseline": {"provider_slug": "azure", "data_policy": {"invented": True}}},
         {"zdr_baseline": None},
         {"approval_mode": "forever"},
+        {"zdr_baseline": {"provider_slug": "azure", "data_policy": {"training": 0}}},
+        {"zdr_baseline": {"provider_slug": "azure", "data_policy": {"retainsPrompts": 1}}},
+        {"zdr_baseline": {"provider_slug": "azure", "data_policy": {"retentionDays": True}}},
+        {"zdr_baseline": {"provider_slug": "azure", "data_policy": {"retentionDays": -1}}},
     ],
 )
 def test_invalid_monitored_definitions_are_refused(extra: dict[str, Any]) -> None:
@@ -245,6 +249,17 @@ def test_a_retention_policy_recorded_at_approval_is_not_a_change() -> None:
         ({"unexpected": True}, _providers(), "metadata_malformed"),
         (LISTED, {"data": "not-a-list"}, "metadata_malformed"),
         (LISTED, {"data": [{"slug": "other", "dataPolicy": {}}]}, "provider_policy_missing"),
+        # One unreadable entry beside the approved one makes the listing unreadable.
+        (
+            {"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure/eu"}, {"tag": "x/y"}]},
+            _providers(),
+            "metadata_malformed",
+        ),
+        (
+            {"data": [{"model_id": "openai/gpt-6-luna", "tag": ""}]},
+            _providers(),
+            "metadata_malformed",
+        ),
     ],
 )
 def test_unreadable_metadata_records_a_failed_check_and_revokes_nothing(
@@ -565,3 +580,20 @@ def test_bootstrap_distinguishes_a_policy_without_monitored_routes() -> None:
         attestation.BOOTSTRAP_NO_MONITORED_ROUTES,
         {},
     )
+
+
+def test_upstream_values_are_compared_type_strictly() -> None:
+    # Integer 0/1 upstream is not the approved boolean, so it is a policy change.
+    [check] = attestation.evaluate([_route()], LISTED, _providers(training=0))
+    assert check.reasons == ("provider_policy_changed:training",)
+
+
+def test_changing_the_gateway_endpoint_is_a_new_baseline() -> None:
+    route = _route()
+    moved = parse_inference_policy(
+        _monitored_policy(extra={"endpoint": "https://gateway.example.com/api/v1"})
+    ).routes["luna-azure-eu"]
+    assert attestation.baseline_fingerprint(moved) != attestation.baseline_fingerprint(route)
+    _attest(route)
+    policy = parse_inference_policy(_monitored_policy())
+    assert moved.rejection_reasons(policy.requirements, now=NOW) == ("zdr_attestation_stale",)

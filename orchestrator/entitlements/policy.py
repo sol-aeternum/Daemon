@@ -1258,7 +1258,15 @@ def _parse_approval_mode(
             f"{sorted(ZDR_BASELINE_POLICY_KEYS)}"
         )
     for key, value in policy.items():
-        if value is not None and not isinstance(value, (bool, int)):
+        # Each field keeps its own type: the flags are booleans and retentionDays is a
+        # non-negative integer or null, so False can never stand in for 0.
+        valid = (
+            isinstance(value, bool)
+            if key in {"training", "retainsPrompts"}
+            else value is None
+            or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+        )
+        if not valid:
             raise PolicyError(f"routes.{route_id}.zdr_baseline.data_policy.{key} is invalid")
     return {
         "approval_mode": mode,
