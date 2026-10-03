@@ -32,9 +32,11 @@ from scripts.web_fetch_pilot_browser_entrypoint import (
     classify,
     final_record,
     launch_excerpt,
+    navigation_outcome,
     parse_run,
     request_allowed,
     sandbox_ok,
+    status_class,
     status_ok,
     synthetic_ok,
     url_host,
@@ -126,24 +128,24 @@ def test_url_host_requires_plain_https() -> None:
 
 def test_classification_never_attaches_content_to_failure() -> None:
     run = run_config()
-    content, final = classify(run, True, "chrome-error://chromewebdata/", "x", "page")
+    content, final = classify(run, "error", "chrome-error://chromewebdata/", "x", "page")
     assert content == b"" and json.loads(final)["status"] == "error"
     assert json.loads(final)["final_url"] == RUN["original_url"]
     assert collector_accepts(content, final) == b""
-    content, final = classify(run, False, "https://evil.example/", "t", "text")
+    content, final = classify(run, "ok", "https://evil.example/", "t", "text")
     assert content == b"" and json.loads(final)["status"] == "blocked"
     assert collector_accepts(content, final) == b""
-    content, final = classify(run, False, "https://openai.com/x", "t", " \n \n")
+    content, final = classify(run, "ok", "https://openai.com/x", "t", " \n \n")
     assert content == b"" and json.loads(final)["status"] == "error"
 
 
 def test_success_content_is_normalized_bounded_and_collector_valid() -> None:
     run = run_config()
-    content, final = classify(run, False, "https://openai.com/x", "Title", "  a \n\n b  ")
+    content, final = classify(run, "ok", "https://openai.com/x", "Title", "  a \n\n b  ")
     assert content == b"a\nb" and json.loads(final)["status"] == "success"
     assert collector_accepts(content, final) == b"a\nb"
     huge = "é" * CONTENT_LIMIT  # Two bytes each: truncation must split cleanly.
-    content, final = classify(run, False, "https://openai.com/x", "T" * 9000, huge)
+    content, final = classify(run, "ok", "https://openai.com/x", "T" * 9000, huge)
     assert len(content) <= CONTENT_LIMIT and content.decode("utf-8")
     assert len(json.loads(final)["title"]) == 512
     assert collector_accepts(content, final) == content
@@ -329,3 +331,60 @@ def test_launch_excerpt_is_bounded_printable_and_launch_only() -> None:
     source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
     assert 'if stage[0] == "launch":' in source  # Never excerpted after a page exists.
     assert LAUNCH_EXCERPT < DIAGNOSTIC_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("status", "cf_mitigated", "title", "expected"),
+    [
+        (200, None, "Introducing dots | OpenAI", "ok"),
+        (204, None, "", "ok"),
+        (403, "challenge", "Just a moment...", "blocked"),  # The #373 incident shape.
+        (403, None, "Forbidden", "blocked"),
+        (429, None, "", "blocked"),
+        (503, None, "", "blocked"),
+        (401, None, "", "blocked"),
+        (407, None, "", "blocked"),
+        (200, "challenge", "Article", "blocked"),  # Header wins over a 2xx.
+        (200, " Challenge ", "Article", "blocked"),
+        (200, None, "  Just   a moment... ", "blocked"),  # Challenge title behind a 2xx.
+        (200, None, "Attention Required! | Cloudflare", "blocked"),
+        (404, None, "Not found", "error"),
+        (500, None, "", "error"),
+        (301, None, "", "error"),
+        (None, None, "", "error"),  # No main-document response.
+        (True, None, "", "error"),
+    ],
+)
+def test_navigation_outcome_never_lets_a_challenge_through(
+    status: object, cf_mitigated: object, title: object, expected: str
+) -> None:
+    assert navigation_outcome(status, cf_mitigated, title) == expected
+
+
+def test_blocked_and_error_outcomes_never_carry_content() -> None:
+    run = run_config()
+    for outcome in ("blocked", "error", "unknown"):
+        content, final = classify(run, outcome, "https://openai.com/x", "t", "challenge text")
+        record = json.loads(final)
+        assert content == b"" and record["status"] in ("blocked", "error")
+        assert record["final_url"] == RUN["original_url"]
+        assert collector_accepts(content, final) == b""
+    assert json.loads(classify(run, "blocked", "x", "", "")[1])["status"] == "blocked"
+
+
+def test_status_class_is_coarse_only() -> None:
+    assert [status_class(s) for s in (200, 403, 503, None, 99, True)] == [
+        "2xx",
+        "4xx",
+        "5xx",
+        "none",
+        "none",
+        "none",
+    ]
+
+
+def test_extraction_happens_only_after_an_ok_outcome() -> None:
+    source = (ROOT / "scripts/web_fetch_pilot_browser_entrypoint.py").read_text()
+    body = source[source.index("response = await page.goto(") :]
+    assert body.index("navigation_outcome(") < body.index('if outcome != "ok":')
+    assert body.index('if outcome != "ok":') < body.index("page.evaluate(EXTRACT_JS)")

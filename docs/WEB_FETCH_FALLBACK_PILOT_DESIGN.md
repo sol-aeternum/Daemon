@@ -2262,3 +2262,16 @@ subresource or redirect host is reported as blocked, never auto-added.
 **Decisions needed from the owner:** approve building prerequisites (1)–(5); supply the
 deployment-owned public address inventory; confirm the single URL and `openai.com`-only
 manifest; then, separately, approve the two-run live session.
+
+### Live prerequisite 1: challenge and HTTP-status classification (2026-10-03)
+
+Owner-approved first prerequisite (the must-fix). The browser entrypoint now keeps the main
+document's response and decides the outcome **before** any extraction with the pure
+`navigation_outcome(status, cf_mitigated, title)`: `blocked` for `cf-mitigated: challenge`, a
+denial status (401, 403, 407, 429, 503) or a reviewed fixed challenge title (exact match after
+whitespace normalization, e.g. "Just a moment..."), even behind a 2xx; `error` for any other
+non-2xx or a missing response; `ok` only for a 2xx main document with no marker. Only `ok`
+reaches `page.evaluate(EXTRACT_JS)`; `blocked` and `error` carry no content and report the
+trusted original URL. Diagnostics add only the status class (`4xx`) and outcome. The #373 shape
+(`403`, `cf-mitigated: challenge`, "Just a moment...") is a test case. 20 new pure tests; pilot
+run **1074 passed, 9 skipped**. The E2c native gate has not been re-run against this change.

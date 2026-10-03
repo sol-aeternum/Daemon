@@ -132,11 +132,54 @@ def final_record(run: RunConfig, status: str, final_url: str, title: str) -> byt
     return encoded
 
 
+# Statuses that mean "denied or challenged", never "absent".
+BLOCKED_STATUSES = frozenset({401, 403, 407, 429, 503})
+# Reviewed, fixed challenge-page titles (exact, after whitespace normalization).
+CHALLENGE_TITLES = frozenset(
+    {
+        "just a moment...",
+        "attention required! | cloudflare",
+        "access denied",
+        "please wait...",
+        "verifying you are human",
+    }
+)
+
+
+def navigation_outcome(status: object, cf_mitigated: object, title: object) -> str:
+    """Pure: ``ok`` only for a 2xx main document with no challenge marker.
+
+    ``blocked`` for any challenge marker or denial status; ``error`` for any other
+    non-2xx or a missing response. A challenge page must never be extracted.
+    """
+    if type(cf_mitigated) is str and cf_mitigated.strip().lower() == "challenge":
+        return "blocked"
+    if type(status) is not int:
+        return "error"
+    if status in BLOCKED_STATUSES:
+        return "blocked"
+    if not 200 <= status <= 299:
+        return "error"
+    normalized = " ".join(title.split()).lower() if type(title) is str else ""
+    if normalized in CHALLENGE_TITLES:
+        return "blocked"
+    return "ok"
+
+
+def status_class(status: object) -> str:
+    """Pure diagnostic label: ``2xx``..``5xx`` or ``none``; never the URL."""
+    if type(status) is int and 100 <= status <= 599:
+        return f"{status // 100}xx"
+    return "none"
+
+
 def classify(
-    run: RunConfig, failed: bool, final_url: str, title: str, text: str
+    run: RunConfig, outcome: str, final_url: str, title: str, text: str
 ) -> tuple[bytes, bytes]:
-    """Pure (content, final) decision; failure never carries content."""
-    if failed:
+    """Pure (content, final) decision; only an ``ok`` outcome may carry content."""
+    if outcome == "blocked":
+        return b"", final_record(run, "blocked", run.original_url, "")
+    if outcome != "ok":
         return b"", final_record(run, "error", run.original_url, "")
     if url_host(final_url) not in run.allowed_hosts:
         return b"", final_record(run, "blocked", run.original_url, "")
@@ -296,16 +339,24 @@ async def _browse(
                 stage[0] = "navigate"
                 remaining_ms = max(1.0, (deadline - loop.time()) * 1000)
                 try:
-                    await page.goto(
+                    response = await page.goto(
                         run.original_url, wait_until="domcontentloaded", timeout=remaining_ms
                     )
                 except Exception as exc:  # Category only; never error text in RESULT.
                     diagnostic({"navigation": type(exc).__name__, "blocked": blocked[0]})
-                    return classify(run, True, run.original_url, "", "")
+                    return classify(run, "error", run.original_url, "", "")
+                status = None if response is None else response.status
+                headers = {} if response is None else await response.all_headers()
+                title = str(await page.title())
+                outcome = navigation_outcome(status, headers.get("cf-mitigated"), title)
+                diagnostic(
+                    {"status": status_class(status), "outcome": outcome, "blocked": blocked[0]}
+                )
+                if outcome != "ok":
+                    return classify(run, outcome, run.original_url, "", "")  # Never extracted.
                 stage[0] = "extract"
-                title = await page.title()
                 text = await page.evaluate(EXTRACT_JS)
-                return classify(run, False, page.url, str(title), str(text))
+                return classify(run, outcome, page.url, title, str(text))
             finally:
                 await context.close()
         finally:
