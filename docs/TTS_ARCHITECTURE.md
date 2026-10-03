@@ -45,6 +45,12 @@ Missing assets fail startup. Runtime uses a read-only filesystem, non-root
 user, dropped capabilities, bounded private tmpfs, two CPU cores and 1536 MiB.
 Phonemizer loads a temporary copy of its eSpeak shared library, so that tmpfs
 must allow executable mappings; no shell is invoked. ONNX telemetry is disabled.
+ONNX inference keeps two intra-op threads, one inter-op thread and sequential CPU
+execution, with intra/inter-op worker spinning disabled to avoid spending the
+container's CPU quota on idle busy-waiting. Model precision, voice, resource caps
+and deadlines are unchanged. This reduces measured buffered preparation time;
+it does not provide streaming startup or guarantee every long reply meets the
+deadline under load. See the dated [CPU measurements](TTS_BENCHMARK.md).
 
 The service has no published host port and only joins the internal
 `speech-network`. Only the API is connected to that network. `/live` answers
