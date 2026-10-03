@@ -2171,6 +2171,6 @@ stopping at the first failure: **all three passed** (9.19 s, 6.79 s, 6.18 s), ea
 fixture attempt rejected (`certificate_unknown`), a clean gateway EOF, all three entrypoints
 exiting 0 and no leftovers. The intermittent launch failure did not recur, so its cause remains
 uncaptured. Tally across E3c runs whose code included the per-stream abort and the peer-record
-fix: 6 passed, 1 failed at Chromium launch; the earlier pre-fix failures were the explained
-transport issues. The launch flake is a known open item for stage F, not a containment failure:
+fix: 4 passed, 1 failed at Chromium launch. Across all 8 E3c runs, Chromium died at launch
+twice; the other two failures were the explained, since-fixed transport issues. The launch flake is a known open item for stage F, not a containment failure:
 the browser refuses cleanly (exit 5, `error` RESULT) and nothing is left behind.
