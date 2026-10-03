@@ -147,7 +147,7 @@ Hybrid search combining:
 | **Chat** | `/chat` (SSE), `/v1/chat/completions` (OpenAI), `/chat/completions` |
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
 | **Conversations** | `/conversations/{conversation_id}` (GET/PATCH/DELETE) |
-| **Memories** | `/memories/{memory_id}` (GET/PATCH/DELETE), `/memories/export`, `/memories/import`, `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
+| **Memories** | `/memories/{memory_id}` (GET/PATCH/DELETE), `/memories/export`, `/memories/import` (≤500 items of `{content ≤2,000 chars, category}`; server-controlled status/source; embedded and deduplicated like other writes; returns created/merged/superseded counts), `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
 | **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/admin/sync` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
 | **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |

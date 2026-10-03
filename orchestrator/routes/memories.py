@@ -1,8 +1,10 @@
 """Memory API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from orchestrator.auth import (
@@ -12,10 +14,21 @@ from orchestrator.auth import (
     require_device_auth,
 )
 from orchestrator.db import get_app_state, AppState
-from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingBatchResult,
+    EmbeddingConfigurationError,
+    embed_documents_with_metadata,
+)
 from orchestrator.memory.store import MemoryContentConflictError
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/memories", tags=["memories"])
+
+MAX_IMPORT_ITEMS = 500
+MAX_IMPORT_CONTENT_CHARS = 2000
+IMPORT_EMBED_BATCH = 50
+ImportCategory = Literal["fact", "preference", "project", "summary", "correction"]
 
 
 class MemoryCreate(BaseModel):
@@ -35,8 +48,37 @@ class MemoryExportRequest(BaseModel):
     status: str = "active"
 
 
+class ImportedMemory(BaseModel):
+    """One person-supplied memory. Only text and category are accepted.
+
+    Extra fields (for example dates from an export file) are ignored. Status,
+    source, locality, confidence, slots and embeddings are always set by the
+    server, never by the request.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = Field(min_length=1, max_length=MAX_IMPORT_CONTENT_CHARS)
+    category: ImportCategory = "fact"
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _strip_content(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+@dataclass(frozen=True)
+class _ImportFact:
+    """Dedup input with the same defaults as a single POST /memories write."""
+
+    content: str
+    category: str
+    confidence: float = 0.8
+    slot: str | None = None
+
+
 class MemoryImportRequest(BaseModel):
-    memories: list[dict[str, Any]]
+    memories: list[ImportedMemory] = Field(max_length=MAX_IMPORT_ITEMS)
 
 
 class MemoryReembedRequest(BaseModel):
@@ -100,12 +142,97 @@ async def import_memories(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
+    """Import memories through the same dedup path as other writes.
+
+    Every item is stored active, with source ``import``, embedded by the
+    server outside any transaction. Each item's dedup decision and writes then
+    commit in their own transaction, and an item is counted only once it has
+    committed, so a failure part-way reports exactly what is persisted: every
+    counted item is saved, and nothing from the failing item is. Contradiction
+    checks and trust signals run after commit, as for the memory tool. Like
+    POST /memories, this explicit person-initiated route is outside the LLM
+    tool's per-window quota (issue #221) but is bounded per request.
+    """
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    from orchestrator.memory.dedup import _embedding_text, deduplicate_facts
+    from orchestrator.memory.tools import apply_deferred_supersede_effects
 
-    inserted = await store.import_memories(auth.user_id, data.memories)
-    return {"inserted": inserted}
+    counts = {"created": 0, "merged": 0, "superseded": 0}
+    processed = 0
+    items = data.memories
+
+    def stopped() -> HTTPException:
+        logger.warning("Memory import stopped after %d of %d", processed, len(items), exc_info=True)
+        return HTTPException(
+            status_code=503,
+            detail={
+                "message": "Import stopped because a memory service was unavailable.",
+                "received": len(items),
+                "processed": processed,
+                **counts,
+            },
+        )
+
+    for start in range(0, len(items), IMPORT_EMBED_BATCH):
+        batch = items[start : start + IMPORT_EMBED_BATCH]
+        prepared: list[Any] | None
+        try:
+            embedded = await embed_documents_with_metadata(
+                [_embedding_text(item.content, None) for item in batch]
+            )
+            prepared = [
+                EmbeddingBatchResult(
+                    embeddings=[vector],
+                    provider=embedded.provider,
+                    model=embedded.model,
+                    storage_model=embedded.storage_model,
+                )
+                for vector in embedded.embeddings
+            ]
+            if len(prepared) != len(batch):
+                raise RuntimeError("embedding count does not match import batch")
+        except EmbeddingConfigurationError:
+            # Dedup falls back to exact-match checks when embeddings are
+            # unqualified, as for any other write.
+            prepared = None
+        except Exception:
+            raise stopped() from None
+
+        for index, item in enumerate(batch):
+            try:
+                async with store._pool.acquire() as conn:
+                    async with conn.transaction():
+                        result = await deduplicate_facts(
+                            store=store,
+                            user_id=auth.user_id,
+                            facts=[_ImportFact(item.content, item.category)],
+                            conversation_id=None,
+                            source_type="import",
+                            status="active",
+                            lock_conn=conn,
+                            prepared_embeddings=[prepared[index]] if prepared else None,
+                        )
+                        outcomes = len(result.new) + len(result.merged) + len(result.superseded)
+                        if outcomes != 1:
+                            # Every processed item must be classified exactly
+                            # once; roll back rather than report an unaccounted item.
+                            raise RuntimeError(f"import item produced {outcomes} outcomes")
+            except Exception:
+                raise stopped() from None
+            counts["created"] += len(result.new)
+            counts["merged"] += len(result.merged)
+            counts["superseded"] += len(result.superseded)
+            processed += 1
+            await apply_deferred_supersede_effects(store, result.deferred_supersede_effects)
+
+    return {
+        "received": len(items),
+        "processed": processed,
+        "inserted": counts["created"],
+        **counts,
+    }
 
 
 @router.post("/reembed")
