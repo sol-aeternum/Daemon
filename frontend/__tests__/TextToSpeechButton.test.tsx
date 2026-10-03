@@ -6,7 +6,9 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { useLayoutEffect } from 'react';
 import { TextToSpeechButton } from '../components/TextToSpeechButton';
+import { TtsPlaybackBar } from '../components/TtsPlaybackBar';
 import {
   AudioPlaybackProvider,
   MAX_TTS_TEXT_CODE_POINTS,
@@ -14,6 +16,7 @@ import {
   TTS_PLAY_ERROR_MESSAGE,
   TTS_STALE_CONVERSATION_MESSAGE,
   TTS_TEXT_TOO_LONG_MESSAGE,
+  useAudioPlayback,
 } from '../components/AudioPlaybackProvider';
 import { DEFAULT_TTS_SETTINGS } from '../lib/constants';
 import { setTtsSettings } from '../lib/ttsSettings';
@@ -55,19 +58,27 @@ interface MediaInstance {
   src: string;
   playbackRate: number;
   currentTime: number;
+  duration: number;
   paused: boolean;
   playCalls: number;
   pauseCalls: number;
+  pause: () => void;
   loadCalls: number;
   onended: (() => void) | null;
   onerror: (() => void) | null;
   oncanplay: (() => void) | null;
   onplaying: (() => void) | null;
+  onpause: (() => void) | null;
+  onloadedmetadata: (() => void) | null;
+  ondurationchange: (() => void) | null;
+  ontimeupdate: (() => void) | null;
+  onseeking: (() => void) | null;
+  onseeked: (() => void) | null;
   resolvePlay: () => void;
   rejectPlay: (error: unknown) => void;
   canplay: () => void;
   playing: () => void;
-  ended: () => void;
+  endPlayback: () => void;
   fail: () => void;
 }
 
@@ -101,6 +112,7 @@ const media = vi.hoisted(() => {
     src: string;
     playbackRate = 1;
     currentTime = 0;
+    duration = NaN;
     paused = true;
     playCalls = 0;
     pauseCalls = 0;
@@ -109,7 +121,8 @@ const media = vi.hoisted(() => {
     onerror: (() => void) | null = null;
     oncanplay: (() => void) | null = null;
     onplaying: (() => void) | null = null;
-    readonly playDeferred: PlayDeferred = createPlayDeferred();
+    onpause: (() => void) | null = null;
+    playDeferred: PlayDeferred = createPlayDeferred();
 
     constructor(src: string) {
       this.src = src;
@@ -133,7 +146,7 @@ const media = vi.hoisted(() => {
         'rejectPlay',
         'canplay',
         'playing',
-        'ended',
+        'endPlayback',
         'fail',
       ] as const) {
         Object.defineProperty(element, key, {
@@ -147,6 +160,7 @@ const media = vi.hoisted(() => {
 
     play(): Promise<void> {
       this.playCalls += 1;
+      if (this.playCalls > 1) this.playDeferred = createPlayDeferred();
       this.paused = false;
       return this.playDeferred.promise;
     }
@@ -154,6 +168,7 @@ const media = vi.hoisted(() => {
     pause(): void {
       this.pauseCalls += 1;
       this.paused = true;
+      this.onpause?.();
     }
 
     load(): void {
@@ -178,7 +193,7 @@ const media = vi.hoisted(() => {
       this.onplaying?.();
     }
 
-    ended(): void {
+    endPlayback(): void {
       this.onended?.();
     }
 
@@ -301,9 +316,26 @@ interface HarnessButton {
 interface HarnessProps {
   scope?: { conversationId: string | null; authGeneration: number };
   buttons: HarnessButton[];
+  player?: boolean;
+  captureControls?: (controls: ReturnType<typeof useAudioPlayback>) => void;
 }
 
-function Harness({ scope = DEFAULT_SCOPE, buttons }: HarnessProps) {
+function ControlsProbe({
+  capture,
+}: {
+  capture: NonNullable<HarnessProps['captureControls']>;
+}) {
+  const controls = useAudioPlayback();
+  useLayoutEffect(() => capture(controls), [capture, controls]);
+  return null;
+}
+
+function Harness({
+  scope = DEFAULT_SCOPE,
+  buttons,
+  player = false,
+  captureControls,
+}: HarnessProps) {
   return (
     <AudioPlaybackProvider scope={scope}>
       {buttons.map((button) => (
@@ -319,6 +351,8 @@ function Harness({ scope = DEFAULT_SCOPE, buttons }: HarnessProps) {
           available={button.available ?? true}
         />
       ))}
+      {player && <TtsPlaybackBar />}
+      {captureControls && <ControlsProbe capture={captureControls} />}
     </AudioPlaybackProvider>
   );
 }
@@ -416,6 +450,278 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.NEXT_PUBLIC_API_URL;
+});
+
+async function startPlayer(captureControls?: HarnessProps['captureControls']) {
+  const fetch = createFetchController();
+  vi.stubGlobal('fetch', fetch.mock);
+  const props: HarnessProps = {
+    player: true,
+    captureControls,
+    buttons: [
+      { messageId: 'm1', text: 'First speech' },
+      { messageId: 'm2', text: 'Second speech' },
+    ],
+  };
+  const view = render(<Harness {...props} />);
+  expect(screen.queryByRole('region', { name: 'Speech player' })).toBeNull();
+  fireEvent.click(buttons('Play TTS')[0]);
+  expect(buttonByLabel('Pause speech').disabled).toBe(true);
+  expect((screen.getByRole('slider') as HTMLInputElement).disabled).toBe(true);
+  await flush();
+  await resolveCall(fetch.calls[0], ttsResponse('/generated-audio/m1.mp3'));
+  await resolveCall(fetch.calls[1], audioResponse(200));
+  const audio = media.last();
+  act(() => {
+    audio.duration = 125;
+    audio.onloadedmetadata?.();
+    audio.playing();
+    audio.resolvePlay();
+  });
+  await flush();
+  return { ...view, ...fetch, props, audio };
+}
+
+it('pauses and resumes the same attached audio at its position without fetching again', async () => {
+  const { audio, mock } = await startPlayer();
+  act(() => {
+    audio.currentTime = 12.4;
+    audio.ontimeupdate?.();
+  });
+  expect(screen.getByText('0:12 / 2:05')).toBeTruthy();
+  expect((screen.getByRole('slider') as HTMLInputElement).value).toBe('12.4');
+  fireEvent.click(buttonByLabel('Pause speech'));
+  expect(audio.paused).toBe(true);
+  expect(audio.currentTime).toBe(12.4);
+  expect(screen.getByText('Paused')).toBeTruthy();
+  expect(buttonByLabel('Stop TTS').textContent).not.toContain('Loading');
+  expect(audio.isConnected).toBe(true);
+  expect(media.revokedUrls).toHaveLength(0);
+  fireEvent.click(buttonByLabel('Resume speech'));
+  act(() => {
+    audio.playing();
+    audio.resolvePlay();
+  });
+  await flush();
+  expect(screen.getByText('Reading aloud')).toBeTruthy();
+  expect(audio.currentTime).toBe(12.4);
+  expect(audio.playCalls).toBe(2);
+  expect(audio.playbackRate).toBe(1);
+  expect(media.instances).toHaveLength(1);
+  expect(mock).toHaveBeenCalledTimes(2);
+});
+
+it('seeks while playing and paused without resetting playback or speech preferences', async () => {
+  const { audio, mock } = await startPlayer();
+  const slider = screen.getByRole('slider') as HTMLInputElement;
+  fireEvent.change(slider, { target: { value: '31.5' } });
+  expect(audio.currentTime).toBe(31.5);
+  expect(audio.paused).toBe(false);
+  fireEvent.click(buttonByLabel('Pause speech'));
+  fireEvent.change(slider, { target: { value: '7' } });
+  expect(audio.currentTime).toBe(7);
+  expect(audio.paused).toBe(true);
+  act(() =>
+    setTtsSettings({ ...DEFAULT_TTS_SETTINGS, speed: 2, format: 'wav' }),
+  );
+  expect(audio.currentTime).toBe(7);
+  expect(audio.playbackRate).toBe(1);
+  expect(mock).toHaveBeenCalledTimes(2);
+});
+
+it('keeps duration unknown until finite metadata and reconciles native media controls', async () => {
+  const { audio } = await startPlayer();
+  act(() => {
+    audio.duration = Infinity;
+    audio.ondurationchange?.();
+    audio.currentTime = NaN;
+    audio.ontimeupdate?.();
+  });
+  expect(screen.getByText('0:00 / —')).toBeTruthy();
+  expect((screen.getByRole('slider') as HTMLInputElement).disabled).toBe(true);
+  act(() => {
+    audio.duration = 90;
+    audio.currentTime = 4;
+    audio.ondurationchange?.();
+    audio.pause();
+  });
+  expect(screen.getByText('0:04 / 1:30')).toBeTruthy();
+  expect(screen.getByLabelText('Resume speech')).toBeTruthy();
+  act(() => audio.playing());
+  expect(screen.getByLabelText('Pause speech')).toBeTruthy();
+});
+
+it('ignores a pending play rejection after pause and a late fulfillment while still paused', async () => {
+  const { audio, mock } = await startPlayer();
+  fireEvent.click(buttonByLabel('Pause speech'));
+  fireEvent.click(buttonByLabel('Resume speech'));
+  const lateReject = audio.rejectPlay.bind(audio);
+  fireEvent.click(buttonByLabel('Pause speech'));
+  await act(async () => lateReject(new DOMException('Paused', 'AbortError')));
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByLabelText('Resume speech')).toBeTruthy();
+  fireEvent.click(buttonByLabel('Resume speech'));
+  fireEvent.click(buttonByLabel('Pause speech'));
+  act(() => audio.resolvePlay());
+  await flush();
+  expect(screen.getByText('Paused')).toBeTruthy();
+  expect(audio.paused).toBe(true);
+  expect(mock).toHaveBeenCalledTimes(2);
+});
+
+it('shows resume failures and releases the paused audio on close, end and scope change', async () => {
+  const { audio, mock, calls, rerender, props } = await startPlayer();
+  fireEvent.click(buttonByLabel('Pause speech'));
+  fireEvent.click(buttonByLabel('Resume speech'));
+  await act(async () => audio.rejectPlay(new Error('Resume denied')));
+  expect(screen.getByRole('alert').textContent).toContain('Resume denied');
+  expect(screen.queryByRole('region', { name: 'Speech player' })).toBeNull();
+  expect(audio.isConnected).toBe(false);
+  expect(media.revokedUrls).toHaveLength(1);
+
+  fireEvent.click(buttonByLabel('Retry speech'));
+  await flush();
+  await resolveCall(calls[2], ttsResponse('/generated-audio/retry.mp3'));
+  await resolveCall(calls[3], audioResponse(200));
+  const retry = media.last();
+  fireEvent.click(buttonByLabel('Pause speech'));
+  fireEvent.click(buttonByLabel('Close speech player'));
+  expect(retry.isConnected).toBe(false);
+  expect(retry.ontimeupdate).toBeNull();
+  expect(retry.onloadedmetadata).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Speech player' })).toBeNull();
+
+  fireEvent.click(buttons('Play TTS')[0]);
+  await flush();
+  await resolveCall(calls[4], ttsResponse('/generated-audio/next.mp3'));
+  await resolveCall(calls[5], audioResponse(200));
+  const next = media.last();
+  fireEvent.click(buttonByLabel('Pause speech'));
+  rerender(
+    <Harness
+      {...props}
+      scope={{ conversationId: 'conv-2', authGeneration: 0 }}
+    />,
+  );
+  expect(next.isConnected).toBe(false);
+  expect(screen.queryByRole('region', { name: 'Speech player' })).toBeNull();
+  expect(mock).toHaveBeenCalledTimes(6);
+});
+
+it('does not let retired progress and media callbacks alter a replacement player', async () => {
+  const { audio, calls } = await startPlayer();
+  const staleTime = audio.ontimeupdate;
+  const stalePause = audio.onpause;
+  fireEvent.click(buttonByLabel('Pause speech'));
+  fireEvent.click(buttonByLabel('Play TTS'));
+  await flush();
+  await resolveCall(calls[2], ttsResponse('/generated-audio/m2.mp3'));
+  await resolveCall(calls[3], audioResponse(200));
+  const replacement = media.last();
+  act(() => {
+    replacement.duration = 25;
+    replacement.currentTime = 3;
+    replacement.onloadedmetadata?.();
+    replacement.playing();
+    audio.currentTime = 110;
+    staleTime?.();
+    stalePause?.();
+  });
+  expect(screen.getByText('0:03 / 0:25')).toBeTruthy();
+  expect(screen.getByText('Reading aloud')).toBeTruthy();
+  expect(replacement.paused).toBe(false);
+  act(() => replacement.endPlayback());
+  expect(screen.queryByRole('region', { name: 'Speech player' })).toBeNull();
+});
+
+it('retires paused playback immediately when authentication is invalidated', async () => {
+  const { audio } = await startPlayer();
+  fireEvent.click(buttonByLabel('Pause speech'));
+  act(() => authHarness.bump());
+  expect(audio.isConnected).toBe(false);
+  expect(media.revokedUrls).toHaveLength(1);
+  expect(screen.queryByRole('region', { name: 'Speech player' })).toBeNull();
+});
+
+it('rejects stale request-qualified pause/resume/seek/close for a newer request of the same message', async () => {
+  const captured: ReturnType<typeof useAudioPlayback>[] = [];
+  const { calls, audio } = await startPlayer((controls) => {
+    captured.push(controls);
+  });
+  const stale = captured.at(-1)!;
+  const staleOwner = {
+    messageId: stale.ownerMessageId!,
+    conversationId: stale.ownerConversationId,
+    requestId: stale.ownerRequestId,
+  };
+  act(() => {
+    stale.startSpeech({
+      ...staleOwner,
+      text: 'First speech',
+      voice: 'daemon-default',
+      speed: 1,
+      format: 'mp3',
+    });
+  });
+  await flush();
+  await resolveCall(
+    calls[2],
+    ttsResponse('/generated-audio/m1-replacement.mp3'),
+  );
+  await resolveCall(calls[3], audioResponse(200));
+  const replacement = media.last();
+  act(() => {
+    replacement.duration = 25;
+    replacement.currentTime = 3;
+    replacement.onloadedmetadata?.();
+    replacement.playing();
+    stale.pauseSpeech(staleOwner);
+    stale.seekSpeech(staleOwner, 20);
+    stale.resumeSpeech(staleOwner);
+    stale.stopSpeech(staleOwner);
+  });
+  expect(replacement.isConnected).toBe(true);
+  expect(replacement.paused).toBe(false);
+  expect(replacement.currentTime).toBe(3);
+  expect(replacement.playCalls).toBe(1);
+  expect(audio.isConnected).toBe(false);
+  expect(screen.getByText('0:03 / 0:25')).toBeTruthy();
+});
+
+it('bounds seek inputs and reports a native seek exception with normal resource cleanup', async () => {
+  const captured: ReturnType<typeof useAudioPlayback>[] = [];
+  const { audio, mock } = await startPlayer((controls) => {
+    captured.push(controls);
+  });
+  const controls = captured.at(-1)!;
+  const owner = {
+    messageId: controls.ownerMessageId!,
+    conversationId: controls.ownerConversationId,
+    requestId: controls.ownerRequestId,
+  };
+  act(() => controls.seekSpeech(owner, -1));
+  expect(audio.currentTime).toBe(0);
+  act(() => controls.seekSpeech(owner, 500));
+  expect(audio.currentTime).toBe(125);
+  act(() => {
+    controls.seekSpeech(owner, NaN);
+    controls.seekSpeech(owner, Infinity);
+  });
+  expect(audio.currentTime).toBe(125);
+  Object.defineProperty(audio, 'currentTime', {
+    configurable: true,
+    get: () => 125,
+    set: () => {
+      throw new Error('Native seek rejected');
+    },
+  });
+  act(() => controls.seekSpeech(owner, 10));
+  expect(screen.getByRole('alert').textContent).toContain(
+    'Speech position could not be changed',
+  );
+  expect(audio.isConnected).toBe(false);
+  expect(media.revokedUrls).toHaveLength(1);
+  expect(mock).toHaveBeenCalledTimes(2);
 });
 
 it('runs one provider-owned POST to protected download to Audio generation', async () => {
@@ -734,7 +1040,7 @@ it('ignores a superseded play rejection and stale media events', async () => {
   media.instances[0].rejectPlay(new Error('A stale play rejection'));
   await flush();
   media.instances[0].fail();
-  media.instances[0].ended();
+  media.instances[0].endPlayback();
   await flush();
 
   await resolveCall(calls[2], ttsResponse('/generated-audio/beta.mp3'));
@@ -839,7 +1145,7 @@ it('returns to idle when playback ends naturally', async () => {
   expect(screen.getByLabelText('Stop TTS')).toBeTruthy();
 
   await act(async () => {
-    media.last().ended();
+    media.last().endPlayback();
   });
   expect(screen.getByLabelText('Play TTS')).toBeTruthy();
   expect(media.revokedUrls).toEqual([media.createdUrls[0]]);
@@ -871,7 +1177,7 @@ it('cancels the owning button when the message unmounts', async () => {
 
   // A late completion after the owner disappeared must stay inert.
   await act(async () => {
-    media.instances[0].ended();
+    media.instances[0].endPlayback();
   });
   expect(media.instances[0].pauseCalls).toBe(1);
 });

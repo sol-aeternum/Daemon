@@ -103,7 +103,7 @@ export function TextToSpeechButton({
   }
 
   const label = active ? 'Stop TTS' : failed ? 'Retry speech' : 'Play TTS';
-  const busy = active && phase !== 'playing';
+  const busy = active && phase !== 'playing' && phase !== 'paused';
   const title = !available
     ? TTS_STREAMING_MESSAGE
     : failed && errorMessage

@@ -134,6 +134,21 @@ cancel queued native play events, then removes only that element and revokes its
 blob URL. The extension can remain enabled; no global media override, hidden error
 suppression or automatic synthesis retry is used.
 
+The web/PWA player sits above the composer, outside the scrolling reply list.
+Pause retains the same attached media element, blob and playback position; Resume
+calls `play()` on that element without another synthesis or download. A seekable
+native range control and elapsed/total time follow decoder metadata and media
+events; seeking is disabled while duration is unknown. Native/Plasma pause and
+playback-start events update the controls as well. Pending play promises are
+attempt-scoped so an intentional pause cannot become a playback failure or a
+late state reset.
+Stop (the message action or player Close), end, replacement, owner content/unmount,
+conversation changes and auth invalidation still release the buffered media.
+Playback position is session-local, not saved across a reload or conversation
+change. No speech API, preferences, playback-rate or accounting change is needed.
+If a browser rejects a seek operation, normal visible failure/retry and resource
+cleanup apply, just as for decode/play errors; retry may synthesize speech again.
+
 The web `/api/tts` bridge converts CommonMark/GFM to readable content using the
 same installed parser as the response UI, on the server rather than adding a
 client parser bundle. It drops formatting delimiters, list markers and link
@@ -206,7 +221,11 @@ cache bounds and ownership. Frontend tests mount the real shared playback
 provider with deferred fetch responses, independently controlled Audio elements
 and object URLs. They exercise competing messages, every active phase, stale
 callbacks, navigation/auth invalidation, owner cleanup, visible failures/retry,
-raw Unicode limits and validated reactive preferences. These are controlled
+raw Unicode limits and validated reactive preferences. Player tests also cover
+position-preserving pause/resume, paused/playing seek, unknown duration, native
+controls, resume failures and pending-play retirement. Browser fixtures in
+`frontend/e2e/tts-plasma.spec.ts` exercise native decode/playback and the Plasma
+discovery hook at desktop/mobile sizes. These are controlled
 client integration tests, not real listening acceptance; they require no paid
 service or model download.
 

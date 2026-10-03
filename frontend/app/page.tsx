@@ -46,6 +46,7 @@ import {
   useConversationHistoryContext,
 } from '../components/ConversationHistoryProvider';
 import { AudioPlaybackProvider } from '../components/AudioPlaybackProvider';
+import { TtsPlaybackBar } from '../components/TtsPlaybackBar';
 import { useEventArchive } from '../hooks/useEventArchive';
 import { useStopGeneration } from '../hooks/useStopGeneration';
 import { useStopShortcut } from '../hooks/useStopShortcut';
@@ -1532,6 +1533,7 @@ function ChatContent() {
                   Jump to latest
                 </button>
               )}
+              <TtsPlaybackBar />
               <form
                 onSubmit={handleSubmit}
                 className="mx-auto w-full max-w-3xl"

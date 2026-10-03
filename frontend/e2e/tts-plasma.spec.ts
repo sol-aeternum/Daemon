@@ -11,6 +11,7 @@ test.beforeEach(async ({ context }) => {
       detachedRemovals: 0,
       extensionReplays: 0,
       stopOnNextPlay: false,
+      pauseOnNextPlay: false,
     };
     Object.assign(window, { __plasmaSpeech: state });
     const NativeAudio = window.Audio;
@@ -47,6 +48,12 @@ test.beforeEach(async ({ context }) => {
               .querySelector<HTMLButtonElement>('button[aria-label="Stop TTS"]')
               ?.click(),
           );
+        }
+        if (state.pauseOnNextPlay) {
+          state.pauseOnNextPlay = false;
+          // Native/extension control: React may not have committed the enabled
+          // Pause button yet. Pause the pending native play, not a disabled UI.
+          queueMicrotask(() => audio.pause());
         }
         return promise;
       };
@@ -153,7 +160,125 @@ interface PlasmaFixtureState {
   detachedRemovals: number;
   extensionReplays: number;
   stopOnNextPlay: boolean;
+  pauseOnNextPlay: boolean;
 }
+
+test('bottom player pauses, seeks and resumes one native audio without another request', async ({
+  page,
+}, testInfo) => {
+  const requests = { speech: 0, download: 0 };
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/tts') requests.speech++;
+    if (path === '/generated-audio/plasma.wav') requests.download++;
+  });
+  await page.goto('/?id=plasma-fixture');
+  await expect(page.getByRole('region', { name: 'Speech player' })).toHaveCount(
+    0,
+  );
+  await page
+    .getByRole('button', { name: 'Play TTS', exact: true })
+    .first()
+    .click();
+  const player = page.getByRole('region', { name: 'Speech player' });
+  const slider = player.getByRole('slider', {
+    name: 'Speech playback position',
+  });
+  await expect(slider).toBeEnabled();
+  await expect(
+    player.getByText('Reading aloud', { exact: true }),
+  ).toBeVisible();
+  await player
+    .getByRole('button', { name: 'Pause speech', exact: true })
+    .click();
+  await expect(player.getByText('Paused', { exact: true })).toBeVisible();
+  const playerBox = await player.boundingBox();
+  const composerBox = await page
+    .getByRole('textbox', { name: 'Message Daemon' })
+    .boundingBox();
+  expect(playerBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(playerBox!.y + playerBox!.height).toBeLessThanOrEqual(composerBox!.y);
+  const viewport = page.viewportSize()!;
+  expect(playerBox!.x).toBeGreaterThanOrEqual(0);
+  expect(playerBox!.x + playerBox!.width).toBeLessThanOrEqual(viewport.width);
+  await page.screenshot({ path: testInfo.outputPath('paused-player.png') });
+  const time = await page
+    .locator('audio')
+    .evaluate((audio) => (audio as HTMLAudioElement).currentTime);
+  await page.waitForTimeout(350); // Prove the native playback clock is paused.
+  expect(
+    await page
+      .locator('audio')
+      .evaluate((audio) => (audio as HTMLAudioElement).currentTime),
+  ).toBe(time);
+  await slider.focus();
+  await slider.press('Home');
+  for (let i = 0; i < 10; i++) await slider.press('ArrowRight');
+  await expect
+    .poll(() =>
+      page
+        .locator('audio')
+        .evaluate((audio) => (audio as HTMLAudioElement).currentTime),
+    )
+    .toBeCloseTo(1, 1);
+  await expect(player.getByText('Paused', { exact: true })).toBeVisible();
+  await player
+    .getByRole('button', { name: 'Resume speech', exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      page
+        .locator('audio')
+        .evaluate((audio) => (audio as HTMLAudioElement).currentTime),
+    )
+    .toBeGreaterThan(1);
+  const native = await page.evaluate(() => {
+    const state = (window as unknown as { __plasmaSpeech: PlasmaFixtureState })
+      .__plasmaSpeech;
+    return {
+      count: state.audio.length,
+      detached: state.detachedRemovals,
+      replays: state.extensionReplays,
+      attached: state.audio[0].isConnected,
+    };
+  });
+  expect(native).toEqual({ count: 1, detached: 0, replays: 0, attached: true });
+  expect(requests).toEqual({ speech: 1, download: 1 });
+  await player.getByRole('button', { name: 'Close speech player' }).click();
+  await expect(player).toHaveCount(0);
+  await expect(page.locator('audio')).toHaveCount(0);
+});
+
+test('native pause before the initial play promise settles retains resumable audio', async ({
+  page,
+}) => {
+  await page.goto('/?id=plasma-fixture');
+  await page.evaluate(() => {
+    (
+      window as unknown as { __plasmaSpeech: PlasmaFixtureState }
+    ).__plasmaSpeech.pauseOnNextPlay = true;
+  });
+  await page
+    .getByRole('button', { name: 'Play TTS', exact: true })
+    .first()
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Resume speech' }),
+  ).toBeVisible();
+  await expect(page.locator('audio')).toHaveCount(1);
+  await expect(page.locator('span[role="alert"]')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Resume speech' }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator('audio')
+        .evaluate((audio) => (audio as HTMLAudioElement).currentTime),
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Close speech player' }).click();
+  await expect(page.locator('audio')).toHaveCount(0);
+});
 
 test('plays with Plasma integration and cleans up on replacement, Stop and end', async ({
   page,
