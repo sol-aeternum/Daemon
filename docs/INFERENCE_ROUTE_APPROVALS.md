@@ -322,9 +322,10 @@ or media service is approved by this inference decision.
 4. Any paid synthetic smoke test needs its own bounded call count and USD cap.
    Exercise the application accounting path, streaming/usage, tools and JSON
    compatibility; public metadata and local tests do not replace this check.
-5. Renew both approval and operator review before **2026-10-17T00:00:00Z** (renewed
-   on 3 October; see above), with refreshed evidence. At expiry all eight routes
-   fail closed. Do not merely extend dates without requalification.
+5. All eight routes are monitored approvals (see above): they carry no calendar
+   expiry and fail closed if a ZDR check revokes them or none has succeeded for 72
+   hours. Re-approving a revoked route requires requalification and a new review
+   date; never re-approve without refreshed evidence.
 6. To roll back, restore the prior policy selection (or remove the override to
    select the portable deny-by-default policy) and recreate both processes.
    Returning to that default deliberately restores route-unavailable behavior.
