@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { markdownToSpeechText } from '../../../lib/markdownSpeech';
+import { MAX_TTS_TEXT_CODE_POINTS } from '../../../lib/constants';
 
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
@@ -42,6 +44,9 @@ async function buildResponseWithCookies(res: Response): Promise<NextResponse> {
   const data = await res.json();
   const responseHeaders = new Headers();
   responseHeaders.set('Content-Type', 'application/json');
+  responseHeaders.set('Cache-Control', 'no-store');
+  const retryAfter = res.headers.get('retry-after');
+  if (retryAfter) responseHeaders.set('Retry-After', retryAfter);
 
   res.headers.forEach((value, key) => {
     if (key.toLowerCase() === 'set-cookie') {
@@ -59,6 +64,20 @@ export async function POST(req: Request) {
   const body = await req.json();
   const { text, voice, model, speed, format, cache } = body || {};
 
+  // Bound the original input before parsing, just as the message button/backend
+  // do. Formatting cleanup must not let oversized raw replies bypass the limit.
+  if (
+    typeof text === 'string' &&
+    Array.from(text).length > MAX_TTS_TEXT_CODE_POINTS
+  ) {
+    return NextResponse.json(
+      { detail: { code: 'text_too_long' } },
+      { status: 413 },
+    );
+  }
+  const speechText =
+    typeof text === 'string' ? markdownToSpeechText(text) : text;
+
   const proxyHeaders = buildProxyHeaders(req);
 
   let backendRes: Response | null = null;
@@ -70,10 +89,24 @@ export async function POST(req: Request) {
         method: 'POST',
         headers: proxyHeaders,
         credentials: 'include',
-        body: JSON.stringify({ text, voice, model, speed, format, cache }),
+        signal: req.signal,
+        body: JSON.stringify({
+          text: speechText,
+          voice,
+          model,
+          speed,
+          format,
+          cache,
+        }),
       });
       break;
     } catch (error) {
+      if (req.signal.aborted) {
+        return NextResponse.json(
+          { detail: { code: 'speech_cancelled' } },
+          { status: 499 },
+        );
+      }
       lastError = error instanceof Error ? error : new Error(String(error));
     }
   }

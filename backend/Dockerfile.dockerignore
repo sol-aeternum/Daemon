@@ -1,0 +1,16 @@
+**
+!pyproject.toml
+!uv.lock
+!orchestrator/
+!orchestrator/**
+!db/
+!db/**
+!config/
+!config/**
+!providers/
+!providers/**
+!scripts/
+!scripts/**
+!migrations/
+!migrations/**
+**/__pycache__/

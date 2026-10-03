@@ -1,264 +1,140 @@
 'use client';
 
-import { useRef, useState, useCallback } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
-import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
-import { useLocalStorage } from '../hooks/useLocalStorage';
-import { TtsSettings, DEFAULT_TTS_SETTINGS } from '../lib/constants';
-import { useAudioPlayback } from './AudioPlaybackProvider';
+import { useTtsSettings } from '../hooks/useTtsSettings';
+import { getTtsSettingsSnapshot } from '../lib/ttsSettings';
+import {
+  countTtsTextCodePoints,
+  MAX_TTS_TEXT_CODE_POINTS,
+  TTS_TEXT_TOO_LONG_MESSAGE,
+  TTS_STREAMING_MESSAGE,
+  useAudioPlayback,
+  type TtsOwner,
+} from './AudioPlaybackProvider';
 
-interface TextToSpeechButtonProps {
+export interface TextToSpeechButtonProps {
+  /** Rendered content. Frozen at click time; never used as identity. */
   text: string;
-  streamingText?: AsyncIterable<string>;
+  /** Stable server-side message identity. */
+  messageId: string;
+  /** Committed conversation the message belongs to. */
+  conversationId: string | null;
+  /** False while the message is still streaming or the view is transitioning. */
+  available?: boolean;
 }
 
 export function TextToSpeechButton({
   text,
-  streamingText,
+  messageId,
+  conversationId,
+  available = true,
 }: TextToSpeechButtonProps) {
-  const { value: storedSettings } = useLocalStorage<TtsSettings>(
-    'tts_settings',
-    DEFAULT_TTS_SETTINGS,
-  );
-  const settings = storedSettings || DEFAULT_TTS_SETTINGS;
-  const ttsEnabled = settings.enabled !== false;
-  const [error, setError] = useState<string | null>(null);
-  const isProcessingRef = useRef(false);
-
-  // Local state for streaming TTS (AudioContext-based, separate from cached playback)
-  const [isStreamingPlaying, setIsStreamingPlaying] = useState(false);
-  const [isStreamingLoading, setIsStreamingLoading] = useState(false);
-
-  // Use AudioPlaybackProvider context for cached playback coordination
+  const { value: settings } = useTtsSettings();
   const {
-    currentlyPlayingText,
-    isLoading: contextIsLoading,
-    play,
-    stop,
-    isPlaying: checkIsPlaying,
+    phase,
+    ownerMessageId,
+    ownerConversationId,
+    errorMessage,
+    startSpeech,
+    stopSpeech,
   } = useAudioPlayback();
-  const isCachedPlaying = checkIsPlaying(text);
+  const ownerRef = useRef<TtsOwner | null>(null);
+  const hidden = settings.enabled === false || text.trim().length === 0;
 
-  // Combined playing state: either cached or streaming
-  const isPlaying = isCachedPlaying || isStreamingPlaying;
-  const isLoading = contextIsLoading || isStreamingLoading;
+  // This button owns its request: unmount, content growth or being hidden
+  // cancels it. A `requestId`-qualified stop cannot cancel a newer owner.
+  useLayoutEffect(
+    () => () => {
+      if (ownerRef.current) stopSpeech(ownerRef.current);
+      ownerRef.current = null;
+    },
+    [available, conversationId, hidden, messageId, stopSpeech, text],
+  );
 
-  const playStreaming = useCallback(async () => {
-    if (!streamingText) return;
+  const owns =
+    ownerMessageId === messageId && ownerConversationId === conversationId;
+  const active = owns && phase !== 'idle' && phase !== 'error';
+  const failed = owns && phase === 'error';
+  const overLimit = countTtsTextCodePoints(text) > MAX_TTS_TEXT_CODE_POINTS;
 
-    const rawSettings = localStorage.getItem('tts_settings');
-    const currentSettings = rawSettings
-      ? JSON.parse(rawSettings)
-      : DEFAULT_TTS_SETTINGS;
-
-    try {
-      let authHeader = getAuthHeader();
-      if (!authHeader) {
-        await refreshIfNeeded();
-        authHeader = getAuthHeader();
-      }
-      const tokenResponse = await fetch('/api/audio/token', {
-        headers: authHeader ? { Authorization: authHeader } : {},
-      });
-      if (!tokenResponse.ok) throw new Error('Failed to get audio token');
-      const { token } = await tokenResponse.json();
-
-      const voice = currentSettings.voice ?? DEFAULT_TTS_SETTINGS.voice;
-      const model = currentSettings.model ?? DEFAULT_TTS_SETTINGS.model;
-      const speed = currentSettings.speed ?? DEFAULT_TTS_SETTINGS.speed;
-
-      const ws = new WebSocket(
-        `wss://api.elevenlabs.io/v1/text-to-speech/${voice}/stream-input?model_id=${model}&single_use_token=${token}`,
-      );
-
-      await new Promise<void>((resolve, reject) => {
-        ws.onopen = () => resolve();
-        ws.onerror = () => reject(new Error('WebSocket failed'));
-        setTimeout(() => reject(new Error('Timeout')), 10000);
-      });
-
-      ws.send(
-        JSON.stringify({
-          text: ' ',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        }),
-      );
-
-      const audioContext = new AudioContext();
-      const audioQueue: AudioBuffer[] = [];
-      let isPlayingAudio = false;
-
-      const playQueue = async () => {
-        if (isPlayingAudio || audioQueue.length === 0) return;
-        isPlayingAudio = true;
-
-        while (audioQueue.length > 0) {
-          const buffer = audioQueue.shift();
-          if (!buffer) continue;
-
-          const source = audioContext.createBufferSource();
-          source.buffer = buffer;
-          source.playbackRate.value = speed;
-          source.connect(audioContext.destination);
-
-          await new Promise<void>((resolve) => {
-            source.onended = () => resolve();
-            source.start();
-          });
-        }
-
-        isPlayingAudio = false;
-      };
-
-      ws.onmessage = async (event) => {
-        const message = JSON.parse(event.data);
-
-        if (message.audio) {
-          const audioData = Uint8Array.from(atob(message.audio), (c) =>
-            c.charCodeAt(0),
-          );
-          try {
-            const audioBuffer = await audioContext.decodeAudioData(
-              audioData.buffer,
-            );
-            audioQueue.push(audioBuffer);
-            playQueue();
-          } catch (e) {
-            console.error('Audio decode failed:', e);
-          }
-        }
-
-        if (message.isFinal) {
-          ws.close();
-        }
-      };
-
-      ws.onerror = () => setError('Streaming error');
-      ws.onclose = () => {
-        setIsStreamingPlaying(false);
-        isProcessingRef.current = false;
-        setIsStreamingLoading(false);
-      };
-
-      let buffer = '';
-      const SENTENCE_ENDERS = /[.!?\n]+/;
-
-      for await (const chunk of streamingText) {
-        buffer += chunk;
-        const match = buffer.match(SENTENCE_ENDERS);
-
-        if (match) {
-          const splitIndex = match.index! + match[0].length;
-          const sentence = buffer.slice(0, splitIndex).trim();
-          buffer = buffer.slice(splitIndex);
-
-          if (sentence && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ text: sentence + ' ' }));
-          }
-        }
-      }
-
-      if (buffer.trim() && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ text: buffer.trim() + ' ' }));
-      }
-
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ text: '' }));
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Streaming failed');
-      setIsStreamingPlaying(false);
-      isProcessingRef.current = false;
-      setIsStreamingLoading(false);
-    }
-  }, [streamingText]);
-
-  const playCached = useCallback(async () => {
-    const rawSettings = localStorage.getItem('tts_settings');
-    const currentSettings = rawSettings
-      ? JSON.parse(rawSettings)
-      : DEFAULT_TTS_SETTINGS;
-
-    try {
-      let authHeader = getAuthHeader();
-      if (!authHeader) {
-        await refreshIfNeeded();
-        authHeader = getAuthHeader();
-      }
-      const response = await fetch('/api/tts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(authHeader ? { Authorization: authHeader } : {}),
-        },
-        body: JSON.stringify({
-          text,
-          voice: currentSettings.voice ?? DEFAULT_TTS_SETTINGS.voice,
-          model: currentSettings.model ?? DEFAULT_TTS_SETTINGS.model,
-          speed: currentSettings.speed ?? DEFAULT_TTS_SETTINGS.speed,
-          format: currentSettings.format ?? DEFAULT_TTS_SETTINGS.format,
-          cache: true,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.detail || 'TTS failed');
-
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const audioPath = data.audio_url || `${apiUrl}${data.audio_path}`;
-      if (!audioPath) throw new Error('Audio URL missing');
-
-      const speed = currentSettings.speed ?? DEFAULT_TTS_SETTINGS.speed;
-      play(text, audioPath, speed);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'TTS failed');
-    } finally {
-      isProcessingRef.current = false;
-    }
-  }, [text, play]);
-
-  const handleClick = async () => {
-    if (!text?.trim()) return;
-
-    if (isPlaying) {
-      stop();
+  const handleClick = () => {
+    if (active) {
+      if (ownerRef.current) stopSpeech(ownerRef.current);
+      ownerRef.current = null;
       return;
     }
-
-    if (currentlyPlayingText) stop();
-    if (contextIsLoading || isProcessingRef.current) return;
-
-    isProcessingRef.current = true;
-    setError(null);
-
-    if (streamingText) {
-      await playStreaming();
-    } else {
-      await playCached();
-    }
+    if (!available || overLimit || hidden) return;
+    // Fresh validated preference snapshot, frozen for this request.
+    const preferences = getTtsSettingsSnapshot();
+    const requestId = startSpeech({
+      messageId,
+      conversationId,
+      text,
+      voice: preferences.voice,
+      speed: preferences.speed,
+      format: preferences.format,
+    });
+    ownerRef.current = { messageId, conversationId, requestId };
   };
 
-  const label = error ? `TTS: ${error}` : isPlaying ? 'Stop TTS' : 'Play TTS';
+  if (hidden) return null;
 
-  if (!ttsEnabled) return null;
+  const buttonClass =
+    'ml-2 inline-flex min-h-touch items-center gap-1 rounded px-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] disabled:cursor-not-allowed disabled:opacity-60';
+
+  if (overLimit) {
+    return (
+      <span className="ml-2 inline-flex items-center gap-1">
+        <button
+          type="button"
+          disabled
+          aria-label="Play TTS unavailable"
+          title={TTS_TEXT_TOO_LONG_MESSAGE}
+          className={buttonClass}
+        >
+          <Volume2 className="h-3.5 w-3.5" />
+        </button>
+        <span role="status" className="text-xs text-[var(--color-text-muted)]">
+          {TTS_TEXT_TOO_LONG_MESSAGE}
+        </span>
+      </span>
+    );
+  }
+
+  const label = active ? 'Stop TTS' : failed ? 'Retry speech' : 'Play TTS';
+  const busy = active && phase !== 'playing';
+  const title = !available
+    ? TTS_STREAMING_MESSAGE
+    : failed && errorMessage
+      ? `TTS: ${errorMessage}`
+      : label;
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      title={label}
-      className={`ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors ${
-        error
-          ? 'text-[var(--color-status-error)] hover:text-[var(--color-status-error)]/90'
-          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
-      }`}
-    >
-      {isPlaying ? (
-        <VolumeX className="h-3.5 w-3.5" />
-      ) : (
-        <Volume2 className="h-3.5 w-3.5" />
-      )}
-      {isLoading ? 'Loading...' : null}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={!available}
+        aria-label={available ? label : 'Play TTS unavailable'}
+        title={title}
+        className={buttonClass}
+      >
+        {active ? (
+          <VolumeX className="h-3.5 w-3.5" />
+        ) : (
+          <Volume2 className="h-3.5 w-3.5" />
+        )}
+        {busy ? 'Loading…' : failed ? 'Retry speech' : null}
+      </button>
+      {failed && errorMessage ? (
+        <span
+          role="alert"
+          className="ml-1 text-xs text-[var(--color-status-error)]"
+        >
+          {errorMessage}
+        </span>
+      ) : null}
+    </>
   );
 }

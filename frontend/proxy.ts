@@ -21,8 +21,7 @@ const SCRIPT_SRC_EXTERNAL_HOSTS = [
 ];
 
 const CONNECT_SRC_EXTERNAL_HOSTS = [
-  // ElevenLabs streaming TTS and realtime STT — frontend/hooks/useStreamingTts.ts,
-  // frontend/hooks/useStt.ts, frontend/components/TextToSpeechButton.tsx.
+  // Retired realtime STT client (useStt.ts); ordinary TTS is same-origin/server-side.
   'wss://api.elevenlabs.io',
   // Google Identity Services — GIS communicates with this origin while the
   // hosted sign-in button opens its account-chooser/popup and exchanges the
@@ -72,7 +71,7 @@ const HTML_PREVIEW_CONTENT_SECURITY_POLICY = [
 
 /**
  * Build the `connect-src` host list. Always includes the static list of
- * runtime adjacencies (ElevenLabs WebSocket, etc.); also includes the
+ * runtime adjacencies; also includes the
  * configured backend origin from `NEXT_PUBLIC_API_URL` so direct browser
  * hooks (`useConversationHistory` etc.) can reach the daemon backend
  * without going through the same-origin Next API routes. When the env

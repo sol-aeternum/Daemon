@@ -119,6 +119,14 @@ mode cannot bypass privacy or runtime limits.
 
 ## Accounting contract
 
+**Self-hosted read-aloud boundary (2 October 2026):** the product owner explicitly
+approved bundled server-side TTS with speech-specific rate/concurrency controls
+and telemetry, independent of LLM-token/funded allowances. Ordinary authenticated
+read-aloud does not use the premium `audio_generation` grant or the positive-price
+external-tool reservation helper. Operator CPU/RAM costs remain. This narrow
+boundary does not enable sound effects, external speech providers, or other
+unqualified tools; see [TTS architecture](TTS_ARCHITECTURE.md).
+
 **Search-only deployment exception (29 September 2026):** the operator approved
 standard Brave Search with its disclosed query retention and manual review,
 without a hard cutoff, pending Enterprise upgrade or removal. This exception

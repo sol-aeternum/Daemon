@@ -37,8 +37,13 @@ from starlette.types import Receive, Scope, Send
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from orchestrator.artifacts import (
+    ArtifactOwnerError,
     resolve_owned_artifact,
 )
+from orchestrator.speech.cache import audio_filename, cached_audio, store_audio
+from orchestrator.speech.contracts import SpeechError, SpeechRequest, canonical_voice
+from orchestrator.speech.service import get_speech_provider, synthesize as synthesize_speech
+from orchestrator.services.identity.rate_limiter import RateLimitUnavailableError
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
     PepperValidationError,
@@ -529,6 +534,7 @@ app.add_middleware(
         "/chat/completions": _request_body_settings.daemon_max_chat_body_bytes,
         "/v1/chat/completions": _request_body_settings.daemon_max_chat_body_bytes,
         "/stt": _request_body_settings.daemon_max_stt_body_bytes,
+        "/tts": 32768,
         "/skills/upload": _request_body_settings.daemon_max_skill_upload_body_bytes,
     },
 )
@@ -1839,6 +1845,8 @@ async def serve_generated_audio(
     """Serve a generated audio file from disk (TTS or sound effects)."""
     filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename, auth.user_id)
     if filepath is None:
+        filepath = cached_audio(TTS_CACHE_DIR / "self-hosted", auth.user_id, filename)
+    if filepath is None:
         filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename, auth.user_id)
     if filepath is None:
         raise HTTPException(status_code=404, detail="Audio not found")
@@ -1878,17 +1886,92 @@ async def serve_generated_file(
 @app.post("/tts")
 async def text_to_speech(
     payload: TtsRequest,
+    request: Request,
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    text = (payload.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Text is required")
+    try:
+        speech = SpeechRequest(
+            payload.text.strip(),
+            canonical_voice(payload.voice),
+            payload.speed if payload.speed is not None else 1,
+            payload.format or "mp3",
+        )
+        # Fail closed for speech in ALL deployments. Compose already includes Redis.
+        limiter = get_rate_limiter(request)
+        if not limiter.is_redis_available:
+            raise SpeechError("speech_admission_unavailable")
+        try:
+            decision = await limiter.check(
+                "speech:tts", "user_id", str(auth.user_id), RateLimitPolicy(12, 60)
+            )
+        except RateLimitUnavailableError as exc:
+            raise SpeechError("speech_admission_unavailable") from exc
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "speech_rate_limited"},
+                headers={"Retry-After": str(decision.retry_after_seconds)},
+            )
+        provider = get_speech_provider(settings)
+        filename = audio_filename(provider.name, provider.model, speech)
+        root = TTS_CACHE_DIR / "self-hosted"
+        cached = (
+            payload.cache is not False and cached_audio(root, auth.user_id, filename) is not None
+        )
+        if not cached:
 
-    raise HTTPException(
-        status_code=503,
-        detail={"code": "route_unavailable", "message": "Approved audio route unavailable"},
-    )
+            async def work():
+                audio = await synthesize_speech(provider, speech, settings.tts_timeout_seconds)
+                try:
+                    await asyncio.to_thread(
+                        store_audio, root, auth.user_id, filename, audio.content
+                    )
+                except (ArtifactOwnerError, OSError) as exc:
+                    raise SpeechError("speech_storage_unavailable") from exc
+
+            task = asyncio.create_task(work())
+            try:
+                while not task.done():
+                    if await request.is_disconnected():
+                        raise asyncio.CancelledError
+                    await asyncio.wait({task}, timeout=0.1)
+                await task
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        else:
+            logger.info(
+                "speech_cache_hit provider=%s model=%s characters=%d",
+                provider.name,
+                provider.model,
+                len(speech.text),
+            )
+        return {
+            "audio_path": f"/generated-audio/{filename}",
+            "cached": cached,
+            "model": provider.model,
+            "voice": speech.voice,
+            "format": speech.format,
+        }
+    except SpeechError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"code": exc.code, "message": "Speech request could not be completed"},
+        ) from exc
+
+
+@app.get("/tts/health")
+async def speech_health(
+    settings: Settings = Depends(get_settings),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> dict[str, Any]:
+    provider = get_speech_provider(settings)
+    ready = await provider.health()
+    if not ready:
+        raise HTTPException(status_code=503, detail={"code": "speech_not_ready"})
+    return {"ready": ready, "provider": provider.name, "model": provider.model}
 
 
 @app.get("/audio/token")
@@ -1896,15 +1979,7 @@ async def get_audio_token(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    """Return scoped ElevenLabs token for frontend WebSocket streaming.
-
-    The frontend uses this token to establish direct WebSocket connections
-    to ElevenLabs for real-time TTS streaming, avoiding the latency
-    penalty of proxying through the backend.
-
-    Returns a scoped single-use token instead of the raw API key
-    to prevent key exposure in the browser.
-    """
+    """Retired vendor-token API; speech now executes exclusively through /tts."""
 
     raise HTTPException(
         status_code=503,

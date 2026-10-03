@@ -121,10 +121,11 @@ class ChatRequest(BaseModel):
 
 
 class TtsRequest(BaseModel):
-    text: str
-    voice: str | None = None
-    model: str | None = None
-    speed: float | None = None
+    text: str = Field(max_length=3000)
+    voice: str | None = Field(default=None, max_length=128)
+    # Deprecated client preference, not a model-loading instruction.
+    model: str | None = Field(default=None, max_length=128)
+    speed: float | None = Field(default=None, ge=0.5, le=2.0, allow_inf_nan=False)
     # Keep the provider format and cache-file suffix within the supported set.
     format: Literal["mp3", "opus", "wav"] | None = None
     cache: bool | None = True

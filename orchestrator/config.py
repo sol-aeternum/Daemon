@@ -187,8 +187,14 @@ class Settings(BaseSettings):
     brave_api_key: str | None = None
     tavily_api_key: str | None = None
 
-    # ElevenLabs API key (TTS, STT, sound effects)
+    # Legacy retired STT/sound-effects configuration; never used for speech.
     elevenlabs_api_key: str | None = None
+
+    # Self-hosted speech; deliberately separate from LLM funding/token quotas.
+    tts_provider: Literal["kokoro"] = "kokoro"
+    tts_model: str = Field(default="kokoro-82m-v1.0", min_length=1, max_length=128)
+    tts_service_url: str = Field(default="http://tts:8080", pattern=r"^https?://[^\s?#@]+$")
+    tts_timeout_seconds: float = Field(default=125, ge=1, le=180)
 
     # OpenRouter image model override (default: google/gemini-2.5-flash-image)
     openrouter_image_model: str = "google/gemini-2.5-flash-image"

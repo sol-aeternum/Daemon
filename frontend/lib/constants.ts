@@ -7,6 +7,9 @@ export type TtsSettings = {
   format: string;
 };
 
+/** Matches the API's raw Unicode code-point text bound before Markdown cleanup. */
+export const MAX_TTS_TEXT_CODE_POINTS = 3000;
+
 export type SttSettings = {
   language: string;
   enablePartials: boolean;
@@ -15,8 +18,8 @@ export type SttSettings = {
 export const DEFAULT_TTS_SETTINGS: TtsSettings = {
   enabled: true,
   autoPlay: false,
-  voice: 'Xb7hH8MSUJpSbSDYk0k2',
-  model: 'eleven_flash_v2_5',
+  voice: 'daemon-default',
+  model: 'daemon-default',
   speed: 1.0,
   format: 'mp3',
 };

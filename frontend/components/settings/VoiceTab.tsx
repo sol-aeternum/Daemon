@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { useTtsSettings } from '@/hooks/useTtsSettings';
 import { useClientMounted } from '@/hooks/useClientMounted';
 import {
   SkeletonLine,
@@ -10,7 +11,6 @@ import {
 } from '@/components/ui/Skeleton';
 import {
   DEFAULT_STT_SETTINGS,
-  DEFAULT_TTS_SETTINGS,
   type SttSettings,
   type TtsSettings,
 } from '@/lib/constants';
@@ -31,15 +31,11 @@ import {
 
 // Voice options
 const VOICES = [
-  { id: 'allay', name: 'Allay', description: 'Gentle and soothing' },
-  { id: 'amy', name: 'Amy', description: 'Warm and friendly' },
-  { id: 'aria', name: 'Aria', description: 'Expressive and dynamic' },
-  { id: 'ashley', name: 'Ashley', description: 'Clear and professional' },
-  { id: 'char', name: 'Char', description: 'Deep and resonant' },
-  { id: 'emma', name: 'Emma', description: 'Bright and energetic' },
-  { id: 'josh', name: 'Josh', description: 'Natural and conversational' },
-  { id: 'rachel', name: 'Rachel', description: 'Polished and articulate' },
-  { id: 'sage', name: 'Sage', description: 'Wise and measured' },
+  {
+    id: 'daemon-default',
+    name: 'Daemon',
+    description: 'Default English voice',
+  },
 ];
 
 // Audio format options
@@ -64,8 +60,9 @@ type SaveStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export default function VoiceTab() {
   const mounted = useClientMounted();
-  const { value: ttsSettings, setValue: setTtsSettings } =
-    useLocalStorage<TtsSettings>('tts_settings', DEFAULT_TTS_SETTINGS);
+  // Read-aloud preferences are subscribed so already-mounted play buttons and
+  // this form share one validated, reactive source.
+  const { value: ttsSettings, setValue: setTtsSettings } = useTtsSettings();
   const { value: sttSettings, setValue: setSttSettings } =
     useLocalStorage<SttSettings>('stt_settings', DEFAULT_STT_SETTINGS);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
@@ -134,9 +131,8 @@ export default function VoiceTab() {
         role="note"
         className="mb-6 rounded-xl border border-border-primary bg-bg-secondary p-4 text-sm text-text-secondary"
       >
-        Voice input and speech generation are unavailable in the current
-        runtime. Saved preferences are retained; changing these settings does
-        not enable them.
+        Speech playback uses Daemon’s self-hosted service. Legacy voice
+        preferences map to the default voice. Voice input remains unavailable.
       </p>
       {/* Header */}
       <div className="flex items-center gap-3 mb-6 pb-6 border-b border-[var(--color-border-primary)]">
@@ -204,12 +200,13 @@ export default function VoiceTab() {
                     Auto-play AI responses
                   </label>
                   <p className="text-xs text-[var(--color-text-muted)]">
-                    Read assistant replies aloud while they stream
+                    Streaming auto-play is not available in the speech MVP
                   </p>
                 </div>
               </div>
               <button
                 type="button"
+                disabled
                 onClick={() =>
                   updateTtsSetting('autoPlay', !ttsSettings.autoPlay)
                 }
@@ -271,7 +268,7 @@ export default function VoiceTab() {
               <div className="relative">
                 <select
                   id="voice"
-                  value={ttsSettings.voice}
+                  value="daemon-default"
                   onChange={(e) => updateTtsSetting('voice', e.target.value)}
                   disabled={!ttsSettings.enabled}
                   className="w-full px-3 py-2.5 bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-md text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-border-focus)] focus:ring-1 focus:ring-[var(--color-border-focus)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed appearance-none cursor-pointer"
@@ -314,10 +311,10 @@ export default function VoiceTab() {
               <input
                 type="text"
                 id="model"
-                value={ttsSettings.model}
+                value="Daemon server default"
                 onChange={(e) => updateTtsSetting('model', e.target.value)}
-                disabled={!ttsSettings.enabled}
-                placeholder="eleven_multilingual_v2"
+                disabled
+                placeholder="Daemon server default"
                 className="w-full px-3 py-2.5 bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-border-focus)] focus:ring-1 focus:ring-[var(--color-border-focus)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>

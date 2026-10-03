@@ -20,6 +20,7 @@ import {
   type DetailTurn,
 } from '../lib/conversationDetails';
 import { CopyResponseButton } from '../components/CopyResponseButton';
+import { TextToSpeechButton } from '../components/TextToSpeechButton';
 import { useChatDraft } from '../hooks/useChatDraft';
 import { useAuthGeneration } from '../hooks/useAuthGeneration';
 import { openChatDraft, resetChatDraft } from '../lib/chatDrafts';
@@ -1441,7 +1442,20 @@ function ChatContent() {
                                 sources={citationSources}
                               />
                               {messageContent.trim() && (
-                                <CopyResponseButton content={messageContent} />
+                                <>
+                                  <CopyResponseButton
+                                    content={messageContent}
+                                  />
+                                  <TextToSpeechButton
+                                    text={messageContent}
+                                    messageId={message.id}
+                                    conversationId={currentId ?? null}
+                                    available={
+                                      currentMessagesMatch &&
+                                      (!isLast || !isLoading)
+                                    }
+                                  />
+                                </>
                               )}
                             </div>
                             {stoppedMessageIds.has(message.id) && (
@@ -1586,13 +1600,36 @@ function ChatContentWrapper() {
   );
 }
 
+/**
+ * Non-remounting playback scope.
+ *
+ * Conversation and auth generation are passed down as props instead of a key so
+ * ChatContent (streaming state, drafts) stays mounted while a committed scope
+ * change synchronously cancels read-aloud work inside the provider.
+ */
+function AudioPlaybackScopedProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const { currentId } = useConversationHistoryContext();
+  const authGeneration = useAuthGeneration();
+  const scope = useMemo(
+    () => ({ conversationId: currentId ?? null, authGeneration }),
+    [authGeneration, currentId],
+  );
+  return (
+    <AudioPlaybackProvider scope={scope}>{children}</AudioPlaybackProvider>
+  );
+}
+
 export default function ChatPage() {
   return (
     <Suspense fallback={<ChatSkeleton />}>
       <ConversationHistoryProvider>
-        <AudioPlaybackProvider>
+        <AudioPlaybackScopedProvider>
           <ChatContentWrapper />
-        </AudioPlaybackProvider>
+        </AudioPlaybackScopedProvider>
       </ConversationHistoryProvider>
     </Suspense>
   );

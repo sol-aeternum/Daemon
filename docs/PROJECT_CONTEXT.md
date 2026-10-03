@@ -79,7 +79,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 
 ### Frontend ✅
 - **Chat**: Streaming via Vercel AI SDK `useChat`.
-- **Voice**: Settings/UI are retained; TTS/STT, sound effects and direct vendor tokens are denied pending bounded server-side execution.
+- **Voice**: Self-hosted Kokoro read-aloud uses a bundled private CPU service and authenticated audio retrieval; speech admission/telemetry is separate from LLM quotas. STT, sound effects and direct vendor tokens remain denied. See [TTS architecture](TTS_ARCHITECTURE.md).
 - **Settings**: Voice preferences, model selector, memory management.
 
 ### Phase 3: Local Pipeline (Blocked)
@@ -88,7 +88,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 
 ## Infrastructure
 
-### Docker Compose Services (7 services)
+### Docker Compose Services (8 services)
 1. `migrate`: One-shot migration runner.
 2. `backend`: FastAPI app (port 8000).
 3. `worker`: arq background job processor with durable `job_failures` audit rows.
@@ -96,6 +96,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 5. `postgres`: pgvector/pg16 (port 5432).
 6. `redis`: Redis 7 Alpine (port 6379).
 7. `crawl4ai`: Web scraping service.
+8. `tts`: Private offline Kokoro speech runtime, model-ready health check.
 
 ## Memory Layer
 
