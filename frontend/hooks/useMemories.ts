@@ -434,6 +434,30 @@ export function useMemories() {
   const filtersRef = useRef<ListFilters>({ status: 'active' });
   const listRequest = useRef(0);
   const loadedCount = useRef(0);
+  // The foreground request (filter fetch or "Load more") that owns `loading`.
+  // A background refresh never retires it; it waits and runs afterwards.
+  const foreground = useRef<number | null>(null);
+  const refreshPending = useRef(false);
+  const refreshRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const beginForeground = () => {
+    const request = ++listRequest.current;
+    foreground.current = request;
+    setLoading(true);
+    setError(null);
+    return request;
+  };
+
+  /** Only the current foreground request settles loading. */
+  const settleForeground = (request: number) => {
+    if (foreground.current !== request) return;
+    foreground.current = null;
+    setLoading(false);
+    if (refreshPending.current) {
+      refreshPending.current = false;
+      void refreshRef.current();
+    }
+  };
 
   const requestPage = useCallback(
     async (
@@ -473,11 +497,9 @@ export function useMemories() {
       if (Object.keys(params).length > 0) {
         filtersRef.current = { status: 'active', ...filters };
       }
-      const request = ++listRequest.current;
+      const request = beginForeground();
       const generation = getAuthGeneration();
       const current = filtersRef.current;
-      setLoading(true);
-      setError(null);
       try {
         const page = await requestPage(current, 0, MEMORY_PAGE_SIZE);
         if (
@@ -491,7 +513,7 @@ export function useMemories() {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         setError(err instanceof Error ? err.message : 'Unknown error');
       } finally {
-        if (request === listRequest.current) setLoading(false);
+        settleForeground(request);
       }
     },
     [publish, requestPage],
@@ -499,24 +521,23 @@ export function useMemories() {
 
   /** Append the next page for the current filters. */
   const loadMore = useCallback(async () => {
-    const request = ++listRequest.current;
+    const request = beginForeground();
     const generation = getAuthGeneration();
     const current = filtersRef.current;
     const offset = loadedCount.current;
-    setLoading(true);
-    setError(null);
     try {
       const page = await requestPage(current, offset, MEMORY_PAGE_SIZE);
       if (request !== listRequest.current || generation !== getAuthGeneration())
         return;
+      // The next offset is the server rows consumed, set now (not inside a
+      // lazy state updater) so a refresh starting right after sees the span.
+      loadedCount.current = offset + page.memories.length;
       setMemories((previous) => {
         const seen = new Set(previous.map((memory) => memory.id));
-        const rows = [
+        return [
           ...previous,
           ...page.memories.filter((memory) => !seen.has(memory.id)),
         ];
-        loadedCount.current = rows.length;
-        return rows;
       });
       setTotal(page.total);
       setHasMore(page.has_more);
@@ -524,7 +545,7 @@ export function useMemories() {
       if (request !== listRequest.current) return;
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      if (request === listRequest.current) setLoading(false);
+      settleForeground(request);
     }
   }, [requestPage]);
 
@@ -533,6 +554,11 @@ export function useMemories() {
    * filters, so polling or a save never collapses the list back to page one.
    */
   const refreshMemories = useCallback(async () => {
+    if (foreground.current !== null) {
+      // Never retire a foreground request; refresh once it settles.
+      refreshPending.current = true;
+      return;
+    }
     const request = ++listRequest.current;
     const generation = getAuthGeneration();
     const current = filtersRef.current;
@@ -568,25 +594,46 @@ export function useMemories() {
     }
   }, [publish, requestPage]);
 
+  useEffect(() => {
+    refreshRef.current = refreshMemories;
+  }, [refreshMemories]);
+
   // A sign-in change retires in-flight list requests and clears the list.
   useEffect(
     () =>
       subscribeAuthGeneration(() => {
         listRequest.current += 1;
+        foreground.current = null;
+        refreshPending.current = false;
         loadedCount.current = 0;
         setMemories([]);
         setTotal(0);
         setHasMore(false);
+        setLoading(false);
       }),
     [],
   );
 
   const deleteMemory = useCallback(
     async (id: string): Promise<boolean> => {
-      // Optimistic update
+      // Optimistic removal keeps the next-page offset and total in step with
+      // the rows shown; a failure restores all three together.
       const previousMemories = memories;
-      setMemories((prev) => prev.filter((mem) => mem.id !== id));
-      setTotal((prev) => Math.max(0, prev - 1));
+      const wasLoaded = previousMemories.some((memory) => memory.id === id);
+      const previousCount = loadedCount.current;
+      const generation = getAuthGeneration();
+      const restore = () => {
+        if (generation !== getAuthGeneration()) return;
+        loadedCount.current = previousCount;
+        setMemories(previousMemories);
+        if (wasLoaded) setTotal((prev) => prev + 1);
+        setError('Failed to delete memory');
+      };
+      if (wasLoaded) {
+        loadedCount.current = Math.max(0, previousCount - 1);
+        setMemories((prev) => prev.filter((mem) => mem.id !== id));
+        setTotal((prev) => Math.max(0, prev - 1));
+      }
 
       try {
         const response = await apiFetch(`/memories/${id}`, {
@@ -595,17 +642,15 @@ export function useMemories() {
         });
 
         if (!response.ok) {
-          // Revert on error
-          setMemories(previousMemories);
-          setError('Failed to delete memory');
+          restore();
           return false;
         }
-
+        // A "Load more" that started before this delete used the old offset;
+        // re-read the loaded span once it settles.
+        if (foreground.current !== null) refreshPending.current = true;
         return true;
       } catch {
-        // Revert on error
-        setMemories(previousMemories);
-        setError('Failed to delete memory');
+        restore();
         return false;
       }
     },

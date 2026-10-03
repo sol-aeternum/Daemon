@@ -246,7 +246,7 @@ export default function MemoryTab() {
       const data = await response.json();
       setActionStatus('success');
       setActionMessage(
-        `Removed ${Number(data.deleted ?? 0).toLocaleString()} memories. They are permanently erased within 30 days.`,
+        `Removed ${Number(data.deleted ?? 0).toLocaleString()} memories. Daemon no longer uses them; they are kept for at least 30 days, then permanently erased by routine cleanup.`,
       );
       setStats({ active: 0, all: 0 });
       void refreshMemories();
@@ -506,8 +506,8 @@ export default function MemoryTab() {
                   </label>
                   <p className="text-xs text-text-muted">
                     Remove every memory, including older and pending ones.
-                    Daemon stops using them at once; they are permanently erased
-                    within 30 days.
+                    Daemon stops using them at once. They are kept for at least
+                    30 days, then permanently erased by routine cleanup.
                   </p>
                 </div>
               </div>
@@ -563,8 +563,9 @@ export default function MemoryTab() {
                 This removes all {stats?.all?.toLocaleString() ?? 0} of your
                 memories ({stats?.active?.toLocaleString() ?? 0} active, the
                 rest older, pending or rejected). Daemon stops using them
-                immediately, and they are permanently erased within 30 days. You
-                can&apos;t restore them from here.
+                immediately. They are kept for at least 30 days, then
+                permanently erased by routine cleanup. You can&apos;t restore
+                them from here.
               </p>
 
               {/* Dialog Actions */}

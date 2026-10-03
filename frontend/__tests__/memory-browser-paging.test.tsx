@@ -66,6 +66,8 @@ const NON_DELETED = ['active', 'pending', 'superseded', 'inactive', 'rejected'];
 let rows: Row[];
 let listRequests: URLSearchParams[];
 let gate: ((params: URLSearchParams) => Promise<void> | void) | null;
+let failDelete: boolean;
+let failList: boolean;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -78,6 +80,7 @@ function json(body: unknown, status = 200) {
 async function serveList(params: URLSearchParams) {
   listRequests.push(params);
   if (gate) await gate(params);
+  if (failList) return json({ detail: 'down' }, 503);
   const status = params.get('status') ?? 'active';
   const source = params.get('source_type');
   const matching = rows.filter(
@@ -103,6 +106,8 @@ beforeEach(() => {
   rows = Array.from({ length: 21 }, (_, i) => row(i + 1));
   listRequests = [];
   gate = null;
+  failDelete = false;
+  failList = false;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -112,6 +117,12 @@ beforeEach(() => {
         (!init?.method || init.method === 'GET')
       ) {
         return serveList(url.searchParams);
+      }
+      const single = url.pathname.match(/\/memories\/([^/]+)$/);
+      if (single && init?.method === 'DELETE') {
+        if (failDelete) return json({ detail: 'nope' }, 500);
+        rows = rows.filter((r) => r.id !== single[1]);
+        return json({ deleted: true });
       }
       if (url.pathname.endsWith('/memories') && init?.method === 'DELETE') {
         const affected = rows.filter((r) =>
@@ -232,7 +243,10 @@ describe('Memory Browser paging (#249)', () => {
       .closest('div.relative') as HTMLElement;
     const text = dialog.textContent ?? '';
     expect(text).toContain('This removes all 6 of your memories (4 active');
-    expect(text).toContain('permanently erased within 30 days');
+    expect(text).toContain(
+      'They are kept for at least 30 days, then permanently erased by routine cleanup.',
+    );
+    expect(text).not.toContain('within 30 days');
     expect(text).not.toContain('permanently delete');
 
     fireEvent.click(
@@ -240,7 +254,7 @@ describe('Memory Browser paging (#249)', () => {
     );
     expect(
       await screen.findByText(
-        'Removed 6 memories. They are permanently erased within 30 days.',
+        'Removed 6 memories. Daemon no longer uses them; they are kept for at least 30 days, then permanently erased by routine cleanup.',
       ),
     ).toBeTruthy();
   });
@@ -333,5 +347,124 @@ describe('useMemories list lifecycle (#249)', () => {
     });
     expect(result.current.memories).toEqual([]);
     expect(result.current.total).toBe(0);
+  });
+});
+
+describe('useMemories loading ownership and deletes (#432 review)', () => {
+  async function loadedHook() {
+    const hook = renderHook(() => useMemories());
+    await waitFor(() => expect(hook.result.current.memories).toHaveLength(20));
+    return hook;
+  }
+
+  function holdNextList() {
+    let release!: () => void;
+    let armed = true;
+    gate = () => {
+      if (!armed) return;
+      armed = false;
+      return new Promise<void>((resolve) => (release = resolve));
+    };
+    return () => release();
+  }
+
+  it('a poll during "Load more" waits, so loading settles and the page lands', async () => {
+    const { result } = await loadedHook();
+    const release = holdNextList();
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.loadMore();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    const before = listRequests.length;
+    await act(async () => result.current.refreshMemories());
+    expect(listRequests.length).toBe(before); // deferred, not racing
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.memories).toHaveLength(21);
+    // The deferred refresh runs after the foreground request settles.
+    await waitFor(() => expect(listRequests.length).toBe(before + 1));
+    expect(result.current.memories).toHaveLength(21);
+  });
+
+  it('a poll during a filter fetch never leaves loading stuck', async () => {
+    const { result } = await loadedHook();
+    const release = holdNextList();
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.fetchMemories({ status: 'all' });
+    });
+    await act(async () => result.current.refreshMemories());
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.total).toBe(21);
+  });
+
+  it('a sign-in change while loading resets loading', async () => {
+    const { result } = await loadedHook();
+    const release = holdNextList();
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.loadMore();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    act(() => changeSignIn());
+    expect(result.current.loading).toBe(false);
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.memories).toEqual([]);
+  });
+
+  it('a failed background refresh keeps the list and loading false', async () => {
+    const { result } = await loadedHook();
+    failList = true;
+    await act(async () => result.current.refreshMemories());
+    expect(result.current.loading).toBe(false);
+    expect(result.current.memories).toHaveLength(20);
+  });
+
+  it('delete then "Load more" reaches the last memory (21 rows)', async () => {
+    const { result } = await loadedHook();
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.deleteMemory('m-005');
+    });
+    expect(ok).toBe(true);
+    expect(result.current.memories).toHaveLength(19);
+    expect(result.current.total).toBe(20);
+
+    await act(async () => result.current.loadMore());
+
+    expect(listRequests.at(-1)?.get('offset')).toBe('19');
+    expect(result.current.memories.map((m) => m.id)).toContain('m-021');
+    expect(result.current.memories).toHaveLength(20);
+    expect(new Set(result.current.memories.map((m) => m.id)).size).toBe(20);
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  it('a failed delete restores rows, total and the next-page offset', async () => {
+    const { result } = await loadedHook();
+    failDelete = true;
+    let ok = true;
+    await act(async () => {
+      ok = await result.current.deleteMemory('m-005');
+    });
+    expect(ok).toBe(false);
+    expect(result.current.memories).toHaveLength(20);
+    expect(result.current.total).toBe(21);
+
+    await act(async () => result.current.loadMore());
+    expect(listRequests.at(-1)?.get('offset')).toBe('20');
+    expect(result.current.memories.map((m) => m.id)).toContain('m-021');
+    expect(result.current.memories).toHaveLength(21);
   });
 });
