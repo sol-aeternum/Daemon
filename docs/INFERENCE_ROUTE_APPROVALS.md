@@ -133,6 +133,37 @@ content-filter refusals on this endpoint for one benign fixture (#344), and the
 3 October run had none across 138 calls. Account attestation above continues to
 apply; no privacy exception is introduced.
 
+## Renewal — 3 October 2026
+
+The operator directed a 14-day bridge renewal while monitored approvals are built
+(approvals that stay valid until an endpoint's ZDR status or provider data policy
+changes). The rule was to renew a route only if its ZDR status and provider data
+policy were unchanged since approval. All eight approvals and operator reviews now
+expire **2026-10-17T00:00:00Z**, reviewed 3 October.
+
+**Evidence:** fetched 2026-10-03T04:30Z from public OpenRouter metadata, with
+SHA-256 provenance kept privately:
+- the endpoint listing for every pinned model;
+- the ZDR endpoint listing;
+- provider data policies.
+
+**Result:**
+- Every pinned endpoint is still listed and still in the ZDR listing.
+- Every provider policy matches the policy recorded at approval:
+  - no training anywhere;
+  - no prompt retention, except generic xAI's 30-day retention, which was already
+    recorded and is why Grok is approved only on `xai/zdr/us`.
+- Context and output limits still meet the pinned values.
+
+**Not a renewal criterion, recorded for the operator:** the GLM 5.3 Flash
+(`inceptron/fp8`) listed prompt price is now USD 0.225 per million, above its pinned
+USD 0.15 ceiling (#421). The transport price cap refuses that route until the ceiling
+or the price changes.
+
+The account-side attestation (prompt logging disabled, training opt-out) is carried
+forward unchanged; it cannot be checked from public metadata. Tool-service approvals
+are unchanged.
+
 ## CoreWeave location decision
 
 The operator accepted CoreWeave's documented North American/European footprint,
@@ -189,9 +220,9 @@ or media service is approved by this inference decision.
 4. Any paid synthetic smoke test needs its own bounded call count and USD cap.
    Exercise the application accounting path, streaming/usage, tools and JSON
    compatibility; public metadata and local tests do not replace this check.
-5. Renew both approval and operator review before **2026-10-06T00:00:00Z**, with
-   refreshed evidence. At expiry all eight routes fail closed. Do not merely
-   extend dates without requalification.
+5. Renew both approval and operator review before **2026-10-17T00:00:00Z** (renewed
+   on 3 October; see above), with refreshed evidence. At expiry all eight routes
+   fail closed. Do not merely extend dates without requalification.
 6. To roll back, restore the prior policy selection (or remove the override to
    select the portable deny-by-default policy) and recreate both processes.
    Returning to that default deliberately restores route-unavailable behavior.
