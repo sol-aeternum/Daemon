@@ -135,6 +135,10 @@ def _provider_policies(payload: object) -> dict[str, Mapping[str, Any]] | None:
         if isinstance(item, dict) and isinstance(item.get("slug"), str):
             policy = item.get("dataPolicy")
             if isinstance(policy, dict):
+                if item["slug"] in policies:
+                    # Two records for one provider are ambiguous evidence: a later
+                    # matching record must not mask an earlier conflicting one.
+                    return None
                 policies[item["slug"]] = policy
     return policies or None
 

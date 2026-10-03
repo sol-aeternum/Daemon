@@ -102,6 +102,9 @@ ROUTE_APPROVAL_MODES: Final[frozenset[str]] = frozenset({"expiring", "monitored"
 MONITORED_PROVIDER: Final[str] = "openrouter"
 MONITORED_ENDPOINT: Final[str] = "https://openrouter.ai/api/v1"
 
+#: Longest route id a monitored approval may use; it must fit the attestation table.
+MONITORED_ROUTE_ID_MAX: Final[int] = 128
+
 #: Provider data-policy fields a monitored baseline may pin. A change in any pinned
 #: field revokes the route.
 ZDR_BASELINE_POLICY_KEYS: Final[frozenset[str]] = frozenset(
@@ -1239,6 +1242,13 @@ def _parse_approval_mode(
         if raw_baseline is not None:
             raise PolicyError(f"routes.{route_id}.zdr_baseline requires approval_mode monitored")
         return {"approval_mode": mode, "zdr_baseline": None}
+    if len(route_id) > MONITORED_ROUTE_ID_MAX:
+        # Attestations are recorded per route in one transaction; an id the table
+        # refuses would fail every check and leave every monitored route stale.
+        raise PolicyError(
+            f"routes.{route_id[:32]}...: a monitored route id is at most "
+            f"{MONITORED_ROUTE_ID_MAX} characters"
+        )
     if (
         route_map.get("provider") != MONITORED_PROVIDER
         or route_map.get("endpoint") != MONITORED_ENDPOINT

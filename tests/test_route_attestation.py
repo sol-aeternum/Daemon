@@ -680,3 +680,25 @@ async def test_restart_with_an_unreadable_pool_fails_closed() -> None:
         assert revoked_key in attestation.snapshot().revoked
     finally:
         await attestation.stop()
+
+
+def test_duplicate_provider_policy_records_are_malformed_metadata() -> None:
+    providers = {
+        "data": [
+            {"slug": "azure", "dataPolicy": {"training": True, "retainsPrompts": False}},
+            {"slug": "azure", "dataPolicy": {"training": False, "retainsPrompts": False}},
+        ]
+    }
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == ("check_failed", ("metadata_malformed",))
+
+
+def test_monitored_route_id_must_fit_the_attestation_table() -> None:
+    from orchestrator.entitlements.policy import MONITORED_ROUTE_ID_MAX
+
+    fits = "r" * MONITORED_ROUTE_ID_MAX
+    assert parse_inference_policy(_monitored_policy(extra={"route_id": fits})).routes[fits]
+    with pytest.raises(PolicyError):
+        parse_inference_policy(_monitored_policy(extra={"route_id": fits + "r"}))
+    migration = MIGRATION.read_text(encoding="utf-8")
+    assert f"BETWEEN 1 AND {MONITORED_ROUTE_ID_MAX}" in migration

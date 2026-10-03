@@ -342,7 +342,10 @@ or media service is approved by this inference decision.
 
 1. Before rollout, verify the intended OpenRouter account/workspace still has
    the attested privacy settings. Refresh exact endpoint/ZDR membership, prices,
-   capabilities and hosting evidence, and confirm both expiries are still valid.
+   capabilities and hosting evidence. Monitored routes carry no expiry dates (the
+   parser rejects them). Instead, apply migration 043 and run
+   `python scripts/attest_inference_routes.py`; proceed only on exit 0, which means
+   every monitored route is currently attested and admitted.
 2. For this deployment only, set the existing setting to
    `DAEMON_INFERENCE_POLICY=/app/config/inference_policy.production.json`.
    Compose already injects this setting into both backend and worker; no new
