@@ -2301,3 +2301,36 @@ runtime; these are pure, fake-tested pieces for a separately approved live sessi
 
 Prerequisite 4 (browser network-layer confinement probes) is an opt-in native gate prepared
 under a pending name and awaiting approval. Pilot run **1084 passed, 9 skipped**.
+
+### Owner direction after PR #431 review: evaluate upstream Crawl4AI 0.9.x (2026-10-03)
+
+The PR review (comment on #431) recommended comparing hardened upstream Crawl4AI before treating
+the custom reader as preferred, noting that containment and extraction are separable. The pinned
+pilot image is Crawl4AI **0.8.0**, which predates the 0.9.x hardening the review cites. The owner
+chose to evaluate **upstream 0.9.x as the primary reader** and approved pulling exactly
+`unclecode/crawl4ai@sha256:048848e548fad60c670bd656cbb3eb204fd999709a30365d3697c411ce50796d`
+(v0.9.4, linux/amd64; image ID equals that digest; `C4AI_VERSION=0.9.4`, Python 3.12.14). Its
+`/app` was read from an inert, never-started, owner-labelled container that was removed and
+verified absent.
+
+Static findings from the shipped deployment files (nothing executed):
+
+- **Service shape.** `entrypoint.sh` runs supervisord with a loopback-only, password-protected
+  Redis and gunicorn on `:11235` as `appuser`. Without `CRAWL4AI_API_TOKEN` it binds loopback
+  only; with a token it may bind all interfaces. The image healthcheck expects at least 2 GiB RAM.
+- **Egress proxy.** Chromium uses an in-process localhost forward proxy that resolves once,
+  rejects any non-global address, pins one IP, dials the pinned IP and tunnels ciphertext (no TLS
+  interception). This closes the DNS-rebinding gap of the retained adapter.
+- **Gaps relative to the pilot boundary.** The proxy is inside the crawler's own network
+  namespace, so the container keeps a real network and traffic that bypasses the proxy is not
+  constrained by the OS. `config.yml` launches Chromium with `--no-sandbox` by default (upstream
+  says to remove it only with user namespaces or a verified seccomp profile, which requires
+  overriding `config.yml`). There is no destination allowlist, any port is allowed, plain-HTTP
+  forwarding is supported, deployment-owned public addresses are not excluded, and no byte or
+  connection budget was found in the proxy. Upstream-proxy chaining CONNECTs to the pinned IP,
+  which the pilot gateway (hostname-only) deliberately refuses.
+- **Defaults worth keeping.** Token-gated API exposure, loopback Redis with a generated
+  password, TLS verification on, `--disable-web-security` removed.
+
+Phase 1 (offline qualification in an owned isolated container) needs a container role and test
+topology that the current policies do not cover; its design awaits owner decisions.
