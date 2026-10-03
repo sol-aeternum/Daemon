@@ -1153,6 +1153,9 @@ function ChatContent() {
           defaultSize={activeDetails && wideDetails ? 65 : 100}
           minSize={40}
           className="flex min-h-0 flex-col"
+          // Panel's inner wrapper defaults to overflow:auto. Only main may
+          // scroll the chat; clip also prevents focus/programmatic outer scroll.
+          style={{ overflow: 'clip' }}
         >
           <div className="flex-1 flex min-h-0 flex-col w-full min-w-0 relative">
             {isRecording && (
@@ -1198,7 +1201,7 @@ function ChatContent() {
               onScroll={onScroll}
               tabIndex={-1}
               aria-label="Conversation messages"
-              className="flex-1 min-h-0 overflow-y-auto"
+              className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
             >
               {messages.length === 0 && isLoading ? (
                 <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
