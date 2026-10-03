@@ -353,6 +353,7 @@ test('settings imports memories only after the person reviews the file', async (
         return route.fulfill({
           json: {
             received: body.memories.length,
+            processed: body.memories.length,
             inserted: 1,
             created: 1,
             merged: 1,

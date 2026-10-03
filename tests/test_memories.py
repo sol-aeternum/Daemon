@@ -774,6 +774,35 @@ async def test_post_memories_dream_device_own_user_id_succeeds(client, monkeypat
 # --- Hardened POST /memories/import -------------------------------------------------
 
 
+class _FakeTransaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeConnection:
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
+
+
+class _FakeAcquire:
+    async def __aenter__(self) -> _FakeConnection:
+        return _FakeConnection()
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _import_store() -> AsyncMock:
+    """Store double whose pool yields a connection with a transaction."""
+    store = AsyncMock()
+    store._pool = MagicMock()
+    store._pool.acquire = MagicMock(side_effect=lambda: _FakeAcquire())
+    return store
+
+
 def _dedup_result(new: int = 0, merged: int = 0, superseded: int = 0) -> Any:
     from orchestrator.memory.dedup import DedupResult
 
@@ -786,10 +815,10 @@ def _dedup_result(new: int = 0, merged: int = 0, superseded: int = 0) -> Any:
 
 @pytest.mark.asyncio
 async def test_import_memories_uses_server_controlled_fields_and_dedup(auth_client) -> None:
-    mock_store = AsyncMock()
+    mock_store = _import_store()
     set_app_state(create_mock_app_state(mock_store))
     embed = AsyncMock(return_value=create_embedding_result([[0.1], [0.2]]))
-    dedup = AsyncMock(return_value=_dedup_result(new=1, merged=1))
+    dedup = AsyncMock(side_effect=[_dedup_result(new=1), _dedup_result(merged=1)])
 
     with (
         patch.object(memories_router, "embed_documents_with_metadata", embed),
@@ -818,28 +847,32 @@ async def test_import_memories_uses_server_controlled_fields_and_dedup(auth_clie
     assert response.status_code == 200
     assert response.json() == {
         "received": 2,
+        "processed": 2,
         "inserted": 1,
         "created": 1,
         "merged": 1,
         "superseded": 0,
     }
     embed.assert_awaited_once_with(["Prefers metric units", "Lives in Adelaide"])
-    assert dedup.await_args is not None
-    kwargs = dedup.await_args.kwargs
-    assert kwargs["source_type"] == "import"
-    assert kwargs["status"] == "active"
-    assert kwargs["conversation_id"] is None
-    assert [(f.content, f.category, f.slot) for f in kwargs["facts"]] == [
-        ("Prefers metric units", "preference", None),
-        ("Lives in Adelaide", "fact", None),
+    calls = [call.kwargs for call in dedup.await_args_list]
+    assert [c["source_type"] for c in calls] == ["import", "import"]
+    assert [c["status"] for c in calls] == ["active", "active"]
+    assert all(c["conversation_id"] is None for c in calls)
+    assert all(c["lock_conn"] is not None for c in calls), "each item runs in a transaction"
+    assert [[(f.content, f.category, f.slot) for f in c["facts"]] for c in calls] == [
+        [("Prefers metric units", "preference", None)],
+        [("Lives in Adelaide", "fact", None)],
     ]
-    assert [p.embeddings for p in kwargs["prepared_embeddings"]] == [[[0.1]], [[0.2]]]
+    assert [[p.embeddings for p in c["prepared_embeddings"]] for c in calls] == [
+        [[[0.1]]],
+        [[[0.2]]],
+    ]
     mock_store.import_memories.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_import_memories_embeds_in_bounded_batches(auth_client) -> None:
-    set_app_state(create_mock_app_state(AsyncMock()))
+    set_app_state(create_mock_app_state(_import_store()))
     sizes: list[int] = []
 
     async def embed(texts: list[str]) -> EmbeddingBatchResult:
@@ -888,7 +921,7 @@ async def test_import_memories_rejects_invalid_requests(auth_client, memories) -
 async def test_import_memories_falls_back_when_embeddings_unqualified(auth_client) -> None:
     from orchestrator.memory.embedding import EmbeddingConfigurationError
 
-    set_app_state(create_mock_app_state(AsyncMock()))
+    set_app_state(create_mock_app_state(_import_store()))
     dedup = AsyncMock(return_value=_dedup_result(new=1))
     with (
         patch.object(
@@ -910,7 +943,7 @@ async def test_import_memories_falls_back_when_embeddings_unqualified(auth_clien
 async def test_import_memories_reports_partial_progress_when_a_service_fails(
     auth_client,
 ) -> None:
-    set_app_state(create_mock_app_state(AsyncMock()))
+    set_app_state(create_mock_app_state(_import_store()))
     calls = 0
 
     async def embed(texts: list[str]) -> EmbeddingBatchResult:
@@ -920,8 +953,12 @@ async def test_import_memories_reports_partial_progress_when_a_service_fails(
             raise RuntimeError("provider down")
         return create_embedding_result([[0.0]] * len(texts))
 
+    seen = 0
+
     async def dedup(**kwargs: Any) -> Any:
-        return _dedup_result(new=len(kwargs["facts"]) - 1, merged=1)
+        nonlocal seen
+        seen += 1
+        return _dedup_result(merged=1) if seen == 1 else _dedup_result(new=1)
 
     with (
         patch.object(memories_router, "embed_documents_with_metadata", embed),
@@ -948,3 +985,40 @@ async def test_import_memories_unavailable_store(auth_client) -> None:
     set_app_state(create_mock_app_state(None))
     response = await auth_client.post("/memories/import", json={"memories": [{"content": "x"}]})
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_import_memories_counts_only_items_committed_before_a_store_failure(
+    auth_client,
+) -> None:
+    set_app_state(create_mock_app_state(_import_store()))
+    outcomes = [_dedup_result(new=1), _dedup_result(merged=1), RuntimeError("db down")]
+
+    async def dedup(**kwargs: Any) -> Any:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    with (
+        patch.object(
+            memories_router,
+            "embed_documents_with_metadata",
+            AsyncMock(return_value=create_embedding_result([[0.0]] * 4)),
+        ),
+        patch("orchestrator.memory.dedup.deduplicate_facts", dedup),
+    ):
+        response = await auth_client.post(
+            "/memories/import",
+            json={"memories": [{"content": f"Note {i}"} for i in range(4)]},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "message": "Import stopped because a memory service was unavailable.",
+        "received": 4,
+        "processed": 2,
+        "created": 1,
+        "merged": 1,
+        "superseded": 0,
+    }

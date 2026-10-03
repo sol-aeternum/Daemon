@@ -90,7 +90,14 @@ function describeImport(result: MemoryImportResult): string {
     'merged with existing ones',
   )}, ${plural(result.superseded, 'replaced an older version', 'replaced older versions')}`;
   if (result.error) {
-    return `${result.error} Saved before stopping: ${saved} (${result.processed.toLocaleString()} of ${result.total.toLocaleString()} processed).`;
+    const confirmed = `${result.error} Confirmed saved before stopping: ${saved} (${result.processed.toLocaleString()} of ${result.total.toLocaleString()} processed).`;
+    return result.unconfirmed > 0
+      ? `${confirmed} Daemon didn't confirm what happened to ${plural(
+          result.unconfirmed,
+          'more memory',
+          'more memories',
+        )}, so some may have been saved. Check your memories before importing them again.`
+      : confirmed;
   }
   return `Imported ${plural(result.total, 'memory', 'memories')}: ${saved}.`;
 }
@@ -107,6 +114,9 @@ export function MemoryActions({
     parsed: ParsedMemoryImport;
   } | null>(null);
   const [importing, setImporting] = useState(false);
+  // Only the latest file selection may publish a review or a read error.
+  // Choosing another file, cancelling or confirming retires older reads.
+  const fileSelection = useRef(0);
   const [content, setContent] = useState('');
   const [category, setCategory] = useState<UserMemoryCategory>('fact');
   const [saving, setSaving] = useState(false);
@@ -130,6 +140,7 @@ export function MemoryActions({
       setOutcome(null);
       setSaving(false);
       setExporting(false);
+      fileSelection.current += 1;
       setPendingImport(null);
       setImporting(false);
     });
@@ -194,6 +205,7 @@ export function MemoryActions({
 
   const handleFile = async (file: File | undefined) => {
     if (fileInput.current) fileInput.current.value = '';
+    const selection = ++fileSelection.current;
     if (!file) return;
     setOutcome(null);
     setPendingImport(null);
@@ -207,7 +219,8 @@ export function MemoryActions({
     const operation = beginOperation();
     try {
       const parsed = parseMemoryImport(await readFileText(file));
-      if (operation.signal.aborted) return;
+      if (operation.signal.aborted || selection !== fileSelection.current)
+        return;
       if (parsed.memories.length === 0) {
         setOutcome({
           kind: 'error',
@@ -217,7 +230,8 @@ export function MemoryActions({
       }
       setPendingImport({ name: file.name, parsed });
     } catch (error) {
-      if (operation.signal.aborted) return;
+      if (operation.signal.aborted || selection !== fileSelection.current)
+        return;
       setOutcome({
         kind: 'error',
         message:
@@ -230,6 +244,7 @@ export function MemoryActions({
 
   const handleConfirmImport = async () => {
     if (!pendingImport || importing) return;
+    fileSelection.current += 1;
     const operation = beginOperation();
     const items = pendingImport.parsed.memories;
     setImporting(true);
@@ -443,7 +458,10 @@ export function MemoryActions({
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setPendingImport(null)}
+                onClick={() => {
+                  fileSelection.current += 1;
+                  setPendingImport(null);
+                }}
                 disabled={importing}
                 className="rounded-md px-3 py-2 text-sm font-medium text-text-secondary hover:bg-bg-secondary hover:text-text-primary disabled:opacity-50"
               >
