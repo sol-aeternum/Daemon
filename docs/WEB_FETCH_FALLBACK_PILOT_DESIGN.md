@@ -2361,3 +2361,13 @@ not through the browser's egress proxy.
 
 The opt-in gate `tests/web_fetch_pilot_c4ai_phase1_pending.py` (SHA-256
 `74edcad1ac81d013d9cdef8c372c6e3c3d3bf645414719368775084e32b4a96e`) awaits approval.
+
+### Live prerequisite 4 verified: browser network-layer confinement (2026-10-04)
+
+With owner approval the confinement gate `tests/test_web_fetch_pilot_confinement_io.py`
+(SHA-256 `6dd8553617a84b07a6cd3de749eba452647ab3d79bf87160449423aec733e144`) ran once:
+**1 passed in 3.47 s**. From a browser-policy container (network none, pinned seccomp profile,
+browser limits) every attempt failed locally with `ENETUNREACH`: TCP to public, metadata,
+Docker-bridge, LAN and egress-gateway addresses, UDP standing in for DNS and QUIC, and IPv6 TCP;
+the name lookup failed and the container had only `lo` and no routes. The E2c browser gate was
+re-run against the challenge-classification change: **2 passed in 15.80 s**. Nothing remained.
