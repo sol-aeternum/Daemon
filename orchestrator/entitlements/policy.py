@@ -1295,6 +1295,10 @@ def _parse_approval_mode(
         )
         if not valid:
             raise PolicyError(f"routes.{route_id}.zdr_baseline.data_policy.{key} is invalid")
+    if policy["training"] is not False:
+        # The attested provider policy must itself forbid training: a monitored route
+        # can never be approved against a baseline that permits it.
+        raise PolicyError(f"routes.{route_id}.zdr_baseline.data_policy.training must be false")
     return {
         "approval_mode": mode,
         "zdr_baseline": ZdrBaseline(provider_slug=slug, data_policy=MappingProxyType(dict(policy))),

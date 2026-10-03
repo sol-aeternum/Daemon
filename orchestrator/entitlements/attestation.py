@@ -266,9 +266,21 @@ class AttestationSnapshot:
 
 _snapshot = AttestationSnapshot()
 _tasks: set[asyncio.Task[None]] = set()
-#: Revocations this process has observed. Monotonic for the life of the process and
-#: merged into every snapshot, so a failed write or refresh never re-admits a route.
+#: Every revocation this process has observed or loaded. Monotonic for the life of
+#: the process and merged into every snapshot, so a failed write, a failed refresh or
+#: an older refresh that finishes last never re-admits a revoked baseline.
 _local_revoked: set[tuple[str, str]] = set()
+#: One refresh lock per event loop: an asyncio.Lock binds to the loop that first
+#: contends for it, and a restarted lifecycle may run on a new loop.
+_refresh_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+
+
+def _refresh_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _refresh_locks.get(loop)
+    if lock is None:
+        lock = _refresh_locks[loop] = asyncio.Lock()
+    return lock
 
 
 def snapshot() -> AttestationSnapshot:
@@ -276,8 +288,9 @@ def snapshot() -> AttestationSnapshot:
 
 
 def set_snapshot(value: AttestationSnapshot) -> None:
-    """Replace the admission snapshot atomically, keeping local revocations."""
+    """Replace the admission snapshot atomically, keeping every known revocation."""
     global _snapshot
+    _local_revoked.update(value.revoked)
     if _local_revoked - value.revoked:
         value = AttestationSnapshot(
             loaded=value.loaded,
@@ -343,12 +356,16 @@ def snapshot_from_rows(rows: Iterable[Mapping[str, Any]]) -> AttestationSnapshot
 
 
 async def refresh(pool: Any) -> AttestationSnapshot:
-    """Reload the admission snapshot. On error the previous snapshot is kept."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(_LATEST_SQL)
-    current = snapshot_from_rows(rows)
-    set_snapshot(current)
-    return current
+    """Reload the admission snapshot. On error the previous snapshot is kept.
+
+    Refreshes are serialised so an older read cannot replace a newer one; any
+    revocation either has seen is retained regardless (see :func:`set_snapshot`).
+    """
+    async with _refresh_lock():
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(_LATEST_SQL)
+        set_snapshot(snapshot_from_rows(rows))
+        return _snapshot
 
 
 async def _refresh_loop(pool: Any, interval_s: float) -> None:

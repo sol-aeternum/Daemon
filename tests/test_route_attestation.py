@@ -795,3 +795,46 @@ async def test_untrustworthy_metadata_is_a_failed_check(response: _Response) -> 
     counts = await attestation.run_check(pool, client, [route])
     assert counts["check_failed"] == 1 and counts["attested"] == 0
     assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
+
+
+def test_a_loaded_revocation_survives_an_older_snapshot_finishing_last() -> None:
+    route = _route()
+    key = (route.route_id, attestation.baseline_fingerprint(route))
+    # A newer read brought in a revocation recorded by the other process...
+    attestation.set_snapshot(
+        attestation.AttestationSnapshot(
+            loaded=True, attested_at={key: NOW}, revoked=frozenset({key})
+        )
+    )
+    # ...then an older, overlapping read that predates it is applied last.
+    attestation.set_snapshot(attestation.AttestationSnapshot(loaded=True, attested_at={key: NOW}))
+    policy = parse_inference_policy(_monitored_policy())
+    assert route.rejection_reasons(policy.requirements, now=NOW) == ("zdr_attestation_revoked",)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refreshes_keep_revocations() -> None:
+    import asyncio as aio
+
+    route = _route()
+    key = (route.route_id, attestation.baseline_fingerprint(route))
+    pool = _Pool()
+    pool.conn.rows.append(
+        {"route_id": key[0], "baseline_sha256": key[1], "outcome": "revoked", "checked_at": NOW}
+    )
+    await aio.gather(*(attestation.refresh(pool) for _ in range(5)))
+    assert key in attestation.snapshot().revoked
+
+
+def test_a_monitored_baseline_must_forbid_training() -> None:
+    with pytest.raises(PolicyError, match="training must be false"):
+        parse_inference_policy(
+            _monitored_policy(
+                extra={
+                    "zdr_baseline": {
+                        "provider_slug": "azure",
+                        "data_policy": {"training": True, "retainsPrompts": False},
+                    }
+                }
+            )
+        )
