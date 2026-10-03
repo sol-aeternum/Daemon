@@ -24,6 +24,8 @@ export default defineConfig([
       'build/**',
       'coverage/**',
       'next-env.d.ts',
+      // Immutable upstream-derived bytes checked by mandatory security:braces.
+      'vendor/braces/**',
     ],
   },
 ]);

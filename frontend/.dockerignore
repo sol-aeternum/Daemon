@@ -1,5 +1,6 @@
 node_modules
 node_modules.*
+vendor/braces-test-tools/node_modules
 
 .next
 .next.*
