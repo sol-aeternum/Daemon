@@ -187,6 +187,9 @@ data policies. Two changes revoke a route:
 
 An observed revocation applies to that process's admission immediately, before any
 database I/O, and lasts for the life of the process even if it cannot be recorded.
+A confirmation takes effect only after it is recorded and the shared history is read
+back. A process that cannot reconcile that history cannot renew a baseline another
+process has revoked; its approval simply goes stale.
 Results are then recorded, one row per monitored route, in
 `inference_route_attestations` (migration 043). The write is retried, and a revocation
 that cannot be persisted is logged as critical. An unreadable check records

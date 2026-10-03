@@ -242,25 +242,20 @@ def reset_local_revocations() -> None:
     _local_revoked.clear()
 
 
-def apply_observed(checks: Iterable[RouteCheck], *, now: datetime) -> None:
-    """Apply a check's results to this process's admission before any I/O.
+def apply_observed(checks: Iterable[RouteCheck]) -> None:
+    """Apply a check's revocations to this process's admission before any I/O.
 
-    A revocation takes effect immediately and permanently for this process. A fresh
-    confirmation only extends an already loaded snapshot: without the persisted
-    history, an earlier sticky revocation could be missed, so it never admits a
-    route on its own.
+    Only negative observations apply here, immediately and permanently for this
+    process. A confirmation is published only by a successful :func:`refresh` after
+    it has been recorded: confirming locally could renew a baseline another process
+    has already revoked while this process cannot read the shared history.
     """
-    current = _snapshot
-    attested = dict(current.attested_at)
-    for check in checks:
-        key = (check.route_id, check.baseline_sha256)
-        if check.outcome == "revoked":
-            _local_revoked.add(key)
-        elif check.outcome == "attested":
-            attested[key] = now
-    set_snapshot(
-        AttestationSnapshot(loaded=current.loaded, attested_at=attested, revoked=current.revoked)
-    )
+    revoked = {
+        (check.route_id, check.baseline_sha256) for check in checks if check.outcome == "revoked"
+    }
+    if revoked:
+        _local_revoked.update(revoked)
+        set_snapshot(_snapshot)
 
 
 def attestation_reasons(route: RoutePolicy, *, now: datetime) -> tuple[str, ...]:
@@ -414,8 +409,9 @@ async def run_check(pool: Any, client: Any, routes: Iterable[RoutePolicy]) -> di
     except Exception as exc:
         logger.warning("Route attestation check could not read metadata: %s", type(exc).__name__)
         checks = failed_checks(candidates, "metadata_unavailable")
-    # Enforce what was observed before any fallible I/O.
-    apply_observed(checks, now=utcnow())
+    # Enforce revocations before any fallible I/O; confirmations wait for the
+    # recorded history to be read back by refresh().
+    apply_observed(checks)
     revoked = [check for check in checks if check.outcome == "revoked"]
     for check in revoked:
         logger.warning(

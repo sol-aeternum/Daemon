@@ -468,12 +468,51 @@ async def test_revocation_is_enforced_when_the_post_record_refresh_fails() -> No
 async def test_a_confirmation_never_admits_before_the_history_is_loaded() -> None:
     route = _route()
     attestation.set_snapshot(attestation.AttestationSnapshot())
-    attestation.apply_observed(
-        attestation.evaluate([route], LISTED, _providers()), now=attestation.utcnow()
-    )
+    attestation.apply_observed(attestation.evaluate([route], LISTED, _providers()))
     policy = parse_inference_policy(_monitored_policy())
     assert route.rejection_reasons(policy.requirements, now=attestation.utcnow()) == (
         "zdr_attestation_unknown",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["record", "refresh"])
+async def test_clean_check_cannot_renew_a_baseline_revoked_by_another_process(
+    failure: str,
+) -> None:
+    """Process B holds an old good snapshot; process A has durably revoked the baseline.
+
+    B's clean check must not extend its confirmation while it cannot reconcile the
+    shared history, and B must pick up the sticky denial once history is readable.
+    """
+    route = _route()
+    key = (route.route_id, attestation.baseline_fingerprint(route))
+    old = attestation.utcnow() - timedelta(hours=60)
+    pool = _Pool()
+    pool.conn.rows.append(
+        {"route_id": key[0], "baseline_sha256": key[1], "outcome": "attested", "checked_at": old}
+    )
+    # Process A's durable revocation; B has not read it yet.
+    pool.conn.rows.append(
+        {"route_id": key[0], "baseline_sha256": key[1], "outcome": "revoked", "checked_at": NOW}
+    )
+    attestation.set_snapshot(attestation.AttestationSnapshot(loaded=True, attested_at={key: old}))
+    if failure == "record":
+        pool.conn.fail_execute = True
+    else:
+        pool.conn.fail_fetch = True
+    with pytest.raises(ConnectionError):
+        await attestation.run_check(pool, _Client(LISTED, _providers()), [route])
+    # No renewal: still the old confirmation, so it goes stale on schedule.
+    assert attestation.snapshot().attested_at[key] == old
+    policy = parse_inference_policy(_monitored_policy())
+    later = old + attestation.STALE_AFTER + timedelta(minutes=1)
+    assert route.rejection_reasons(policy.requirements, now=later) == ("zdr_attestation_stale",)
+    # Once history is readable, the sticky denial applies.
+    pool.conn.fail_execute = pool.conn.fail_fetch = False
+    await attestation.refresh(pool)
+    assert route.rejection_reasons(policy.requirements, now=attestation.utcnow()) == (
+        "zdr_attestation_revoked",
     )
 
 
