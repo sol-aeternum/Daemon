@@ -408,6 +408,10 @@ async def start(
 ) -> None:
     """Load the snapshot now, then refresh it and run this process's own checks."""
     await stop()
+    # A restart must not keep admitting from a previous pool's history: start
+    # unloaded (fail closed) until this pool's history is read. Local revocations
+    # are kept by set_snapshot().
+    set_snapshot(AttestationSnapshot())
     try:
         await refresh(pool)
     except Exception:

@@ -659,3 +659,24 @@ def test_a_missing_pinned_policy_field_is_a_failed_check_not_a_value() -> None:
         "check_failed",
         ("provider_policy_field_missing:training",),
     )
+
+
+@pytest.mark.asyncio
+async def test_restart_with_an_unreadable_pool_fails_closed() -> None:
+    route = _route()
+    policy = parse_inference_policy(_monitored_policy())
+    _attest(route, at=attestation.utcnow())
+    revoked_key = ("other-route", "0" * 64)
+    attestation._local_revoked.add(revoked_key)  # pyright: ignore[reportPrivateUsage]
+    broken = _Pool()
+    broken.conn.fail_fetch = True
+    await attestation.start(broken, interval_s=3600, check_interval_s=3600)
+    try:
+        # The previous pool's confirmation is gone; nothing is admitted until the
+        # new pool's history loads.
+        assert route.rejection_reasons(policy.requirements, now=attestation.utcnow()) == (
+            "zdr_attestation_unknown",
+        )
+        assert revoked_key in attestation.snapshot().revoked
+    finally:
+        await attestation.stop()
