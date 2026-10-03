@@ -1,8 +1,10 @@
 """Memory API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from orchestrator.auth import (
@@ -12,10 +14,21 @@ from orchestrator.auth import (
     require_device_auth,
 )
 from orchestrator.db import get_app_state, AppState
-from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingBatchResult,
+    EmbeddingConfigurationError,
+    embed_documents_with_metadata,
+)
 from orchestrator.memory.store import MemoryContentConflictError
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/memories", tags=["memories"])
+
+MAX_IMPORT_ITEMS = 500
+MAX_IMPORT_CONTENT_CHARS = 2000
+IMPORT_EMBED_BATCH = 50
+ImportCategory = Literal["fact", "preference", "project", "summary", "correction"]
 
 
 class MemoryCreate(BaseModel):
@@ -35,8 +48,37 @@ class MemoryExportRequest(BaseModel):
     status: str = "active"
 
 
+class ImportedMemory(BaseModel):
+    """One person-supplied memory. Only text and category are accepted.
+
+    Extra fields (for example dates from an export file) are ignored. Status,
+    source, locality, confidence, slots and embeddings are always set by the
+    server, never by the request.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = Field(min_length=1, max_length=MAX_IMPORT_CONTENT_CHARS)
+    category: ImportCategory = "fact"
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _strip_content(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+@dataclass(frozen=True)
+class _ImportFact:
+    """Dedup input with the same defaults as a single POST /memories write."""
+
+    content: str
+    category: str
+    confidence: float = 0.8
+    slot: str | None = None
+
+
 class MemoryImportRequest(BaseModel):
-    memories: list[dict[str, Any]]
+    memories: list[ImportedMemory] = Field(max_length=MAX_IMPORT_ITEMS)
 
 
 class MemoryReembedRequest(BaseModel):
@@ -100,12 +142,71 @@ async def import_memories(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
+    """Import memories through the same dedup path as other writes.
+
+    Every item is stored active, with source ``import``, embedded by the
+    server. Like POST /memories this explicit person-initiated route is outside
+    the LLM tool's per-window quota (issue #221) but is bounded per request.
+    If embedding fails partway, the response reports exactly what was saved.
+    """
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    from orchestrator.memory.dedup import _embedding_text, deduplicate_facts
 
-    inserted = await store.import_memories(auth.user_id, data.memories)
-    return {"inserted": inserted}
+    counts = {"created": 0, "merged": 0, "superseded": 0}
+    processed = 0
+    items = data.memories
+    for start in range(0, len(items), IMPORT_EMBED_BATCH):
+        batch = items[start : start + IMPORT_EMBED_BATCH]
+        try:
+            try:
+                embedded = await embed_documents_with_metadata(
+                    [_embedding_text(item.content, None) for item in batch]
+                )
+                prepared: list[Any] | None = [
+                    EmbeddingBatchResult(
+                        embeddings=[vector],
+                        provider=embedded.provider,
+                        model=embedded.model,
+                        storage_model=embedded.storage_model,
+                    )
+                    for vector in embedded.embeddings
+                ]
+                if len(prepared) != len(batch):
+                    raise RuntimeError("embedding count does not match import batch")
+            except EmbeddingConfigurationError:
+                # Dedup falls back to exact-match checks when embeddings are
+                # unqualified, as for any other write.
+                prepared = None
+            result = await deduplicate_facts(
+                store=store,
+                user_id=auth.user_id,
+                facts=[_ImportFact(item.content, item.category) for item in batch],
+                conversation_id=None,
+                source_type="import",
+                status="active",
+                prepared_embeddings=prepared,
+            )
+        except Exception:
+            logger.warning(
+                "Memory import stopped after %d of %d", processed, len(items), exc_info=True
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Import stopped because a memory service was unavailable.",
+                    "received": len(items),
+                    "processed": processed,
+                    **counts,
+                },
+            ) from None
+        counts["created"] += len(result.new)
+        counts["merged"] += len(result.merged)
+        counts["superseded"] += len(result.superseded)
+        processed += len(batch)
+
+    return {"received": len(items), "inserted": counts["created"], **counts}
 
 
 @router.post("/reembed")
