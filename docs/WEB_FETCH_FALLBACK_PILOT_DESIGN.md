@@ -2334,3 +2334,30 @@ Static findings from the shipped deployment files (nothing executed):
 
 Phase 1 (offline qualification in an owned isolated container) needs a container role and test
 topology that the current policies do not cover; its design awaits owner decisions.
+
+### Crawl4AI Phase 1 role and gate prepared (2026-10-03)
+
+Owner decisions: a dedicated **Crawl4AI service role** at 2 GiB / no swap, 256 PIDs, two CPUs;
+**both sandbox modes** measured, with one narrow exception to the no-mounts rule (a read-only
+bind of a single reviewed config file in sandboxed mode); and a **client container** on the same
+internal network for API access (no host route into the network).
+
+`c4ai_create_arguments`/`require_c4ai` run upstream's own entrypoint unchanged on the pinned
+0.9.4 image, add only an ephemeral per-run `CRAWL4AI_API_TOKEN`, and require: the owned internal
+network with one exact alias; read-only root with tmpfs for `/tmp`, `/var/lib/redis` and
+`~/.crawl4ai`; all capabilities dropped and no-new-privileges; the exact image environment plus
+the token (so e.g. `CRAWL4AI_HOOKS_ENABLED` cannot be added); no ports, devices or other mounts;
+no restart and no logs. Sandboxed mode adds the pinned seccomp profile and the reviewed override
+`scripts/web_fetch_pilot_c4ai_config_sandboxed.yml` (SHA-256
+`af11aa97fb426170f16aea08b6cd48025b9caacc0510cb7b122e01ed9672a15b`), which is the shipped
+`config.yml` (`e1c63398a3958414204fa1e218360d2e13baadafbb3f971ee4ba6a46cbc3225f`) minus exactly the
+`- "--no-sandbox"` line. The driver's `c4ai_policy` verifies both byte sets once and refuses any
+non-empty command. A `client` networked role was added. Five new pure tests pass; pilot run
+**1088 passed, 9 skipped**.
+
+Upstream defaults noted for the comparison: hooks are off unless `CRAWL4AI_HOOKS_ENABLED=true`
+(upstream calls them an RCE risk); webhooks are enabled and are issued by the server process,
+not through the browser's egress proxy.
+
+The opt-in gate `tests/web_fetch_pilot_c4ai_phase1_pending.py` (SHA-256
+`74edcad1ac81d013d9cdef8c372c6e3c3d3bf645414719368775084e32b4a96e`) awaits approval.

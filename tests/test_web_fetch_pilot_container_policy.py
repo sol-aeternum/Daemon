@@ -14,6 +14,11 @@ from scripts.web_fetch_pilot_container_policy import (
     BROWSER_SECCOMP_SHA256,
     BROWSER_SHM,
     BROWSER_TMPFS,
+    C4AI_IMAGE,
+    C4AI_IMAGE_ENV,
+    C4AI_MEMORY,
+    C4AI_SANDBOXED_CONFIG_SHA256,
+    C4AI_TMPFS,
     EGRESS_OPTIONS,
     EGRESS_SUBNET,
     IMAGE,
@@ -26,10 +31,14 @@ from scripts.web_fetch_pilot_container_policy import (
     PreflightError,
     browser_create_arguments,
     browser_seccomp_option,
+    c4ai_create_arguments,
+    c4ai_sandboxed_config,
     create_arguments,
     network_create_arguments,
     networked_create_arguments,
     require_browser_identity,
+    require_c4ai,
+    require_c4ai_identity,
     require_identity,
     require_network_identity,
     require_networked,
@@ -780,3 +789,193 @@ def test_networked_role_is_held_to_its_network_kinds_subnet() -> None:
     assert ("--network", EGRESS_NET) == vector[
         vector.index("--network") : vector.index("--network") + 2
     ]
+
+
+C4AI = "daemon-c4ai-" + "b" * 24
+API = "c" * 64
+ALIAS = "reader.pilot.test"
+OVERRIDE_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts/web_fetch_pilot_c4ai_config_sandboxed.yml"
+)
+
+
+def c4ai_fixture(*, sandboxed: bool = False) -> dict:
+    env = [f"{name}=x" for name in sorted(C4AI_IMAGE_ENV)] + ["CRAWL4AI_API_TOKEN=" + API]
+    host = {
+        "NetworkMode": NET,
+        "ReadonlyRootfs": True,
+        "Privileged": False,
+        "CapDrop": ["ALL"],
+        "SecurityOpt": (
+            [browser_seccomp_option(pinned_profile()), "no-new-privileges"]
+            if sandboxed
+            else ["no-new-privileges"]
+        ),
+        "Memory": C4AI_MEMORY,
+        "MemorySwap": C4AI_MEMORY,
+        "NanoCpus": 2_000_000_000,
+        "PidsLimit": 256,
+        "ShmSize": 256 * 1024 * 1024,
+        "Tmpfs": dict(C4AI_TMPFS),
+        "IpcMode": "private",
+        "PidMode": "",
+        "UTSMode": "",
+        "UsernsMode": "",
+        "CgroupnsMode": "private",
+        "PublishAllPorts": False,
+        "AutoRemove": False,
+        "CapAdd": None,
+        "Binds": None,
+        "PortBindings": {},
+        "Devices": [],
+        "DeviceRequests": None,
+        "VolumesFrom": None,
+        "Links": None,
+        "ExtraHosts": None,
+        "Dns": [],
+        "DnsSearch": [],
+        "DnsOptions": [],
+        "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
+        "LogConfig": {"Type": "none", "Config": {}},
+    }
+    mounts: list[dict[str, object]] = [
+        {"Type": "tmpfs", "Destination": target} for target in C4AI_TMPFS
+    ]
+    if sandboxed:
+        mounts.append(
+            {
+                "Type": "bind",
+                "Source": str(OVERRIDE_PATH),
+                "Destination": "/app/config.yml",
+                "RW": False,
+            }
+        )
+    return {
+        "Id": IDENTIFIER,
+        "Name": "/" + C4AI,
+        "Image": C4AI_IMAGE,
+        "Config": {
+            "User": "appuser",
+            "Labels": {OWNER_LABEL: C4AI, RUN_LABEL: RUN},
+            "Entrypoint": None,
+            "Cmd": ["bash", "entrypoint.sh"],
+            "WorkingDir": "/app",
+            "Env": env,
+            "Volumes": None,
+            "Tty": False,
+            "OpenStdin": True,
+            "StdinOnce": True,
+            "AttachStdin": True,
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Healthcheck": {"Test": ["NONE"]},
+        },
+        "HostConfig": host,
+        "Mounts": mounts,
+        "NetworkSettings": {
+            "Networks": {
+                NET: {"NetworkID": "", "IPAddress": "", "GlobalIPv6Address": "", "Aliases": [ALIAS]}
+            },
+            "Ports": {},
+        },
+    }
+
+
+def check_c4ai(item: dict, *, sandboxed: bool = False) -> str:
+    return require_c4ai(
+        item,
+        C4AI,
+        NET,
+        ALIAS,
+        run_token=RUN,
+        network_id=NET_ID,
+        api_token=API,
+        sandboxed=sandboxed,
+        seccomp_option=browser_seccomp_option(pinned_profile()) if sandboxed else None,
+        config_path=str(OVERRIDE_PATH) if sandboxed else None,
+    )
+
+
+def test_c4ai_override_removes_exactly_the_no_sandbox_line() -> None:
+    override = OVERRIDE_PATH.read_bytes()
+    assert hashlib.sha256(override).hexdigest() == C4AI_SANDBOXED_CONFIG_SHA256
+    assert b'- "--no-sandbox"' not in override and b"--disable-dev-shm-usage" in override
+    with pytest.raises(PreflightError):
+        c4ai_sandboxed_config(override)  # Not the shipped bytes.
+
+
+def test_c4ai_vectors_shipped_and_sandboxed() -> None:
+    shipped = c4ai_create_arguments(C4AI, NET, ALIAS, run_token=RUN, api_token=API, sandboxed=False)
+    assert shipped[-1] == C4AI_IMAGE and "--entrypoint" not in shipped and "--mount" not in shipped
+    assert ("--network", NET, "--network-alias", ALIAS) == shipped[
+        shipped.index("--network") : shipped.index("--network") + 4
+    ]
+    assert (
+        "CRAWL4AI_API_TOKEN=" + API in shipped
+        and "-p" not in shipped
+        and "--publish" not in shipped
+    )
+    sandboxed = c4ai_create_arguments(
+        C4AI,
+        NET,
+        ALIAS,
+        run_token=RUN,
+        api_token=API,
+        sandboxed=True,
+        profile_path=str(PROFILE_PATH),
+        config_path=str(OVERRIDE_PATH),
+    )
+    assert "seccomp=" + str(PROFILE_PATH) in sandboxed
+    assert f"type=bind,source={OVERRIDE_PATH},target=/app/config.yml,readonly" in sandboxed
+    for kwargs in (
+        {"api_token": "short"},
+        {"sandboxed": False, "profile_path": str(PROFILE_PATH)},
+        {"sandboxed": True, "profile_path": "relative", "config_path": str(OVERRIDE_PATH)},
+        {"sandboxed": True, "profile_path": str(PROFILE_PATH), "config_path": "/a,b"},
+    ):
+        base = {"run_token": RUN, "api_token": API, "sandboxed": False}
+        with pytest.raises(PreflightError):
+            c4ai_create_arguments(C4AI, NET, ALIAS, **{**base, **kwargs})  # type: ignore[arg-type]
+    with pytest.raises(PreflightError):
+        c4ai_create_arguments(BROWSER, NET, ALIAS, run_token=RUN, api_token=API, sandboxed=False)
+
+
+def test_c4ai_preflight_accepts_both_modes_and_refuses_drift() -> None:
+    assert check_c4ai(c4ai_fixture()) == IDENTIFIER
+    assert check_c4ai(c4ai_fixture(sandboxed=True), sandboxed=True) == IDENTIFIER
+    with pytest.raises(PreflightError):
+        check_c4ai(c4ai_fixture(sandboxed=True))  # A bind mount in shipped mode.
+    with pytest.raises(PreflightError):
+        check_c4ai(c4ai_fixture(), sandboxed=True)  # Sandboxed mode needs its seccomp and bind.
+    mutations = [
+        lambda i: i["HostConfig"].__setitem__("ReadonlyRootfs", False),
+        lambda i: i["HostConfig"].__setitem__("Memory", 4 * C4AI_MEMORY),
+        lambda i: i["HostConfig"].__setitem__("PidsLimit", 1024),
+        lambda i: i["HostConfig"].__setitem__("CapAdd", ["SYS_ADMIN"]),
+        lambda i: i["HostConfig"].__setitem__(
+            "PortBindings", {"11235/tcp": [{"HostPort": "11235"}]}
+        ),
+        lambda i: i["HostConfig"].__setitem__("Binds", ["/:/host"]),
+        lambda i: i["Config"].__setitem__("Cmd", ["bash", "-c", "id"]),
+        lambda i: i["Config"].__setitem__("Entrypoint", ["/bin/sh"]),
+        lambda i: i["Config"]["Env"].append("CRAWL4AI_HOOKS_ENABLED=true"),
+        lambda i: i["Config"]["Env"].__setitem__(-1, "CRAWL4AI_API_TOKEN=" + "d" * 64),
+        lambda i: i.__setitem__("Image", IMAGE),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("Aliases", ["openai.com"]),
+        lambda i: i["Mounts"].append(
+            {"Type": "bind", "Source": "/etc", "Destination": "/x", "RW": True}
+        ),
+    ]
+    for mutate in mutations:
+        item = c4ai_fixture()
+        mutate(item)
+        with pytest.raises(PreflightError):
+            check_c4ai(item)
+    assert require_c4ai_identity(c4ai_fixture(), C4AI, run_token=RUN) == IDENTIFIER
+    with pytest.raises(PreflightError):
+        require_c4ai_identity(c4ai_fixture(), C4AI, run_token="f" * 32)
+
+
+def test_client_role_name_is_networked() -> None:
+    name = "daemon-client-" + "1" * 24
+    assert networked_create_arguments(name, COMMAND, NET, run_token=RUN)[11] == name

@@ -602,7 +602,7 @@ def require_owned_network(
     return identifier
 
 
-NETWORKED_NAME = re.compile(r"daemon-(?:gateway|fixture)-[0-9a-f]{24}\Z")
+NETWORKED_NAME = re.compile(r"daemon-(?:gateway|fixture|client)-[0-9a-f]{24}\Z")
 _ALIAS = re.compile(r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
 
 
@@ -678,5 +678,281 @@ def require_networked(
         _require(aliases is None or aliases == [])
     else:
         _require(aliases == [alias])
+    _require_no_ports(settings)
+    return identifier
+
+
+# ---- Upstream Crawl4AI 0.9.4 service role (Phase 1 evaluation, owner-approved) ----
+C4AI_IMAGE = "sha256:048848e548fad60c670bd656cbb3eb204fd999709a30365d3697c411ce50796d"
+C4AI_NAME = re.compile(r"daemon-c4ai-[0-9a-f]{24}\Z")
+C4AI_MEMORY = 2 * 1024 * 1024 * 1024
+C4AI_SHM = 256 * 1024 * 1024
+C4AI_TMPFS = {
+    "/tmp": "rw,nosuid,nodev,size=256m,mode=1777",
+    "/var/lib/redis": "rw,nosuid,nodev,size=64m,mode=1777",
+    "/home/appuser/.crawl4ai": "rw,nosuid,nodev,size=128m,mode=1777",
+}
+C4AI_CONFIG_TARGET = "/app/config.yml"
+# Shipped /app/config.yml and the reviewed override that removes ONLY its
+# ``- "--no-sandbox"`` line (scripts/web_fetch_pilot_c4ai_config_sandboxed.yml).
+C4AI_SHIPPED_CONFIG_SHA256 = "e1c63398a3958414204fa1e218360d2e13baadafbb3f971ee4ba6a46cbc3225f"
+C4AI_SANDBOXED_CONFIG_SHA256 = "af11aa97fb426170f16aea08b6cd48025b9caacc0510cb7b122e01ed9672a15b"
+C4AI_IMAGE_ENV = frozenset(
+    {
+        "C4AI_VERSION",
+        "DEBIAN_FRONTEND",
+        "GPG_KEY",
+        "LANG",
+        "PATH",
+        "PIP_DEFAULT_TIMEOUT",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_CACHE_DIR",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONFAULTHANDLER",
+        "PYTHONHASHSEED",
+        "PYTHONUNBUFFERED",
+        "PYTHON_ENV",
+        "PYTHON_SHA256",
+        "PYTHON_VERSION",
+        "REDIS_HOST",
+        "REDIS_PORT",
+    }
+)
+_TOKEN = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def c4ai_sandboxed_config(shipped: bytes) -> bytes:
+    """Pure: the reviewed override from hash-checked shipped bytes (one line removed)."""
+    _require(type(shipped) is bytes)
+    _require(hashlib.sha256(shipped).hexdigest() == C4AI_SHIPPED_CONFIG_SHA256)
+    line = b'      - "--no-sandbox"\n'
+    _require(shipped.count(line) == 1)
+    override = shipped.replace(line, b"", 1)
+    _require(hashlib.sha256(override).hexdigest() == C4AI_SANDBOXED_CONFIG_SHA256)
+    return override
+
+
+def c4ai_create_arguments(
+    name: str,
+    network: str,
+    alias: str,
+    *,
+    run_token: str,
+    api_token: str,
+    sandboxed: bool,
+    profile_path: str | None = None,
+    config_path: str | None = None,
+) -> tuple[str, ...]:
+    """Pure fixed vector for one upstream Crawl4AI service container.
+
+    Its own entrypoint and command run unchanged; only an ephemeral per-run API
+    token is added. ``sandboxed`` additionally applies the pinned seccomp profile
+    and the reviewed config override (read-only bind, the single mount exception).
+    """
+    _require(type(name) is str and C4AI_NAME.fullmatch(name) is not None)
+    _kind_for(network)
+    _require(type(alias) is str and _ALIAS.fullmatch(alias) is not None)
+    _require(bool(_run_label(run_token)))
+    _require(type(api_token) is str and _TOKEN.fullmatch(api_token) is not None)
+    _require(type(sandboxed) is bool)
+    hardening: tuple[str, ...] = ()
+    if sandboxed:
+        for path in (profile_path, config_path):
+            _require(type(path) is str and os.path.isabs(path) and "," not in path)
+            _require(os.path.normpath(path) == path)  # type: ignore[arg-type]
+        hardening = (
+            "--security-opt",
+            "seccomp=" + profile_path,  # type: ignore[operator]
+            "--mount",
+            f"type=bind,source={config_path},target={C4AI_CONFIG_TARGET},readonly",
+        )
+    else:
+        _require(profile_path is None and config_path is None)
+    tmpfs: list[str] = []
+    for target, options in C4AI_TMPFS.items():
+        tmpfs.extend(("--tmpfs", target + ":" + options))
+    return (
+        "create",
+        "--pull",
+        "never",
+        "--attach",
+        "stdin",
+        "--attach",
+        "stdout",
+        "--attach",
+        "stderr",
+        "--interactive",
+        "--name",
+        name,
+        "--label",
+        OWNER_LABEL + "=" + name,
+        *_run_label(run_token),
+        "--network",
+        network,
+        "--network-alias",
+        alias,
+        "--read-only",
+        "--user",
+        "appuser",
+        "--cap-drop",
+        "ALL",
+        *hardening,
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "2g",
+        "--memory-swap",
+        "2g",
+        "--cpus",
+        "2",
+        "--pids-limit",
+        "256",
+        "--shm-size",
+        "256m",
+        "--ipc",
+        "private",
+        "--cgroupns",
+        "private",
+        *tmpfs,
+        "--env",
+        "CRAWL4AI_API_TOKEN=" + api_token,
+        "--restart",
+        "no",
+        "--log-driver",
+        "none",
+        "--no-healthcheck",
+        C4AI_IMAGE,
+    )
+
+
+def require_c4ai_identity(
+    record: object,
+    name: str,
+    *,
+    container_id: str | None = None,
+    run_token: str | None = None,
+) -> str:
+    """Identity for cleanup: c4ai name, pinned 0.9.4 image, owner and run labels."""
+    _require(type(name) is str and C4AI_NAME.fullmatch(name) is not None)
+    item = _map(record)
+    identifier = item.get("Id")
+    _require(type(identifier) is str and _ID.fullmatch(identifier) is not None)
+    if container_id is not None:
+        _require(type(container_id) is str and identifier == container_id)
+    _equal(item, "Name", "/" + name)
+    _equal(item, "Image", C4AI_IMAGE)
+    labels = _map(_map(item.get("Config")).get("Labels"))
+    _equal(labels, OWNER_LABEL, name)
+    if run_token is not None:
+        _require(type(run_token) is str and _RUN.fullmatch(run_token) is not None)
+        _equal(labels, RUN_LABEL, run_token)
+    return identifier  # type: ignore[return-value]
+
+
+def require_c4ai(
+    record: object,
+    name: str,
+    network: str,
+    alias: str,
+    *,
+    run_token: str,
+    network_id: str,
+    api_token: str,
+    sandboxed: bool,
+    seccomp_option: str | None = None,
+    config_path: str | None = None,
+    container_id: str | None = None,
+) -> str:
+    """Exact upstream-service configuration before start; fails closed on drift."""
+    identifier = require_c4ai_identity(record, name, container_id=container_id, run_token=run_token)
+    _require(type(api_token) is str and _TOKEN.fullmatch(api_token) is not None)
+    item = _map(record)
+    config, host = _map(item.get("Config")), _map(item.get("HostConfig"))
+    for key, value in (
+        ("User", "appuser"),
+        ("Cmd", ["bash", "entrypoint.sh"]),
+        ("WorkingDir", "/app"),
+        ("Tty", False),
+        ("OpenStdin", True),
+        ("StdinOnce", True),
+        ("AttachStdin", True),
+        ("AttachStdout", True),
+        ("AttachStderr", True),
+    ):
+        _equal(config, key, value)
+    _require(config.get("Entrypoint") in (None, []))
+    _empty(config, "Volumes")
+    _equal(_map(config.get("Healthcheck")), "Test", ["NONE"])
+    env = config.get("Env")
+    _require(type(env) is list and all(type(entry) is str for entry in env))  # type: ignore[union-attr]
+    names = [entry.split("=", 1)[0] for entry in env]  # type: ignore[union-attr]
+    _require(len(names) == len(set(names)))
+    _require(set(names) == C4AI_IMAGE_ENV | {"CRAWL4AI_API_TOKEN"})
+    _require("CRAWL4AI_API_TOKEN=" + api_token in env)  # type: ignore[operator]
+    security = ["no-new-privileges"]
+    if sandboxed:
+        _require(type(seccomp_option) is str and seccomp_option.startswith("seccomp={"))
+        security = [seccomp_option, "no-new-privileges"]  # type: ignore[list-item]
+    for key, value in (
+        ("NetworkMode", network),
+        ("ReadonlyRootfs", True),
+        ("Privileged", False),
+        ("CapDrop", ["ALL"]),
+        ("SecurityOpt", security),
+        ("Memory", C4AI_MEMORY),
+        ("MemorySwap", C4AI_MEMORY),
+        ("NanoCpus", 2_000_000_000),
+        ("PidsLimit", 256),
+        ("ShmSize", C4AI_SHM),
+        ("Tmpfs", C4AI_TMPFS),
+        ("IpcMode", "private"),
+        ("PidMode", ""),
+        ("UTSMode", ""),
+        ("UsernsMode", ""),
+        ("CgroupnsMode", "private"),
+        ("PublishAllPorts", False),
+        ("AutoRemove", False),
+    ):
+        _equal(host, key, value)
+    for key in (
+        "CapAdd",
+        "Binds",
+        "PortBindings",
+        "Devices",
+        "DeviceRequests",
+        "VolumesFrom",
+        "Links",
+        "ExtraHosts",
+        "Dns",
+        "DnsSearch",
+        "DnsOptions",
+    ):
+        _empty(host, key)
+    restart = _map(host.get("RestartPolicy"))
+    _equal(restart, "Name", "no")
+    _equal(restart, "MaximumRetryCount", 0)
+    log = _map(host.get("LogConfig"))
+    _equal(log, "Type", "none")
+    mounts = item.get("Mounts")
+    _require(type(mounts) is list)
+    binds = []
+    for mount in mounts:  # type: ignore[union-attr]
+        fields = _map(mount)
+        if fields.get("Type") == "tmpfs":
+            _require(fields.get("Destination") in C4AI_TMPFS)
+            continue
+        _equal(fields, "Type", "bind")
+        _equal(fields, "Destination", C4AI_CONFIG_TARGET)
+        _equal(fields, "RW", False)
+        _equal(fields, "Source", config_path)
+        binds.append(fields)
+    _require(len(binds) == (1 if sandboxed else 0))
+    settings = _map(item.get("NetworkSettings"))
+    networks = _map(settings.get("Networks"))
+    _require(set(networks) == {network})
+    endpoint = _map(networks[network])
+    _require(endpoint.get("NetworkID") in ("", network_id))
+    _equal(endpoint, "GlobalIPv6Address", "")
+    _require(endpoint.get("Aliases") == [alias])
     _require_no_ports(settings)
     return identifier

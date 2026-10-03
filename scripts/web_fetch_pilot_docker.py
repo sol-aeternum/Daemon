@@ -25,6 +25,7 @@ caught by the next start's owner-label orphan check, not silently ignored.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -39,10 +40,14 @@ from scripts.web_fetch_pilot_container_policy import (
     OWNER_LABEL,
     RUN_LABEL,
     PreflightError,
+    C4AI_SANDBOXED_CONFIG_SHA256,
     browser_create_arguments,
     browser_seccomp_option,
+    c4ai_create_arguments,
     create_arguments,
     require_browser_identity,
+    require_c4ai,
+    require_c4ai_identity,
     require_identity,
     network_create_arguments,
     networked_create_arguments,
@@ -190,8 +195,8 @@ def networked_policy(
     network: str, network_id: str, role: str, *, alias: str | None = None
 ) -> ContainerPolicy:
     """Gateway-limit role attached only to the owned internal network."""
-    if role not in ("gateway", "fixture"):
-        raise ValueError("networked role must be gateway or fixture")
+    if role not in ("gateway", "fixture", "client"):
+        raise ValueError("networked role must be gateway, fixture or client")
     return ContainerPolicy(
         lambda: f"daemon-{role}-" + secrets.token_hex(12),
         lambda name, command, run: networked_create_arguments(
@@ -208,6 +213,67 @@ def networked_policy(
             container_id=identifier,
         ),
         lambda record, name, identifier, run: require_networked_identity(
+            record, name, container_id=identifier, run_token=run
+        ),
+    )
+
+
+def c4ai_policy(
+    network: str,
+    network_id: str,
+    alias: str,
+    *,
+    api_token: str,
+    sandboxed: bool,
+    profile_path: str | None = None,
+    profile: bytes | None = None,
+    config_path: str | None = None,
+    config: bytes | None = None,
+) -> ContainerPolicy:
+    """Upstream Crawl4AI 0.9.4 service role; its own entrypoint runs unchanged.
+
+    Sandboxed mode verifies the pinned seccomp profile and the reviewed config
+    override bytes here, once; preflight compares the record with those bytes.
+    """
+    option: str | None = None
+    if sandboxed:
+        if profile is None or config is None:
+            raise ValueError("sandboxed mode needs the pinned profile and config bytes")
+        option = browser_seccomp_option(profile)
+        if hashlib.sha256(config).hexdigest() != C4AI_SANDBOXED_CONFIG_SHA256:
+            raise PreflightError("offline gateway preflight refused")
+
+    def create(name: str, command: tuple[str, ...], run: str) -> tuple[str, ...]:
+        if command != ():
+            raise PreflightError("offline gateway preflight refused")  # Upstream entrypoint only.
+        return c4ai_create_arguments(
+            name,
+            network,
+            alias,
+            run_token=run,
+            api_token=api_token,
+            sandboxed=sandboxed,
+            profile_path=profile_path,
+            config_path=config_path,
+        )
+
+    return ContainerPolicy(
+        lambda: "daemon-c4ai-" + secrets.token_hex(12),
+        create,
+        lambda record, name, command, identifier, run: require_c4ai(
+            record,
+            name,
+            network,
+            alias,
+            run_token=run,
+            network_id=network_id,
+            api_token=api_token,
+            sandboxed=sandboxed,
+            seccomp_option=option,
+            config_path=config_path,
+            container_id=identifier,
+        ),
+        lambda record, name, identifier, run: require_c4ai_identity(
             record, name, container_id=identifier, run_token=run
         ),
     )
