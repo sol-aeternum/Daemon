@@ -2092,3 +2092,28 @@ peer-mutation tests unchanged). The acceptor closes and skips a client whose
 `getpeername` fails before verification and keeps accepting. New fake tests cover both.
 Pilot run passes **1045, 9 skipped** including the approved E1 loopback fixtures. E2c and
 E3c need another owner-approved run.
+
+### Stage E3c two-container gate verified (2026-10-03)
+
+After the peer-record correction, with owner approval: **E2c 2 passed in 9.91 s**, then
+**E3c 1 passed in 8.18 s**. No owner-labelled container or network existed before either run
+and none remained after; no attach CLI survived; parent fd/task sets were restored. E3c
+supervisor-side evidence: one owned internal network (`1.2.3.0/29`, isolated gateway mode)
+carried the TLS fixture container (alias `openai.com`) and the gateway container; the
+gateway's **unchanged** `Gateway`, real `DNSResolver`/`StdlibSpawner` (Docker embedded DNS)
+and real `NumericConnector` (numeric dial plus real peer check) tunnelled the network-none
+browser's CONNECT to the fixture; Chromium rejected the self-signed certificate (fixture: one
+attempt, no completed handshake, `certificate_unknown`); the fixture's reset was absorbed by
+the per-stream abort and the gateway ended on normal EOF (717 bytes read, 1750 written, clean
+resolver and actor ownership); the bridge ended with final RESULT plus browser EOF; the
+collector's candidate is `error` with no content; all three entrypoints exited 0 with Docker
+recording `exited/0`; identity-checked removal of every container and the network verified.
+Untrusted stderr diagnostics (record only) were consistent.
+
+This closes E3 and stage E's offline qualification: real-socket peer identity, the real
+dial and DNS helper path, per-stream abort and the browser producer now pass together in an
+isolated topology with no test-only transport. Not established: any public network path,
+deployment-address inventory, successful extraction against a real page, Patchright, or
+full-project gates. Production remains direct-only. Next is handoff stage F: fresh security
+review of the actual runner/gateway/relay code and full-project gates, then — only with
+explicit owner approval — the bounded fixed-URL live comparison.
