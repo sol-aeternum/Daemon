@@ -26,9 +26,12 @@ from scripts.web_fetch_pilot_container_policy import (
     browser_seccomp_option,
     create_arguments,
     network_create_arguments,
+    networked_create_arguments,
     require_browser_identity,
     require_identity,
     require_network_identity,
+    require_networked,
+    require_networked_identity,
     require_offline_browser,
     require_offline_gateway,
     require_offline_network,
@@ -594,3 +597,97 @@ def test_offline_network_refuses_mutations(key: str, value: object) -> None:
     record[key] = value
     with pytest.raises(PreflightError):
         require_offline_network(record, NET, RUN)
+
+
+FIXTURE_NAME = "daemon-fixture-" + "3" * 24
+
+
+def networked_fixture(*, alias: str | None = "openai.com", started: bool = False) -> dict:
+    item = fixture()
+    item["Name"] = "/" + FIXTURE_NAME
+    item["Config"]["Labels"] = {OWNER_LABEL: FIXTURE_NAME, RUN_LABEL: RUN}
+    item["HostConfig"]["NetworkMode"] = NET
+    item["NetworkSettings"]["Networks"] = {
+        NET: {
+            "NetworkID": NET_ID if started else "",
+            "IPAddress": "1.2.3.2" if started else "",
+            "GlobalIPv6Address": "",
+            "Aliases": None if alias is None else [alias],
+        }
+    }
+    return item
+
+
+def test_networked_vector_replaces_only_the_network_attachment() -> None:
+    vector = networked_create_arguments(
+        FIXTURE_NAME, COMMAND, NET, run_token=RUN, alias="openai.com"
+    )
+    gateway = create_arguments(NAME, COMMAND, run_token=RUN)
+    at = gateway.index("--network")
+    assert vector[at : at + 4] == ("--network", NET, "--network-alias", "openai.com")
+    assert vector[at + 4 :] == gateway[at + 2 :]
+    plain = networked_create_arguments(FIXTURE_NAME, COMMAND, NET, run_token=RUN)
+    assert plain[at : at + 2] == ("--network", NET) and "--network-alias" not in plain
+    for kwargs in (
+        {"alias": "OpenAI.com"},
+        {"alias": "-bad.example"},
+        {"alias": "openai.com\n"},
+        {"alias": "localhost"},
+    ):
+        with pytest.raises(PreflightError):
+            networked_create_arguments(FIXTURE_NAME, COMMAND, NET, run_token=RUN, **kwargs)
+    for name, network in ((NAME, NET), (FIXTURE_NAME, "none"), (FIXTURE_NAME, "bridge")):
+        with pytest.raises(PreflightError):
+            networked_create_arguments(name, COMMAND, network, run_token=RUN)
+    with pytest.raises(PreflightError):
+        networked_create_arguments(FIXTURE_NAME, COMMAND, NET, run_token=None)  # type: ignore[arg-type]
+
+
+def test_networked_record_before_and_after_start() -> None:
+    for started in (False, True):
+        item = networked_fixture(started=started)
+        assert (
+            require_networked(
+                item,
+                FIXTURE_NAME,
+                COMMAND,
+                NET,
+                run_token=RUN,
+                network_id=NET_ID,
+                alias="openai.com",
+            )
+            == IDENTIFIER
+        )
+    plain = networked_fixture(alias=None)
+    assert require_networked(plain, FIXTURE_NAME, COMMAND, NET, run_token=RUN, network_id=NET_ID)
+    assert require_networked_identity(plain, FIXTURE_NAME, run_token=RUN) == IDENTIFIER
+    with pytest.raises(PreflightError):
+        require_identity(plain, FIXTURE_NAME)  # Role names never cross.
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda i: i["HostConfig"].__setitem__("NetworkMode", "none"),
+        lambda i: i["HostConfig"].__setitem__("Memory", 2 * MEMORY),
+        lambda i: i["HostConfig"].__setitem__("ExtraHosts", ["openai.com:1.2.3.2"]),
+        lambda i: i["NetworkSettings"]["Networks"].__setitem__("bridge", {}),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("IPAddress", "10.0.0.2"),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("IPAddress", "bogus"),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("IPAddress", None),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__(
+            "GlobalIPv6Address", "2001:db8::2"
+        ),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("NetworkID", "8" * 64),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("Aliases", ["openai.com", "x"]),
+        lambda i: i["NetworkSettings"]["Networks"][NET].__setitem__("Aliases", ["other.com"]),
+        lambda i: i["Config"]["Labels"].__setitem__(RUN_LABEL, "f" * 32),
+    ],
+)
+def test_networked_record_refuses_mutations(mutate: object) -> None:
+    item = networked_fixture(started=True)
+    mutate(item)  # type: ignore[operator]
+    with pytest.raises(PreflightError):
+        require_networked(
+            item, FIXTURE_NAME, COMMAND, NET, run_token=RUN, network_id=NET_ID, alias="openai.com"
+        )

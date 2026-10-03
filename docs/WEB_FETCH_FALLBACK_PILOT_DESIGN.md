@@ -1892,3 +1892,43 @@ task, state is published synchronously, and any uncertainty is fatal and retaine
 scoped types and high-severity Bandit pass. Policy SHA-256
 `edcc232fbee532db94886a2c8acb0bf26091cc0b75179a3032b9baedd454d471`; driver
 `1aeacd94bfbf522d968b2fd76a1ff129761f9f2194eb42ddb2545ad9c2717f31`. No network was created.
+
+### Stage E3b networked role and network probe — prepared, not executed (2026-10-03)
+
+The gateway create vector and preflight were refactored so a third, **networked** role
+reuses every gateway limit and replaces only the network attachment:
+`networked_create_arguments` (names `daemon-gateway-…`/`daemon-fixture-…`, the owned
+network by name, optional canonical `--network-alias`, run label required) and
+`require_networked` (exactly one network endpoint, the owned network; network ID and
+IPv4 address may be empty before start, otherwise the owned network and an address in
+`1.2.3.0/29`; no IPv6; exact alias equality failing closed). The driver gains
+`networked_policy`. Existing gateway vectors and checks are unchanged (all prior tests
+pass); 14 new networked-role tests pass; pilot run **1016 passed, 7 skipped**.
+
+The opt-in probe `tests/web_fetch_pilot_network_probe_pending.py`
+(`972653aac36b8d60943da705d9914800adac15c6462c37af1a74e3a87091049b`) creates one owned
+network and one fixture-role container aliased `openai.com`. Its stdlib program sends raw
+DNS queries only to Docker's embedded resolver: first `daemon-pilot-probe.invalid`
+(NXDOMAIN would suggest upstream forwarding; SERVFAIL/REFUSED/no answer would not), then,
+only if not NXDOMAIN, the alias, which must return the container's own subnet address. It
+also reports nameservers, interfaces, routes (no default route allowed) and its own
+address. The host side checks read-only that no `1.2.3.x` route or address appears.
+Worst case, one query naming `daemon-pilot-probe.invalid` reaches an upstream resolver.
+On refusal it prints whitelisted configuration fields only. Awaiting owner approval.
+
+### Stage E3b internal-network probe verified (2026-10-03)
+
+The owner approved one run of opt-in `tests/test_web_fetch_pilot_network_probe_io.py`
+(SHA-256 `972653aac36b8d60943da705d9914800adac15c6462c37af1a74e3a87091049b`). No
+owner-labelled container or network existed beforehand. Under `timeout -k 5 150`:
+**1 passed in 2.00 s**. Docker 29.8.1 accepted the network vector, and the exact network
+and networked-container preflights (isolated gateway mode and masquerade options, IPAM,
+alias equality) passed on the real records. The embedded resolver answered
+`daemon-pilot-probe.invalid` with **SERVFAIL** (not NXDOMAIN): internal-network names are
+not forwarded upstream. The alias `openai.com` resolved to the container's own address
+`1.2.3.1` (isolated mode reserves no gateway address). Inside: nameserver `127.0.0.11`,
+interfaces `eth0` and `lo`, a single subnet route and **no default route**. The host
+never gained a `1.2.3.x` route or address before, during or after. Exit 0; container and
+network removed and verified absent; no owner-labelled leftovers, no attach CLI, fd/task
+sets restored. Pilot run without opt-in **1016 passed, 8 skipped**. This establishes the
+E3 addressing premise; the gateway and TLS fixture roles are next (E3c).

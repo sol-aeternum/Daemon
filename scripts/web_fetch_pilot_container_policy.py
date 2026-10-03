@@ -8,6 +8,7 @@ No Docker, filesystem, process, network or import-time I/O is performed.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -73,6 +74,12 @@ def create_arguments(
     target the qualified local daemon and scrub its own host environment.
     """
     _require(type(name) is str and _NAME.fullmatch(name) is not None)
+    return _gateway_vector(name, command, run_token, ("--network", "none"))
+
+
+def _gateway_vector(
+    name: str, command: tuple[str, ...], run_token: str | None, network: tuple[str, ...]
+) -> tuple[str, ...]:
     _require(type(command) is tuple and len(command) > 1 and command[0] == "-i")
     _require(all(type(arg) is str and "\x00" not in arg for arg in command))
     return (
@@ -91,8 +98,7 @@ def create_arguments(
         "--label",
         OWNER_LABEL + "=" + name,
         *_run_label(run_token),
-        "--network",
-        "none",
+        *network,
         "--read-only",
         "--user",
         "appuser",
@@ -184,6 +190,26 @@ def require_offline_gateway(
     IPC must be disabled: this DNS-only fixture needs no /dev/shm allocation.
     """
     identifier = require_identity(record, name, container_id=container_id, run_token=run_token)
+    item = _require_gateway_limits(record, command, "none")
+    network = _map(item.get("NetworkSettings"))
+    networks = _map(network.get("Networks"))
+    _require(set(networks) == {"none"})
+    none = _map(networks["none"])
+    _equal(none, "IPAddress", "")
+    _equal(none, "GlobalIPv6Address", "")
+    _require_no_ports(network)
+    return identifier
+
+
+def _require_no_ports(network: Mapping[str, object]) -> None:
+    ports = network.get("Ports")
+    _require(ports is None or type(ports) is dict and all(v is None for v in ports.values()))
+
+
+def _require_gateway_limits(
+    record: object, command: tuple[str, ...], network_mode: str
+) -> Mapping[str, object]:
+    """Every gateway-role Config/HostConfig/mount limit except the network attachment."""
     _require(type(command) is tuple and len(command) > 1 and command[0] == "-i")
     _require(all(type(arg) is str and "\x00" not in arg for arg in command))
     item = _map(record)
@@ -203,7 +229,7 @@ def require_offline_gateway(
     _empty(config, "Volumes")
     _equal(_map(config.get("Healthcheck")), "Test", ["NONE"])
     for key, value in (
-        ("NetworkMode", "none"),
+        ("NetworkMode", network_mode),
         ("ReadonlyRootfs", True),
         ("Privileged", False),
         ("CapDrop", ["ALL"]),
@@ -253,15 +279,7 @@ def require_offline_gateway(
         _equal(fields, "Mode", "")
         _equal(fields, "Propagation", "")
     _require(len(mounts) <= 1)  # type: ignore[arg-type]
-    network = _map(item.get("NetworkSettings"))
-    networks = _map(network.get("Networks"))
-    _require(set(networks) == {"none"})
-    none = _map(networks["none"])
-    _equal(none, "IPAddress", "")
-    _equal(none, "GlobalIPv6Address", "")
-    ports = network.get("Ports")
-    _require(ports is None or type(ports) is dict and all(v is None for v in ports.values()))
-    return identifier
+    return item
 
 
 def browser_seccomp_option(profile: bytes) -> str:
@@ -535,4 +553,84 @@ def require_offline_network(
     _require(set(config) <= {"Subnet", "Gateway"})
     gateway = config.get("Gateway")
     _require(gateway is None or gateway == "1.2.3.1")
+    return identifier
+
+
+NETWORKED_NAME = re.compile(r"daemon-(?:gateway|fixture)-[0-9a-f]{24}\Z")
+_ALIAS = re.compile(r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
+
+
+def networked_create_arguments(
+    name: str,
+    command: tuple[str, ...],
+    network: str,
+    *,
+    run_token: str,
+    alias: str | None = None,
+) -> tuple[str, ...]:
+    """Gateway-limit container attached only to the owned internal network."""
+    _require(type(name) is str and NETWORKED_NAME.fullmatch(name) is not None)
+    _require(type(network) is str and NETWORK_NAME.fullmatch(network) is not None)
+    _require(bool(_run_label(run_token)))
+    attachment: tuple[str, ...] = ("--network", network)
+    if alias is not None:
+        _require(type(alias) is str and _ALIAS.fullmatch(alias) is not None)
+        attachment += ("--network-alias", alias)
+    return _gateway_vector(name, command, run_token, attachment)
+
+
+def require_networked_identity(
+    record: object,
+    name: str,
+    *,
+    container_id: str | None = None,
+    run_token: str | None = None,
+) -> str:
+    return _require_identity(record, name, NETWORKED_NAME, container_id, run_token)
+
+
+def require_networked(
+    record: object,
+    name: str,
+    command: tuple[str, ...],
+    network: str,
+    *,
+    run_token: str,
+    network_id: str,
+    alias: str | None = None,
+    container_id: str | None = None,
+) -> str:
+    """Gateway limits plus exactly one attachment: the owned internal network.
+
+    Before start the endpoint may not yet carry a network ID or address; when
+    present they must be the owned network and an IPv4 address in its subnet.
+    Exact alias equality fails closed if the daemon adds implicit aliases.
+    """
+    identifier = require_networked_identity(
+        record, name, container_id=container_id, run_token=run_token
+    )
+    _require(type(network) is str and NETWORK_NAME.fullmatch(network) is not None)
+    _require(type(network_id) is str and _ID.fullmatch(network_id) is not None)
+    item = _require_gateway_limits(record, command, network)
+    settings = _map(item.get("NetworkSettings"))
+    networks = _map(settings.get("Networks"))
+    _require(set(networks) == {network})
+    endpoint = _map(networks[network])
+    _require(endpoint.get("NetworkID") in ("", network_id))
+    address = endpoint.get("IPAddress")
+    if type(address) is not str:
+        raise PreflightError("offline gateway preflight refused")
+    if address:
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            raise PreflightError("offline gateway preflight refused") from None
+        _require(parsed in ipaddress.ip_network(NETWORK_SUBNET))
+    _equal(endpoint, "GlobalIPv6Address", "")
+    aliases = endpoint.get("Aliases")
+    if alias is None:
+        _require(aliases is None or aliases == [])
+    else:
+        _require(aliases == [alias])
+    _require_no_ports(settings)
     return identifier

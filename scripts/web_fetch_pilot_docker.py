@@ -45,7 +45,10 @@ from scripts.web_fetch_pilot_container_policy import (
     require_browser_identity,
     require_identity,
     network_create_arguments,
+    networked_create_arguments,
     require_network_identity,
+    require_networked,
+    require_networked_identity,
     require_offline_browser,
     require_offline_gateway,
     require_offline_network,
@@ -173,6 +176,33 @@ def browser_policy(profile_path: str, profile: bytes) -> ContainerPolicy:
             record, name, command, option, container_id=identifier, run_token=run
         ),
         lambda record, name, identifier, run: require_browser_identity(
+            record, name, container_id=identifier, run_token=run
+        ),
+    )
+
+
+def networked_policy(
+    network: str, network_id: str, role: str, *, alias: str | None = None
+) -> ContainerPolicy:
+    """Gateway-limit role attached only to the owned internal network."""
+    if role not in ("gateway", "fixture"):
+        raise ValueError("networked role must be gateway or fixture")
+    return ContainerPolicy(
+        lambda: f"daemon-{role}-" + secrets.token_hex(12),
+        lambda name, command, run: networked_create_arguments(
+            name, command, network, run_token=run, alias=alias
+        ),
+        lambda record, name, command, identifier, run: require_networked(
+            record,
+            name,
+            command,
+            network,
+            run_token=run,
+            network_id=network_id,
+            alias=alias,
+            container_id=identifier,
+        ),
+        lambda record, name, identifier, run: require_networked_identity(
             record, name, container_id=identifier, run_token=run
         ),
     )
