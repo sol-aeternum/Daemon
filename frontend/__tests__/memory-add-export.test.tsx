@@ -822,6 +822,17 @@ describe('import acknowledgement integrity', () => {
         }),
     ],
     [
+      'outcomes that account for fewer entries than processed',
+      () =>
+        json({
+          received: 2,
+          processed: 2,
+          created: 0,
+          merged: 0,
+          superseded: 0,
+        }),
+    ],
+    [
       'a success that processed fewer entries than sent',
       () =>
         json({
@@ -904,6 +915,29 @@ describe('import acknowledgement integrity', () => {
       processed: IMPORT_REQUEST_SIZE,
       unconfirmed: 2,
     });
+  });
+
+  it('treats a partial 503 whose outcomes undercount processed as unconfirmed', async () => {
+    respond = () =>
+      json(
+        {
+          detail: {
+            message: 'stopped',
+            received: 2,
+            processed: 1,
+            created: 0,
+            merged: 0,
+            superseded: 0,
+          },
+        },
+        503,
+      );
+    const { result } = renderHook(() => useMemories());
+    let outcome!: Awaited<ReturnType<typeof result.current.importMemories>>;
+    await act(async () => {
+      outcome = await result.current.importMemories(two);
+    });
+    expect(outcome).toMatchObject({ processed: 0, created: 0, unconfirmed: 2 });
   });
 
   it('treats a 503 without a consistent progress report as unconfirmed', async () => {

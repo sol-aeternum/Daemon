@@ -1022,3 +1022,30 @@ async def test_import_memories_counts_only_items_committed_before_a_store_failur
         "merged": 1,
         "superseded": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_import_memories_rolls_back_an_unclassified_item(auth_client) -> None:
+    set_app_state(create_mock_app_state(_import_store()))
+    outcomes = [_dedup_result(new=1), _dedup_result()]
+
+    async def dedup(**kwargs: Any) -> Any:
+        return outcomes.pop(0)
+
+    with (
+        patch.object(
+            memories_router,
+            "embed_documents_with_metadata",
+            AsyncMock(return_value=create_embedding_result([[0.0]] * 2)),
+        ),
+        patch("orchestrator.memory.dedup.deduplicate_facts", dedup),
+    ):
+        response = await auth_client.post(
+            "/memories/import",
+            json={"memories": [{"content": "One"}, {"content": "Two"}]},
+        )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["processed"] == 1
+    assert detail["created"] + detail["merged"] + detail["superseded"] == detail["processed"]

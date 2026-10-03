@@ -209,7 +209,8 @@ export function readImportCounts(
     received !== sent ||
     processed > received ||
     (complete && processed !== received) ||
-    created + merged + superseded > processed
+    // Every processed entry is created, merged or superseded; nothing else.
+    created + merged + superseded !== processed
   ) {
     return null;
   }

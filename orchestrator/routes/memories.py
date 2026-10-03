@@ -214,6 +214,11 @@ async def import_memories(
                             lock_conn=conn,
                             prepared_embeddings=[prepared[index]] if prepared else None,
                         )
+                        outcomes = len(result.new) + len(result.merged) + len(result.superseded)
+                        if outcomes != 1:
+                            # Every processed item must be classified exactly
+                            # once; roll back rather than report an unaccounted item.
+                            raise RuntimeError(f"import item produced {outcomes} outcomes")
             except Exception:
                 raise stopped() from None
             counts["created"] += len(result.new)
