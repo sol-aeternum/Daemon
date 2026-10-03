@@ -317,6 +317,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         cleanup_shutdown_event.set()
     if cleanup_task is not None:
         await asyncio.shield(cleanup_task)
+    if state.db_pool is not None:
+        from orchestrator.entitlements import attestation
+
+        await attestation.stop()
     await close_app_state(state)
     logger.info("AppState shut down")
 

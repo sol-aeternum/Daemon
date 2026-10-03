@@ -556,15 +556,18 @@ async def test_bootstrap_reports_effective_admission_not_the_latest_counts() -> 
     await attestation.refresh(pool)
     counts = await attestation.run_check(pool, _Client(LISTED, _providers()), [route])
     assert counts["attested"] == 1 and counts["revoked"] == 0
-    code, status = attestation.bootstrap_status([route], now=attestation.utcnow())
+    requirements = parse_inference_policy(_monitored_policy()).requirements
+    code, status = attestation.bootstrap_status([route], requirements, now=attestation.utcnow())
     assert code == attestation.BOOTSTRAP_NOT_ADMITTED
     assert status == {"luna-azure-eu": ("zdr_attestation_revoked",)}
     # Explicit re-approval: a new review date is a new baseline, attested afresh.
     reapproved_doc = _monitored_policy()
-    reapproved_doc["routes"][0]["operator_review"]["reviewed_at"] = "2026-10-03T06:00:00Z"
+    reapproved_doc["routes"][0]["operator_review"]["reviewed_at"] = "2026-10-03T01:00:00Z"
     reapproved = parse_inference_policy(reapproved_doc).routes["luna-azure-eu"]
     await attestation.run_check(pool, _Client(LISTED, _providers()), [reapproved])
-    code, status = attestation.bootstrap_status([reapproved], now=attestation.utcnow())
+    code, status = attestation.bootstrap_status(
+        [reapproved], requirements, now=attestation.utcnow()
+    )
     assert (code, status) == (attestation.BOOTSTRAP_ADMITTED, {"luna-azure-eu": ()})
 
 
@@ -576,7 +579,8 @@ def test_bootstrap_distinguishes_a_policy_without_monitored_routes() -> None:
         item["approval_expires_at"] = "2026-10-17T00:00:00Z"
         item["operator_review"]["review_expires_at"] = "2026-10-17T00:00:00Z"
     routes = parse_inference_policy(doc).routes.values()
-    assert attestation.bootstrap_status(routes, now=NOW) == (
+    requirements = parse_inference_policy(doc).requirements
+    assert attestation.bootstrap_status(routes, requirements, now=NOW) == (
         attestation.BOOTSTRAP_NO_MONITORED_ROUTES,
         {},
     )
@@ -588,12 +592,48 @@ def test_upstream_values_are_compared_type_strictly() -> None:
     assert check.reasons == ("provider_policy_changed:training",)
 
 
-def test_changing_the_gateway_endpoint_is_a_new_baseline() -> None:
-    route = _route()
-    moved = parse_inference_policy(
-        _monitored_policy(extra={"endpoint": "https://gateway.example.com/api/v1"})
-    ).routes["luna-azure-eu"]
-    assert attestation.baseline_fingerprint(moved) != attestation.baseline_fingerprint(route)
-    _attest(route)
-    policy = parse_inference_policy(_monitored_policy())
-    assert moved.rejection_reasons(policy.requirements, now=NOW) == ("zdr_attestation_stale",)
+def test_monitored_approval_is_only_for_the_openrouter_gateway() -> None:
+    for extra in (
+        {"endpoint": "https://gateway.example.com/api/v1"},
+        {"endpoint": "https://openrouter.ai/api/v2"},
+        {"provider": "other"},
+    ):
+        with pytest.raises(PolicyError):
+            parse_inference_policy(_monitored_policy(extra=extra))
+
+
+def test_evaluator_never_attests_a_non_openrouter_endpoint() -> None:
+    import dataclasses
+
+    moved = dataclasses.replace(_route(), endpoint="https://gateway.example.com/api/v1")
+    [check] = attestation.evaluate([moved], LISTED, _providers())
+    assert (check.outcome, check.reasons) == ("check_failed", ("endpoint_not_attestable",))
+    assert attestation.baseline_fingerprint(moved) != attestation.baseline_fingerprint(_route())
+
+
+def test_bootstrap_requires_full_admission_not_only_attestation() -> None:
+    doc = _monitored_policy(extra={"approved": False})
+    policy = parse_inference_policy(doc)
+    route = policy.routes["luna-azure-eu"]
+    _attest(route, at=attestation.utcnow())
+    code, status = attestation.bootstrap_status(
+        [route], policy.requirements, now=attestation.utcnow()
+    )
+    assert code == attestation.BOOTSTRAP_NOT_ADMITTED
+    assert status == {"luna-azure-eu": ("not_approved",)}
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_and_awaits_the_background_tasks() -> None:
+    pool = _Pool()
+    await attestation.start(pool, interval_s=3600, check_interval_s=3600)
+    tasks = set(attestation._tasks)  # pyright: ignore[reportPrivateUsage]
+    assert len(tasks) == 2
+    await attestation.stop()
+    assert all(task.done() for task in tasks)
+    assert not attestation._tasks  # pyright: ignore[reportPrivateUsage]
+    # A restart replaces, rather than adds to, the previous tasks.
+    await attestation.start(pool, interval_s=3600, check_interval_s=3600)
+    await attestation.start(pool, interval_s=3600, check_interval_s=3600)
+    assert len(attestation._tasks) == 2  # pyright: ignore[reportPrivateUsage]
+    await attestation.stop()

@@ -41,7 +41,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final
 
-from orchestrator.entitlements.policy import RoutePolicy
+from orchestrator.entitlements.policy import (
+    MONITORED_ENDPOINT,
+    MONITORED_PROVIDER,
+    PolicyRequirements,
+    RoutePolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +175,15 @@ def evaluate(
             checks.append(
                 RouteCheck(
                     route.route_id, fingerprint, "check_failed", ("provider_policy_missing",)
+                )
+            )
+            continue
+        if route.provider != MONITORED_PROVIDER or route.endpoint != MONITORED_ENDPOINT:
+            # Defence in depth: the parser already refuses this. OpenRouter's listings
+            # are no evidence about any other host.
+            checks.append(
+                RouteCheck(
+                    route.route_id, fingerprint, "check_failed", ("endpoint_not_attestable",)
                 )
             )
             continue
@@ -356,6 +370,23 @@ def _spawn(coro: Any) -> None:
     task.add_done_callback(_tasks.discard)
 
 
+async def stop() -> None:
+    """Cancel and await this process's refresh and check tasks.
+
+    Call before closing their database pool, so no task keeps polling a closed pool
+    or overwrites the snapshot after a restart in the same event loop.
+    """
+    tasks = list(_tasks)
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    _tasks.clear()
+
+
 async def start(
     pool: Any,
     *,
@@ -363,6 +394,7 @@ async def start(
     check_interval_s: float = CHECK_INTERVAL.total_seconds(),
 ) -> None:
     """Load the snapshot now, then refresh it and run this process's own checks."""
+    await stop()
     try:
         await refresh(pool)
     except Exception:
@@ -459,15 +491,18 @@ BOOTSTRAP_NO_MONITORED_ROUTES: Final[int] = 3
 
 
 def bootstrap_status(
-    routes: Iterable[RoutePolicy], *, now: datetime
+    routes: Iterable[RoutePolicy], requirements: PolicyRequirements, *, now: datetime
 ) -> tuple[int, dict[str, tuple[str, ...]]]:
     """Effective admission of every monitored route, as the deploy gate.
 
-    Success means every monitored route would be admitted now, including routes a
-    clean latest check cannot re-admit because their baseline was revoked earlier.
+    Uses each route's complete rejection reasons under the policy's requirements, so
+    success means every monitored route would be admitted now: including routes a
+    clean latest check cannot re-admit because their baseline was revoked earlier,
+    and routes unusable for any other reason (not approved, a future review date, a
+    missing account assertion).
     """
     status = {
-        route.route_id: attestation_reasons(route, now=now)
+        route.route_id: route.rejection_reasons(requirements, now=now)
         for route in routes
         if is_monitored(route)
     }

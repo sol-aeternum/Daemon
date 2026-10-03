@@ -171,7 +171,10 @@ calendar. It should be revoked only when the endpoint's ZDR status changes. A ro
 with `"approval_mode": "monitored"` has no `approval_expires_at` or
 `review_expires_at`; a date alongside monitoring is refused as ambiguous. It still
 needs a named operator review with evidence and a review date that is not in the
-future. Its `zdr_baseline` records what it was approved against:
+future. Monitored mode is valid only for routes on the OpenRouter gateway
+(`provider: openrouter`, endpoint `https://openrouter.ai/api/v1`), because the
+evidence comes from OpenRouter's listings and says nothing about any other host. Its
+`zdr_baseline` records what it was approved against:
 - `provider_slug`: the pinned provider whose published data policy applies;
 - `data_policy`: the approved values of `training`, `retainsPrompts` and, where
   relevant, `retentionDays`.
@@ -217,8 +220,9 @@ once against the deployment database before restarting the backend and worker on
 a monitored policy. Its exit status reflects effective admission, not just that
 check:
 - `0`: every monitored route would be admitted now;
-- `1`: some route is stale, unknown or revoked, including a baseline revoked by an
-  earlier check;
+- `1`: some route would be refused, because it is stale, unknown or revoked
+  (including a baseline revoked by an earlier check), or unusable for any other
+  policy reason;
 - `3`: the policy has no monitored routes.
 
 Restart only on `0`. Expiring approvals keep their existing behaviour.

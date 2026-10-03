@@ -12,8 +12,9 @@ DAEMON_INFERENCE_POLICY exported):
     python scripts/attest_inference_routes.py
 
 Exit status reflects effective admission, not only this check: 0 when every
-monitored route would be admitted now, 1 when any is stale, unknown or revoked
-(including a baseline revoked by an earlier check), 3 when the policy has no
+monitored route would be admitted now, 1 when any is not (stale, unknown or revoked,
+including a baseline revoked by an earlier check, or unusable for any other policy
+reason), 3 when the policy has no
 monitored routes, 2 when the database is not configured.
 """
 
@@ -43,13 +44,16 @@ async def main() -> int:
     if not settings.database_url:
         print("DATABASE_URL is not configured", file=sys.stderr)
         return 2
-    routes = list(load_inference_policy().routes.values())
+    policy = load_inference_policy()
+    routes = list(policy.routes.values())
     pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=1)
     try:
         await attestation.refresh(pool)
         async with httpx.AsyncClient() as client:
             counts = await attestation.run_check(pool, client, routes)
-        code, status = attestation.bootstrap_status(routes, now=attestation.utcnow())
+        code, status = attestation.bootstrap_status(
+            routes, policy.requirements, now=attestation.utcnow()
+        )
     finally:
         await pool.close()
     report = {

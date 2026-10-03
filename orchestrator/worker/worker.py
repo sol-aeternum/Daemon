@@ -113,6 +113,9 @@ async def on_shutdown(ctx: WorkerContext) -> None:
     set_shared_encryption_failure_counter(None)
     db_pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
     if db_pool is not None:
+        from orchestrator.entitlements import attestation
+
+        await attestation.stop()
         await db_pool.close()
         logger.info("Worker DB pool closed")
 

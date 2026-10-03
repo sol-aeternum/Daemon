@@ -97,6 +97,11 @@ VERIFIED_AVAILABILITY: Final[str] = "verified"
 #: long as the ZDR attestation keeps confirming the approved baseline.
 ROUTE_APPROVAL_MODES: Final[frozenset[str]] = frozenset({"expiring", "monitored"})
 
+#: The only gateway a monitored approval can attest: the ZDR listing and provider
+#: policies it checks are OpenRouter's, so they say nothing about any other host.
+MONITORED_PROVIDER: Final[str] = "openrouter"
+MONITORED_ENDPOINT: Final[str] = "https://openrouter.ai/api/v1"
+
 #: Provider data-policy fields a monitored baseline may pin. A change in any pinned
 #: field revokes the route.
 ZDR_BASELINE_POLICY_KEYS: Final[frozenset[str]] = frozenset(
@@ -1234,6 +1239,14 @@ def _parse_approval_mode(
         if raw_baseline is not None:
             raise PolicyError(f"routes.{route_id}.zdr_baseline requires approval_mode monitored")
         return {"approval_mode": mode, "zdr_baseline": None}
+    if (
+        route_map.get("provider") != MONITORED_PROVIDER
+        or route_map.get("endpoint") != MONITORED_ENDPOINT
+    ):
+        raise PolicyError(
+            f"routes.{route_id}: a monitored approval is only attestable on the "
+            f"{MONITORED_PROVIDER} gateway {MONITORED_ENDPOINT}"
+        )
     review = route_map.get("operator_review")
     if route_map.get("approval_expires_at") is not None or (
         isinstance(review, Mapping) and review.get("review_expires_at") is not None
