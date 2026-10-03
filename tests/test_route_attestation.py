@@ -642,7 +642,12 @@ async def test_stop_cancels_and_awaits_the_background_tasks() -> None:
 def test_a_missing_pinned_policy_field_is_a_failed_check_not_a_value() -> None:
     # Baseline pins retentionDays as null; upstream omits the field entirely.
     route = _route(
-        extra={"zdr_baseline": {"provider_slug": "azure", "data_policy": {"retentionDays": None}}}
+        extra={
+            "zdr_baseline": {
+                "provider_slug": "azure",
+                "data_policy": {"training": False, "retainsPrompts": False, "retentionDays": None},
+            }
+        }
     )
     [check] = attestation.evaluate([route], LISTED, _providers())
     assert (check.outcome, check.reasons) == (
@@ -702,3 +707,38 @@ def test_monitored_route_id_must_fit_the_attestation_table() -> None:
         parse_inference_policy(_monitored_policy(extra={"route_id": fits + "r"}))
     migration = MIGRATION.read_text(encoding="utf-8")
     assert f"BETWEEN 1 AND {MONITORED_ROUTE_ID_MAX}" in migration
+
+
+def test_a_malformed_earlier_duplicate_record_is_still_a_duplicate() -> None:
+    providers = {
+        "data": [
+            {"slug": "azure"},
+            {"slug": "azure", "dataPolicy": {"training": False, "retainsPrompts": False}},
+        ]
+    }
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == ("check_failed", ("metadata_malformed",))
+
+
+def test_an_unreadable_provider_policy_is_never_a_match() -> None:
+    providers = {"data": [{"slug": "azure", "dataPolicy": "redacted"}]}
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == ("check_failed", ("provider_policy_missing",))
+
+
+def test_equivalent_review_instants_share_one_baseline() -> None:
+    route = _route()
+    shifted_doc = _monitored_policy()
+    shifted_doc["routes"][0]["operator_review"]["reviewed_at"] = "2026-10-03T01:00:00+01:00"
+    shifted = parse_inference_policy(shifted_doc).routes["luna-azure-eu"]
+    assert attestation.baseline_fingerprint(shifted) == attestation.baseline_fingerprint(route)
+
+
+@pytest.mark.parametrize("pinned", [{"training": False}, {"retainsPrompts": False}])
+def test_a_baseline_must_pin_both_core_privacy_fields(pinned: dict[str, bool]) -> None:
+    with pytest.raises(PolicyError):
+        parse_inference_policy(
+            _monitored_policy(
+                extra={"zdr_baseline": {"provider_slug": "azure", "data_policy": pinned}}
+            )
+        )

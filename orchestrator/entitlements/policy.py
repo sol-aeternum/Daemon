@@ -111,6 +111,10 @@ ZDR_BASELINE_POLICY_KEYS: Final[frozenset[str]] = frozenset(
     {"training", "retainsPrompts", "retentionDays"}
 )
 
+#: Every monitored baseline pins both core privacy fields, so a change to either is
+#: always seen.
+ZDR_BASELINE_REQUIRED_KEYS: Final[frozenset[str]] = frozenset({"training", "retainsPrompts"})
+
 _LIMIT_FIELDS: Final[tuple[str, ...]] = (
     "max_concurrent_operations",
     "max_context_tokens",
@@ -1275,10 +1279,10 @@ def _parse_approval_mode(
     policy = _require_mapping(
         baseline.get("data_policy"), field=f"routes.{route_id}.zdr_baseline.data_policy"
     )
-    if not policy or not set(policy) <= ZDR_BASELINE_POLICY_KEYS:
+    if not ZDR_BASELINE_REQUIRED_KEYS <= set(policy) <= ZDR_BASELINE_POLICY_KEYS:
         raise PolicyError(
-            f"routes.{route_id}.zdr_baseline.data_policy must pin one or more of "
-            f"{sorted(ZDR_BASELINE_POLICY_KEYS)}"
+            f"routes.{route_id}.zdr_baseline.data_policy must pin "
+            f"{sorted(ZDR_BASELINE_REQUIRED_KEYS)} and may also pin retentionDays"
         )
     for key, value in policy.items():
         # Each field keeps its own type: the flags are booleans and retentionDays is a

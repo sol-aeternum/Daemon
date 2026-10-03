@@ -90,7 +90,12 @@ def baseline_fingerprint(route: RoutePolicy) -> str:
         "provider_only": list(route.transport.provider_only or ()),
         "provider_slug": baseline.provider_slug if baseline else None,
         "data_policy": dict(sorted(baseline.data_policy.items())) if baseline else None,
-        "reviewed_at": route.review.reviewed_at.isoformat() if route.review.reviewed_at else None,
+        # One instant is one review, whatever offset it was written with.
+        "reviewed_at": (
+            route.review.reviewed_at.astimezone(timezone.utc).isoformat()
+            if route.review.reviewed_at
+            else None
+        ),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -126,20 +131,21 @@ def _listing_entries(payload: object) -> list[tuple[str, str]] | None:
     return entries
 
 
-def _provider_policies(payload: object) -> dict[str, Mapping[str, Any]] | None:
+def _provider_policies(payload: object) -> dict[str, Mapping[str, Any] | None] | None:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list) or not data:
         return None
-    policies: dict[str, Mapping[str, Any]] = {}
+    policies: dict[str, Mapping[str, Any] | None] = {}
     for item in data:
         if isinstance(item, dict) and isinstance(item.get("slug"), str):
+            slug = item["slug"]
+            if slug in policies:
+                # Two records for one provider are ambiguous evidence, whatever their
+                # shape: a later matching record must not mask an earlier one.
+                return None
             policy = item.get("dataPolicy")
-            if isinstance(policy, dict):
-                if item["slug"] in policies:
-                    # Two records for one provider are ambiguous evidence: a later
-                    # matching record must not mask an earlier conflicting one.
-                    return None
-                policies[item["slug"]] = policy
+            # An unreadable policy is kept as None: it is never evidence of a match.
+            policies[slug] = policy if isinstance(policy, dict) else None
     return policies or None
 
 
