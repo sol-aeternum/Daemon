@@ -86,6 +86,63 @@ def judge(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("finish", [None, "unknown", "content_filter", "length", "tool_calls", ""])
+async def test_equivalent_json_requires_normal_terminal(judge, finish):
+    judge.return_value = reply([uuid.UUID(int=1)], finish=finish)
+    assert (await equivalence.plan_equivalence(incoming(), [row()])).equivalent_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [{"refusal": "refused"}, {"tool_calls": [{"id": "x"}]}, {"function_call": {"name": "x"}}],
+)
+@pytest.mark.parametrize("sdk", [False, True])
+async def test_equivalent_json_with_refusal_or_calls_is_not_accepted(judge, extra, sdk):
+    response = reply([uuid.UUID(int=1)])
+    response["choices"][0]["message"].update(extra)
+    if sdk:
+        choice = response["choices"][0]
+        choice["message"] = SimpleNamespace(**choice["message"])
+        response = SimpleNamespace(choices=[SimpleNamespace(**choice)])
+    judge.return_value = response
+    assert (await equivalence.plan_equivalence(incoming(), [row()])).equivalent_id is None
+
+
+@pytest.mark.asyncio
+async def test_missing_terminal_and_multiple_choices_retain_fact(judge):
+    response = reply([uuid.UUID(int=1)])
+    del response["choices"][0]["finish_reason"]
+    judge.return_value = response
+    assert (await equivalence.plan_equivalence(incoming(), [row()])).equivalent_id is None
+    response = reply([uuid.UUID(int=1)])
+    response["choices"] *= 2
+    judge.return_value = response
+    assert (await equivalence.plan_equivalence(incoming(), [row()])).equivalent_id is None
+
+
+@pytest.mark.parametrize("style", ["dict", "sdk", "dump"])
+def test_normal_terminal_text_control(style):
+    response = reply([uuid.UUID(int=1)])
+    expected = response["choices"][0]["message"]["content"]
+    if style == "sdk":
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=expected, refusal=None, tool_calls=[], function_call=None
+                    ),
+                )
+            ]
+        )
+    elif style == "dump":
+        original = response
+        response = SimpleNamespace(model_dump=lambda: original)
+    assert equivalence.strict_judge_content(response) == expected
+
+
+@pytest.mark.asyncio
 async def test_pizza_full_payload_cross_source_slot_and_role(judge):
     fact = incoming()
     plan = await equivalence.plan_equivalence(fact, [row()])

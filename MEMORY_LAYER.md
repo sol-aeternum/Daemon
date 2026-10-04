@@ -170,6 +170,9 @@ Production `deduplicate_facts()` uses a bounded PLAN → revalidate/COMMIT path
 active/open L1 lexical, slot-family and qualified-vector candidates are discovery
 only. Complete facts are compared by the configured, account-budgeted background
 role; only a complete `equivalent` verdict may merge a paraphrase. A missing
+normal `stop` terminal reason, refusal or tool/function-call output also prevents
+semantic merging, even when the visible text contains valid verdict JSON. Exactly
+one nonempty text choice is required at this decision boundary. A missing
 scope, unavailable judge, malformed/truncated verdict, correction, distinct fact
 or uncertainty preserves the incoming fact without threshold supersession or
 slot-family closure. Embeddings are not required for this path.

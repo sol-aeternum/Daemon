@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from orchestrator.compute_runtime import ComputeUnavailable, current_scope, guarded_completion
-from orchestrator.memory.completion import read_completeness
 from orchestrator.model_routing import routing_context
 
 MAX_CANDIDATES = 6
@@ -135,6 +134,33 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def strict_judge_content(response: Any) -> str | None:
+    """Only a single normal, non-refusal text completion may suppress capture."""
+
+    def field(value: Any, name: str) -> Any:
+        return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+    try:
+        choices = field(response, "choices")
+        if not isinstance(choices, list):
+            dump = getattr(response, "model_dump", None)
+            if not callable(dump):
+                dump = getattr(response, "dict", None)
+            choices = field(dump(), "choices") if callable(dump) else None
+        if not isinstance(choices, list) or len(choices) != 1:
+            return None
+        choice = choices[0]
+        if field(choice, "finish_reason") != "stop":
+            return None
+        message = field(choice, "message")
+        if any(field(message, name) for name in ("refusal", "tool_calls", "function_call")):
+            return None
+        content = field(message, "content")
+        return content if isinstance(content, str) and content.strip() else None
+    except Exception:
+        return None  # Malformed SDK objects are not affirmative completion evidence.
+
+
 async def plan_equivalence(
     incoming: IncomingMemory,
     rows: list[dict[str, Any]],
@@ -213,11 +239,11 @@ async def plan_equivalence(
         }:
             return plan
         raise
-    complete = read_completeness(response)
-    if not complete.complete:
+    content = strict_judge_content(response)
+    if content is None:
         return plan
     try:
-        data = json.loads(complete.content, object_pairs_hook=_unique_object)
+        data = json.loads(content, object_pairs_hook=_unique_object)
     except (ValueError, TypeError):
         return plan
     if not isinstance(data, dict) or set(data) != {"verdicts"}:
