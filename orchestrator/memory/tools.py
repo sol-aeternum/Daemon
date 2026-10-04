@@ -613,6 +613,10 @@ class MemoryWriteTool(Tool):
             content = kwargs.get("content", "")
             category = kwargs.get("category", "fact")
             slot = kwargs.get("slot")
+            if not isinstance(content, str) or not content.strip():
+                # Cheap input validation: before any quota reservation,
+                # embedding request or cap lock.
+                return "Memory content can't be blank."
             if category not in self.allowed_categories:
                 allowed = ", ".join(sorted(self.allowed_categories))
                 return f"Invalid category '{category}'. Use one of: {allowed}."
@@ -757,6 +761,13 @@ class MemoryWriteTool(Tool):
             # reveals nothing about whether the ID exists for another user.
             if old_memory.get("user_id") != self.user_id:
                 return "Memory not found"
+
+            if "content" in kwargs and (
+                not isinstance(kwargs["content"], str) or not kwargs["content"].strip()
+            ):
+                # Reject before quota, close or embedding; omitting content
+                # still inherits the existing text below.
+                return "Memory content can't be blank."
 
             # Quota check runs after the ownership guard (so an
             # unauthorized caller learns nothing about quota state) but

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from orchestrator.compute_runtime import guarded_completion
 from orchestrator.memory.completion import read_completeness
-from orchestrator.memory.embedding import EmbeddingConfigurationError
+from orchestrator.memory.embedding import EmbeddingConfigurationError, EmbeddingRequestError
 
 import uuid
 from dataclasses import dataclass, field
@@ -73,6 +73,22 @@ def _embedding_text(content: str, slot: str | None) -> str:
     if isinstance(slot, str) and slot.strip():
         return f"{slot.strip()}: {normalized_content}"
     return normalized_content
+
+
+def _single_vector(result: Any) -> list[float]:
+    """The one vector for one non-empty text, or a clear error.
+
+    The embedding helper silently drops blank texts and can return an empty
+    batch. For non-empty text that is a provider fault, not the same as
+    embeddings being unqualified (which keeps its explicit lexical fallback),
+    so it raises instead of indexing past the end.
+    """
+    embeddings = getattr(result, "embeddings", None) or []
+    if len(embeddings) != 1:
+        raise EmbeddingRequestError(
+            f"embedding provider returned {len(embeddings)} vectors for one memory text"
+        )
+    return embeddings[0]
 
 
 @dataclass
@@ -484,6 +500,11 @@ async def deduplicate_facts(
         raise ValueError("prepared_embeddings must match facts length")
 
     for fact_index, fact in enumerate(facts):
+        if not str(getattr(fact, "content", "") or "").strip():
+            # Blank text must never reach embedding or storage. Skipping by
+            # index keeps any prepared embeddings aligned with their facts.
+            logger.warning("deduplicate_facts skipped a blank fact at index %d", fact_index)
+            continue
         fact_slot = getattr(fact, "slot", None)
         fact_slot_family = _slot_family(fact_slot)
         current_like_slot = _is_current_like_slot(fact_slot)
@@ -538,7 +559,7 @@ async def deduplicate_facts(
             continue
         if current_like_slot and fact_slot_family:
             current_slot_families.add(fact_slot_family)
-        embedding = embedding_result.embeddings[0]
+        embedding = _single_vector(embedding_result)
         document_model = embedding_result.storage_model
 
         min_similarity = (
@@ -1060,7 +1081,7 @@ async def dedup_and_store(
         except EmbeddingConfigurationError:
             effective_embedding_result = None
         embedding = (
-            effective_embedding_result.embeddings[0]
+            _single_vector(effective_embedding_result)
             if effective_embedding_result is not None
             else None
         )
@@ -1085,4 +1106,8 @@ async def dedup_and_store(
 
 async def prepare_memory_embedding(content: str, slot: str | None = None) -> Any:
     """Compute a write embedding before opening a cap transaction."""
-    return await embed_documents_with_metadata([_embedding_text(content, slot)])
+    if not content or not content.strip():
+        raise ValueError("memory content must not be blank")
+    result = await embed_documents_with_metadata([_embedding_text(content, slot)])
+    _single_vector(result)  # fail before any lock if the provider returned none
+    return result
