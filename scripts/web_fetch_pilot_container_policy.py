@@ -682,8 +682,12 @@ def require_networked(
     return identifier
 
 
-# ---- Upstream Crawl4AI 0.9.4 service role (Phase 1 evaluation, owner-approved) ----
-C4AI_IMAGE = "sha256:048848e548fad60c670bd656cbb3eb204fd999709a30365d3697c411ce50796d"
+# ---- Crawl4AI 0.9.4 service role (Phase 1 evaluation, owner-approved) ----
+# A locally built, owner-approved derivative of the upstream image below. It
+# changes only browser launch arguments and is replaced by upstream once a
+# release meets the pilot's requirements.
+C4AI_UPSTREAM_IMAGE = "sha256:048848e548fad60c670bd656cbb3eb204fd999709a30365d3697c411ce50796d"
+C4AI_IMAGE = "sha256:455b56782cd1840d3659c79d67e59a63a6e6bb7df91f2f971ee72eacccd0f782"
 C4AI_NAME = re.compile(r"daemon-c4ai-[0-9a-f]{24}\Z")
 C4AI_MEMORY = 2 * 1024 * 1024 * 1024
 C4AI_SHM = 256 * 1024 * 1024

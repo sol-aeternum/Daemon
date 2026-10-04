@@ -2371,3 +2371,23 @@ browser limits) every attempt failed locally with `ENETUNREACH`: TCP to public, 
 Docker-bridge, LAN and egress-gateway addresses, UDP standing in for DNS and QUIC, and IPv6 TCP;
 the name lookup failed and the container had only `lo` and no routes. The E2c browser gate was
 re-run against the challenge-classification change: **2 passed in 15.80 s**. Nothing remained.
+
+### Crawl4AI Phase 1: owner-approved local derivative (2026-10-04)
+
+Upstream image `sha256:048848e5…` (0.9.4) did not meet a pilot security requirement in its
+shipped form; details are withheld pending coordinated disclosure to upstream. With owner
+approval (direction (a)) the pilot pins a locally built derivative of that exact image,
+`C4AI_IMAGE = sha256:455b5678…`, which changes only Chromium launch arguments. Its build
+recipe is kept outside this public repository until disclosure completes and will be committed
+then. The pilot moves back to an upstream release once one meets the requirements; the
+derivative is also the intended replacement for the unsupported 0.8.0 Compose service (#436),
+which needs its own approval.
+
+The derivative always runs request-built browsers with Chromium's sandbox (owner decision), so
+it requires the pinned seccomp profile: under Docker's default profile Chromium refuses to start
+and the crawl fails closed (observed in a shipped-mode run, nothing left behind). The Phase 1
+gate therefore runs in sandboxed mode only. Owner-approved run of
+`tests/test_web_fetch_pilot_c4ai_phase1_io.py` (SHA-256 `3088496b4cb614726716d111e411f094b5f9c1e7f9fd385e94856e88722a6041`): **1 passed in
+26.10 s** — health 200, unauthenticated crawl 401, metadata/loopback/private/IPv6-loopback
+targets refused, the self-signed fixture saw attempts and no completed handshake, identity-checked
+removal of everything.
