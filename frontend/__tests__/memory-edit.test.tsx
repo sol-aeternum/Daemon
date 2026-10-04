@@ -497,3 +497,84 @@ describe('edits that change filter membership (#437 review)', () => {
     ).toBe('My stale edit');
   });
 });
+
+describe('#437 re-review: auth boundary and reconcile barrier', () => {
+  it(
+    'a sign-in change drops an open memory and its unsaved draft',
+    { timeout: 15000 },
+    async () => {
+      const field = await openFirstMemoryForEditing();
+      fireEvent.change(field, { target: { value: 'Account A private draft' } });
+      act(() => changeSignIn());
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Memory content')).toBeNull(),
+      );
+      expect(screen.queryByText('Account A private draft')).toBeNull();
+      expect(screen.queryByText('I commute by tram')).toBeNull();
+    },
+  );
+
+  it(
+    'a sign-in change drops the cached saved memory too',
+    { timeout: 15000 },
+    async () => {
+      const field = await openFirstMemoryForEditing();
+      fireEvent.change(field, { target: { value: 'Account A saved text' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Memory content')).toBeNull(),
+      );
+      expect(screen.getByText('Account A saved text')).toBeTruthy();
+      act(() => changeSignIn());
+      await waitFor(() =>
+        expect(screen.queryByText('Account A saved text')).toBeNull(),
+      );
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    },
+  );
+
+  it('"Load more" during a held post-edit reconcile waits and then reaches every row', async () => {
+    rows = Array.from({ length: 21 }, (_, i) =>
+      row(i + 1, { category: 'fact' }),
+    );
+    const { result } = renderHook(() => useMemories());
+    await act(async () =>
+      result.current.fetchMemories({ category: 'fact', status: 'active' }),
+    );
+    expect(result.current.memories).toHaveLength(20);
+
+    let releaseList!: () => void;
+    listGate = () => new Promise<void>((resolve) => (releaseList = resolve));
+    await act(async () => {
+      expect(
+        (
+          await result.current.correctMemory(
+            'm-5',
+            'Memory number 5',
+            'preference',
+          )
+        ).ok,
+      ).toBe(true);
+    });
+    await waitFor(() => expect(releaseList).toBeDefined()); // reconcile is held
+    let more!: Promise<void>;
+    act(() => {
+      more = result.current.loadMore(); // clicked before the reconcile applies
+    });
+    expect(result.current.loading).toBe(true);
+    listGate = null;
+    await act(async () => {
+      releaseList();
+      await more;
+    });
+
+    const ids = result.current.memories.map((m) => m.id);
+    expect(ids).not.toContain('m-5');
+    expect(ids).toContain('m-21');
+    expect(ids).toHaveLength(20);
+    expect(new Set(ids).size).toBe(20);
+    expect(result.current.total).toBe(20);
+    expect(result.current.hasMore).toBe(false);
+    expect(result.current.loading).toBe(false);
+  });
+});

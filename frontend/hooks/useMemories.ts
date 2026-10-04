@@ -468,6 +468,11 @@ export function useMemories() {
   const foregroundKind = useRef<'fetch' | 'loadMore' | null>(null);
   const pendingMutations = useRef(0);
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
+  // A running refresh (poll or post-mutation reconcile) is a barrier for
+  // "Load more": paging waits for it so it never retires a reconcile and then
+  // pages from a stale offset.
+  const inFlightRefresh = useRef<Promise<void> | null>(null);
+  const loadMoreQueued = useRef(false);
 
   const beginForeground = (kind: 'fetch' | 'loadMore') => {
     const request = ++listRequest.current;
@@ -552,6 +557,19 @@ export function useMemories() {
 
   /** Append the next page for the current filters. */
   const loadMore = useCallback(async () => {
+    if (loadMoreQueued.current) return;
+    if (inFlightRefresh.current) {
+      // Keep the person's intent, but page only after the refresh applies.
+      loadMoreQueued.current = true;
+      setLoading(true);
+      const generation = getAuthGeneration();
+      try {
+        await inFlightRefresh.current;
+      } finally {
+        loadMoreQueued.current = false;
+      }
+      if (generation !== getAuthGeneration()) return;
+    }
     const request = beginForeground('loadMore');
     const generation = getAuthGeneration();
     const current = filtersRef.current;
@@ -591,38 +609,46 @@ export function useMemories() {
       refreshPending.current = true;
       return;
     }
-    const request = ++listRequest.current;
-    const generation = getAuthGeneration();
-    const current = filtersRef.current;
-    const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
-    try {
-      const rows: Memory[] = [];
-      const seen = new Set<string>();
-      let last: MemoryPage | null = null;
-      while (rows.length < span) {
-        const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
-        last = await requestPage(current, rows.length, limit);
-        if (
-          request !== listRequest.current ||
-          generation !== getAuthGeneration()
-        )
-          return;
-        for (const memory of last.memories) {
-          if (!seen.has(memory.id)) {
-            seen.add(memory.id);
-            rows.push(memory);
+    const run = (async () => {
+      const request = ++listRequest.current;
+      const generation = getAuthGeneration();
+      const current = filtersRef.current;
+      const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
+      try {
+        const rows: Memory[] = [];
+        const seen = new Set<string>();
+        let last: MemoryPage | null = null;
+        while (rows.length < span) {
+          const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
+          last = await requestPage(current, rows.length, limit);
+          if (
+            request !== listRequest.current ||
+            generation !== getAuthGeneration()
+          )
+            return;
+          for (const memory of last.memories) {
+            if (!seen.has(memory.id)) {
+              seen.add(memory.id);
+              rows.push(memory);
+            }
           }
+          if (!last.has_more || last.memories.length === 0) break;
         }
-        if (!last.has_more || last.memories.length === 0) break;
+        if (last) {
+          publish(rows, {
+            ...last,
+            has_more: last.has_more && rows.length < last.total,
+          });
+        }
+      } catch {
+        // A failed background refresh keeps the current list.
       }
-      if (last) {
-        publish(rows, {
-          ...last,
-          has_more: last.has_more && rows.length < last.total,
-        });
-      }
-    } catch {
-      // A failed background refresh keeps the current list.
+    })();
+    inFlightRefresh.current = run;
+    try {
+      await run;
+    } finally {
+      if (inFlightRefresh.current === run) inFlightRefresh.current = null;
     }
   }, [publish, requestPage]);
 
@@ -638,6 +664,7 @@ export function useMemories() {
         foreground.current = null;
         foregroundKind.current = null;
         refreshPending.current = false;
+        loadMoreQueued.current = false;
         loadedCount.current = 0;
         setMemories([]);
         setTotal(0);

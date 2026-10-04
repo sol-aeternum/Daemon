@@ -23,7 +23,11 @@ import {
   AlertTriangle,
   MessageSquare,
 } from 'lucide-react';
-import { ensureAuthHeader } from '@/lib/auth';
+import {
+  ensureAuthHeader,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
 
 interface MemoryStats {
   /** Memories Daemon currently uses. */
@@ -193,6 +197,18 @@ export default function MemoryTab() {
   // move it out of the current filters; the detail view keeps showing it.
   const [detailMemory, setDetailMemory] = useState<Memory | null>(null);
 
+  // A sign-in change drops the open memory, its cached copy and any draft,
+  // so nothing from the previous account stays on screen.
+  useEffect(
+    () =>
+      subscribeAuthGeneration(() => {
+        setSelectedMemoryId(null);
+        setDetailMemory(null);
+        setViewMode('list');
+      }),
+    [],
+  );
+
   const handleSelectMemory = useCallback(
     (memoryId: string) => {
       setSelectedMemoryId(memoryId);
@@ -212,8 +228,12 @@ export default function MemoryTab() {
   // Handle memory correction
   const handleCorrectMemory = useCallback(
     async (id: string, content: string, category?: string) => {
+      const generation = getAuthGeneration();
       const result = await correctMemory(id, content, category);
-      if (result.ok) setDetailMemory(result.memory);
+      // A save from a previous sign-in never repopulates the detail cache.
+      if (result.ok && generation === getAuthGeneration()) {
+        setDetailMemory(result.memory);
+      }
       return result;
     },
     [correctMemory],
