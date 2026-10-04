@@ -1,17 +1,44 @@
 """Bounded, owner-scoped cache for NEW speech only; legacy artifacts untouched."""
 
 from contextlib import contextmanager
+import asyncio
 import fcntl
 import hashlib
 import os
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any, TypeVar
 
 from orchestrator.speech.contracts import SpeechRequest
 
 CACHE_BYTES = 64 * 1024 * 1024
 CACHE_FILES = 128
 CACHE_TTL_SECONDS = 3600
+
+_T = TypeVar("_T")
+_io_tails: set[asyncio.Task[Any]] = set()
+
+
+async def run_cache_io(work: Callable[..., _T], *args: Any) -> _T:
+    """Keep synchronous cache locks off-loop and own cancelled work until exit.
+
+    Only use for operations returning values, not live file descriptors. The
+    synchronous operation owns every descriptor/lock through its own finally.
+    """
+    task = asyncio.create_task(asyncio.to_thread(work, *args))
+    _io_tails.add(task)
+
+    def finished(done: asyncio.Task[Any]) -> None:
+        _io_tails.discard(done)
+        if not done.cancelled():
+            done.exception()  # Consume failure even after the HTTP waiter retires.
+
+    task.add_done_callback(finished)
+    # wait never propagates waiter cancellation into the owned task. Unlike
+    # shield, it also does not report a late failure from a retired waiter on
+    # Python 3.14; the explicit completion callback above consumes that failure.
+    await asyncio.wait({task})
+    return task.result()
 
 
 def audio_filename(

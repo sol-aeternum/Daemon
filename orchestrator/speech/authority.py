@@ -35,6 +35,7 @@ class SpeechAuthority:
     def __init__(self, pool: Any, auth: AuthenticatedDevice, token_hash: str):
         self._pool, self._auth, self._token_hash = pool, auth, token_hash
         self._expires = 0.0
+        self._refresh_due = 0.0
         self._error: SpeechError | None = None
         self._ready = asyncio.Event()
         self._failed: asyncio.Future[SpeechError] = asyncio.get_running_loop().create_future()
@@ -73,19 +74,32 @@ class SpeechAuthority:
         self._check()
         await self._ready.wait()
         self._check()
+        # Enforce freshness even when this task resumes before an overdue
+        # background monitor after event-loop starvation.
+        await self.refresh(only_if_due=True)
+        self._check()
 
     async def wait_failure(self) -> None:
         # Shield the shared future: a cancelled HTTP waiter cannot disable the
         # monitor or accidentally mark authority successful.
         raise await asyncio.shield(self._failed)
 
-    async def refresh(self) -> None:
+    async def refresh(self, *, only_if_due: bool = False) -> None:
         async with self._refresh_lock:
             if self._error is not None:
                 raise self._error
+            if self._expires:
+                self._check()
+            if only_if_due and time.monotonic() < self._refresh_due:
+                return
+            old_expiry = self._expires
+            budget = REFRESH_BUDGET_SECONDS
+            if old_expiry:
+                budget = min(budget, max(0.0, old_expiry - time.monotonic()))
+            budget_deadline = time.monotonic() + budget
             self._ready.clear()
             try:
-                async with asyncio.timeout(REFRESH_BUDGET_SECONDS):
+                async with asyncio.timeout(budget):
                     for attempt in range(2):
                         started = time.monotonic()
                         try:
@@ -108,11 +122,22 @@ class SpeechAuthority:
                         # Anchor at query START, not arrival. Round-trip latency
                         # subtracts validity instead of extending the DB lease.
                         remaining = (row["access_expires_at"] - row["checked_at"]).total_seconds()
+                        # A delayed query must not revive a lease that expired
+                        # while the loop could not deliver its timeout callback.
+                        if old_expiry and time.monotonic() >= old_expiry:
+                            raise SpeechError("speech_authorization_lost", 401)
+                        if time.monotonic() >= budget_deadline:
+                            raise SpeechError("speech_authorization_unavailable", 503)
                         self._expires = started + max(0.0, remaining)
                         self._check()
+                        self._refresh_due = started + REFRESH_SECONDS
                         break
             except TimeoutError:
-                error = SpeechError("speech_authorization_unavailable", 503)
+                error = (
+                    SpeechError("speech_authorization_lost", 401)
+                    if old_expiry and time.monotonic() >= old_expiry
+                    else SpeechError("speech_authorization_unavailable", 503)
+                )
                 self._fail(error)
                 raise error from None
             except SpeechError as error:
@@ -126,16 +151,16 @@ class SpeechAuthority:
                 self._ready.set()
 
     async def _watch(self) -> None:
-        next_refresh = time.monotonic() + REFRESH_SECONDS
         try:
             while True:
-                await asyncio.sleep(max(0.0, min(next_refresh, self._expires) - time.monotonic()))
+                await asyncio.sleep(
+                    max(0.0, min(self._refresh_due, self._expires) - time.monotonic())
+                )
                 self._check()
                 # Expiry must interrupt even an in-progress DB refresh. A blocked
                 # authority read must never grant its full budget past expiry.
                 async with asyncio.timeout_at(self._expires):
-                    await self.refresh()
-                next_refresh += REFRESH_SECONDS
+                    await self.refresh(only_if_due=True)
         except asyncio.CancelledError:
             raise
         except TimeoutError:

@@ -71,6 +71,13 @@ at most one transient read retry, payload gating while pending, and fail-closed
 expiry/revocation/unavailability. Authority loss independently interrupts blocked
 I/O. Successor tokens cannot extend an older stream's authority. No POST retry.
 
+Each outbound checkpoint also enforces the five-second refresh deadline, so a
+delayed monitor cannot authorize a frame from a stale snapshot after an event-loop
+stall. Concurrent overdue checks share one read; forced prepublication checks
+remain unconditional. Buffered cache lookups and writes run off-loop with owned
+thread tails through cancellation, keeping the shared filesystem lock from
+blocking the authority monitor.
+
 ## Cache, proxy and player
 
 Rendering identity differs from buffered `speech-v1`. Partial audio and private

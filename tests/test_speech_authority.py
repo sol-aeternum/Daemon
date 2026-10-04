@@ -5,12 +5,75 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
 from orchestrator.auth import AuthenticatedDevice
 from orchestrator.speech.authority import SpeechAuthority
 from orchestrator.speech.contracts import SpeechError
+
+
+@pytest.mark.asyncio
+async def test_overdue_checkpoint_rechecks_before_delayed_monitor_runs(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(
+        "orchestrator.speech.authority.time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    pool = Pool(lease_row(), None)
+    authority, _ = lease(pool)
+    await authority.refresh()
+    # Model resumption after starvation with the payload task scheduled before
+    # the monitor. No monitor is needed to enforce a checkpoint's freshness.
+    clock[0] += 5.01
+    with pytest.raises(SpeechError, match="speech_authorization_lost"):
+        await authority.checkpoint()
+    assert len(pool.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_overdue_checkpoints_coalesce_and_forced_publication_still_reads(
+    monkeypatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr(
+        "orchestrator.speech.authority.time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    pool = Pool(lease_row(), lease_row(), None)
+    authority, _ = lease(pool)
+    await authority.refresh()
+    clock[0] += 5.01
+    await asyncio.gather(*(authority.checkpoint() for _ in range(12)))
+    assert len(pool.calls) == 2
+    with pytest.raises(SpeechError, match="speech_authorization_lost"):
+        await authority.refresh()
+    assert len(pool.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_refresh_cannot_outlive_old_expiry_without_monitor(monkeypatch):
+    monkeypatch.setattr("orchestrator.speech.authority.REFRESH_SECONDS", 0.001)
+    pool = Pool(lease_row(0.04), lease_row())
+    authority, _ = lease(pool)
+    await authority.refresh()
+    await asyncio.sleep(0.005)
+    pool.delay = 1
+    with pytest.raises(SpeechError, match="speech_authorization_lost"):
+        await asyncio.wait_for(authority.checkpoint(), 0.2)
+
+
+@pytest.mark.asyncio
+async def test_overdue_checkpoint_unavailable_is_bounded_without_monitor(monkeypatch):
+    monkeypatch.setattr("orchestrator.speech.authority.REFRESH_SECONDS", 0.001)
+    monkeypatch.setattr("orchestrator.speech.authority.REFRESH_BUDGET_SECONDS", 0.025)
+    pool = Pool(lease_row(), lease_row())
+    authority, _ = lease(pool)
+    await authority.refresh()
+    await asyncio.sleep(0.005)
+    pool.delay = 1
+    with pytest.raises(SpeechError, match="speech_authorization_unavailable"):
+        await asyncio.wait_for(authority.checkpoint(), 0.2)
+    assert len(pool.calls) == 2
 
 
 class Pool:
