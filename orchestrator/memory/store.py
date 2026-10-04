@@ -1442,22 +1442,55 @@ class MemoryStore:
         content: str,
         *,
         embedding: list[float] | None = None,
+        embedding_model: str | None = None,
+        clear_embedding: bool = False,
+        category: str | None = None,
         confidence: float | None = None,
+        user_id: uuid.UUID | None = None,
+        require_content_hash: bool = False,
+        expected_content_hash: str | None = None,
     ) -> dict[str, Any] | None:
+        """Replace a memory's content in one write.
+
+        With ``require_content_hash`` the write applies only if the stored
+        content hash still equals ``expected_content_hash`` (NULL matches
+        NULL), so an edit based on a stale read cannot overwrite a newer one
+        or pair its text with another edit's vector; it returns ``None``.
+
+        A supplied ``embedding`` replaces the vector (with its model);
+        ``clear_embedding`` drops it so an obsolete vector can never keep
+        matching the old text. With neither, the vector is left as is.
+        ``user_id`` additionally scopes the write to its owner.
+        """
         encrypted_content = self._enc.encrypt(content)
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
+        effective_model = (
+            (embedding_model or _default_embedding_model()) if embedding_str is not None else None
+        )
         try:
             row = await self._pool.fetchrow(
                 """
                 UPDATE memories
                 SET content    = $2,
-                    embedding  = COALESCE($3::vector, embedding),
+                    embedding  = CASE
+                        WHEN $3::vector IS NOT NULL THEN $3::vector
+                        WHEN $7::bool THEN NULL
+                        ELSE embedding
+                    END,
+                    embedding_model = CASE
+                        WHEN $3::vector IS NOT NULL THEN $8
+                        WHEN $7::bool THEN NULL
+                        ELSE embedding_model
+                    END,
                     confidence = COALESCE($4, confidence),
+                    category   = COALESCE($9, category),
                     content_tsv = to_tsvector('english', $5),
                     content_hash = $6,
                     updated_at = NOW()
                 WHERE id = $1
+                  AND ($10::uuid IS NULL OR user_id = $10)
+                  AND (NOT $11::bool OR content_hash IS NOT DISTINCT FROM $12)
                 RETURNING *
                 """,
                 memory_id,
@@ -1466,6 +1499,12 @@ class MemoryStore:
                 confidence,
                 content,
                 content_hash,
+                clear_embedding,
+                effective_model,
+                category,
+                user_id,
+                require_content_hash,
+                expected_content_hash,
             )
         except asyncpg.UniqueViolationError as exc:
             raise MemoryContentConflictError(
@@ -1481,7 +1520,14 @@ class MemoryStore:
         embedding: list[float],
         *,
         embedding_model: str | None = None,
+        expected_content_hash: str | None = None,
     ) -> bool:
+        """Store a vector; with ``expected_content_hash``, only if still current.
+
+        A background re-embed passes the hash of the text it embedded, so a
+        vector computed from content that was edited meanwhile is discarded
+        instead of overwriting the newer content's vector.
+        """
         embedding_str = _format_vector(embedding)
         effective_embedding_model = embedding_model or _default_embedding_model()
         result = await self._pool.execute(
@@ -1491,10 +1537,12 @@ class MemoryStore:
                 embedding_model = $3,
                 updated_at = NOW()
             WHERE id = $1
+              AND ($4::text IS NULL OR content_hash = $4)
             """,
             memory_id,
             embedding_str,
             effective_embedding_model,
+            expected_content_hash,
         )
         return result == "UPDATE 1"
 

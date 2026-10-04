@@ -20,16 +20,6 @@ export interface Memory {
   metadata?: Record<string, unknown>;
 }
 
-export interface TrailItem {
-  id: string;
-  memory_id: string;
-  content: string;
-  category: string;
-  changed_by: string;
-  changed_at: string;
-  change_type: string;
-}
-
 export interface FetchMemoriesParams {
   category?: string;
   source_type?: string;
@@ -327,6 +317,41 @@ export function parseMemoryPage(body: unknown): MemoryPage {
   };
 }
 
+export type CorrectMemoryResult =
+  | { ok: true; memory: Memory }
+  | { ok: false; error: string; status?: number };
+
+function correctionError(status: number): string {
+  switch (status) {
+    case 404:
+      return 'This memory no longer exists, so the edit was not saved.';
+    case 409:
+      return 'Another memory already says exactly this. Change the wording or delete the other one.';
+    case 412:
+      return 'This memory changed since you opened it, so your edit was not saved. Your draft is still here; reopen the memory to see the latest version.';
+    case 422:
+      return `Write something to remember, under ${MAX_USER_MEMORY_LENGTH.toLocaleString()} characters.`;
+    case 503:
+      return 'Memory is unavailable right now, so the edit was not saved. Try again shortly.';
+    default:
+      return "Couldn't save this edit. Your draft is still here.";
+  }
+}
+
+/** The PATCH reply must be the memory that was edited. */
+export function parseCorrectedMemory(body: unknown, id: string): Memory | null {
+  if (!body || typeof body !== 'object') return null;
+  const record = body as Record<string, unknown>;
+  if (
+    String(record.id) !== id ||
+    typeof record.content !== 'string' ||
+    typeof record.category !== 'string'
+  ) {
+    return null;
+  }
+  return { ...(record as unknown as Memory), id };
+}
+
 export function useMemories() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
@@ -441,8 +466,15 @@ export function useMemories() {
   // Which kind of foreground request owns loading, and how many deletes are
   // pending. While a delete is pending no background refresh publishes.
   const foregroundKind = useRef<'fetch' | 'loadMore' | null>(null);
-  const pendingDeletes = useRef(0);
+  const pendingMutations = useRef(0);
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
+  // Reconciliation bookkeeping. A mutation that may shift the filtered
+  // span bumps `dirtySeq`; only a list read that started at or after that
+  // bump and then published successfully advances `cleanSeq`. While dirty,
+  // the consumed offset is not trusted: "Load more" re-reads the span from
+  // the start instead of paging from a possibly stale offset.
+  const dirtySeq = useRef(0);
+  const cleanSeq = useRef(0);
 
   const beginForeground = (kind: 'fetch' | 'loadMore') => {
     const request = ++listRequest.current;
@@ -459,7 +491,7 @@ export function useMemories() {
     foreground.current = null;
     foregroundKind.current = null;
     setLoading(false);
-    if (refreshPending.current && pendingDeletes.current === 0) {
+    if (refreshPending.current && pendingMutations.current === 0) {
       refreshPending.current = false;
       void refreshRef.current();
     }
@@ -496,6 +528,45 @@ export function useMemories() {
     setHasMore(page.has_more);
   }, []);
 
+  /**
+   * Read the first `span` rows for `filters` (pages of up to 100). Returns
+   * null if a newer list request or a sign-in change superseded it.
+   */
+  const readSpan = useCallback(
+    async (
+      filters: ListFilters,
+      span: number,
+      request: number,
+      generation: number,
+    ): Promise<{ rows: Memory[]; page: MemoryPage } | null> => {
+      const rows: Memory[] = [];
+      const seen = new Set<string>();
+      let last: MemoryPage | null = null;
+      while (rows.length < span) {
+        const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
+        last = await requestPage(filters, rows.length, limit);
+        if (
+          request !== listRequest.current ||
+          generation !== getAuthGeneration()
+        )
+          return null;
+        for (const memory of last.memories) {
+          if (!seen.has(memory.id)) {
+            seen.add(memory.id);
+            rows.push(memory);
+          }
+        }
+        if (!last.has_more || last.memories.length === 0) break;
+      }
+      if (!last) return null;
+      return {
+        rows,
+        page: { ...last, has_more: last.has_more && rows.length < last.total },
+      };
+    },
+    [requestPage],
+  );
+
   /** Apply filters (or reapply the current ones) from the first page. */
   const fetchMemories = useCallback(
     async (params: FetchMemoriesParams = {}) => {
@@ -507,6 +578,7 @@ export function useMemories() {
       const generation = getAuthGeneration();
       const current = filtersRef.current;
       try {
+        const seq = dirtySeq.current;
         const page = await requestPage(current, 0, MEMORY_PAGE_SIZE);
         if (
           request !== listRequest.current ||
@@ -514,6 +586,7 @@ export function useMemories() {
         )
           return;
         publish(page.memories, page);
+        cleanSeq.current = Math.max(cleanSeq.current, seq);
       } catch (err) {
         if (request !== listRequest.current) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -530,8 +603,21 @@ export function useMemories() {
     const request = beginForeground('loadMore');
     const generation = getAuthGeneration();
     const current = filtersRef.current;
-    const offset = loadedCount.current;
     try {
+      if (cleanSeq.current < dirtySeq.current) {
+        // A mutation may have shifted the filtered span and no successful
+        // reconcile has published since; never page from that offset. Re-read
+        // the loaded span plus one page from the start instead.
+        const seq = dirtySeq.current;
+        const span =
+          Math.max(MEMORY_PAGE_SIZE, loadedCount.current) + MEMORY_PAGE_SIZE;
+        const read = await readSpan(current, span, request, generation);
+        if (!read) return;
+        publish(read.rows, read.page);
+        cleanSeq.current = Math.max(cleanSeq.current, seq);
+        return;
+      }
+      const offset = loadedCount.current;
       const page = await requestPage(current, offset, MEMORY_PAGE_SIZE);
       if (request !== listRequest.current || generation !== getAuthGeneration())
         return;
@@ -553,14 +639,14 @@ export function useMemories() {
     } finally {
       settleForeground(request);
     }
-  }, [requestPage]);
+  }, [publish, readSpan, requestPage]);
 
   /**
    * Re-read the span already loaded (at least one page) for the current
    * filters, so polling or a save never collapses the list back to page one.
    */
   const refreshMemories = useCallback(async () => {
-    if (foreground.current !== null || pendingDeletes.current > 0) {
+    if (foreground.current !== null || pendingMutations.current > 0) {
       // Never retire a foreground request, and never publish a snapshot that
       // may predate a pending delete; refresh once both settle.
       refreshPending.current = true;
@@ -568,38 +654,22 @@ export function useMemories() {
     }
     const request = ++listRequest.current;
     const generation = getAuthGeneration();
-    const current = filtersRef.current;
+    const seq = dirtySeq.current;
     const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
     try {
-      const rows: Memory[] = [];
-      const seen = new Set<string>();
-      let last: MemoryPage | null = null;
-      while (rows.length < span) {
-        const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
-        last = await requestPage(current, rows.length, limit);
-        if (
-          request !== listRequest.current ||
-          generation !== getAuthGeneration()
-        )
-          return;
-        for (const memory of last.memories) {
-          if (!seen.has(memory.id)) {
-            seen.add(memory.id);
-            rows.push(memory);
-          }
-        }
-        if (!last.has_more || last.memories.length === 0) break;
-      }
-      if (last) {
-        publish(rows, {
-          ...last,
-          has_more: last.has_more && rows.length < last.total,
-        });
-      }
+      const read = await readSpan(
+        filtersRef.current,
+        span,
+        request,
+        generation,
+      );
+      if (!read) return; // superseded: not a repair
+      publish(read.rows, read.page);
+      cleanSeq.current = Math.max(cleanSeq.current, seq);
     } catch {
-      // A failed background refresh keeps the current list.
+      // A failed refresh keeps the current list and leaves it dirty.
     }
-  }, [publish, requestPage]);
+  }, [publish, readSpan]);
 
   useEffect(() => {
     refreshRef.current = refreshMemories;
@@ -613,6 +683,8 @@ export function useMemories() {
         foreground.current = null;
         foregroundKind.current = null;
         refreshPending.current = false;
+        dirtySeq.current = 0;
+        cleanSeq.current = 0;
         loadedCount.current = 0;
         setMemories([]);
         setTotal(0);
@@ -622,27 +694,45 @@ export function useMemories() {
     [],
   );
 
+  /**
+   * Writes that change a listed memory take part in list ordering. Starting
+   * one retires in-flight list responses (they may predate it); a retired
+   * "Load more" keeps its intent by widening the span a reconcile refresh
+   * reads. While any is pending, background refreshes wait.
+   */
+  const beginListMutation = () => {
+    const retiredKind = foregroundKind.current;
+    const version = ++listRequest.current;
+    if (foreground.current !== null) {
+      foreground.current = null;
+      foregroundKind.current = null;
+      setLoading(false);
+      refreshPending.current = true;
+    }
+    pendingMutations.current += 1;
+    return { version, retiredKind, generation: getAuthGeneration() };
+  };
+
+  /** Reconcile against the current filters and span once nothing is pending. */
+  const reconcileList = () => {
+    dirtySeq.current += 1;
+    refreshPending.current = false;
+    if (foreground.current !== null || pendingMutations.current > 0) {
+      refreshPending.current = true;
+    } else {
+      void refreshRef.current();
+    }
+  };
+
   const deleteMemory = useCallback(
     async (id: string): Promise<boolean> => {
-      // A delete takes part in list ordering. Starting it retires in-flight
-      // list responses, which may predate it; a retired "Load more" is kept
-      // as intent by widening the span the reconcile refresh reads. While it
-      // is pending, background refreshes wait. On settle it restores its
-      // snapshot only if no newer list activity happened; otherwise, and
-      // whenever a refresh waited, it re-reads the current filters and span.
-      const generation = getAuthGeneration();
+      // On settle a failed delete restores its snapshot only if no newer
+      // list activity happened; otherwise, and whenever a refresh waited, it
+      // re-reads the current filters and span.
       const previousMemories = memories;
       const wasLoaded = previousMemories.some((memory) => memory.id === id);
-      const retiredKind = foregroundKind.current;
-      const version = ++listRequest.current;
-      if (foreground.current !== null) {
-        foreground.current = null;
-        foregroundKind.current = null;
-        setLoading(false);
-        refreshPending.current = true;
-      }
+      const { version, retiredKind, generation } = beginListMutation();
       const previousCount = loadedCount.current;
-      pendingDeletes.current += 1;
       if (wasLoaded) {
         loadedCount.current = Math.max(0, previousCount - 1);
         setMemories((prev) => prev.filter((mem) => mem.id !== id));
@@ -654,16 +744,18 @@ export function useMemories() {
 
       let ok = false;
       try {
-        const response = await apiFetch(`/memories/${id}`, {
-          method: 'DELETE',
-          headers: await getAuthHeaders(),
-        });
+        const response = await apiFetch(
+          `/memories/${id}`,
+          { method: 'DELETE', headers: await getAuthHeaders() },
+          12000,
+          { retryAfterError: false },
+        );
         ok = response.ok;
       } catch {
         ok = false;
       }
 
-      pendingDeletes.current -= 1;
+      pendingMutations.current -= 1;
       if (generation !== getAuthGeneration()) return ok;
       const untouched = listRequest.current === version && retiredKind === null;
       if (!ok) {
@@ -675,91 +767,99 @@ export function useMemories() {
           return false;
         }
       }
-      if (!untouched || refreshPending.current || !ok) {
-        refreshPending.current = false;
-        if (foreground.current !== null || pendingDeletes.current > 0) {
-          refreshPending.current = true;
-        } else {
-          void refreshRef.current();
-        }
-      }
+      if (!untouched || refreshPending.current || !ok) reconcileList();
       return ok;
     },
     [apiFetch, getAuthHeaders, memories],
   );
 
+  /**
+   * Save a person's correction via PATCH /memories/{id}. Not optimistic: the
+   * list shows the server's acknowledged memory, so a failure never needs a
+   * rollback and the caller keeps the draft open with the returned error.
+   */
   const correctMemory = useCallback(
     async (
       id: string,
       content: string,
       category?: string,
-    ): Promise<Memory | null> => {
-      const previousMemories = memories;
-
-      // Optimistic update
-      setMemories((prev) =>
-        prev.map((mem) =>
-          mem.id === id
-            ? { ...mem, content, category: category || mem.category }
-            : mem,
-        ),
-      );
-
+      options: MemoryRequestOptions = {},
+    ): Promise<CorrectMemoryResult> => {
+      const trimmed = content.trim();
+      if (!trimmed) return { ok: false, error: 'Write something to remember.' };
+      if (trimmed.length > MAX_USER_MEMORY_LENGTH) {
+        return {
+          ok: false,
+          error: `Keep it under ${MAX_USER_MEMORY_LENGTH.toLocaleString()} characters.`,
+        };
+      }
+      const { version, retiredKind, generation } = beginListMutation();
+      if (retiredKind === 'loadMore') loadedCount.current += MEMORY_PAGE_SIZE;
+      const settle = () => {
+        pendingMutations.current -= 1;
+      };
+      let response: Response;
       try {
-        const response = await apiFetch(`/memories/${id}/correct`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(await getAuthHeaders()),
+        response = await apiFetch(
+          `/memories/${id}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(await getAuthHeaders()),
+            },
+            body: JSON.stringify(
+              category ? { content: trimmed, category } : { content: trimmed },
+            ),
+            signal: options.signal,
           },
-          body: JSON.stringify({ content, category }),
-        });
-
-        if (!response.ok) {
-          // Revert on error
-          setMemories(previousMemories);
-          setError('Failed to correct memory');
-          return null;
-        }
-
-        const correctedMemory: Memory = await response.json();
-
-        // Replace with corrected version
-        setMemories((prev) =>
-          prev.map((mem) => (mem.id === id ? correctedMemory : mem)),
+          30000,
+          { retryAfterError: false },
         );
-
-        return correctedMemory;
       } catch {
-        // Revert on error
-        setMemories(previousMemories);
-        setError('Failed to correct memory');
-        return null;
+        settle();
+        assertCurrent(generation, options.signal);
+        reconcileList();
+        return {
+          ok: false,
+          error:
+            "Couldn't reach Daemon, so this edit may not have been saved. Your draft is still here.",
+        };
       }
-    },
-    [apiFetch, getAuthHeaders, memories],
-  );
-
-  const fetchTrail = useCallback(
-    async (id: string): Promise<TrailItem[]> => {
+      let body: unknown = null;
       try {
-        const response = await apiFetch(`/memories/${id}/trail`, {
-          headers: await getAuthHeaders(),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch trail: ${response.status}`);
-        }
-
-        const trail: TrailItem[] = await response.json();
-        return trail;
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          return [];
-        }
-        setError(err instanceof Error ? err.message : 'Failed to fetch trail');
-        return [];
+        body = await response.json();
+      } catch {
+        body = null;
       }
+      settle();
+      assertCurrent(generation, options.signal);
+      if (!response.ok) {
+        if (listRequest.current !== version || refreshPending.current)
+          reconcileList();
+        return {
+          ok: false,
+          status: response.status,
+          error: correctionError(response.status),
+        };
+      }
+      const memory = parseCorrectedMemory(body, id);
+      if (!memory) {
+        reconcileList();
+        return {
+          ok: false,
+          error:
+            'Daemon sent an unexpected reply, so this edit may or may not have been saved. Reload to check.',
+        };
+      }
+      setMemories((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, ...memory } : m)),
+      );
+      // An edit can move the memory into or out of the current filters
+      // (category or search), changing the total and the consumed offset, so
+      // always re-read the current filtered span.
+      reconcileList();
+      return { ok: true, memory };
     },
     [apiFetch, getAuthHeaders],
   );
@@ -990,7 +1090,6 @@ export function useMemories() {
     refreshMemories,
     deleteMemory,
     correctMemory,
-    fetchTrail,
     createMemory,
     exportMemories,
     importMemories,

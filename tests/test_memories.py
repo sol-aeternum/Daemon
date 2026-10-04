@@ -302,52 +302,201 @@ async def test_create_memory(auth_client, monkeypatch) -> None:
     assert data["id"] == str(new_memory_id)
 
 
-@pytest.mark.asyncio
-async def test_update_memory(auth_client, monkeypatch) -> None:
-    """Test that PATCH /memories/{id} updates memory content."""
-    memory_id = uuid.uuid4()
-    mock_store = AsyncMock()
-    mock_memory = create_mock_memory(memory_id=memory_id)
-    mock_store.get_memory = AsyncMock(return_value=mock_memory)
-    mock_store.update_memory = AsyncMock(return_value=True)
-
-    mock_app_state = create_mock_app_state(mock_store)
-    set_app_state(mock_app_state)
-
-    response = await auth_client.patch(
-        f"/memories/{memory_id}",
-        json={"content": "Updated content"},
+def _edit_store(existing: dict[str, Any], updated: dict[str, Any] | None = None) -> AsyncMock:
+    store = AsyncMock()
+    store.get_memory = AsyncMock(return_value=existing)
+    store.update_memory_content = AsyncMock(
+        return_value=updated if updated is not None else {**existing, "content": "x"}
     )
+    return store
+
+
+@pytest.mark.asyncio
+async def test_update_memory_returns_the_updated_memory(auth_client) -> None:
+    """PATCH /memories/{id} corrects text and category and returns the memory."""
+    memory_id = uuid.uuid4()
+    existing = create_mock_memory(memory_id=memory_id, content="Old text", category="fact")
+    updated = {**existing, "content": "New text", "category": "preference"}
+    store = _edit_store(existing, updated)
+    set_app_state(create_mock_app_state(store))
+    embed = AsyncMock(return_value=create_embedding_result([[0.4, 0.5]]))
+
+    with patch.object(memories_router, "embed_documents_with_metadata", embed):
+        response = await auth_client.patch(
+            f"/memories/{memory_id}",
+            json={"content": "  New text  ", "category": "preference"},
+        )
 
     assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "updated"
-    mock_store.update_memory.assert_called_once()
+    body = response.json()
+    assert (body["id"], body["content"], body["category"]) == (
+        str(memory_id),
+        "New text",
+        "preference",
+    )
+    embed.assert_awaited_once_with(["New text"])
+    kwargs = store.update_memory_content.call_args.kwargs
+    assert store.update_memory_content.call_args.args == (memory_id, "New text")
+    assert kwargs["embedding"] == [0.4, 0.5]
+    assert kwargs["embedding_model"] == "voyage-4-large"
+    assert kwargs["clear_embedding"] is False
+    assert kwargs["category"] == "preference"
+    assert kwargs["user_id"] == uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 @pytest.mark.asyncio
-async def test_update_memory_content_conflict_returns_409(auth_client, monkeypatch) -> None:
-    """Test that duplicate memory edits return a controlled conflict."""
+@pytest.mark.parametrize(
+    "failure",
+    ["unqualified", "provider"],
+)
+async def test_update_memory_clears_the_vector_when_it_cannot_reembed(
+    auth_client, failure: str
+) -> None:
+    from orchestrator.memory.embedding import EmbeddingConfigurationError
+
     memory_id = uuid.uuid4()
-    mock_store = AsyncMock()
-    mock_memory = create_mock_memory(memory_id=memory_id)
-    mock_store.get_memory = AsyncMock(return_value=mock_memory)
-    mock_store.update_memory = AsyncMock(
+    store = _edit_store(create_mock_memory(memory_id=memory_id, content="Old text"))
+    set_app_state(create_mock_app_state(store))
+    error = (
+        EmbeddingConfigurationError("unqualified")
+        if failure == "unqualified"
+        else RuntimeError("provider down")
+    )
+
+    with patch.object(
+        memories_router, "embed_documents_with_metadata", AsyncMock(side_effect=error)
+    ):
+        response = await auth_client.patch(f"/memories/{memory_id}", json={"content": "New"})
+
+    assert response.status_code == 200
+    kwargs = store.update_memory_content.call_args.kwargs
+    assert kwargs["embedding"] is None
+    assert kwargs["clear_embedding"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_memory_category_only_keeps_text_and_vector(auth_client) -> None:
+    memory_id = uuid.uuid4()
+    store = _edit_store(create_mock_memory(memory_id=memory_id, content="Same text"))
+    set_app_state(create_mock_app_state(store))
+    embed = AsyncMock()
+
+    with patch.object(memories_router, "embed_documents_with_metadata", embed):
+        response = await auth_client.patch(
+            f"/memories/{memory_id}",
+            json={"content": "Same text", "category": "project"},
+        )
+
+    assert response.status_code == 200
+    embed.assert_not_called()
+    kwargs = store.update_memory_content.call_args.kwargs
+    assert kwargs["clear_embedding"] is False
+    assert kwargs["embedding"] is None
+    assert kwargs["category"] == "project"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"content": "   "},
+        {"content": ""},
+        {"content": "x" * 2001},
+        {"content": "ok", "category": "observation"},
+        {"content": "ok", "category": "secret"},
+        {},
+    ],
+    ids=["blank", "empty", "too-long", "system-category", "unknown-category", "missing"],
+)
+async def test_update_memory_rejects_invalid_edits(auth_client, body) -> None:
+    memory_id = uuid.uuid4()
+    store = _edit_store(create_mock_memory(memory_id=memory_id))
+    set_app_state(create_mock_app_state(store))
+    response = await auth_client.patch(f"/memories/{memory_id}", json=body)
+    assert response.status_code == 422
+    store.update_memory_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_memory_denies_another_accounts_memory(auth_client) -> None:
+    memory_id = uuid.uuid4()
+    store = _edit_store(create_mock_memory(memory_id=memory_id, user_id=uuid.uuid4()))
+    set_app_state(create_mock_app_state(store))
+    response = await auth_client.patch(f"/memories/{memory_id}", json={"content": "Mine now"})
+    assert response.status_code == 404
+    store.update_memory_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_memory_returns_404_if_the_memory_vanished(auth_client) -> None:
+    memory_id = uuid.uuid4()
+    store = _edit_store(create_mock_memory(memory_id=memory_id, content="Old"))
+    store.get_memory = AsyncMock(
+        side_effect=[create_mock_memory(memory_id=memory_id, content="Old"), None]
+    )
+    store.update_memory_content = AsyncMock(return_value=None)
+    set_app_state(create_mock_app_state(store))
+    with patch.object(
+        memories_router,
+        "embed_documents_with_metadata",
+        AsyncMock(return_value=create_embedding_result([[0.1]])),
+    ):
+        response = await auth_client.patch(f"/memories/{memory_id}", json={"content": "New"})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_memory_content_conflict_returns_409(auth_client) -> None:
+    """Duplicate memory edits return a controlled conflict."""
+    memory_id = uuid.uuid4()
+    store = _edit_store(create_mock_memory(memory_id=memory_id, content="Old"))
+    store.update_memory_content = AsyncMock(
         side_effect=MemoryContentConflictError(
             "Memory content duplicates an existing active memory"
         )
     )
-
-    mock_app_state = create_mock_app_state(mock_store)
-    set_app_state(mock_app_state)
-
-    response = await auth_client.patch(
-        f"/memories/{memory_id}",
-        json={"content": "Updated content"},
-    )
-
+    set_app_state(create_mock_app_state(store))
+    with patch.object(
+        memories_router,
+        "embed_documents_with_metadata",
+        AsyncMock(return_value=create_embedding_result([[0.1]])),
+    ):
+        response = await auth_client.patch(
+            f"/memories/{memory_id}", json={"content": "Updated content"}
+        )
     assert response.status_code == 409
     assert response.json()["detail"] == "Memory content duplicates an existing active memory"
+
+
+@pytest.mark.asyncio
+async def test_update_memory_store_unavailable(auth_client) -> None:
+    set_app_state(create_mock_app_state(None))
+    response = await auth_client.patch(f"/memories/{uuid.uuid4()}", json={"content": "x"})
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_reembed_only_applies_vectors_to_unchanged_content(auth_client) -> None:
+    from orchestrator.memory.store import compute_memory_content_hash
+
+    memory_id = uuid.uuid4()
+    store = AsyncMock()
+    store.export_memories = AsyncMock(
+        return_value=[create_mock_memory(memory_id=memory_id, content="Embedded text")]
+    )
+    store.update_memory_embedding = AsyncMock(return_value=False)  # edited meanwhile
+    set_app_state(create_mock_app_state(store))
+    with patch.object(
+        memories_router,
+        "embed_documents_with_metadata",
+        AsyncMock(return_value=create_embedding_result([[0.2]])),
+    ):
+        response = await auth_client.post("/memories/reembed", json={"status": "active"})
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == 0
+    kwargs = store.update_memory_embedding.call_args.kwargs
+    assert kwargs["expected_content_hash"] == compute_memory_content_hash("Embedded text")
 
 
 @pytest.mark.asyncio
@@ -1149,3 +1298,40 @@ async def test_list_memories_rejects_unsupported_filters(auth_client, query) -> 
     response = await auth_client.get(f"/memories?{query}")
     assert response.status_code == 422
     store.list_memories.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_memory_writes_only_against_the_content_it_read(auth_client) -> None:
+    memory_id = uuid.uuid4()
+    existing = create_mock_memory(memory_id=memory_id, content="Old", content_hash="hash-old")
+    store = _edit_store(existing)
+    set_app_state(create_mock_app_state(store))
+    with patch.object(
+        memories_router,
+        "embed_documents_with_metadata",
+        AsyncMock(return_value=create_embedding_result([[0.1]])),
+    ):
+        await auth_client.patch(f"/memories/{memory_id}", json={"content": "New"})
+    kwargs = store.update_memory_content.call_args.kwargs
+    assert kwargs["require_content_hash"] is True
+    assert kwargs["expected_content_hash"] == "hash-old"
+
+
+@pytest.mark.asyncio
+async def test_update_memory_returns_412_when_another_edit_landed_first(auth_client) -> None:
+    memory_id = uuid.uuid4()
+    read = create_mock_memory(memory_id=memory_id, content="X", content_hash="hash-x")
+    newer = create_mock_memory(memory_id=memory_id, content="Y", content_hash="hash-y")
+    store = _edit_store(read)
+    store.get_memory = AsyncMock(side_effect=[read, newer])
+    store.update_memory_content = AsyncMock(return_value=None)  # hash no longer matches
+    set_app_state(create_mock_app_state(store))
+
+    response = await auth_client.patch(
+        f"/memories/{memory_id}", json={"content": "X", "category": "project"}
+    )
+
+    assert response.status_code == 412
+    assert response.json()["detail"] == (
+        "Memory changed since it was read; reload it and try again"
+    )

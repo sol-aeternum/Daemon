@@ -4,6 +4,11 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Memory } from '@/hooks/useMemories';
 import { TrailView } from './TrailView';
+import {
+  IMPORT_MEMORY_CATEGORIES,
+  MAX_USER_MEMORY_LENGTH,
+  type CorrectMemoryResult,
+} from '@/hooks/useMemories';
 import { formatRelativeTime } from '@/lib/format';
 import {
   ArrowLeft,
@@ -24,7 +29,11 @@ import {
 interface MemoryDetailProps {
   memory: Memory;
   onBack: () => void;
-  onCorrect: (id: string, content: string, category?: string) => Promise<void>;
+  onCorrect: (
+    id: string,
+    content: string,
+    category?: string,
+  ) => Promise<CorrectMemoryResult>;
   onDelete: (id: string) => Promise<void>;
 }
 
@@ -92,19 +101,37 @@ export function MemoryDetail({
   const [editedCategory, setEditedCategory] = useState(memory.category);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const categoryOptions: string[] = IMPORT_MEMORY_CATEGORIES.includes(
+    memory.category as (typeof IMPORT_MEMORY_CATEGORIES)[number],
+  )
+    ? [...IMPORT_MEMORY_CATEGORIES]
+    : [memory.category, ...IMPORT_MEMORY_CATEGORIES];
+  const draftTooLong = editedContent.trim().length > MAX_USER_MEMORY_LENGTH;
 
   const SourceIcon = getSourceIcon(memory.source_type);
   const statusConfig = getStatusConfig(memory.status);
   const StatusIcon = statusConfig.icon;
   const confidence = memory.metadata?.confidence as number | undefined;
 
+  // Leave edit mode only after the server acknowledges the save; on any
+  // failure keep the draft and show why.
   const handleSave = async () => {
-    if (!editedContent.trim()) return;
+    if (!editedContent.trim() || draftTooLong || isSaving) return;
     setIsSaving(true);
+    setSaveError(null);
     try {
-      await onCorrect(memory.id, editedContent.trim(), editedCategory.trim());
-      setIsEditing(false);
+      const category =
+        editedCategory !== memory.category ? editedCategory : undefined;
+      const result = await onCorrect(memory.id, editedContent.trim(), category);
+      if (result.ok) {
+        setIsEditing(false);
+      } else {
+        setSaveError(result.error);
+      }
+    } catch {
+      // A sign-in change or unmount retired the save; nothing to report here.
     } finally {
       setIsSaving(false);
     }
@@ -113,6 +140,7 @@ export function MemoryDetail({
   const handleCancel = () => {
     setEditedContent(memory.content);
     setEditedCategory(memory.category);
+    setSaveError(null);
     setIsEditing(false);
   };
 
@@ -164,7 +192,12 @@ export function MemoryDetail({
             <>
               <button
                 type="button"
-                onClick={() => setIsEditing(true)}
+                onClick={() => {
+                  setEditedContent(memory.content);
+                  setEditedCategory(memory.category);
+                  setSaveError(null);
+                  setIsEditing(true);
+                }}
                 className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-text-primary bg-bg-tertiary hover:bg-bg-tertiary/80 rounded-md transition-colors"
               >
                 <Pencil className="w-4 h-4" />
@@ -193,7 +226,7 @@ export function MemoryDetail({
               <button
                 type="button"
                 onClick={handleSave}
-                disabled={isSaving || !editedContent.trim()}
+                disabled={isSaving || !editedContent.trim() || draftTooLong}
                 className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-[var(--color-text-on-accent)] bg-accent-primary hover:bg-accent-primary/90 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSaving ? (
@@ -221,8 +254,14 @@ export function MemoryDetail({
           </label>
           {isEditing ? (
             <textarea
+              aria-label="Memory content"
+              aria-invalid={draftTooLong || Boolean(saveError)}
+              aria-describedby={saveError ? 'memory-save-error' : undefined}
+              readOnly={isSaving}
               value={editedContent}
-              onChange={(e) => setEditedContent(e.target.value)}
+              onChange={(e) => {
+                if (!isSaving) setEditedContent(e.target.value);
+              }}
               className="w-full min-h-memory-editor px-3 py-2 text-sm text-text-primary bg-bg-primary border border-border-primary rounded-md resize-y focus:outline-none focus:ring-2 focus:ring-border-focus/50"
               placeholder="Enter memory content..."
             />
@@ -232,6 +271,21 @@ export function MemoryDetail({
                 {memory.content}
               </p>
             </div>
+          )}
+          {isEditing && saveError && (
+            <p
+              id="memory-save-error"
+              role="alert"
+              className="mt-2 text-sm text-status-error"
+            >
+              {saveError}
+            </p>
+          )}
+          {isEditing && draftTooLong && !saveError && (
+            <p className="mt-2 text-sm text-status-error">
+              Keep it under {MAX_USER_MEMORY_LENGTH.toLocaleString()}{' '}
+              characters.
+            </p>
           )}
         </div>
 
@@ -243,12 +297,21 @@ export function MemoryDetail({
               Category
             </label>
             {isEditing ? (
-              <input
-                type="text"
+              <select
+                aria-label="Memory category"
                 value={editedCategory}
-                onChange={(e) => setEditedCategory(e.target.value)}
+                disabled={isSaving}
+                onChange={(e) => {
+                  if (!isSaving) setEditedCategory(e.target.value);
+                }}
                 className="w-full px-3 py-2 text-sm text-text-primary bg-bg-primary border border-border-primary rounded-md focus:outline-none focus:ring-2 focus:ring-border-focus/50"
-              />
+              >
+                {categoryOptions.map((value) => (
+                  <option key={value} value={value}>
+                    {value.charAt(0).toUpperCase() + value.slice(1)}
+                  </option>
+                ))}
+              </select>
             ) : (
               <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-bg-tertiary text-text-primary">
                 {memory.category}
@@ -397,7 +460,7 @@ export function MemoryDetail({
 
       {/* Trail View */}
       <div className="pt-6 border-t border-border-primary">
-        <TrailView memoryId={memory.id} />
+        <TrailView />
       </div>
 
       {/* Delete Confirmation Dialog */}

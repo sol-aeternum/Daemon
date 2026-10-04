@@ -19,7 +19,7 @@ from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_documents_with_metadata,
 )
-from orchestrator.memory.store import MemoryContentConflictError
+from orchestrator.memory.store import MemoryContentConflictError, compute_memory_content_hash
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,19 @@ class MemoryCreate(BaseModel):
     category: str = "fact"
 
 
+MAX_EDIT_CONTENT_CHARS = 2000
+
+
 class MemoryUpdate(BaseModel):
-    content: str
+    """A person's correction: new text and, optionally, a new category."""
+
+    content: str = Field(min_length=1, max_length=MAX_EDIT_CONTENT_CHARS)
+    category: Literal["fact", "preference", "project", "summary", "correction"] | None = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _strip_content(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 class MemoryConfirm(BaseModel):
@@ -324,12 +335,15 @@ async def reembed_memories(
             ) from exc
 
         for mem, embedding in zip(valid_batch, embedding_result.embeddings):
-            await store.update_memory_embedding(
+            # Applies only if the memory still holds the text that was
+            # embedded; an edit in the meantime keeps its own vector.
+            applied = await store.update_memory_embedding(
                 mem["id"],
                 embedding,
                 embedding_model=embedding_result.storage_model,
+                expected_content_hash=compute_memory_content_hash(str(mem.get("content") or "")),
             )
-            updated += 1
+            updated += int(applied)
 
     return {
         "requested": requested,
@@ -415,21 +429,71 @@ async def update_memory(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
-    """Update memory content."""
+    """Correct a memory's text (and optionally its category); returns the memory.
+
+    New text is embedded before the write and stored with its vector in one
+    update. If embeddings are unqualified or the provider fails, the write
+    clears the vector instead, so retrieval can never keep matching the old
+    text through an obsolete embedding. The write is conditional on the
+    content hash this request read; if another edit landed first, it returns
+    412 rather than overwrite it.
+    """
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
     existing = await store.get_memory(memory_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
+
+    content_changed = data.content != existing.get("content")
+    embedding: list[float] | None = None
+    embedding_model: str | None = None
+    if content_changed:
+        from orchestrator.memory.dedup import _embedding_text
+
+        try:
+            embedded = await embed_documents_with_metadata(
+                [_embedding_text(data.content, existing.get("memory_slot"))]
+            )
+            if len(embedded.embeddings) == 1:
+                embedding = embedded.embeddings[0]
+                embedding_model = embedded.storage_model
+        except EmbeddingConfigurationError:
+            pass
+        except Exception:
+            logger.warning(
+                "Re-embedding an edited memory failed; clearing its vector", exc_info=True
+            )
+
     try:
-        await store.update_memory(memory_id, content=data.content)
+        updated = await store.update_memory_content(
+            memory_id,
+            data.content,
+            embedding=embedding,
+            embedding_model=embedding_model,
+            clear_embedding=content_changed and embedding is None,
+            category=data.category,
+            user_id=auth.user_id,
+            # Write only if the text is still what this request read, so a
+            # concurrent edit is never overwritten or paired with this
+            # request's vector decision.
+            require_content_hash=True,
+            expected_content_hash=existing.get("content_hash"),
+        )
     except MemoryContentConflictError as exc:
         raise HTTPException(
             status_code=409,
             detail="Memory content duplicates an existing active memory",
         ) from exc
-    return {"status": "updated"}
+    if updated is None:
+        current = await store.get_memory(memory_id)
+        if current and current.get("user_id") == auth.user_id:
+            raise HTTPException(
+                status_code=412,
+                detail="Memory changed since it was read; reload it and try again",
+            )
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return updated
 
 
 @router.delete("/{memory_id}")
