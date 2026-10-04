@@ -2,28 +2,14 @@
 
 import { Memory } from '@/hooks/useMemories';
 import { formatRelativeTime } from '@/lib/format';
-import { Sparkles, Pencil, Wrench } from 'lucide-react';
+import {
+  getMemorySourcePresentation,
+  memorySourceTitle,
+} from '@/lib/memorySource';
 
 interface MemoryCardProps {
   memory: Memory;
   onSelect: (memoryId: string) => void;
-}
-
-const sourceIcons = {
-  extracted: Sparkles,
-  manual: Pencil,
-  tool: Wrench,
-} as const;
-
-function SourceIcon({
-  sourceType,
-  className,
-}: {
-  sourceType: string;
-  className?: string;
-}) {
-  const Icon = sourceIcons[sourceType as keyof typeof sourceIcons] || Sparkles;
-  return <Icon className={className} />;
 }
 
 function getConfidenceColor(confidence?: number): string {
@@ -44,6 +30,8 @@ function truncateContent(content: string, maxLines: number = 2): string {
 export function MemoryCard({ memory, onSelect }: MemoryCardProps) {
   const confidence = memory.metadata?.confidence as number | undefined;
   const confidenceColor = getConfidenceColor(confidence);
+  const source = getMemorySourcePresentation(memory.source_type);
+  const SourceIcon = source.icon;
 
   return (
     <button
@@ -87,9 +75,9 @@ export function MemoryCard({ memory, onSelect }: MemoryCardProps) {
             {/* Source icon */}
             <span
               className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-bg-tertiary text-text-muted"
-              title={`Source: ${memory.source_type}`}
+              title={memorySourceTitle(memory.source_type)}
             >
-              <SourceIcon sourceType={memory.source_type} className="w-3 h-3" />
+              <SourceIcon className="w-3 h-3" />
             </span>
 
             {/* Timestamp */}

@@ -124,13 +124,9 @@ adapter. The configured identities below remain distinct for existing stored vec
 fallback settings cannot grant approval. Core writes and retrieval degrade to nullable
 vectors and account-scoped lexical search.
 
-- **Extraction**: GPT-4o-mini extracts facts from conversation turns.
+- **Extraction**: The configured, account-budgeted background role extracts facts from conversation turns. Each fact is persisted before planning the next.
 - **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with an explicit ordered fallback chain configured by `EMBEDDING_FALLBACK_PROVIDERS`. Supported fallbacks are the corresponding Voyage models through OpenRouter (reusing `OPENROUTER_API_KEY`) and OpenAI `text-embedding-3-small`. Routed Voyage parity is unproven, so fallback vectors retain distinct `openrouter:<model>` or `openai:<model>` storage identities. Vector/BM25 retrieval only searches enabled identities with stored rows for that user, including inferred historical windows; dedup reconciles spaces lexically/by slot without cross-provider vector comparisons and excludes L0/dream rows.
-- **Dedup Thresholds**:
-  - Merge: ≥ 0.90
-  - Supersede (generic): ≥ 0.82
-  - Supersede (same slot): ≥ 0.65
-  - Insert new: < 0.65
+- **Production dedup**: Bounded owner-scoped active/open L1 candidates are discovery only. The configured account-budgeted background role compares complete facts; only a complete `equivalent` verdict permits a paraphrase merge. Unavailable/uncertain/correction verdicts preserve the incoming fact. Slot labels and cosine scores do not authorize supersession. Provider work precedes transactions; selected rows are owner-locked and full plaintext/state revalidated before commit. Local-only tool updates are refused before provider work. Exact normalized-content hash uniqueness remains independently enforced. Historical threshold behavior is retained only for explicit offline benchmarks; see `MEMORY_LAYER.md`.
 
 ### Retrieval
 Hybrid search combining:

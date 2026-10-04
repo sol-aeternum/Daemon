@@ -160,6 +160,86 @@ async def test_insert_memory_recovers_existing_row_on_content_hash_conflict(monk
 
 
 @pytest.mark.asyncio
+async def test_internal_insert_disposition_comes_from_returning_not_timestamps(
+    memory_store,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    owner = uuid.uuid4()
+    existing = MockRecord(
+        id=uuid.uuid4(),
+        user_id=owner,
+        content="User likes pizza",
+        updated_at=datetime.now(),
+    )
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [existing, None, existing]
+    first, inserted = await memory_store._insert_memory_with_outcome(
+        owner,
+        "User likes pizza",
+        "fact",
+        "extracted",
+        conn=conn,
+    )
+    reused, inserted_again = await memory_store._insert_memory_with_outcome(
+        owner,
+        "  User   likes pizza  ",
+        "preference",
+        "user_created",
+        conn=conn,
+    )
+    assert inserted is True and inserted_again is False
+    assert first == reused  # Even identical timestamps are not disposition evidence.
+    assert conn.fetchrow.await_count == 3
+    assert "ON CONFLICT DO NOTHING" in conn.fetchrow.await_args_list[0].args[0]
+    assert "content_hash = $2" in conn.fetchrow.await_args_list[2].args[0]
+    conn.transaction.assert_not_called()  # ON CONFLICT does not need a savepoint.
+    mock_db_pool.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_internal_insert_unexpected_database_failure_propagates(
+    memory_store,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = asyncpg.UniqueViolationError("mock cannot emulate ON CONFLICT")
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await memory_store._insert_memory_with_outcome(
+            uuid.uuid4(),
+            "User likes pizza",
+            "fact",
+            "extracted",
+            conn=conn,
+        )
+    conn.transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_equivalence_discovery_is_owner_cloud_active_l1_and_bounded(
+    memory_store,
+    mock_db_pool,
+) -> None:
+    owner, excluded = uuid.uuid4(), uuid.uuid4()
+    mock_db_pool.fetch.return_value = []
+    await memory_store._discover_equivalence_candidates(
+        owner,
+        "User likes pizza",
+        "preference",
+        "food.favorite_pizza",
+        excluded_memory_ids={excluded},
+    )
+    sql, *args = mock_db_pool.fetch.await_args.args
+    assert "user_id = $1 AND category = $2" in sql
+    assert "status = 'active' AND tier = 'l1' AND valid_to IS NULL" in sql
+    assert "local_only = FALSE AND source_type != 'dream'" in sql
+    assert "LIMIT 6" in sql and "NOT (id = ANY($7::uuid[]))" in sql
+    assert args == [owner, "preference", "User likes pizza", "food", None, None, [excluded]]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_same_content_inserts_create_one_memory(monkeypatch) -> None:
     _patch_memory_hash_settings(monkeypatch)
     pool = UniqueMemoryPool()

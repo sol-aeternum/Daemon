@@ -7,9 +7,12 @@ import asyncpg
 import pytest
 
 from orchestrator.memory.dedup import (
+    # The supersession/contradiction tests retain dated benchmark behavior only;
+    # production never auto-supersedes on similarity (test_memory_equivalence.py).
     AUTOMATIC_CONTRADICTION_MAX_TOKENS,
     CONTRADICTION_PROFILE,
     check_contradiction,
+    _deduplicate_facts_benchmark,
     deduplicate_facts,
 )
 from orchestrator.memory.embedding import EmbeddingBatchResult, EmbeddingConfigurationError
@@ -133,7 +136,7 @@ async def test_dedup_supersession_with_contradiction() -> None:
     ):
         embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
-        result = await deduplicate_facts(
+        result = await _deduplicate_facts_benchmark(
             store,
             uuid.uuid4(),
             [_new_fact("User does not drive a Tesla", "vehicle")],
@@ -241,7 +244,7 @@ async def test_dedup_supersession_retries_without_metadata_column() -> None:
     ):
         embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
-        result = await deduplicate_facts(
+        result = await _deduplicate_facts_benchmark(
             store,
             uuid.uuid4(),
             [_new_fact("User does not drive a Tesla", "vehicle")],
@@ -286,7 +289,7 @@ async def test_dedup_supersession_proceeds_on_llm_failure() -> None:
     ):
         embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.side_effect = Exception("LLM unavailable")
-        result = await deduplicate_facts(
+        result = await _deduplicate_facts_benchmark(
             store,
             uuid.uuid4(),
             [_new_fact("User does not drive a Tesla", "vehicle")],
@@ -314,6 +317,7 @@ async def test_denied_embeddings_merge_exact_fact_on_cap_lock_connection() -> No
         "valid_to": None,
     }
     store.search_memories_bm25.return_value = [existing]
+    store._insert_memory_with_outcome.return_value = (existing, False)
     with patch(
         "orchestrator.memory.dedup.embed_documents_with_metadata",
         new=AsyncMock(side_effect=EmbeddingConfigurationError("route unavailable")),
@@ -329,4 +333,5 @@ async def test_denied_embeddings_merge_exact_fact_on_cap_lock_connection() -> No
     assert result.merged == [existing]
     store.search_memories.assert_not_awaited()
     store.insert_memory.assert_not_awaited()
-    assert store.search_memories_bm25.await_args.kwargs["conn"] is lock_conn
+    store.search_memories_bm25.assert_not_awaited()
+    assert store._insert_memory_with_outcome.await_args.kwargs["conn"] is lock_conn

@@ -772,8 +772,9 @@ async def process_extraction(
 
     # Extraction is an internal lifecycle writer, intentionally
     # outside the user-invoked MemoryWriteTool abuse quota. Its
-    # batch dedup/close behavior may be net-negative and is governed
-    # by extraction limits rather than the tool active-row cap.
+    # bounded sequential PLAN/COMMIT is governed by extraction limits rather
+    # than the tool active-row cap. Each fact commits before the next plan so
+    # same-batch paraphrases can reuse an earlier canonical fact.
     result = await deduplicate_facts(
         store,
         user_id,

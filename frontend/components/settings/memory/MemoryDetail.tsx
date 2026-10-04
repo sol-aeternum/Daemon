@@ -11,15 +11,16 @@ import {
 } from '@/hooks/useMemories';
 import { formatRelativeTime } from '@/lib/format';
 import {
+  getMemorySourcePresentation,
+  memorySourceTitle,
+} from '@/lib/memorySource';
+import {
   ArrowLeft,
   Pencil,
   Trash2,
   Save,
   X,
   MessageSquare,
-  Sparkles,
-  Pencil as PencilIcon,
-  Wrench,
   CheckCircle2,
   XCircle,
   Clock,
@@ -36,12 +37,6 @@ interface MemoryDetailProps {
   ) => Promise<CorrectMemoryResult>;
   onDelete: (id: string) => Promise<void>;
 }
-
-const sourceIcons = {
-  extracted: Sparkles,
-  manual: PencilIcon,
-  tool: Wrench,
-} as const;
 
 const statusConfig = {
   active: {
@@ -73,10 +68,6 @@ const statusConfig = {
     borderColor: 'border-status-error/30',
   },
 } as const;
-
-function getSourceIcon(sourceType: string) {
-  return sourceIcons[sourceType as keyof typeof sourceIcons] || Sparkles;
-}
 
 function getStatusConfig(status: string) {
   return (
@@ -110,7 +101,9 @@ export function MemoryDetail({
     : [memory.category, ...IMPORT_MEMORY_CATEGORIES];
   const draftTooLong = editedContent.trim().length > MAX_USER_MEMORY_LENGTH;
 
-  const SourceIcon = getSourceIcon(memory.source_type);
+  const source = getMemorySourcePresentation(memory.source_type);
+  const SourceIcon = source.icon;
+  const sourceTitle = memorySourceTitle(memory.source_type);
   const statusConfig = getStatusConfig(memory.status);
   const StatusIcon = statusConfig.icon;
   const confidence = memory.metadata?.confidence as number | undefined;
@@ -324,11 +317,9 @@ export function MemoryDetail({
             <label className="block text-xs font-medium text-text-muted mb-1">
               Source
             </label>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2" title={sourceTitle}>
               <SourceIcon className="w-4 h-4 text-text-muted" />
-              <span className="text-sm text-text-primary capitalize">
-                {memory.source_type}
-              </span>
+              <span className="text-sm text-text-primary">{source.label}</span>
             </div>
           </div>
 

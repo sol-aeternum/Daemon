@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrator.memory.dedup import deduplicate_facts
+# Preserve dated threshold benchmark behavior, not production merge authority.
+# Production slot/unslotted equivalence is covered in test_memory_equivalence.py.
+from orchestrator.memory.dedup import _deduplicate_facts_benchmark as deduplicate_facts
 from orchestrator.memory.embedding import EmbeddingBatchResult
 
 

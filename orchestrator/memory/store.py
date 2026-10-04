@@ -1066,6 +1066,41 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
         conn: Any | None = None,
     ) -> dict[str, Any]:
+        memory, _ = await self._insert_memory_with_outcome(
+            user_id,
+            content,
+            category,
+            source_type,
+            embedding=embedding,
+            embedding_model=embedding_model,
+            source_conversation_id=source_conversation_id,
+            local_only=local_only,
+            confidence=confidence,
+            status=status,
+            memory_slot=memory_slot,
+            metadata=metadata,
+            conn=conn,
+        )
+        return memory
+
+    async def _insert_memory_with_outcome(
+        self,
+        user_id: uuid.UUID,
+        content: str,
+        category: str,
+        source_type: str,
+        *,
+        embedding: list[float] | None = None,
+        embedding_model: str | None = None,
+        source_conversation_id: uuid.UUID | None = None,
+        local_only: bool = False,
+        confidence: float = 1.0,
+        status: str = "active",
+        memory_slot: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        conn: Any | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Internal reliable INSERT/reuse disposition; public row shape is unchanged."""
         encrypted_content = self._enc.encrypt(content)
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
@@ -1127,9 +1162,10 @@ class MemoryStore:
                 user_id, content_hash, local_only
             )
             if existing is not None:
-                return existing
+                return existing, False
             raise
 
+        inserted = row is not None
         if row is None:
             # ON CONFLICT keeps a caller-owned transaction usable. Resolve
             # the active duplicate on the same executor/connection so the
@@ -1147,7 +1183,69 @@ class MemoryStore:
             )
             if row is None:
                 raise RuntimeError("insert_memory: conflict returned no active duplicate")
-        return self._memory_row_to_dict(row)
+        return self._memory_row_to_dict(row), inserted
+
+    async def _lock_memory_rows(
+        self,
+        user_id: uuid.UUID,
+        memory_ids: list[uuid.UUID],
+        *,
+        conn: Any,
+    ) -> dict[uuid.UUID, dict[str, Any]]:
+        """Owner-scoped row locks, acquired in UUID order on the caller connection."""
+        rows: dict[uuid.UUID, dict[str, Any]] = {}
+        for memory_id in sorted(set(memory_ids)):
+            row = await conn.fetchrow(
+                "SELECT * FROM memories WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                user_id,
+                memory_id,
+            )
+            if row is not None:
+                rows[memory_id] = self._memory_row_to_dict(row)
+        return rows
+
+    async def _discover_equivalence_candidates(
+        self,
+        user_id: uuid.UUID,
+        content: str,
+        category: str,
+        slot: str | None,
+        *,
+        embedding: list[float] | None = None,
+        embedding_model: str | None = None,
+        excluded_memory_ids: set[uuid.UUID] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Bounded discovery only, never semantic merge evidence or a full-account dump."""
+        family = slot.strip().lower().split(".")[0] if slot and slot.strip() else None
+        vector = _format_vector(embedding) if embedding else None
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM memories
+            WHERE user_id = $1 AND category = $2
+              AND status = 'active' AND tier = 'l1' AND valid_to IS NULL
+              AND local_only = FALSE AND source_type != 'dream'
+              AND NOT (id = ANY($7::uuid[]))
+              AND (
+                ($4::text IS NOT NULL AND split_part(lower(memory_slot), '.', 1) = $4)
+                OR content_tsv @@ plainto_tsquery('english', $3)
+                OR ($5::vector IS NOT NULL AND embedding IS NOT NULL AND embedding_model = $6)
+              )
+            ORDER BY
+              (COALESCE(content_tsv @@ plainto_tsquery('english', $3), FALSE)) DESC,
+              ts_rank(content_tsv, plainto_tsquery('english', $3)) DESC NULLS LAST,
+              CASE WHEN embedding_model = $6 THEN embedding <=> $5::vector END ASC NULLS LAST,
+              updated_at DESC, id
+            LIMIT 6
+            """,
+            user_id,
+            category,
+            content,
+            family,
+            vector,
+            embedding_model,
+            sorted(excluded_memory_ids or ()),
+        )
+        return [self._memory_row_to_dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Atomic active-row cap enforcement (issue #221)

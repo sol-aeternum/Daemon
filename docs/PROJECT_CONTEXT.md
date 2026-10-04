@@ -1,7 +1,7 @@
 # Project Context — Daemon
 
 > **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
-> **Last updated**: 2026-09-27 (product identity; implementation verification pin above is historical)
+> **Last updated**: 2026-10-04 (memory dedup/status repair; implementation verification pin above is historical)
 > **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
 ## What Daemon Is
@@ -103,11 +103,13 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
 - **Embeddings**: Provider execution is denied until a qualified bounded adapter exists. Existing provider/model storage identities remain isolated; configured Voyage/OpenRouter/OpenAI fallback settings do not bypass qualification. Lexical retrieval and memory persistence remain available.
-- **Dedup Thresholds**:
+- **Production dedup**: Bounded account-background equivalence planning precedes transactions. Only complete equivalence verdicts merge; owner-locked full-state revalidation protects commit. Uncertainty and corrections preserve capture, while normalized exact-hash uniqueness remains independent. Local-only cloud-tool updates are refused before provider work.
+- **Historical offline dedup thresholds (not production merge authority)**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
   - Supersede (same slot): ≥ 0.65
 - **Retrieval**: Hybrid score (0.5 × vector + 0.3 × BM25 + 0.2 × recency/confidence/trust).
+- **Embedding status**: Authenticated `/status` separates static eligibility from backend-process outcomes and exposes safe degradation reasons without a provider probe. The browser presents unavailable/unverified/unknown, not a static Ready badge.
 
 ## Subagent Status
 
