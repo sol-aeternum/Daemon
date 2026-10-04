@@ -327,6 +327,8 @@ function correctionError(status: number): string {
       return 'This memory no longer exists, so the edit was not saved.';
     case 409:
       return 'Another memory already says exactly this. Change the wording or delete the other one.';
+    case 412:
+      return 'This memory changed since you opened it, so your edit was not saved. Your draft is still here; reopen the memory to see the latest version.';
     case 422:
       return `Write something to remember, under ${MAX_USER_MEMORY_LENGTH.toLocaleString()} characters.`;
     case 503:
@@ -805,8 +807,10 @@ export function useMemories() {
       setMemories((prev) =>
         prev.map((m) => (m.id === id ? { ...m, ...memory } : m)),
       );
-      if (listRequest.current !== version || refreshPending.current)
-        reconcileList();
+      // An edit can move the memory into or out of the current filters
+      // (category or search), changing the total and the consumed offset, so
+      // always re-read the current filtered span.
+      reconcileList();
       return { ok: true, memory };
     },
     [apiFetch, getAuthHeaders],

@@ -109,7 +109,16 @@ beforeEach(() => {
       ) {
         listRequests += 1;
         // Snapshot first, then wait: a held reply reflects data at read time.
-        const snapshot = rows.map((r) => ({ ...r }));
+        // Honours the category and search filters like the real API.
+        const category = url.searchParams.get('category');
+        const search = url.searchParams.get('search')?.toLowerCase();
+        const snapshot = rows
+          .filter(
+            (r) =>
+              (!category || r.category === category) &&
+              (!search || r.content.toLowerCase().includes(search)),
+          )
+          .map((r) => ({ ...r }));
         if (listGate) await listGate();
         const limit = Number(url.searchParams.get('limit') ?? 20);
         const offset = Number(url.searchParams.get('offset') ?? 0);
@@ -375,5 +384,116 @@ describe('correctMemory list ordering (#395)', () => {
     expect(
       parseCorrectedMemory({ id: 'm-1', content: 1, category: 'fact' }, 'm-1'),
     ).toBeNull();
+  });
+});
+
+describe('edits that change filter membership (#437 review)', () => {
+  function many(count: number, make: (i: number) => Partial<Row>) {
+    return Array.from({ length: count }, (_, i) => row(i + 1, make(i + 1)));
+  }
+
+  it('a category edit out of the filter keeps paging exact (21 facts)', async () => {
+    rows = many(21, () => ({ category: 'fact' }));
+    const { result } = renderHook(() => useMemories());
+    await act(async () =>
+      result.current.fetchMemories({ category: 'fact', status: 'active' }),
+    );
+    expect(result.current.memories).toHaveLength(20);
+    expect(result.current.total).toBe(21);
+
+    await act(async () => {
+      expect(
+        (
+          await result.current.correctMemory(
+            'm-5',
+            'Memory number 5',
+            'preference',
+          )
+        ).ok,
+      ).toBe(true);
+    });
+    await waitFor(() => expect(result.current.total).toBe(20));
+    await act(async () => result.current.loadMore());
+
+    const ids = result.current.memories.map((m) => m.id);
+    expect(ids).not.toContain('m-5');
+    expect(ids).toContain('m-21');
+    expect(ids).toHaveLength(20);
+    expect(new Set(ids).size).toBe(20);
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  it('a search-term edit out of the filter keeps paging exact', async () => {
+    rows = many(21, (i) => ({ content: `Tram stop note ${i}` }));
+    const { result } = renderHook(() => useMemories());
+    await act(async () =>
+      result.current.fetchMemories({ search: 'tram', status: 'active' }),
+    );
+    expect(result.current.total).toBe(21);
+
+    await act(async () => {
+      expect(
+        (await result.current.correctMemory('m-3', 'Bus stop note 3')).ok,
+      ).toBe(true);
+    });
+    await waitFor(() => expect(result.current.total).toBe(20));
+    await act(async () => result.current.loadMore());
+
+    const ids = result.current.memories.map((m) => m.id);
+    expect(ids).not.toContain('m-3');
+    expect(ids).toContain('m-21');
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  it(
+    'the detail view keeps the acknowledged memory after it leaves the filter',
+    { timeout: 15000 },
+    async () => {
+      rows = [
+        row(1, { content: 'I commute by tram', category: 'fact' }),
+        row(2),
+      ];
+      render(<MemoryTab />);
+      await screen.findByText('I commute by tram');
+      fireEvent.click(screen.getByRole('button', { name: 'Fact' }));
+      await waitFor(() =>
+        expect(screen.getByText('Showing 2 of 2 memories')).toBeTruthy(),
+      );
+      fireEvent.click(screen.getByText('I commute by tram'));
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+      fireEvent.change(screen.getByLabelText('Memory category'), {
+        target: { value: 'preference' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Memory content')).toBeNull(),
+      );
+      expect(screen.getByText('I commute by tram')).toBeTruthy();
+      expect(screen.getByText('preference')).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Back to memories' }));
+      await waitFor(() =>
+        expect(screen.getByText('Showing 1 of 1 memory')).toBeTruthy(),
+      );
+      expect(screen.queryByText('I commute by tram')).toBeNull();
+    },
+  );
+
+  it('explains a 412 and keeps the draft', { timeout: 15000 }, async () => {
+    patchReply = () =>
+      json(
+        { detail: 'Memory changed since it was read; reload it and try again' },
+        412,
+      );
+    const field = await openFirstMemoryForEditing();
+    fireEvent.change(field, { target: { value: 'My stale edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This memory changed since you opened it, so your edit was not saved. Your draft is still here; reopen the memory to see the latest version.',
+    );
+    expect(
+      (screen.getByLabelText('Memory content') as HTMLTextAreaElement).value,
+    ).toBe('My stale edit');
   });
 });

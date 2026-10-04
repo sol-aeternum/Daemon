@@ -189,21 +189,33 @@ export default function MemoryTab() {
   );
 
   // Handle memory selection - go to detail view
-  const handleSelectMemory = useCallback((memoryId: string) => {
-    setSelectedMemoryId(memoryId);
-    setViewMode('detail');
-  }, []);
+  // The open memory as last seen or acknowledged by the server. An edit can
+  // move it out of the current filters; the detail view keeps showing it.
+  const [detailMemory, setDetailMemory] = useState<Memory | null>(null);
+
+  const handleSelectMemory = useCallback(
+    (memoryId: string) => {
+      setSelectedMemoryId(memoryId);
+      setDetailMemory(memories.find((m) => m.id === memoryId) ?? null);
+      setViewMode('detail');
+    },
+    [memories],
+  );
 
   // Handle back navigation from detail view
   const handleBackToList = useCallback(() => {
     setSelectedMemoryId(null);
+    setDetailMemory(null);
     setViewMode('list');
   }, []);
 
   // Handle memory correction
   const handleCorrectMemory = useCallback(
-    (id: string, content: string, category?: string) =>
-      correctMemory(id, content, category),
+    async (id: string, content: string, category?: string) => {
+      const result = await correctMemory(id, content, category);
+      if (result.ok) setDetailMemory(result.memory);
+      return result;
+    },
     [correctMemory],
   );
 
@@ -219,9 +231,9 @@ export default function MemoryTab() {
   );
 
   // Get selected memory object
-  const selectedMemory: Memory | undefined = memories.find(
-    (m) => m.id === selectedMemoryId,
-  );
+  const selectedMemory: Memory | undefined =
+    memories.find((m) => m.id === selectedMemoryId) ??
+    (detailMemory?.id === selectedMemoryId ? detailMemory : undefined);
 
   // Handle clear all memories
   const handleClearMemories = async () => {

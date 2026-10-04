@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from typing import Any
 
 import asyncpg
 import pytest
 from cryptography.fernet import Fernet
 
+from fastapi import HTTPException
+
+from orchestrator.auth import AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import (
@@ -21,6 +25,7 @@ from orchestrator.memory.store import (
     MemoryStore,
     compute_memory_content_hash,
 )
+from orchestrator.routes import memories as memories_router
 from tests.benchmark_longmemeval.isolated_database import isolated_database_fixture
 
 isolated_edit_pool = isolated_database_fixture("memory_edit_", audited_tables=["users", "memories"])
@@ -211,3 +216,67 @@ async def test_background_reembed_of_old_text_cannot_overwrite_an_edit(
     raw = await _raw(pool, memory_id)
     assert raw["embedding_model"] == "fresh"
     assert raw["vector_text"].startswith("[0.9")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("a_changes_text", [False, True], ids=["category-only", "text"])
+async def test_concurrent_edit_cannot_mix_text_and_vector_or_be_overwritten(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_edit_pool: tuple[asyncpg.Pool, str],
+    a_changes_text: bool,
+) -> None:
+    """A reads X; B commits Y with its vector; A resumes and must not write."""
+    pool, _dsn = isolated_edit_pool
+    store = MemoryStore(pool, _crypto(monkeypatch))
+    user_id = await _user(pool)
+    memory_id = await _seed(store, user_id, "I commute by tram")
+
+    async def embed(_texts: list[str]):
+        from orchestrator.memory.embedding import EmbeddingBatchResult
+
+        return EmbeddingBatchResult(
+            embeddings=[_vector(0.3)], provider="voyage", model="a-model", storage_model="a-model"
+        )
+
+    monkeypatch.setattr(memories_router, "embed_documents_with_metadata", embed)
+    real_get = store.get_memory
+    reads = 0
+
+    async def get_then_let_b_commit(memory_id_arg: uuid.UUID):
+        nonlocal reads
+        reads += 1
+        row = await real_get(memory_id_arg)
+        if reads == 1:
+            # B's edit commits between A's read and A's write.
+            await store.update_memory_content(
+                memory_id_arg,
+                "I commute by bicycle",
+                embedding=_vector(0.7),
+                embedding_model="b-model",
+                user_id=user_id,
+                require_content_hash=True,
+                expected_content_hash=row["content_hash"] if row else None,
+            )
+        return row
+
+    monkeypatch.setattr(store, "get_memory", get_then_let_b_commit)
+    app_state: Any = type("State", (), {"memory_store": store})()
+    auth = AuthenticatedDevice(user_id=user_id, device_id=uuid.uuid4(), session_id=uuid.uuid4())
+    request = memories_router.MemoryUpdate(
+        content="I commute by bus" if a_changes_text else "I commute by tram",
+        category="project",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await memories_router.update_memory(memory_id, request, app_state=app_state, auth=auth)
+
+    assert raised.value.status_code == 412
+    monkeypatch.setattr(store, "get_memory", real_get)
+    reloaded = await store.get_memory(memory_id)
+    assert reloaded is not None
+    assert reloaded["content"] == "I commute by bicycle"
+    raw = await _raw(pool, memory_id)
+    assert raw["content_hash"] == compute_memory_content_hash("I commute by bicycle")
+    assert raw["embedding_model"] == "b-model"
+    assert raw["vector_text"].startswith("[0.7")
+    assert raw["category"] == "fact"

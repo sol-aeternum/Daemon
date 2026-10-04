@@ -1447,8 +1447,15 @@ class MemoryStore:
         category: str | None = None,
         confidence: float | None = None,
         user_id: uuid.UUID | None = None,
+        require_content_hash: bool = False,
+        expected_content_hash: str | None = None,
     ) -> dict[str, Any] | None:
         """Replace a memory's content in one write.
+
+        With ``require_content_hash`` the write applies only if the stored
+        content hash still equals ``expected_content_hash`` (NULL matches
+        NULL), so an edit based on a stale read cannot overwrite a newer one
+        or pair its text with another edit's vector; it returns ``None``.
 
         A supplied ``embedding`` replaces the vector (with its model);
         ``clear_embedding`` drops it so an obsolete vector can never keep
@@ -1483,6 +1490,7 @@ class MemoryStore:
                     updated_at = NOW()
                 WHERE id = $1
                   AND ($10::uuid IS NULL OR user_id = $10)
+                  AND (NOT $11::bool OR content_hash IS NOT DISTINCT FROM $12)
                 RETURNING *
                 """,
                 memory_id,
@@ -1495,6 +1503,8 @@ class MemoryStore:
                 effective_model,
                 category,
                 user_id,
+                require_content_hash,
+                expected_content_hash,
             )
         except asyncpg.UniqueViolationError as exc:
             raise MemoryContentConflictError(

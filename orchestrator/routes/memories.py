@@ -434,7 +434,9 @@ async def update_memory(
     New text is embedded before the write and stored with its vector in one
     update. If embeddings are unqualified or the provider fails, the write
     clears the vector instead, so retrieval can never keep matching the old
-    text through an obsolete embedding.
+    text through an obsolete embedding. The write is conditional on the
+    content hash this request read; if another edit landed first, it returns
+    412 rather than overwrite it.
     """
     store = app_state.memory_store
     if store is None:
@@ -472,6 +474,11 @@ async def update_memory(
             clear_embedding=content_changed and embedding is None,
             category=data.category,
             user_id=auth.user_id,
+            # Write only if the text is still what this request read, so a
+            # concurrent edit is never overwritten or paired with this
+            # request's vector decision.
+            require_content_hash=True,
+            expected_content_hash=existing.get("content_hash"),
         )
     except MemoryContentConflictError as exc:
         raise HTTPException(
@@ -479,6 +486,12 @@ async def update_memory(
             detail="Memory content duplicates an existing active memory",
         ) from exc
     if updated is None:
+        current = await store.get_memory(memory_id)
+        if current and current.get("user_id") == auth.user_id:
+            raise HTTPException(
+                status_code=412,
+                detail="Memory changed since it was read; reload it and try again",
+            )
         raise HTTPException(status_code=404, detail="Memory not found")
     return updated
 
