@@ -4,6 +4,11 @@ export function isSameOriginApiRequest(url: URL, sameOrigin: boolean): boolean {
   return sameOrigin && url.pathname.startsWith('/api/');
 }
 
+/** Speech is private even when the protected download uses the backend origin. */
+export function isPrivateSpeechRequest(url: URL): boolean {
+  return /^\/(?:tts(?:\/|$)|generated-audio\/)/.test(url.pathname);
+}
+
 export function shouldUseGeneralRuntimeCache(
   url: URL,
   sameOrigin: boolean,
@@ -11,6 +16,7 @@ export function shouldUseGeneralRuntimeCache(
 ): boolean {
   return (
     !isSameOriginApiRequest(url, sameOrigin) &&
+    !isPrivateSpeechRequest(url) &&
     !isWebSnapshotRequest(url, appOrigin)
   );
 }

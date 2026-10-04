@@ -40,7 +40,7 @@ from orchestrator.artifacts import (
     ArtifactOwnerError,
     resolve_owned_artifact,
 )
-from orchestrator.speech.cache import audio_filename, cached_audio, store_audio
+from orchestrator.speech.cache import audio_filename, cached_audio, run_cache_io, store_audio
 from orchestrator.speech.contracts import SpeechError, SpeechRequest, canonical_voice
 from orchestrator.speech.service import get_speech_provider, synthesize as synthesize_speech
 from orchestrator.services.identity.rate_limiter import RateLimitUnavailableError
@@ -126,6 +126,7 @@ from orchestrator.routes import (
 )
 from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
+from orchestrator.routes.speech_stream import router as speech_stream_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
 from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import (
@@ -544,6 +545,7 @@ app.add_middleware(
         "/v1/chat/completions": _request_body_settings.daemon_max_chat_body_bytes,
         "/stt": _request_body_settings.daemon_max_stt_body_bytes,
         "/tts": 32768,
+        "/tts/stream/v1": 32768,
         "/skills/upload": _request_body_settings.daemon_max_skill_upload_body_bytes,
     },
 )
@@ -1854,7 +1856,9 @@ async def serve_generated_audio(
     """Serve a generated audio file from disk (TTS or sound effects)."""
     filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename, auth.user_id)
     if filepath is None:
-        filepath = cached_audio(TTS_CACHE_DIR / "self-hosted", auth.user_id, filename)
+        filepath = await run_cache_io(
+            cached_audio, TTS_CACHE_DIR / "self-hosted", auth.user_id, filename
+        )
     if filepath is None:
         filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename, auth.user_id)
     if filepath is None:
@@ -1926,16 +1930,15 @@ async def text_to_speech(
         filename = audio_filename(provider.name, provider.model, speech)
         root = TTS_CACHE_DIR / "self-hosted"
         cached = (
-            payload.cache is not False and cached_audio(root, auth.user_id, filename) is not None
+            payload.cache is not False
+            and await run_cache_io(cached_audio, root, auth.user_id, filename) is not None
         )
         if not cached:
 
             async def work():
                 audio = await synthesize_speech(provider, speech, settings.tts_timeout_seconds)
                 try:
-                    await asyncio.to_thread(
-                        store_audio, root, auth.user_id, filename, audio.content
-                    )
+                    await run_cache_io(store_audio, root, auth.user_id, filename, audio.content)
                 except (ArtifactOwnerError, OSError) as exc:
                     raise SpeechError("speech_storage_unavailable") from exc
 
@@ -2662,6 +2665,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(speech_stream_router)
 app.include_router(web_snapshots_router)
 app.include_router(entitlements.router)
 app.include_router(images.router)

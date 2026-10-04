@@ -16,6 +16,14 @@ import {
   subscribeAuthGeneration,
 } from '../lib/auth';
 import { MAX_TTS_TEXT_CODE_POINTS } from '../lib/constants';
+import { validateSpeechCapabilities } from '../lib/speechCapabilities';
+import { PROGRESSIVE_SPEECH_QUALIFIED } from '../lib/speechQualification';
+import {
+  ProgressivePlayback,
+  availableSpeechRanges,
+  clampSpeechSeek,
+  type SpeechRange,
+} from '../lib/progressivePlayback';
 
 /**
  * AudioPlaybackProvider owns the whole buffered read-aloud lifecycle:
@@ -51,6 +59,7 @@ export type TtsPhase =
   | 'downloading'
   | 'starting'
   | 'playing'
+  | 'buffering'
   | 'paused'
   | 'error';
 
@@ -75,6 +84,8 @@ export interface TtsScope {
 }
 
 interface TtsState {
+  generation: 'idle' | 'starting' | 'receiving' | 'complete' | 'failed';
+  availableRanges: SpeechRange[];
   phase: TtsPhase;
   requestId: number | null;
   messageId: string | null;
@@ -85,6 +96,8 @@ interface TtsState {
 }
 
 interface AudioPlaybackContextValue {
+  generation: TtsState['generation'];
+  availableRanges: SpeechRange[];
   phase: TtsPhase;
   ownerMessageId: string | null;
   ownerConversationId: string | null;
@@ -101,6 +114,8 @@ interface AudioPlaybackContextValue {
 }
 
 const IDLE_STATE: TtsState = {
+  generation: 'idle',
+  availableRanges: [],
   phase: 'idle',
   requestId: null,
   messageId: null,
@@ -207,6 +222,8 @@ async function readJsonSafely(response: Response): Promise<unknown> {
 interface AudioPlaybackProviderProps {
   children: ReactNode;
   scope?: TtsScope;
+  /** Isolated qualification/test harness only; no persisted user preference. */
+  progressiveEnabled?: boolean;
 }
 
 interface ActiveSpeech {
@@ -219,11 +236,18 @@ interface ActiveSpeech {
   objectUrl: string | null;
   /** Retires pending play promises without releasing the buffered audio. */
   playAttempt: number;
+  progressive: ProgressivePlayback | null;
+  generation: TtsState['generation'];
+  pauseIntent: boolean;
+  playbackStarted: boolean;
+  deadlineTimer: ReturnType<typeof setTimeout> | null;
+  startedAt: number;
 }
 
 export function AudioPlaybackProvider({
   children,
   scope,
+  progressiveEnabled = PROGRESSIVE_SPEECH_QUALIFIED,
 }: AudioPlaybackProviderProps) {
   const resolvedScope: TtsScope = useMemo(
     () => scope ?? { conversationId: null, authGeneration: 0 },
@@ -247,10 +271,11 @@ export function AudioPlaybackProvider({
    * Detach and free exactly one owner's resources. Only the current owner can
    * be released, so a late cleanup cannot cancel its successor.
    */
-  const releaseActive = useCallback((active: ActiveSpeech) => {
-    if (activeRef.current !== active) return;
-    activeRef.current = null;
+  const retireResources = useCallback((active: ActiveSpeech) => {
     active.controller.abort();
+    active.progressive?.dispose();
+    active.progressive = null;
+    if (active.deadlineTimer !== null) clearTimeout(active.deadlineTimer);
 
     const { audio, objectUrl } = active;
     active.audio = null;
@@ -263,6 +288,8 @@ export function AudioPlaybackProvider({
       audio.onplaying = null;
       audio.onpause = null;
       audio.onstalled = null;
+      audio.onwaiting = null;
+      audio.onprogress = null;
       audio.onloadedmetadata = null;
       audio.ondurationchange = null;
       audio.ontimeupdate = null;
@@ -295,6 +322,15 @@ export function AudioPlaybackProvider({
     }
   }, []);
 
+  const releaseActive = useCallback(
+    (active: ActiveSpeech) => {
+      if (activeRef.current !== active) return;
+      activeRef.current = null;
+      retireResources(active);
+    },
+    [retireResources],
+  );
+
   /** Invalidate the current owner and return the provider to idle. */
   const cancelSpeech = useCallback(() => {
     const active = activeRef.current;
@@ -307,6 +343,11 @@ export function AudioPlaybackProvider({
       if (activeRef.current !== active) return;
       if (!mountedRef.current) return;
       setState((previous) => ({
+        generation: active.generation,
+        availableRanges:
+          previous.requestId === active.requestId
+            ? previous.availableRanges
+            : [],
         phase,
         requestId: active.requestId,
         messageId: active.messageId,
@@ -331,6 +372,7 @@ export function AudioPlaybackProvider({
       setState({
         ...IDLE_STATE,
         phase: 'error',
+        generation: 'failed',
         messageId,
         conversationId,
         errorMessage,
@@ -363,7 +405,11 @@ export function AudioPlaybackProvider({
       if (!isCurrent(active) || !active.audio) return;
       const { currentTime, duration } = active.audio;
       const finiteDuration =
-        Number.isFinite(duration) && duration > 0 ? duration : 0;
+        (!active.progressive || active.generation === 'complete') &&
+        Number.isFinite(duration) &&
+        duration > 0
+          ? duration
+          : 0;
       const finiteTime = Number.isFinite(currentTime)
         ? Math.max(0, currentTime)
         : 0;
@@ -375,6 +421,9 @@ export function AudioPlaybackProvider({
                 ? Math.min(finiteTime, finiteDuration)
                 : finiteTime,
               duration: finiteDuration,
+              availableRanges: active.progressive
+                ? availableSpeechRanges(active.audio!)
+                : [],
             }
           : previous,
       );
@@ -387,6 +436,7 @@ export function AudioPlaybackProvider({
       const audio = active.audio;
       if (!audio || !isCurrent(active)) return;
       const attempt = ++active.playAttempt;
+      active.pauseIntent = false;
       const guard = () => isCurrent(active) && active.playAttempt === attempt;
       publishPhase(active, 'starting', null);
       const failed = (error: unknown) => {
@@ -425,6 +475,165 @@ export function AudioPlaybackProvider({
           'Content-Type': 'application/json',
         };
         if (authHeader) postHeaders.Authorization = authHeader;
+
+        if (
+          progressiveEnabled &&
+          request.format === 'mp3' &&
+          ProgressivePlayback.supported()
+        ) {
+          active.deadlineTimer = setTimeout(() => {
+            if (guard()) failActive(active, 'Speech generation timed out');
+          }, 125000);
+          const capabilityResponse = await fetch('/api/tts/capabilities', {
+            headers: authHeader ? { Authorization: authHeader } : {},
+            signal,
+            redirect: 'error',
+            cache: 'no-store',
+          });
+          if (!guard()) return;
+          if (!capabilityResponse.ok)
+            throw new TtsRequestError('Speech capabilities unavailable');
+          const capabilities = validateSpeechCapabilities(
+            await readJsonSafely(capabilityResponse),
+          );
+          if (!guard()) return;
+          if (active.deadlineTimer !== null) clearTimeout(active.deadlineTimer);
+          active.deadlineTimer = setTimeout(
+            () => {
+              if (guard()) failActive(active, 'Speech generation timed out');
+            },
+            Math.max(
+              0,
+              active.startedAt +
+                Math.min(125, capabilities.limits.deadline_seconds) * 1000 -
+                Date.now(),
+            ),
+          );
+          if (capabilities.streams.length) {
+            // Install every created resource in its owner before any await.
+            const audio = new Audio();
+            active.audio = audio;
+            const host = audioHostRef.current;
+            if (!host?.isConnected)
+              throw new TtsRequestError(TTS_PLAY_ERROR_MESSAGE);
+            host.appendChild(audio);
+            let progressive: ProgressivePlayback | null = null;
+            let prepared = false;
+            try {
+              progressive = new ProgressivePlayback(audio, signal, guard);
+              active.progressive = progressive;
+              await progressive.prepare();
+              prepared = true;
+            } catch {
+              if (!guard()) return;
+            }
+            if (!guard()) return;
+            if (prepared && progressive !== null) {
+              const updatePosition = () => publishPosition(active);
+              audio.onloadedmetadata = updatePosition;
+              audio.ondurationchange = updatePosition;
+              audio.ontimeupdate = updatePosition;
+              audio.onseeking = updatePosition;
+              audio.onseeked = updatePosition;
+              audio.onprogress = updatePosition;
+              audio.onerror = () => {
+                if (guard()) failActive(active, TTS_DECODE_ERROR_MESSAGE);
+              };
+              audio.onplaying = () => {
+                if (!guard() || audio.paused) return;
+                active.pauseIntent = false;
+                publishPhase(active, 'playing', null);
+              };
+              audio.onpause = () => {
+                if (!guard() || !audio.paused || audio.ended) return;
+                active.playAttempt += 1;
+                active.pauseIntent = true;
+                updatePosition();
+                publishPhase(active, 'paused', null);
+              };
+              const buffering = () => {
+                if (guard() && !active.pauseIntent)
+                  publishPhase(active, 'buffering', null);
+              };
+              audio.onwaiting = buffering;
+              audio.onstalled = buffering;
+              audio.oncanplay = () => {
+                if (guard() && !active.pauseIntent && active.playbackStarted) {
+                  publishPhase(
+                    active,
+                    audio.paused ? 'starting' : 'playing',
+                    null,
+                  );
+                }
+              };
+              audio.onended = () => {
+                if (!guard()) return;
+                if (active.generation !== 'complete') {
+                  buffering();
+                  return;
+                }
+                releaseActive(active);
+                publishIdle();
+              };
+              await progressive.receive(
+                postHeaders,
+                {
+                  text: request.text,
+                  voice: request.voice,
+                  speed: request.speed,
+                  cache: true,
+                },
+                capabilities,
+                {
+                  receiving: () => {
+                    if (!guard()) return;
+                    active.generation = 'receiving';
+                    publishPhase(
+                      active,
+                      active.pauseIntent ? 'paused' : 'starting',
+                      null,
+                    );
+                  },
+                  appended: () => {
+                    if (!guard()) return;
+                    updatePosition();
+                    if (!active.playbackStarted && !active.pauseIntent) {
+                      active.playbackStarted = true;
+                      playActive(active);
+                    }
+                  },
+                  complete: () => {
+                    if (!guard()) return;
+                    active.generation = 'complete';
+                    if (active.deadlineTimer !== null)
+                      clearTimeout(active.deadlineTimer);
+                    updatePosition();
+                    publishPhase(
+                      active,
+                      active.pauseIntent
+                        ? 'paused'
+                        : audio.paused
+                          ? 'starting'
+                          : 'playing',
+                      null,
+                    );
+                  },
+                },
+              );
+              return; // No replay/transport fallback after this POST may start.
+            }
+            // Local SourceBuffer refusal is before POST. Preserve request and
+            // preferences while freeing only this owner's preflight resources.
+            active.progressive = null;
+            progressive?.dispose();
+            active.audio = null;
+            audio.removeAttribute('src');
+            audio.load();
+            audio.remove();
+          }
+          if (active.deadlineTimer !== null) clearTimeout(active.deadlineTimer);
+          active.deadlineTimer = null;
+        }
 
         const response = await fetch('/api/tts', {
           method: 'POST',
@@ -506,6 +715,7 @@ export function AudioPlaybackProvider({
         // players when play fires. That removal rejects the pending play promise.
         // Give each owner a stable document parent BEFORE playback instead.
         host.appendChild(audio);
+        active.generation = 'complete';
         publishPhase(active, 'starting', null);
 
         audio.onplaying = () => {
@@ -541,6 +751,11 @@ export function AudioPlaybackProvider({
         if (!guard()) return;
         if (signal.aborted) return;
         failActive(active, describeUnexpectedFailure(error));
+      } finally {
+        // Also cover reentrant resource constructors/hooks after an earlier
+        // cancellation. This only retires this owner's resources, never state
+        // or media belonging to the replacement owner.
+        if (!guard()) retireResources(active);
       }
     },
     [
@@ -551,6 +766,8 @@ export function AudioPlaybackProvider({
       publishPhase,
       publishPosition,
       releaseActive,
+      retireResources,
+      progressiveEnabled,
     ],
   );
 
@@ -590,6 +807,12 @@ export function AudioPlaybackProvider({
         audio: null,
         objectUrl: null,
         playAttempt: 0,
+        progressive: null,
+        generation: 'starting',
+        pauseIntent: false,
+        playbackStarted: false,
+        deadlineTimer: null,
+        startedAt: Date.now(),
       };
       activeRef.current = active;
       publishPhase(active, 'synthesizing', null);
@@ -634,6 +857,7 @@ export function AudioPlaybackProvider({
       const active = ownedAudio(owner);
       if (!active?.audio) return;
       active.playAttempt += 1;
+      active.pauseIntent = true;
       active.audio.pause();
       publishPosition(active);
       publishPhase(active, 'paused', null);
@@ -644,7 +868,10 @@ export function AudioPlaybackProvider({
   const resumeSpeech = useCallback(
     (owner: TtsOwner) => {
       const active = ownedAudio(owner);
-      if (active?.audio?.paused) playActive(active);
+      if (active?.audio?.paused) {
+        active.playbackStarted = true;
+        playActive(active);
+      }
     },
     [ownedAudio, playActive],
   );
@@ -654,9 +881,14 @@ export function AudioPlaybackProvider({
       const active = ownedAudio(owner);
       if (!active?.audio || !Number.isFinite(seconds)) return;
       const duration = active.audio.duration;
-      if (!Number.isFinite(duration) || duration <= 0) return;
+      const destination = active.progressive
+        ? clampSpeechSeek(seconds, availableSpeechRanges(active.audio))
+        : Number.isFinite(duration) && duration > 0
+          ? Math.max(0, Math.min(seconds, duration))
+          : null;
+      if (destination === null) return;
       try {
-        active.audio.currentTime = Math.max(0, Math.min(seconds, duration));
+        active.audio.currentTime = destination;
         publishPosition(active);
       } catch {
         failActive(active, 'Speech position could not be changed');
@@ -703,6 +935,8 @@ export function AudioPlaybackProvider({
   const value = useMemo<AudioPlaybackContextValue>(
     () => ({
       phase: state.phase,
+      generation: state.generation,
+      availableRanges: state.availableRanges,
       ownerMessageId: state.messageId,
       ownerConversationId: state.conversationId,
       ownerRequestId: state.requestId,

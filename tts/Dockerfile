@@ -12,7 +12,7 @@ RUN uv sync --locked --no-dev --no-install-project --no-cache
 COPY tts/download_assets.py /build/download_assets.py
 RUN python /build/download_assets.py && rm /build/download_assets.py
 COPY tts /app/tts
-COPY orchestrator/speech/contracts.py /app/orchestrator/speech/contracts.py
+COPY orchestrator/speech/contracts.py orchestrator/speech/stream_protocol.py orchestrator/speech/stream_response.py /app/orchestrator/speech/
 COPY orchestrator/models.py orchestrator/request_body_limit.py /app/orchestrator/
 USER 65532:65532
 CMD ["uvicorn", "tts.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--limit-concurrency", "16", "--no-access-log"]

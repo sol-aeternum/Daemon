@@ -17,6 +17,8 @@ export function TtsPlaybackBar() {
     ownerRequestId,
     currentTime,
     duration,
+    generation,
+    availableRanges,
     pauseSpeech,
     resumeSpeech,
     seekSpeech,
@@ -32,14 +34,22 @@ export function TtsPlaybackBar() {
     requestId: ownerRequestId,
   };
   const paused = phase === 'paused';
-  const ready = phase === 'playing' || paused || phase === 'starting';
+  const ready =
+    phase === 'playing' ||
+    paused ||
+    phase === 'starting' ||
+    phase === 'buffering';
+  const generating = generation === 'starting' || generation === 'receiving';
+  const seekEnd = duration || availableRanges.at(-1)?.[1] || 0;
   const status = paused
     ? 'Paused'
     : phase === 'playing'
       ? 'Reading aloud'
-      : phase === 'starting'
-        ? 'Starting playback…'
-        : 'Preparing speech…';
+      : phase === 'buffering'
+        ? 'Buffering speech…'
+        : phase === 'starting'
+          ? 'Starting playback…'
+          : 'Preparing speech…';
   const controlClass =
     'inline-flex min-h-touch min-w-touch shrink-0 items-center justify-center rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-primary)] disabled:opacity-50';
 
@@ -66,7 +76,10 @@ export function TtsPlaybackBar() {
       </button>
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
-          <span role="status">{status}</span>
+          <span role="status">
+            {status}
+            {generating ? ' · Generating…' : ''}
+          </span>
           <span className="shrink-0 tabular-nums" aria-hidden="true">
             {formatTime(currentTime)} /{' '}
             {duration > 0 ? formatTime(duration) : '—'}
@@ -77,10 +90,10 @@ export function TtsPlaybackBar() {
           aria-label="Speech playback position"
           aria-valuetext={`${formatTime(currentTime)} of ${duration > 0 ? formatTime(duration) : 'unknown duration'}`}
           min={0}
-          max={duration > 0 ? duration : 1}
+          max={seekEnd > 0 ? seekEnd : 1}
           step={0.1}
-          value={Math.min(currentTime, duration || 1)}
-          disabled={!ready || duration <= 0}
+          value={Math.min(currentTime, seekEnd || 1)}
+          disabled={!ready || seekEnd <= 0}
           onChange={(event) =>
             seekSpeech(owner, Number(event.currentTarget.value))
           }

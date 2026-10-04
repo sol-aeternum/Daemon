@@ -14,6 +14,7 @@ import {
 
 import {
   isSameOriginApiRequest,
+  isPrivateSpeechRequest,
   shouldUseGeneralRuntimeCache,
 } from '../lib/pwaCaching';
 import {
@@ -30,6 +31,10 @@ declare global {
 declare const self: ServiceWorkerGlobalScope;
 
 const runtimeCaching: RuntimeCaching[] = [
+  {
+    matcher: ({ url }) => isPrivateSpeechRequest(url),
+    handler: new NetworkOnly(),
+  },
   {
     // HTTP no-store does not constrain Cache API writes. Both direct-backend
     // and relative snapshot GETs must bypass all runtime-cache strategies.
