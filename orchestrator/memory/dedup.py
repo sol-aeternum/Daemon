@@ -19,6 +19,13 @@ from orchestrator.memory.embedding import (
     get_configured_embedding_fallback_storage_models,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.equivalence import (
+    EquivalencePlan,
+    IncomingMemory,
+    eligible,
+    may_merge_sources,
+    plan_equivalence,
+)
 from orchestrator.model_routing import routing_context
 
 logger = logging.getLogger(__name__)
@@ -467,7 +474,7 @@ async def _close_current_related_candidates(
     return closed_ids
 
 
-async def deduplicate_facts(
+async def _deduplicate_facts_benchmark(
     store: MemoryStore,
     user_id: uuid.UUID,
     facts: list[Any],
@@ -479,20 +486,13 @@ async def deduplicate_facts(
     prepared_embeddings: list[Any] | None = None,
     excluded_memory_ids: set[uuid.UUID] | None = None,
 ) -> DedupResult:
-    """Deduplicate extracted facts against existing memories.
+    """Frozen threshold algorithm for explicitly historical benchmarks only.
 
-    ``lock_conn`` (issue #221): when supplied, every database read and
-    write routes onto that connection so a one-slot pool cannot deadlock
-    while the cap-protected transaction owns its only connection.
-    Provider calls and trust-signal reads are returned as deferred effects
-    for the caller to run only after the transaction commits.
-
-    ``excluded_memory_ids``: when the caller has already closed one or
-    more rows in the same transaction (the ``update`` path closes the
-    target before ``dedup_and_store`` runs), filter those rows out of
-    every candidate source before choosing the best match. This keeps
-    the closed replacement target from being selected and closed twice.
+    Production never enters this implementation unless the offline benchmark
+    harness explicitly sets DEDUP_BENCHMARK_MODE. Locked writes are forbidden.
     """
+    if lock_conn is not None:
+        raise ValueError("historical threshold benchmark cannot run inside a write lock")
     result = DedupResult()
     current_slot_families: set[str] = set()
     current_family_keep_ids: dict[str, uuid.UUID] = {}
@@ -1011,6 +1011,192 @@ async def deduplicate_facts(
     return result
 
 
+async def prepare_memory_plan(
+    store: MemoryStore,
+    incoming: IncomingMemory,
+    *,
+    embedding_result: Any | None = None,
+    excluded_memory_ids: set[uuid.UUID] | None = None,
+) -> EquivalencePlan:
+    """Discover and judge before acquiring any database transaction or lock."""
+    if (
+        incoming.local_only
+        or incoming.tier != "l1"
+        or incoming.status != "active"
+        or incoming.source_type == "dream"
+    ):
+        return EquivalencePlan(incoming)
+    rows = await store._discover_equivalence_candidates(
+        incoming.user_id,
+        incoming.content,
+        incoming.category,
+        incoming.slot,
+        embedding=_single_vector(embedding_result) if embedding_result is not None else None,
+        embedding_model=embedding_result.storage_model if embedding_result is not None else None,
+        excluded_memory_ids=excluded_memory_ids,
+    )
+    return await plan_equivalence(incoming, rows, excluded_memory_ids=excluded_memory_ids)
+
+
+async def _commit_memory_plan(
+    store: MemoryStore,
+    plan: EquivalencePlan,
+    *,
+    conn: Any | None,
+    embedding_result: Any | None,
+    excluded_memory_ids: set[uuid.UUID] | None = None,
+    locked_rows: dict[uuid.UUID, dict[str, Any]] | None = None,
+    revalidate_only: bool = False,
+) -> DedupResult:
+    """Only same-connection DB work; no rejudge and no threshold/family fallback."""
+    incoming = plan.incoming
+    result = DedupResult()
+    selected = plan.selected
+    if selected is not None and selected.memory_id not in (excluded_memory_ids or ()):
+        if conn is None:
+            raise ValueError("semantic revalidation requires a transaction connection")
+        rows = locked_rows
+        if rows is None:
+            rows = await store._lock_memory_rows(incoming.user_id, [selected.memory_id], conn=conn)
+        row = rows.get(selected.memory_id)
+        if (
+            row is not None
+            and eligible(row, incoming)
+            and selected.matches(row)
+            and may_merge_sources(incoming.source_type, row["source_type"])
+        ):
+            await store.touch_memory(selected.memory_id, conn=conn)
+            result.merged.append(row)
+            return result
+    if revalidate_only:
+        return result
+    memory, inserted = await store._insert_memory_with_outcome(
+        user_id=incoming.user_id,
+        content=incoming.content,
+        category=incoming.category,
+        source_type=incoming.source_type,
+        source_conversation_id=incoming.conversation_id,
+        confidence=incoming.confidence,
+        status=incoming.status,
+        local_only=incoming.local_only,
+        memory_slot=incoming.slot,
+        embedding=_single_vector(embedding_result) if embedding_result is not None else None,
+        embedding_model=embedding_result.storage_model if embedding_result is not None else None,
+        conn=conn,
+    )
+    (result.new if inserted else result.merged).append(memory)
+    return result
+
+
+async def deduplicate_facts(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    facts: list[Any],
+    conversation_id: uuid.UUID | None,
+    *,
+    source_type: str = "extracted",
+    status: str = "active",
+    lock_conn: Any | None = None,
+    prepared_embeddings: list[Any] | None = None,
+    excluded_memory_ids: set[uuid.UUID] | None = None,
+    prepared_plans: list[EquivalencePlan] | None = None,
+    locked_rows: dict[uuid.UUID, dict[str, Any]] | None = None,
+) -> DedupResult:
+    """Sequential PLAN -> revalidate/COMMIT. Only equivalent verdicts merge.
+
+    Two concurrent empty plans may both insert paraphrases (safe false negative).
+    Exact hash uniqueness remains the existing database baseline exception.
+    Locked legacy callers without a plan insert conservatively, with no network.
+    """
+    if DEDUP_BENCHMARK_MODE:
+        if lock_conn is not None:
+            raise ValueError("historical threshold benchmark cannot run inside a write lock")
+        return await _deduplicate_facts_benchmark(
+            store,
+            user_id,
+            facts,
+            conversation_id,
+            source_type=source_type,
+            status=status,
+            prepared_embeddings=prepared_embeddings,
+            excluded_memory_ids=excluded_memory_ids,
+        )
+    if prepared_embeddings is not None and len(prepared_embeddings) != len(facts):
+        raise ValueError("prepared_embeddings must match facts length")
+    if prepared_plans is not None and len(prepared_plans) != len(facts):
+        raise ValueError("prepared_plans must match facts length")
+    result = DedupResult()
+    for index, fact in enumerate(facts):
+        if not str(getattr(fact, "content", "") or "").strip():
+            logger.warning("deduplicate_facts skipped a blank fact at index %d", index)
+            continue
+        incoming = IncomingMemory(
+            user_id=user_id,
+            content=fact.content,
+            category=fact.category,
+            source_type=source_type,
+            conversation_id=conversation_id,
+            slot=getattr(fact, "slot", None),
+            confidence=getattr(fact, "confidence", 0.8),
+            status=status,
+        )
+        embedding_result = prepared_embeddings[index] if prepared_embeddings is not None else None
+        if prepared_embeddings is None and lock_conn is None:
+            try:
+                embedding_result = await prepare_memory_embedding(incoming.content, incoming.slot)
+            except EmbeddingConfigurationError:
+                embedding_result = None
+        if prepared_plans is not None:
+            plan = prepared_plans[index]
+            if plan.incoming != incoming:
+                raise ValueError("prepared plan does not match immutable incoming memory")
+        elif lock_conn is not None:
+            plan = EquivalencePlan(incoming)
+        else:
+            plan = await prepare_memory_plan(
+                store,
+                incoming,
+                embedding_result=embedding_result,
+                excluded_memory_ids=excluded_memory_ids,
+            )
+        if lock_conn is not None:
+            committed = await _commit_memory_plan(
+                store,
+                plan,
+                conn=lock_conn,
+                embedding_result=embedding_result,
+                excluded_memory_ids=excluded_memory_ids,
+                locked_rows=locked_rows,
+            )
+        else:
+            # Unlocked callers own a short transaction only for row-locked
+            # revalidation/touch. Conservative inserts use the store's existing
+            # atomic INSERT/exact-conflict path after that transaction ends.
+            committed = DedupResult()
+            if plan.selected is not None:
+                async with store._pool.acquire() as conn:
+                    async with conn.transaction():
+                        committed = await _commit_memory_plan(
+                            store,
+                            plan,
+                            conn=conn,
+                            embedding_result=embedding_result,
+                            excluded_memory_ids=excluded_memory_ids,
+                            revalidate_only=True,
+                        )
+            if not committed.merged:
+                committed = await _commit_memory_plan(
+                    store,
+                    EquivalencePlan(incoming),
+                    conn=None,
+                    embedding_result=embedding_result,
+                )
+            # Each fact finishes persistence before the next fact's plan.
+        result.new.extend(committed.new)
+        result.merged.extend(committed.merged)
+    return result
+
+
 async def dedup_and_store(
     store: MemoryStore,
     user_id: uuid.UUID,
@@ -1025,18 +1211,20 @@ async def dedup_and_store(
     embedding_result: Any | None = None,
     excluded_memory_ids: set[uuid.UUID] | None = None,
     deferred_supersede_effects: list[DeferredSupersedeEffects] | None = None,
+    prepared_plan: EquivalencePlan | None = None,
+    locked_rows: dict[uuid.UUID, dict[str, Any]] | None = None,
 ) -> uuid.UUID:
     """Store a single memory with deduplication.
 
     Returns the memory ID (existing if merged/superseded, new if created).
 
     ``lock_conn`` (issue #221): when supplied, the caller has already
-    acquired the per-user active-row cap advisory lock on this
-    connection (see ``MemoryStore.acquire_user_cap_lock``). The
-    function routes all database work onto ``lock_conn`` so the cap check,
-    dedup decision, and insert happen inside the same transaction without
-    reacquiring the pool. Any provider or trust-signal work is returned via
-    ``deferred_supersede_effects`` for the caller to run after commit.
+    acquired the per-user active-row cap advisory lock on this connection.
+    Provider work must already have completed in ``prepared_plan`` and the
+    prepared embedding. The commit reuses this connection without acquiring
+    the pool. A locked caller without a plan conservatively inserts/reuses
+    the exact database duplicate; it never judges or falls through to legacy
+    thresholds. ``deferred_supersede_effects`` retains benchmark compatibility.
     """
     from dataclasses import dataclass
 
@@ -1058,6 +1246,8 @@ async def dedup_and_store(
         lock_conn=lock_conn,
         prepared_embeddings=[embedding_result] if embedding_result is not None else None,
         excluded_memory_ids=excluded_memory_ids,
+        prepared_plans=[prepared_plan] if prepared_plan is not None else None,
+        locked_rows=locked_rows,
     )
     if deferred_supersede_effects is not None:
         deferred_supersede_effects.extend(result.deferred_supersede_effects)
@@ -1071,37 +1261,7 @@ async def dedup_and_store(
     elif result.new:
         return result.new[0]["id"]
     else:
-        # Fallback - create directly on the lock conn so the insert is
-        # part of the cap-protected transaction.
-        embedding_input = _embedding_text(content, slot)
-        try:
-            effective_embedding_result = embedding_result or await embed_documents_with_metadata(
-                [embedding_input]
-            )
-        except EmbeddingConfigurationError:
-            effective_embedding_result = None
-        embedding = (
-            _single_vector(effective_embedding_result)
-            if effective_embedding_result is not None
-            else None
-        )
-        memory = await store.insert_memory(
-            user_id=user_id,
-            content=content,
-            category=category,
-            source_type=source_type,
-            embedding=embedding,
-            embedding_model=(
-                effective_embedding_result.storage_model
-                if effective_embedding_result is not None
-                else None
-            ),
-            source_conversation_id=conversation_id,
-            status=status,
-            memory_slot=slot,
-            conn=lock_conn,
-        )
-        return memory["id"]
+        raise ValueError("memory content must not be blank")
 
 
 async def prepare_memory_embedding(content: str, slot: str | None = None) -> Any:

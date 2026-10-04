@@ -165,7 +165,37 @@ Triggered after each conversation turn via the worker queue. `process_extraction
 
 ### 2. Deduplication
 
-`deduplicate_facts()` in `dedup.py` compares each extracted fact against existing active memories using embedding similarity:
+Production `deduplicate_facts()` uses a bounded PLAN → revalidate/COMMIT path
+(`orchestrator/memory/equivalence.py`, `dedup.py`, and `store.py`). Owner-scoped,
+active/open L1 lexical, slot-family and qualified-vector candidates are discovery
+only. Complete facts are compared by the configured, account-budgeted background
+role; only a complete `equivalent` verdict may merge a paraphrase. A missing
+scope, unavailable judge, malformed/truncated verdict, correction, distinct fact
+or uncertainty preserves the incoming fact without threshold supersession or
+slot-family closure. Embeddings are not required for this path.
+
+Provider work happens before write transactions. The selected canonical row is
+owner-scoped and locked `FOR UPDATE`, and its plaintext and decision-state
+snapshot are revalidated on the same connection before touching it. An explicit
+tool replacement also locks/revalidates its target before closing it. Stale
+decisions never overwrite a concurrent edit. Extraction commits each fact before
+planning the next; concurrent writers with no shared candidate may still retain
+paraphrases (a conservative false negative, not global exactly-once dedup).
+
+Frozen L0, dreams and local-only records are excluded from cloud equivalence.
+The cloud `memory_write` update tool refuses local-only or unknown-locality
+targets before embedding, judging or writing, even with explicit replacement
+text. It does not provide a concurrent privacy-revocation protocol for requests
+already authorized from an earlier nonlocal snapshot.
+Extracted facts may reuse an explicit canonical record without changing its
+content/source/slot. An explicit incoming paraphrase is not silently suppressed
+behind an extracted origin. Existing whitespace-normalized database hash
+uniqueness remains a separate deterministic exception, including cross-source
+reuse; conflict reuse is reported as merged, not newly inserted. No existing
+records are reconciled by this source change.
+
+The following thresholds and behaviors are retained **only for explicitly
+historical offline dedup benchmarks**, not production merge authority:
 
 | Scenario | Threshold | Action |
 |---|---|---|
@@ -178,13 +208,29 @@ Thresholds are calibrated from `tests/results/voyage_similarity_analysis.json`:
 - Within-scenario max: 0.8374 / p95: 0.6621
 - Cross-scenario max: 0.8046 / p95: 0.6080
 
-**Slot families:** Memories with slots like `language.python` share the family `language`. Within a family, `.current`-suffixed slots (`vehicle.current`) trigger post-insert cleanup: other family members are closed (soft-deleted via `valid_to`).
+**Historical slot families:** Memories with slots like `language.python` share the family `language`. The legacy benchmark's `.current` cleanup closes family members; production uses families for bounded discovery only and never infers supersession from the family label.
 
-**Sibling blocking:** Facts with different explicit slots at the merge/supersede threshold are inserted as parallel siblings rather than merged (e.g., `language.python` vs `language.typescript`).
+**Historical sibling blocking:** The threshold benchmark separates different explicit slots. Production may merge equivalent facts despite spelling/slot-label differences, but preserves different entities, values, negation, temporal scope, conditions and certainty.
 
-**LLM contradiction check:** Before superseding, a `kimi-k2.5` call checks if the new fact contradicts the existing one. Contradictions are stored in metadata but do not block supersession (advisory).
+**Historical contradiction check:** The retained benchmark's advisory contradiction helper is not used as proof of production equivalence. Workload routing remains configuration-owned; no new model is enabled by deduplication.
 
-**Protected explicit matches:** `user_created` memories within a 5-minute window from the same conversation are protected from extraction-driven supersession — they are touched instead.
+**Explicit provenance:** Production does not blindly touch a recent explicit match. It requires equivalence plus commit-time revalidation; corrections and uncertain facts are preserved separately.
+
+### Embedding capability status
+
+Authenticated `GET /status` adds an `embeddings` object while retaining legacy
+counters. Static `configuration` (`eligible`, `unavailable`, `unknown`) is not a
+provider test or proof of account-budgeted dispatch. Safe reason codes distinguish
+missing credentials, unapproved routes, invalid configuration and missing adapters.
+Current adapters report `budget_adapter_unavailable`; adding a key alone does not
+make semantic memory ready. Process-local outcomes, timestamps and configuration
+denial counts have `observation_scope=backend_process`: they do not represent the
+worker or survive restarts. The status read performs no provider request.
+
+The Memory Browser shows embedding capability separately from browser loading
+and errors. Missing/old-server status remains unknown, never green Ready. See
+`docs/MEMORY_EMBEDDING_SCREEN.md` for the separately authorized fictional screen;
+its results do not qualify or activate a private-memory provider.
 
 ### 3. Storage
 

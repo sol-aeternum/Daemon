@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Frozen historical threshold benchmark semantics only. The approved production
+# contract no longer supersedes/merges on similarity or closes .current families;
+# those safety invariants are covered in test_memory_equivalence.py.
+
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -28,7 +32,8 @@ def _embedding_result(
 
 
 @pytest.fixture(autouse=True)
-def _mock_contradiction_check():
+def _mock_contradiction_check(monkeypatch):
+    monkeypatch.setattr("orchestrator.memory.dedup.DEDUP_BENCHMARK_MODE", True)
     with (
         patch(
             "orchestrator.memory.dedup.check_contradiction",

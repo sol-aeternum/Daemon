@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 
@@ -32,13 +33,67 @@ _embedding_failures_total = 0
 _embedding_provider_used: dict[str, int] = {"voyage": 0, "openrouter": 0, "openai": 0}
 _voyage_failure_timestamps: list[float] = []
 
+#: Observation scope of the dispatch outcome records below. They live in this
+#: backend process only: observed attempts, successes and denials seen by this
+#: process. Background workers keep their own process, and a restart clears
+#: this history; nothing here may be presented as a global or stored claim.
+EMBEDDING_OBSERVATION_SCOPE = "backend_process"
+
+#: Safe, fixed reason codes for the ``/status`` embeddings object. They expose
+#: persisted configuration verdicts without raw exception text, secrets,
+#: account identifiers or facts about users or their content. Unknown
+#: conditions in future code must not invent strings outside this set.
+EMBEDDING_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "missing_credentials",
+        "route_unapproved",
+        "invalid_configuration",
+        "adapter_unavailable",
+        "budget_adapter_unavailable",
+    }
+)
+
+#: Codes that block an embedding dispatch outright. ``budget_adapter_unavailable``
+#: is deliberately not a blocker: current adapters reserve no account compute
+#: budget, so a configuration can be eligible while this code honestly records
+#: that no qualified, budgeted adapter exists and the capability stays
+#: unverified until one does.
+_EMBEDDING_CONFIGURATION_BLOCKERS: frozenset[str] = EMBEDDING_REASON_CODES - {
+    "budget_adapter_unavailable"
+}
+
+#: Canonical publication order for reason codes so ``/status`` always exposes
+#: the same deterministic list, whatever order the checks discovered them in.
+_EMBEDDING_REASON_CODE_ORDER: tuple[str, ...] = (
+    "missing_credentials",
+    "route_unapproved",
+    "invalid_configuration",
+    "adapter_unavailable",
+    "budget_adapter_unavailable",
+)
+assert set(_EMBEDDING_REASON_CODE_ORDER) == set(EMBEDDING_REASON_CODES)
+
+_last_embed_success_at: datetime | None = None
+_last_embed_failure_at: datetime | None = None
+_last_embed_outcome: str = "never_attempted"
+_embedding_configuration_denials_total = 0
+_embedding_configuration_denial_reason_counts: dict[str, int] = {}
+
 
 class EmbeddingError(Exception):
     pass
 
 
 class EmbeddingConfigurationError(EmbeddingError):
-    pass
+    """Configuration denial before any provider dispatch.
+
+    ``reason`` carries the safe reason code for ``/status`` (one of
+    :data:`EMBEDDING_REASON_CODES`) or ``None`` when it cannot be attributed.
+    """
+
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class EmbeddingRequestError(EmbeddingError):
@@ -81,7 +136,10 @@ def _get_voyage_api_key() -> str:
     settings = get_settings()
     api_key = settings.voyage_api_key
     if not api_key:
-        raise EmbeddingConfigurationError("VOYAGE_API_KEY environment variable not set")
+        raise EmbeddingConfigurationError(
+            "VOYAGE_API_KEY environment variable not set",
+            reason="missing_credentials",
+        )
     return api_key
 
 
@@ -90,7 +148,10 @@ def _get_openai_api_key() -> str:
     settings = get_settings()
     api_key = settings.openai_api_key
     if not api_key:
-        raise EmbeddingConfigurationError("OPENAI_API_KEY environment variable not set")
+        raise EmbeddingConfigurationError(
+            "OPENAI_API_KEY environment variable not set",
+            reason="missing_credentials",
+        )
     return api_key
 
 
@@ -99,7 +160,10 @@ def _get_openrouter_api_key() -> str:
     settings = get_settings()
     api_key = settings.openrouter_api_key
     if not api_key:
-        raise EmbeddingConfigurationError("OPENROUTER_API_KEY environment variable not set")
+        raise EmbeddingConfigurationError(
+            "OPENROUTER_API_KEY environment variable not set",
+            reason="missing_credentials",
+        )
     return api_key
 
 
@@ -143,14 +207,210 @@ def get_embedding_failures_total() -> int:
     return _embedding_failures_total
 
 
+def get_embedding_retry_activations() -> int:
+    return _retry_count
+
+
+def get_embedding_last_retry_at() -> float | None:
+    return _last_retry_at
+
+
+def _embedding_utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _record_dispatch_success() -> None:
+    """Record the terminal outcome of one public dispatch: success."""
+    global _last_embed_success_at, _last_embed_outcome
+    _last_embed_success_at = _embedding_utc_now()
+    _last_embed_outcome = "success"
+
+
+def _record_provider_failure_outcome() -> None:
+    """Record the terminal outcome of one public dispatch: provider error.
+
+    Provider failures are already counted by the existing per-provider paths;
+    this only sets the outcome stamp.
+    """
+    global _last_embed_failure_at, _last_embed_outcome
+    _last_embed_failure_at = _embedding_utc_now()
+    _last_embed_outcome = "provider_error"
+
+
+def _record_configuration_denied_outcome(error: EmbeddingConfigurationError) -> None:
+    """Record the terminal outcome of one public dispatch: configuration denial.
+
+    Exactly one record per public dispatch attempt; the denial is counted
+    separately from provider failures and attributed to the safe reason code
+    carried by the error, never to its message text.
+    """
+    global _last_embed_failure_at, _last_embed_outcome
+    global _embedding_configuration_denials_total
+    _last_embed_failure_at = _embedding_utc_now()
+    _last_embed_outcome = "configuration_denied"
+    _embedding_configuration_denials_total += 1
+    reason = getattr(error, "reason", None)
+    if reason in EMBEDDING_REASON_CODES:
+        _embedding_configuration_denial_reason_counts[reason] = (
+            _embedding_configuration_denial_reason_counts.get(reason, 0) + 1
+        )
+
+
+def _record_dismissed_exception(error: BaseException) -> None:
+    """Record a public dispatch that failed on a provider attempt."""
+    if isinstance(error, EmbeddingConfigurationError):
+        _record_configuration_denied_outcome(error)
+    else:
+        _record_provider_failure_outcome()
+
+
+def _has_dispatchable_text(texts: list[str]) -> bool:
+    return any(text and text.strip() for text in texts)
+
+
+def _format_status_timestamp(moment: datetime | None) -> str | None:
+    if moment is None:
+        return None
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _describe_provider_credentials(provider: str, settings: Any) -> str | None:
+    key_attributes = {
+        "voyage": "voyage_api_key",
+        "openrouter": "openrouter_api_key",
+        "openai": "openai_api_key",
+    }
+    attribute = key_attributes.get(provider)
+    if attribute is None or not getattr(settings, attribute, None):
+        return "missing_credentials"
+    return None
+
+
+def _is_provider_route_approved(provider: str) -> bool | None:
+    """Whether the loaded policy approves ``provider``'s embedding service.
+
+    ``None`` means the policy itself could not be validated (a configuration
+    problem, not an approval verdict).
+    """
+    service_id = _EMBEDDING_TOOL_SERVICES.get(provider)
+    if service_id is None:
+        return False
+    try:
+        return bool(load_inference_policy().is_tool_service_approved(service_id))
+    except PolicyError:
+        return None
+
+
+def _canonical_reason_codes(present: Iterable[str]) -> tuple[str, ...]:
+    """Deterministic, de-duplicated reason codes in canonical enum order."""
+    found = set(present)
+    return tuple(code for code in _EMBEDDING_REASON_CODE_ORDER if code in found)
+
+
+def describe_embedding_configuration() -> tuple[str, tuple[str, ...]]:
+    """Return ``(configuration, reason_codes)`` without any network activity.
+
+    ``eligible`` means every static precondition for a dispatch attempt is
+    present. It is not a provider test: no request has been made and the
+    capability is not verified. ``budget_adapter_unavailable`` is always
+    reported for the current adapters because they reserve no account compute
+    budget, so an eligible configuration still is not operational-ready.
+    """
+    try:
+        settings = get_settings()
+    except Exception as error:
+        # The configuration cannot even be evaluated; stay safe and unknown
+        # rather than guess at details that could mislead. The exception
+        # (and its message) may originate inside settings validation and can
+        # contain credential material, so the log stays to the type name.
+        logger.warning("Embedding configuration could not be evaluated: %s", type(error).__name__)
+        return "unknown", ()
+
+    present: set[str] = set()
+    dimensions = getattr(settings, "embedding_dimensions", None)
+    if not isinstance(dimensions, int) or dimensions <= 0:
+        present.add("invalid_configuration")
+    for model_attribute in ("embedding_document_model", "embedding_query_model"):
+        model = getattr(settings, model_attribute, None)
+        if not isinstance(model, str) or not model.strip():
+            present.add("invalid_configuration")
+
+    for provider in get_configured_embedding_providers():
+        # No `continue` before the key checks: a configured provider with no
+        # embedding adapter still reports its own credential and route state.
+        if provider not in _EMBEDDING_TOOL_SERVICES:
+            # The embedding adapter for this provider does not exist yet.
+            # The configuration listing it is still validated below, but the
+            # absent adapter itself is the reason, not an invalid value.
+            present.add("adapter_unavailable")
+        missing = _describe_provider_credentials(provider, settings)
+        if missing is not None:
+            present.add(missing)
+        approved = _is_provider_route_approved(provider)
+        if approved is None:
+            present.add("invalid_configuration")
+        elif not approved:
+            present.add("route_unapproved")
+
+    # Current direct adapters never reserve account price, so no deployment
+    # with them may report an operational-ready embedding capability.
+    present.add("budget_adapter_unavailable")
+
+    unexpected = present - EMBEDDING_REASON_CODES
+    if unexpected:
+        logger.error("Unexpected embedding reason codes: %s", sorted(unexpected))
+        return "unknown", ()
+    if present & _EMBEDDING_CONFIGURATION_BLOCKERS:
+        return "unavailable", _canonical_reason_codes(present)
+    return "eligible", _canonical_reason_codes(present)
+
+
+def get_embedding_status() -> dict[str, Any]:
+    """JSON-safe additive ``embeddings`` object for ``GET /status``.
+
+    Observation scope is this backend process only: attempt outcomes and
+    timestamps live in process memory and disappear on restart. No provider
+    request is made, nothing is keyed by account, and no exception text,
+    credential or account fact is included.
+    """
+    try:
+        configuration, reasons = describe_embedding_configuration()
+    except Exception as error:
+        # Status itself must never fail the request; unknown is the safe state.
+        # Type name only: the underlying exception may carry raw settings
+        # validation text that must not reach logs or the response.
+        logger.warning("Embedding status fell back to unknown: %s", type(error).__name__)
+        configuration, reasons = "unknown", ()
+
+    return {
+        "observation_scope": EMBEDDING_OBSERVATION_SCOPE,
+        "configuration": configuration,
+        "reason_codes": list(reasons),
+        "last_outcome": _last_embed_outcome,
+        "last_success_at": _format_status_timestamp(_last_embed_success_at),
+        "last_failure_at": _format_status_timestamp(_last_embed_failure_at),
+        "configuration_denials_total": _embedding_configuration_denials_total,
+        "configuration_denial_reason_counts": dict(
+            sorted(_embedding_configuration_denial_reason_counts.items())
+        ),
+    }
+
+
 def reset_embedding_metrics_for_tests() -> None:
     global _embedding_failures_total, _last_retry_at, _retry_count
+    global _last_embed_success_at, _last_embed_failure_at, _last_embed_outcome
+    global _embedding_configuration_denials_total
     _retry_count = 0
     _last_retry_at = None
     _embedding_failures_total = 0
     _embedding_provider_used.clear()
     _embedding_provider_used.update({"voyage": 0, "openrouter": 0, "openai": 0})
     _voyage_failure_timestamps.clear()
+    _last_embed_success_at = None
+    _last_embed_failure_at = None
+    _last_embed_outcome = "never_attempted"
+    _embedding_configuration_denials_total = 0
+    _embedding_configuration_denial_reason_counts.clear()
     _get_voyage_api_key.cache_clear()
     _get_openrouter_api_key.cache_clear()
     _get_openai_api_key.cache_clear()
@@ -248,10 +508,17 @@ def _require_approved_embedding_service(provider: str) -> None:
             service_id
         )
     except PolicyError:
-        approved = False
+        # The policy itself cannot be validated; the route is not the problem.
+        raise EmbeddingConfigurationError(
+            "Embedding inference policy invalid",
+            reason="invalid_configuration",
+        ) from None
     if not approved:
         # Lexical memory retrieval stays available without embeddings.
-        raise EmbeddingConfigurationError("Approved embedding route unavailable")
+        raise EmbeddingConfigurationError(
+            "Approved embedding route unavailable",
+            reason="route_unapproved",
+        )
 
 
 async def _post_embeddings(
@@ -637,6 +904,8 @@ async def _embed_texts_with_openai(
             )
             all_embeddings.extend(embeddings)
             total_tokens += chunk_tokens
+    except EmbeddingConfigurationError:
+        raise
     except Exception:
         _record_provider_failure("openai")
         raise
@@ -706,6 +975,8 @@ async def _embed_texts_with_openrouter(
             )
             all_embeddings.extend(embeddings)
             total_tokens += chunk_tokens
+    except EmbeddingConfigurationError:
+        raise
     except Exception:
         _record_provider_failure("openrouter")
         raise
@@ -732,25 +1003,61 @@ async def _embed_texts_with_openrouter(
 
 
 async def embed_documents_with_metadata(texts: list[str]) -> EmbeddingBatchResult:
+    """Public document dispatch: records exactly one terminal outcome.
+
+    A batch with no dispatchable text contacts no provider and records no
+    outcome; the attempt never happened. Settings are resolved before the
+    attempt starts, exactly like the pre-observation dispatch, so a settings
+    failure is not miscounted as a provider error.
+    """
     settings = get_settings()
-    return await _embed_texts(
-        texts,
-        model=settings.embedding_document_model,
-        input_type="document",
-        max_tokens=DOCUMENT_MAX_TOKENS,
-    )
+    try:
+        result = await _embed_texts(
+            texts,
+            model=settings.embedding_document_model,
+            input_type="document",
+            max_tokens=DOCUMENT_MAX_TOKENS,
+        )
+    except Exception as error:
+        # ``CancelledError`` is a BaseException, so cancellation escapes this
+        # handler and is never recorded as a provider or configuration result.
+        _record_dismissed_exception(error)
+        raise
+    if result.provider != "none":
+        _record_dispatch_success()
+    return result
 
 
 async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
+    """Public query dispatch: records exactly one terminal outcome.
+
+    A blank or whitespace-only query contacts no provider and raises without
+    recording an outcome: no attempt was made, so none is observed.
+    """
     settings = get_settings()
-    result = await _embed_texts(
-        [text],
-        model=settings.embedding_query_model,
-        input_type="query",
-        max_tokens=QUERY_MAX_TOKENS,
-    )
-    if not result.embeddings:
+    if not _has_dispatchable_text([text]):
         raise EmbeddingRequestError("Cannot embed empty or whitespace-only query text")
+    try:
+        result = await _embed_texts(
+            [text],
+            model=settings.embedding_query_model,
+            input_type="query",
+            max_tokens=QUERY_MAX_TOKENS,
+        )
+    except Exception as error:
+        # ``CancelledError`` is a BaseException, so cancellation escapes this
+        # handler and is never recorded as a provider or configuration result.
+        _record_dismissed_exception(error)
+        raise
+
+    if not result.embeddings:
+        # Restored guard: a provider consumed by the dispatch must deliver
+        # exactly one vector for the query. An empty response is a terminal
+        # provider failure — recorded as such — never an index-time surprise.
+        if result.provider != "none":
+            _record_provider_failure_outcome()
+        raise EmbeddingRequestError("Query embedding dispatch returned no embeddings for the query")
+
     if result.provider == "voyage":
         storage_model = settings.embedding_document_model
     elif result.provider == "openrouter":
@@ -763,6 +1070,7 @@ async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
         )
     else:
         storage_model = result.storage_model
+    _record_dispatch_success()
     return EmbeddingVectorResult(
         embedding=EmbeddingVector(
             result.embeddings[0],

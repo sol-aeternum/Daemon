@@ -27,6 +27,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | File | Tier | Owner/Source | Classification | Derived-from/Authority |
 |------|------|--------------|----------------|------------------------|
 | `MEMORY_LAYER.md` | T1 | Engineering | gated | `orchestrator/config.py`, `orchestrator/memory/` |
+| `docs/MEMORY_EMBEDDING_SCREEN.md` | N/A | Engineering | raw-log | Owner-approved fictional-only #445 embedding screen; dated route/control results, not private-provider qualification or deployment evidence |
 | `docs/FEATURE_MATRIX.md` | T1 | Product/Eng | gated | Code implementation state |
 | `docs/TECHNICAL_SPECS.md` | T1 | Engineering | gated | `orchestrator/`, `migrations/`, `docker-compose.yml` |
 | `docs/PROJECT_CONTEXT.md` | T1 | Engineering | gated | `truth_set.md`, `docs/FEATURE_MATRIX.md` |

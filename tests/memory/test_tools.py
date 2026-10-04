@@ -33,6 +33,29 @@ def _stub_prepared_write_embedding(monkeypatch):
     )
     mock = AsyncMock(return_value=prepared)
     monkeypatch.setattr(tools_module, "prepare_memory_embedding", mock)
+    from orchestrator.memory.equivalence import EquivalencePlan
+
+    captured = {}
+    capture_snapshot = tools_module.CandidateSnapshot.capture
+
+    def capture(row):
+        captured[row["id"]] = dict(row)
+        return capture_snapshot(row)
+
+    monkeypatch.setattr(tools_module, "CandidateSnapshot", SimpleNamespace(capture=capture))
+
+    async def plan(store, incoming, **kwargs):
+        async def lock_rows(_owner, memory_ids, *, conn):
+            return {
+                memory_id: dict(captured[memory_id])
+                for memory_id in memory_ids
+                if memory_id in captured
+            }
+
+        store._lock_memory_rows = AsyncMock(side_effect=lock_rows)
+        return EquivalencePlan(incoming)
+
+    monkeypatch.setattr(tools_module, "prepare_memory_plan", plan)
     return mock
 
 
@@ -263,6 +286,7 @@ async def test_memory_write_update_calls_close_then_dedup():
                 {
                     "id": existing_memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old content",
                     "category": "fact",
                     "source_type": "user_created",
@@ -274,6 +298,7 @@ async def test_memory_write_update_calls_close_then_dedup():
                 {
                     "id": existing_memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old content",
                     "category": "fact",
                     "source_type": "user_created",
@@ -317,6 +342,7 @@ async def test_memory_write_update_inherits_category_and_slot():
                 {
                     "id": existing_memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old content",
                     "category": "preference",
                     "source_type": "user_created",
@@ -328,6 +354,7 @@ async def test_memory_write_update_inherits_category_and_slot():
                 {
                     "id": existing_memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old content",
                     "category": "preference",
                     "source_type": "user_created",
@@ -683,6 +710,7 @@ async def test_memory_write_update_is_also_rate_limited(monkeypatch):
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -945,6 +973,7 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
                 {
                     "id": memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old",
                     "category": "fact",
                     "memory_slot": None,
@@ -955,6 +984,7 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
                 {
                     "id": memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old",
                     "category": "fact",
                     "memory_slot": None,
@@ -1002,6 +1032,7 @@ async def test_memory_write_update_at_cap_with_closed_target_is_refused(monkeypa
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -1039,6 +1070,7 @@ async def test_memory_write_update_at_cap_with_deleted_target_is_refused(monkeyp
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -1081,6 +1113,7 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
                 {
                     "id": memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old",
                     "category": "fact",
                     "memory_slot": None,
@@ -1091,6 +1124,7 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
                 {
                     "id": memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old",
                     "category": "fact",
                     "memory_slot": None,
@@ -1127,6 +1161,7 @@ async def test_memory_write_update_concurrent_close_is_refused(monkeypatch):
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -1172,6 +1207,7 @@ async def test_memory_write_update_post_close_success_proceeds(monkeypatch):
                 {
                     "id": memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old",
                     "category": "fact",
                     "memory_slot": None,
@@ -1182,6 +1218,7 @@ async def test_memory_write_update_post_close_success_proceeds(monkeypatch):
                 {
                     "id": memory_id,
                     "user_id": user_id,
+                    "local_only": False,
                     "content": "old",
                     "category": "fact",
                     "memory_slot": None,
@@ -1243,6 +1280,7 @@ async def test_memory_write_update_close_no_op_is_refused(monkeypatch):
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -1290,6 +1328,7 @@ async def test_memory_write_update_close_already_closed_is_refused(monkeypatch):
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -1344,6 +1383,7 @@ async def test_memory_write_update_close_target_excluded_from_dedup_search(monke
         return_value={
             "id": old_memory_id,
             "user_id": user_id,
+            "local_only": False,
             "content": "old",
             "category": "fact",
             "memory_slot": None,
@@ -1399,6 +1439,9 @@ async def test_memory_dedup_candidate_reads_route_to_lock_conn():
             "memory_slot": fact.slot,
         }
     )
+    mock_store._insert_memory_with_outcome = AsyncMock(
+        return_value=(mock_store.insert_memory.return_value, True)
+    )
 
     with (
         patch(
@@ -1423,19 +1466,18 @@ async def test_memory_dedup_candidate_reads_route_to_lock_conn():
             lock_conn=lock_conn,
         )
 
-    mock_store.search_memories.assert_awaited_once()
-    assert mock_store.search_memories.await_args.kwargs["conn"] is lock_conn
-
-    mock_store.search_memories_bm25.assert_awaited_once()
-    assert mock_store.search_memories_bm25.await_args.kwargs["conn"] is lock_conn
-
-    mock_store.list_memories_by_slot_family.assert_awaited_once()
-    assert mock_store.list_memories_by_slot_family.await_args.kwargs["conn"] is lock_conn
+    # Without a precomputed semantic plan, lock-held callers insert rather than
+    # discovering/judging or falling back to threshold/family closure.
+    mock_embed.assert_not_awaited()
+    mock_store.search_memories.assert_not_awaited()
+    mock_store.search_memories_bm25.assert_not_awaited()
+    mock_store.list_memories_by_slot_family.assert_not_awaited()
+    assert mock_store._insert_memory_with_outcome.await_args.kwargs["conn"] is lock_conn
 
 
 @pytest.mark.asyncio
-async def test_deduplicate_facts_does_not_check_contradiction_when_lock_conn_defers_supersede():
-    """A lock-conn supersede path defers contradiction/trust side effects."""
+async def test_deduplicate_facts_locked_unplanned_preserves_without_supersede():
+    """No semantic plan means insert-only, not legacy similarity supersession."""
     from dataclasses import dataclass
     from orchestrator.memory.store import MemoryStore
     from orchestrator.memory.dedup import deduplicate_facts
@@ -1467,6 +1509,9 @@ async def test_deduplicate_facts_does_not_check_contradiction_when_lock_conn_def
     )
     mock_store.insert_memory = AsyncMock(
         return_value={"id": new_memory_id, "content": fact.content}
+    )
+    mock_store._insert_memory_with_outcome = AsyncMock(
+        return_value=(mock_store.insert_memory.return_value, True)
     )
     mock_store.close_memory = AsyncMock(return_value=True)
 
@@ -1501,9 +1546,11 @@ async def test_deduplicate_facts_does_not_check_contradiction_when_lock_conn_def
         )
 
     assert mock_contradiction.await_count == 0
-    assert len(result.deferred_supersede_effects) == 1
-    assert result.deferred_supersede_effects[0].superseded_memory_id == superseded_memory_id
-    assert result.deferred_supersede_effects[0].new_memory_id == new_memory_id
+    assert result.deferred_supersede_effects == []
+    assert result.superseded == []
+    assert result.new[0]["id"] == new_memory_id
+    mock_store.close_memory.assert_not_awaited()
+    mock_embed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1603,7 +1650,9 @@ async def test_memory_dedup_excluded_ids_filter_fallback_candidate_sources(monke
     from dataclasses import dataclass
     from unittest.mock import MagicMock
 
-    from orchestrator.memory.dedup import deduplicate_facts
+    # Historical threshold benchmark regression. Production exclusions are
+    # exercised before PLAN and again at COMMIT in test_memory_equivalence.py.
+    from orchestrator.memory.dedup import _deduplicate_facts_benchmark as deduplicate_facts
     from orchestrator.memory.store import MemoryStore
 
     monkeypatch.setattr(
@@ -1722,6 +1771,7 @@ async def test_memory_write_update_store_error_retains_rate_reservation(monkeypa
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,
@@ -1981,6 +2031,7 @@ async def test_memory_write_update_below_cap_of_historical_target_proceeds(monke
             return_value={
                 "id": memory_id,
                 "user_id": user_id,
+                "local_only": False,
                 "content": "old",
                 "category": "fact",
                 "memory_slot": None,

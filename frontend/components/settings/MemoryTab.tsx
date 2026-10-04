@@ -22,12 +22,17 @@ import {
   Clock,
   AlertTriangle,
   MessageSquare,
+  CircleQuestionMark,
 } from 'lucide-react';
 import {
   ensureAuthHeader,
   getAuthGeneration,
   subscribeAuthGeneration,
 } from '@/lib/auth';
+import {
+  resolveEmbeddingHealth,
+  presentEmbeddingHealth,
+} from '@/lib/embeddingHealth';
 
 interface MemoryStats {
   /** Memories Daemon currently uses. */
@@ -37,6 +42,9 @@ interface MemoryStats {
 }
 
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error';
+
+/** Loading of the authenticated /status payload for embedding semantics. */
+type EmbeddingStatusState = 'loading' | 'error' | 'loaded';
 
 type ViewMode = 'list' | 'detail';
 
@@ -53,6 +61,14 @@ export default function MemoryTab() {
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle');
   const [actionMessage, setActionMessage] = useState('');
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+
+  // Semantic embedding capability state, from GET /status. Kept separate from
+  // the memory browser's own loading/error/loaded states: the browser can be
+  // fully functional on lexical retrieval while embeddings are unavailable,
+  // and a failed /status fetch must not color anything green.
+  const [embeddingStatusState, setEmbeddingStatusState] =
+    useState<EmbeddingStatusState>('loading');
+  const [embeddingStatus, setEmbeddingStatus] = useState<unknown>(null);
 
   // Memory browser state
   const [viewMode, setViewMode] = useState<ViewMode>('list');
@@ -183,6 +199,43 @@ export default function MemoryTab() {
     fetchMemoryStats();
   }, [fetchMemoryStats]);
 
+  // Fetch the semantic embedding state through the same authenticated API
+  // path as the memories themselves. Missing fields or a failed fetch leave
+  // the capability unknown; this never marks it ready. A sign-in change
+  // clears the previous account's payload immediately and nothing from a
+  // stale response is ever applied to the new state.
+  const fetchEmbeddingStatus = useCallback(async () => {
+    const generation = getAuthGeneration();
+    setEmbeddingStatusState('loading');
+    try {
+      const headers = await getAuthHeaders();
+      if (generation !== getAuthGeneration()) return;
+      const response = await fetchWithFallback('/status', { headers });
+      const payload = await response.json().catch(() => null);
+      if (generation !== getAuthGeneration()) {
+        // The account changed while the request ran; drop it entirely.
+        return;
+      }
+      if (!response.ok) {
+        setEmbeddingStatus(null);
+        setEmbeddingStatusState('error');
+        return;
+      }
+      setEmbeddingStatus(payload);
+      setEmbeddingStatusState('loaded');
+    } catch {
+      if (generation !== getAuthGeneration()) {
+        return;
+      }
+      setEmbeddingStatus(null);
+      setEmbeddingStatusState('error');
+    }
+  }, [fetchWithFallback, getAuthHeaders]);
+
+  useEffect(() => {
+    void fetchEmbeddingStatus();
+  }, [fetchEmbeddingStatus]);
+
   // Handle filter changes from MemoryFilters
   const handleFilterChange = useCallback(
     (newFilters: FilterState) => {
@@ -205,8 +258,12 @@ export default function MemoryTab() {
         setSelectedMemoryId(null);
         setDetailMemory(null);
         setViewMode('list');
+        // Re-read embedding semantics for the signing in account.
+        setEmbeddingStatus(null);
+        setEmbeddingStatusState('loading');
+        void fetchEmbeddingStatus();
       }),
-    [],
+    [fetchEmbeddingStatus],
   );
 
   const handleSelectMemory = useCallback(
@@ -249,6 +306,21 @@ export default function MemoryTab() {
     },
     [deleteMemory, handleBackToList],
   );
+
+  // Semantic embedding health: derived from /status. A missing payload or a
+  // failed fetch resolves to unknown, never to a positive state.
+  const embeddingHealth = resolveEmbeddingHealth(
+    embeddingStatusState === 'loaded' ? embeddingStatus : null,
+  );
+  const embeddingPill = presentEmbeddingHealth(embeddingHealth);
+  const embeddingPillIcon =
+    embeddingHealth.state === 'unavailable' ? (
+      <AlertCircle className="w-3.5 h-3.5" />
+    ) : embeddingHealth.state === 'unverified' ? (
+      <AlertTriangle className="w-3.5 h-3.5" />
+    ) : (
+      <CircleQuestionMark className="w-3.5 h-3.5" />
+    );
 
   // Get selected memory object
   const selectedMemory: Memory | undefined =
@@ -439,8 +511,13 @@ export default function MemoryTab() {
                       </p>
                     </div>
                   </div>
-                  <span className="px-3 py-1 text-xs font-medium bg-status-success-bg text-status-success rounded-full">
-                    Ready
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full ${embeddingPill.className}`}
+                    title={embeddingPill.detail}
+                    aria-label={`Memory embeddings: ${embeddingPill.label}`}
+                  >
+                    {embeddingPillIcon}
+                    {embeddingPill.label}
                   </span>
                 </div>
               </div>

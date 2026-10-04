@@ -18,7 +18,9 @@ from orchestrator.memory.dedup import (
     check_contradiction,
     dedup_and_store,
     prepare_memory_embedding,
+    prepare_memory_plan,
 )
+from orchestrator.memory.equivalence import CandidateSnapshot, IncomingMemory
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_documents_with_metadata,
@@ -633,6 +635,13 @@ class MemoryWriteTool(Tool):
                 embedding_result = await prepare_memory_embedding(content, effective_slot)
             except EmbeddingConfigurationError:
                 embedding_result = None
+            prepared_plan = await prepare_memory_plan(
+                self.store,
+                IncomingMemory(
+                    self.user_id, content, category, "user_created", None, effective_slot
+                ),
+                embedding_result=embedding_result,
+            )
             # Issue #221 — atomic active-row cap enforcement.
             #
             # `_check_write_quota` does a non-locked count + a
@@ -705,6 +714,7 @@ class MemoryWriteTool(Tool):
                     lock_conn=cap_conn,
                     embedding_result=embedding_result,
                     deferred_supersede_effects=deferred_effects,
+                    prepared_plan=prepared_plan,
                 )
                 # Commit the cap-locked transaction so the advisory
                 # lock is released (it is transaction-scoped). The
@@ -769,6 +779,12 @@ class MemoryWriteTool(Tool):
                 # still inherits the existing text below.
                 return "Memory content can't be blank."
 
+            # Local-only targets cannot grant cloud processing through an update,
+            # even when replacement text is explicitly supplied. Fail closed on
+            # absent/malformed locality; real stored rows have a non-null bool.
+            if old_memory.get("local_only") is not False:
+                return "Local-only memories cannot be updated through this cloud tool."
+
             # Quota check runs after the ownership guard (so an
             # unauthorized caller learns nothing about quota state) but
             # before `close_memory` + `dedup_and_store`. `update` closes
@@ -801,6 +817,7 @@ class MemoryWriteTool(Tool):
             content = kwargs.get("content", old_memory.get("content", ""))
             category = kwargs.get("category", old_memory.get("category", "fact"))
             slot = kwargs.get("slot", old_memory.get("memory_slot"))
+            replacement_snapshot = CandidateSnapshot.capture(old_memory)
 
             # Compute the external embedding before opening the database
             # transaction, then serialize the authoritative count, close,
@@ -809,6 +826,19 @@ class MemoryWriteTool(Tool):
                 embedding_result = await prepare_memory_embedding(content, slot)
             except EmbeddingConfigurationError:
                 embedding_result = None
+            prepared_plan = await prepare_memory_plan(
+                self.store,
+                IncomingMemory(
+                    self.user_id,
+                    content,
+                    category,
+                    "user_created",
+                    old_memory.get("source_conversation_id"),
+                    slot,
+                ),
+                embedding_result=embedding_result,
+                excluded_memory_ids={memory_id},
+            )
             cap_conn = None
             deferred_effects = []
             try:
@@ -830,6 +860,26 @@ class MemoryWriteTool(Tool):
                         "a new one."
                     )
 
+                # The advisory cap lock does not serialize admin edits. Lock the
+                # target AND selected merge row in UUID order, on this connection,
+                # and compare full plaintext/state before closing anything.
+                lock_ids = [memory_id]
+                if prepared_plan.equivalent_id is not None:
+                    lock_ids.append(prepared_plan.equivalent_id)
+                locked_rows = await self.store._lock_memory_rows(
+                    self.user_id,
+                    lock_ids,
+                    conn=cap_conn,
+                )
+                replacement = locked_rows.get(memory_id)
+                if replacement is None or not replacement_snapshot.matches(replacement):
+                    await cap_conn.execute("ROLLBACK")
+                    await self.store._pool.release(cap_conn)
+                    cap_conn = None
+                    return (
+                        "Memory was modified concurrently and could not be replaced. "
+                        "Retry the update."
+                    )
                 close_took_effect = await self.store.close_memory(
                     memory_id, user_id=self.user_id, conn=cap_conn
                 )
@@ -860,8 +910,10 @@ class MemoryWriteTool(Tool):
                     # source after closing it on this transaction. Otherwise
                     # it can still be selected as the best match and trigger
                     # a redundant second close.
-                    excluded_memory_ids=({memory_id} if close_took_effect else None),
+                    excluded_memory_ids={memory_id},
                     deferred_supersede_effects=deferred_effects,
+                    prepared_plan=prepared_plan,
+                    locked_rows=locked_rows,
                 )
                 await cap_conn.execute("COMMIT")
                 await self.store._pool.release(cap_conn)

@@ -1,7 +1,7 @@
 """Tests for dedup threshold configuration authority.
 
-These tests prove that threshold accessors delegate to config settings
-and that branch behavior follows config values — not hardcoded constants.
+These tests preserve historical benchmark threshold authority. Production uses
+complete equivalence verdicts instead (see test_memory_equivalence.py).
 """
 
 import pytest
@@ -68,7 +68,7 @@ class TestThresholdBranchBehavior:
         import uuid
         from dataclasses import dataclass
         from unittest.mock import AsyncMock, patch
-        from orchestrator.memory.dedup import deduplicate_facts
+        from orchestrator.memory.dedup import _deduplicate_facts_benchmark as deduplicate_facts
         from orchestrator.memory.store import MemoryStore
 
         TEST_UUID = uuid.UUID("00000000-0000-0000-0000-000000000000")
@@ -180,7 +180,7 @@ class TestThresholdBranchBehavior:
         import uuid
         from dataclasses import dataclass
         from unittest.mock import AsyncMock, patch
-        from orchestrator.memory.dedup import deduplicate_facts
+        from orchestrator.memory.dedup import _deduplicate_facts_benchmark as deduplicate_facts
         from orchestrator.memory.store import MemoryStore
 
         TEST_UUID = uuid.UUID("00000000-0000-0000-0000-000000000000")

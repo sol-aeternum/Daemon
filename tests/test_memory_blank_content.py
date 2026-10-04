@@ -161,6 +161,7 @@ async def test_tool_update_without_content_still_inherits_existing_text() -> Non
         return_value={
             "id": memory_id,
             "user_id": USER_ID,
+            "local_only": False,
             "content": "Existing",
             "category": "fact",
             "status": "active",
@@ -200,11 +201,11 @@ async def test_mixed_batch_skips_blank_facts_and_keeps_vectors_aligned() -> None
     store.search_memories_bm25.return_value = []
     inserted: list[tuple[str, list[float]]] = []
 
-    async def insert_memory(**kwargs: Any) -> dict[str, Any]:
+    async def insert_memory(**kwargs: Any) -> tuple[dict[str, Any], bool]:
         inserted.append((kwargs["content"], kwargs["embedding"]))
-        return {"id": uuid.uuid4(), "content": kwargs["content"], "valid_to": None}
+        return {"id": uuid.uuid4(), "content": kwargs["content"], "valid_to": None}, True
 
-    store.insert_memory.side_effect = insert_memory
+    store._insert_memory_with_outcome.side_effect = insert_memory
     facts = [
         ExtractedFact(content="First fact", category="fact", confidence=0.9),
         ExtractedFact(content="   ", category="fact", confidence=0.9),
@@ -213,7 +214,12 @@ async def test_mixed_batch_skips_blank_facts_and_keeps_vectors_aligned() -> None
     prepared = [_batch([[0.1]]), _batch([[9.9]]), _batch([[0.3]])]
 
     result = await deduplicate_facts(
-        store, USER_ID, facts, conversation_id=None, prepared_embeddings=prepared
+        store,
+        USER_ID,
+        facts,
+        conversation_id=None,
+        prepared_embeddings=prepared,
+        lock_conn=AsyncMock(),
     )
 
     assert inserted == [("First fact", [0.1]), ("Third fact", [0.3])]
@@ -237,8 +243,21 @@ async def test_empty_provider_result_for_real_text_is_a_clear_error_not_index_er
 @pytest.mark.asyncio
 async def test_unqualified_embeddings_keep_the_lexical_fallback() -> None:
     store = AsyncMock()
-    store.search_memories_bm25.return_value = []
-    store.insert_memory.return_value = {"id": uuid.uuid4(), "content": "Real text"}
+    from contextlib import asynccontextmanager
+    from unittest.mock import MagicMock
+
+    @asynccontextmanager
+    async def context():
+        conn = AsyncMock()
+        conn.transaction = MagicMock(side_effect=context)
+        yield conn
+
+    store._pool.acquire = MagicMock(side_effect=context)
+    store._discover_equivalence_candidates.return_value = []
+    store._insert_memory_with_outcome.return_value = (
+        {"id": uuid.uuid4(), "content": "Real text"},
+        True,
+    )
     with patch(
         "orchestrator.memory.dedup.embed_documents_with_metadata",
         AsyncMock(side_effect=EmbeddingConfigurationError("unqualified")),
@@ -250,4 +269,4 @@ async def test_unqualified_embeddings_keep_the_lexical_fallback() -> None:
             conversation_id=None,
         )
     assert len(result.new) == 1
-    assert store.insert_memory.call_args.kwargs["embedding"] is None
+    assert store._insert_memory_with_outcome.call_args.kwargs["embedding"] is None

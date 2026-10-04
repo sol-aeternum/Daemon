@@ -1358,9 +1358,10 @@ async def test_explicit_memory_write_remains_local_when_embeddings_unapproved(
     user_id = uuid.uuid4()
     memory_id = uuid.uuid4()
     store = SimpleNamespace(
-        insert_memory=AsyncMock(return_value={"id": memory_id}),
-        search_memories_bm25=AsyncMock(return_value=[]),
+        _insert_memory_with_outcome=AsyncMock(return_value=({"id": memory_id}, True)),
+        _discover_equivalence_candidates=AsyncMock(return_value=[]),
     )
+    _install_memory_mutation_context(store)
     actual = await dedup.dedup_and_store(
         cast(MemoryStore, store),
         user_id,
@@ -1369,8 +1370,20 @@ async def test_explicit_memory_write_remains_local_when_embeddings_unapproved(
         "preference",
     )
     assert actual == memory_id
-    assert store.insert_memory.await_args.kwargs["user_id"] == user_id
-    assert store.insert_memory.await_args.kwargs["embedding"] is None
+    assert store._insert_memory_with_outcome.await_args.kwargs["user_id"] == user_id
+    assert store._insert_memory_with_outcome.await_args.kwargs["embedding"] is None
+
+
+def _install_memory_mutation_context(store: Any) -> None:
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    @asynccontextmanager
+    async def acquire():
+        yield SimpleNamespace(transaction=transaction)
+
+    store._pool = SimpleNamespace(acquire=acquire, execute=AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -1400,9 +1413,11 @@ async def test_extracted_fact_without_embeddings_persists_and_never_supersedes_s
                 }
             ]
         ),
-        insert_memory=AsyncMock(return_value={"id": new_id}),
+        _insert_memory_with_outcome=AsyncMock(return_value=({"id": new_id}, True)),
+        _discover_equivalence_candidates=AsyncMock(return_value=[]),
         _pool=SimpleNamespace(execute=AsyncMock()),
     )
+    _install_memory_mutation_context(store)
     fact = SimpleNamespace(
         content="User works at NewCo", category="career", confidence=0.9, slot="work.current"
     )
@@ -1414,9 +1429,9 @@ async def test_extracted_fact_without_embeddings_persists_and_never_supersedes_s
     )
     assert [memory["id"] for memory in result.new] == [new_id]
     assert result.superseded == []
-    assert store.insert_memory.await_args.kwargs["embedding"] is None
+    assert store._insert_memory_with_outcome.await_args.kwargs["embedding"] is None
     store._pool.execute.assert_not_awaited()
-    store.search_memories_bm25.assert_awaited_once()
+    store._discover_equivalence_candidates.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1441,9 +1456,10 @@ async def test_identical_lexical_memory_is_merged_without_new_embedding(
         "valid_to": None,
     }
     store = SimpleNamespace(
-        search_memories_bm25=AsyncMock(return_value=[existing]),
-        insert_memory=AsyncMock(),
+        _discover_equivalence_candidates=AsyncMock(return_value=[]),
+        _insert_memory_with_outcome=AsyncMock(return_value=(existing, False)),
     )
+    _install_memory_mutation_context(store)
     result = await dedup.dedup_and_store(
         cast(MemoryStore, store),
         uuid.uuid4(),
@@ -1452,7 +1468,8 @@ async def test_identical_lexical_memory_is_merged_without_new_embedding(
         "preference",
     )
     assert result == existing_id
-    store.insert_memory.assert_not_awaited()
+    # Reliable SQL conflict disposition, not a lexical equivalence assumption.
+    store._insert_memory_with_outcome.assert_awaited_once()
 
 
 @pytest.mark.asyncio

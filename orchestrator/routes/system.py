@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import (
-    _last_retry_at,
-    _retry_count,
     get_embedding_failures_total,
+    get_embedding_last_retry_at,
     get_embedding_provider_used_counts,
+    get_embedding_retry_activations,
+    get_embedding_status,
 )
 from orchestrator.memory.encryption import (
     ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY,
@@ -58,10 +59,13 @@ async def get_status(
         "db_healthy": db_healthy,
         "redis_healthy": redis_healthy,
         "memory_enabled": app_state.memory_store is not None,
-        "embedding_retry_activations": _retry_count,
-        "embedding_last_retry_at": _last_retry_at,
+        "embedding_retry_activations": get_embedding_retry_activations(),
+        "embedding_last_retry_at": get_embedding_last_retry_at(),
         "embedding_failures_total": get_embedding_failures_total(),
         "embedding_provider_used": get_embedding_provider_used_counts(),
+        # Additive semantic embeddings state; see get_embedding_status(). The
+        # legacy scalar counters above are unchanged keys for compatibility.
+        "embeddings": get_embedding_status(),
         "encryption_operations_failed_total": encryption_failures,
         "encryption_failure_alert": encryption_failures > 0,
         "chat_rate_limits": get_chat_rate_limit_metrics(),
