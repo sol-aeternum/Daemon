@@ -2,10 +2,25 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isSameOriginApiRequest,
+  isPrivateSpeechRequest,
   shouldUseGeneralRuntimeCache,
 } from '@/lib/pwaCaching';
 
 describe('PWA runtime cache boundaries', () => {
+  it('excludes protected speech and capabilities on direct backend origins', () => {
+    for (const path of [
+      '/tts/capabilities',
+      '/tts/stream/v1',
+      '/generated-audio/fixture.mp3',
+    ]) {
+      const url = new URL(`https://backend.fixture${path}`);
+      expect(isPrivateSpeechRequest(url)).toBe(true);
+      expect(shouldUseGeneralRuntimeCache(url, false)).toBe(false);
+    }
+    expect(
+      isPrivateSpeechRequest(new URL('https://backend.fixture/tts-example')),
+    ).toBe(false);
+  });
   it('classifies same-origin /api/* requests as network-only', () => {
     expect(
       isSameOriginApiRequest(new URL('https://daemon.test/api/chat'), true),

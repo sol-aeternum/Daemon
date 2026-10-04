@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 import re
 import importlib
+import logging
 import threading
 import time
 from typing import Any
@@ -80,8 +81,10 @@ class KokoroRuntime:
     def __init__(self, root: Path = Path("/opt/models")):
         self.root = root
         self.engine: Any = None
+        self.progressive_ready = False
 
     def load(self) -> None:
+        self.progressive_ready = False
         # Fail on absent assets; no from_pretrained/download/remote model loader.
         model_path = self.root / "kokoro-v1.0.onnx"
         voices_path = self.root / "voices-v1.0.bin"
@@ -109,6 +112,38 @@ class KokoroRuntime:
             content, _ = encode(audio, rate, format)
             if not content:
                 raise RuntimeError("TTS warm synthesis failed")
+        from tts.streaming import qualify_encoder
+
+        try:
+            qualify_encoder(audio, rate)
+        except Exception:
+            # A new encoder qualification failure cannot take established
+            # buffered codecs offline. No payload/model details in this log.
+            logging.getLogger(__name__).warning("speech_progressive_qualification_failed")
+        else:
+            self.progressive_ready = True
+
+    def stream(
+        self, request: SpeechRequest, cancel: threading.Event, queue: Any, deadline: float
+    ) -> None:
+        from tts.streaming import ContinuousMP3Encoder, completion
+
+        started = time.monotonic()
+        encoder = ContinuousMP3Encoder(queue.put, cancel, deadline)
+        try:
+            for text in chunks(request.text):
+                encoder.check()
+                audio, rate = self.engine.create(
+                    text, voice=VOICE_MAP[request.voice], speed=request.speed, lang="en-us"
+                )
+                # A cancelled native call may have finished, but may not encode or
+                # publish that abandoned chunk. The owning thread still closes.
+                encoder.add(audio, rate)
+            source, encoded = encoder.finish()
+            encoder.check()
+            queue.put(completion(encoder, source, encoded, started))
+        finally:
+            encoder.close()
 
     def synthesize(self, request: SpeechRequest, cancel: threading.Event) -> SpeechAudio:
         np = importlib.import_module("numpy")

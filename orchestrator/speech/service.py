@@ -8,7 +8,7 @@ import time
 
 from orchestrator.config import Settings
 from orchestrator.speech.contracts import SpeechAudio, SpeechError, SpeechProvider, SpeechRequest
-from orchestrator.speech.provider import InternalSpeechProvider
+from orchestrator.speech.stream_transport import InternalProgressiveProvider
 
 logger = logging.getLogger(__name__)
 _active = 0
@@ -19,7 +19,7 @@ def get_speech_provider(settings: Settings) -> SpeechProvider:
     # fallback to an external service. Server config selects deployment identity.
     if settings.tts_provider != "kokoro":
         raise SpeechError("speech_configuration_error")
-    return InternalSpeechProvider(
+    return InternalProgressiveProvider(
         name=settings.tts_provider,
         model=settings.tts_model,
         url=settings.tts_service_url,

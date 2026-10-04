@@ -1,5 +1,13 @@
 # Self-hosted speech rendering
 
+## Gated progressive delivery
+
+The owner-approved additive [progressive v1 contract](TTS_PROGRESSIVE_V1.md)
+preserves this buffered MP3/WAV/Opus boundary. Implementation/PR authorization is
+separate from merge/deployment; automatic progressive selection remains gated
+pending approved device/listening qualification. Do not infer Android, installed
+Plasma or warm loaded first-audio latency acceptance from synthetic browser tests.
+
 ## Local rollout evidence boundary
 
 The owner authorized completing the local rollout after the frontend-only

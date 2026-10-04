@@ -95,7 +95,10 @@ def test_missing_model_fails_without_downloading(tmp_path):
     assert " ".join(pieces).split() == text.split()
 
 
-def test_load_keeps_fp32_voice_and_bounded_cpu_without_spinning(tmp_path, monkeypatch):
+@pytest.mark.parametrize("progressive_works", [True, False])
+def test_load_keeps_fp32_voice_and_bounded_cpu_without_spinning(
+    tmp_path, monkeypatch, progressive_works
+):
     # Verify actual loader wiring without installing native/image-only dependencies.
     model, voices = tmp_path / "kokoro-v1.0.onnx", tmp_path / "voices-v1.0.bin"
     model.touch()
@@ -122,8 +125,14 @@ def test_load_keeps_fp32_voice_and_bounded_cpu_without_spinning(tmp_path, monkey
     encoder = Mock(return_value=(b"encoded-warm-audio", 24000))
     monkeypatch.setattr(speech_runtime.importlib, "import_module", import_module)
     monkeypatch.setattr(speech_runtime, "encode", encoder)
+    qualifier = Mock(
+        side_effect=None if progressive_works else RuntimeError("fictional encoder refusal")
+    )
+    monkeypatch.setattr("tts.streaming.qualify_encoder", qualifier)
     runtime = KokoroRuntime(tmp_path)
     runtime.load()
+    qualifier.assert_called_once_with(samples, 24000)
+    assert runtime.progressive_ready is progressive_works
 
     assert options.intra_op_num_threads == 2
     assert options.inter_op_num_threads == 1

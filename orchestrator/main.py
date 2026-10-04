@@ -126,6 +126,7 @@ from orchestrator.routes import (
 )
 from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
+from orchestrator.routes.speech_stream import router as speech_stream_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
 from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import (
@@ -544,6 +545,7 @@ app.add_middleware(
         "/v1/chat/completions": _request_body_settings.daemon_max_chat_body_bytes,
         "/stt": _request_body_settings.daemon_max_stt_body_bytes,
         "/tts": 32768,
+        "/tts/stream/v1": 32768,
         "/skills/upload": _request_body_settings.daemon_max_skill_upload_body_bytes,
     },
 )
@@ -2662,6 +2664,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(speech_stream_router)
 app.include_router(web_snapshots_router)
 app.include_router(entitlements.router)
 app.include_router(images.router)
