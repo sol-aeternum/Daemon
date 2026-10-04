@@ -107,17 +107,23 @@ class InternalProgressiveProvider(InternalSpeechProvider):
                 if response.status_code != 200:
                     return False
                 data = response.json()
-                profile = data.get("capabilities", {}).get("progressive")
+                profiles = data.get("capabilities", {}).get("progressive")
                 return (
                     data.get("ready") is True
                     and data.get("provider") == self.name
                     and data.get("model") == self.model
-                    and isinstance(profile, dict)
-                    and profile.get("version") == 1
-                    and profile.get("format") == "mp3"
-                    and profile.get("mime") == "audio/mpeg"
-                    and profile.get("sample_rate") == 24000
-                    and profile.get("rendering") == "speech-mp3-progressive-v1"
+                    and isinstance(profiles, list)
+                    and any(
+                        isinstance(profile, dict)
+                        and type(profile.get("version")) is int
+                        and profile.get("version") == 1
+                        and profile.get("format") == "mp3"
+                        and profile.get("mime") == "audio/mpeg"
+                        and type(profile.get("sample_rate")) is int
+                        and profile.get("sample_rate") == 24000
+                        and profile.get("rendering") == "speech-mp3-progressive-v1"
+                        for profile in profiles
+                    )
                 )
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             return False

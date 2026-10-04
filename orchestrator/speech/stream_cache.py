@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
+import errno
 import json
 import logging
 import math
@@ -296,10 +297,12 @@ class _Ledger:
             raise OSError("invalid speech cache ledger") from exc
 
     def _scan_validated(self) -> None:
+        owners: dict[str, tuple[int, int]] = {}
         for name in _names(self.root):
             if not is_artifact_owner_namespace(name):
                 continue
             with _directory(self.root, name) as owner:
+                owners[name] = _inode(os.fstat(owner))
                 for filename in _names(owner):
                     info = _stat_file(owner, filename)
                     if info is None:
@@ -355,6 +358,7 @@ class _Ledger:
             elif lease is None and clip is not None:
                 raise OSError("speech cache published inode changed")
 
+        protected_owners: set[str] = set()
         for token, group in groups.items():
             lease = group.get("lease")
             manifest = group.get("manifest")
@@ -371,6 +375,9 @@ class _Ledger:
                     try:
                         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
+                        # A live reservation needs its namespace even before
+                        # any audio is published there (including our own commit).
+                        protected_owners.add(journal["owner"])
                         # Charge the reservation once, not its same partial twice.
                         if published:
                             assert clip is not None and manifest is not None
@@ -418,6 +425,33 @@ class _Ledger:
                 and now - timestamp > cache.CACHE_TTL_SECONDS
             ):
                 self.evict(clip)
+
+        # Only after every journal/pair validates and recovery/expiry completes.
+        # Retain inode pairs, not open descriptors for every historical owner.
+        for name, expected in owners.items():
+            if name not in protected_owners:
+                self._remove_empty_owner(name, expected)
+
+    def _remove_empty_owner(self, name: str, expected: tuple[int, int]) -> None:
+        try:
+            with _directory(self.root, name) as owner:
+                if _inode(os.fstat(owner)) != expected:
+                    raise OSError("speech cache owner directory changed")
+                with os.scandir(owner) as entries:
+                    if next(entries, None) is not None:
+                        return
+                current = os.stat(name, dir_fd=self.root, follow_symlinks=False)
+                if not stat.S_ISDIR(current.st_mode) or _inode(current) != expected:
+                    raise OSError("speech cache owner directory changed")
+                try:
+                    os.rmdir(name, dir_fd=self.root)
+                except OSError as error:
+                    # Never remove contents to make a directory removable.
+                    if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                        raise
+        except FileNotFoundError:
+            # A vanished empty namespace has nothing left to reclaim.
+            return
 
     @staticmethod
     def _validate_clip(clip: _Clip, manifest: dict) -> None:

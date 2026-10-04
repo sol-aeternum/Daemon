@@ -63,6 +63,118 @@ def disk_files(root):
     return [p for p in root.rglob("*") if p.is_file() and p.name != ".lock"]
 
 
+@pytest.mark.parametrize("retirement", ["expiry", "eviction"])
+def test_owner_churn_stays_bounded_and_preserves_live_empty_namespace(
+    tmp_path, spec, monkeypatch, retirement
+):
+    # More owners than even the normal root enumeration bound; a small file
+    # budget exercises eviction while one reservation remains live throughout.
+    original_limit = cache.CACHE_FILES
+    count = 2 * original_limit + 16
+    monkeypatch.setattr(cache, "CACHE_FILES", 5)
+    live = reserve(tmp_path, spec)
+    live_directory = tmp_path / artifact_owner_namespace(spec[0])
+    original = live_directory.stat().st_ino
+    try:
+        for _ in range(count):
+            owner = uuid.uuid4()
+            cache.store_audio(tmp_path, owner, "buffered.wav", b"clip")
+            path = cache.cached_audio(tmp_path, owner, "buffered.wav")
+            assert path is not None
+            if retirement == "expiry":
+                os.utime(path, (0, 0))
+            assert live_directory.stat().st_ino == original
+        live.append(b"audio")
+        assert live.commit(complete())
+        hit = sc.open_cached_audio(tmp_path, *spec)
+        assert hit is not None
+        hit.close()
+        later_owner = uuid.uuid4()
+        cache.store_audio(tmp_path, later_owner, "later.opus", b"complete")
+        assert cache.cached_audio(tmp_path, later_owner, "later.opus") is not None
+        # A new reservation needs three free slots; restore the normal budget
+        # after exercising pressure, rather than demanding speculative eviction.
+        monkeypatch.setattr(cache, "CACHE_FILES", original_limit)
+        subsequent = reserve(tmp_path, (uuid.uuid4(), spec[1], spec[2]))
+        subsequent.abort()
+    finally:
+        live.abort()
+
+
+def test_empty_namespace_cleanup_preserves_unknown_contents_and_directories(tmp_path, spec):
+    empty = tmp_path / artifact_owner_namespace(uuid.uuid4())
+    occupied = tmp_path / artifact_owner_namespace(uuid.uuid4())
+    unknown = tmp_path / "operator-notes"
+    for directory in (empty, occupied, unknown):
+        directory.mkdir()
+    (occupied / "unrecognized.data").write_bytes(b"preserve")
+    live = reserve(tmp_path, spec)
+    try:
+        assert not empty.exists()
+        assert (occupied / "unrecognized.data").read_bytes() == b"preserve"
+        assert unknown.is_dir()
+    finally:
+        live.abort()
+
+
+def test_invalid_journal_prevents_even_empty_namespace_cleanup(tmp_path, spec):
+    empty = tmp_path / artifact_owner_namespace(uuid.uuid4())
+    empty.mkdir()
+    manager = tmp_path / ".progressive"
+    manager.mkdir()
+    (manager / ("a" * 32 + ".lease")).write_bytes(b"")
+    assert sc.reserve_audio(tmp_path, *spec) is None
+    assert empty.is_dir()
+
+
+def test_symlink_namespace_is_never_followed_or_removed_by_cleanup(tmp_path, spec):
+    external = tmp_path / "operator-directory"
+    external.mkdir()
+    namespace = tmp_path / artifact_owner_namespace(uuid.uuid4())
+    namespace.symlink_to(external, target_is_directory=True)
+    assert sc.reserve_audio(tmp_path, *spec) is None
+    assert namespace.is_symlink()
+    assert external.is_dir()
+
+
+@pytest.mark.parametrize("replacement", ["directory", "symlink", "missing", "nonempty-race"])
+def test_empty_namespace_revalidation_preserves_replacements(tmp_path, monkeypatch, replacement):
+    namespace = artifact_owner_namespace(uuid.uuid4())
+    target = tmp_path / namespace
+    with (
+        cache.cache_lock(tmp_path) as root,
+        sc._directory(root, ".progressive", create=True) as manager,
+    ):
+        ledger = sc._Ledger(root, manager)
+        target.mkdir()
+        expected = sc._inode(target.stat())
+        if replacement == "nonempty-race":
+            original_rmdir = os.rmdir
+
+            def raced_rmdir(name, *, dir_fd):
+                (target / "new-data").write_bytes(b"preserve")
+                return original_rmdir(name, dir_fd=dir_fd)
+
+            monkeypatch.setattr(sc.os, "rmdir", raced_rmdir)
+            ledger._remove_empty_owner(namespace, expected)
+            assert (target / "new-data").read_bytes() == b"preserve"
+        else:
+            preserved = tmp_path / "preserved-original"
+            target.rename(preserved)
+            if replacement == "directory":
+                target.mkdir()
+            elif replacement == "symlink":
+                target.symlink_to(preserved, target_is_directory=True)
+            if replacement == "missing":
+                ledger._remove_empty_owner(namespace, expected)
+                assert not target.exists()
+            else:
+                with pytest.raises(OSError):
+                    ledger._remove_empty_owner(namespace, expected)
+                assert target.exists()
+            assert preserved.is_dir()
+
+
 def test_render_identity_and_complete_only_private_stage(tmp_path, spec):
     owner, filename, identity = spec
     speech = SpeechRequest("A short fictional cache fixture.")

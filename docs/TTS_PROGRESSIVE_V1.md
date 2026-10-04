@@ -80,6 +80,13 @@ blocking the authority monitor.
 
 ## Cache, proxy and player
 
+Validated empty owner namespaces are reclaimed under the cache root lock after
+journal validation and recovery. Live reservation owners, unknown contents and
+non-namespace directories are preserved; directory identity is rechecked without
+following symlinks. This bounds normal owner churn without widening scan/file
+budgets. An already-over-limit or malformed cache still fails closed for operator
+diagnosis; this is not an unbounded cleanup or migration of existing disk state.
+
 Rendering identity differs from buffered `speech-v1`. Partial audio and private
 reservation metadata live outside served owner directories. All buffered and
 progressive writers share64MiB/128 physical-file accounting, including bounded

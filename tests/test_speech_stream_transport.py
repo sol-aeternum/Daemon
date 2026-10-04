@@ -1,7 +1,12 @@
 """Real httpx stream adapter with deterministic offline transport; no replay."""
 
 import asyncio
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import Mock
+import uuid
 
+from fastapi import FastAPI
 import httpx
 import pytest
 
@@ -14,6 +19,117 @@ from orchestrator.speech.stream_protocol import (
     metadata,
 )
 from orchestrator.speech.stream_transport import InternalProgressiveProvider
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.config import Settings, get_settings
+from orchestrator.routes import speech_stream as routes
+from tts.app import create_app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_qualified", [True, False])
+async def test_real_runtime_ready_through_provider_and_public_capability_gate(
+    monkeypatch, runtime_qualified
+):
+    runtime = SimpleNamespace(
+        name="kokoro",
+        model="fixture",
+        progressive_ready=runtime_qualified,
+        load=Mock(),
+        synthesize=Mock(),
+    )
+    private = create_app(cast(Any, runtime))
+    original_client = httpx.AsyncClient
+    calls = []
+
+    async def handle(request):
+        calls.append((request.method, request.url.path))
+        async with original_client(
+            transport=httpx.ASGITransport(app=private), base_url="http://private"
+        ) as client:
+            return await client.send(request)
+
+    provider = transport(monkeypatch, handle)
+    public = FastAPI()
+    public.include_router(routes.router)
+    monkeypatch.setattr(routes, "get_speech_provider", lambda _: provider)
+    public.dependency_overrides[require_device_auth] = lambda: AuthenticatedDevice(
+        uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    )
+    public.dependency_overrides[get_settings] = lambda: cast(Any, Settings)(_env_file=None)
+    async with private.router.lifespan_context(private):
+        async with original_client(
+            transport=httpx.ASGITransport(app=private), base_url="http://private"
+        ) as client:
+            readiness = (await client.get("/ready")).json()
+        assert isinstance(readiness["capabilities"]["progressive"], list)
+        assert await provider.progressive_health() is runtime_qualified
+        async with original_client(
+            transport=httpx.ASGITransport(app=public), base_url="http://public"
+        ) as client:
+            # Gate off is always the actual production source default.
+            response = await client.get("/tts/capabilities")
+            assert response.status_code == 200 and response.json()["streams"] == []
+            monkeypatch.setattr(routes, "PROGRESSIVE_SPEECH_QUALIFIED", True)
+            response = await client.get("/tts/capabilities")
+            assert response.status_code == 200
+            assert response.json()["streams"] == (
+                [
+                    {
+                        "version": 1,
+                        "format": "mp3",
+                        "mime": "audio/mpeg",
+                        "sample_rate": 24000,
+                        "rendering": "speech-mp3-progressive-v1",
+                    }
+                ]
+                if runtime_qualified
+                else []
+            )
+    assert calls and all(method == "GET" and path == "/ready" for method, path in calls)
+    runtime.synthesize.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {},
+        [],
+        [None],
+        [
+            {
+                "version": True,
+                "format": "mp3",
+                "mime": "audio/mpeg",
+                "sample_rate": 24000,
+                "rendering": "speech-mp3-progressive-v1",
+            }
+        ],
+        [
+            {
+                "version": 1,
+                "format": "mp3",
+                "mime": "audio/mpeg",
+                "sample_rate": 24000,
+                "rendering": "wrong",
+            }
+        ],
+    ],
+)
+async def test_invalid_or_unqualified_runtime_profile_never_qualifies(monkeypatch, invalid):
+    provider = transport(
+        monkeypatch,
+        lambda _: httpx.Response(
+            200,
+            json={
+                "ready": True,
+                "provider": "kokoro",
+                "model": "fixture",
+                "capabilities": {"progressive": invalid},
+            },
+        ),
+    )
+    assert not await provider.progressive_health()
 
 
 def wire():
