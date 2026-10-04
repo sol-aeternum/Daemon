@@ -468,11 +468,13 @@ export function useMemories() {
   const foregroundKind = useRef<'fetch' | 'loadMore' | null>(null);
   const pendingMutations = useRef(0);
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
-  // A running refresh (poll or post-mutation reconcile) is a barrier for
-  // "Load more": paging waits for it so it never retires a reconcile and then
-  // pages from a stale offset.
-  const inFlightRefresh = useRef<Promise<void> | null>(null);
-  const loadMoreQueued = useRef(false);
+  // Reconciliation bookkeeping. A mutation that may shift the filtered
+  // span bumps `dirtySeq`; only a list read that started at or after that
+  // bump and then published successfully advances `cleanSeq`. While dirty,
+  // the consumed offset is not trusted: "Load more" re-reads the span from
+  // the start instead of paging from a possibly stale offset.
+  const dirtySeq = useRef(0);
+  const cleanSeq = useRef(0);
 
   const beginForeground = (kind: 'fetch' | 'loadMore') => {
     const request = ++listRequest.current;
@@ -526,6 +528,45 @@ export function useMemories() {
     setHasMore(page.has_more);
   }, []);
 
+  /**
+   * Read the first `span` rows for `filters` (pages of up to 100). Returns
+   * null if a newer list request or a sign-in change superseded it.
+   */
+  const readSpan = useCallback(
+    async (
+      filters: ListFilters,
+      span: number,
+      request: number,
+      generation: number,
+    ): Promise<{ rows: Memory[]; page: MemoryPage } | null> => {
+      const rows: Memory[] = [];
+      const seen = new Set<string>();
+      let last: MemoryPage | null = null;
+      while (rows.length < span) {
+        const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
+        last = await requestPage(filters, rows.length, limit);
+        if (
+          request !== listRequest.current ||
+          generation !== getAuthGeneration()
+        )
+          return null;
+        for (const memory of last.memories) {
+          if (!seen.has(memory.id)) {
+            seen.add(memory.id);
+            rows.push(memory);
+          }
+        }
+        if (!last.has_more || last.memories.length === 0) break;
+      }
+      if (!last) return null;
+      return {
+        rows,
+        page: { ...last, has_more: last.has_more && rows.length < last.total },
+      };
+    },
+    [requestPage],
+  );
+
   /** Apply filters (or reapply the current ones) from the first page. */
   const fetchMemories = useCallback(
     async (params: FetchMemoriesParams = {}) => {
@@ -537,6 +578,7 @@ export function useMemories() {
       const generation = getAuthGeneration();
       const current = filtersRef.current;
       try {
+        const seq = dirtySeq.current;
         const page = await requestPage(current, 0, MEMORY_PAGE_SIZE);
         if (
           request !== listRequest.current ||
@@ -544,6 +586,7 @@ export function useMemories() {
         )
           return;
         publish(page.memories, page);
+        cleanSeq.current = Math.max(cleanSeq.current, seq);
       } catch (err) {
         if (request !== listRequest.current) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -557,24 +600,24 @@ export function useMemories() {
 
   /** Append the next page for the current filters. */
   const loadMore = useCallback(async () => {
-    if (loadMoreQueued.current) return;
-    if (inFlightRefresh.current) {
-      // Keep the person's intent, but page only after the refresh applies.
-      loadMoreQueued.current = true;
-      setLoading(true);
-      const generation = getAuthGeneration();
-      try {
-        await inFlightRefresh.current;
-      } finally {
-        loadMoreQueued.current = false;
-      }
-      if (generation !== getAuthGeneration()) return;
-    }
     const request = beginForeground('loadMore');
     const generation = getAuthGeneration();
     const current = filtersRef.current;
-    const offset = loadedCount.current;
     try {
+      if (cleanSeq.current < dirtySeq.current) {
+        // A mutation may have shifted the filtered span and no successful
+        // reconcile has published since; never page from that offset. Re-read
+        // the loaded span plus one page from the start instead.
+        const seq = dirtySeq.current;
+        const span =
+          Math.max(MEMORY_PAGE_SIZE, loadedCount.current) + MEMORY_PAGE_SIZE;
+        const read = await readSpan(current, span, request, generation);
+        if (!read) return;
+        publish(read.rows, read.page);
+        cleanSeq.current = Math.max(cleanSeq.current, seq);
+        return;
+      }
+      const offset = loadedCount.current;
       const page = await requestPage(current, offset, MEMORY_PAGE_SIZE);
       if (request !== listRequest.current || generation !== getAuthGeneration())
         return;
@@ -596,7 +639,7 @@ export function useMemories() {
     } finally {
       settleForeground(request);
     }
-  }, [requestPage]);
+  }, [publish, readSpan, requestPage]);
 
   /**
    * Re-read the span already loaded (at least one page) for the current
@@ -609,48 +652,24 @@ export function useMemories() {
       refreshPending.current = true;
       return;
     }
-    const run = (async () => {
-      const request = ++listRequest.current;
-      const generation = getAuthGeneration();
-      const current = filtersRef.current;
-      const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
-      try {
-        const rows: Memory[] = [];
-        const seen = new Set<string>();
-        let last: MemoryPage | null = null;
-        while (rows.length < span) {
-          const limit = Math.min(MEMORY_REFRESH_PAGE_SIZE, span - rows.length);
-          last = await requestPage(current, rows.length, limit);
-          if (
-            request !== listRequest.current ||
-            generation !== getAuthGeneration()
-          )
-            return;
-          for (const memory of last.memories) {
-            if (!seen.has(memory.id)) {
-              seen.add(memory.id);
-              rows.push(memory);
-            }
-          }
-          if (!last.has_more || last.memories.length === 0) break;
-        }
-        if (last) {
-          publish(rows, {
-            ...last,
-            has_more: last.has_more && rows.length < last.total,
-          });
-        }
-      } catch {
-        // A failed background refresh keeps the current list.
-      }
-    })();
-    inFlightRefresh.current = run;
+    const request = ++listRequest.current;
+    const generation = getAuthGeneration();
+    const seq = dirtySeq.current;
+    const span = Math.max(MEMORY_PAGE_SIZE, loadedCount.current);
     try {
-      await run;
-    } finally {
-      if (inFlightRefresh.current === run) inFlightRefresh.current = null;
+      const read = await readSpan(
+        filtersRef.current,
+        span,
+        request,
+        generation,
+      );
+      if (!read) return; // superseded: not a repair
+      publish(read.rows, read.page);
+      cleanSeq.current = Math.max(cleanSeq.current, seq);
+    } catch {
+      // A failed refresh keeps the current list and leaves it dirty.
     }
-  }, [publish, requestPage]);
+  }, [publish, readSpan]);
 
   useEffect(() => {
     refreshRef.current = refreshMemories;
@@ -664,7 +683,8 @@ export function useMemories() {
         foreground.current = null;
         foregroundKind.current = null;
         refreshPending.current = false;
-        loadMoreQueued.current = false;
+        dirtySeq.current = 0;
+        cleanSeq.current = 0;
         loadedCount.current = 0;
         setMemories([]);
         setTotal(0);
@@ -695,6 +715,7 @@ export function useMemories() {
 
   /** Reconcile against the current filters and span once nothing is pending. */
   const reconcileList = () => {
+    dirtySeq.current += 1;
     refreshPending.current = false;
     if (foreground.current !== null || pendingMutations.current > 0) {
       refreshPending.current = true;

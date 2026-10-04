@@ -65,6 +65,8 @@ function json(body: unknown, status = 200) {
 
 let rows: Row[];
 let listRequests: number;
+let listParams: URLSearchParams[];
+let failNextLists: number;
 let listGate: (() => Promise<void>) | null;
 let patchBodies: unknown[];
 let patchReply:
@@ -76,6 +78,8 @@ let trailRequests: number;
 beforeEach(() => {
   rows = [row(1, { content: 'I commute by tram' }), row(2), row(3)];
   listRequests = 0;
+  listParams = [];
+  failNextLists = 0;
   listGate = null;
   patchBodies = [];
   patchReply = null;
@@ -108,6 +112,11 @@ beforeEach(() => {
         (!init?.method || init.method === 'GET')
       ) {
         listRequests += 1;
+        listParams.push(url.searchParams);
+        if (failNextLists > 0) {
+          failNextLists -= 1;
+          return json({ detail: 'unavailable' }, 503);
+        }
         // Snapshot first, then wait: a held reply reflects data at read time.
         // Honours the category and search filters like the real API.
         const category = url.searchParams.get('category');
@@ -576,5 +585,123 @@ describe('#437 re-review: auth boundary and reconcile barrier', () => {
     expect(result.current.total).toBe(20);
     expect(result.current.hasMore).toBe(false);
     expect(result.current.loading).toBe(false);
+  });
+});
+
+describe('#437 re-review: Load more never trusts an unrepaired offset', () => {
+  async function editedFacts() {
+    rows = Array.from({ length: 21 }, (_, i) =>
+      row(i + 1, { category: 'fact' }),
+    );
+    const hook = renderHook(() => useMemories());
+    await act(async () =>
+      hook.result.current.fetchMemories({ category: 'fact', status: 'active' }),
+    );
+    expect(hook.result.current.memories).toHaveLength(20);
+    return hook;
+  }
+
+  function staleOffsetRequested(from: number) {
+    return listParams.slice(from).some((p) => p.get('offset') === '20');
+  }
+
+  function expectAllRemainingFacts(result: {
+    current: ReturnType<typeof useMemories>;
+  }) {
+    const ids = result.current.memories.map((m) => m.id);
+    expect(ids).not.toContain('m-5');
+    expect(ids).toContain('m-21');
+    expect(ids).toHaveLength(20);
+    expect(new Set(ids).size).toBe(20);
+    expect(result.current.total).toBe(20);
+    expect(result.current.hasMore).toBe(false);
+    expect(result.current.loading).toBe(false);
+  }
+
+  it('a failed (503) reconcile leaves the list dirty; Load more repairs instead of paging', async () => {
+    const { result } = await editedFacts();
+    failNextLists = 1; // the post-edit reconcile read fails
+    const before = listParams.length;
+    await act(async () => {
+      expect(
+        (
+          await result.current.correctMemory(
+            'm-5',
+            'Memory number 5',
+            'preference',
+          )
+        ).ok,
+      ).toBe(true);
+    });
+    await waitFor(() => expect(failNextLists).toBe(0));
+    await act(async () => result.current.loadMore());
+
+    expect(staleOffsetRequested(before)).toBe(false);
+    expectAllRemainingFacts(result);
+  });
+
+  it('a reconcile superseded by a newer poll still never pages from the stale offset', async () => {
+    const { result } = await editedFacts();
+    let releaseFirst!: () => void;
+    let held = 0;
+    listGate = () => {
+      held += 1;
+      if (held === 1)
+        return new Promise<void>((resolve) => (releaseFirst = resolve));
+      return Promise.resolve();
+    };
+    const before = listParams.length;
+    await act(async () => {
+      expect(
+        (
+          await result.current.correctMemory(
+            'm-5',
+            'Memory number 5',
+            'preference',
+          )
+        ).ok,
+      ).toBe(true);
+    });
+    await waitFor(() => expect(releaseFirst).toBeDefined()); // reconcile held
+    let poll!: Promise<void>;
+    act(() => {
+      poll = result.current.refreshMemories(); // supersedes the reconcile
+    });
+    let more!: Promise<void>;
+    act(() => {
+      more = result.current.loadMore(); // supersedes the poll too
+    });
+    await act(async () => {
+      releaseFirst();
+      await Promise.all([poll, more]);
+    });
+
+    expect(staleOffsetRequested(before)).toBe(false);
+    expectAllRemainingFacts(result);
+  });
+
+  it('once a reconcile publishes, Load more pages normally from the repaired offset', async () => {
+    rows = Array.from({ length: 45 }, (_, i) =>
+      row(i + 1, { category: 'fact' }),
+    );
+    const { result } = renderHook(() => useMemories());
+    await act(async () =>
+      result.current.fetchMemories({ category: 'fact', status: 'active' }),
+    );
+    await act(async () => {
+      await result.current.correctMemory(
+        'm-5',
+        'Memory number 5',
+        'preference',
+      );
+    });
+    await waitFor(() => expect(result.current.total).toBe(44)); // reconcile published
+    const before = listParams.length;
+    await act(async () => result.current.loadMore());
+    expect(listParams.slice(before).map((p) => p.get('offset'))).toEqual([
+      '20',
+    ]);
+    expect(result.current.memories).toHaveLength(40);
+    expect(result.current.hasMore).toBe(true);
   });
 });
