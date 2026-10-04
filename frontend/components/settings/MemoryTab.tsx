@@ -202,9 +202,8 @@ export default function MemoryTab() {
 
   // Handle memory correction
   const handleCorrectMemory = useCallback(
-    async (id: string, content: string, category?: string) => {
-      await correctMemory(id, content, category);
-    },
+    (id: string, content: string, category?: string) =>
+      correctMemory(id, content, category),
     [correctMemory],
   );
 
@@ -423,6 +422,7 @@ export default function MemoryTab() {
               <div className="p-4">
                 {viewMode === 'detail' && selectedMemory ? (
                   <MemoryDetail
+                    key={selectedMemory.id}
                     memory={selectedMemory}
                     onBack={handleBackToList}
                     onCorrect={handleCorrectMemory}

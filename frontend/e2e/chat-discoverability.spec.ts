@@ -451,3 +451,73 @@ test('the memory browser shows the true total and loads every memory', async ({
   await expect(page.getByText('Showing 21 of 21 memories')).toBeVisible();
   await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
 });
+
+test('a memory edit saves through PATCH, survives reload and keeps the draft on failure', async ({
+  page,
+}) => {
+  const memory = {
+    id: 'm-edit',
+    content: 'I commute by tram',
+    category: 'fact',
+    status: 'active',
+    source_type: 'user_created',
+    conversation_id: null,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    confirmed: true,
+  };
+  let failNext = false;
+  const trail: string[] = [];
+  await page.route(
+    /^http:\/\/[^/]+\/(?:api\/)?memories(?:\/|\?|$)/,
+    async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith('/trail')) {
+        trail.push(path);
+        return route.fulfill({ status: 404, json: { detail: 'Not Found' } });
+      }
+      if (request.method() === 'PATCH' && path.endsWith('/memories/m-edit')) {
+        if (failNext) {
+          failNext = false;
+          return route.fulfill({ status: 409, json: { detail: 'duplicate' } });
+        }
+        const body = request.postDataJSON();
+        memory.content = body.content;
+        if (body.category) memory.category = body.category;
+        return route.fulfill({ json: memory });
+      }
+      return route.fulfill({
+        json: { memories: [memory], total: 1, has_more: false },
+      });
+    },
+  );
+  await page.goto('/settings/memory');
+  await page.getByText('I commute by tram').click();
+  await expect(
+    page.getByText(/Edit history isn.t available yet/),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByLabel('Memory content').fill('I commute by bicycle');
+  await page.getByLabel('Memory category').selectOption('preference');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByLabel('Memory content')).toHaveCount(0);
+  await expect(page.getByText('I commute by bicycle')).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText('I commute by bicycle')).toBeVisible();
+
+  await page.getByText('I commute by bicycle').click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  failNext = true;
+  await page.getByLabel('Memory content').fill('A duplicate wording');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const error = page.locator('#memory-save-error');
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(error).toContainText('Another memory already says exactly this');
+  await expect(page.getByLabel('Memory content')).toHaveValue(
+    'A duplicate wording',
+  );
+  expect(trail).toEqual([]);
+});
