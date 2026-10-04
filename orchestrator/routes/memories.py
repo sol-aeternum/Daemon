@@ -17,6 +17,7 @@ from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import (
     EmbeddingBatchResult,
     EmbeddingConfigurationError,
+    EmbeddingRequestError,
     embed_documents_with_metadata,
 )
 from orchestrator.memory.store import MemoryContentConflictError, compute_memory_content_hash
@@ -32,8 +33,15 @@ ImportCategory = Literal["fact", "preference", "project", "summary", "correction
 
 
 class MemoryCreate(BaseModel):
-    content: str
+    content: str = Field(min_length=1)
     category: str = "fact"
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _strip_content(cls, value: Any) -> Any:
+        # Blank or whitespace-only text is rejected (422) before any
+        # embedding, dedup or write.
+        return value.strip() if isinstance(value, str) else value
 
 
 MAX_EDIT_CONTENT_CHARS = 2000
@@ -410,14 +418,17 @@ async def create_memory(
     # abuse quota. It retains deduplication but does not participate in the
     # tool-only cap lock; bulk import below is likewise an explicit admin
     # operation. Issue #221's atomic cap applies to MemoryWriteTool writes.
-    memory_id = await dedup_and_store(
-        store=store,
-        user_id=auth.user_id,
-        content=data.content,
-        source_type="user_created",
-        category=data.category,
-        conversation_id=None,
-    )
+    try:
+        memory_id = await dedup_and_store(
+            store=store,
+            user_id=auth.user_id,
+            content=data.content,
+            source_type="user_created",
+            category=data.category,
+            conversation_id=None,
+        )
+    except EmbeddingRequestError as exc:
+        raise HTTPException(status_code=503, detail="Memory embedding service unavailable") from exc
 
     return {"id": str(memory_id), "status": "created"}
 
