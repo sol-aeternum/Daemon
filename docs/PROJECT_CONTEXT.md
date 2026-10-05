@@ -1,7 +1,7 @@
 # Project Context — Daemon
 
 > **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
-> **Last updated**: 2026-10-05 (budgeted embedding implementation pending qualification; verification pin above is historical)
+> **Last updated**: 2026-10-05 (qualified embedding adapter and cloud-only reflection guard deployed locally in `0ffd9a3`; verification pin above is historical)
 > **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
 ## What Daemon Is

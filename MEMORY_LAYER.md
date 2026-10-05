@@ -362,6 +362,13 @@ clients without a stored conversation receive cloud-safe lexical reads, not an
 assumed permission for private memory. Explicit owner-created/imported nonlocal
 facts without a conversation remain cloud-eligible writes.
 
+`memory_reflect` permits query embedding and cloud synthesis only after its
+server-bound conversation is confirmed to belong to the user with pipeline
+`cloud`. Local, missing, unknown and wrong-owner contexts refuse before provider
+work; tool arguments cannot opt in. Retrieved cloud reflection rows must explicitly
+have `local_only=False`, including L0 and historical results. This does not grant
+cloud synthesis to compatibility clients lacking a trusted stored conversation.
+
 ### Retained legacy configuration (not executable admission)
 
 | Purpose | Model | Input type | Dimensions |

@@ -219,9 +219,9 @@ null; the older calendar-renewal dates in the approval history are superseded.
 Selecting or approving the entry alone does not establish deployment or effective
 attestation.
 
-### Verified owner-local activation — 5 October 2026
+### Provisional owner-local activation and rollback — 5 October 2026
 
-**Current state: rolled back; embeddings disabled.** The startup verification
+**Historical state: rolled back; embeddings disabled pending repair.** The startup verification
 below describes a provisional activation, not the final runtime state. Residual
 caller inspection found that `memory_reflect` lacked trusted conversation locality.
 Backend and worker were restored to the pinned #447 images/source with an empty
@@ -250,3 +250,31 @@ or follow-up PR merge occurred. The source's portable selector remains off by
 default. Rollback uses the pinned pre-activation Python images, #447 archived
 source and an empty selector, without rebuilding or restoring data. The durable
 operator runbook is `AZURE-SMALL-ROLLOUT.md` under the local release directory.
+
+### Final repaired local activation — 5 October 2026
+
+**Current state: activated locally**, from clean archived source commit
+`0ffd9a309e1b087e54bc4254d7d5d4742d3275a7`. The owner-approved reflection guard
+received pre-change and fresh independent final review. Final backend blocking
+gates passed with **5,016 tests passed and 152 skipped**; staged aggregate and
+secret checks passed. The separate 35-test PostgreSQL suite and 820-test frontend
+gate evidence remain applicable to their unchanged accounting/frontend sources.
+No new paid evaluation was performed; the frozen qualification ledgers remain
+unchanged.
+
+New immutable backend/worker images were built from this release. Fresh bootstrap
+again admitted all nine routes with zero failures/revocations. Read-only final
+checks verified both containers' exact source and policy hashes, selected route,
+fresh monitored admission, healthy PostgreSQL/Redis, worker startup, and unchanged
+Luna medium profile. The deployed reflection source also passed four synthetic
+local/unknown/wrong-owner refusals in a separate process, with provider calls and
+production-memory access prohibited. This does not claim real-user behavior was
+evaluated or that process-local embedding outcomes were observed.
+
+The original checkout, dotenv, data/benchmark mounts and frontend/dependency
+containers are unchanged. Only the new source/images and embedding selector
+differ for backend/worker. The active third Compose file is
+`azure-small-reflection-compose.override.yml`; the pinned #447 rollback override
+remains valid. No migration, historical memory cleanup/reembedding, remote rollout
+or follow-up PR merge occurred. Snapshot-time locality revocation and generic
+Azure residency limitations remain as disclosed above.
