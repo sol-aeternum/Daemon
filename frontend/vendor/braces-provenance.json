@@ -9,35 +9,59 @@
     "license_sha256": "35bdd8a44339719441900fb50fbefc5e2dca1ca662cbaed7a687de842c8b70f2"
   },
   "patch": {
-    "sha256": "fbe3698e830716a3dab2481f674deaeacaa01e1c48c1c777b3f8084640828cb6",
+    "sha256": "d472faf192fdc57bf4e2108df4587a3eb42d33d7f1f8e8b409c7defa3cf2d01c",
     "upstream_pr": "https://github.com/micromatch/braces/pull/72",
     "upstream_pr_head": "d0d575e55e74a4e0218e5248fafb79efc3e54ebb",
     "minimal_backport": true,
+    "adopted_commits": [
+      {
+        "sha": "d0d575e55e74a4e0218e5248fafb79efc3e54ebb",
+        "note": "Nesting depth guard base, shipped in 3.0.3-daemon.1"
+      },
+      {
+        "sha": "2569eada352a032decd189db906c3c7d87be0ad0",
+        "note": "Fractional maxDepth parsing guard only (nesting + 1 > maxDepth at '(' and '{'); unrelated quote-handling and comma invalid-flag changes from the initial PR remain excluded"
+      },
+      {
+        "sha": "f7ba960d37ddb452b0ad304812635b7259abb173",
+        "note": "expand parent-chain cycle rejection via queueOwner; adopted verbatim for lib/expand.js"
+      }
+    ],
+    "excluded_upstream": [
+      {
+        "sha": "e072fe408812dbcb428cf85fde4cfb12ec4021f0",
+        "note": "stringify escapeInvalid change excluded; vendored stringify keeps the original 3.0.3 undefined-parent recursion and is not evidence of adopting this commit"
+      },
+      {
+        "sha": "28d440b5dd449dbf1fe6f3506cf94ecca4d02660",
+        "note": "PR final head (test-shim change only); watched for upstream change detection, not adopted code"
+      }
+    ],
     "code_files": {
       "index.js": "332ea07c7b006361aad12aa994ca75dc1db8e8382b884909e2f38f10b85c88a4",
       "lib/compile.js": "b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195",
       "lib/constants.js": "f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c",
-      "lib/expand.js": "2974d5b8763a358d81dfa5b4b804329f525239f34429c396b93a540219504809",
-      "lib/parse.js": "ef9b3851f848460daaf91ff248222a43e266f97c4f2df7010cb7858e1e39a107",
+      "lib/expand.js": "7ea3e14c2b2b256ef244fd3d83b8fcaa20aa2232b4e6d768c3bb6ab567f66cf5",
+      "lib/parse.js": "72aabaadaa555cdfbd07fbd7c7f743373e4dc8eec04a97550cc57bbeec30eb6c",
       "lib/stringify.js": "49dc2d8bafa74f34715a18a845bcb82ce66caaf3bab4cf117998e06b1f9a50a9",
       "lib/utils.js": "b5a7596aa67730412b3c029ef09e84e6b67b8e445cffd35d1d295549c89066c7"
     }
   },
   "derivative": {
     "name": "@daemon-internal/braces",
-    "version": "3.0.3-daemon.1",
+    "version": "3.0.3-daemon.2",
     "private": true,
-    "archive_sha256": "f21f13fe2460f146df7dd483f046def84553b678c4e1ca284ea8ff0366338dd2",
-    "integrity": "sha512-kh7EoDGNkp7JXVRs7p1ZII2S3XTLQZFIlkrarCguIMg1HhqV2DYnsGeaI9lGsOMI+5J6ZSzkU9baMq/ziy410g==",
+    "archive_sha256": "9855767da387d07a04e85ca7eb12816d6eddba9d5771d8ee6a75cb8f94434e29",
+    "integrity": "sha512-nMhvWWKF7659vK0Etfmz8SLpjmNNfBllxFMYSjz1RTlawpb4Fwn/PMzc71shDKsxzClW/61cUdcCPdf4yS9+Qw==",
     "files": {
       "LICENSE": "35bdd8a44339719441900fb50fbefc5e2dca1ca662cbaed7a687de842c8b70f2",
-      "README.md": "25c48a99dd52dfeba273ed6e7430782b1fb38c67d6d0eb8afe26a32ae42316ee",
+      "README.md": "eed7fc6754aaae5d3a731b45a8111cc6d6365157de047a95d31cef7ce0cf4fdd",
       "index.js": "332ea07c7b006361aad12aa994ca75dc1db8e8382b884909e2f38f10b85c88a4",
-      "package.json": "16d60f1d38fe0719277c8125b8558b60f3f529e25e38c34c80175a7a22cc3426",
+      "package.json": "c2f9a7efc25a9380eb86c01cae3edd498738ef67348eb8bd650643f0fe78c637",
       "lib/compile.js": "b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195",
       "lib/constants.js": "f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c",
-      "lib/expand.js": "2974d5b8763a358d81dfa5b4b804329f525239f34429c396b93a540219504809",
-      "lib/parse.js": "ef9b3851f848460daaf91ff248222a43e266f97c4f2df7010cb7858e1e39a107",
+      "lib/expand.js": "7ea3e14c2b2b256ef244fd3d83b8fcaa20aa2232b4e6d768c3bb6ab567f66cf5",
+      "lib/parse.js": "72aabaadaa555cdfbd07fbd7c7f743373e4dc8eec04a97550cc57bbeec30eb6c",
       "lib/stringify.js": "49dc2d8bafa74f34715a18a845bcb82ce66caaf3bab4cf117998e06b1f9a50a9",
       "lib/utils.js": "b5a7596aa67730412b3c029ef09e84e6b67b8e445cffd35d1d295549c89066c7"
     }
@@ -63,12 +87,25 @@
   "coverage": {
     "advisory": "GHSA-vfj7-8cjw-p6xm",
     "cve": "CVE-2026-93687",
-    "scope": "Nesting stack exhaustion only; no general expansion-bomb or arbitrary parent-cycle claim",
-    "candidate_review_session": "ses_f0087ebe8ffeuvpC57U12exbCv",
-    "strategy_review_session": "ses_f007293eaffePSkK1j8DfTkutd",
+    "scope": "Nesting stack exhaustion, fractional maxDepth string parsing, and expand() AST parent-chain cycles only; no general expansion-bomb, arbitrary parent-cycle, or arbitrary malformed-AST claim",
+    "candidate_issue": "https://github.com/sol-aeternum/Daemon/issues/455",
+    "initial_candidate_review_session": "ses_f0087ebe8ffeuvpC57U12exbCv",
+    "initial_strategy_review_session": "ses_f007293eaffePSkK1j8DfTkutd",
+    "strategy_review_session": "ses_ef2574c2cffe4Z4q4fca4hMq6q",
+    "candidate_review_session": "ses_ef2488346ffeiXAehg5LbLxqWd",
     "baseline_golden_sha256": "47e23bf5ceed0395305812f0cdc5eba92743cbf02ffd23073f1b97842bbb84c7"
   },
   "watch": {
+    "release": {
+      "version": "3.0.3",
+      "shasum": "490332f40919452272d55a8480adc0c441358789",
+      "integrity": "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA=="
+    },
+    "pull_request": {
+      "head": "28d440b5dd449dbf1fe6f3506cf94ecca4d02660",
+      "state": "closed",
+      "merged": false
+    },
     "advisories": [
       {
         "ghsa_id": "GHSA-vfj7-8cjw-p6xm",
@@ -77,6 +114,7 @@
       }
     ],
     "responsible_maintainer": "sol-aeternum",
-    "tracking_issue": "https://github.com/sol-aeternum/Daemon/issues/418"
+    "tracking_issue": "https://github.com/sol-aeternum/Daemon/issues/418",
+    "note": "Recorded reviewed upstream state for change detection only; it is not a security guarantee and is never silently refreshed."
   }
 }

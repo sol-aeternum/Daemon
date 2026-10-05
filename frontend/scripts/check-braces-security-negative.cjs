@@ -17,6 +17,14 @@ const hash = (bytes, algorithm = 'sha256', encoding = 'hex') =>
   crypto.createHash(algorithm).update(bytes).digest(encoding);
 const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value));
+// Derive the packed archive name from the vendored manifest so version bumps
+// never leave a stale hardcoded path behind.
+const vendoredManifest = read(
+  path.join(frontend, 'vendor/braces/package.json'),
+);
+const archiveName = `${vendoredManifest.name
+  .replace(/^@/, '')
+  .replace('/', '-')}-${vendoredManifest.version}.tgz`;
 function fixture(t) {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), 'daemon-braces-negative-'),
@@ -60,10 +68,7 @@ test('valid pinned source/lock and consumer-resolution fixture is accepted', (t)
 });
 test('tampered archive fails before any dependency execution', (t) => {
   const root = fixture(t);
-  const file = path.join(
-    root,
-    'vendor/daemon-internal-braces-3.0.3-daemon.1.tgz',
-  );
+  const file = path.join(root, 'vendor', archiveName);
   const bytes = fs.readFileSync(file);
   bytes[bytes.length - 1] ^= 1;
   fs.writeFileSync(file, bytes);
@@ -123,16 +128,8 @@ test('missing override or lock integrity cannot pass', (t) => {
   write(file, lock);
   assert.throws(() => verifyArtifacts(root), /Lockfile must pin/);
 });
-test('reverted code cannot hide behind updated archive/provenance and private identity', (t) => {
-  const root = fixture(t);
-  const original = archiveFiles(
-    fs.readFileSync(path.join(root, 'vendor/braces-3.0.3.tgz')),
-  );
-  // Keep the PRIVATE derivative identity but revert the security implementation.
-  for (const [relative, bytes] of original)
-    if (relative.startsWith('lib/')) {
-      fs.writeFileSync(path.join(root, 'vendor/braces', relative), bytes);
-    }
+/** Repack the fixture derivative and regenerate its provenance/lock metadata. */
+function regenerateFixtureMetadata(root) {
   const packed = spawnSync(
     'npm',
     [
@@ -149,9 +146,13 @@ test('reverted code cannot hide behind updated archive/provenance and private id
     },
   );
   assert.equal(packed.status, 0, packed.stderr);
-  const archive = fs.readFileSync(
-    path.join(root, 'vendor/daemon-internal-braces-3.0.3-daemon.1.tgz'),
-  );
+  const packedOutput = JSON.parse(packed.stdout);
+  const packedEntry = Array.isArray(packedOutput)
+    ? packedOutput[0]
+    : Object.values(packedOutput)[0];
+  const packedName = packedEntry && packedEntry.filename;
+  assert.equal(packedName, archiveName, 'Unexpected packed archive name');
+  const archive = fs.readFileSync(path.join(root, 'vendor', packedName));
   const file = path.join(root, 'vendor/braces-provenance.json');
   const proof = read(file);
   proof.derivative.archive_sha256 = hash(archive);
@@ -164,5 +165,79 @@ test('reverted code cannot hide behind updated archive/provenance and private id
   const lock = read(lockFile);
   lock.packages['node_modules/braces'].integrity = proof.derivative.integrity;
   write(lockFile, lock);
+}
+
+test('reverted code cannot hide behind updated archive/provenance and private identity', (t) => {
+  const root = fixture(t);
+  const original = archiveFiles(
+    fs.readFileSync(path.join(root, 'vendor/braces-3.0.3.tgz')),
+  );
+  // Keep the PRIVATE derivative identity but revert the security implementation.
+  for (const [relative, bytes] of original)
+    if (relative.startsWith('lib/')) {
+      fs.writeFileSync(path.join(root, 'vendor/braces', relative), bytes);
+    }
+  regenerateFixtureMetadata(root);
   assert.throws(() => verifyArtifacts(root), /Reviewed code reverted\/changed/);
+});
+test('reverted fractional parser guard fails even with regenerated metadata', (t) => {
+  const root = fixture(t);
+  const parseFile = path.join(root, 'vendor/braces/lib/parse.js');
+  const source = fs.readFileSync(parseFile, 'utf8');
+  const reverted = source.replaceAll(
+    'if (nesting + 1 > maxDepth) {',
+    'if (nesting >= maxDepth) {',
+  );
+  assert.notEqual(
+    reverted,
+    source,
+    'Expected the fractional parser guard to be present for selective revert',
+  );
+  fs.writeFileSync(parseFile, reverted);
+  regenerateFixtureMetadata(root);
+  assert.throws(
+    () => verifyArtifacts(root),
+    /Reviewed code reverted\/changed: lib\/parse\.js/,
+  );
+});
+test('reverted parent-cycle guard fails even with regenerated metadata', (t) => {
+  const root = fixture(t);
+  const expandFile = path.join(root, 'vendor/braces/lib/expand.js');
+  const source = fs.readFileSync(expandFile, 'utf8');
+  const reverted = source
+    .replace(
+      'const q = queueOwner(parent).queue;',
+      [
+        'let p = parent;',
+        'let q = parent.queue;',
+        '',
+        "while (p.type !== 'brace' && p.type !== 'root' && p.parent) {",
+        '  p = p.parent;',
+        '  q = p.queue;',
+        '}',
+      ].join('\n'),
+    )
+    .replace(
+      'const queue = queueOwner(node).queue;',
+      [
+        'let queue = node.queue;',
+        'let block = node;',
+        '',
+        "while (block.type !== 'brace' && block.type !== 'root' && block.parent) {",
+        '  block = block.parent;',
+        '  queue = block.queue;',
+        '}',
+      ].join('\n'),
+    );
+  assert.notEqual(
+    reverted,
+    source,
+    'Expected the parent-cycle guard to be present for selective revert',
+  );
+  fs.writeFileSync(expandFile, reverted);
+  regenerateFixtureMetadata(root);
+  assert.throws(
+    () => verifyArtifacts(root),
+    /Reviewed code reverted\/changed: lib\/expand\.js/,
+  );
 });

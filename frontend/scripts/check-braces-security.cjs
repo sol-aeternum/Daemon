@@ -10,22 +10,22 @@ const zlib = require('node:zlib');
 
 const FRONTEND = path.resolve(__dirname, '..');
 const PATCH_SHA256 =
-  'fbe3698e830716a3dab2481f674deaeacaa01e1c48c1c777b3f8084640828cb6';
+  'd472faf192fdc57bf4e2108df4587a3eb42d33d7f1f8e8b409c7defa3cf2d01c';
 const ORIGINAL_SHA256 =
   '1cd18e862c8640b4568b1425a7df4ee030ff201d45b2da8f9f222d2987494ffc';
 const NAME = '@daemon-internal/braces';
-const VERSION = '3.0.3-daemon.1';
-const ARCHIVE = 'vendor/daemon-internal-braces-3.0.3-daemon.1.tgz';
+const VERSION = '3.0.3-daemon.2';
+const ARCHIVE = 'vendor/daemon-internal-braces-3.0.3-daemon.2.tgz';
 // Independently reviewed code bytes, separate from editable packaging metadata.
 const FIXED_CODE = {
   'lib/constants.js':
     'f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c',
   'lib/parse.js':
-    'ef9b3851f848460daaf91ff248222a43e266f97c4f2df7010cb7858e1e39a107',
+    '72aabaadaa555cdfbd07fbd7c7f743373e4dc8eec04a97550cc57bbeec30eb6c',
   'lib/compile.js':
     'b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195',
   'lib/expand.js':
-    '2974d5b8763a358d81dfa5b4b804329f525239f34429c396b93a540219504809',
+    '7ea3e14c2b2b256ef244fd3d83b8fcaa20aa2232b4e6d768c3bb6ab567f66cf5',
   'lib/stringify.js':
     '49dc2d8bafa74f34715a18a845bcb82ce66caaf3bab4cf117998e06b1f9a50a9',
 };
