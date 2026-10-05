@@ -72,6 +72,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/ROADMAP.md` | T2 | Product | pointer | `.sisyphus/plans/`, `docs/MEMORY_UPGRADE_ROADMAP.md` |
 | `frontend/PWA_CHECKLIST.md` | N/A | Engineering | raw-log | Build environment report |
 | `docs/BRACES_SECURITY_MAINTENANCE.md` | N/A | Engineering | ungated-reference | Temporary vendored dependency lineage, mandatory security checks and maintenance/retirement contract; not deployment authority |
+| `docs/CI_PYTEST_DIAGNOSTICS.md` | N/A | Engineering | ungated-reference | Bounded backend CI diagnostics and synthetic regression contract; not an established root cause or resolution of #454 |
 | `README.md` | N/A | Engineering | ungated-reference | Project overview |
 | `QUICKSTART.md` | N/A | Engineering | ungated-reference | Setup instructions |
 | `AGENTS.md` | N/A | Engineering | ungated-reference | Agent behavior rules |

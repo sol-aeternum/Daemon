@@ -180,3 +180,27 @@ def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
     build_idx = frontend_steps.index("Build")
 
     assert vitest_idx < chromium_idx < browser_idx < build_idx
+
+
+def test_backend_pytest_diagnostics_have_bounded_execution_and_narrow_upload() -> None:
+    workflow = _load_ci_workflow()
+    backend = workflow["jobs"]["backend"]
+    steps = backend["steps"]
+    by_name = {step["name"]: step for step in steps}
+    pytest_step = by_name["Pytest"]
+    upload = by_name["Upload backend pytest diagnostics"]
+
+    assert backend["timeout-minutes"] == 30
+    assert pytest_step["timeout-minutes"] == 25
+    assert pytest_step["run"] == "bash scripts/run_backend_pytest.sh"
+    assert steps.index(pytest_step) < steps.index(upload)
+    assert upload["if"] == "always()"
+    assert upload["timeout-minutes"] == 3
+    assert upload["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert upload["with"]["path"].splitlines() == [
+        "pytest-diagnostics/pytest.log",
+        "pytest-diagnostics/pytest-results.xml",
+    ]
+    assert upload["with"]["if-no-files-found"] == "warn"
+    assert upload["with"]["retention-days"] == 7
+    assert not upload["with"].get("include-hidden-files", False)
