@@ -802,6 +802,21 @@ class MemoryWriteTool(Tool):
             if old_memory.get("local_only") is not False:
                 return "Local-only memories cannot be updated through this cloud tool."
 
+            # Authorize inherited source context before either paid preparation
+            # or quota reservation. Locked dedup revalidates it before commit.
+            source_conversation_id = old_memory.get("source_conversation_id")
+            if source_conversation_id is not None:
+                from orchestrator.memory.embedding import get_selected_embedding_route_id
+
+                if get_selected_embedding_route_id():
+                    source = await self.store.get_conversation(source_conversation_id)
+                    if (
+                        not source
+                        or source.get("user_id") != self.user_id
+                        or source.get("pipeline") != "cloud"
+                    ):
+                        return "Memory source is unavailable for this cloud update."
+
             # Quota check runs after the ownership guard (so an
             # unauthorized caller learns nothing about quota state) but
             # before `close_memory` + `dedup_and_store`. `update` closes

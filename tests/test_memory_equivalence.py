@@ -815,20 +815,29 @@ async def test_update_source_guard_uses_held_slot_and_rolls_back(
         "actual_message_count": 0,
         "effective_last_activity_at": NOW,
     }
-    if outcome == "local":
-        pool.conversation["pipeline"] = "local"
-    elif outcome == "wrong-owner":
-        pool.conversation["user_id"] = uuid.UUID(int=101)
-    elif outcome == "missing":
-        pool.conversation = None
-    elif outcome in ("failure", "cancel"):
-        pool.fail_conversation = (
-            asyncio.CancelledError()
-            if outcome == "cancel"
-            else RuntimeError("synthetic read failure")
-        )
-    elif outcome == "insert-failure":
-        pool.fail_insert = RuntimeError("synthetic insert failure")
+
+    async def prepare_after_preflight(*args):
+        assert not pool.slot.locked()
+        assert ("conversation", False) in pool.events
+        if outcome == "local":
+            pool.conversation["pipeline"] = "local"
+        elif outcome == "wrong-owner":
+            pool.conversation["user_id"] = uuid.UUID(int=101)
+        elif outcome == "missing":
+            pool.conversation = None
+        elif outcome in ("failure", "cancel"):
+            pool.fail_conversation = (
+                asyncio.CancelledError()
+                if outcome == "cancel"
+                else RuntimeError("synthetic read failure")
+            )
+        elif outcome == "insert-failure":
+            pool.fail_insert = RuntimeError("synthetic insert failure")
+        return None
+
+    monkeypatch.setattr(
+        tools, "prepare_memory_embedding", AsyncMock(side_effect=prepare_after_preflight)
+    )
 
     async def update():
         return await asyncio.wait_for(
@@ -855,6 +864,7 @@ async def test_update_source_guard_uses_held_slot_and_rolls_back(
         assert pool.rows == before
         assert "ROLLBACK" in pool.events
     assert ("conversation", True) in pool.events
+    assert pool.events.count(("conversation", False)) == 1
     assert ("close", target) in pool.events
     assert pool.events.index(("close", target)) < pool.events.index(("conversation", True))
     start = pool.events.index("BEGIN")
@@ -883,6 +893,67 @@ async def test_unlocked_conversation_lookup_preserves_pool_and_listing_metadata(
     assert result is not None and result["message_count"] == 3
     assert ("conversation", False) in store._pool.events
     assert not store._pool.slot.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_state", ["local", "missing", "wrong-owner", "unknown", "read-error", "cancel"]
+)
+async def test_update_invalid_source_preflight_never_prepares_or_locks(
+    store, judge, tool_offline, monkeypatch, source_state
+):
+    from orchestrator.memory import embedding
+
+    monkeypatch.setattr(embedding, "get_selected_embedding_route_id", lambda: "selected")
+    cid = uuid.UUID(int=7)
+    target = add_row(store, source_type="extracted", source_conversation_id=cid)
+    pool = store._pool
+    before = copy.deepcopy(pool.rows)
+    pool.conversation = {
+        "id": cid,
+        "user_id": USER,
+        "pipeline": "local",
+        "actual_message_count": 0,
+        "effective_last_activity_at": NOW,
+    }
+    if source_state == "missing":
+        pool.conversation = None
+    elif source_state == "wrong-owner":
+        pool.conversation.update(user_id=uuid.UUID(int=101), pipeline="cloud")
+    elif source_state == "unknown":
+        pool.conversation["pipeline"] = None
+    elif source_state in ("read-error", "cancel"):
+        pool.fail_conversation = (
+            RuntimeError("synthetic source read")
+            if source_state == "read-error"
+            else asyncio.CancelledError()
+        )
+    planner = AsyncMock()
+    monkeypatch.setattr(tools, "prepare_memory_plan", planner)
+    call = tool_offline.execute(
+        action="update",
+        memory_id=str(target),
+        content="Replacement",
+        pipeline="cloud",
+        source_conversation_id=None,
+    )
+    if source_state in ("read-error", "cancel"):
+        with pytest.raises(
+            RuntimeError if source_state == "read-error" else asyncio.CancelledError
+        ):
+            await asyncio.wait_for(call, 1)
+    else:
+        assert (
+            await asyncio.wait_for(call, 1) == "Memory source is unavailable for this cloud update."
+        )
+    cast(AsyncMock, tools.prepare_memory_embedding).assert_not_awaited()
+    planner.assert_not_awaited()
+    judge.assert_not_awaited()
+    tool_offline._check_write_quota.assert_not_awaited()
+    assert pool.rows == before
+    assert "BEGIN" not in pool.events and "insert" not in pool.events
+    assert ("close", target) not in pool.events
+    assert not pool.slot.locked()
 
 
 @pytest.mark.asyncio

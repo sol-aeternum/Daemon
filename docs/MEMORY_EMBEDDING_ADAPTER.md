@@ -292,3 +292,18 @@ the repair received fresh independent review with no findings. An offline
 before/after check also confirmed that emulating the former pool lookup stalls,
 while the repaired actual update path completes. Further PR review remains
 requested; this source-only follow-up has not been deployed.
+
+### PR #449 source preflight — source only
+
+Further review found the locked source check occurred after update embedding and
+planning. Updates with a selected embedding route and an inherited source now
+validate that source's owner and exact cloud pipeline before quota reservation or
+either provider-preparation call. Invalid sources return a uniform refusal;
+missing source metadata cannot be supplied or overridden through tool arguments.
+The same-connection commit check remains in place to reject source changes after
+preflight and roll back the update. This does not eliminate concurrent revocation
+after an authorized snapshot. Offline regressions cover initial denial without
+provider work and post-preflight changes with rollback/release. Final local blocking
+gates passed with 5,032 backend tests and 820 frontend tests; fresh independent
+repair review found no P1/P2 defects. Exact-head CI and further PR review remain
+required for merge; the deployed runtime has not changed.
