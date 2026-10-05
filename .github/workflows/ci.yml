@@ -14,6 +14,7 @@ jobs:
   backend:
     name: Backend gates
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # pyrightconfig.json points basedpyright at .uv-venv (the audit-mandated
       # project environment). uv must create/use the same directory in CI or
@@ -55,7 +56,22 @@ jobs:
         run: uv run pip-audit
 
       - name: Pytest
-        run: PYTHONPATH=. uv run pytest -q
+        # The runner's 20-minute suite deadline leaves room for artifact upload;
+        # this step and the job retain separate fallback cancellation bounds.
+        timeout-minutes: 25
+        run: bash scripts/run_backend_pytest.sh
+
+      - name: Upload backend pytest diagnostics
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-pytest-diagnostics
+          path: |
+            pytest-diagnostics/pytest.log
+            pytest-diagnostics/pytest-results.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   frontend:
     name: Frontend gates
