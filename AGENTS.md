@@ -1,159 +1,122 @@
 # Daemon — Agent Instructions
 
 ## What This Is
-Read `docs/DAEMON.md` first: Daemon is one personal AI for everything, using the best qualified model per role with user-owned, portable context. Use `docs/GLOSSARY.md` terms. Product identity and ratified decisions govern direction; code and gated documentation govern implementation status. DEC12 does not enable R routes: runtime remains Z-only until its implementation design is approved.
+Daemon is one personal AI for everything: the best qualified model per role, with user-owned, portable context. Read `docs/DAEMON.md` first and use `docs/GLOSSARY.md` terms. Product identity and ratified decisions govern direction; code and gated documentation govern implementation status.
 
 ## Before You Touch Anything
-1. Read `docs/FEATURE_MATRIX.md` (implemented/planned status) and `docs/PROJECT_CONTEXT.md` (regenerated context)
-2. If the task touches memory: read `MEMORY_LAYER.md` and `docs/TECHNICAL_SPECS.md`
-3. Read `docs/SOURCES_OF_TRUTH.md` — documentation authority map
-4. Check recent commits and code comments for context on current state
+1. `docs/FEATURE_MATRIX.md` (implemented/planned status) and `docs/PROJECT_CONTEXT.md` (regenerated context).
+2. `docs/SOURCES_OF_TRUTH.md` — which document is authoritative for what.
+3. Memory work: also `MEMORY_LAYER.md` and `docs/TECHNICAL_SPECS.md`.
+4. Product changes: also `docs/DAEMON_VISION.md` and `docs/DAEMON_VISION_DECISIONS.md`.
+5. Recent commits and code comments for current state. Where this file *describes the implementation* and the code disagrees, code wins — fix the description. Policy, product, and approval rules (here and in accepted contracts) stay in force until explicitly superseded: report a conflict for an owner decision instead of rewriting the rule to match the code (`docs/SOURCES_OF_TRUTH.md` §1).
 
 ## Product Direction
-After `docs/DAEMON.md`, read `docs/DAEMON_VISION.md` and `docs/DAEMON_VISION_DECISIONS.md` before planning product changes. Preserve Vision / Approved product decision / Proposed / Open distinctions. DEC11–DEC12 are ratified product decisions; "spine before surface" and build order remain Proposed sequencing. Use `docs/DAEMON_RECONCILIATION.md` as dated evidence, not current release status. Reference V/D/AC/DEC IDs; inspect code, tests and existing architecture contracts. Product approval does not authorise unrelated rewrites, deployments, expanded permissions, or unapproved schema/API changes.
+- Preserve the Vision / Approved product decision / Proposed / Open distinctions, and cite V/D/AC/DEC IDs.
+- DEC11–DEC12 are ratified. "Spine before surface" and build order are still Proposed.
+- Inference stays zero-data-retention only (Z routes). DEC12 permits opt-in provider-retained (R) routes in principle, but none may execute until their implementation design is approved.
+- `docs/DAEMON_RECONCILIATION.md` is dated evidence, not current release status.
+- Product approval does not authorise unrelated rewrites, deployments, expanded permissions, or unapproved schema/API changes.
 
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.
-- **Clarify ambiguity, don't assume.** If the spec is unclear, ask. Wrong assumptions cost more than a question.
-- **No silent architecture changes.** Changing data models, API contracts, SSE event types, or plan/entitlement config requires explicit approval.
-- **Update docs with code.** If you fix a bug tracked by a GitHub issue, close it (or comment the resolution) in the same change; if you complete a ROADMAP.md item, update the doc.
-- **Don't add dependencies without asking.** Especially frontend — bundle size matters for PWA.
-- **Done means the gates pass.** No task is complete until it satisfies the Definition of Done below.
+- **Clarify ambiguity, don't assume.** Wrong assumptions cost more than a question.
+- **No silent architecture changes.** Data models, API contracts, SSE event types, and plan/entitlement config change only with explicit approval.
+- **Update docs with code.** Close (or comment the resolution on) the GitHub issue a change fixes, in the same change. Completing a `docs/ROADMAP.md` item means updating it.
+- **Don't add dependencies without asking.** Especially frontend — bundle size matters for the PWA.
+- **Done means the gates pass** — see below.
 
-## Quality Gates (Definition of Done)
-No task is complete until it passes the project's automated gates. Run them before claiming done. Existing debt may be recorded as blocker inventory in dedicated baseline files (e.g., `.basedpyright/baseline.json`) or a pinned tracking issue; do not weaken or remove gates.
+## Definition of Done — Quality Gates
+No change is complete until these pass. Run them locally; CI runs the same commands (`.github/workflows/ci.yml`). Existing debt is grandfathered only through dedicated baselines (e.g. `.basedpyright/baseline.json`) or a pinned tracking issue — ratchet, never loosen.
 
-### Backend Gates
-- **Lint**: `uv run ruff check .`
-- **Format**: `uv run ruff format --check .`
-- **Type Check**: `uv run basedpyright --level error`
-- **Security (SAST, blocking high severity)**: `uv run bandit -r orchestrator providers scripts tests -lll`
-- **Security (SAST inventory)**: `uv run bandit -r orchestrator providers scripts tests`
-- **Security (SCA, blocking)**: `uv run pip-audit`
-- **Tests**: `PYTHONPATH=. uv run pytest -q`
+**Backend** (repo root):
+- `uv run ruff check .` — lint
+- `uv run ruff format --check .` — formatting
+- `uv run basedpyright --level error` — type check; new errors must be clean
+- `uv run bandit -r orchestrator providers scripts tests -lll` — blocking high-severity SAST
+- `uv run bandit -r orchestrator providers scripts tests` — full SAST inventory (non-blocking)
+- `uv run pip-audit` — blocking dependency audit
+- `PYTHONPATH=. uv run pytest -q` — tests
 
-### Frontend Gates (run from `frontend/`)
-- **Install**: `npm ci`
-- **Type Check**: `npm run type-check`
-- **Lint**: `npm run lint`
-- **Format**: `npm run format:check`
-- **Security (SCA, blocking)**: `npm run audit:ci`
-- **Tests**: `npm run test:run`
-- **Build**: `npm run build`
+**Frontend** (`frontend/`):
+- `npm ci`
+- `npm run security:braces` — vendored `braces` integrity and regressions (`docs/BRACES_SECURITY_MAINTENANCE.md`)
+- `npm run type-check` — Next 16 `build` does not type-check
+- `npm run lint` — eslint (`next lint` was removed in Next 16)
+- `npm run format:check`
+- `npm run audit:ci` — blocking dependency audit
+- `npm run test:run` — Vitest
+- `npm run test:browser` — Playwright regressions (non-blocking inventory)
+- `npm run build`
 
-### Aggregate & Infrastructure Gates
-- **Feature Matrix**: `python scripts/lint_feature_matrix.py`
-- **Pre-commit**: `uv run pre-commit run --all-files` (includes gitleaks; commitlint runs as a commit-msg hook)
+**Repo-wide:**
+- `python scripts/lint_feature_matrix.py` — feature-matrix validation
+- `uv run pre-commit run --all-files` — doc freshness (`scripts/check_doc_freshness.py --mode fail`), ruff, gitleaks; commitlint runs as a commit-msg hook
 
-## Tech Stack
-- **Backend:** Python 3.11+, FastAPI, LiteLLM, asyncpg, arq, cryptography (Fernet)
-- **Frontend:** Next.js 16, React 19, Vercel AI SDK, Tailwind CSS 3, lucide-react
-- **Infra:** Docker Compose — backend, worker, frontend, postgres (pgvector), redis
-- **External:** OpenRouter (LLMs), Voyage AI (embeddings), OpenAI (Sora), Brave Search, ElevenLabs, ntfy.sh
+Tool versions live in `pyproject.toml`, `frontend/package.json`, and the lockfiles. Do not restate them elsewhere, including here. Gate config: `.pre-commit-config.yaml`, `.github/workflows/`, `.github/dependabot.yml`, `renovate.json`.
 
-## Structure
-```
-orchestrator/           # FastAPI backend
-  main.py               # Routes, SSE streaming, chat endpoint
-  daemon.py             # Core orchestration loop (stream_sse_chat)
-  config.py             # Deployment and workload model configuration
-  prompts.py            # System prompt (v1)
-  memory/               # Full memory pipeline
-    store.py            # PostgreSQL CRUD (973 lines)
-    extraction.py       # Fact extraction
-    dedup.py            # Embedding similarity dedup
-    retrieval.py        # Composite scoring retrieval
-    injection.py        # System prompt assembly with memory context
-    embedding.py        # Voyage AI asymmetric embeddings (doc/query)
-    encryption.py       # Fernet encrypt/decrypt
-    tools.py            # memory_read / memory_write tool implementations
-  worker/               # arq background jobs
-  routes/               # API route modules
-  agents/               # Subagent implementations
-frontend/
-  app/page.tsx          # Main chat UI (ChatContent component)
-  app/api/chat/route.ts # SSE bridge: backend SSE → Vercel AI SDK format
-  components/           # UI components
-  hooks/                # React hooks (useConversationHistory, useChat wrappers)
-  lib/events.ts         # Typed SSE event definitions
-docs/                   # Project documentation (keep in sync)
-migrations/             # PostgreSQL migrations
-```
+## Local CI, PRs and Merging
+- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` runs every gate above except `npm run test:browser`, which CI runs as a separate non-blocking step. Blocking gates fail the script; the full Bandit inventory is reported only.
+- `scripts/pr_create.sh -- <gh pr create args>` replaces `gh pr create`: it refuses to open a PR until `local_ci.sh` exits 0. `--dry-run` shows the plan without running anything.
+- `main` is protected by the `Main Protection` ruleset. Required checks: `Backend gates`, `Frontend gates`, `Feature matrix gate`, `Pre-commit and secret scanning`.
+- **Merge only after review, not just green CI.** Wait for the Codex review on the current head SHA (and any `[agent]` source review), and resolve its findings first. A requested-but-missing review means the PR is waiting, not mergeable.
+- Never merge around a failed required check. If a check is stale, missing, or misconfigured, fix the workflow/ruleset or record the blocker.
 
 ## Conventions
-- Backend uses `asyncpg` directly — no ORM. Raw SQL in store.py.
-- All message/memory content encrypted at rest via Fernet. Embeddings are plaintext for pgvector.
-- SSE events are typed: token, thinking, routing, tool_call, tool_result, final, error, done.
-- Commercial plans resolve centrally into entitlements and compute budgets. Provider qualification is independent of plans; see `docs/SUBSCRIPTION_ARCHITECTURE.md`. Don't hardcode model strings or plan checks in execution logic.
-- Frontend uses `useChat` from Vercel AI SDK — ErrorBoundary wraps ChatContent for crash recovery.
- - Backend tests use pytest + pytest-asyncio; frontend tests use Vitest and Playwright.
- - **Test suite is growing** (pytest + pytest-asyncio backend; Playwright planned for frontend). New backend code ships with tests; new frontend behaviour ships with at least a smoke test.
- - **Conventional Commits** for all commit messages (`feat:`, `fix:`, `chore:`, `refactor:`, ...). commitlint enforces this.
- - **Reproducible installs only.** Use the locked path (`uv sync --locked` backend / `npm ci` frontend). Never `pip install` ad hoc and never hand-edit a lockfile — let the package manager and Renovate own them.
-
- ## Definition of Done — Quality Gates
- No change is complete until it passes the project's automated quality gates. Run them locally before declaring a task done; once CI lands (see the `ci-tooling-baseline` plan) these run on every PR and are required to merge. Backend lives in `orchestrator/`; frontend in `frontend/`.
-
- **Backend (`orchestrator/`):**
- - `uv run ruff check .` — lint (autofix with `--fix`)
- - `uv run ruff format --check .` — formatting
- - `uv run basedpyright --level error` — strict error-level type check (new errors must be clean; existing diagnostics are grandfathered via the baseline — ratchet, not rewrite)
- - `uv run bandit -r orchestrator providers scripts tests -lll` — blocking high-severity security static analysis
- - `uv run bandit -r orchestrator providers scripts tests` — full security finding inventory
- - `uv run pip-audit` — blocking dependency vulnerability audit
- - `PYTHONPATH=. uv run pytest -q` — tests
-
- **Frontend (`frontend/`):**
- - `npm run type-check` — type check (Next 16 `build` does NOT type-check; run this explicitly)
- - `npm run lint` — eslint (NOT `next lint`; removed in Next 16)
- - `npm run format:check` — formatting
- - `npm run audit:ci` — blocking dependency vulnerability audit
- - `npm run test:run` — tests
- - `npm run build` — production build
-
- **Repo-wide:**
- - `python scripts/lint_feature_matrix.py` — feature-matrix validation (this is the CI integration the Feature Matrix section previously flagged as a follow-up)
- - `uv run pre-commit run --all-files` — pre-commit hooks (gitleaks; commitlint runs as a commit-msg hook)
-
- Run backend commands through the project's package manager — `uv run …` is the recommended runner. **Tool versions are pinned in the backend dependency manifest (`pyproject.toml` or equivalent), `frontend/package.json`, and the lockfiles — those files are the source of truth.** Do not restate versions anywhere else, including in this file.
-
- Gate config lives in: `.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `.github/dependabot.yml`, `renovate.json`.
-
-## Local CI / PR Submission
-
-Local gate runner and PR wrapper live in `scripts/`:
-
-- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` — runs the gate families above. Functional gates, dependency audits, and the high-severity Bandit gate fail the script; full Bandit and browser regressions remain inventory gates (CI `continue-on-error`) that are reported but do not block.
-- `scripts/pr_create.sh --dry-run -- <gh pr create args>` — refuses to invoke `gh pr create` until `scripts/local_ci.sh` exits 0. `--dry-run` shows the plan without running gates or contacting GitHub. `scripts/pr_create.sh -- <args>` is the recommended replacement for `gh pr create`.
-- `main` is protected by the GitHub `Main Protection` ruleset. Required checks are `Backend gates`, `Frontend gates`, `Feature matrix gate`, and `Pre-commit and secret scanning`.
-- Do not merge around failed required checks. If a required check is stale, missing, or misconfigured, fix the workflow/ruleset or record the blocker before merging.
-
-## Recent Fixes (as of Feb 2026)
-- ✅ Memory extraction now writes `status="active"` — pipeline is fully operational
-- ✅ Error boundary added to chat view for crash recovery
-- ✅ Voyage embedding service added (voyage-4-large docs / voyage-4-lite queries)
-- ✅ Retry detection consolidated into orchestrator/tools/retry.py with word-boundary matching
-- ✅ Audio endpoint returns scoped token instead of raw API key (security fix)
-- ✅ Completion streaming adds incremental content_delta for real-time output
-- ✅ Frontend hooks extracted: useEventArchive, AudioPlaybackProvider, ConversationHistoryProvider
-- ✅ SettingsPanel component added for user preferences
-- ✅ Tests added: test_chat_history.py, test_store.py
+- Entry points: `orchestrator/main.py` (FastAPI app), `orchestrator/daemon.py` (orchestration loop), `orchestrator/memory/` (memory pipeline), `orchestrator/worker/` (arq jobs), `frontend/app/page.tsx` (chat UI), `frontend/app/api/chat/route.ts` (backend SSE → AI SDK bridge). Explore the tree for the rest.
+- Backend uses `asyncpg` directly — no ORM, raw SQL.
+- Message and memory content is Fernet-encrypted at rest; embeddings are plaintext for pgvector.
+- SSE event types are a typed API contract defined in `frontend/lib/events.ts`. Adding or changing one needs approval.
+- Commercial plans resolve centrally into entitlements and compute budgets; provider qualification is independent of plans (`docs/SUBSCRIPTION_ARCHITECTURE.md`). Don't hardcode model strings or plan checks in execution logic.
+- Tests: pytest + pytest-asyncio (backend), Vitest + Playwright (frontend). New backend code ships with tests; new frontend behaviour ships with at least a smoke test.
+- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, …), enforced by commitlint.
+- **Reproducible installs only:** `uv sync --locked` / `npm ci`. Never `pip install` ad hoc or hand-edit a lockfile.
 
 ## What NOT to Do
-- Don't add Open WebUI references — it's being removed
-- Don't reference OpenCode Zen provider — legacy, being removed
-- Don't use `gpt-4o` as a default anywhere — backend uses privacy-qualified, capability-aware routing
-- Don't put secrets in code or docs — everything goes through env vars; commit `.env.example` only, never `.env`. gitleaks runs in pre-commit and CI.
-- **Keep the env surface in sync in the same commit.** Adding, renaming, removing, or changing the scope of an environment variable means one commit that updates every surface it touches. Scope-aware minimums:
-  - **Shared app-runtime variable** (read by both the backend and the worker, e.g. a `Settings`/`VideoPricingConfig` field both services construct): declare the field, document it exactly once in `.env.example`, and inject it into **both** the `backend` and `worker` service environments in `docker-compose.yml`. An explicit per-service exclusion needs a written reason in the PR — the current set is `SERVICE_ROLE_EXCEPTIONS` in `tests/test_env_surface_parity.py`, which is the single source for the backend-only keys.
-  - **Frontend-only, Compose-only, or standalone-script variable** (e.g. `NEXT_PUBLIC_*` build arguments, Compose interpolation names such as `POSTGRES_USER`/`POSTGRES_DB`, resolver or maintenance-script names such as `POSTGRES_HOST`/`POSTGRES_PORT`/`BACKUP_DIR`): it has no backend settings field, so document it exactly once in `.env.example` and wire it to its own surface only. Do not force it into both Python service environments.
-  - **Never** document a name in two places in `.env.example` (a commented line still counts as a declaration), and never leave a declaration without an identified consumer: a declared settings field, a Compose interpolation, a frontend source read, or an explicitly allowlisted script with a `file:line` attribution. Any exemption from example coverage goes through the explicit enumerated allowlist in `tests/test_env_surface_parity.py`, never a prefix wildcard.
-  - Existing dotenv-only inputs are frozen in the parity gate's explicit `LEGACY_DOTENV_ONLY` inventory to preserve their precedence. They are not a blanket exemption for new fields; changing their injection channel requires explicit review.
-  - **Renames and removals** additionally require a `MIGRATION:` line in the PR description and a migration section in `docs/ENV_SURFACE_MIGRATION.md` in the same PR, covering the exact production keys to add, change, or drop, the resulting fallback behavior, and the conditional case where a name's absence means something different from an empty value. Do not recommend deleting a variable that still has a consumer.
-- Don't create new Docker services without discussing architecture impact
-- **Don't weaken a gate to make CI pass.** If strictness surfaces debt that blocks you, surface it for a decision — do not loosen `ruff`/`mypy`/`tsconfig` config silently.
-- **Don't hand-edit lockfiles or `pip install` ad hoc.** Dependency changes go through the package manager (and need approval, per Rules of Engagement).
+- Don't add Open WebUI or OpenCode Zen integrations or references — both are legacy and being removed. Existing Open WebUI compatibility endpoints in `orchestrator/main.py` stay untouched unless the task is removing them.
+- Don't use `gpt-4o` (or any fixed model) as a default route — routing is privacy-qualified and capability-aware.
+- Don't put secrets in code or docs. Everything goes through env vars; commit `.env.example`, never `.env`. gitleaks runs in pre-commit and CI.
+- **Keep the env surface in sync in the same commit.** Adding, renaming, removing, or re-scoping an environment variable updates every surface it touches in one commit. `tests/test_env_surface_parity.py` enforces this and owns the allowlists (`SERVICE_ROLE_EXCEPTIONS`, `LEGACY_DOTENV_ONLY`, consumer attributions). The rules it can't check for you:
+  - A shared backend/worker setting is documented once in `.env.example` and injected into **both** `backend` and `worker` in `docker-compose.yml`. A per-service exclusion needs a written reason in the PR.
+  - A frontend-only, Compose-only, or script-only variable is documented once and wired to its own surface only.
+  - Every declaration has an identified consumer, and a commented line still counts as a declaration. Exemptions go through the test's enumerated allowlist, never a prefix wildcard.
+  - **Renames and removals** also need a `MIGRATION:` line in the PR description and a section in `docs/ENV_SURFACE_MIGRATION.md` in the same PR. It must list the exact production keys to add, change, or drop, the fallback behaviour, and any case where absence differs from an empty value. Never recommend deleting a variable that still has a consumer.
+- Don't create new Docker services without discussing architecture impact.
+- **Don't weaken a gate to make CI pass.** Surface blocking debt for a decision; don't silently loosen `ruff`, `basedpyright`, or `tsconfig` config.
 - **Don't regenerate or reflow config/doc files.** Edits to `pyproject.toml`, `package.json`, `tsconfig.json`, `*.yml`, READMEs, and `AGENTS.md` are surgical — change the relevant lines only.
+
+## Feature Matrix
+`docs/FEATURE_MATRIX.md` records every user-visible feature's state per client surface. It is scope control, not documentation, and CI validates it.
+- New user-visible feature → add a row.
+- Promoting a feature on any surface (e.g. `Not started` → `Mobile eligible`) → update the cell.
+- Retiring or platform-restricting a feature → update or remove the row, with justification in the PR.
+
+Internal infrastructure (dedup thresholds, embedding model choice, retrieval scoring) is out of scope.
+
+## Anomaly Reporting Protocol
+Note errors, warnings, failures, and unexpected behaviour during a task — especially outside its scope. Don't keep an in-repo log. Route by scope and severity:
+- scope `project`/`upstream` and severity `critical`/`warning` → GitHub issue
+- scope `host`/`tooling` → append to `.triage.local.md` (gitignored, never committed)
+- severity `info` → don't record. When in doubt, it is info.
+
+**Filing:** batch at task completion.
+1. Search: `gh issue list --label triage --search "<keywords>" --state open`
+2. Match → `gh issue comment <n> --body "[agent] <new evidence>"`
+3. No match → `gh issue create --title "[triage][<category>] <title>" --label triage --label agent-filed --label severity:<critical|warning> --label scope:<project|upstream> --body "<template>"`
+
+File only: don't assign, prioritise, close, or fix triaged items unless they block the current task. If `gh` is unavailable, record the finding in `.triage.local.md`, surface it in your completion report, and file it once `gh` works.
+
+**Issue body template:**
+- Severity: critical | warning
+- Scope: project | upstream
+- Category: build-error | runtime-error | deprecation | config | test-failure | dependency | security | other
+- Encountered during: <task / issue #>
+- Blocked current task: yes | no
+- What happened: <1–3 sentences>
+- Evidence: <exact output, file:line>
+- Likely cause: <assessment + confidence %>
+- Suggested action: <what to investigate>
+
+**Completion report:** `Anomalies: {N} filed/updated ({critical} crit, {warning} warn) — issues [#…]; {M} host/tooling → local. "Clean" if none.`
 
 ## Review guidelines
 
@@ -196,54 +159,3 @@ Notes:
 - Human final review is still required.
 ```
 Codex must not treat "no findings" as permission to remain silent. A visible review comment is required so downstream reviewers and agents can confirm that the PR was actually pre-reviewed.
-
-## Anomaly Reporting Protocol
-
-During task execution, log any error, warning, failure, or unexpected behavior — especially items outside your current task scope. Do NOT maintain a shared in-repo log file. Route by scope and severity.
-
-### Routing
-- scope: project | upstream AND severity: critical | warning → file a GitHub issue
-- scope: host | tooling → append to `.triage.local.md` (gitignored, never committed)
-- severity: info → do not record
-
-When in doubt about severity, it is info — drop it. The old "if it was worth noting, log it" rule is what bloated the prior log; the gate above is deliberate.
-
-### Filing issues
-Accumulate qualifying anomalies during execution; reconcile against GitHub in one batch at task completion:
-1. Search: `gh issue list --label triage --search "<keywords>" --state open`
-2. Match → `gh issue comment <n> --body "[agent] <new evidence>"`
-3. No match → `gh issue create --title "[triage][<category>] <title>" --label triage --label agent-filed --label severity:<critical|warning> --label scope:<project|upstream> --body "<template>"`
-
-File only. Do not assign, prioritize, close, or fix triaged items unless they block the current task. Review is out-of-band.
-
-If `gh` is unavailable (missing or unauthenticated), do not drop a qualifying project/upstream finding: record it in `.triage.local.md` using the template below and surface it in your completion report, then file it as an issue once `gh` is restored.
-
-### Issue body template
-- Severity: critical | warning
-- Scope: project | upstream
-- Category: build-error | runtime-error | deprecation | config | test-failure | dependency | security | other
-- Encountered during: <task / issue #>
-- Blocked current task: yes | no
-- What happened: <1–3 sentences>
-- Evidence: <exact output, file:line>
-- Likely cause: <assessment + confidence %>
-- Suggested action: <what to investigate>
-
-### .triage.local.md (host / tooling only)
-Same fields, appended freeform. Ephemeral, gitignored, not reviewed unless you choose to.
-
-### Completion report
-`Anomalies: {N} filed/updated ({critical} crit, {warning} warn) — issues [#…]; {M} host/tooling → local. "Clean" if none.`
-
-## Feature Matrix
-
-Daemon maintains a feature matrix at `docs/FEATURE_MATRIX.md` capturing every user-visible feature's state across each client surface. This is scope control, not documentation.
-
-**When you must edit the matrix:**
-- Adding a new user-visible feature → add a row
-- Promoting a feature's state on any surface (e.g., `Not started` → `Mobile eligible`) → update the relevant cell
-- Retiring or platform-restricting a feature → update cells or remove the row with justification in the PR
-
-**Validation:** Run `python scripts/lint_feature_matrix.py` and `python scripts/check_doc_freshness.py --mode fail` before committing changes. CI integration is a separate follow-up; until then, discipline is human-enforced via PR review.
-
-**Internal infrastructure is out of scope.** The matrix tracks user-visible capabilities only. Memory dedup thresholds, embedding model choice, retrieval scoring — none of these are matrix entries.
