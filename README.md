@@ -116,7 +116,7 @@ Daemon/
 ├── .sisyphus/           # Agent workflow configuration
 ├── MEMORY_LAYER.md      # Memory system design document
 ├── QUICKSTART.md        # Quick setup guide
-├── docker-compose.yml   # Full-stack deployment (6 long-running services)
+├── docker-compose.yml   # Full-stack deployment (6 default long-running services)
 └── Dockerfile           # Single-image backend build
 ```
 
@@ -148,6 +148,27 @@ operator override, not the committed default.
 The Docker compose stack starts uvicorn without `--reload` and serves the
 frontend with `next start`. Use host-local commands such as `npm run dev` only
 for development sessions.
+
+The retained legacy Crawl4AI service is excluded from ordinary startup by the
+`crawl4ai` Compose profile. Its application adapter remains disabled, so
+`web_fetch` stays direct-only. To explicitly start only the legacy service for
+manual use:
+
+```bash
+docker compose --profile crawl4ai up -d crawl4ai
+```
+
+It still has no published host ports and uses only `daemon-network`. Opting in
+does not enable the adapter or qualify the existing `:latest` image; any future
+version/digest pin needs separate security review ([#436](https://github.com/sol-aeternum/Daemon/issues/436),
+[#373](https://github.com/sol-aeternum/Daemon/issues/373), [PR #431](https://github.com/sol-aeternum/Daemon/pull/431)).
+Do not set this profile globally for ordinary startup. A container started
+before this change keeps running until explicitly stopped; after updating an
+existing checkout, stop it once with:
+
+```bash
+docker compose --profile crawl4ai stop crawl4ai
+```
 
 Verify: `curl http://localhost:8000/health`
 

@@ -34,6 +34,27 @@ def test_database_ports_are_bound_to_loopback_only() -> None:
     assert services["redis"]["ports"] == ["127.0.0.1:6379:6379"]
 
 
+def test_crawl4ai_is_excluded_from_default_compose_startup() -> None:
+    services = _compose_services()
+
+    assert services["crawl4ai"]["profiles"] == ["crawl4ai"]
+    default_services = {
+        name: service for name, service in services.items() if not service.get("profiles")
+    }
+    assert "backend" in default_services
+    assert "crawl4ai" not in default_services
+    for name, service in default_services.items():
+        assert "crawl4ai" not in service.get("depends_on", {}), name
+
+
+def test_crawl4ai_keeps_existing_network_without_host_ports() -> None:
+    crawl4ai = _compose_services()["crawl4ai"]
+
+    assert not crawl4ai.get("ports")
+    assert crawl4ai["networks"] == ["daemon-network"]
+    assert "network_mode" not in crawl4ai
+
+
 def test_compose_requires_postgres_password_without_default() -> None:
     compose = (ROOT / "docker-compose.yml").read_text()
 

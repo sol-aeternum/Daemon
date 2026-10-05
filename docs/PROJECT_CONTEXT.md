@@ -43,7 +43,7 @@ Read [DAEMON.md](DAEMON.md) first for the ratified product identity (DEC11): one
 - **Frontend**: Next.js 16 with Vercel AI SDK and React 19.
 - **Memory**: PostgreSQL with `pgvector` for semantic search and Fernet encryption for content at rest.
 - **Worker**: Redis + `arq` for background jobs (memory extraction, consolidation, dreaming).
-- **Fetch**: Public HTTP(S) `direct` strategy retains upstream URL/redirect protections. Vendor-assisted fallbacks are disabled pending qualified bounded adapters; the `crawl4ai` docker service remains unused by `web_fetch`.
+- **Fetch**: Public HTTP(S) `direct` strategy retains upstream URL/redirect protections. Vendor-assisted fallbacks are disabled pending qualified bounded adapters; the `crawl4ai` docker service is opt-in via the `crawl4ai` Compose profile and remains unused by `web_fetch`.
 
 ## Account Plans and Compute
 
@@ -95,7 +95,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 4. `frontend`: Next.js 16 (port 3000).
 5. `postgres`: pgvector/pg16 (port 5432).
 6. `redis`: Redis 7 Alpine (port 6379).
-7. `crawl4ai`: Web scraping service.
+7. `crawl4ai`: Retained legacy web scraping service; opt-in `crawl4ai` profile, excluded from ordinary startup. See [README opt-in and existing-container instructions](../README.md#developer-quick-start).
 8. `tts`: Private offline Kokoro speech runtime, model-ready health check.
 
 ## Memory Layer

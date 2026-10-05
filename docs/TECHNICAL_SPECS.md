@@ -190,7 +190,7 @@ rejection ratio above 10%.
 - `frontend`: Next.js 16 (port 3000).
 - `postgres`: pgvector/pg16 (port 5432).
 - `redis`: Redis 7 (port 6379).
-- `crawl4ai`: Web scraping service.
+- `crawl4ai`: Retained legacy web scraping service; opt-in `crawl4ai` profile, excluded from ordinary startup. See [README opt-in and existing-container instructions](../README.md#developer-quick-start).
 - `tts`: Private offline Kokoro runtime; ready only after warm synthesis. See [TTS architecture](TTS_ARCHITECTURE.md).
 - `migrate`: One-shot migration runner.
 

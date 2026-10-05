@@ -296,9 +296,10 @@ services:
     networks:
       - daemon-network
 
-  # Crawl4AI - Internal web scraping service for fetch strategies
-  # Could be shared with future @browser subagent for screenshot capabilities
+  # Retained legacy service; the application adapter is disabled (#436).
+  # Manual opt-in only. Image qualification/pinning requires separate review.
   crawl4ai:
+    profiles: ["crawl4ai"]
     image: unclecode/crawl4ai:latest
     mem_limit: 1g
     cpus: 1.0
