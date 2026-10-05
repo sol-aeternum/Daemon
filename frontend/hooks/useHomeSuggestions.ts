@@ -445,6 +445,54 @@ export function useHomeSuggestions() {
     const request = requestIdRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
+    // Failed responses can follow committed writes: reconcile by read only.
+    const reconcileEnable = async () => {
+      if (!isCurrent(request, generationAtRequest)) return;
+      setState({
+        status: 'unavailable',
+        suggestions: [],
+        message:
+          'Enabling could not be confirmed; suggestions may be enabled. Use Turn off suggestions to disable them.',
+      });
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+      try {
+        const header = await ensureAuthHeader();
+        if (
+          !header ||
+          !isCurrent(request, generationAtRequest) ||
+          controller.signal.aborted
+        )
+          return;
+        const response = await fetch(HOME_SUGGESTIONS_ENDPOINTS.settings, {
+          headers: { Authorization: header },
+          credentials: 'include',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const settings = await response.json();
+        if (
+          !isCurrent(request, generationAtRequest) ||
+          controller.signal.aborted
+        )
+          return;
+        const enabled = settings?.preferences?.home_suggestions_enabled;
+        if (enabled === true) {
+          setState({
+            status: 'unavailable',
+            suggestions: [],
+            message:
+              'Suggestions are enabled, but startup could not be confirmed. No refresh was requested. You can turn them off or refresh explicitly.',
+          });
+        } else if (enabled === false) {
+          setState({ status: 'disabled', suggestions: [], message: null });
+        }
+      } catch {
+        // Retain unknown state and opt-out on read failure; never generate.
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
     try {
       const header = await ensureAuthHeader();
       if (
@@ -471,14 +519,7 @@ export function useHomeSuggestions() {
       });
       if (!isCurrent(request, generationAtRequest)) return false;
       if (!response.ok) {
-        setState({
-          status: response.status === 503 ? 'unavailable' : 'error',
-          suggestions: [],
-          message:
-            response.status === 503
-              ? 'Daemon is unavailable, so the feature was not enabled. Try again shortly.'
-              : "Couldn't enable suggestions. Try again.",
-        });
+        await reconcileEnable();
         return false;
       }
       // One explicit refresh kicks off the first generation; polling
@@ -492,11 +533,7 @@ export function useHomeSuggestions() {
       ) {
         return false;
       }
-      setState({
-        status: 'error',
-        suggestions: [],
-        message: NETWORK_FAILURE_MESSAGE,
-      });
+      await reconcileEnable();
       return false;
     } finally {
       stopIfStale(request, generationAtRequest, controller);

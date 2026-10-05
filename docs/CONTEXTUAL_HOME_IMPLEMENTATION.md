@@ -487,6 +487,45 @@ are the only authorised remaining publication actions; human review is required
 before merge. Anomalies: no new unresolved project/upstream warning to file;
 three local tooling observations are preserved in ignored `.triage.local.md`.
 
+## PR #453 review follow-up: partial-write opt-in truthfulness
+
+The owner review of `c76da800` found a valid P2: settings commits the opt-in
+before synchronizing Redis, so PATCH 503 can mean the preference is already
+enabled. The previous frontend claim that it was not enabled was incorrect.
+That finding supersedes the original no-findings assessment for this path.
+
+Failed or uncertain enabling now says confirmation failed and it **may be
+enabled**, then makes one read-only settings reconciliation with a five-second
+abort and request/auth-generation guards. A strict true result confirms enabled
+but not startup; a strict false result confirms disabled. Failed, invalid or
+timed-out reads retain uncertainty and the visible turn-off path. Reconciliation
+does not retry enabling or request generation, even after Redis recovery. A normal
+successful enabling still requests exactly one explicit refresh.
+
+Changed runtime: only `frontend/hooks/useHomeSuggestions.ts`. Tests cover
+committed true/false, failed settings reads, lost PATCH response, bounded timeout,
+recovery via explicit disable, no POST after failed PATCH, stale-account response
+discard and visible opt-out. Authenticated backend API regressions exercise the
+real route's merge-success then absent/failed Redis: PATCH 503, authoritative GET
+true, and explicit disabling after recovery, with no model call. Backend runtime,
+API, database schema, dependencies and permission rules are unchanged.
+
+Bounded supervisory verification observed 35 hook/UI and 12 API tests passing,
+frontend type/scoped lint/format and backend type/scoped lint checks passing.
+Fresh read-only `explore-luna` review `ses_ef42a8a85ffepo0JzG7n1xeaE0` found no
+remaining material blocker in this repair. Full final-head gates are required
+again before resubmission; prior-head CI is not evidence for this revision.
+No new anomaly: the existing Node localStorage warning remains local tooling
+inventory. No live private inference, deployment or merge is authorised.
+
+Final revision verification: `scripts/local_ci.sh` passed all blocking gates
+(5,106 backend tests / 152 skips, 886 frontend tests across 70 files), including
+production build, type/lint/format, dependency audits, blocking security checks,
+feature matrix, pre-commit and secret scanning. Existing full Bandit inventory
+remains non-blocking. Documentation freshness and staged whitespace checks passed.
+Log: `pr453-revision-gates.log` in the local evidence directory. Resubmission is
+to the existing PR; no merge or deployment is performed.
+
 ### Verified repository evidence
 
 - Clean branch `feat/contextual-home`, based on `origin/main` at `67f1f63a`, in the

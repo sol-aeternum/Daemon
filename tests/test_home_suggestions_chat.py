@@ -234,3 +234,41 @@ async def test_optin_endpoint_rejects_coercions_and_stale_mixed_settings_patch(c
         json={"preferences": {"home_suggestions_enabled": True, "personality": "concise"}},
     )
     assert mixed.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_redis", [False, True])
+async def test_optin_partial_write_failure_remains_authoritatively_enabled(
+    rig, chat_client, monkeypatch, missing_redis
+):
+    _, store, redis, model, _ = rig
+    client, _, state = chat_client
+    store.enabled = False
+
+    async def merge(owner, preferences):
+        assert owner == store.user_id
+        store.enabled = preferences["home_suggestions_enabled"]
+        return await store.get_user_settings(owner)
+
+    monkeypatch.setattr(store, "merge_user_preferences", merge, raising=False)
+    redis.failed = True
+    if missing_redis:
+        state.redis = None
+    response = await client.patch(
+        "/users/me/settings", json={"preferences": {"home_suggestions_enabled": True}}
+    )
+    assert response.status_code == 503
+    assert store.enabled is True
+    settings = await client.get("/users/me/settings")
+    assert settings.json()["preferences"]["home_suggestions_enabled"] is True
+    model.assert_not_awaited()
+    redis.failed = False
+    state.redis = redis
+    disabled = await client.patch(
+        "/users/me/settings", json={"preferences": {"home_suggestions_enabled": False}}
+    )
+    assert disabled.status_code == 200
+    assert (await client.get("/users/me/settings")).json()["preferences"][
+        "home_suggestions_enabled"
+    ] is False
+    model.assert_not_awaited()

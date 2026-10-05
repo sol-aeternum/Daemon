@@ -46,6 +46,23 @@ function readyRows() {
 }
 
 describe('home suggestion rows', () => {
+  it('retains explicit opt-out while enabling is unconfirmed', () => {
+    const stub = createSuggestionsApiStub({
+      view: {
+        status: 'unavailable',
+        suggestions: [],
+        message: 'Enabling could not be confirmed; suggestions may be enabled.',
+      },
+    });
+    useHomeSuggestionsMock.mockImplementation(() => stub);
+    render(<WelcomeScreen />);
+    expect(screen.getByText(/suggestions may be enabled/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Turn off suggestions' }),
+    );
+    expect(stub.disable).toHaveBeenCalledTimes(1);
+    expect(stub.refresh).not.toHaveBeenCalled();
+  });
   it('exposes persistent opt-out separately from session-local hiding', () => {
     const stub = createSuggestionsApiStub({ view: readyViewWithRows() });
     useHomeSuggestionsMock.mockImplementation(() => stub);

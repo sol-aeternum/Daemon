@@ -408,6 +408,114 @@ it('disabling hides rows immediately and PATCHes the strict false preference', a
   expect(view.result.current.view.suggestions).toHaveLength(0);
 });
 
+it.each([true, false, 'unavailable', 'timeout', 'network'])(
+  'reconciles a failed enable truthfully without generating: %s',
+  async (persisted) => {
+    signIn('partial-write');
+    let readStarted!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    fetchMock.mockImplementation(async (input, init) => {
+      if (listUrl(String(input)))
+        return listResponse({
+          enabled: false,
+          status: 'disabled',
+          suggestions: [],
+        });
+      if (settingsUrl(String(input)) && init?.method === 'PATCH') {
+        if (
+          JSON.parse(String(init.body)).preferences.home_suggestions_enabled ===
+          false
+        )
+          return listResponse({ status: 'updated' });
+        if (persisted === 'network') throw new Error('uncertain write');
+        return listResponse({}, 503);
+      }
+      if (settingsUrl(String(input))) {
+        readStarted();
+        if (persisted === 'timeout')
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new Error('timeout')),
+            );
+          });
+        if (persisted === 'unavailable' || persisted === 'network')
+          return listResponse({}, 503);
+        return listResponse({
+          preferences: { home_suggestions_enabled: persisted },
+        });
+      }
+      throw new Error('Unexpected generation');
+    });
+    const hook = renderHook(() => useHomeSuggestions());
+    await waitFor(() =>
+      expect(hook.result.current.view.status).toBe('disabled'),
+    );
+    await act(async () => {
+      const pending = hook.result.current.enable();
+      await reading;
+      if (persisted === 'timeout') await vi.advanceTimersByTimeAsync(5100);
+      expect(await pending).toBe(false);
+    });
+    if (persisted === false)
+      expect(hook.result.current.view.status).toBe('disabled');
+    else {
+      expect(hook.result.current.view.status).toBe('unavailable');
+      expect(hook.result.current.view.message).toContain(
+        persisted === true ? 'Suggestions are enabled' : 'may be enabled',
+      );
+      expect(hook.result.current.preferencePending).toBe(false);
+      await act(async () => {
+        expect(await hook.result.current.disable()).toBe(true);
+      });
+      expect(hook.result.current.view.status).toBe('disabled');
+    }
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST'),
+    ).toHaveLength(0);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([, init]) =>
+          init?.method === 'PATCH' && String(init.body).includes(':true'),
+      ),
+    ).toHaveLength(1);
+  },
+);
+
+it('discards an old-account preference reconciliation response', async () => {
+  signIn('old-partial');
+  let resolveRead!: (response: Response) => void;
+  fetchMock.mockImplementation(async (input, init) => {
+    if (listUrl(String(input)))
+      return listResponse({
+        enabled: false,
+        status: 'disabled',
+        suggestions: [],
+      });
+    if (init?.method === 'PATCH') return listResponse({}, 503);
+    return new Promise<Response>((resolve) => {
+      resolveRead = resolve;
+    });
+  });
+  const hook = renderHook(() => useHomeSuggestions());
+  await waitFor(() => expect(hook.result.current.view.status).toBe('disabled'));
+  let pending!: Promise<boolean>;
+  act(() => {
+    pending = hook.result.current.enable();
+  });
+  await waitFor(() => expect(resolveRead).toBeDefined());
+  act(() => clearLocalAuthState());
+  await act(async () => {
+    resolveRead(
+      listResponse({ preferences: { home_suggestions_enabled: true } }),
+    );
+    await pending;
+  });
+  expect(hook.result.current.view.status).toBe('unloaded');
+  expect(hook.result.current.view.message).toBeNull();
+});
+
 it('a throttled refresh keeps live rows and reports the throttle truthfully', async () => {
   signIn('token-a');
   fetchMock.mockImplementation(
