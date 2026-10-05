@@ -221,6 +221,16 @@ attestation.
 
 ### Verified owner-local activation — 5 October 2026
 
+**Current state: rolled back; embeddings disabled.** The startup verification
+below describes a provisional activation, not the final runtime state. Residual
+caller inspection found that `memory_reflect` lacked trusted conversation locality.
+Backend and worker were restored to the pinned #447 images/source with an empty
+selector; readiness passed. The owner approved a cloud-only reflection guard:
+only an owner-checked stored cloud conversation may embed/retrieve/synthesize;
+local or unknown contexts refuse reflection without provider calls. Cloud results
+exclude local-only and unclassified rows. Local `memory_read` retains lexical
+access. Re-activation requires reviewed repair, final gates and a new release.
+
 Clean archived source commit `05abf4861eba34b487d92cf803d0b2640b765df9` was built
 and activated for **backend and worker only** using an additional local Compose
 override. The original checkout and dotenv were not edited. Only the embedding

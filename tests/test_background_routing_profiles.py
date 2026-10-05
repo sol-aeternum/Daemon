@@ -273,14 +273,28 @@ async def test_nested_reflection_binds_its_own_reasoning_profile() -> None:
     guard = RecordingGuard("You play guitar.")
     store = MagicMock(spec=MemoryStore)
     user_id = uuid.uuid4()
+    # Positive fixture: the server-bound conversation attests that the calling
+    # user owns it on the cloud pipeline, so the tool's guard lets the
+    # pipeline proceed to the nested reasoning call.
+    store.get_conversation = AsyncMock(return_value={"user_id": user_id, "pipeline": "cloud"})
 
     with _patched_settings():
         with patch(
             "orchestrator.tools.memory_reflect.retrieve_memories_for_text",
-            new=AsyncMock(return_value=[{"id": uuid.uuid4(), "content": "User plays guitar"}]),
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "id": uuid.uuid4(),
+                        "content": "User plays guitar",
+                        "local_only": False,
+                    }
+                ]
+            ),
         ):
             with patch("orchestrator.tools.memory_reflect.guarded_completion", new=guard):
-                result = await MemoryReflectTool(store, user_id).execute(topic="guitar")
+                result = await MemoryReflectTool(
+                    store, user_id, conversation_id=uuid.uuid4()
+                ).execute(topic="guitar")
 
     assert result == "You play guitar."
     # The helper's own profile, and still no pinned model inherited from a parent.

@@ -310,7 +310,9 @@ def create_default_registry(
             registry.register(MemoryWriteTool(memory_store, user_id))
         registry.register(MemoryPromoteTool(memory_store, user_id))
         registry.register(MemoryDemoteTool(memory_store, user_id))
-        registry.register(MemoryReflectTool(memory_store, user_id))
+        registry.register(
+            MemoryReflectTool(memory_store, user_id, conversation_id=memory_conversation_id)
+        )
 
     return registry
 
