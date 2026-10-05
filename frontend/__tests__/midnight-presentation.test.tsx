@@ -10,6 +10,19 @@ import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatInputBar } from '@/components/ChatInputBar';
 import { CopyResponseButton } from '@/components/CopyResponseButton';
 import MemoryFilters from '@/components/settings/memory/MemoryFilters';
+import {
+  createSuggestionsApiStub,
+  readyViewWithRows,
+} from './home-suggestions-test-utils';
+
+const useHomeSuggestionsMock = vi.fn();
+vi.mock('@/hooks/useHomeSuggestions', () => ({
+  useHomeSuggestions: (...args: unknown[]) =>
+    useHomeSuggestionsMock(...(args as [])),
+}));
+beforeEach(() => {
+  useHomeSuggestionsMock.mockImplementation(() => createSuggestionsApiStub());
+});
 
 vi.mock('@/components/ModelSelector', () => ({ ModelSelector: () => null }));
 beforeEach(() => {
@@ -26,14 +39,35 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('appends an ordinary starter without trimming or replacing existing work', () => {
-  const setInput = vi.fn();
-  render(<WelcomeScreen input="  existing draft  " setInput={setInput} />);
-  fireEvent.click(screen.getByRole('button', { name: /^Find/ }));
-  expect(setInput).toHaveBeenCalledWith(
-    '  existing draft  \nSearch the web for…',
+it('pauses suggestion rows while typing and keeps the draft untouched', () => {
+  useHomeSuggestionsMock.mockImplementation(() =>
+    createSuggestionsApiStub({ view: readyViewWithRows() }),
   );
-  expect(screen.queryByRole('button', { name: /Create Image/ })).toBeNull();
+  render(<WelcomeScreen input="  existing draft  " />);
+  // With unrelated unsent text, ready rows pause; nothing is submitted.
+  expect(screen.getByTestId('paused-while-typing-note')).toBeTruthy();
+  expect(screen.queryAllByTestId(/^suggestion-row/)).toHaveLength(0);
+  expect(screen.queryByRole('button', { name: /Start chat/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+});
+
+it('shows ready contextual rows without Start chat, Preview or Why controls, and dismiss/undo is session-local', () => {
+  const stub = createSuggestionsApiStub({ view: readyViewWithRows() });
+  useHomeSuggestionsMock.mockImplementation(() => stub);
+  const select = vi.fn();
+  render(<WelcomeScreen onSuggestionSelect={select} />);
+  const rows = screen.getAllByTestId(/^suggestion-row/);
+  expect(rows).toHaveLength(2);
+  expect(screen.queryByTestId('paused-while-typing-note')).toBeNull();
+  expect(screen.queryByText(/Start chat/)).toBeNull();
+  expect(screen.queryByText('Preview')).toBeNull();
+  expect(screen.queryByText(/^Why\b/)).toBeNull();
+  fireEvent.click(
+    screen.getAllByRole('button', { name: /Dismiss suggestion/ })[0],
+  );
+  expect(stub.dismiss).toHaveBeenCalledWith('s1');
+  fireEvent.click(screen.getByTestId('undo-dismiss'));
+  expect(stub.undoDismiss).toHaveBeenCalledWith('s1');
 });
 
 it('does not submit IME composition and announces blocked send while streaming', () => {

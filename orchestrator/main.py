@@ -104,6 +104,9 @@ from orchestrator.database_url import (
     validate_database_credentials,
 )
 from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
+from orchestrator.home_suggestions.contracts import SuggestionError, render_context
+from orchestrator.home_suggestions.service import HomeSuggestions
+from orchestrator.routes.home_suggestions import router as home_suggestions_router
 from orchestrator.timezones import extract_timezone_name
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
@@ -2214,6 +2217,40 @@ async def chat(
 
     incoming_messages = payload.messages or []
     attachments = payload.attachments or []
+    suggestion_context: dict[str, Any] | None = None
+    suggestion_destination: uuid.UUID | None = None
+    if payload.suggestion_id is not None:
+        # No client history, destination, attachment or metadata may replace or
+        # augment a server-owned candidate. Ordinary explicit model/provider
+        # selection still passes the existing chat/account admission paths.
+        if (
+            payload.conversation_id is not None
+            or incoming_messages
+            or attachments
+            or payload.metadata
+            or payload.user_id
+        ):
+            raise HTTPException(
+                status_code=422, detail="Suggestion requests require an isolated new chat"
+            )
+        try:
+            suggestion_destination, suggestion_context = await HomeSuggestions(
+                app_state.memory_store, app_state.redis, auth.user_id
+            ).accept(payload.suggestion_id, payload.message)
+            conversation_id = f"conv_{suggestion_destination}"
+        except SuggestionError as exc:
+            raise HTTPException(
+                status_code=exc.status,
+                detail={"code": exc.code, "message": "Suggestion unavailable; refresh home"},
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "suggestion_unavailable",
+                    "message": "Suggestion could not be saved",
+                },
+            ) from exc
     last_user_message = None
     last_user_msg: dict[str, Any] | None = None
     for msg in reversed(incoming_messages):
@@ -2223,7 +2260,7 @@ async def chat(
             break
     # Classify what the user wrote; the upload default is model-facing text only.
     requested_text = (last_user_message or payload.message).strip()
-    user_message = requested_text
+    user_message = payload.message if suggestion_context is not None else requested_text
     if not user_message and attachments:
         user_message = "Please analyze the attached files."
 
@@ -2242,6 +2279,8 @@ async def chat(
             }
 
     prepared_user_content: str | list[dict[str, Any]] = user_message
+    if suggestion_context is not None:
+        prepared_user_content = render_context(user_message, suggestion_context)
     if attachments:
         prepared_user_content = _build_user_content_from_attachments(user_message, attachments)
     elif last_user_msg and isinstance(last_user_msg.get("content"), list):
@@ -2316,9 +2355,13 @@ async def chat(
     # from the draft's own state instead of from whether this request created
     # it (issue #362).
     existing_draft_needs_title = False
+    home_bound_conversation = suggestion_destination is not None
 
     # Create or get conversation if persistence is available
-    if store and user_id:
+    if suggestion_destination is not None:
+        conversation_uuid = suggestion_destination
+        conversation_exists = True
+    elif store and user_id:
         try:
             if payload.conversation_id:
                 try:
@@ -2331,6 +2374,14 @@ async def chat(
                     raise HTTPException(status_code=404, detail="Conversation not found")
                 if existing.get("user_id") != user_id:
                     raise HTTPException(status_code=403, detail="Conversation forbidden")
+
+                existing_metadata = existing.get("metadata")
+                if isinstance(existing_metadata, str):
+                    existing_metadata = json.loads(existing_metadata)
+                home_bound_conversation = (
+                    isinstance(existing_metadata, dict)
+                    and existing_metadata.get("home_suggestion") == 1
+                )
 
                 conversation_uuid = conv_uuid
                 conversation_exists = True
@@ -2388,6 +2439,10 @@ async def chat(
         except HTTPException:
             raise
         except Exception as e:
+            if home_bound_conversation:
+                raise HTTPException(
+                    status_code=503, detail="Bound conversation could not be saved"
+                ) from e
             logger.warning(
                 "Conversation persistence failed, continuing without persistence: %s", e
             )  # Graceful degradation - continue without persistence
@@ -2418,6 +2473,11 @@ async def chat(
             "role": msg.get("role"),
             "content": msg.get("content"),
         }
+        metadata = msg.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("home_suggestion") is not None:
+            if msg.get("role") != "user" or not isinstance(msg.get("content"), str):
+                raise ValueError("Invalid bound home turn")
+            mapped["content"] = render_context(msg["content"], metadata["home_suggestion"])
         if msg.get("reasoning_text"):
             mapped["reasoning"] = msg.get("reasoning_text")
         if msg.get("reasoning_duration_secs") is not None:
@@ -2426,6 +2486,18 @@ async def chat(
             mapped["reasoning_model"] = msg.get("reasoning_model")
         return mapped
 
+    bound_home_turn: dict[str, Any] | None = None
+    if home_bound_conversation and conversation_exists and store and conversation_uuid and user_id:
+        binding_reader = getattr(store, "get_home_suggestion_turn", None)
+        if binding_reader is not None:
+            try:
+                bound_home_turn = await binding_reader(conversation_uuid, user_id)
+                if not isinstance(bound_home_turn, dict):
+                    raise ValueError("Missing bound home turn")
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503, detail="Bound source context unavailable"
+                ) from exc
     if conversation_exists and store and conversation_uuid:
         try:
             db_messages = await store.get_recent_messages(
@@ -2440,7 +2512,18 @@ async def chat(
                 and msg.get("content") is not None
                 and msg.get("role") != "system"
             ]
-        except Exception:
+            # Keep the copied source turn after Redis expiry and after normal
+            # recent-history truncation. Persisted prompt remains distinct from
+            # its context on public history reads.
+            if bound_home_turn is not None and not any(
+                msg.get("id") == bound_home_turn.get("id") for msg in db_messages
+            ):
+                history_messages.insert(0, _to_history_message(bound_home_turn))
+        except Exception as exc:
+            if suggestion_context is not None or bound_home_turn is not None:
+                raise HTTPException(
+                    status_code=503, detail="Bound source context unavailable"
+                ) from exc
             conversation_exists = False
 
     if not history_messages:
@@ -2456,6 +2539,21 @@ async def chat(
             if msg.get("role") == "user":
                 msg["content"] = prepared_user_content
                 break
+    if suggestion_context is not None and not history_messages:
+        history_messages = [{"role": "user", "content": prepared_user_content}]
+
+    council_user_message = user_message
+    if bound_home_turn is not None:
+        bound_context = bound_home_turn["metadata"]["home_suggestion"]
+        council_user_message = render_context(user_message, bound_context)
+        if council_config_response is not None:
+            council_config_response = {
+                **council_config_response,
+                "_prompt": render_context(
+                    council_config_response.get("_prompt") or bound_home_turn["content"],
+                    bound_context,
+                ),
+            }
 
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
     preferences_block = ""
@@ -2559,7 +2657,7 @@ async def chat(
                     db_pool=app_state.db_pool,
                     account_user_id=auth.user_id,
                     source=lambda: stream_council(
-                        user_message=user_message,
+                        user_message=council_user_message,
                         conversation_id=conversation_id,
                         request_id=request_id,
                     ),
@@ -2602,6 +2700,21 @@ async def chat(
                 user_timezone=user_timezone,
             ):
                 yield frame
+                # Source-change event only. Reading home never dispatches work.
+                # Failed/cancelled turns do not qualify; DB locality and opt-in
+                # are checked again by admission and by the queued worker.
+                if store and app_state.redis is not None and frame.startswith("event: done"):
+                    try:
+                        data_line = next(
+                            line[6:] for line in frame.splitlines() if line.startswith("data: ")
+                        )
+                        completed = json.loads(data_line).get("data", {}).get("ok") is True
+                        if completed:
+                            await HomeSuggestions(store, app_state.redis, auth.user_id).refresh(
+                                manual=False
+                            )
+                    except Exception:
+                        logger.info("Contextual home source-change admission unavailable")
         except Exception as exc:
             capacity = compute_error(exc)
             ts = now_rfc3339()
@@ -2681,7 +2794,7 @@ async def chat(
         stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store" if payload.suggestion_id is not None else "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
@@ -2689,6 +2802,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(home_suggestions_router)
 app.include_router(speech_stream_router)
 app.include_router(web_snapshots_router)
 app.include_router(entitlements.router)

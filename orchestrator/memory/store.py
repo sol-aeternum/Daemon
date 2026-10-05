@@ -94,6 +94,45 @@ class MemoryStore:
         for field in ("tool_calls", "tool_results"):
             if field in message:
                 message[field] = self._decrypt_tool_trace(message[field])
+        metadata = message.get("metadata")
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        if isinstance(metadata, dict) and "home_suggestion" in metadata:
+            from orchestrator.home_suggestions.contracts import ENVELOPE_FORMAT, validate_context
+
+            envelope = metadata["home_suggestion"]
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("format") != ENVELOPE_FORMAT
+                or envelope.get("version") != 1
+                or not isinstance(envelope.get("ciphertext"), str)
+            ):
+                raise ValueError("Invalid encrypted home context envelope")
+            metadata = dict(metadata)
+            metadata["home_suggestion"] = validate_context(
+                json.loads(self._enc.decrypt(envelope["ciphertext"]))
+            )
+            message["metadata"] = metadata
+
+    def _encrypt_message_metadata(self, metadata: dict[str, Any] | None) -> str:
+        from orchestrator.home_suggestions.contracts import (
+            ENVELOPE_FORMAT,
+            canonical,
+            validate_context,
+        )
+
+        result = dict(metadata or {})
+        if "home_suggestion" in result:
+            context = result["home_suggestion"]
+            if not isinstance(context, dict) or context.get("format") != ENVELOPE_FORMAT:
+                result["home_suggestion"] = {
+                    "format": ENVELOPE_FORMAT,
+                    "version": 1,
+                    "ciphertext": self._enc.encrypt(canonical(validate_context(context))),
+                }
+            elif context.get("version") != 1 or not isinstance(context.get("ciphertext"), str):
+                raise ValueError("Invalid encrypted home context envelope")
+        return json.dumps(result)
 
     def _decrypt_advisor_traces(self, value: Any) -> Any:
         if value is None:
@@ -495,7 +534,7 @@ class MemoryStore:
             self._encrypt_tool_trace(tool_calls or []),
             self._encrypt_tool_trace(tool_results or []),
             status,
-            json.dumps(metadata or {}),
+            self._encrypt_message_metadata(metadata),
             encrypted_reasoning_text,
             reasoning_duration_secs,
             reasoning_model,
@@ -524,6 +563,7 @@ class MemoryStore:
                 SELECT * FROM (
                     SELECT * FROM messages
                     WHERE conversation_id = $1 AND created_at > $4
+                      AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
                     ORDER BY created_at DESC
                     LIMIT $2 OFFSET $3
                 ) sub
@@ -540,6 +580,7 @@ class MemoryStore:
                 SELECT * FROM (
                     SELECT * FROM messages
                     WHERE conversation_id = $1
+                      AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
                     ORDER BY created_at DESC
                     LIMIT $2 OFFSET $3
                 ) sub
@@ -970,7 +1011,7 @@ class MemoryStore:
         reasoning_model: str | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
-        metadata_json = json.dumps(metadata) if metadata is not None else None
+        metadata_json = self._encrypt_message_metadata(metadata) if metadata is not None else None
         tool_calls_json = self._encrypt_tool_trace(tool_calls) if tool_calls is not None else None
         tool_results_json = (
             self._encrypt_tool_trace(tool_results) if tool_results is not None else None
@@ -1031,6 +1072,7 @@ class MemoryStore:
             SELECT * FROM (
                 SELECT * FROM messages
                 WHERE conversation_id = $1
+                  AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
                   AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[])))
                 ORDER BY created_at DESC
                 LIMIT $2
@@ -1052,6 +1094,220 @@ class MemoryStore:
             self._decrypt_message_tool_traces(d)
             results.append(_normalize_message(d))
         return results
+
+    # ------------------------------------------------------------------
+    # Trusted contextual-home snapshots and short acceptance transactions.
+    # No Redis/provider/network work is performed inside these transactions.
+    # ------------------------------------------------------------------
+
+    async def _home_snapshot_on_connection(
+        self, conn: Any, user_id: uuid.UUID
+    ) -> list[dict[str, Any]]:
+        from orchestrator.home_suggestions.contracts import (
+            MAX_CIPHERTEXT_BYTES,
+            MAX_CONVERSATIONS,
+            MAX_MESSAGE_BYTES,
+            MAX_MESSAGES,
+            MAX_SOURCE_BYTES,
+            MAX_TITLE_BYTES,
+            MAX_TOTAL_BYTES,
+            SuggestionError,
+            excerpt,
+        )
+
+        # Lock parents before messages: FK inserts and deletion/rename/locality
+        # changes serialize with acceptance; message edits serialize with SHARE.
+        # Read at most six parents, never list/scan/decrypt a hundred dialogs.
+        rows = await conn.fetch(
+            """
+            SELECT c.id, c.user_id, c.pipeline,
+                   CASE WHEN octet_length(COALESCE(c.title, '')) <= $3
+                        THEN COALESCE(c.title, '') ELSE NULL END AS title
+            FROM conversations c
+            WHERE c.user_id = $1 AND c.pipeline = 'cloud'
+              AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id
+                          AND m.user_id = $1 AND m.status = 'complete'
+                          AND m.role IN ('user', 'assistant'))
+            ORDER BY COALESCE(c.last_activity_at, c.updated_at) DESC, c.id ASC
+            LIMIT $2 FOR UPDATE OF c
+            """,
+            user_id,
+            MAX_CONVERSATIONS,
+            MAX_TITLE_BYTES,
+        )
+        sources: list[dict[str, Any]] = []
+        total = 0
+        for row in rows:
+            if row["user_id"] != user_id or row["pipeline"] != "cloud" or row["title"] is None:
+                raise SuggestionError()
+            messages = await conn.fetch(
+                """
+                SELECT id, user_id, role, status, created_at,
+                       CASE WHEN octet_length(content) <= $4 THEN content ELSE NULL END AS content
+                FROM messages
+                WHERE conversation_id = $1 AND user_id = $2 AND status = 'complete'
+                  AND role IN ('user', 'assistant')
+                ORDER BY created_at DESC, id DESC LIMIT $3 FOR SHARE
+                """,
+                row["id"],
+                user_id,
+                MAX_MESSAGES,
+                MAX_CIPHERTEXT_BYTES,
+            )
+            selected = []
+            source_bytes = 0
+            for message in reversed(messages):
+                if (
+                    message["user_id"] != user_id
+                    or message["role"] not in {"user", "assistant"}
+                    or message["status"] != "complete"
+                    or message["content"] is None
+                ):
+                    raise SuggestionError()
+                full_content = self._enc.decrypt(message["content"])
+                if len(full_content.encode()) > MAX_MESSAGE_BYTES:
+                    raise SuggestionError()
+                content = excerpt(full_content)
+                size = len(content.encode())
+                if source_bytes + size > MAX_SOURCE_BYTES or total + size > MAX_TOTAL_BYTES:
+                    # Deterministic bound: retain whole bounded excerpts, never
+                    # silently replace the selected snapshot at click time.
+                    break
+                selected.append(
+                    {
+                        "id": str(message["id"]),
+                        "user_id": str(user_id),
+                        "role": message["role"],
+                        "status": message["status"],
+                        "content": content,
+                        "content_hash": hashlib.sha256(full_content.encode()).hexdigest(),
+                    }
+                )
+                source_bytes += size
+                total += size
+            if selected:
+                sources.append(
+                    {
+                        "conversation_id": str(row["id"]),
+                        "user_id": str(user_id),
+                        "pipeline": row["pipeline"],
+                        "title": row["title"],
+                        "messages": selected,
+                    }
+                )
+        return sorted(sources, key=lambda source: source["conversation_id"])
+
+    async def home_suggestion_snapshot(
+        self, user_id: uuid.UUID
+    ) -> tuple[bool, int, list[dict[str, Any]]]:
+        from orchestrator.home_suggestions.contracts import SuggestionError, preference_state
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT settings FROM users WHERE id = $1 FOR UPDATE", user_id
+            )
+            if row is None:
+                raise SuggestionError()
+            enabled, epoch = preference_state(self._normalize_settings(row["settings"]))
+            sources = await self._home_snapshot_on_connection(conn, user_id) if enabled else []
+            return enabled, epoch, sources
+
+    async def bind_home_suggestion(
+        self,
+        user_id: uuid.UUID,
+        *,
+        epoch: int,
+        expected_fingerprint: str,
+        prompt: str,
+        context: dict[str, Any],
+    ) -> uuid.UUID:
+        from orchestrator.home_suggestions.contracts import (
+            ENVELOPE_FORMAT,
+            SuggestionError,
+            bound_context,
+            canonical,
+            fingerprint,
+            preference_state,
+            validate_context,
+        )
+
+        context = validate_context(context)
+        encrypted_context = self._enc.encrypt(canonical(context))
+        encrypted_prompt = self._enc.encrypt(prompt)
+        destination = uuid.uuid4()
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT settings FROM users WHERE id = $1 FOR UPDATE", user_id
+            )
+            if row is None or preference_state(self._normalize_settings(row["settings"])) != (
+                True,
+                epoch,
+            ):
+                raise SuggestionError(409, "disabled")
+            sources = await self._home_snapshot_on_connection(conn, user_id)
+            if fingerprint(sources) != expected_fingerprint:
+                raise SuggestionError(409, "source_changed")
+            matching_index = next(
+                (
+                    index
+                    for index, source in enumerate(sources)
+                    if source["conversation_id"] == context["sources"][0]["conversation_id"]
+                ),
+                None,
+            )
+            if matching_index is None or context != bound_context(
+                {"id": context["suggestion_id"], "source_index": matching_index}, sources
+            ):
+                raise SuggestionError(409, "source_changed")
+            # Both destination and accepted copied turn are atomic. No ordinary
+            # chat's continue-without-persistence fallback may handle this path.
+            await conn.execute(
+                """INSERT INTO conversations (id, user_id, pipeline, title, metadata)
+                   VALUES ($1, $2, 'cloud', $3, '{"home_suggestion":1}'::jsonb)""",
+                destination,
+                user_id,
+                prompt[:50],
+            )
+            await conn.execute(
+                """
+                INSERT INTO messages (conversation_id, user_id, role, content, status, metadata)
+                VALUES ($1, $2, 'user', $3, 'complete', $4::jsonb)
+                """,
+                destination,
+                user_id,
+                encrypted_prompt,
+                canonical(
+                    {
+                        "home_suggestion": {
+                            "format": ENVELOPE_FORMAT,
+                            "version": 1,
+                            "ciphertext": encrypted_context,
+                        }
+                    }
+                ),
+            )
+        return destination
+
+    async def get_home_suggestion_turn(
+        self, conversation_id: uuid.UUID, user_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT m.id, m.role, m.content, m.metadata FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id AND c.user_id = m.user_id
+            WHERE c.id = $1 AND c.user_id = $2 AND m.role = 'user'
+              AND m.metadata ? 'home_suggestion'
+            ORDER BY m.created_at ASC, m.id ASC LIMIT 1
+            """,
+            conversation_id,
+            user_id,
+        )
+        if row is None:
+            return None
+        message = dict(row)
+        message["content"] = self._enc.decrypt(message["content"])
+        self._decrypt_message_tool_traces(message)
+        return message
 
     # ------------------------------------------------------------------
     # Memory operations
@@ -3472,6 +3728,41 @@ class MemoryStore:
             if not row:
                 return settings
             return self._normalize_settings(row["settings"])
+
+    async def merge_user_preferences(
+        self, user_id: uuid.UUID, preferences: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge against the locked current row, not a stale read/modify/write."""
+        from orchestrator.home_suggestions.contracts import EPOCH_KEY, PREFERENCE, preference_state
+
+        if PREFERENCE in preferences and (
+            type(preferences[PREFERENCE]) is not bool or set(preferences) != {PREFERENCE}
+        ):
+            raise ValueError("Home suggestion preference requires an isolated boolean patch")
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT settings FROM users WHERE id = $1 FOR UPDATE", user_id
+            )
+            if row is None:
+                raise ValueError("User unavailable")
+            current = self._normalize_settings(row["settings"])
+            existing = current.get("preferences")
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            if PREFERENCE in preferences:
+                _, epoch = preference_state(current)
+                current[EPOCH_KEY] = epoch + 1
+            for key, value in preferences.items():
+                if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[key] = value
+            current["preferences"] = merged
+            await conn.execute(
+                "UPDATE users SET settings = $2::jsonb, updated_at = NOW() WHERE id = $1",
+                user_id,
+                json.dumps(current),
+            )
+            return current
 
 
 async def load_bootstrap_memories(

@@ -13,6 +13,11 @@ export default defineConfig({
       testMatch: 'midnight.spec.ts',
       use: { baseURL: 'http://127.0.0.1:3101' },
     },
+    {
+      name: 'contextual-home',
+      testMatch: 'contextual-home.spec.ts',
+      use: { baseURL: 'http://127.0.0.1:3101' },
+    },
   ],
   webServer: {
     command: 'npm run start -- -H 127.0.0.1 -p 3101',

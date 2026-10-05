@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daemon — contextual start screen design study (proposal)</title>
+    <meta
+      name="description"
+      content="Standalone, non-production design study for a contextual authenticated empty-chat start screen. All data is fictional."
+    />
+    <meta name="robots" content="noindex" />
+    <link rel="stylesheet" href="study.css" />
+  </head>
+  <body>
+    <!-- Inline icon sprite: no network, no icon font, no framework. -->
+    <svg class="sprite" aria-hidden="true" focusable="false" width="0" height="0">
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path
+          d="M12 3.2l1.7 4.3 4.3 1.7-4.3 1.7L12 15.2l-1.7-4.3L6 9.2l4.3-1.7L12 3.2zM18.4 14.6l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1zM5.6 14.2l.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7.7-1.7z"
+        />
+      </symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24">
+        <path
+          d="M4 6.4A2.4 2.4 0 016.4 4h11.2A2.4 2.4 0 0120 6.4v7.2a2.4 2.4 0 01-2.4 2.4H9.8L5.6 19.2V16h-.8A.8.8 0 014 15.2V6.4z"
+        />
+      </symbol>
+      <symbol id="i-plane" viewBox="0 0 24 24">
+        <path d="M3 13.4l17.2-6.1a.9.9 0 01.2 1.7l-7 3.2-2.9 7a.8.8 0 01-1.5-.2l-1.6-5.3-5.3-1.6a.8.8 0 01-.1-1.5z" />
+      </symbol>
+      <symbol id="i-code" viewBox="0 0 24 24">
+        <path
+          d="M8.7 6.4L4 12l4.7 5.6 1.6-1.4L7 12l3.3-4.2-1.6-1.4zm6.6 0l-1.6 1.4L17 12l-3.3 4.2 1.6 1.4L20 12l-4.7-5.6z"
+        />
+      </symbol>
+      <symbol id="i-home" viewBox="0 0 24 24">
+        <path d="M12 4.2l7.4 5.1H18V20h-4.4v-5h-3.2v5H6V9.3h-1.4L12 4.2z" />
+      </symbol>
+      <symbol id="i-pen" viewBox="0 0 24 24">
+        <path
+          d="M16.6 4.3l3.1 3.1-8.4 8.4-4 .9.9-4 8.4-8.4zm-9.8 10v2.4h2.4l.6-1.6-1.4-1.4-1.6.6z"
+        />
+      </symbol>
+      <symbol id="i-info" viewBox="0 0 24 24">
+        <path
+          d="M12 3.6a8.4 8.4 0 100 16.8 8.4 8.4 0 000-16.8zm0 3.6a1.2 1.2 0 110 2.4 1.2 1.2 0 010-2.4zm1.2 11.2h-2.4v-6h2.4v6z"
+        />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path
+          d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"
+        />
+      </symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24">
+        <path
+          d="M9 7.5V5l-5 4.5L9 14v-2.6h3.6a4.4 4.4 0 010 8.8H8.2v2h4.4a6.4 6.4 0 000-12.8H9z"
+        />
+      </symbol>
+      <symbol id="i-clip" viewBox="0 0 24 24">
+        <path
+          d="M14.4 5.2l4.4 4.4-7.6 7.6a2.2 2.2 0 01-3.1-3.1l7.2-7.2.9.9-7.1 7.1a.9.9 0 001.3 1.3l7.6-7.6-3.6-3.4z"
+        />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="M4 12l16-7.5-4 16-4-5.6L4 12z" />
+      </symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24">
+        <path d="M4 7h16v2H4zM4 12h16v2H4zM4 17h16v2H4z" />
+      </symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24">
+        <path
+          d="M12 3.6l9.2 15.8H2.8L12 3.6zm-1.1 5.2v5h2.2v-5h-2.2zm0 6.4v2.1h2.2V15.2h-2.2z"
+        />
+      </symbol>
+    </svg>
+
+    <!-- ============================================================= -->
+    <!-- STUDY CONTROLS: outside the app mock, not a Daemon surface     -->
+    <!-- ============================================================= -->
+    <header class="study-bar" id="study-bar">
+      <div class="study-bar-inner">
+        <div class="study-title">
+          <p class="study-kicker">Design study — proposal only</p>
+          <h1 class="study-heading">
+            Daemon contextual start screen
+          </h1>
+        </div>
+        <button
+          type="button"
+          class="study-toggle"
+          id="study-toggle"
+           aria-expanded="false"
+          aria-controls="study-panel"
+          data-affordance="study-toggle"
+        >
+          <svg aria-hidden="true"><use href="#i-menu" /></svg>
+          <span id="study-toggle-label">Study controls</span>
+        </button>
+        <div class="study-panel" id="study-panel" hidden>
+          <p class="study-lede">
+            Proposal only. Every source, conversation and file is fictional.
+            No model, API, authentication or persistent storage is involved.
+            Phase 2 shows a target design, not a shipped capability.
+          </p>
+        <form class="study-controls" id="study-controls" aria-label="Study controls">
+          <div class="control">
+            <label for="study-state">Study state</label>
+            <select id="study-state" data-affordance="study-state">
+              <option value="target" selected>Target actions (phase 2 proposed)</option>
+              <option value="mvp">Available-data MVP (phase 1 proposed)</option>
+              <option value="new">New user (no history)</option>
+              <option value="error">History unavailable</option>
+            </select>
+          </div>
+          <div class="control">
+            <label for="study-load">History load</label>
+            <select id="study-load" data-affordance="study-load">
+              <option value="ready" selected>Ready</option>
+              <option value="loading">Loading</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+          <div class="control">
+            <label for="study-theme">Theme</label>
+            <select id="study-theme" data-affordance="study-theme">
+              <option value="dark" selected>Dark (Midnight tokens)</option>
+              <option value="light">Light (Daylight tokens)</option>
+            </select>
+          </div>
+          <div class="control control-action">
+            <button type="button" id="study-reset" data-affordance="study-reset">
+              Reset study state
+            </button>
+          </div>
+        </form>
+        </div>
+      </div>
+    </header>
+
+    <div class="study-shell">
+      <!-- ============================ RAIL ============================ -->
+      <aside class="rail" id="rail" aria-label="Recent conversations (fictional)">
+        <div class="rail-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg><use href="#i-spark" /></svg>
+          </span>
+          <span class="brand-word">Daemon</span>
+        </div>
+        <button type="button" class="new-chat" id="new-chat" data-affordance="new-chat">
+          <svg aria-hidden="true"><use href="#i-chat" /></svg>
+          New chat
+        </button>
+        <label class="rail-search-label" for="rail-search">Recent conversations</label>
+        <input
+          type="search"
+          id="rail-search"
+          class="rail-search"
+          placeholder="Filter fictional recents"
+          autocomplete="off"
+          data-affordance="rail-search"
+        />
+        <ul class="rail-list" id="rail-list" data-affordance="rail-list"></ul>
+        <p class="rail-foot">
+          Fictional fixtures. Pin, rename and delete are not part of this study and
+          are therefore not shown.
+        </p>
+      </aside>
+
+      <!-- ============================ MAIN ============================ -->
+      <main class="main" id="main">
+        <!-- EMPTY CHAT / START VIEW -->
+        <section class="view view-home" id="view-home" aria-label="Start a chat">
+          <div class="hero" id="hero">
+            <div class="hero-brand" aria-hidden="true">
+              <span class="brand-mark brand-mark-sm"><svg><use href="#i-spark" /></svg></span>
+              <span class="hero-wordmark">Daemon</span>
+            </div>
+            <p class="hero-greeting" id="hero-greeting">Good evening</p>
+            <h2 class="hero-heading" id="hero-heading">
+              What would you like to pick up?
+            </h2>
+          </div>
+
+          <div class="composer-slot" id="slot-home"></div>
+
+          <section class="actions-region" id="actions-region" aria-label="Next actions"></section>
+
+          <div class="mobile-recents">
+            <details class="recents-details" id="recents-details">
+              <summary data-affordance="recents-toggle">
+                Recent conversations (fictional)
+              </summary>
+              <ul class="recents-list" id="recents-list"></ul>
+            </details>
+          </div>
+        </section>
+
+        <!-- OPEN CONVERSATION / DEMONSTRATION VIEW -->
+        <section class="view view-chat" id="view-chat" aria-label="Conversation" hidden>
+          <div class="chat-head">
+            <button
+              type="button"
+              class="ghost-btn"
+              id="back-to-start"
+              data-affordance="back-to-start"
+            >
+              <svg aria-hidden="true"><use href="#i-undo" /></svg>
+              Back to start
+            </button>
+            <div class="chat-head-title">
+              <h2 id="chat-title">Fixture conversation</h2>
+              <p class="chat-head-note" id="chat-note">
+                Fictional fixture. Opening a conversation navigates in the app; nothing
+                was requested here.
+              </p>
+            </div>
+            <span class="badge badge-neutral" id="chat-badge">Fictional fixture</span>
+          </div>
+          <div class="transcript" id="transcript"></div>
+          <div class="composer-slot composer-slot-docked" id="slot-chat"></div>
+        </section>
+      </main>
+    </div>
+
+    <!-- ======================= SINGLE COMPOSER ======================= -->
+    <!-- Exactly one composer exists. Moving a view relocates this same form
+         between #slot-home (centred, empty state) and #slot-chat (docked). -->
+    <form class="composer" id="composer" novalidate>
+      <ul class="context-attachments" id="context-attachments" aria-label="Attached source context (fictional)"></ul>
+      <ul class="attachments" id="attachments" aria-label="Attachments"></ul>
+      <label class="sr-only" for="draft">Message Daemon</label>
+      <textarea
+        id="draft"
+        name="draft"
+        rows="1"
+        placeholder="Ask Daemon anything…"
+        autocomplete="off"
+        aria-describedby="composer-hint"
+      ></textarea>
+      <div class="composer-bar">
+        <div class="composer-left">
+          <button
+            type="button"
+            class="icon-btn"
+            id="attach-button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="attach-menu"
+            data-affordance="attach-button"
+          >
+            <svg aria-hidden="true"><use href="#i-clip" /></svg>
+            <span class="sr-only">Attach a fictional sample file</span>
+          </button>
+          <button
+            type="button"
+            class="auto-btn"
+            id="auto-button"
+            aria-haspopup="dialog"
+            data-affordance="auto-button"
+          >
+            Auto
+            <svg aria-hidden="true"><use href="#i-info" /></svg>
+          </button>
+        </div>
+        <div class="composer-right">
+          <button
+            type="button"
+            class="deliberate-btn"
+            id="deliberate-button"
+            data-affordance="deliberate-button"
+          >
+            Deliberate
+          </button>
+          <button
+            type="submit"
+            class="send-btn"
+            id="send-button"
+            data-affordance="send-button"
+          >
+            <svg aria-hidden="true"><use href="#i-send" /></svg>
+            <span>Send</span>
+          </button>
+        </div>
+      </div>
+      <div
+        class="attach-menu"
+        id="attach-menu"
+        role="menu"
+        aria-label="Fictional sample attachments"
+        hidden
+      ></div>
+      <p class="composer-hint" id="composer-hint">
+        Mock only · Enter sends locally · Shift+Enter adds a line
+      </p>
+    </form>
+
+    <!-- ======================= DIALOGS (one layer) ==================== -->
+    <dialog class="dialog" id="auto-dialog" aria-labelledby="auto-dialog-title">
+      <h2 id="auto-dialog-title">Auto model selection</h2>
+      <div class="dialog-body">
+        <p>
+          <strong>Mock control.</strong> Daemon chooses the qualified model for each
+          role in its own configuration; the user is never asked to pick a model to get
+          an answer. This button is informational in the study and requested nothing.
+        </p>
+        <p>
+          Auto stays the default. Existing optional model preferences and overrides
+          remain available in the product; this study does not redesign or remove them.
+        </p>
+      </div>
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="primary-btn"
+          id="auto-close"
+          data-affordance="auto-close"
+        >
+          Close
+        </button>
+      </div>
+    </dialog>
+
+    <dialog class="dialog" id="deliberate-dialog" aria-labelledby="deliberate-dialog-title">
+      <h2 id="deliberate-dialog-title">Deliberate — mock interview</h2>
+      <div class="dialog-body">
+        <p>
+          In the current runtime this control submits <code>/council</code> immediately.
+          It is retained for compatibility until a separate disposition decision, so the
+          study keeps it as a quiet secondary action and makes its effect explicit
+          rather than folding it into a suggestion row.
+        </p>
+        <p class="dialog-list" id="deliberate-perspectives"></p>
+        <p class="dialog-note">
+          Nothing was submitted. Pressing Deliberate in this study opens this mock
+          interview only.
+        </p>
+      </div>
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="primary-btn"
+          id="deliberate-close"
+          data-affordance="deliberate-close"
+        >
+          Close
+        </button>
+      </div>
+    </dialog>
+
+    <!-- ============================ TOAST ============================ -->
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden>
+      <span id="toast-text"></span>
+      <button type="button" class="toast-undo" id="toast-undo" data-affordance="toast-undo">
+        <svg aria-hidden="true"><use href="#i-undo" /></svg>
+        Undo
+      </button>
+      <button
+        type="button"
+        class="toast-close"
+        id="toast-close"
+        aria-label="Dismiss this notice"
+        data-affordance="toast-close"
+      >
+        <svg aria-hidden="true"><use href="#i-x" /></svg>
+      </button>
+    </div>
+
+    <script src="study.js"></script>
+  </body>
+</html>

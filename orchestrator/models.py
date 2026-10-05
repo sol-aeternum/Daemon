@@ -99,6 +99,7 @@ class OpenAIModelList(BaseModel):
 
 class ChatRequest(BaseModel):
     conversation_id: str | None = None
+    suggestion_id: str | None = Field(default=None, min_length=32, max_length=32)
     message: str
     messages: list[dict[str, Any]] | None = None
     attachments: list[dict[str, Any]] | None = None

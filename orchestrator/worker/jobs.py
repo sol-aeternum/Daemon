@@ -751,6 +751,26 @@ async def extract_memories(
         raise Retry(defer=5) from None
 
 
+async def generate_home_suggestions(
+    ctx: WorkerContext,
+    user_id: str,
+    epoch: int,
+    identity: str,
+    token: str,
+) -> dict[str, str]:
+    from orchestrator.home_suggestions.service import HomeSuggestions
+
+    store = ctx.get("store")
+    if not isinstance(store, MemoryStore):
+        return {"status": "unavailable"}
+    try:
+        return await HomeSuggestions(store, ctx.get("redis"), _as_uuid(user_id)).generate(
+            ctx.get("db_pool"), epoch, identity, token
+        )
+    except Exception:
+        return {"status": "unavailable"}
+
+
 async def generate_title(
     ctx: WorkerContext,
     conversation_id: str | uuid.UUID,
