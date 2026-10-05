@@ -564,6 +564,44 @@ tests or inspect the diff; primary separately inspected the integrated paths/dif
 and executed the tests above. Source contract remains experimental, not released
 or device-qualified by this change.
 
+### PR #456 review correction: recovery independent of profile loading
+
+The owner's direct review of `5029a82b` found a valid P2 missed by the earlier
+no-findings review: Profile Settings returned its skeleton before mounting the
+recovery control. The profile request clears its timeout after response headers;
+stalled JSON parsing could therefore leave the opt-out control unreachable.
+This finding supersedes the earlier no-findings assessment for that path.
+
+`ProfileTab` now unconditionally mounts the profile form and preference control
+as independent siblings. Only the private `ProfileForm` switches between skeleton
+and form; the preference control remains mounted through loading and completion.
+Its existing auth guards, bounded requests, isolated boolean PATCH and absence
+of generation requests are unchanged. No backend/network contract was altered.
+
+Three new real-ProfileTab integration regressions keep the profile body unresolved
+while the preference read succeeds, fails or times out. Beyond 12 seconds, safe
+Turn off is available and sends only `home_suggestions_enabled: false`. Completing
+the profile read afterward preserves the disabled preference with no remount,
+extra GET or generation request. All 15 targeted integration/component tests,
+full frontend type checking, scoped lint and formatting passed during repair.
+
+Fresh read-only `review-go` review `ses_ef25cdedbffeC64iJJfrm393Pb` found no remaining
+blocker in the repair. It independently confirmed that the parent timeout does
+not cover body parsing, rejecting the preflight review's contrary claim. Primary
+inspection confirmed the actual diff changes only the wrapper placement plus
+regressions; the preference component itself is unchanged. Final-head full gates
+remain required before resubmission. No merge, deployment, live account mutation
+or private inference is performed by this review repair.
+
+Final repair verification: all blocking `scripts/local_ci.sh` gates passed
+(5,106 backend tests / 152 skips; 912 frontend tests), including type/lint/format,
+dependency audits, high-severity security analysis, production build, feature
+matrix and pre-commit/secret scanning. Existing full Bandit inventory remains
+non-blocking. Four production contextual-home browser regressions also passed
+with fictional APIs. Evidence: `pr456-review-repair-gates.log` and
+`pr456-review-repair-browser.log` in the local evidence directory. This verifies
+the revised source state, not deployment or real-account acceptance.
+
 ### Verified repository evidence
 
 - Clean branch `feat/contextual-home`, based on `origin/main` at `67f1f63a`, in the
