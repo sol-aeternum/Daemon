@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/Skeleton';
 import { User, Save, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { ensureAuthHeader } from '@/lib/auth';
+import { HomeSuggestionsPreference } from './HomeSuggestionsPreference';
 
 interface UserSettings {
   preferences?: {
@@ -31,6 +32,16 @@ interface ProfileFormData {
 type SaveStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export default function ProfileTab() {
+  // Recovery must stay mounted even if the independent profile request stalls.
+  return (
+    <>
+      <ProfileForm />
+      <HomeSuggestionsPreference />
+    </>
+  );
+}
+
+function ProfileForm() {
   const [formData, setFormData] = useState<ProfileFormData>({
     displayName: '',
     preferences: '',

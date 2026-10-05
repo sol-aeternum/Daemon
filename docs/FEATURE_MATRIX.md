@@ -110,8 +110,8 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Document File Generation (.docx, .csv download) | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + /generated-files/{filename} | No |
 | **Council/Studio** | — | — | — | — | — | — |
 | Council Deliberation (multi-perspective LLM debate) | Cross-client stable | Cross-client stable | Not started | Not started | Council streaming service | No |
-| Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | Welcome-screen Deliberate shortcut or /council command → interview flow | No |
-| Contextual home next actions (opt-in, cloud conversation sources) | Web experimental | Mobile eligible | Not started | Not started | Bounded ready prompts with hover/focus preview and immediate source-bound new-chat submission; fictional integration checks verified, not deployed. See CONTEXTUAL_HOME_IMPLEMENTATION.md | No |
+| Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | Explicit /council command → interview flow; home Deliberate shortcut removed by owner request | No |
+| Contextual home next actions (opt-in, cloud conversation sources) | Web experimental | Mobile eligible | Not started | Not started | Bounded ready prompts with hover/focus preview and immediate source-bound new-chat submission; initial release deployed locally in PR #453, quieter empty-home and persistent Settings toggle follow-up not deployed. See CONTEXTUAL_HOME_IMPLEMENTATION.md | No |
 | Studio Image Generation (web UI) | Retired | Retired | Not started | Not started | Authenticated retired Studio image API surface returns 410; hosted-identity replacement tracked separately | No |
 | Studio Video Generation (web UI with credit check) | Retired | Retired | Not started | Not started | UI retained; generation denied pending bounded provider integration; credit balances/history preserved | No |
 | Video Credit Balance & Transactions | Cross-client stable | Cross-client stable | Not started | Not started | GET /video-credits/balance, GET /video-credits/transactions, GET /video-credits/estimate | No |
@@ -123,7 +123,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Share Intent Ingestion | — | Not started | Not started | Not started | No backend (OS/app-intent entry point not implemented) | Yes |
 | Biometric Unlock | — | — | Not started | Not started | No backend (client OS biometric gate not implemented) | Yes |
 | **Local Pipeline** | — | — | — | — | — | — |
-| Local Pipeline Routing (/local flag) | Not started | Not started | Not started | Not started | Pre-router intent parsing and disabled Cloud/Local UI; local inference pending hardware | No |
+| Local Pipeline Routing (/local flag) | Not started | Not started | Not started | Not started | Pre-router intent parsing; disabled Cloud/Local UI removed by owner request; local inference pending hardware | No |
 | **PWA / Offline** | — | — | — | — | — | — |
 | PWA Service Worker + Offline Indicator | Platform-specific permanent | Platform-specific permanent | Not started | Not started | Browser service worker (no backend) | No |
 | Mobile-Responsive Navigation (hamburger + sidebar) | Cross-client stable | Cross-client stable | Not started | Not started | Purely frontend responsive navigation; settings sections form a vertical list on mobile with 44px minimum touch targets | No |

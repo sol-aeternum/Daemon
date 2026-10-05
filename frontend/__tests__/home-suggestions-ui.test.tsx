@@ -46,7 +46,7 @@ function readyRows() {
 }
 
 describe('home suggestion rows', () => {
-  it('retains explicit opt-out while enabling is unconfirmed', () => {
+  it('links to persistent Settings opt-out when enabling is unconfirmed, without an empty home control row', () => {
     const stub = createSuggestionsApiStub({
       view: {
         status: 'unavailable',
@@ -57,10 +57,15 @@ describe('home suggestion rows', () => {
     useHomeSuggestionsMock.mockImplementation(() => stub);
     render(<WelcomeScreen />);
     expect(screen.getByText(/suggestions may be enabled/)).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Turn off suggestions' }),
-    );
-    expect(stub.disable).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole('button', { name: 'Turn off suggestions' }),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole('link', { name: 'Manage suggestions in Settings' })
+        .getAttribute('href'),
+    ).toBe('/settings/profile');
+    expect(stub.disable).not.toHaveBeenCalled();
     expect(stub.refresh).not.toHaveBeenCalled();
   });
   it('exposes persistent opt-out separately from session-local hiding', () => {
@@ -72,6 +77,56 @@ describe('home suggestion rows', () => {
     );
     expect(stub.disable).toHaveBeenCalledTimes(1);
     expect(stub.dismissAll).not.toHaveBeenCalled();
+  });
+  it.each([
+    'empty',
+    'loading',
+    'generating',
+    'unavailable',
+    'expired',
+    'error',
+    'disabled',
+    'unloaded',
+    'dismissed',
+  ] as const)(
+    'hides the Refresh/Turn off row when no suggestions are visible: %s',
+    (status) => {
+      useHomeSuggestionsMock.mockImplementation(() =>
+        createSuggestionsApiStub({
+          view: { status, suggestions: [], message: null },
+        }),
+      );
+      render(<WelcomeScreen />);
+      expect(
+        screen.queryByRole('button', { name: 'Refresh suggestions' }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: 'Turn off suggestions' }),
+      ).toBeNull();
+    },
+  );
+  it('hides the action row when available suggestions are paused or hidden', () => {
+    useHomeSuggestionsMock.mockImplementation(() =>
+      createSuggestionsApiStub({ view: readyViewWithRows() }),
+    );
+    const view = render(<WelcomeScreen input="unsent question" />);
+    expect(
+      screen.queryByRole('button', { name: 'Refresh suggestions' }),
+    ).toBeNull();
+    fireEvent.click(screen.getByTestId('show-suggestions-anyway'));
+    expect(
+      screen.getByRole('button', { name: 'Refresh suggestions' }),
+    ).toBeTruthy();
+    useHomeSuggestionsMock.mockImplementation(() =>
+      createSuggestionsApiStub({ view: readyViewWithRows(), hiddenAll: true }),
+    );
+    view.rerender(<WelcomeScreen />);
+    expect(
+      screen.queryByRole('button', { name: 'Refresh suggestions' }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Turn off suggestions' }),
+    ).toBeNull();
   });
   it('shows compact summaries and source titles without Start chat, Preview or Why controls', () => {
     useHomeSuggestionsMock.mockImplementation(() =>
@@ -224,9 +279,8 @@ describe('home suggestion rows', () => {
     });
     useHomeSuggestionsMock.mockImplementation(() => emptyStub);
     render(<WelcomeScreen />);
-    expect(screen.getByTestId('suggestion-status-empty').textContent).toContain(
-      'No contextual suggestions',
-    );
+    expect(screen.queryByTestId('suggestion-status-empty')).toBeNull();
+    expect(screen.queryByText(/No contextual suggestions/)).toBeNull();
     expect(screen.queryByText(/Start chat/)).toBeNull();
   });
 
