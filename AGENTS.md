@@ -8,7 +8,7 @@ Daemon is one personal AI for everything: the best qualified model per role, wit
 2. `docs/SOURCES_OF_TRUTH.md` — which document is authoritative for what.
 3. Memory work: also `MEMORY_LAYER.md` and `docs/TECHNICAL_SPECS.md`.
 4. Product changes: also `docs/DAEMON_VISION.md` and `docs/DAEMON_VISION_DECISIONS.md`.
-5. Recent commits and code comments for current state. When this file disagrees with code, code wins — fix this file.
+5. Recent commits and code comments for current state. Where this file *describes the implementation* and the code disagrees, code wins — fix the description. Policy, product, and approval rules (here and in accepted contracts) stay in force until explicitly superseded: report a conflict for an owner decision instead of rewriting the rule to match the code (`docs/SOURCES_OF_TRUTH.md` §1).
 
 ## Product Direction
 - Preserve the Vision / Approved product decision / Proposed / Open distinctions, and cite V/D/AC/DEC IDs.
@@ -18,7 +18,7 @@ Daemon is one personal AI for everything: the best qualified model per role, wit
 - Product approval does not authorise unrelated rewrites, deployments, expanded permissions, or unapproved schema/API changes.
 
 ## Rules of Engagement
-- **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously. In an unattended run where you cannot ask, take the most reversible option and flag the decision in the PR description.
+- **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.
 - **Clarify ambiguity, don't assume.** Wrong assumptions cost more than a question.
 - **No silent architecture changes.** Data models, API contracts, SSE event types, and plan/entitlement config change only with explicit approval.
 - **Update docs with code.** Close (or comment the resolution on) the GitHub issue a change fixes, in the same change. Completing a `docs/ROADMAP.md` item means updating it.
@@ -55,7 +55,7 @@ No change is complete until these pass. Run them locally; CI runs the same comma
 Tool versions live in `pyproject.toml`, `frontend/package.json`, and the lockfiles. Do not restate them elsewhere, including here. Gate config: `.pre-commit-config.yaml`, `.github/workflows/`, `.github/dependabot.yml`, `renovate.json`.
 
 ## Local CI, PRs and Merging
-- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` runs the gate families above. Blocking gates fail the script; inventory gates are reported only.
+- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` runs every gate above except `npm run test:browser`, which CI runs as a separate non-blocking step. Blocking gates fail the script; the full Bandit inventory is reported only.
 - `scripts/pr_create.sh -- <gh pr create args>` replaces `gh pr create`: it refuses to open a PR until `local_ci.sh` exits 0. `--dry-run` shows the plan without running anything.
 - `main` is protected by the `Main Protection` ruleset. Required checks: `Backend gates`, `Frontend gates`, `Feature matrix gate`, `Pre-commit and secret scanning`.
 - **Merge only after review, not just green CI.** Wait for the Codex review on the current head SHA (and any `[agent]` source review), and resolve its findings first. A requested-but-missing review means the PR is waiting, not mergeable.
