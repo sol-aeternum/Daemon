@@ -24,6 +24,15 @@ const baseProps = {
 };
 
 describe('ChatInputBar generation controls', () => {
+  it('keeps the model selector without a nonfunctional Cloud/Local toggle', () => {
+    render(<ChatInputBar {...baseProps} isLoading={false} />);
+    expect(screen.getByTestId('model-selector')).toBeTruthy();
+    expect(screen.queryByText('Cloud')).toBeNull();
+    expect(screen.queryByText('Local')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Local pipeline coming soon' }),
+    ).toBeNull();
+  });
   it('renders Send while idle and Stop while loading', () => {
     const onStop = vi.fn();
     const { rerender } = render(

@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/Skeleton';
 import { User, Save, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { ensureAuthHeader } from '@/lib/auth';
+import { HomeSuggestionsPreference } from './HomeSuggestionsPreference';
 
 interface UserSettings {
   preferences?: {
@@ -222,115 +223,120 @@ export default function ProfileTab() {
     );
   }
   return (
-    <form onSubmit={handleSubmit} className="animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6 pb-6 border-b border-border-primary">
-        <div className="w-10 h-10 rounded-full bg-accent-subtle flex items-center justify-center">
-          <User className="w-5 h-5 text-accent-primary" />
-        </div>
-        <div>
-          <h2 className="text-lg font-semibold text-text-primary">
-            Profile Settings
-          </h2>
-          <p className="text-sm text-text-muted">
-            Manage your display name and preferences
-          </p>
-        </div>
-      </div>
-
-      {/* Error Message */}
-      {saveStatus === 'error' && (
-        <div className="mb-6 p-4 rounded-lg bg-status-error-bg border border-status-error/20 flex items-start gap-3 animate-slide-up">
-          <AlertCircle className="w-5 h-5 text-status-error flex-shrink-0 mt-0.5" />
+    <>
+      <form onSubmit={handleSubmit} className="animate-fade-in">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-6 pb-6 border-b border-border-primary">
+          <div className="w-10 h-10 rounded-full bg-accent-subtle flex items-center justify-center">
+            <User className="w-5 h-5 text-accent-primary" />
+          </div>
           <div>
-            <p className="text-sm font-medium text-status-error">Save failed</p>
-            <p className="text-sm text-text-secondary">{errorMessage}</p>
+            <h2 className="text-lg font-semibold text-text-primary">
+              Profile Settings
+            </h2>
+            <p className="text-sm text-text-muted">
+              Manage your display name and preferences
+            </p>
           </div>
         </div>
-      )}
 
-      {/* Success Message */}
-      {saveStatus === 'success' && (
-        <div className="mb-6 p-4 rounded-lg bg-status-success-bg border border-status-success/20 flex items-center gap-3 animate-slide-up">
-          <CheckCircle2 className="w-5 h-5 text-status-success flex-shrink-0" />
-          <p className="text-sm font-medium text-status-success">
-            Settings saved successfully
-          </p>
+        {/* Error Message */}
+        {saveStatus === 'error' && (
+          <div className="mb-6 p-4 rounded-lg bg-status-error-bg border border-status-error/20 flex items-start gap-3 animate-slide-up">
+            <AlertCircle className="w-5 h-5 text-status-error flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-status-error">
+                Save failed
+              </p>
+              <p className="text-sm text-text-secondary">{errorMessage}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Success Message */}
+        {saveStatus === 'success' && (
+          <div className="mb-6 p-4 rounded-lg bg-status-success-bg border border-status-success/20 flex items-center gap-3 animate-slide-up">
+            <CheckCircle2 className="w-5 h-5 text-status-success flex-shrink-0" />
+            <p className="text-sm font-medium text-status-success">
+              Settings saved successfully
+            </p>
+          </div>
+        )}
+
+        {/* Form Fields */}
+        <div className="space-y-6">
+          {/* Display Name Field */}
+          <div className="space-y-2">
+            <label
+              htmlFor="displayName"
+              className="block text-sm font-medium text-text-secondary"
+            >
+              Display Name
+            </label>
+            <input
+              type="text"
+              id="displayName"
+              value={formData.displayName}
+              onChange={(e) =>
+                setFormData({ ...formData, displayName: e.target.value })
+              }
+              placeholder="Enter your display name"
+              disabled={saveStatus === 'loading'}
+              className="w-full px-3 py-2.5 bg-bg-input border border-border-primary rounded-md text-text-primary placeholder-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+            />
+            <p className="text-xs text-text-muted">
+              This name will be used in conversations and across the app
+            </p>
+          </div>
+
+          {/* Preferences Textarea */}
+          <div className="space-y-2">
+            <label
+              htmlFor="preferences"
+              className="block text-sm font-medium text-text-secondary"
+            >
+              Custom Instructions
+            </label>
+            <textarea
+              id="preferences"
+              value={formData.preferences}
+              onChange={(e) =>
+                setFormData({ ...formData, preferences: e.target.value })
+              }
+              placeholder="Describe how you'd like the AI to interact with you..."
+              rows={6}
+              disabled={saveStatus === 'loading'}
+              className="w-full px-3 py-2.5 bg-bg-input border border-border-primary rounded-md text-text-primary placeholder-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors resize-y"
+            />
+            <p className="text-xs text-text-muted">
+              These instructions help personalize the AI&apos;s responses to
+              your style and preferences
+            </p>
+          </div>
         </div>
-      )}
 
-      {/* Form Fields */}
-      <div className="space-y-6">
-        {/* Display Name Field */}
-        <div className="space-y-2">
-          <label
-            htmlFor="displayName"
-            className="block text-sm font-medium text-text-secondary"
-          >
-            Display Name
-          </label>
-          <input
-            type="text"
-            id="displayName"
-            value={formData.displayName}
-            onChange={(e) =>
-              setFormData({ ...formData, displayName: e.target.value })
-            }
-            placeholder="Enter your display name"
+        {/* Submit Button */}
+        <div className="mt-8 pt-6 border-t border-border-primary">
+          <button
+            type="submit"
             disabled={saveStatus === 'loading'}
-            className="w-full px-3 py-2.5 bg-bg-input border border-border-primary rounded-md text-text-primary placeholder-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
-          />
-          <p className="text-xs text-text-muted">
-            This name will be used in conversations and across the app
-          </p>
-        </div>
-
-        {/* Preferences Textarea */}
-        <div className="space-y-2">
-          <label
-            htmlFor="preferences"
-            className="block text-sm font-medium text-text-secondary"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-primary hover:bg-accent-hover active:bg-accent-active text-[var(--color-text-on-accent)] font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
           >
-            Custom Instructions
-          </label>
-          <textarea
-            id="preferences"
-            value={formData.preferences}
-            onChange={(e) =>
-              setFormData({ ...formData, preferences: e.target.value })
-            }
-            placeholder="Describe how you'd like the AI to interact with you..."
-            rows={6}
-            disabled={saveStatus === 'loading'}
-            className="w-full px-3 py-2.5 bg-bg-input border border-border-primary rounded-md text-text-primary placeholder-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors resize-y"
-          />
-          <p className="text-xs text-text-muted">
-            These instructions help personalize the AI&apos;s responses to your
-            style and preferences
-          </p>
+            {saveStatus === 'loading' ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Saving...</span>
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4" />
+                <span>Save Changes</span>
+              </>
+            )}
+          </button>
         </div>
-      </div>
-
-      {/* Submit Button */}
-      <div className="mt-8 pt-6 border-t border-border-primary">
-        <button
-          type="submit"
-          disabled={saveStatus === 'loading'}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-primary hover:bg-accent-hover active:bg-accent-active text-[var(--color-text-on-accent)] font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-        >
-          {saveStatus === 'loading' ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Saving...</span>
-            </>
-          ) : (
-            <>
-              <Save className="w-4 h-4" />
-              <span>Save Changes</span>
-            </>
-          )}
-        </button>
-      </div>
-    </form>
+      </form>
+      <HomeSuggestionsPreference />
+    </>
   );
 }

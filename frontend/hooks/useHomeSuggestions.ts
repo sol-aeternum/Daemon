@@ -452,7 +452,7 @@ export function useHomeSuggestions() {
         status: 'unavailable',
         suggestions: [],
         message:
-          'Enabling could not be confirmed; suggestions may be enabled. Use Turn off suggestions to disable them.',
+          'Enabling could not be confirmed; suggestions may be enabled. You can turn them off in Settings.',
       });
       const timeout = window.setTimeout(() => controller.abort(), 5000);
       try {
@@ -482,7 +482,7 @@ export function useHomeSuggestions() {
             status: 'unavailable',
             suggestions: [],
             message:
-              'Suggestions are enabled, but startup could not be confirmed. No refresh was requested. You can turn them off or refresh explicitly.',
+              'Suggestions are enabled, but startup could not be confirmed. No refresh was requested. You can turn them off in Settings or retry loading.',
           });
         } else if (enabled === false) {
           setState({ status: 'disabled', suggestions: [], message: null });
@@ -587,7 +587,7 @@ export function useHomeSuggestions() {
           status: 'error',
           suggestions: [],
           message:
-            'Suggestions are hidden, but turning them off was not confirmed. Use Turn off suggestions to retry.',
+            'Suggestions are hidden, but turning them off was not confirmed. You can retry turning them off in Settings.',
         });
         return false;
       }
@@ -599,7 +599,7 @@ export function useHomeSuggestions() {
         status: 'error',
         suggestions: [],
         message:
-          'Suggestions are hidden on this screen, but the connection to Daemon failed while confirming the change.',
+          'Suggestions are hidden, but the change could not be confirmed. You can retry turning them off in Settings.',
       });
       return false;
     } finally {

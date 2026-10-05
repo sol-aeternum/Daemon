@@ -23,9 +23,6 @@ interface ChatInputBarProps {
   onSubmit: (e?: { preventDefault?: () => void }) => void;
   isLoading: boolean;
   onStop: () => void;
-  // Cloud/Local toggle props
-  isLocal?: boolean;
-  onToggleLocal?: () => void;
   attachments?: Array<{ id: string; name: string; size: number }>;
   onAttachFiles?: (files: FileList) => void;
   onRemoveAttachment?: (id: string) => void;
@@ -42,8 +39,6 @@ export function ChatInputBar({
   onSubmit,
   isLoading,
   onStop,
-  isLocal = false,
-  onToggleLocal,
   attachments = [],
   onAttachFiles,
   onRemoveAttachment,
@@ -179,34 +174,6 @@ export function ChatInputBar({
           {/* Left: Model selector pill */}
           <div className="flex min-w-0 flex-wrap items-center gap-2 pb-1 overflow-visible">
             <ModelSelector selected={selectedModel} onSelect={onSelectModel} />
-
-            {/* Cloud/Local toggle */}
-            {onToggleLocal && (
-              <div className="flex min-h-touch items-center gap-1.5 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-tertiary)] px-2 py-1">
-                <span
-                  className={`text-xs font-medium transition-colors ${!isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
-                >
-                  Cloud
-                </span>
-                <button
-                  type="button"
-                  disabled
-                  onClick={onToggleLocal}
-                  aria-label="Local pipeline coming soon"
-                  className="relative inline-flex h-6 w-10 cursor-not-allowed items-center rounded-full bg-[var(--color-border-primary)] opacity-70 focus:outline-none"
-                  title="Local pipeline coming soon"
-                >
-                  <span
-                    className={`${isLocal ? 'translate-x-5' : 'translate-x-1'} inline-block h-4 w-4 transform rounded-full bg-[var(--color-bg-secondary)] transition-transform duration-200`}
-                  />
-                </button>
-                <span
-                  className={`hidden text-xs font-medium transition-colors sm:inline ${isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
-                >
-                  Local
-                </span>
-              </div>
-            )}
           </div>
 
           {/* Spacer */}

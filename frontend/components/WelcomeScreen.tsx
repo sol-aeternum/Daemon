@@ -28,11 +28,6 @@ interface WelcomeScreenProps {
   isSubmittingSuggestion?: boolean;
   /** Truthful selection failure message; nothing is requested here. */
   selectionError?: string | null;
-  /**
-   * Existing Council shortcut retained pending a separate disposition
-   * decision; unrelated to suggestions and always passed through.
-   */
-  onDeliberate?: () => void;
 }
 
 const getTimeGreeting = () => {
@@ -52,7 +47,6 @@ export function WelcomeScreen({
   onSuggestionSelect,
   isSubmittingSuggestion = false,
   selectionError = null,
-  onDeliberate,
 }: WelcomeScreenProps) {
   const isClientMounted = useClientMounted();
   const greeting = isClientMounted ? getTimeGreeting() : 'Good evening';
@@ -130,24 +124,6 @@ export function WelcomeScreen({
           onHideAll={suggestions.dismissAll}
           onRestoreAll={suggestions.restoreAll}
         />
-
-        {onDeliberate && (
-          <button
-            type="button"
-            onClick={onDeliberate}
-            className="min-h-touch rounded-lg px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
-          >
-            Deliberate
-          </button>
-        )}
-
-        {/* Hint text */}
-        <p className="text-sm text-[var(--color-text-muted)] text-center">
-          Type a message to get started
-        </p>
-        <p className="text-xs text-[var(--color-text-muted)] text-center">
-          Voice and image generation are unavailable in the current runtime.
-        </p>
       </div>
     </div>
   );

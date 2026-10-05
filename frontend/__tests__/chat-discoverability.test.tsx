@@ -34,11 +34,13 @@ describe('chat discoverability', () => {
     useHomeSuggestionsMock.mockImplementation(() => createSuggestionsApiStub());
   });
 
-  it('keeps the Council shortcut and renders no static draft starters', () => {
-    const onDeliberate = vi.fn();
-    render(<WelcomeScreen onDeliberate={onDeliberate} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Deliberate' }));
-    expect(onDeliberate).toHaveBeenCalledTimes(1);
+  it('renders no Council shortcut, footer disclaimers or static draft starters', () => {
+    render(<WelcomeScreen />);
+    expect(screen.queryByRole('button', { name: 'Deliberate' })).toBeNull();
+    expect(screen.queryByText('Type a message to get started')).toBeNull();
+    expect(
+      screen.queryByText(/Voice and image generation are unavailable/),
+    ).toBeNull();
     const allLabels = screen.getAllByRole('button').map((b) => b.textContent);
     for (const banned of ['Explain', 'Find', 'Compare', 'Draft']) {
       expect(allLabels.join(' ')).not.toContain(banned);

@@ -526,6 +526,44 @@ remains non-blocking. Documentation freshness and staged whitespace checks passe
 Log: `pr453-revision-gates.log` in the local evidence directory. Resubmission is
 to the existing PR; no merge or deployment is performed.
 
+## Owner-requested home cleanup follow-up
+
+After PR #453's local deployment, the owner requested removal of the highlighted
+empty-suggestions notice, Deliberate shortcut, get-started hint and voice/image
+disclaimer, plus the disabled Cloud/Local composer toggle. Those presentation
+elements are removed; explicit `/council` and backend locality/routing remain
+unchanged. The normal home Refresh/Turn off row appears only when live suggestion
+rows are actually visible, not in empty/loading/error/hidden/paused states.
+
+The owner explicitly chose a persistent Settings control to preserve opt-out
+when no candidates exist or a prior enable failed ambiguously. Profile Settings
+now contains a separate preference-only control, outside its profile form. It
+reads settings only and PATCHes an isolated strict boolean on explicit action;
+it never reads candidate prompts or triggers generation. Unknown states retain a
+safe Turn off action, and failed writes reconcile once by read while retaining
+unconfirmed synchronization state. Timeout/auth-generation/unmount guards bound
+requests and suppress stale dispatch/results. Home uncertainty notices point to
+Settings rather than claiming an off action that is absent on an empty home.
+
+Checks observed on this follow-up: 909 frontend tests passed, whole frontend
+type/lint and production build passed; four production Playwright cases passed
+(three existing source-bound new-chat viewport cases plus quiet empty home and
+actual Profile Settings read/toggle flow with fictional API responses). Settings
+mount and both toggles produce no generation request. No live private inference,
+account preference change, backend/API/schema/dependency change or deployment
+was performed. Full PR gates and final independent integration review still apply.
+Existing deployed source remains `eed64e27`; this follow-up is not deployed.
+
+Fresh enforced read-only `explore-luna` review
+`ses_ef3ed020cffeNmu5PyLSc3I64B` found no material toggle/composer/row-visibility
+defect in the inspected files. Its stale Council shortcut documentation finding
+was accepted and corrected. Its suggestion to remove “not deployed” for the new
+Settings toggle was rejected: the running release is still the earlier PR #453,
+and browser fixtures are not a rollout. Reviewer could inspect files, not execute
+tests or inspect the diff; primary separately inspected the integrated paths/diff
+and executed the tests above. Source contract remains experimental, not released
+or device-qualified by this change.
+
 ### Verified repository evidence
 
 - Clean branch `feat/contextual-home`, based on `origin/main` at `67f1f63a`, in the

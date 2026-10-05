@@ -1203,8 +1203,6 @@ function ChatContent() {
         attachments={attachmentItems}
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
-        isLocal={false}
-        onToggleLocal={() => {}}
       />
     </form>
   );
@@ -1365,7 +1363,6 @@ function ChatContent() {
                     onSuggestionSelect={handleSuggestionSelect}
                     isSubmittingSuggestion={isSubmittingSuggestion}
                     composer={chatComposer}
-                    onDeliberate={() => void submitChat('/council')}
                   />
                 </div>
               ) : (

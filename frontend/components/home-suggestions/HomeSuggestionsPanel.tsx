@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useClientMounted } from '../../hooks/useClientMounted';
 import type {
   HomeSuggestion,
@@ -241,8 +242,7 @@ export function HomeSuggestionsPanel({
           </button>
         </div>
       ) : null}
-      {(view.status === 'empty' ||
-        view.status === 'unavailable' ||
+      {(view.status === 'unavailable' ||
         view.status === 'expired' ||
         view.status === 'error') &&
       !hiddenAll ? (
@@ -251,10 +251,6 @@ export function HomeSuggestionsPanel({
           data-testid={`suggestion-status-${view.status}`}
           className="rounded-lg bg-[var(--color-bg-secondary)] px-3 py-2 text-xs text-[var(--color-text-muted)] text-center"
         >
-          {view.status === 'empty'
-            ? (view.message ??
-              'No contextual suggestions right now. Nothing was deleted, and typing below always works.')
-            : null}
           {view.status === 'unavailable'
             ? (view.message ?? 'Suggestions are unavailable right now.')
             : null}
@@ -265,6 +261,14 @@ export function HomeSuggestionsPanel({
           {view.status === 'error'
             ? (view.message ?? 'Suggestions failed to load.')
             : null}
+          {(view.status === 'error' || view.status === 'unavailable') && (
+            <Link
+              href="/settings/profile"
+              className="inline-flex min-h-touch items-center px-2 text-[var(--color-text-accent)]"
+            >
+              Manage suggestions in Settings
+            </Link>
+          )}
           {(view.status === 'expired' ||
             view.status === 'error' ||
             view.status === 'unavailable') && (
@@ -303,7 +307,7 @@ export function HomeSuggestionsPanel({
           Loading suggestions…
         </p>
       ) : null}
-      {view.status !== 'disabled' && view.status !== 'unloaded' && (
+      {showRows && (
         <div className="flex justify-center gap-3 text-xs mt-2">
           <button
             type="button"

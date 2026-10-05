@@ -114,6 +114,75 @@ async function fixtures(page: Page) {
 
 test.beforeEach(async ({ page }) => fixtures(page));
 
+test('quiet empty home and persistent Settings control without generation', async ({
+  page,
+}, testInfo) => {
+  let enabled = true;
+  const patches: unknown[] = [];
+  let refreshes = 0;
+  await page.route('**/home-suggestions', (route) =>
+    route.fulfill({
+      json: {
+        enabled,
+        status: enabled ? 'empty' : 'disabled',
+        suggestions: [],
+      },
+    }),
+  );
+  await page.route('**/home-suggestions/refresh', (route) => {
+    refreshes++;
+    return route.fulfill({ json: { status: 'unchanged' } });
+  });
+  await page.route('**/users/me/settings', (route) => {
+    if (route.request().method() === 'PATCH') {
+      const body = route.request().postDataJSON();
+      patches.push(body);
+      enabled = body.preferences.home_suggestions_enabled;
+      return route.fulfill({
+        json: {
+          status: 'updated',
+          settings: { preferences: { home_suggestions_enabled: enabled } },
+        },
+      });
+    }
+    return route.fulfill({
+      json: { preferences: { home_suggestions_enabled: enabled } },
+    });
+  });
+  await page.setViewportSize({ width: 689, height: 820 });
+  await page.goto('/');
+  await expect(page.locator('textarea')).toBeVisible();
+  await expect(page.getByText(/No contextual suggestions/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Deliberate' })).toHaveCount(0);
+  await expect(page.getByText('Type a message to get started')).toHaveCount(0);
+  await expect(
+    page.getByText(/Voice and image generation are unavailable/),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Refresh suggestions' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Turn off suggestions' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Local pipeline coming soon' }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('quiet-empty-home.png'),
+    fullPage: true,
+  });
+  await page.goto('/settings/profile');
+  await expect(page.getByText('Personal suggestions are on.')).toBeVisible();
+  await page.getByRole('button', { name: 'Turn off suggestions' }).click();
+  await expect(page.getByText('Personal suggestions are off.')).toBeVisible();
+  expect(patches).toEqual([
+    { preferences: { home_suggestions_enabled: false } },
+  ]);
+  await page.getByRole('button', { name: 'Turn on suggestions' }).click();
+  await expect(page.getByText('Personal suggestions are on.')).toBeVisible();
+  expect(refreshes).toBe(0);
+});
+
 for (const width of [375, 768, 1440]) {
   test(`centred exact preview and immediate new chat at ${width}px`, async ({
     page,
