@@ -278,3 +278,17 @@ differ for backend/worker. The active third Compose file is
 remains valid. No migration, historical memory cleanup/reembedding, remote rollout
 or follow-up PR merge occurred. Snapshot-time locality revocation and generic
 Azure residency limitations remain as disclosed above.
+
+### PR #449 transaction repair — source only
+
+Review found that a cap-locked memory update with a source conversation requested
+another pool connection for the source-locality check. The lookup now uses the
+already-held transaction connection, preserving owner and exact-cloud validation.
+One-slot offline SQL-driver regressions exercise the actual update → dedup path,
+including locality denial, read/insert failure, cancellation, rollback and subsequent
+lock acquisition. Unlocked conversation reads retain their existing result shape.
+Final local blocking gates passed with 5,026 backend tests and 820 frontend tests;
+the repair received fresh independent review with no findings. An offline
+before/after check also confirmed that emulating the former pool lookup stalls,
+while the repaired actual update path completes. Further PR review remains
+requested; this source-only follow-up has not been deployed.

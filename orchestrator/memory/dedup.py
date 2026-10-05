@@ -1134,7 +1134,11 @@ async def deduplicate_facts(
             from orchestrator.memory.embedding import get_selected_embedding_route_id
 
             if get_selected_embedding_route_id():
-                source = await store.get_conversation(conversation_id)
+                source = (
+                    await store.get_conversation(conversation_id, conn=lock_conn)
+                    if lock_conn is not None
+                    else await store.get_conversation(conversation_id)
+                )
                 if (
                     not source
                     or source.get("user_id") != user_id

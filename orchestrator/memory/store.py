@@ -229,8 +229,12 @@ class MemoryStore:
         )
         return dict(row)  # type: ignore[arg-type]
 
-    async def get_conversation(self, conversation_id: uuid.UUID) -> dict[str, Any] | None:
-        row = await self._pool.fetchrow(
+    async def get_conversation(
+        self, conversation_id: uuid.UUID, *, conn: Any | None = None
+    ) -> dict[str, Any] | None:
+        """Read on the caller's transaction when supplied, without reacquiring the pool."""
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             f"""
             SELECT c.*,
                    listing_meta.actual_message_count,
