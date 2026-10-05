@@ -183,8 +183,8 @@ Final backend blocking gates passed with **5,005 tests passed and 152 skipped**;
 frontend blocking gates passed with **820 tests**, including locked install,
 types, lint, format, audit and build. Full Bandit remains a nonblocking inventory,
 not a high-severity pass substitute. Staged aggregate gates and scoped independent
-reviews passed; the separate database-backed suite is recorded below. Local activation remains
-**pending** until the reviewed deployment procedure runs. Existing stored memories
+reviews passed; the separate database-backed suite and owner-local activation
+are recorded below. Existing stored memories
 will not be reembedded by this change.
 
 ### Subsequent boundary and database checks — 5 October 2026
@@ -217,4 +217,26 @@ with the existing monitored non-calendar contract: revocation is sticky and no
 successful check for 72 hours denies admission. Both approval expiry fields remain
 null; the older calendar-renewal dates in the approval history are superseded.
 Selecting or approving the entry alone does not establish deployment or effective
-attestation. Local activation remains **pending** until runtime evidence is recorded.
+attestation.
+
+### Verified owner-local activation — 5 October 2026
+
+Clean archived source commit `05abf4861eba34b487d92cf803d0b2640b765df9` was built
+and activated for **backend and worker only** using an additional local Compose
+override. The original checkout and dotenv were not edited. Only the embedding
+selector, release source mounts and explicit image tags changed; original data
+and benchmark mounts, frontend and dependency containers were preserved.
+
+Before restart, the public attestation bootstrap admitted all nine selected
+routes, including the embedding entry, with zero failures or revocations. After
+restart, backend readiness, PostgreSQL/Redis, worker runtime, exact source/policy
+hashes and fresh monitored admission were checked. Frontend readiness remained
+200; its container was not rebuilt. The qualified Luna medium profile is unchanged.
+Static embedding eligibility was checked without a private inference probe or
+invented process-local success observation.
+
+No migration, existing-memory reembedding, duplicate cleanup, remote deployment
+or follow-up PR merge occurred. The source's portable selector remains off by
+default. Rollback uses the pinned pre-activation Python images, #447 archived
+source and an empty selector, without rebuilding or restoring data. The durable
+operator runbook is `AZURE-SMALL-ROLLOUT.md` under the local release directory.

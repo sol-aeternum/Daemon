@@ -21,7 +21,9 @@ remains the selected transport's credential; no direct Azure key is introduced.
 When the new selector is set, legacy embedding model/fallback settings do not
 control its primary document/query route; they retain legacy storage identities
 for lexical access. Existing vectors are not reembedded. No production environment
-was changed by this source update; activation remains conditional on qualification.
+was changed by the source update itself. The owner-approved local activation on
+5 October 2026 sets only the selector in an additional backend/worker release
+override, preserving the original dotenv and all existing injection channels.
 
 ### Self-hosted speech amendment — 2 October 2026
 
