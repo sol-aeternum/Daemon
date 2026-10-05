@@ -4,10 +4,12 @@
 
 Daemon's memory system captures, stores, and retrieves durable facts about users and projects across conversations. The pipeline uses Voyage AI asymmetric embeddings for semantic search, PostgreSQL with pgvector for storage, Fernet encryption for content at rest, and a multi-stage extraction → calibration → deduplication → retrieval workflow.
 
-Provider embedding execution is currently disabled pending a qualified bounded
-adapter. Core persistence accepts nullable vectors and retrieval uses account-scoped
-lexical search. Existing model/provider vector spaces remain isolated; fallback
-configuration cannot bypass privacy or account compute policy.
+Provider embedding execution remains disabled by default. The dedicated
+Azure/OpenRouter token-budgeted adapter is qualified in the deployment-specific
+policy; the portable policy remains denied and selection defaults off. Core persistence accepts nullable vectors
+and retrieval uses account-scoped lexical search when admission is denied.
+Existing model/provider vector spaces remain isolated; fallback configuration
+cannot bypass privacy or account compute policy.
 
 **Key components:** `orchestrator/memory/{extraction,dedup,retrieval,store,injection,embedding,encryption,consolidation,trust,trust_signals,summary}.py`
 
@@ -225,8 +227,10 @@ Authenticated `GET /status` adds an `embeddings` object while retaining legacy
 counters. Static `configuration` (`eligible`, `unavailable`, `unknown`) is not a
 provider test or proof of account-budgeted dispatch. Safe reason codes distinguish
 missing credentials, unapproved routes, invalid configuration and missing adapters.
-Current adapters report `budget_adapter_unavailable`; adding a key alone does not
-make semantic memory ready. Process-local outcomes, timestamps and configuration
+Legacy adapters report `budget_adapter_unavailable`; the dedicated Azure adapter
+has an account-budget integration but still requires explicit selection and a
+qualified policy entry. Adding a key alone does not make semantic memory ready.
+Process-local outcomes, timestamps and configuration
 denial counts have `observation_scope=backend_process`: they do not represent the
 worker or survive restarts. The status read performs no provider request.
 
@@ -318,6 +322,55 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 ## Embeddings
 
+### Dedicated selected route (default off; qualification pending)
+
+`EMBEDDING_ROUTE_ID` selects an entry in the separate `embedding_routes` policy
+mapping. The implemented candidate is Azure-hosted OpenAI small through OpenRouter
+at the existing storage dimensions; the exact model, input/batch bounds and price
+ceiling live in `config/inference_policy.json`, with the adapter's implementation
+identity in `orchestrator/memory/embedding_adapter.py`. It is not a completion
+candidate or a fixed-price tool service. The portable entry remains unapproved;
+the deployment entry is qualified under monitored admission. See [the approved adapter contract](docs/MEMORY_EMBEDDING_ADAPTER.md)
+for privacy evidence, prospective criteria and actual qualification status.
+
+When selected, this is the primary document/query route and never traverses the
+legacy fallback chain. Its stable storage identity is
+`openrouter:azure:openai/text-embedding-3-small:1024`; old identities remain
+lexically discoverable, but their vectors are never compared against new query
+vectors. New writes do not reembed old rows. Embeddings do not authorize merging.
+
+Each outbound batch reserves bounded input-token compute on the existing account
+scope before sending. Unknown sends and malformed receipts retain conservative
+charges; validated usage settles under the existing ledger. Settlement failures
+propagate rather than silently producing lexical success. No retries, redirects,
+proxies or provider fallback are enabled on this adapter. Document/query inputs
+are bounded without silent truncation, and receipts require finite nonzero vectors.
+
+Native-chat context preparation runs inside the turn's existing producer account
+scope, not a second admission. Authenticated memory writers use an outer scope;
+background calls retain their existing background allocation. Local-only/unknown
+sources cannot enter cloud embeddings or dream synthesis. Cloud L0 and summary
+selection also requires explicit nonlocal metadata; known-local conversations
+retain lexical/frozen context. Concurrent source revocation after an authorized
+snapshot remains an acknowledged separate limitation.
+
+`memory_read` derives locality from its server-bound, owner-checked conversation.
+Cloud/unknown context excludes local-only or unclassified rows; known-local context
+retains local lexical results without query-provider dispatch, including retrieval
+fallback. Model-supplied privacy arguments cannot widen access. Compatibility
+clients without a stored conversation receive cloud-safe lexical reads, not an
+assumed permission for private memory. Explicit owner-created/imported nonlocal
+facts without a conversation remain cloud-eligible writes.
+
+`memory_reflect` permits query embedding and cloud synthesis only after its
+server-bound conversation is confirmed to belong to the user with pipeline
+`cloud`. Local, missing, unknown and wrong-owner contexts refuse before provider
+work; tool arguments cannot opt in. Retrieved cloud reflection rows must explicitly
+have `local_only=False`, including L0 and historical results. This does not grant
+cloud synthesis to compatibility clients lacking a trusted stored conversation.
+
+### Retained legacy configuration (not executable admission)
+
 | Purpose | Model | Input type | Dimensions |
 |---|---|---|---|
 | Document (memory writes) | `voyage-4-large` | `input_type="document"` | 1024 |
@@ -325,7 +378,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 | Optional fallback | `voyageai/voyage-4-large` / `voyageai/voyage-4-lite` via OpenRouter | matching `document` / `query` input type | configured `EMBEDDING_DIMENSIONS` (default 1024) |
 | Optional fallback | `text-embedding-3-small` via OpenAI | OpenAI embeddings API | configured `EMBEDDING_DIMENSIONS` (default 1024) |
 
-Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
+Retained legacy retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). These unqualified legacy adapters remain denied; this logic is not the selected Azure adapter's behavior. Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
 
 Fallback logic: Voyage remains primary. `EMBEDDING_FALLBACK_PROVIDERS` is empty by default; operators can explicitly configure an ordered `openrouter,openai` chain (or either provider alone). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and tries that chain until the failure window clears. OpenRouter reuses `OPENROUTER_API_KEY` and sends native `input_type="document"` / `input_type="query"` requests, but routed-vector parity with direct Voyage has not been demonstrated, so those vectors use a distinct `openrouter:<model>` storage identity. OpenAI vectors likewise use `openai:<model>`. Vector and BM25 search filter by enabled storage identity; retrieval embeds fallback queries only when that user has rows in the corresponding active or inferred historical space. Dedup reconciles enabled spaces lexically and by slot without cross-provider vector comparison, while excluding L0 and dream observations. OpenAI inputs are truncated to its smaller per-input limit. `/status` exposes `embedding_failures_total` and per-provider `embedding_provider_used` counters.
 
@@ -355,6 +408,7 @@ DATABASE_URL=postgresql://daemon:daemon@postgres:5432/daemon
 DAEMON_ENCRYPTION_KEY=<fernet-key>
 
 # Embeddings
+EMBEDDING_ROUTE_ID=  # OFF until qualified policy and explicit selection
 VOYAGE_API_KEY=<voyage-api-key>
 EMBEDDING_DOCUMENT_MODEL=voyage-4-large
 EMBEDDING_QUERY_MODEL=voyage-4-lite

@@ -45,7 +45,7 @@ from orchestrator.entitlements.policy import (
     MONITORED_ENDPOINT,
     MONITORED_PROVIDER,
     PolicyRequirements,
-    RoutePolicy,
+    MonitorableRoute,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,11 +75,11 @@ MAX_METADATA_BYTES: Final[int] = 8 * 1024 * 1024
 OUTCOMES: Final[frozenset[str]] = frozenset({"attested", "revoked", "check_failed"})
 
 
-def is_monitored(route: RoutePolicy) -> bool:
+def is_monitored(route: MonitorableRoute) -> bool:
     return route.approval_mode == "monitored" and route.zdr_baseline is not None
 
 
-def baseline_fingerprint(route: RoutePolicy) -> str:
+def baseline_fingerprint(route: MonitorableRoute) -> str:
     """Identity of what was approved. Any change makes a new, unattested baseline.
 
     Covers the route, gateway endpoint, exact model, pinned provider, the baseline
@@ -182,7 +182,7 @@ def _same_value(observed: object, approved: object) -> bool:
 
 
 def evaluate(
-    routes: Iterable[RoutePolicy], zdr_payload: object, providers_payload: object
+    routes: Iterable[MonitorableRoute], zdr_payload: object, providers_payload: object
 ) -> list[RouteCheck]:
     """Compare every monitored route with its approved baseline. Never raises."""
     monitored = [route for route in routes if is_monitored(route)]
@@ -256,7 +256,7 @@ def evaluate(
     return checks
 
 
-def failed_checks(routes: Iterable[RoutePolicy], reason: str) -> list[RouteCheck]:
+def failed_checks(routes: Iterable[MonitorableRoute], reason: str) -> list[RouteCheck]:
     return [
         RouteCheck(route.route_id, baseline_fingerprint(route), "check_failed", (reason,))
         for route in routes
@@ -335,7 +335,7 @@ def apply_observed(checks: Iterable[RouteCheck]) -> None:
         set_snapshot(_snapshot)
 
 
-def attestation_reasons(route: RoutePolicy, *, now: datetime) -> tuple[str, ...]:
+def attestation_reasons(route: MonitorableRoute, *, now: datetime) -> tuple[str, ...]:
     """Why a monitored route is not currently attested. Empty means attested."""
     current = _snapshot
     if not current.loaded:
@@ -391,10 +391,10 @@ async def _refresh_loop(pool: Any, interval_s: float) -> None:
             logger.warning("Route attestation refresh failed; keeping previous snapshot")
 
 
-def _monitored_routes() -> list[RoutePolicy]:
+def _monitored_routes() -> list[MonitorableRoute]:
     from orchestrator.entitlements.policy import load_inference_policy
 
-    return [route for route in load_inference_policy().routes.values() if is_monitored(route)]
+    return [route for route in load_inference_policy().monitorable_routes() if is_monitored(route)]
 
 
 async def check_once(pool: Any) -> dict[str, int]:
@@ -533,7 +533,7 @@ async def _fetch_json(client: Any, url: str) -> tuple[object, bytes]:
     return json.loads(body, object_pairs_hook=_reject_duplicate_names), body
 
 
-async def run_check(pool: Any, client: Any, routes: Iterable[RoutePolicy]) -> dict[str, int]:
+async def run_check(pool: Any, client: Any, routes: Iterable[MonitorableRoute]) -> dict[str, int]:
     """Fetch the public listings, evaluate every monitored route and record the result."""
     candidates = [route for route in routes if is_monitored(route)]
     if not candidates:
@@ -588,7 +588,7 @@ BOOTSTRAP_NO_MONITORED_ROUTES: Final[int] = 3
 
 
 def bootstrap_status(
-    routes: Iterable[RoutePolicy], requirements: PolicyRequirements, *, now: datetime
+    routes: Iterable[MonitorableRoute], requirements: PolicyRequirements, *, now: datetime
 ) -> tuple[int, dict[str, tuple[str, ...]]]:
     """Effective admission of every monitored route, as the deploy gate.
 

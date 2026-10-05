@@ -1516,7 +1516,12 @@ async def test_reembed_endpoint_fails_cleanly_without_approved_embedding_route(
     account, memory_id = uuid.uuid4(), uuid.uuid4()
     store = SimpleNamespace(
         get_memory=AsyncMock(
-            return_value={"id": memory_id, "user_id": account, "content": "local"}
+            return_value={
+                "id": memory_id,
+                "user_id": account,
+                "content": "cloud",
+                "local_only": False,
+            }
         ),
         update_memory_embedding=AsyncMock(),
     )

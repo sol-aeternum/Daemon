@@ -119,6 +119,16 @@ async def client(monkeypatch):
 
 def create_mock_app_state(mock_store: AsyncMock, queue: FakeTitleQueue | None) -> MagicMock:
     mock_store.get_user_settings = AsyncMock(return_value=None)
+    for method in (
+        "get_l0_memories",
+        "get_recent_summaries",
+        "get_recent_messages",
+        "find_entities_by_alias",
+    ):
+        mocked = getattr(mock_store, method)
+        if not isinstance(mocked.return_value, list):
+            mocked.return_value = []
+    mock_store.get_entity_by_lookup_key.return_value = None
     app_state = MagicMock(spec=AppState)
     app_state.memory_store = mock_store
     app_state.redis = queue
@@ -333,6 +343,11 @@ async def test_newly_created_chat_keeps_title_enqueue(client) -> None:
     owner = uuid.uuid4()
 
     mock_store = AsyncMock()
+    mock_store.get_conversation.return_value = {
+        "id": new_conversation_id,
+        "user_id": owner,
+        "pipeline": "cloud",
+    }
     mock_store.create_conversation = AsyncMock(
         return_value={"id": new_conversation_id, "title": "Hello", "title_locked": False}
     )

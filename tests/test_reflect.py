@@ -8,6 +8,7 @@ import contextlib
 import uuid
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -60,13 +61,40 @@ def _mock_query_embedding():
         yield
 
 
+def _trusted_reflect_tool(
+    store: Any,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID | None = None,
+) -> MemoryReflectTool:
+    """Build a reflect tool bound to a conversation the store attests as trusted.
+
+    The production guard resolves trust only from the server-bound
+    conversation, never from tool arguments: a nonempty-topic ``execute``
+    must first read ``store.get_conversation`` and see a row owned by
+    ``user_id`` on the exact ``cloud`` pipeline before any embedding,
+    retrieval or synthesis runs. Positive fixtures therefore bind an
+    explicit ``conversation_id`` and return a matching cloud conversation
+    row from the store.
+    """
+    conversation_id = conversation_id or uuid.uuid4()
+    store.get_conversation = AsyncMock(return_value={"user_id": user_id, "pipeline": "cloud"})
+    return MemoryReflectTool(store, user_id, conversation_id=conversation_id)
+
+
 @pytest.mark.asyncio
 async def test_reflect_synthesizes_account_scoped_lexical_memories_when_embeddings_denied():
     store = MagicMock(spec=MemoryStore)
     user_id = uuid.uuid4()
     memory_id = uuid.uuid4()
     store.search_memories_bm25 = AsyncMock(
-        return_value=[{"id": memory_id, "content": "User plays guitar", "bm25_score": 1.0}]
+        return_value=[
+            {
+                "id": memory_id,
+                "content": "User plays guitar",
+                "bm25_score": 1.0,
+                "local_only": False,
+            }
+        ]
     )
     store.get_l0_memories = AsyncMock(return_value=[])
     store.bulk_touch_memories = AsyncMock()
@@ -85,7 +113,8 @@ async def test_reflect_synthesizes_account_scoped_lexical_memories_when_embeddin
         patch("orchestrator.tools.memory_reflect.get_settings") as settings,
     ):
         settings.return_value.get_provider_config.return_value.requires_auth = False
-        result = await MemoryReflectTool(store, user_id).execute(topic="guitar")
+        tool = _trusted_reflect_tool(store, user_id)
+        result = await tool.execute(topic="guitar")
 
     assert result == "You play guitar."
     embed.assert_awaited_once()
@@ -129,7 +158,7 @@ async def test_reflect_no_memories_found():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         result = await tool.execute(topic="my hobbies")
 
         assert "No relevant memories found" in result
@@ -148,6 +177,7 @@ async def test_reflect_successful_synthesis():
             "category": "fact",
             "memory_slot": "hobbies",
             "source": "hybrid",
+            "local_only": False,
         },
         {
             "id": uuid.uuid4(),
@@ -155,10 +185,12 @@ async def test_reflect_successful_synthesis():
             "category": "fact",
             "memory_slot": "equipment",
             "source": "l0",
+            "local_only": False,
         },
     ]
 
     profiles: list[str] = []
+    conversation_id = uuid.uuid4()
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = memories
 
@@ -175,11 +207,21 @@ async def test_reflect_successful_synthesis():
                     "orchestrator.tools.memory_reflect.routing_context",
                     _track_routing_profile(profiles),
                 ):
-                    tool = MemoryReflectTool(store, user_id)
+                    tool = _trusted_reflect_tool(store, user_id, conversation_id=conversation_id)
                     result = await tool.execute(topic="my musical interests")
 
                     assert "Fender" in result or "guitar" in result.lower()
                     assert profiles == [REFLECT_PROFILE]
+                    # The guard ran against the server-bound conversation before
+                    # the pipeline, not against anything read from tool args.
+                    owner_lookup = store.get_conversation.await_args
+                    assert owner_lookup is not None
+                    passed_id = (
+                        owner_lookup.args[0]
+                        if owner_lookup.args
+                        else owner_lookup.kwargs.get("conversation_id")
+                    )
+                    assert passed_id == conversation_id
 
 
 @pytest.mark.asyncio
@@ -194,6 +236,7 @@ async def test_reflect_includes_l0_memories():
         "category": "fact",
         "memory_slot": "preferences",
         "source": "l0",
+        "local_only": False,
     }
 
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
@@ -202,10 +245,12 @@ async def test_reflect_includes_l0_memories():
         with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
             mock_llm.return_value = MockLitellmResponse("The user has a strong coffee preference.")
 
-            tool = MemoryReflectTool(store, user_id)
+            tool = _trusted_reflect_tool(store, user_id)
             await tool.execute(topic="coffee preferences")
 
             assert mock_retrieve.call_args.kwargs["include_l0"] is True
+            # Locality is server-bound: reflect must never request local rows.
+            assert mock_retrieve.call_args.kwargs["include_local"] is False
 
 
 @pytest.mark.asyncio
@@ -217,7 +262,7 @@ async def test_reflect_uses_expanded_retrieval_limit():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         await tool.execute(topic="anything")
 
         assert mock_retrieve.call_args.kwargs["limit"] == 15
@@ -232,7 +277,7 @@ async def test_reflect_custom_limit():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         await tool.execute(topic="anything", limit=25)
 
         assert mock_retrieve.call_args.kwargs["limit"] == 25
@@ -251,6 +296,7 @@ async def test_reflect_llm_failure_returns_error():
             "category": "fact",
             "memory_slot": "hobbies",
             "source": "hybrid",
+            "local_only": False,
         },
     ]
 
@@ -269,7 +315,7 @@ async def test_reflect_llm_failure_returns_error():
                     "orchestrator.tools.memory_reflect.routing_context",
                     _track_routing_profile(profiles),
                 ):
-                    tool = MemoryReflectTool(store, user_id)
+                    tool = _trusted_reflect_tool(store, user_id)
                     result = await tool.execute(topic="my hobbies")
 
                     assert "Reflection synthesis failed" in result
@@ -285,7 +331,7 @@ async def test_reflect_is_non_persistent():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         await tool.execute(topic="test")
 
         store.insert_memory.assert_not_called()
@@ -359,7 +405,7 @@ async def test_reflect_truncates_limit_to_max_50():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         await tool.execute(topic="anything", limit=100)
 
         assert mock_retrieve.call_args.kwargs["limit"] == 50
@@ -374,7 +420,7 @@ async def test_reflect_enforces_minimum_limit_of_1():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         await tool.execute(topic="anything", limit=0)
 
         assert mock_retrieve.call_args.kwargs["limit"] == 1
@@ -393,6 +439,7 @@ async def test_reflect_passes_timeout_from_provider_config():
             "category": "fact",
             "memory_slot": "hobbies",
             "source": "hybrid",
+            "local_only": False,
         },
     ]
 
@@ -415,7 +462,7 @@ async def test_reflect_passes_timeout_from_provider_config():
                     "orchestrator.tools.memory_reflect.routing_context",
                     _track_routing_profile(profiles),
                 ):
-                    tool = MemoryReflectTool(store, user_id)
+                    tool = _trusted_reflect_tool(store, user_id)
                     result = await tool.execute(topic="my hobbies")  # noqa: F841
 
                     assert profiles == [REFLECT_PROFILE]
@@ -438,6 +485,7 @@ async def test_reflect_uses_zero_timeout_when_configured():
             "category": "fact",
             "memory_slot": "hobbies",
             "source": "hybrid",
+            "local_only": False,
         },
     ]
 
@@ -460,7 +508,7 @@ async def test_reflect_uses_zero_timeout_when_configured():
                     "orchestrator.tools.memory_reflect.routing_context",
                     _track_routing_profile(profiles),
                 ):
-                    tool = MemoryReflectTool(store, user_id)
+                    tool = _trusted_reflect_tool(store, user_id)
                     result = await tool.execute(topic="my hobbies")  # noqa: F841
 
                     assert profiles == [REFLECT_PROFILE]
@@ -484,7 +532,7 @@ async def test_reflect_includes_dream_observations():
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = []
 
-        tool = MemoryReflectTool(store, user_id)
+        tool = _trusted_reflect_tool(store, user_id)
         await tool.execute(topic="my dreams and aspirations")
 
         assert mock_retrieve.call_args.kwargs.get("include_dream_observations") is True

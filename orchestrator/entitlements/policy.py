@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -822,7 +822,6 @@ class RoutePolicy:
         Every condition is reported even when ``requirements`` disables it, so
         a caller can still see what is unverified about a route.
         """
-        moment = now or datetime.now(timezone.utc)
         reasons: list[str] = []
         if (
             "text" not in self.model_capabilities
@@ -830,99 +829,173 @@ class RoutePolicy:
             or not 0 < self.max_output_tokens <= self.max_context_tokens
         ):
             reasons.append("model_capabilities_unverified")
-        if requirements.require_approval and not self.approved:
-            reasons.append("not_approved")
-        if requirements.require_verified_availability and (
-            self.availability != VERIFIED_AVAILABILITY
-        ):
-            reasons.append(f"availability_{self.availability}")
-        if requirements.require_pinned_endpoint and not _is_pinned_endpoint(self.endpoint):
-            reasons.append("endpoint_not_pinned")
-        if requirements.require_zdr and not self.transport.zdr:
-            reasons.append("transport_zdr_not_asserted")
-        if requirements.require_no_training and (
-            self.transport.data_collection != REQUIRED_DATA_COLLECTION
-        ):
-            reasons.append("transport_training_not_denied")
-        if requirements.require_pinned_transport and (
-            self.transport.allow_fallbacks is not False
-            or self.transport.require_parameters is not True
-        ):
-            reasons.append("transport_flags_not_pinned")
-        if requirements.require_pinned_provider_selection and not _provider_pinned(self.transport):
-            reasons.append("transport_provider_not_pinned")
-        if requirements.require_account_logging_disabled and (
-            self.account_prompt_logging_disabled is not True
-        ):
-            reasons.append("account_logging_not_disabled")
-        if requirements.require_free_model_training_opt_out and (
-            self.free_model_training_opt_out is not True
-        ):
-            reasons.append("free_model_training_opt_out_missing")
-        if requirements.require_price_ceiling and self.price_ceiling is None:
-            reasons.append("price_ceiling_missing")
-        if self.approval_mode == "monitored":
-            reasons.extend(self._monitored_reasons(requirements, moment))
-            return tuple(reasons)
-        if requirements.require_unexpired_approval:
-            if self.approval_expires_at is None:
-                reasons.append("approval_expiry_missing")
-            elif self.approval_expires_at <= moment:
-                reasons.append("approval_expired")
-        reasons.extend(
-            self.review.rejection_reasons(
-                requirements,
-                now=moment,
-                require=requirements.require_operator_review,
-            )
-        )
-        return tuple(reasons)
-
-    def _monitored_reasons(
-        self, requirements: PolicyRequirements, moment: datetime
-    ) -> tuple[str, ...]:
-        """No calendar expiry: a dated sign-off plus a current ZDR attestation.
-
-        The operator review still needs a named reviewer, recorded evidence and a
-        review date that is not in the future. In place of expiry dates, the
-        route needs an attestation that confirmed its baseline within the
-        staleness window and has never revoked it.
-        """
-        reasons: list[str] = []
-        if requirements.require_operator_review:
-            if not self.review.reviewer or not self.review.evidence:
-                reasons.append("operator_review_missing_evidence")
-            if self.review.reviewed_at is None or self.review.reviewed_at > moment:
-                reasons.append("operator_review_date_invalid")
-        if self.zdr_baseline is None:
-            reasons.append("zdr_baseline_missing")
-        elif requirements.require_zdr_attestation:
-            from orchestrator.entitlements import attestation
-
-            reasons.extend(attestation.attestation_reasons(self, now=moment))
+        reasons.extend(_route_privacy_reasons(self, requirements, now=now))
         return tuple(reasons)
 
     def is_approved(self, requirements: PolicyRequirements, *, now: datetime | None = None) -> bool:
         return not self.rejection_reasons(requirements, now=now)
 
     def transport_payload(
-        self,
-        requirements: PolicyRequirements,
-        *,
-        now: datetime | None = None,
+        self, requirements: PolicyRequirements, *, now: datetime | None = None
     ) -> dict[str, Any]:
-        """The per-request payload an inference transport must send.
+        return _route_transport_payload(self, requirements, now=now)
 
-        Raises :class:`RouteNotApproved` when the route fails any requirement,
-        so a caller cannot accidentally send an unqualified request.
-        """
-        reasons = self.rejection_reasons(requirements, now=now)
-        if reasons:
-            raise RouteNotApproved(self.route_id, reasons)
-        assert self.price_ceiling is not None  # guaranteed by rejection_reasons
-        payload = self.transport.as_transport_kwargs()
-        payload["extra_body"]["provider"]["max_price"] = self.price_ceiling.as_max_price()
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingRoutePolicy:
+    """Input-token-only embedding route, deliberately outside completion scans."""
+
+    route_id: str
+    provider: str
+    model: str
+    endpoint: str
+    dimensions: int
+    max_input_tokens: int
+    max_batch_tokens: int
+    max_batch_items: int
+    approved: bool
+    availability: str
+    approval_expires_at: datetime | None
+    transport: TransportPrivacy
+    account_prompt_logging_disabled: bool | None
+    free_model_training_opt_out: bool | None
+    review: OperatorReview
+    price_ceiling: PriceCeiling | None
+    notes: str = ""
+    approval_mode: str = "expiring"
+    zdr_baseline: ZdrBaseline | None = None
+
+    def estimate_microusd(self, input_tokens: int) -> Microusd:
+        if self.price_ceiling is None:
+            raise RouteNotApproved(self.route_id, ("price_ceiling_missing",))
+        return self.price_ceiling.estimate_microusd(input_tokens, 0)
+
+    def rejection_reasons(
+        self, requirements: PolicyRequirements, *, now: datetime | None = None
+    ) -> tuple[str, ...]:
+        reasons = list(_route_privacy_reasons(self, requirements, now=now))
+        if (
+            self.dimensions <= 0
+            or self.max_input_tokens <= 0
+            or self.max_batch_tokens < self.max_input_tokens
+            or self.max_batch_items <= 0
+        ):
+            reasons.append("embedding_capacities_unverified")
+        if self.price_ceiling is not None and (
+            self.price_ceiling.microusd_per_1m_prompt <= 0
+            or self.price_ceiling.microusd_per_1m_completion != 0
+        ):
+            reasons.append("embedding_price_invalid")
+        return tuple(reasons)
+
+    def is_approved(self, requirements: PolicyRequirements, *, now: datetime | None = None) -> bool:
+        return not self.rejection_reasons(requirements, now=now)
+
+    def transport_payload(
+        self, requirements: PolicyRequirements, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        payload = _route_transport_payload(self, requirements, now=now)
+        # Embeddings have no completion price or completion admission semantics.
+        payload["extra_body"]["provider"]["max_price"].pop("completion")
         return payload
+
+
+# Typed shared boundary for privacy/attestation, not completion admission.
+MonitorableRoute = RoutePolicy | EmbeddingRoutePolicy
+
+
+def _route_privacy_reasons(
+    route: MonitorableRoute, requirements: PolicyRequirements, *, now: datetime | None = None
+) -> tuple[str, ...]:
+    self = route
+    moment = now or datetime.now(timezone.utc)
+    reasons: list[str] = []
+    if requirements.require_approval and not self.approved:
+        reasons.append("not_approved")
+    if requirements.require_verified_availability and (self.availability != VERIFIED_AVAILABILITY):
+        reasons.append(f"availability_{self.availability}")
+    if requirements.require_pinned_endpoint and not _is_pinned_endpoint(self.endpoint):
+        reasons.append("endpoint_not_pinned")
+    if requirements.require_zdr and not self.transport.zdr:
+        reasons.append("transport_zdr_not_asserted")
+    if requirements.require_no_training and (
+        self.transport.data_collection != REQUIRED_DATA_COLLECTION
+    ):
+        reasons.append("transport_training_not_denied")
+    if requirements.require_pinned_transport and (
+        self.transport.allow_fallbacks is not False or self.transport.require_parameters is not True
+    ):
+        reasons.append("transport_flags_not_pinned")
+    if requirements.require_pinned_provider_selection and not _provider_pinned(self.transport):
+        reasons.append("transport_provider_not_pinned")
+    if requirements.require_account_logging_disabled and (
+        self.account_prompt_logging_disabled is not True
+    ):
+        reasons.append("account_logging_not_disabled")
+    if requirements.require_free_model_training_opt_out and (
+        self.free_model_training_opt_out is not True
+    ):
+        reasons.append("free_model_training_opt_out_missing")
+    if requirements.require_price_ceiling and self.price_ceiling is None:
+        reasons.append("price_ceiling_missing")
+    if self.approval_mode == "monitored":
+        reasons.extend(_monitored_reasons(self, requirements, moment))
+        return tuple(reasons)
+    if requirements.require_unexpired_approval:
+        if self.approval_expires_at is None:
+            reasons.append("approval_expiry_missing")
+        elif self.approval_expires_at <= moment:
+            reasons.append("approval_expired")
+    reasons.extend(
+        self.review.rejection_reasons(
+            requirements,
+            now=moment,
+            require=requirements.require_operator_review,
+        )
+    )
+    return tuple(reasons)
+
+
+def _monitored_reasons(
+    self: MonitorableRoute, requirements: PolicyRequirements, moment: datetime
+) -> tuple[str, ...]:
+    """No calendar expiry: a dated sign-off plus a current ZDR attestation.
+
+    The operator review still needs a named reviewer, recorded evidence and a
+    review date that is not in the future. In place of expiry dates, the
+    route needs an attestation that confirmed its baseline within the
+    staleness window and has never revoked it.
+    """
+    reasons: list[str] = []
+    if requirements.require_operator_review:
+        if not self.review.reviewer or not self.review.evidence:
+            reasons.append("operator_review_missing_evidence")
+        if self.review.reviewed_at is None or self.review.reviewed_at > moment:
+            reasons.append("operator_review_date_invalid")
+    if self.zdr_baseline is None:
+        reasons.append("zdr_baseline_missing")
+    elif requirements.require_zdr_attestation:
+        from orchestrator.entitlements import attestation
+
+        reasons.extend(attestation.attestation_reasons(self, now=moment))
+    return tuple(reasons)
+
+
+def _route_transport_payload(
+    self: MonitorableRoute, requirements: PolicyRequirements, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """The per-request payload an inference transport must send.
+
+    Raises :class:`RouteNotApproved` when the route fails any requirement,
+    so a caller cannot accidentally send an unqualified request.
+    """
+    reasons = self.rejection_reasons(requirements, now=now)
+    if reasons:
+        raise RouteNotApproved(self.route_id, reasons)
+    assert self.price_ceiling is not None  # guaranteed by rejection_reasons
+    payload = self.transport.as_transport_kwargs()
+    payload["extra_body"]["provider"]["max_price"] = self.price_ceiling.as_max_price()
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -1000,6 +1073,15 @@ class InferencePolicy:
     tool_services: Mapping[str, ToolServicePolicy]
     default_route_id: str | None
     source_path: str
+    embedding_routes: Mapping[str, EmbeddingRoutePolicy] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def embedding_route(self, route_id: str) -> EmbeddingRoutePolicy | None:
+        return self.embedding_routes.get(route_id)
+
+    def monitorable_routes(self) -> tuple[MonitorableRoute, ...]:
+        return (*self.routes.values(), *self.embedding_routes.values())
 
     def route(self, route_id: str) -> RoutePolicy | None:
         return self.routes.get(route_id)
@@ -1305,6 +1387,47 @@ def _parse_approval_mode(
     }
 
 
+def _parse_embedding_route(raw: object, *, index: int) -> EmbeddingRoutePolicy:
+    mapping = _require_mapping(raw, field=f"embedding_routes[{index}]")
+    route_id = _require_str(mapping.get("route_id"), field="embedding route_id")
+    privacy = _require_mapping(mapping.get("privacy"), field=f"embedding_routes.{route_id}.privacy")
+    capacities: dict[str, int] = {}
+    for key in ("dimensions", "max_input_tokens", "max_batch_tokens", "max_batch_items"):
+        value = mapping.get(key, 0)
+        if type(value) is not int or value < 0:
+            raise PolicyError(f"embedding_routes.{route_id}.{key} must be a non-negative integer")
+        capacities[key] = value
+    return EmbeddingRoutePolicy(
+        route_id=route_id,
+        provider=_require_str(mapping.get("provider"), field="embedding provider"),
+        model=_require_str(mapping.get("model"), field="embedding model"),
+        endpoint=_require_str(mapping.get("endpoint"), field="embedding endpoint"),
+        **capacities,
+        approved=_require_bool(mapping.get("approved"), field="embedding approved"),
+        availability=_require_str(
+            mapping.get("availability", "unverified"), field="embedding availability"
+        ),
+        approval_expires_at=_parse_timestamp(
+            mapping.get("approval_expires_at"), field="embedding approval_expires_at"
+        ),
+        transport=_parse_transport(privacy.get("transport"), route_id=route_id),
+        account_prompt_logging_disabled=_optional_bool(
+            privacy.get("account_prompt_logging_disabled"),
+            field="embedding account_prompt_logging_disabled",
+        ),
+        free_model_training_opt_out=_optional_bool(
+            privacy.get("free_model_training_opt_out"),
+            field="embedding free_model_training_opt_out",
+        ),
+        review=_parse_review(mapping.get("operator_review"), field="embedding operator_review"),
+        price_ceiling=_parse_price_ceiling(
+            mapping.get("price_ceiling"), field="embedding price_ceiling"
+        ),
+        notes=str(mapping.get("notes", "")),
+        **_parse_approval_mode(mapping, privacy, route_id=route_id),
+    )
+
+
 def _parse_tool_service(raw: object, *, index: int) -> ToolServicePolicy:
     service_map = _require_mapping(raw, field=f"tool_services[{index}]")
     service_id = _require_str(
@@ -1369,6 +1492,15 @@ def parse_inference_policy(data: object, *, source_path: str = "<memory>") -> In
         routes[route.route_id] = route
 
     raw_services = mapping.get("tool_services", [])
+    raw_embeddings = mapping.get("embedding_routes", [])
+    if not isinstance(raw_embeddings, list):
+        raise PolicyError("embedding_routes must be a list")
+    embedding_routes: dict[str, EmbeddingRoutePolicy] = {}
+    for index, raw_embedding in enumerate(raw_embeddings):
+        route = _parse_embedding_route(raw_embedding, index=index)
+        if route.route_id in routes or route.route_id in embedding_routes:
+            raise PolicyError(f"duplicate route_id: {route.route_id}")
+        embedding_routes[route.route_id] = route
     if not isinstance(raw_services, list):
         raise PolicyError("tool_services must be a list")
     tool_services: dict[str, ToolServicePolicy] = {}
@@ -1376,6 +1508,8 @@ def parse_inference_policy(data: object, *, source_path: str = "<memory>") -> In
         service = _parse_tool_service(raw_service, index=index)
         if service.service_id in tool_services:
             raise PolicyError(f"duplicate tool service_id: {service.service_id}")
+        if service.service_id in routes or service.service_id in embedding_routes:
+            raise PolicyError(f"duplicate accounting route_id: {service.service_id}")
         tool_services[service.service_id] = service
 
     raw_default = mapping.get("default_route_id")
@@ -1394,6 +1528,7 @@ def parse_inference_policy(data: object, *, source_path: str = "<memory>") -> In
         tool_services=MappingProxyType(tool_services),
         default_route_id=default_route_id,
         source_path=source_path,
+        embedding_routes=MappingProxyType(embedding_routes),
     )
 
 
@@ -1429,6 +1564,8 @@ __all__ = [
     "DEFAULT_COMMERCIAL_CONFIG",
     "DEFAULT_INFERENCE_POLICY",
     "DisplayPrice",
+    "EmbeddingRoutePolicy",
+    "MonitorableRoute",
     "INFERENCE_POLICY_ENV",
     "InferencePolicy",
     "OperatorReview",

@@ -6,6 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
+from collections.abc import AsyncGenerator
 
 from orchestrator.auth import (
     AuthenticatedDevice,
@@ -19,7 +20,10 @@ from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     EmbeddingRequestError,
     embed_documents_with_metadata,
+    get_selected_embedding_route_id,
+    raise_if_embedding_accounting_error,
 )
+from orchestrator.compute_runtime import account_compute, current_scope, ComputeUnavailable
 from orchestrator.memory.store import MemoryContentConflictError, compute_memory_content_hash
 
 logger = logging.getLogger(__name__)
@@ -98,6 +102,27 @@ class _ImportFact:
 
 class MemoryImportRequest(BaseModel):
     memories: list[ImportedMemory] = Field(max_length=MAX_IMPORT_ITEMS)
+
+
+async def _embedding_account_scope(
+    app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> AsyncGenerator[None, None]:
+    """Outer scope for HTTP writers, never a scope created inside the adapter."""
+    if not get_selected_embedding_route_id() or app_state.memory_store is None:
+        yield
+        return
+    try:
+        active = current_scope()
+    except ComputeUnavailable:
+        active = None
+    if active is not None:
+        if active.user_id != auth.user_id:
+            raise HTTPException(status_code=503, detail="Account compute unavailable")
+        yield
+        return
+    async with account_compute(app_state.memory_store._pool, auth.user_id, operation="chat"):
+        yield
 
 
 class MemoryReembedRequest(BaseModel):
@@ -180,7 +205,7 @@ async def export_memories(
     return {"memories": memories}
 
 
-@router.post("/import")
+@router.post("/import", dependencies=[Depends(_embedding_account_scope)])
 async def import_memories(
     data: MemoryImportRequest,
     app_state: AppState = Depends(get_app_state),
@@ -241,7 +266,8 @@ async def import_memories(
             # Dedup falls back to exact-match checks when embeddings are
             # unqualified, as for any other write.
             prepared = None
-        except Exception:
+        except Exception as error:
+            raise_if_embedding_accounting_error(error)
             raise stopped() from None
 
         for index, item in enumerate(batch):
@@ -279,7 +305,7 @@ async def import_memories(
     }
 
 
-@router.post("/reembed")
+@router.post("/reembed", dependencies=[Depends(_embedding_account_scope)])
 async def reembed_memories(
     data: MemoryReembedRequest,
     app_state: AppState = Depends(get_app_state),
@@ -321,6 +347,8 @@ async def reembed_memories(
         valid_batch: list[dict[str, Any]] = []
         valid_texts: list[str] = []
         for mem in batch:
+            if mem.get("local_only") is not False:
+                continue
             text = str(mem.get("content") or "").strip()
             if not text:
                 skipped_empty += 1
@@ -401,7 +429,7 @@ async def get_memory(
     return memory
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(_embedding_account_scope)])
 async def create_memory(
     data: MemoryCreate,
     app_state: AppState = Depends(get_app_state),
@@ -433,7 +461,7 @@ async def create_memory(
     return {"id": str(memory_id), "status": "created"}
 
 
-@router.patch("/{memory_id}")
+@router.patch("/{memory_id}", dependencies=[Depends(_embedding_account_scope)])
 async def update_memory(
     memory_id: uuid.UUID,
     data: MemoryUpdate,
@@ -459,7 +487,7 @@ async def update_memory(
     content_changed = data.content != existing.get("content")
     embedding: list[float] | None = None
     embedding_model: str | None = None
-    if content_changed:
+    if content_changed and existing.get("local_only") is False:
         from orchestrator.memory.dedup import _embedding_text
 
         try:
@@ -471,7 +499,8 @@ async def update_memory(
                 embedding_model = embedded.storage_model
         except EmbeddingConfigurationError:
             pass
-        except Exception:
+        except Exception as error:
+            raise_if_embedding_accounting_error(error)
             logger.warning(
                 "Re-embedding an edited memory failed; clearing its vector", exc_info=True
             )

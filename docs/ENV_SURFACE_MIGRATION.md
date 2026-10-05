@@ -7,6 +7,24 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Dedicated embedding route selector — 5 October 2026
+
+`EMBEDDING_ROUTE_ID` is a new optional shared-runtime selector, declared once in
+`.env.example` and injected into both backend and worker. Absence or an empty
+value leaves the new adapter off. A nonempty value selects the separate embedding
+policy entry; unknown/unapproved entries deny dispatch and do not fall back to
+Voyage or another provider. Runtime approval and account compute are still required.
+
+No existing environment key is renamed, removed or moved between injection
+channels. Existing frozen dotenv precedence is unchanged. `OPENROUTER_API_KEY`
+remains the selected transport's credential; no direct Azure key is introduced.
+When the new selector is set, legacy embedding model/fallback settings do not
+control its primary document/query route; they retain legacy storage identities
+for lexical access. Existing vectors are not reembedded. No production environment
+was changed by the source update itself. The owner-approved local activation on
+5 October 2026 sets only the selector in an additional backend/worker release
+override, preserving the original dotenv and all existing injection channels.
+
 ### Self-hosted speech amendment — 2 October 2026
 
 MIGRATION: ordinary TTS no longer consumes `ELEVENLABS_API_KEY`. The key remains

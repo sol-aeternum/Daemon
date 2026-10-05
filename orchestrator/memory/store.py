@@ -15,7 +15,11 @@ import asyncpg
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingConfigurationError,
+    embed_query_with_metadata,
+    get_selected_embedding_route_id,
+)
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -225,8 +229,12 @@ class MemoryStore:
         )
         return dict(row)  # type: ignore[arg-type]
 
-    async def get_conversation(self, conversation_id: uuid.UUID) -> dict[str, Any] | None:
-        row = await self._pool.fetchrow(
+    async def get_conversation(
+        self, conversation_id: uuid.UUID, *, conn: Any | None = None
+    ) -> dict[str, Any] | None:
+        """Read on the caller's transaction when supplied, without reacquiring the pool."""
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             f"""
             SELECT c.*,
                    listing_meta.actual_message_count,
@@ -2294,6 +2302,10 @@ class MemoryStore:
         """
         # Embed the text query
         try:
+            if get_selected_embedding_route_id() and include_local is not False:
+                raise EmbeddingConfigurationError(
+                    "Local or unknown-locality query uses lexical retrieval"
+                )
             embedding_result = await embed_query_with_metadata(text)
         except EmbeddingConfigurationError:
             results = await self.search_memories_bm25(
@@ -2378,6 +2390,8 @@ class MemoryStore:
     async def get_l0_memories(
         self,
         user_id: uuid.UUID,
+        *,
+        include_local: bool = False,
     ) -> list[dict[str, Any]]:
         """Get all L0 (frozen) memories for a user.
 
@@ -2389,11 +2403,13 @@ class MemoryStore:
             SELECT * FROM memories
             WHERE user_id = $1
               AND tier = 'l0'
+              AND ($2::boolean OR local_only IS FALSE)
               AND status = 'active'
               AND valid_to IS NULL
             ORDER BY created_at ASC
             """,
             user_id,
+            include_local is True,
         )
         results = []
         for r in rows:
@@ -2406,12 +2422,15 @@ class MemoryStore:
         self,
         user_id: uuid.UUID,
         limit: int = 5,
+        *,
+        include_local: bool = False,
     ) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
             """
             SELECT * FROM memories
             WHERE user_id = $1
               AND category = 'summary'
+              AND ($3::boolean OR local_only IS FALSE)
               AND valid_to IS NULL
               AND status != 'deleted'
             ORDER BY created_at DESC
@@ -2419,6 +2438,7 @@ class MemoryStore:
             """,
             user_id,
             limit,
+            include_local is True,
         )
         results = []
         for r in rows:
@@ -2439,6 +2459,7 @@ class MemoryStore:
               AND valid_to IS NULL
               AND tier = 'l1'
               AND source_type != 'dream'
+              AND local_only IS FALSE
               AND memory_slot IS NOT NULL
             ORDER BY memory_slot ASC, created_at ASC
             """,
@@ -2460,6 +2481,7 @@ class MemoryStore:
               AND valid_to IS NULL
               AND tier = 'l1'
               AND source_type != 'dream'
+              AND local_only IS FALSE
               AND memory_slot IS NOT NULL
             ORDER BY user_id
             """

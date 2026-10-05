@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "fictional": true,
+  "split": "frozen-heldout",
+  "owner": "fictional-owner",
+  "space": "candidate",
+  "criteria": {"queries": 16, "minimum_top1": 12, "minimum_top3": 15},
+  "scenarios": [
+    {
+      "id": "tea-current",
+      "query": "Which tea does Mara most like drinking nowadays?",
+      "relevant": "tea-now",
+      "documents": [
+        {"id": "tea-night", "text": "Mara drinks chamomile before bed but it is not her favorite."},
+        {"id": "tea-now", "text": "As of October 2026, Mara's favorite tea is jasmine."},
+        {"id": "tea-other", "text": "Ellis's favorite tea is oolong."},
+        {"id": "tea-shop", "text": "Mara buys loose-leaf tea from the harbor shop."},
+        {"id": "tea-old", "text": "Mara's favorite tea is oolong.", "status": "superseded", "valid_to": "2026-10-01"}
+      ]
+    },
+    {
+      "id": "diet",
+      "query": "What type of diet does Ellis follow?",
+      "relevant": "diet-main",
+      "documents": [
+        {"id": "diet-other", "text": "Mara is vegan."},
+        {"id": "diet-lunch", "text": "Ellis likes lentil soup for lunch."},
+        {"id": "diet-avoid", "text": "Ellis dislikes celery but has no celery allergy."},
+        {"id": "diet-main", "text": "Ellis follows a vegetarian diet and eats dairy and eggs."},
+        {"id": "diet-local", "text": "Ellis follows a vegetarian diet.", "local_only": true}
+      ]
+    },
+    {
+      "id": "notebook",
+      "query": "What does Niko use to keep handwritten work notes?",
+      "relevant": "notes-work",
+      "documents": [
+        {"id": "notes-work", "text": "Niko records work notes by hand in a red paper notebook."},
+        {"id": "notes-diary", "text": "Niko's personal diary has a blue cover."},
+        {"id": "notes-device", "text": "Niko uses a silver laptop for email."},
+        {"id": "notes-other", "text": "Rowan keeps work notes in a green binder."},
+        {"id": "notes-foreign", "text": "Niko records work notes in a red notebook.", "owner": "another-fictional-owner"}
+      ]
+    },
+    {
+      "id": "music",
+      "query": "Which musical instrument is Rowan learning to play?",
+      "relevant": "music-learn",
+      "documents": [
+        {"id": "music-listen", "text": "Rowan listens to classical piano recordings."},
+        {"id": "music-other", "text": "Niko is learning violin."},
+        {"id": "music-learn", "text": "Rowan is taking beginner lessons on the cello."},
+        {"id": "music-venue", "text": "Rowan attends concerts at the town hall."},
+        {"id": "music-oldspace", "text": "Rowan is learning the cello.", "space": "historical-vector-space"}
+      ]
+    },
+    {
+      "id": "language-siblings",
+      "query": "Which programming language does Imani prefer for backend services?",
+      "relevant": "lang-backend",
+      "documents": [
+        {"id": "lang-browser", "text": "Imani prefers TypeScript for browser applications."},
+        {"id": "lang-backend", "text": "Imani favors Python when developing backend services."},
+        {"id": "lang-human", "text": "Imani is studying conversational Spanish."},
+        {"id": "lang-other", "text": "Dev favors Rust for backend services."}
+      ]
+    },
+    {
+      "id": "travel-condition",
+      "query": "Where does Dev prefer sitting when flying?",
+      "relevant": "travel-flight",
+      "documents": [
+        {"id": "travel-train", "text": "Dev chooses a window seat when traveling by train."},
+        {"id": "travel-class", "text": "Dev usually flies economy class."},
+        {"id": "travel-other", "text": "Imani prefers window seats on aircraft."},
+        {"id": "travel-flight", "text": "Dev prefers an aisle seat on airplanes so it is easy to stand up."}
+      ]
+    },
+    {
+      "id": "commute-current",
+      "query": "How does Sora currently travel to work?",
+      "relevant": "commute-now",
+      "documents": [
+        {"id": "commute-now", "text": "Since September 2026, Sora commutes to work by bicycle."},
+        {"id": "commute-weekend", "text": "Sora takes the bus to visit friends on weekends."},
+        {"id": "commute-other", "text": "Theo drives to work."},
+        {"id": "commute-weather", "text": "Sora owns a waterproof cycling jacket."},
+        {"id": "commute-old", "text": "Sora drives to work every day.", "status": "superseded", "valid_to": "2026-09-01"}
+      ]
+    },
+    {
+      "id": "schedule-scope",
+      "query": "At what time does Theo want work meetings to begin?",
+      "relevant": "meeting-time",
+      "documents": [
+        {"id": "meeting-gym", "text": "Theo goes to the gym at seven in the morning."},
+        {"id": "meeting-other", "text": "Sora prefers work meetings before nine in the morning."},
+        {"id": "meeting-time", "text": "Theo prefers work meetings to start after ten in the morning."},
+        {"id": "meeting-social", "text": "Theo meets friends for dinner at six in the evening."}
+      ]
+    },
+    {
+      "id": "project-current",
+      "query": "What is the current name of Lina's gardening project?",
+      "relevant": "project-name",
+      "documents": [
+        {"id": "project-tool", "text": "Lina plans gardening tasks in a spreadsheet."},
+        {"id": "project-name", "text": "Lina's gardening project is now called Meadow, renamed in October 2026."},
+        {"id": "project-other", "text": "Pavel's gardening project is called Orchard."},
+        {"id": "project-budget", "text": "Lina's gardening project budget is three hundred dollars."},
+        {"id": "project-old", "text": "Lina's gardening project is called Orchard.", "status": "superseded", "valid_to": "2026-10-01"}
+      ]
+    },
+    {
+      "id": "accessibility",
+      "query": "How should information be presented so Pavel can read it comfortably?",
+      "relevant": "access-font",
+      "documents": [
+        {"id": "access-other", "text": "Lina prefers compact text and small fonts."},
+        {"id": "access-audio", "text": "Pavel enjoys listening to audiobooks during walks."},
+        {"id": "access-device", "text": "Pavel uses a tablet to read newspapers."},
+        {"id": "access-font", "text": "Pavel needs large print and high-contrast text for comfortable reading."}
+      ]
+    },
+    {
+      "id": "uncertainty",
+      "query": "Which foreign language is Ada considering learning, without having decided?",
+      "relevant": "maybe-learn",
+      "documents": [
+        {"id": "maybe-learn", "text": "Ada might start learning Italian, but she has not decided yet."},
+        {"id": "maybe-current", "text": "Ada already speaks French fluently."},
+        {"id": "maybe-food", "text": "Ada enjoys Italian cooking."},
+        {"id": "maybe-other", "text": "Bram has decided to learn German."}
+      ]
+    },
+    {
+      "id": "notification-condition",
+      "query": "When is Bram willing to receive audible app alerts?",
+      "relevant": "alerts-work",
+      "documents": [
+        {"id": "alerts-phone", "text": "Bram's phone supports vibration alerts."},
+        {"id": "alerts-work", "text": "Bram allows audible app alerts only during working hours; outside those hours he wants silence."},
+        {"id": "alerts-other", "text": "Ada allows audible alerts at any time."},
+        {"id": "alerts-email", "text": "Bram checks email twice a day."}
+      ]
+    },
+    {
+      "id": "pet-person",
+      "query": "What is the name of Cora's dog?",
+      "relevant": "pet-dog",
+      "documents": [
+        {"id": "pet-cat", "text": "Cora's cat is called Juniper."},
+        {"id": "pet-other", "text": "Dax's dog is called Cedar."},
+        {"id": "pet-dog", "text": "Cora has a dog named Maple."},
+        {"id": "pet-color", "text": "Cora's dog has brown fur."}
+      ]
+    },
+    {
+      "id": "allergy",
+      "query": "What ingredient must Dax avoid because of an allergy?",
+      "relevant": "allergy-peanut",
+      "documents": [
+        {"id": "allergy-taste", "text": "Dax dislikes mushrooms but is not allergic to them."},
+        {"id": "allergy-food", "text": "Dax likes strawberry desserts."},
+        {"id": "allergy-other", "text": "Cora is allergic to shellfish."},
+        {"id": "allergy-peanut", "text": "Dax has a peanut allergy and must avoid peanuts."}
+      ]
+    },
+    {
+      "id": "negation",
+      "query": "Which drink does Eira specifically not like?",
+      "relevant": "drink-dislike",
+      "documents": [
+        {"id": "drink-dislike", "text": "Eira does not like coffee."},
+        {"id": "drink-like", "text": "Eira enjoys peppermint tea."},
+        {"id": "drink-other", "text": "Finn loves coffee."},
+        {"id": "drink-office", "text": "Eira's office has a coffee machine."}
+      ]
+    },
+    {
+      "id": "address-current",
+      "query": "In which city does Finn live now?",
+      "relevant": "address-now",
+      "documents": [
+        {"id": "address-trip", "text": "Finn plans a holiday in Lisbon."},
+        {"id": "address-now", "text": "Finn moved to Bergen in August 2026 and currently lives there."},
+        {"id": "address-other", "text": "Eira lives in Oslo."},
+        {"id": "address-work", "text": "Finn works remotely for a company in Oslo."},
+        {"id": "address-old", "text": "Finn lives in Oslo.", "status": "superseded", "valid_to": "2026-08-01"}
+      ]
+    }
+  ]
+}

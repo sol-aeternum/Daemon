@@ -119,10 +119,14 @@ Account entitlement schema and usage ledgers are introduced by the commercial mi
 Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYER.md](../MEMORY_LAYER.md) for full architecture.
 
 ### Extraction & Dedup
-Provider embedding execution is currently denied pending a qualified, budget-bounded
-adapter. The configured identities below remain distinct for existing stored vectors;
-fallback settings cannot grant approval. Core writes and retrieval degrade to nullable
-vectors and account-scoped lexical search.
+Provider embedding execution remains denied by default. The dedicated token-metered
+Azure/OpenRouter adapter is qualified in the deployment-specific monitored policy;
+the portable `embedding_routes` entry remains denied and `EMBEDDING_ROUTE_ID` defaults empty.
+Legacy identities below remain distinct for existing vectors; fallback settings
+cannot grant approval. Core writes and retrieval degrade to nullable vectors and
+account-scoped lexical search. Native-chat query preparation shares the existing
+account producer scope, and cloud frozen/summary context excludes local-only or
+unknown locality. See `MEMORY_EMBEDDING_ADAPTER.md` for the approved contract.
 
 - **Extraction**: The configured, account-budgeted background role extracts facts from conversation turns. Each fact is persisted before planning the next.
 - **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with an explicit ordered fallback chain configured by `EMBEDDING_FALLBACK_PROVIDERS`. Supported fallbacks are the corresponding Voyage models through OpenRouter (reusing `OPENROUTER_API_KEY`) and OpenAI `text-embedding-3-small`. Routed Voyage parity is unproven, so fallback vectors retain distinct `openrouter:<model>` or `openai:<model>` storage identities. Vector/BM25 retrieval only searches enabled identities with stored rows for that user, including inferred historical windows; dedup reconciles spaces lexically/by slot without cross-provider vector comparisons and excludes L0/dream rows.
@@ -197,6 +201,7 @@ rejection ratio above 10%.
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
+- **EMBEDDING_ROUTE_ID**: empty by default; explicit policy route selection grants no approval by itself
 - **EMBEDDING_FALLBACK_PROVIDERS**: unset by default; ordered comma-separated opt-in (`openrouter`, `openai`, or `openrouter,openai`)
 - **EMBEDDING_OPENROUTER_DOCUMENT_MODEL**: voyageai/voyage-4-large
 - **EMBEDDING_OPENROUTER_QUERY_MODEL**: voyageai/voyage-4-lite

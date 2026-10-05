@@ -295,12 +295,24 @@ def create_default_registry(
         from orchestrator.tools.memory_demote import MemoryDemoteTool
         from orchestrator.tools.memory_reflect import MemoryReflectTool
 
-        registry.register(MemoryReadTool(memory_store, user_id))
+        import uuid
+
+        memory_conversation_id = None
+        if conversation_id is not None:
+            try:
+                memory_conversation_id = uuid.UUID(str(conversation_id))
+            except (ValueError, TypeError, AttributeError):
+                pass  # Unknown context permits only cloud-safe lexical reads.
+        registry.register(
+            MemoryReadTool(memory_store, user_id, conversation_id=memory_conversation_id)
+        )
         if not disable_memory_write:
             registry.register(MemoryWriteTool(memory_store, user_id))
         registry.register(MemoryPromoteTool(memory_store, user_id))
         registry.register(MemoryDemoteTool(memory_store, user_id))
-        registry.register(MemoryReflectTool(memory_store, user_id))
+        registry.register(
+            MemoryReflectTool(memory_store, user_id, conversation_id=memory_conversation_id)
+        )
 
     return registry
 

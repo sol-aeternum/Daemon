@@ -49,15 +49,35 @@ class MemoryReflectTool(Tool):
         "required": ["topic"],
     }
 
-    def __init__(self, store: MemoryStore, user_id: uuid.UUID, *, model: str | None = None) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        user_id: uuid.UUID,
+        *,
+        model: str | None = None,
+        conversation_id: uuid.UUID | None = None,
+    ) -> None:
         self.store = store
         self.user_id = user_id
         self.model = model
+        self.conversation_id = conversation_id
 
     async def execute(self, **kwargs: Any) -> str:
         topic = kwargs.get("topic", "")
         if not topic or not topic.strip():
             return "No topic provided for reflection."
+
+        # Only server-bound, owner-checked cloud context authorizes disclosure.
+        # Tool arguments cannot supply or widen this permission.
+        conversation = None
+        if isinstance(self.conversation_id, uuid.UUID):
+            conversation = await self.store.get_conversation(self.conversation_id)
+        if (
+            not isinstance(conversation, dict)
+            or conversation.get("user_id") != self.user_id
+            or conversation.get("pipeline") != "cloud"
+        ):
+            return "Reflection is available only in a verified cloud conversation."
 
         limit = kwargs.get("limit", 15)
         effective_limit = max(1, min(limit, 50))
@@ -72,7 +92,7 @@ class MemoryReflectTool(Tool):
             user_id=self.user_id,
             query_embedding=query_result.embedding if query_result is not None else None,
             limit=effective_limit,
-            include_local=True,
+            include_local=False,
             include_historical=True,
             include_l0=True,
             include_dream_observations=True,
@@ -82,6 +102,7 @@ class MemoryReflectTool(Tool):
             query_embedding_model=query_result.model if query_result is not None else None,
         )
 
+        memories = [memory for memory in memories if memory.get("local_only") is False]
         if not memories:
             return (
                 "No relevant memories found for reflection. "

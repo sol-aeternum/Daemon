@@ -317,6 +317,57 @@
       "notes": "Exact xai/zdr/us listing overrides the ordinary provider's 30-day retention policy; no substitution to xai or xai/priority. Ceilings cover the >=200000-prompt-token pricing tier and US premium. Endpoint-advertised output limit, not maximal-length live-tested."
     }
   ],
+  "embedding_routes": [
+    {
+      "route_id": "azure-openrouter-small-1024",
+      "provider": "openrouter",
+      "model": "openai/text-embedding-3-small",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "dimensions": 1024,
+      "max_input_tokens": 8000,
+      "max_batch_tokens": 100000,
+      "max_batch_items": 100,
+      "approved": true,
+      "availability": "verified",
+      "approval_mode": "monitored",
+      "approval_expires_at": null,
+      "privacy": {
+        "transport": {
+          "provider_only": ["azure"],
+          "provider_order": ["azure"],
+          "allow_fallbacks": false,
+          "require_parameters": true,
+          "data_collection": "deny",
+          "zdr": true
+        },
+        "account_prompt_logging_disabled": true,
+        "free_model_training_opt_out": true
+      },
+      "operator_review": {
+        "reviewer": "deployment-operator (conditional local activation approved 2026-10-04; qualification reviewed 2026-10-05)",
+        "reviewed_at": "2026-10-05T00:00:00Z",
+        "review_expires_at": null,
+        "evidence": [
+          "https://openrouter.ai/api/v1/endpoints/zdr",
+          "https://openrouter.ai/api/v1/models/openai/text-embedding-3-small/endpoints",
+          "https://openrouter.ai/api/frontend/v1/all-providers",
+          "Exact small/azure public ZDR, provider baseline and price rechecked 2026-10-05T01:41:27Z; no regional residency claim.",
+          "docs/INFERENCE_ROUTE_APPROVALS.md: same-account logging/training attestation carried forward under operator-approved monitored mode.",
+          "docs/MEMORY_EMBEDDING_ADAPTER.md: frozen fictional retrieval 14/16 top-one and 16/16 top-three; exact Azure small-1024 production wire/parser receipts.",
+          "Owner-approved isolated PostgreSQL accounting suite: 35 passed, synthetic data and mocked HTTP only; disposable database removed."
+        ]
+      },
+      "price_ceiling": {
+        "microusd_per_1m_prompt": 20000,
+        "microusd_per_1m_completion": 0
+      },
+      "zdr_baseline": {
+        "provider_slug": "azure",
+        "data_policy": {"training": false, "retainsPrompts": false}
+      },
+      "notes": "Qualified dedicated input-token adapter, not a completion candidate. Owner-approved conditional LOCAL activation after route privacy, frozen fictional quality and isolated PostgreSQL accounting checks. Selection remains off by default; effective admission also requires fresh sticky-revocation attestation. Monitored non-calendar approval; no region/residency claim, retry or provider fallback. New cloud-memory writes and retrieval only, no existing vector migration."
+    }
+  ],
   "tool_services": [
     {
       "service_id": "brave-web-search",

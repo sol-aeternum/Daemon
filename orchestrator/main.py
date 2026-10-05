@@ -797,13 +797,21 @@ async def _account_chat_frames(
     *,
     auto_route: bool = False,
     profile: str = "routine",
+    prepare_system_prompt: Callable[[], Awaitable[str]] | None = None,
     **kwargs: Any,
 ) -> AsyncIterator[str]:
     request_id = kwargs.get("request_id")
+
+    async def source() -> AsyncIterator[str]:
+        if prepare_system_prompt is not None:
+            kwargs["system_prompt"] = await prepare_system_prompt()
+        async for frame in stream_sse_chat(**kwargs):
+            yield frame
+
     async for frame in _account_frames(
         scope_pool,
         scope_user_id,
-        lambda: stream_sse_chat(**kwargs),
+        source,
         auto_route=auto_route,
         profile=profile,
         request_id=request_id if isinstance(request_id, str) else None,
@@ -2450,6 +2458,7 @@ async def chat(
                 break
 
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
+    preferences_block = ""
     user_timezone = None
     try:
         db_pool = getattr(app_state, "db_pool", None)
@@ -2460,25 +2469,39 @@ async def chat(
     if store and user_id and conversation_uuid:
         try:
             from orchestrator.memory.injection import (
-                assemble_system_prompt,
-                build_memory_context,
                 format_preferences_block,
             )
 
             user_settings = await store.get_user_settings(user_id)
             user_timezone = extract_timezone_name(user_settings)
             preferences_block = format_preferences_block(user_settings)
-            memory_context = await build_memory_context(store, conversation_uuid)
-            assembled_system_prompt = await assemble_system_prompt(
-                memory_context=memory_context,
-                preferences_block=preferences_block,
-                conversation_id=conversation_uuid,
-            )
         except Exception:
             logger.warning("Memory injection failed, using base prompt", exc_info=True)
 
     if skills_block and skills_block not in assembled_system_prompt:
         assembled_system_prompt = f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
+
+    async def prepare_native_system_prompt() -> str:
+        # Invoked in the account producer task, before model dispatch. Query
+        # embeddings share this turn's admission and reservation cleanup.
+        prompt = assembled_system_prompt
+        if store and user_id and conversation_uuid:
+            from orchestrator.memory.embedding import raise_if_embedding_accounting_error
+            from orchestrator.memory.injection import assemble_system_prompt, build_memory_context
+
+            try:
+                context = await build_memory_context(store, conversation_uuid)
+                prompt = await assemble_system_prompt(
+                    memory_context=context,
+                    preferences_block=preferences_block,
+                    conversation_id=conversation_uuid,
+                )
+            except Exception as error:
+                raise_if_embedding_accounting_error(error)
+                logger.warning("Memory injection failed, using base prompt", exc_info=True)
+        if skills_block and skills_block not in prompt:
+            prompt = f"{prompt.rstrip()}\n\n{skills_block}"
+        return prompt
 
     async def is_disconnected() -> bool:
         return await request.is_disconnected()
@@ -2559,6 +2582,7 @@ async def chat(
                 settings=settings,
                 provider_config=provider_config,
                 system_prompt=assembled_system_prompt,
+                prepare_system_prompt=prepare_native_system_prompt,
                 user_message=user_message,
                 history_messages=history_messages,
                 conversation_id=conversation_id,
