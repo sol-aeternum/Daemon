@@ -1,7 +1,7 @@
 {
   "name": "@daemon-internal/braces",
-  "description": "Private Daemon-maintained derivative of braces3.0.3 with CVE-2026-93687 depth guards; not an official upstream release.",
-  "version": "3.0.3-daemon.1",
+  "description": "Private Daemon-maintained derivative of braces3.0.3 with CVE-2026-93687 depth, fractional-maxDepth and parent-cycle guards; not an official upstream release.",
+  "version": "3.0.3-daemon.2",
   "homepage": "https://github.com/sol-aeternum/Daemon",
   "author": "Jon Schlinkert (https://github.com/jonschlinkert)",
   "contributors": [

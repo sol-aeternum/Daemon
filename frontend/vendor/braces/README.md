@@ -1,6 +1,6 @@
 # Daemon temporary maintained derivative
 
-This is private/unpublished @daemon-internal/braces3.0.3-daemon.1 derived from published braces3.0.3 plus the reviewed CVE-2026-93687 depth-guard backport. It is NOT an official upstream release. Original MIT attribution is retained. Upstream origin/advisory and fix provenance are maintained by Daemon; name-based npm audit alone does not establish security.
+This is private/unpublished @daemon-internal/braces3.0.3-daemon.2 derived from published braces3.0.3 plus the reviewed CVE-2026-93687 depth-guard backport with the fractional maxDepth parsing and AST parent-chain cycle fixes. It is NOT an official upstream release. Original MIT attribution is retained. Upstream origin/advisory and fix provenance are maintained by Daemon; name-based npm audit alone does not establish security.
 
 # braces [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=W8YFZ425KND68) [![NPM version](https://img.shields.io/npm/v/braces.svg?style=flat)](https://www.npmjs.com/package/braces) [![NPM monthly downloads](https://img.shields.io/npm/dm/braces.svg?style=flat)](https://npmjs.org/package/braces) [![NPM total downloads](https://img.shields.io/npm/dt/braces.svg?style=flat)](https://npmjs.org/package/braces) [![Linux Build Status](https://img.shields.io/travis/micromatch/braces.svg?style=flat&label=Travis)](https://travis-ci.org/micromatch/braces)
 

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const braces = require(path.resolve(process.argv[2]));
 const modules = path.resolve(process.argv[3]);
@@ -19,6 +20,14 @@ function refusal(fn, type) {
   assert.throws(
     fn,
     (error) => error instanceof type && /exceeds max depth/.test(error.message),
+  );
+}
+function cycleRefusal(fn) {
+  assert.throws(
+    fn,
+    (error) =>
+      error instanceof RangeError &&
+      error.message === 'AST parent chain contains a cycle',
   );
 }
 function ast(n, type = 'brace', rooted = true) {
@@ -167,8 +176,157 @@ async function main() {
       }
   });
   check('fractional option semantics', () => {
-    assert.doesNotThrow(() => braces.parse('{x}', { maxDepth: 0.5 }));
-    refusal(() => braces.compile('{x}', { maxDepth: 0.5 }), RangeError);
+    // Parser (upstream 2569ead guard): fractional maxDepth below 1 rejects the
+    // first nesting level; 1.5 admits exactly one level; exact integers 100/101
+    // and stricter integer limits are unchanged (asserted above).
+    refusal(() => braces.parse('{x}', { maxDepth: 0.5 }), SyntaxError);
+    refusal(() => braces.parse('(x)', { maxDepth: 0.5 }), SyntaxError);
+    refusal(() => braces.parse('{{x}}', { maxDepth: 1.5 }), SyntaxError);
+    refusal(() => braces.parse('((x))', { maxDepth: 1.5 }), SyntaxError);
+    refusal(() => braces.parse('({x})', { maxDepth: 1.5 }), SyntaxError);
+    assert.doesNotThrow(() => braces.parse('{x}', { maxDepth: 1.5 }));
+    assert.doesNotThrow(() => braces.parse('(x)', { maxDepth: 1.5 }));
+    assert.doesNotThrow(() => braces.parse('({x})', { maxDepth: 2.5 }));
+    // Walkers keep fractional rejection with RangeError on direct AST input,
+    // independent of the parser now rejecting fractional options.
+    for (const op of ['compile', 'expand', 'stringify']) {
+      refusal(() => braces[op](ast(1), { maxDepth: 0.5 }), RangeError);
+      refusal(() => braces[op](ast(2), { maxDepth: 1.5 }), RangeError);
+      assert.doesNotThrow(() => braces[op](ast(1), { maxDepth: 1.5 }));
+      // String input reaches the parser first, so the composite error is the
+      // parser's SyntaxError, not the walker's RangeError.
+      refusal(() => braces[op]('{x}', { maxDepth: 0.5 }), SyntaxError);
+    }
+    refusal(() => braces('{x}', { maxDepth: 0.5 }), SyntaxError);
+  });
+  check('expand parent-chain self cycle', () => {
+    const paren = { type: 'paren', nodes: [{ type: 'text', value: 'x' }] };
+    paren.nodes[0].parent = paren;
+    paren.parent = paren;
+    const root = { type: 'root', nodes: [paren] };
+    cycleRefusal(() => braces.expand(root));
+  });
+  check('expand parent-chain multinode cycle', () => {
+    const a = { type: 'paren', nodes: [{ type: 'text', value: 'x' }] };
+    const b = { type: 'paren', nodes: [] };
+    a.parent = b;
+    b.parent = a;
+    const root = { type: 'root', nodes: [a] };
+    cycleRefusal(() => braces.expand(root));
+  });
+  check('expand acyclic parent traversal still works', () => {
+    // Deep but acyclic parent chains must keep working; no hop limit is
+    // claimed or enforced by the cycle guard.
+    const text = { type: 'text', value: 'x' };
+    let node = text;
+    for (let i = 0; i < 50; i++) {
+      const paren = { type: 'paren', nodes: [node] };
+      node.parent = paren;
+      node = paren;
+    }
+    const root = { type: 'root', nodes: [node] };
+    node.parent = root;
+    assert.doesNotThrow(() => braces.expand(root));
+    assert.deepEqual(braces.expand('src/{app,components}/*.tsx'), [
+      'src/app/*.tsx',
+      'src/components/*.tsx',
+    ]);
+  });
+  check('expand upward call sites remain guarded', () => {
+    const expandSource = fs.readFileSync(
+      path.join(path.resolve(process.argv[2]), 'lib/expand.js'),
+      'utf8',
+    );
+    assert.equal(
+      expandSource.split('queueOwner(').length - 1,
+      2,
+      'Expected exactly two guarded queueOwner call sites',
+    );
+    assert.ok(
+      expandSource.includes('const queueOwner ='),
+      'queueOwner helper definition missing',
+    );
+    assert.ok(
+      expandSource.includes('queueOwner(parent).queue') &&
+        expandSource.includes('queueOwner(node).queue'),
+      'Both upward traversal sites must use the cycle-guarded queueOwner helper',
+    );
+    assert.ok(
+      !expandSource.includes("while (p.type !== 'brace'") &&
+        !expandSource.includes("while (block.type !== 'brace'"),
+      'Raw unguarded upward parent loops must not return',
+    );
+  });
+  check('queueOwner helper unit behavior', () => {
+    // Extracted for dedicated unit testing only; production code stays export-free.
+    const expandSource = fs.readFileSync(
+      path.join(path.resolve(process.argv[2]), 'lib/expand.js'),
+      'utf8',
+    );
+    const helperSource = expandSource.slice(
+      expandSource.indexOf('const queueOwner'),
+      expandSource.indexOf('const expand'),
+    );
+    assert.ok(
+      helperSource.includes('AST parent chain contains a cycle'),
+      'queueOwner helper not found in installed expand.js',
+    );
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext(`${helperSource}\nthis.queueOwner = queueOwner;`, sandbox);
+    const queueOwner = sandbox.queueOwner;
+    const owner = { type: 'brace', nodes: [] };
+    const mid = { type: 'paren', parent: owner, nodes: [] };
+    const leaf = { type: 'text', value: 'x', parent: mid };
+    assert.equal(
+      queueOwner(leaf),
+      owner,
+      'acyclic chain follows to brace owner',
+    );
+    assert.equal(queueOwner(owner), owner, 'brace owner returns itself');
+    const parentless = { type: 'text', value: 'x' };
+    assert.equal(
+      queueOwner(parentless),
+      parentless,
+      'parentless node returns itself',
+    );
+    const rootOwner = { type: 'root', nodes: [] };
+    assert.equal(
+      queueOwner({ type: 'text', value: 'x', parent: rootOwner }),
+      rootOwner,
+      'chain terminates at root',
+    );
+    // Parent-only links do not increase recursive child depth. Keep traversal
+    // beyond MAX_DEPTH working without turning that ceiling into a hop cap.
+    let longChain = rootOwner;
+    for (let i = 0; i < 1000; i++) {
+      longChain = { type: 'paren', parent: longChain };
+    }
+    assert.equal(queueOwner(longChain), rootOwner, 'no parent-chain hop cap');
+    const self = { type: 'paren', nodes: [] };
+    self.parent = self;
+    // The VM helper runs in its own realm, so assert the exact contract
+    // message rather than cross-realm instanceof.
+    assert.throws(() => queueOwner(self), {
+      name: 'RangeError',
+      message: 'AST parent chain contains a cycle',
+    });
+    const cycleA = { type: 'paren', nodes: [] };
+    const cycleB = { type: 'paren', nodes: [] };
+    cycleA.parent = cycleB;
+    cycleB.parent = cycleA;
+    assert.throws(() => queueOwner(cycleA), {
+      name: 'RangeError',
+      message: 'AST parent chain contains a cycle',
+    });
+    assert.throws(() => queueOwner(cycleB), {
+      name: 'RangeError',
+      message: 'AST parent chain contains a cycle',
+    });
+    // A cyclic chain behind an early-return brace type is not followed.
+    const cyclicBrace = { type: 'brace', nodes: [] };
+    cyclicBrace.parent = cyclicBrace;
+    assert.equal(queueOwner(cyclicBrace), cyclicBrace);
   });
   check('216 baseline differential rows', () => {
     const rows = JSON.parse(

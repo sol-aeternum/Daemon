@@ -54,8 +54,24 @@
  
  const append = (queue = '', stash = '', enclose = false) => {
    const result = [];
-@@ -32,8 +33,12 @@
+@@ -30,19 +31,31 @@
+   return utils.flatten(result);
+ };
  
++const queueOwner = node => {
++  if (node.type === 'brace' || node.type === 'root' || !node.parent) return node;
++
++  const seen = new Set();
++  while (node.type !== 'brace' && node.type !== 'root' && node.parent) {
++    if (seen.has(node)) {
++      throw new RangeError('AST parent chain contains a cycle');
++    }
++    seen.add(node);
++    node = node.parent;
++  }
++  return node;
++};
++
  const expand = (ast, options = {}) => {
    const rangeLimit = options.rangeLimit === undefined ? 1000 : options.rangeLimit;
 +  const maxDepth = Number.isFinite(options.maxDepth) ? Math.min(MAX_DEPTH, options.maxDepth) : MAX_DEPTH;
@@ -67,8 +83,33 @@
 +    }
      node.queue = [];
  
-     let p = parent;
-@@ -100,14 +105,14 @@
+-    let p = parent;
+-    let q = parent.queue;
+-
+-    while (p.type !== 'brace' && p.type !== 'root' && p.parent) {
+-      p = p.parent;
+-      q = p.queue;
+-    }
++    const q = queueOwner(parent).queue;
+ 
+     if (node.invalid || node.dollar) {
+       q.push(append(q.pop(), stringify(node, options)));
+@@ -72,13 +85,7 @@
+     }
+ 
+     const enclose = utils.encloseBrace(node);
+-    let queue = node.queue;
+-    let block = node;
+-
+-    while (block.type !== 'brace' && block.type !== 'root' && block.parent) {
+-      block = block.parent;
+-      queue = block.queue;
+-    }
++    const queue = queueOwner(node).queue;
+ 
+     for (let i = 0; i < node.nodes.length; i++) {
+       const child = node.nodes[i];
+@@ -100,14 +107,14 @@
        }
  
        if (child.nodes) {
@@ -115,7 +156,7 @@
       */
  
      if (value === CHAR_LEFT_PARENTHESES) {
-+      if (nesting >= maxDepth) {
++      if (nesting + 1 > maxDepth) {
 +        throw new SyntaxError(`Input depth (${nesting + 1}), exceeds max depth (${maxDepth})`);
 +      }
 +      nesting++;
@@ -134,7 +175,7 @@
       */
  
      if (value === CHAR_LEFT_CURLY_BRACE) {
-+      if (nesting >= maxDepth) {
++      if (nesting + 1 > maxDepth) {
 +        throw new SyntaxError(`Input depth (${nesting + 1}), exceeds max depth (${maxDepth})`);
 +      }
 +      nesting++;
