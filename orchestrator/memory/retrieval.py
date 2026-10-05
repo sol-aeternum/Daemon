@@ -14,6 +14,9 @@ from orchestrator.config import get_settings
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     EmbeddingVectorResult,
+    get_primary_embedding_storage_model,
+    get_lexical_embedding_storage_models,
+    get_selected_embedding_route_id,
     get_configured_embedding_fallback_storage_models,
     embed_query_for_configured_storage_models,
 )
@@ -430,6 +433,7 @@ async def retrieve_memories_for_text(
     include_dream_observations: bool = False,
     storage_embedding_model: str | None = None,
     query_embedding_model: str | None = None,
+    allow_query_embedding: bool = True,
 ) -> list[dict[str, object]]:
     """Canonical text-query retrieval contract.
 
@@ -465,6 +469,12 @@ async def retrieve_memories_for_text(
         )
         if effective_embedding is None:
             try:
+                if not allow_query_embedding or (
+                    get_selected_embedding_route_id() and include_local is not False
+                ):
+                    raise EmbeddingConfigurationError(
+                        "Local or unknown-locality query uses lexical retrieval"
+                    )
                 embedding_results = await embed_query_for_configured_storage_models(
                     normalized_query,
                     fallback_storage_models=fallback_storage_models,
@@ -478,7 +488,7 @@ async def retrieve_memories_for_text(
                         embedding=[],
                         provider="none",
                         model=settings.embedding_query_model,
-                        storage_model=settings.embedding_document_model,
+                        storage_model=get_primary_embedding_storage_model(),
                     )
                 ]
                 embedding_results.extend(
@@ -500,7 +510,7 @@ async def retrieve_memories_for_text(
             effective_storage_embedding_model = (
                 effective_storage_embedding_model
                 or inferred_storage_model
-                or settings.embedding_document_model
+                or get_primary_embedding_storage_model()
             )
             primary_result = EmbeddingVectorResult(
                 embedding=effective_embedding,
@@ -508,11 +518,16 @@ async def retrieve_memories_for_text(
                 model=embedding_model_used,
                 storage_model=effective_storage_embedding_model,
             )
-            embedding_results = await embed_query_for_configured_storage_models(
-                normalized_query,
-                primary_result=primary_result,
-                fallback_storage_models=fallback_storage_models,
-            )
+            if not allow_query_embedding or (
+                get_selected_embedding_route_id() and include_local is not False
+            ):
+                embedding_results = [primary_result]
+            else:
+                embedding_results = await embed_query_for_configured_storage_models(
+                    normalized_query,
+                    primary_result=primary_result,
+                    fallback_storage_models=fallback_storage_models,
+                )
 
         combined_ranked: dict[uuid.UUID, dict[str, object]] = {}
         for index, embedding_result in enumerate(embedding_results):
@@ -628,7 +643,12 @@ async def retrieve_memories_for_text(
         _ = asyncio.create_task(_persist_combined_log())
 
     if include_l0:
-        l0_memories = cast(list[dict[str, object]], await store.get_l0_memories(user_id))
+        l0_memories = cast(
+            list[dict[str, object]],
+            await store.get_l0_memories(user_id, include_local=include_local is True),
+        )
+        if include_local is not True:
+            l0_memories = [row for row in l0_memories if row.get("local_only") is False]
         combined = _prepend_l0_memories(l0_memories, ranked)
         l0_included = len(l0_memories) > 0
 
@@ -809,7 +829,7 @@ async def retrieve_memories(
     effective_embedding_model = (
         embedding_model
         or (inferred_storage_model if isinstance(inferred_storage_model, str) else None)
-        or get_settings().embedding_document_model
+        or get_primary_embedding_storage_model()
     )
     effective_user_id: uuid.UUID | None = user_id
     temporal_window = _detect_temporal_query_window(
@@ -871,7 +891,9 @@ async def retrieve_memories(
                 memory_slot=normalized_slot,
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
-                embedding_models=[effective_embedding_model],
+                embedding_models=list(get_lexical_embedding_storage_models())
+                if get_selected_embedding_route_id()
+                else [effective_embedding_model],
             ),
         )
 

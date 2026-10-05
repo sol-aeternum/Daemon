@@ -149,7 +149,10 @@ def test_embedding_providers_follow_inference_policy_approval(
         embedding._require_approved_embedding_service("voyage")
 
     approved.add("voyage-embeddings")
-    embedding._require_approved_embedding_service("voyage")
+    # A legacy service approval cannot bypass the missing token-budget adapter.
+    with pytest.raises(embedding.EmbeddingConfigurationError) as caught:
+        embedding._require_approved_embedding_service("voyage")
+    assert caught.value.reason == "budget_adapter_unavailable"
     # Providers without a reviewed tool service stay denied by default.
     for provider in ("openai", "openrouter"):
         with pytest.raises(embedding.EmbeddingConfigurationError):

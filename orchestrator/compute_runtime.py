@@ -46,7 +46,11 @@ from openai import APIError as OpenAIAPIError
 from orchestrator import model_routing, routing_log
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
-from orchestrator.entitlements.policy import RoutePolicy, load_inference_policy
+from orchestrator.entitlements.policy import (
+    EmbeddingRoutePolicy,
+    RoutePolicy,
+    load_inference_policy,
+)
 from orchestrator.entitlements.errors import (
     AccessDenied,
     AccountError,
@@ -1008,6 +1012,219 @@ async def metered_tool_call(
         yield charge
     finally:
         await _settle_tool_hold(active, reservation, approval, charge=charge)
+
+
+class EmbeddingCallCharge:
+    """Dispatch state and a validated input-token receipt for one embedding POST."""
+
+    def __init__(self, hold: ReservationHold, route: EmbeddingRoutePolicy) -> None:
+        self._hold = hold
+        self._route = route
+        self._state = "pre_dispatch"
+        self.input_tokens: int | None = None
+        self.actual: int | None = None
+
+    def mark_dispatched(self) -> None:
+        if self._state != "pre_dispatch" or self._hold.settlement is not None:
+            raise ComputeUnavailable(
+                "settlement_conflict",
+                "Embedding reservation is already settling",
+                category=FAILURE_SETTLEMENT_FAILED,
+            )
+        self._hold.actual = None
+        self._state = "dispatched"
+
+    def confirm(self, *, input_tokens: int, actual_microusd: int) -> None:
+        if self._state != "dispatched":
+            raise RuntimeError("Embedding confirmation requires one marked dispatch")
+        if type(input_tokens) is not int or input_tokens <= 0:
+            raise ValueError("Embedding input usage must be a positive integer")
+        if type(actual_microusd) is not int or actual_microusd < 0:
+            raise ValueError("Embedding cost must be a non-negative integer")
+        if actual_microusd > self._route.estimate_microusd(input_tokens):
+            raise ValueError("Embedding cost exceeds its pinned input rate")
+        self.input_tokens = input_tokens
+        self.actual = actual_microusd
+        # Cleanup racing cancellation must preserve validated actual usage.
+        self._hold.actual = actual_microusd
+        self._state = "confirmed"
+
+
+@asynccontextmanager
+async def metered_embedding_call(
+    route: EmbeddingRoutePolicy, input_token_bound: int, *, scope: ComputeScope | None = None
+) -> AsyncIterator[EmbeddingCallCharge]:
+    """Reserve input tokens on the EXISTING scope before a single embedding send.
+
+    Acquisition/registration and uncertain-commit recovery mirror dispatch-aware
+    metered_tool_call. Known pre-send failure costs zero; unknown post-send usage
+    costs the ceiling. No fixed-unit quotient or completion receipt is involved.
+    The adapter rechecks its exact route/attestation after acquisition, before send.
+    """
+    active = scope if scope is not None else current_scope()
+    if type(input_token_bound) is not int or not 0 < input_token_bound <= route.max_batch_tokens:
+        raise ComputeUnavailable("embedding_unavailable", "Invalid embedding input bound")
+    policy = load_inference_policy()
+    if policy.embedding_route(route.route_id) != route or not route.is_approved(
+        policy.requirements
+    ):
+        raise ComputeUnavailable("embedding_unavailable", "Approved embedding route unavailable")
+    bound = route.estimate_microusd(input_token_bound)
+
+    async def acquire_and_register(first_extended: bool) -> Any:
+        options = (
+            {"expected_period": active.expected_period}
+            if active.expected_period is not None
+            else {}
+        )
+        try:
+            reservation = await active.service.reserve(
+                active.user_id,
+                bound,
+                operation=active.operation,
+                provider=route.provider,
+                model=route.model,
+                route_id=route.route_id,
+                premium=False,
+                extended=active.extended,
+                extended_run=first_extended,
+                background=active.background,
+                scope_id=active.scope_id,
+                **options,
+            )
+        except ReservationCommitUncertain as exc:
+            receipt = exc.receipt
+            active.outstanding[receipt.id] = ReservationHold(receipt, bound, actual=0)
+
+            async def recover_commit() -> None:
+                if (
+                    receipt.user_id != active.user_id
+                    or receipt.scope_id != active.scope_id
+                    or receipt.reservation.operation != active.operation
+                    or receipt.reservation.reserved_microusd != bound
+                    or receipt.provider != route.provider
+                    or receipt.model != route.model
+                    or (
+                        active.expected_period is not None
+                        and receipt.reservation.period_key != active.expected_period
+                    )
+                    or receipt.route_id != route.route_id
+                    or receipt.reservation.premium
+                    or receipt.reservation.extended != active.extended
+                    or receipt.extended_run != first_extended
+                    or receipt.background != active.background
+                ):
+
+                    async def reject_binding() -> None:
+                        raise ReservationRecoveryUnresolved(receipt)
+
+                    rejected = asyncio.create_task(reject_binding())
+                    active.outstanding[receipt.id].settlement = rejected
+                    await asyncio.shield(rejected)
+                recovered = await active.service.recover_reservation(receipt)
+                if recovered is None:
+                    active.outstanding.pop(receipt.id)
+                else:
+                    active.outstanding[receipt.id].reservation = recovered
+                    if first_extended:
+                        active.extended_started = True
+                    await active.settle(recovered, 0, path="embedding_not_dispatched")
+
+            recovery = asyncio.create_task(recover_commit())
+            interrupted = exc.interrupted
+            try:
+                while True:
+                    try:
+                        await asyncio.shield(recovery)
+                        break
+                    except asyncio.CancelledError:
+                        interrupted = True
+                        if recovery.done():
+                            recovery.result()
+                            break
+            except ReservationRecoveryUnresolved:
+                raise ComputeUnavailable(
+                    "reservation_outcome_unresolved",
+                    "Account reservation outcome is unresolved",
+                    category=FAILURE_SETTLEMENT_FAILED,
+                ) from None
+            except Exception:
+                raise ComputeUnavailable(
+                    "reservation_outcome_unresolved",
+                    "Account reservation outcome is unresolved",
+                    category=FAILURE_SETTLEMENT_FAILED,
+                ) from None
+            if interrupted:
+                raise asyncio.CancelledError
+            raise ComputeUnavailable(
+                "account_unavailable", "Account reservation could not be confirmed"
+            ) from None
+        active.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound, actual=0)
+        if first_extended:
+            active.extended_started = True
+        return reservation
+
+    try:
+        async with active.extended_lock:
+            first_extended = active.extended and not active.extended_started
+            acquisition = asyncio.create_task(acquire_and_register(first_extended))
+            try:
+                reservation = await asyncio.shield(acquisition)
+            except BaseException:
+
+                async def recover_acquisition() -> None:
+                    try:
+                        acquired = await acquisition
+                    except ComputeUnavailable as exc:
+                        if exc.category == FAILURE_SETTLEMENT_FAILED:
+                            raise
+                        return
+                    except Exception:
+                        return
+                    await active.settle(acquired, 0, path="embedding_not_dispatched")
+
+                cleanup = asyncio.create_task(recover_acquisition())
+                while True:
+                    try:
+                        await asyncio.shield(cleanup)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup.done():
+                            cleanup.result()
+                            break
+                raise
+    except ComputeUnavailable:
+        raise
+    except EntitlementsError as exc:
+        raise compute_error(exc) or ComputeUnavailable(
+            "account_unavailable", "Account compute unavailable"
+        ) from None
+    except Exception:
+        raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
+
+    charge = EmbeddingCallCharge(active.outstanding[_hold_key(reservation)], route)
+    try:
+        yield charge
+    finally:
+        if charge._state == "pre_dispatch":
+            await active.settle(reservation, 0, path="embedding_not_dispatched")
+        elif charge.actual is not None:
+            await active.settle(
+                reservation,
+                charge.actual,
+                usage={"input_tokens": charge.input_tokens, "output_tokens": 0},
+                path="embedding_call",
+            )
+            if charge.actual > bound:
+                raise ComputeUnavailable(
+                    "embedding_price_exceeded",
+                    "Embedding charge exceeded its reserved price",
+                    category=FAILURE_SETTLEMENT_FAILED,
+                )
+        else:
+            await active.settle(
+                reservation, bound, usage={"estimated_cost": True}, path="embedding_call"
+            )
 
 
 async def _settle_tool_hold(

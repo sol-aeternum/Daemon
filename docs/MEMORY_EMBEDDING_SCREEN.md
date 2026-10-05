@@ -6,6 +6,17 @@ gated; it is not deployed. Local gates passed with 4,778 backend tests and 816
 frontend tests. Real PostgreSQL contention and live equivalence-judge accuracy
 were not tested. These checks do not qualify a private embedding route.
 
+**Subsequent rollout, 4 October 2026:** the owner approved merging and local
+deployment of PR #447, including the later strict-judge repairs and separate
+qualification recorded in `MEMORY_JUDGE_QUALIFICATION.md`. Merged commit
+`15c7ead1d3551d0e69bba298b4f9ed9cb2d15189` was deployed from a clean archived
+release; backend/frontend readiness, worker runtime and exact code/policy hashes
+were checked, preserving the original checkout, environment and data mounts.
+No migration, duplicate cleanup or reembedding ran. The earlier screen results
+and reservations below are unchanged. Azure small adapter design and conditional
+activation approval are recorded in [MEMORY_EMBEDDING_ADAPTER.md](MEMORY_EMBEDDING_ADAPTER.md);
+that approval does not retrospectively qualify this transport screen.
+
 ## Approval and reproducibility
 
 For issue [#445](https://github.com/sol-aeternum/Daemon/issues/445), the owner

@@ -1,7 +1,7 @@
 # Project Context — Daemon
 
 > **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
-> **Last updated**: 2026-10-04 (memory dedup/status repair; implementation verification pin above is historical)
+> **Last updated**: 2026-10-05 (budgeted embedding implementation pending qualification; verification pin above is historical)
 > **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
 ## What Daemon Is
@@ -102,7 +102,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 
 For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
-- **Embeddings**: Provider execution is denied until a qualified bounded adapter exists. Existing provider/model storage identities remain isolated; configured Voyage/OpenRouter/OpenAI fallback settings do not bypass qualification. Lexical retrieval and memory persistence remain available.
+- **Embeddings**: Dedicated Azure/OpenRouter input-token metering is qualified in the deployment-specific monitored policy; the portable policy remains denied and the route selector defaults off. Existing provider/model storage identities remain isolated; legacy fallback settings do not bypass qualification. Lexical retrieval and memory persistence remain available. See `MEMORY_EMBEDDING_ADAPTER.md` for qualification and actual activation evidence.
 - **Production dedup**: Bounded account-background equivalence planning precedes transactions. Only complete equivalence verdicts merge; owner-locked full-state revalidation protects commit. Uncertainty and corrections preserve capture, while normalized exact-hash uniqueness remains independent. Local-only cloud-tool updates are refused before provider work.
 - **Historical offline dedup thresholds (not production merge authority)**:
   - Merge: ≥ 0.90

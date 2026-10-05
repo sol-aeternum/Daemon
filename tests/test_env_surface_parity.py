@@ -109,7 +109,7 @@ AMBIENT_SUBCONFIG_CLASSES: tuple[type[BaseSettings], ...] = (
 
 # Inventory pins. A change here is a deliberate review trigger: the coverage
 # test reports the resolved name of the new field in the same run.
-EXPECTED_SETTINGS_FIELD_COUNT = 124
+EXPECTED_SETTINGS_FIELD_COUNT = 125
 EXPECTED_VIDEO_PRICING_FIELD_COUNT = 6
 
 # --------------------------------------------------------------------------

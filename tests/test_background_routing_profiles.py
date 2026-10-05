@@ -248,6 +248,7 @@ async def test_dreaming_uses_reasoning_profile_and_reports_selected_route() -> N
         {
             "id": memory_id,
             "content": "User bikes to work three times a week.",
+            "local_only": False,
             "category": "fact",
             "memory_slot": "fitness.cycling.frequency",
         }
@@ -331,12 +332,14 @@ async def test_dreaming_provenance_records_every_route_actually_selected() -> No
     store.get_dream_candidate_memories.return_value = [
         {
             "id": first_id,
+            "local_only": False,
             "content": "User bikes to work.",
             "category": "fact",
             "memory_slot": "fitness.cycling.frequency",
         },
         {
             "id": second_id,
+            "local_only": False,
             "content": "User prefers pour-over coffee.",
             "category": "preference",
             "memory_slot": "food.coffee.method",

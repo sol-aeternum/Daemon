@@ -317,6 +317,7 @@ async def test_retrieve_memories_for_text_logs_with_l0_inclusion(mock_store):
         {
             "id": l0_memory_id,
             "content": "L0 frozen memory",
+            "local_only": False,
             "similarity": 1.0,
             "confidence": 1.0,
             "access_count": 0,

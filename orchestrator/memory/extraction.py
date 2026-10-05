@@ -705,6 +705,15 @@ async def process_extraction(
     from orchestrator.memory.dedup import deduplicate_facts
 
     conversation = await store.get_conversation(conversation_id)
+    from orchestrator.memory.embedding import get_selected_embedding_route_id
+
+    if get_selected_embedding_route_id() and (
+        not conversation
+        or conversation.get("pipeline") != "cloud"
+        or conversation.get("user_id") != user_id
+    ):
+        # No extraction or embedding of local/unknown source content through cloud.
+        return False, [], False
     summary = None
     if conversation:
         summary = conversation.get("summary")

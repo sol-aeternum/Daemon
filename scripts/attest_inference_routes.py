@@ -35,7 +35,7 @@ import httpx  # noqa: E402
 from orchestrator.config import get_settings  # noqa: E402
 from orchestrator.database_url import apply_resolved_database_url  # noqa: E402
 from orchestrator.entitlements import attestation  # noqa: E402
-from orchestrator.entitlements.policy import load_inference_policy  # noqa: E402
+from orchestrator.entitlements.policy import MonitorableRoute, load_inference_policy  # noqa: E402
 
 
 async def main() -> int:
@@ -45,7 +45,14 @@ async def main() -> int:
         print("DATABASE_URL is not configured", file=sys.stderr)
         return 2
     policy = load_inference_policy()
-    routes = list(policy.routes.values())
+    routes: list[MonitorableRoute] = list(policy.routes.values())
+    selector = settings.embedding_route_id.strip()
+    if selector:
+        embedding_route = policy.embedding_route(selector)
+        if embedding_route is None:
+            print("Selected embedding route is not configured", file=sys.stderr)
+            return 1
+        routes.append(embedding_route)
     pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=1)
     try:
         await attestation.refresh(pool)

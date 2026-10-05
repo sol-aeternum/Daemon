@@ -124,7 +124,11 @@ async def test_build_memory_context_l0_at_top() -> None:
         "user_id": user_id,
     }
     store.get_l0_memories.return_value = [
-        {"content": "Always remember: user is a Python developer", "category": "fact"},
+        {
+            "content": "Always remember: user is a Python developer",
+            "category": "fact",
+            "local_only": False,
+        },
     ]
     store.get_recent_messages.return_value = []
     store.get_recent_summaries.return_value = []
@@ -147,7 +151,7 @@ async def test_build_memory_context_l0_bypasses_retrieval() -> None:
         "user_id": user_id,
     }
     store.get_l0_memories.return_value = [
-        {"content": "Frozen fact", "category": "fact"},
+        {"content": "Frozen fact", "category": "fact", "local_only": False},
     ]
     store.get_recent_messages.return_value = [
         {"role": "user", "content": "hello"},
@@ -156,7 +160,7 @@ async def test_build_memory_context_l0_bypasses_retrieval() -> None:
 
     result = await build_memory_context(store, conversation_id)
 
-    store.get_l0_memories.assert_called_once_with(user_id)
+    store.get_l0_memories.assert_called_once_with(user_id, include_local=False)
     assert "Frozen fact" in result
 
 
@@ -171,7 +175,11 @@ async def test_build_memory_context_l0_enforces_token_budget() -> None:
         "user_id": user_id,
     }
     many_l0_memories = [
-        {"content": f"Frozen memory number {i} " + ("x" * 100), "category": "fact"}
+        {
+            "content": f"Frozen memory number {i} " + ("x" * 100),
+            "category": "fact",
+            "local_only": False,
+        }
         for i in range(20)
     ]
     store.get_l0_memories.return_value = many_l0_memories
@@ -194,13 +202,17 @@ async def test_build_memory_context_l0_and_l1_separate() -> None:
         "user_id": user_id,
     }
     store.get_l0_memories.return_value = [
-        {"content": "Frozen fact", "category": "fact"},
+        {"content": "Frozen fact", "category": "fact", "local_only": False},
     ]
     store.get_recent_messages.return_value = [
         {"role": "user", "content": "tell me about Python"},
     ]
     store.get_recent_summaries.return_value = [
-        {"content": "Previous session discussed Python", "category": "summary"},
+        {
+            "content": "Previous session discussed Python",
+            "category": "summary",
+            "local_only": False,
+        },
     ]
 
     async def mock_retrieve(*args, **kwargs):

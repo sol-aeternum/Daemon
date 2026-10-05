@@ -88,7 +88,9 @@ async def test_memory_read_semantic_mode_passes_memory_slot():
         mock_store.search_memories.return_value = []
 
         user_id = uuid.uuid4()
-        tool = MemoryReadTool(mock_store, user_id)
+        conversation_id = uuid.uuid4()
+        mock_store.get_conversation.return_value = {"user_id": user_id, "pipeline": "cloud"}
+        tool = MemoryReadTool(mock_store, user_id, conversation_id=conversation_id)
 
         # Execute with slot parameter
         await tool.execute(query="test query", mode="semantic", slot="test_slot")
@@ -148,6 +150,7 @@ async def test_memory_read_history_mode_excludes_deleted_memories():
     mock_store.list_memories.return_value = [
         {
             "content": "active memory",
+            "local_only": False,
             "status": "active",
             "category": "fact",
             "valid_from": None,
@@ -162,6 +165,7 @@ async def test_memory_read_history_mode_excludes_deleted_memories():
         },
         {
             "content": "closed memory",
+            "local_only": False,
             "status": "closed",
             "category": "fact",
             "valid_from": None,
@@ -193,6 +197,7 @@ async def test_memory_read_temporal_mode_slot_post_filter_with_increased_limit()
     mock_store.list_memories.return_value = [
         {
             "content": "memory 1",
+            "local_only": False,
             "memory_slot": "slot_a",
             "category": "fact",
             "valid_from": None,
@@ -200,6 +205,7 @@ async def test_memory_read_temporal_mode_slot_post_filter_with_increased_limit()
         },
         {
             "content": "memory 2",
+            "local_only": False,
             "memory_slot": "slot_b",
             "category": "fact",
             "valid_from": None,
@@ -207,6 +213,7 @@ async def test_memory_read_temporal_mode_slot_post_filter_with_increased_limit()
         },
         {
             "content": "memory 3",
+            "local_only": False,
             "memory_slot": "slot_a",
             "category": "fact",
             "valid_from": None,
@@ -214,6 +221,7 @@ async def test_memory_read_temporal_mode_slot_post_filter_with_increased_limit()
         },
         {
             "content": "memory 4",
+            "local_only": False,
             "memory_slot": "slot_c",
             "category": "fact",
             "valid_from": None,

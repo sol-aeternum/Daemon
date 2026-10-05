@@ -92,6 +92,8 @@ async def test_dream_on_cluster_binds_reasoning_profile_and_reports_route() -> N
     ]
 
     recorder = _dream_profile_recorder("openrouter/z-ai/glm-5.3")
+    for memory in memories:
+        memory["local_only"] = False
 
     with patch("orchestrator.memory.dreaming.get_settings", return_value=settings):
         with patch("orchestrator.memory.dreaming.guarded_completion") as mock_llm:
@@ -184,6 +186,8 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
         }
     ]
     store.insert_memory.return_value = {"id": uuid.uuid4()}
+    for memory in store.get_dream_candidate_memories.return_value:
+        memory["local_only"] = False
     store.log_dream_run.return_value = {"id": uuid.uuid4()}
 
     with patch("orchestrator.memory.dreaming.get_settings", return_value=settings):

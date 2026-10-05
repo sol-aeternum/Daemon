@@ -14,6 +14,8 @@ import httpx
 from orchestrator.config import get_settings
 from orchestrator.entitlements.errors import PolicyError
 from orchestrator.entitlements.policy import load_inference_policy
+from orchestrator.compute_runtime import ComputeUnavailable, FAILURE_SETTLEMENT_FAILED
+from orchestrator.memory import embedding_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,59 @@ class EmbeddingRequestError(EmbeddingError):
     pass
 
 
+class EmbeddingBudgetError(EmbeddingConfigurationError):
+    """Account admission denied without dispatch; persistence/retrieval may degrade."""
+
+
+def raise_if_embedding_accounting_error(error: BaseException) -> None:
+    """Never turn incomplete/contradictory accounting into lexical success."""
+    if isinstance(error, ComputeUnavailable) and (
+        error.category == FAILURE_SETTLEMENT_FAILED
+        or error.code.startswith("settlement")
+        or error.code == "reservation_outcome_unresolved"
+    ):
+        raise error
+
+
+def get_selected_embedding_route_id() -> str:
+    value = getattr(get_settings(), "embedding_route_id", "")
+    if not isinstance(value, str):
+        raise EmbeddingConfigurationError(
+            "Invalid embedding selector", reason="invalid_configuration"
+        )
+    return value.strip()
+
+
+def get_primary_embedding_storage_model() -> str:
+    if get_selected_embedding_route_id():
+        return embedding_adapter.STORAGE_MODEL
+    return get_settings().embedding_document_model
+
+
+def get_enabled_embedding_storage_models() -> tuple[str, ...]:
+    return (
+        get_primary_embedding_storage_model(),
+        *get_configured_embedding_fallback_storage_models(),
+    )
+
+
+def get_lexical_embedding_storage_models() -> tuple[str, ...]:
+    """Old spaces stay lexically discoverable, never compared with new vectors."""
+    settings = get_settings()
+    if not get_selected_embedding_route_id():
+        return get_enabled_embedding_storage_models()
+    return (
+        embedding_adapter.STORAGE_MODEL,
+        settings.embedding_document_model,
+        _openrouter_model_identity(
+            getattr(settings, "embedding_openrouter_document_model", "voyageai/voyage-4-large")
+        ),
+        _openai_model_identity(
+            getattr(settings, "embedding_openai_fallback_model", "text-embedding-3-small")
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class EmbeddingBatchResult:
     embeddings: list[list[float]]
@@ -168,6 +223,8 @@ def _get_openrouter_api_key() -> str:
 
 
 def get_configured_embedding_providers() -> tuple[str, ...]:
+    if get_selected_embedding_route_id():
+        return ("azure-openrouter",)
     settings = get_settings()
     fallback_raw = getattr(settings, "embedding_fallback_providers", "")
     fallbacks = [
@@ -179,6 +236,8 @@ def get_configured_embedding_providers() -> tuple[str, ...]:
 
 
 def get_configured_embedding_fallback_storage_models() -> tuple[str, ...]:
+    if get_selected_embedding_route_id():
+        return ()
     settings = get_settings()
     models: list[str] = []
     providers = get_configured_embedding_providers()
@@ -327,6 +386,27 @@ def describe_embedding_configuration() -> tuple[str, tuple[str, ...]]:
         return "unknown", ()
 
     present: set[str] = set()
+    selector = get_selected_embedding_route_id()
+    if selector:
+        if not getattr(settings, "openrouter_api_key", None):
+            present.add("missing_credentials")
+        try:
+            policy = load_inference_policy()
+            route = policy.embedding_route(selector)
+            if route is None:
+                present.add("route_unapproved")
+            else:
+                try:
+                    embedding_adapter.validate_adapter_route(route)
+                except embedding_adapter.AdapterUnavailable:
+                    present.add("invalid_configuration")
+                if not route.is_approved(policy.requirements):
+                    present.add("route_unapproved")
+        except PolicyError:
+            present.add("invalid_configuration")
+        if getattr(settings, "embedding_dimensions", None) != embedding_adapter.DIMENSIONS:
+            present.add("invalid_configuration")
+        return ("unavailable" if present else "eligible"), _canonical_reason_codes(present)
     dimensions = getattr(settings, "embedding_dimensions", None)
     if not isinstance(dimensions, int) or dimensions <= 0:
         present.add("invalid_configuration")
@@ -375,17 +455,35 @@ def get_embedding_status() -> dict[str, Any]:
     """
     try:
         configuration, reasons = describe_embedding_configuration()
+        selected = bool(get_selected_embedding_route_id())
     except Exception as error:
         # Status itself must never fail the request; unknown is the safe state.
         # Type name only: the underlying exception may carry raw settings
         # validation text that must not reach logs or the response.
         logger.warning("Embedding status fell back to unknown: %s", type(error).__name__)
         configuration, reasons = "unknown", ()
+        selected = False
 
     return {
         "observation_scope": EMBEDDING_OBSERVATION_SCOPE,
         "configuration": configuration,
         "reason_codes": list(reasons),
+        "adapters": {
+            "azure-openrouter": {
+                "selected": selected,
+                "budget_adapter_available": True,
+                "configuration": configuration if selected else "unavailable",
+                "reason_codes": list(reasons) if selected else ["route_unapproved"],
+            },
+            **{
+                provider: {
+                    "budget_adapter_available": False,
+                    "configuration": "unavailable",
+                    "reason_codes": ["budget_adapter_unavailable"],
+                }
+                for provider in ("voyage", "openrouter", "openai")
+            },
+        },
         "last_outcome": _last_embed_outcome,
         "last_success_at": _format_status_timestamp(_last_embed_success_at),
         "last_failure_at": _format_status_timestamp(_last_embed_failure_at),
@@ -519,6 +617,9 @@ def _require_approved_embedding_service(provider: str) -> None:
             "Approved embedding route unavailable",
             reason="route_unapproved",
         )
+    raise EmbeddingConfigurationError(
+        "Account-budgeted embedding adapter unavailable", reason="budget_adapter_unavailable"
+    )
 
 
 async def _post_embeddings(
@@ -795,6 +896,36 @@ async def _embed_texts(
         )
 
     settings = get_settings()
+    selector = get_selected_embedding_route_id()
+    if selector:
+        if settings.embedding_dimensions != embedding_adapter.DIMENSIONS:
+            raise EmbeddingConfigurationError(
+                "Invalid embedding dimensions", reason="invalid_configuration"
+            )
+        try:
+            embeddings = await embedding_adapter.embed(
+                valid_texts,
+                route_id=selector,
+                api_key=getattr(settings, "openrouter_api_key", "") or "",
+            )
+        except embedding_adapter.AdapterUnavailable:
+            # Static denial is distinguishable from an account-budget denial.
+            configuration, reasons = describe_embedding_configuration()
+            if configuration != "eligible":
+                raise EmbeddingConfigurationError(
+                    "Embedding route unavailable", reason=next(iter(reasons), None)
+                ) from None
+            raise EmbeddingBudgetError("Embedding account capacity unavailable") from None
+        except embedding_adapter.AdapterReceiptError:
+            _record_provider_failure("azure-openrouter")
+            raise EmbeddingRequestError("Embedding provider outcome unknown") from None
+        _record_provider_used("azure-openrouter")
+        return EmbeddingBatchResult(
+            embeddings=embeddings,
+            provider="azure-openrouter",
+            model=embedding_adapter.MODEL,
+            storage_model=embedding_adapter.STORAGE_MODEL,
+        )
     output_dimension = settings.embedding_dimensions
     voyage_chunks = _chunk_texts(valid_texts, max_tokens=max_tokens)
 
@@ -1002,7 +1133,9 @@ async def _embed_texts_with_openrouter(
     )
 
 
-async def embed_documents_with_metadata(texts: list[str]) -> EmbeddingBatchResult:
+async def embed_documents_with_metadata(
+    texts: list[str], *, local_only: bool = False
+) -> EmbeddingBatchResult:
     """Public document dispatch: records exactly one terminal outcome.
 
     A batch with no dispatchable text contacts no provider and records no
@@ -1011,6 +1144,10 @@ async def embed_documents_with_metadata(texts: list[str]) -> EmbeddingBatchResul
     failure is not miscounted as a provider error.
     """
     settings = get_settings()
+    if local_only is not False and _has_dispatchable_text(texts):
+        raise EmbeddingConfigurationError(
+            "Local-only or unknown-locality text cannot be cloud embedded"
+        )
     try:
         result = await _embed_texts(
             texts,
@@ -1028,7 +1165,9 @@ async def embed_documents_with_metadata(texts: list[str]) -> EmbeddingBatchResul
     return result
 
 
-async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
+async def embed_query_with_metadata(
+    text: str, *, local_only: bool = False
+) -> EmbeddingVectorResult:
     """Public query dispatch: records exactly one terminal outcome.
 
     A blank or whitespace-only query contacts no provider and raises without
@@ -1037,6 +1176,10 @@ async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
     settings = get_settings()
     if not _has_dispatchable_text([text]):
         raise EmbeddingRequestError("Cannot embed empty or whitespace-only query text")
+    if local_only is not False:
+        raise EmbeddingConfigurationError(
+            "Local-only or unknown-locality query cannot be cloud embedded"
+        )
     try:
         result = await _embed_texts(
             [text],
@@ -1092,6 +1235,8 @@ async def embed_query_for_configured_storage_models(
 ) -> list[EmbeddingVectorResult]:
     settings = get_settings()
     results = [primary_result or await embed_query_with_metadata(text)]
+    if get_selected_embedding_route_id():
+        return results  # Selected primary never traverses legacy provider spaces.
 
     fallback_specs = {
         "openrouter": (
@@ -1155,8 +1300,12 @@ async def embed_query_for_configured_storage_models(
 
 
 async def embed_documents(texts: list[str]) -> list[list[float]]:
+    if get_selected_embedding_route_id():
+        raise EmbeddingConfigurationError(
+            "Legacy vector consumers lack the selected storage identity"
+        )
     result = await embed_documents_with_metadata(texts)
-    primary_storage_model = get_settings().embedding_document_model
+    primary_storage_model = get_primary_embedding_storage_model()
     if result.storage_model != primary_storage_model:
         raise EmbeddingRequestError(
             "Legacy embed_documents cannot return fallback vectors without storage model metadata; "
@@ -1166,8 +1315,12 @@ async def embed_documents(texts: list[str]) -> list[list[float]]:
 
 
 async def embed_query(text: str) -> list[float]:
+    if get_selected_embedding_route_id():
+        raise EmbeddingConfigurationError(
+            "Legacy vector consumers lack the selected storage identity"
+        )
     result = await embed_query_with_metadata(text)
-    primary_storage_model = get_settings().embedding_document_model
+    primary_storage_model = get_primary_embedding_storage_model()
     if result.storage_model != primary_storage_model:
         raise EmbeddingRequestError(
             "Legacy embed_query cannot return fallback vectors without storage model metadata; "

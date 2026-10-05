@@ -15,7 +15,11 @@ from typing import Any
 import asyncpg
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingConfigurationError,
+    embed_documents_with_metadata,
+    raise_if_embedding_accounting_error,
+)
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from orchestrator.model_routing import routing_context
@@ -270,6 +274,8 @@ async def dream_on_cluster(
     """
     if not memories:
         return [], None
+    if any(memory.get("local_only") is not False for memory in memories):
+        raise EmbeddingConfigurationError("Dream sources must be explicitly cloud eligible")
 
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
@@ -345,6 +351,8 @@ async def run_dreaming(
         families: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
         for memory in candidate_memories:
+            if memory.get("local_only") is not False:
+                continue
             family = _slot_family(memory.get("memory_slot"))
             if family is None:
                 continue
@@ -478,6 +486,7 @@ async def run_dreaming(
 
                 families_processed += 1
             except Exception as error:
+                raise_if_embedding_accounting_error(error)
                 logger.warning(
                     "Dream synthesis failed for user %s family %s: %s",
                     user_id,
@@ -513,6 +522,7 @@ async def run_dreaming(
             "dream_run_id": str(dream_run["id"]),
         }
     except Exception as error:
+        raise_if_embedding_accounting_error(error)
         logger.warning("Dream run failed for user %s: %s", user_id, error, exc_info=True)
         try:
             dream_run = await active_store.log_dream_run(

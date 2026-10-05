@@ -117,6 +117,7 @@ from orchestrator.entitlements.plans import (
 )
 from orchestrator.entitlements.policy import (
     CommercialPolicy,
+    EmbeddingRoutePolicy,
     InferencePolicy,
     OperatorReview,
     PolicyRequirements,
@@ -146,6 +147,7 @@ __all__ = [
     "CapabilityDenied",
     "ChargeKind",
     "CommercialPolicy",
+    "EmbeddingRoutePolicy",
     "ConcurrencyExceeded",
     "EntitlementService",
     "EntitlementStore",

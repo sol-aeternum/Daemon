@@ -126,11 +126,28 @@ def create_mock_memory(memory_id: uuid.UUID | None = None, **overrides) -> dict[
         "confirmed": True,
         "source_type": "extraction",
         "conversation_id": None,
+        "local_only": False,
         "created_at": datetime.now(),
         "updated_at": datetime.now(),
         "valid_to": None,
         **overrides,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locality", [True, None, "false"])
+async def test_local_or_unknown_edit_never_calls_embedding(auth_client, locality) -> None:
+    existing = create_mock_memory(content="Local text", local_only=locality)
+    store = _edit_store(existing, {**existing, "content": "Corrected text"})
+    set_app_state(create_mock_app_state(store))
+    embed = AsyncMock()
+    with patch.object(memories_router, "embed_documents_with_metadata", embed):
+        response = await auth_client.patch(
+            f"/memories/{existing['id']}", json={"content": "Corrected text"}
+        )
+    assert response.status_code == 200
+    embed.assert_not_awaited()
+    assert store.update_memory_content.await_args.kwargs["clear_embedding"] is True
 
 
 @pytest.mark.asyncio

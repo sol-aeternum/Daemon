@@ -25,9 +25,13 @@ def _make_store(
         "id": str(conversation_id),
         "user_id": user_id,
     }
-    store.get_l0_memories.return_value = l0_memories or []
+    store.get_l0_memories.return_value = [
+        {"local_only": False, **row} for row in (l0_memories or [])
+    ]
     store.get_recent_messages.return_value = recent_messages or []
-    store.get_recent_summaries.return_value = recent_summaries or []
+    store.get_recent_summaries.return_value = [
+        {"local_only": False, **row} for row in (recent_summaries or [])
+    ]
     return store
 
 

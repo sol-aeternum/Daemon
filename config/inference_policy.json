@@ -47,6 +47,44 @@
       "notes": "Carried over from the pre-entitlements tier configuration and intentionally left unqualified. To approve: verify availability; pin the transport block above to the exact provider slug with zdr true, data_collection deny, allow_fallbacks false, require_parameters true; record that account-level prompt/completion logging is disabled and that free models are excluded from training; set max price ceilings in microusd per 1M prompt/completion tokens; then set approved true with an approval_expires_at, and record an operator_review with reviewer, evidence and review_expires_at."
     }
   ],
+  "embedding_routes": [
+    {
+      "route_id": "azure-openrouter-small-1024",
+      "provider": "openrouter",
+      "model": "openai/text-embedding-3-small",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "dimensions": 1024,
+      "max_input_tokens": 8000,
+      "max_batch_tokens": 100000,
+      "max_batch_items": 100,
+      "approved": false,
+      "availability": "unverified",
+      "approval_mode": "monitored",
+      "approval_expires_at": null,
+      "privacy": {
+        "transport": {
+          "provider_only": ["azure"],
+          "provider_order": ["azure"],
+          "allow_fallbacks": false,
+          "require_parameters": true,
+          "data_collection": "deny",
+          "zdr": true
+        },
+        "account_prompt_logging_disabled": null,
+        "free_model_training_opt_out": null
+      },
+      "operator_review": null,
+      "price_ceiling": {
+        "microusd_per_1m_prompt": 20000,
+        "microusd_per_1m_completion": 0
+      },
+      "zdr_baseline": {
+        "provider_slug": "azure",
+        "data_policy": {"training": false, "retainsPrompts": false}
+      },
+      "notes": "UNAPPROVED. Dedicated input-token adapter only; not a completion candidate. Enable only after route-specific privacy, quality and accounting checks, dated operator review and a fresh sticky-revocation attestation. No region/residency claim. EMBEDDING_ROUTE_ID is empty by default; no retry or provider fallback. No existing vector migration."
+    }
+  ],
   "tool_services": [
     {
       "service_id": "brave-web-search",

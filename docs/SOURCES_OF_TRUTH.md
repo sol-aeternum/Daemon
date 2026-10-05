@@ -28,6 +28,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 |------|------|--------------|----------------|------------------------|
 | `MEMORY_LAYER.md` | T1 | Engineering | gated | `orchestrator/config.py`, `orchestrator/memory/` |
 | `docs/MEMORY_EMBEDDING_SCREEN.md` | N/A | Engineering | raw-log | Owner-approved fictional-only #445 embedding screen; dated route/control results, not private-provider qualification or deployment evidence |
+| `docs/MEMORY_EMBEDDING_ADAPTER.md` | N/A | Engineering/Operator | ungated-reference | Owner-approved dedicated token-metered Azure embedding contract and prospective qualification criteria; implementation and activation require separate final-state evidence |
 | `docs/MEMORY_JUDGE_QUALIFICATION.md` | N/A | Engineering | raw-log | Fictional PR #447 judge screens: original failed, fresh audited follow-up passed; not deployment approval |
 | `docs/FEATURE_MATRIX.md` | T1 | Product/Eng | gated | Code implementation state |
 | `docs/TECHNICAL_SPECS.md` | T1 | Engineering | gated | `orchestrator/`, `migrations/`, `docker-compose.yml` |

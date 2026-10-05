@@ -6,7 +6,12 @@ import uuid
 from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
-from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingConfigurationError,
+    embed_query_with_metadata,
+    get_selected_embedding_route_id,
+    raise_if_embedding_accounting_error,
+)
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
@@ -176,8 +181,12 @@ async def build_memory_context(
         return ""
 
     include_local = str(conversation.get("pipeline") or "").strip().lower() == "local"
+    if get_selected_embedding_route_id() and conversation.get("pipeline") not in ("cloud", "local"):
+        return ""  # Unknown source permissions cannot authorize context processing.
 
-    l0_memories = await store.get_l0_memories(user_id)
+    l0_memories = await store.get_l0_memories(user_id, include_local=include_local)
+    if not include_local:
+        l0_memories = [row for row in l0_memories if row.get("local_only") is False]
     l0_block = _format_l0_block(l0_memories)
 
     if estimate_tokens(l0_block) > L0_TOKEN_BUDGET:
@@ -202,12 +211,16 @@ async def build_memory_context(
 
     retrieved: list[dict[str, object]] = []
     summaries_task = asyncio.create_task(
-        store.get_recent_summaries(user_id, limit=MAX_SUMMARY_ITEMS)
+        store.get_recent_summaries(user_id, limit=MAX_SUMMARY_ITEMS, include_local=include_local)
     )
 
     if query_text:
         try:
             try:
+                if get_selected_embedding_route_id() and conversation.get("pipeline") != "cloud":
+                    raise EmbeddingConfigurationError(
+                        "Local or unknown-locality conversation cannot be cloud embedded"
+                    )
                 query_result = await asyncio.wait_for(
                     embed_query_with_metadata(query_text), timeout=8.0
                 )
@@ -240,10 +253,13 @@ async def build_memory_context(
                 except Exception:
                     pass  # Trust signals are best-effort
 
-        except Exception:
+        except Exception as error:
+            raise_if_embedding_accounting_error(error)
             retrieved = []
 
     summaries = await summaries_task
+    if not include_local:
+        summaries = [row for row in summaries if row.get("local_only") is False]
 
     memory_lines: list[str] = []
     for memory in retrieved[:MAX_MEMORY_ITEMS]:
@@ -359,5 +375,7 @@ async def get_l0_memories(store: MemoryStore, user_id: uuid.UUID) -> list[dict[s
 
     This is a wrapper around MemoryStore.get_l0_memories for backward compatibility.
     Use directly via MemoryStore.get_l0_memories when you have a store instance.
+    This compatibility wrapper returns only explicitly cloud-eligible rows;
+    known-local callers must use the store's explicit include_local option.
     """
     return await store.get_l0_memories(user_id)

@@ -24,6 +24,7 @@ from orchestrator.memory.equivalence import CandidateSnapshot, IncomingMemory
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_documents_with_metadata,
+    raise_if_embedding_accounting_error,
     embed_query_with_metadata,
 )
 from orchestrator.tools.registry import Tool
@@ -175,11 +176,21 @@ class MemoryReadTool(Tool):
         "required": [],
     }
 
-    def __init__(self, store: MemoryStore, user_id: uuid.UUID) -> None:
+    def __init__(
+        self, store: MemoryStore, user_id: uuid.UUID, *, conversation_id: uuid.UUID | None = None
+    ) -> None:
         self.store = store
         self.user_id = user_id
+        self.conversation_id = conversation_id
 
     async def execute(self, **kwargs: Any) -> str:
+        # Locality comes only from the server-bound conversation, never tool args.
+        pipeline = None
+        if isinstance(self.conversation_id, uuid.UUID):
+            conversation = await self.store.get_conversation(self.conversation_id)
+            if isinstance(conversation, dict) and conversation.get("user_id") == self.user_id:
+                pipeline = conversation.get("pipeline")
+        include_local = pipeline == "local"
         mode = kwargs.get("mode", "semantic")
         query = kwargs.get("query", "")
         limit = kwargs.get("limit", 5)
@@ -198,17 +209,20 @@ class MemoryReadTool(Tool):
 
         if mode == "semantic":
             normalized_slot = slot if isinstance(slot, str) and slot.strip() else None
-            try:
-                query_result = await embed_query_with_metadata(query)
-            except EmbeddingConfigurationError:
-                query_result = None
+            query_result = None
+            if pipeline == "cloud":
+                try:
+                    query_result = await embed_query_with_metadata(query)
+                except EmbeddingConfigurationError:
+                    pass
             memories = await retrieve_memories_for_text(
                 store=self.store,
                 query_text=query,
                 user_id=self.user_id,
-                query_embedding=query_result.embedding if query_result is not None else None,
+                query_embedding=query_result.embedding if query_result is not None else [],
                 limit=limit,
-                include_local=True,
+                include_local=include_local,
+                allow_query_embedding=pipeline == "cloud",
                 include_historical=history,
                 memory_slot=normalized_slot,
                 storage_embedding_model=query_result.storage_model
@@ -228,12 +242,14 @@ class MemoryReadTool(Tool):
                 user_id=self.user_id,
                 confirmed=None if history else True,
                 status=None,
-                include_local=True,
+                include_local=include_local,
                 created_after=created_after,
                 created_before=created_before,
                 limit=effective_limit,
             )
 
+        if not include_local:
+            memories = [memory for memory in memories if memory.get("local_only") is False]
         if history:
             memories = [m for m in memories if m.get("status") != "deleted"]
         # Slot filtering for temporal mode (semantic handles it via store)
@@ -372,9 +388,10 @@ class MemoryWriteTool(Tool):
                     )
                     break
         except Exception as error:
+            raise_if_embedding_accounting_error(error)
             logger.warning(
                 "Failed to annotate contradiction metadata: %s",
-                error,
+                type(error).__name__,
             )
 
     async def _apply_deferred_supersede_effects(

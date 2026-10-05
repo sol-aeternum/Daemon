@@ -1020,7 +1020,7 @@ async def prepare_memory_plan(
 ) -> EquivalencePlan:
     """Discover and judge before acquiring any database transaction or lock."""
     if (
-        incoming.local_only
+        incoming.local_only is not False
         or incoming.tier != "l1"
         or incoming.status != "active"
         or incoming.source_type == "dream"
@@ -1130,6 +1130,19 @@ async def deduplicate_facts(
         if not str(getattr(fact, "content", "") or "").strip():
             logger.warning("deduplicate_facts skipped a blank fact at index %d", index)
             continue
+        if conversation_id is not None:
+            from orchestrator.memory.embedding import get_selected_embedding_route_id
+
+            if get_selected_embedding_route_id():
+                source = await store.get_conversation(conversation_id)
+                if (
+                    not source
+                    or source.get("user_id") != user_id
+                    or source.get("pipeline") != "cloud"
+                ):
+                    raise EmbeddingConfigurationError(
+                        "Local or unknown source cannot be cloud processed"
+                    )
         incoming = IncomingMemory(
             user_id=user_id,
             content=fact.content,
@@ -1139,9 +1152,14 @@ async def deduplicate_facts(
             slot=getattr(fact, "slot", None),
             confidence=getattr(fact, "confidence", 0.8),
             status=status,
+            local_only=getattr(fact, "local_only", False),
         )
         embedding_result = prepared_embeddings[index] if prepared_embeddings is not None else None
-        if prepared_embeddings is None and lock_conn is None:
+        if type(incoming.local_only) is not bool:
+            raise ValueError("Memory locality must be known before processing")
+        if incoming.local_only is not False:
+            embedding_result = None
+        if prepared_embeddings is None and lock_conn is None and incoming.local_only is False:
             try:
                 embedding_result = await prepare_memory_embedding(incoming.content, incoming.slot)
             except EmbeddingConfigurationError:
