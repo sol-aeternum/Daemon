@@ -161,8 +161,15 @@ async function readCapacityDetailFromResponse(
 }
 
 export async function POST(req: Request) {
-  const { messages, id, model, attachments, metadata, provider } =
-    await req.json();
+  const {
+    messages,
+    id,
+    model,
+    attachments,
+    metadata,
+    provider,
+    suggestion_id,
+  } = await req.json();
 
   const { createUIMessageStream, createUIMessageStreamResponse } =
     await import('ai');
@@ -176,6 +183,23 @@ export async function POST(req: Request) {
     .reverse()
     .find((m) => m.role === 'user');
   const lastUserText = extractTextContent(lastUserMessage?.content);
+
+  if (
+    suggestion_id &&
+    (typeof suggestion_id !== 'string' ||
+      id ||
+      normalizedMessages.length !== 1 ||
+      normalizedMessages[0]?.role !== 'user' ||
+      (Array.isArray(attachments) && attachments.length > 0) ||
+      metadata)
+  ) {
+    return Response.json(
+      {
+        detail: 'A suggestion must start a new chat without unrelated content.',
+      },
+      { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
 
   const proxyHeaders = buildProxyHeaders(req);
 
@@ -194,21 +218,26 @@ export async function POST(req: Request) {
         body: JSON.stringify({
           message: lastUserText,
           conversation_id: id || null,
-          messages: normalizedMessages,
+          messages: suggestion_id ? null : normalizedMessages,
           model: model || 'auto',
           provider: provider || null,
           attachments: Array.isArray(attachments) ? attachments : [],
           metadata: metadata && typeof metadata === 'object' ? metadata : null,
+          ...(suggestion_id ? { suggestion_id } : {}),
         }),
       });
       break;
     } catch {
+      // A suggestion may already have been claimed and persisted. Never send
+      // it again to another backend after an uncertain transport failure.
+      if (suggestion_id) break;
       // Try the next configured backend. A transport error can name internal
       // hosts and ports, so nothing from it is surfaced to the browser.
     }
   }
 
   const responseHeaders = new Headers();
+  responseHeaders.set('Cache-Control', 'no-store');
   if (backendRes) {
     backendRes.headers.forEach((value, key) => {
       if (key.toLowerCase() === 'set-cookie') {

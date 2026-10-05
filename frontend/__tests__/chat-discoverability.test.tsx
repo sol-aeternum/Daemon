@@ -6,6 +6,14 @@ import { ChatActivityStatus } from '../components/ChatActivityStatus';
 import { SettingsNav } from '../components/settings/SettingsNav';
 import { IconButton } from '../components/ui/IconButton';
 import type { ChatEvent } from '../lib/events';
+import { createSuggestionsApiStub } from './home-suggestions-test-utils';
+
+const useHomeSuggestionsMock = vi.fn();
+
+vi.mock('@/hooks/useHomeSuggestions', () => ({
+  useHomeSuggestions: (...args: unknown[]) =>
+    useHomeSuggestionsMock(...(args as [])),
+}));
 
 const { push, location } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -23,19 +31,19 @@ describe('chat discoverability', () => {
     push.mockClear();
     location.pathname = '/settings/profile';
     location.search = 'from=conversation-1';
+    useHomeSuggestionsMock.mockImplementation(() => createSuggestionsApiStub());
   });
 
-  it('starts Council directly while other welcome shortcuts only prepare a draft', () => {
-    const setInput = vi.fn();
+  it('keeps the Council shortcut and renders no static draft starters', () => {
     const onDeliberate = vi.fn();
-    render(<WelcomeScreen setInput={setInput} onDeliberate={onDeliberate} />);
-    expect(screen.getAllByRole('button')).toHaveLength(5);
-    fireEvent.click(screen.getByRole('button', { name: /Deliberate/ }));
+    render(<WelcomeScreen onDeliberate={onDeliberate} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Deliberate' }));
     expect(onDeliberate).toHaveBeenCalledTimes(1);
-    expect(setInput).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: /^Find/ }));
-    expect(setInput).toHaveBeenCalledWith('Search the web for…');
-    expect(onDeliberate).toHaveBeenCalledTimes(1);
+    const allLabels = screen.getAllByRole('button').map((b) => b.textContent);
+    for (const banned of ['Explain', 'Find', 'Compare', 'Draft']) {
+      expect(allLabels.join(' ')).not.toContain(banned);
+    }
+    expect(screen.queryByText('Search the web for…')).toBeNull();
   });
 
   it.each([

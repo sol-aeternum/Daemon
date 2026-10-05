@@ -111,6 +111,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Council/Studio** | — | — | — | — | — | — |
 | Council Deliberation (multi-perspective LLM debate) | Cross-client stable | Cross-client stable | Not started | Not started | Council streaming service | No |
 | Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | Welcome-screen Deliberate shortcut or /council command → interview flow | No |
+| Contextual home next actions (opt-in, cloud conversation sources) | Web experimental | Mobile eligible | Not started | Not started | Bounded ready prompts with hover/focus preview and immediate source-bound new-chat submission; fictional integration checks verified, not deployed. See CONTEXTUAL_HOME_IMPLEMENTATION.md | No |
 | Studio Image Generation (web UI) | Retired | Retired | Not started | Not started | Authenticated retired Studio image API surface returns 410; hosted-identity replacement tracked separately | No |
 | Studio Video Generation (web UI with credit check) | Retired | Retired | Not started | Not started | UI retained; generation denied pending bounded provider integration; credit balances/history preserved | No |
 | Video Credit Balance & Transactions | Cross-client stable | Cross-client stable | Not started | Not started | GET /video-credits/balance, GET /video-credits/transactions, GET /video-credits/estimate | No |

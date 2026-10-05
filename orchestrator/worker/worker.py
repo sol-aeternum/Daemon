@@ -35,6 +35,7 @@ from orchestrator.worker.jobs import (
     reconcile_settlement_receipts,
     generate_conversation_title_job,
     generate_title,
+    generate_home_suggestions,
     generate_summary_job,
     resolve_entities_job,
     run_consolidation_nudge_job,
@@ -203,6 +204,7 @@ logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:
 
 worker = AuditedWorker(
     functions=[
+        func(generate_home_suggestions, max_tries=1, keep_result=0),
         func(extract_memories, max_tries=_worker_settings.retry_attempts, keep_result=0),
         func(generate_title, max_tries=_worker_settings.retry_attempts),
         func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),

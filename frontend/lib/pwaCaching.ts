@@ -16,6 +16,7 @@ export function shouldUseGeneralRuntimeCache(
 ): boolean {
   return (
     !isSameOriginApiRequest(url, sameOrigin) &&
+    !/^\/home-suggestions(?:\/|$)/.test(url.pathname) &&
     !isPrivateSpeechRequest(url) &&
     !isWebSnapshotRequest(url, appOrigin)
   );

@@ -1,6 +1,9 @@
 'use client';
 
 import { WelcomeScreen } from '../components/WelcomeScreen';
+import { SuggestionSourceContext } from '../components/SuggestionSourceContext';
+import { chatTransportFetch } from '../lib/chatTransportFetch';
+import type { HomeSuggestion } from '../lib/homeSuggestions';
 import { ChatHeaderActions } from '../components/ChatHeaderActions';
 import { ChatActivityStatus } from '../components/ChatActivityStatus';
 import { ChatInputBar } from '../components/ChatInputBar';
@@ -57,7 +60,7 @@ import { OfflineIndicator } from '../components/OfflineIndicator';
 import { RetryButton } from '../components/RetryButton';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { refreshIfNeeded, getAuthHeader, getAuthGeneration } from '../lib/auth';
+import { getAuthGeneration, subscribeAuthGeneration } from '../lib/auth';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import { RoutingNotice } from '../components/RoutingNotice';
 import MarkdownMessage from '../components/MarkdownMessage';
@@ -404,6 +407,13 @@ function ChatContent() {
   const latestConversationIdRef = useRef<string | null>(currentId);
   const renderedConversationIdRef = useRef<string | null>(currentId);
   const [messageScope, setMessageScope] = useState(currentId);
+  const suggestionSubmissionRef = useRef<{
+    generation: number;
+    messageId: string;
+    pending: boolean;
+  } | null>(null);
+  const chatRequestGenerationRef = useRef<number | null>(null);
+  const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
     new Set(),
@@ -466,31 +476,14 @@ function ChatContent() {
     () =>
       new DefaultChatTransport<DaemonMessage>({
         api: '/api/chat',
-        fetch: async (requestInput, init) => {
-          const generation = getAuthGeneration();
-          await refreshIfNeeded();
-          if (getAuthGeneration() !== generation || init?.signal?.aborted) {
-            throw new Error(
-              'Authentication changed before sending. Please review your draft.',
-            );
-          }
-          const body: Record<string, unknown> =
-            typeof init?.body === 'string' ? JSON.parse(init.body) : {};
-          body.model = activeModel;
-          body.id = currentId || null;
-
-          const headers = new Headers(init?.headers);
-          const authHeader = getAuthHeader();
-          if (authHeader) {
-            headers.set('Authorization', authHeader);
-          }
-
-          return fetch(requestInput, {
-            ...init,
-            headers,
-            body: JSON.stringify(body),
-          });
-        },
+        fetch: (requestInput, init) =>
+          chatTransportFetch(requestInput, init, {
+            model: activeModel,
+            conversationId: currentId || null,
+            onGeneration: (generation) => {
+              chatRequestGenerationRef.current = generation;
+            },
+          }),
       }),
     [activeModel, currentId],
   );
@@ -511,6 +504,11 @@ function ChatContent() {
     messages:
       currentConversation?.id === currentId ? currentConversation.messages : [],
     onFinish: ({ message }) => {
+      if (
+        chatRequestGenerationRef.current !== null &&
+        chatRequestGenerationRef.current !== getAuthGeneration()
+      )
+        return;
       setConnectionStatus('connected');
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
@@ -525,12 +523,27 @@ function ChatContent() {
       thinkingDurationRef.current = 0;
     },
     onError: (err) => {
+      if (
+        chatRequestGenerationRef.current !== null &&
+        chatRequestGenerationRef.current !== getAuthGeneration()
+      )
+        return;
       showError(err.message || 'Chat error occurred');
       setConnectionStatus('disconnected');
     },
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+
+  useEffect(() => {
+    return subscribeAuthGeneration(() => {
+      if (!suggestionSubmissionRef.current) return;
+      suggestionSubmissionRef.current = null;
+      stopChat();
+      setMessages([]);
+      setIsSubmittingSuggestion(false);
+    });
+  }, [stopChat, setMessages]);
   const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
   const reload = () => {
     void regenerate({
@@ -694,6 +707,8 @@ function ChatContent() {
   };
 
   const submitChat = async (command?: string) => {
+    if (isSubmittingSuggestion || suggestionSubmissionRef.current?.pending)
+      return;
     if (isLoading && messages.length > 0) return;
 
     const generation = getAuthGeneration();
@@ -717,6 +732,8 @@ function ChatContent() {
         : '');
 
     if (!content) return;
+
+    suggestionSubmissionRef.current = null;
 
     try {
       await sendMessage(
@@ -768,7 +785,9 @@ function ChatContent() {
     messages,
     stop: stopChat,
     archiveEvents: archiveCurrentEvents,
-    conversationId: currentId ?? null,
+    conversationId: suggestionSubmissionRef.current
+      ? latestConversationIdRef.current
+      : (currentId ?? null),
   });
 
   useStopShortcut({
@@ -836,6 +855,8 @@ function ChatContent() {
   };
 
   const handleNewChat = async () => {
+    if (isSubmittingSuggestion || isLoading) return;
+    suggestionSubmissionRef.current = null;
     clearAssignedConversationId();
     resetChatDraft(openChatDraft(null, getAuthGeneration()));
     const generation = getAuthGeneration();
@@ -847,6 +868,45 @@ function ChatContent() {
     eventsRef.current = [];
     lastArchivedEventKeysRef.current = new Set();
     currentRequestIdRef.current = null;
+  };
+
+  const handleSuggestionSelect = async (suggestion: HomeSuggestion) => {
+    if (suggestionSubmissionRef.current || isLoading || messages.length > 0)
+      return;
+    const generation = getAuthGeneration();
+    const messageId = crypto.randomUUID();
+    // No composer receipt, file serialisation, draft reset or draft transfer.
+    // The backend alone creates the destination after revalidating the source.
+    suggestionSubmissionRef.current = { generation, messageId, pending: true };
+    chatRequestGenerationRef.current = generation;
+    latestConversationIdRef.current = null;
+    setIsSubmittingSuggestion(true);
+    clearAssignedConversationId();
+    setMessages([]);
+    try {
+      await sendMessage(
+        { text: suggestion.prompt },
+        {
+          body: {
+            id: null,
+            suggestion_id: suggestion.id,
+            __suggestionAuthGeneration: generation,
+          },
+        },
+      );
+    } catch {
+      if (chatMountedRef.current && generation === getAuthGeneration()) {
+        showError(
+          'The suggestion could not be started. Your unfinished draft is preserved; check chat history before trying again.',
+        );
+      }
+    } finally {
+      if (chatMountedRef.current && generation === getAuthGeneration()) {
+        if (suggestionSubmissionRef.current?.messageId === messageId)
+          suggestionSubmissionRef.current.pending = false;
+        setIsSubmittingSuggestion(false);
+      }
+    }
   };
 
   const handleSidebarNavigate = (section: SidebarSection) => {
@@ -944,6 +1004,11 @@ function ChatContent() {
 
   useEffect(() => {
     if (flattenedData.length === 0) return;
+    if (
+      chatRequestGenerationRef.current !== null &&
+      chatRequestGenerationRef.current !== getAuthGeneration()
+    )
+      return;
     const conversationEvent = flattenedData.find(isConversationDataEvent);
     if (!conversationEvent) {
       if (currentId) {
@@ -953,9 +1018,15 @@ function ChatContent() {
     }
 
     const conversationId = conversationEvent.conversation_id;
+    const suggestionSubmission = suggestionSubmissionRef.current;
+    if (
+      suggestionSubmission &&
+      suggestionSubmission.generation !== getAuthGeneration()
+    )
+      return;
     latestConversationIdRef.current = conversationId;
     renderedConversationIdRef.current = conversationId;
-    if (!currentId) {
+    if (!currentId || suggestionSubmission) {
       // A fast Stop can be recorded before the URL has the backend-assigned
       // conversation ID. Promote those provisional markers immediately so
       // the router transition does not make the marker disappear.
@@ -965,8 +1036,11 @@ function ChatContent() {
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
     const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
 
-    if (!currentId && !urlUpdatedRef.current) {
-      if (!draftRef.current.transferToConversation(conversationId)) {
+    if ((!currentId || suggestionSubmission) && !urlUpdatedRef.current) {
+      if (
+        !suggestionSubmission &&
+        !draftRef.current.transferToConversation(conversationId)
+      ) {
         // Never overwrite another conversation's draft. The unassigned draft
         // remains available at Home, rather than being silently discarded.
         showError(
@@ -992,7 +1066,7 @@ function ChatContent() {
       }
     }
 
-    if (currentId) {
+    if (currentId && currentId === conversationId) {
       urlUpdatedRef.current = false;
     }
   }, [
@@ -1105,6 +1179,34 @@ function ChatContent() {
       <span className="hidden lg:inline">Hide tool calls</span>
       <span className="lg:hidden">Tools</span>
     </button>
+  );
+
+  const chatComposer = (
+    <form onSubmit={handleSubmit} className="mx-auto w-full max-w-3xl">
+      <ChatInputBar
+        selectedModel={activeModel}
+        onSelectModel={(modelId) => {
+          setActiveModel(modelId);
+          if (currentId) setConversationModel(currentId, modelId);
+        }}
+        isRecording={isRecording}
+        isConnecting={isConnecting}
+        startRecording={start}
+        stopRecording={stop}
+        micDisabled={inputIsBusy || !currentId || !isOnline}
+        micError={sttError}
+        input={input}
+        onInputChange={handleInputChange}
+        onSubmit={handleSubmit}
+        isLoading={inputIsBusy || isSubmittingSuggestion}
+        onStop={handleStopGeneration}
+        attachments={attachmentItems}
+        onAttachFiles={handleAttachFiles}
+        onRemoveAttachment={handleRemoveAttachment}
+        isLocal={false}
+        onToggleLocal={() => {}}
+      />
+    </form>
   );
 
   return (
@@ -1260,7 +1362,9 @@ function ChatContent() {
                 <div className="h-full px-4 py-6">
                   <WelcomeScreen
                     input={input}
-                    setInput={setInput}
+                    onSuggestionSelect={handleSuggestionSelect}
+                    isSubmittingSuggestion={isSubmittingSuggestion}
+                    composer={chatComposer}
                     onDeliberate={() => void submitChat('/council')}
                   />
                 </div>
@@ -1513,6 +1617,13 @@ function ChatContent() {
                             <div className="whitespace-pre-wrap leading-relaxed font-medium">
                               {formattedMessageContent}
                             </div>
+                            <SuggestionSourceContext
+                              context={
+                                message.metadata?.home_suggestion ??
+                                persistedMessagesById.get(message.id)?.metadata
+                                  ?.home_suggestion
+                              }
+                            />
                           </div>
                         ) : null}
                       </CollapsibleMessage>
@@ -1523,51 +1634,26 @@ function ChatContent() {
               )}
             </main>
 
-            <footer className="relative shrink-0 bg-[var(--color-bg-primary)] pb-safe-panel">
-              {isScrolledUp && isLoading && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    jumpToLatest();
-                    scrollContainerRef.current?.focus({ preventScroll: true });
-                  }}
-                  className="absolute bottom-full mb-4 right-4 min-h-touch px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
-                >
-                  Jump to latest
-                </button>
-              )}
-              <TtsPlaybackBar />
-              <form
-                onSubmit={handleSubmit}
-                className="mx-auto w-full max-w-3xl"
-              >
-                <ChatInputBar
-                  selectedModel={activeModel}
-                  onSelectModel={(modelId) => {
-                    setActiveModel(modelId);
-                    if (currentId) {
-                      setConversationModel(currentId, modelId);
-                    }
-                  }}
-                  isRecording={isRecording}
-                  isConnecting={isConnecting}
-                  startRecording={start}
-                  stopRecording={stop}
-                  micDisabled={inputIsBusy || !currentId || !isOnline}
-                  micError={sttError}
-                  input={input}
-                  onInputChange={handleInputChange}
-                  onSubmit={handleSubmit}
-                  isLoading={inputIsBusy}
-                  onStop={handleStopGeneration}
-                  attachments={attachmentItems}
-                  onAttachFiles={handleAttachFiles}
-                  onRemoveAttachment={handleRemoveAttachment}
-                  isLocal={false}
-                  onToggleLocal={() => {}}
-                />
-              </form>
-            </footer>
+            {messages.length > 0 && (
+              <footer className="relative shrink-0 bg-[var(--color-bg-primary)] pb-safe-panel">
+                {isScrolledUp && isLoading && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      jumpToLatest();
+                      scrollContainerRef.current?.focus({
+                        preventScroll: true,
+                      });
+                    }}
+                    className="absolute bottom-full mb-4 right-4 min-h-touch px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
+                  >
+                    Jump to latest
+                  </button>
+                )}
+                <TtsPlaybackBar />
+                {chatComposer}
+              </footer>
+            )}
           </div>
         </Panel>
 
