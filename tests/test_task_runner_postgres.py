@@ -319,3 +319,54 @@ async def test_suspension_during_run_stops_without_publishing(
     assert await asyncio.wait_for(job, timeout=10) == "failed"
     row = await env.pool.fetchrow("SELECT * FROM tasks WHERE id = $1", accepted.task_id)
     assert row["terminal_code"] == "account_suspended"
+
+
+@pytest.mark.asyncio
+async def test_lost_attempts_hold_is_settled_before_a_one_slot_account_recovers(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #461: a dead attempt's open hold must not starve the recovery attempt."""
+    import contextlib as _contextlib
+
+    from orchestrator.entitlements.errors import LimitExceeded
+    from orchestrator.entitlements.service import EntitlementService
+
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    service = EntitlementService(env.pool)
+    lost_scope = uuid.uuid4()
+    hold = await service.reserve(env.alice, 1000, operation="chat", scope_id=lost_scope)
+    await env.tasks.record_compute_scope(accepted.task_id, first.epoch, lost_scope)
+    # The free plan allows one concurrent operation: the dead hold blocks the next.
+    with pytest.raises(LimitExceeded) as refused:
+        await service.reserve(env.alice, 1000, operation="chat", scope_id=uuid.uuid4())
+    assert refused.value.code == "concurrency_exceeded"
+
+    await expire_lease(env, accepted.task_id)  # the worker died holding it
+    status_at_admission: list[str] = []
+    real_account_compute = runner.account_compute
+
+    @_contextlib.asynccontextmanager
+    async def observed_account_compute(*args: Any, **kwargs: Any):
+        status_at_admission.append(
+            await env.pool.fetchval(
+                "SELECT status FROM entitlement_reservations WHERE id = $1", hold.id
+            )
+        )
+        async with real_account_compute(*args, **kwargs) as scope:
+            yield scope
+
+    monkeypatch.setattr(runner, "account_compute", observed_account_compute)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    assert status_at_admission == ["settled"]
+    settled = await env.pool.fetchrow(
+        "SELECT actual_microusd, reserved_microusd FROM entitlement_reservations WHERE id = $1",
+        hold.id,
+    )
+    # Unknown provider work is charged conservatively at the full hold.
+    assert settled["actual_microusd"] == settled["reserved_microusd"]
+    # The slot is free again for the account's next operation.
+    assert await service.reserve(env.alice, 1000, operation="chat", scope_id=uuid.uuid4())

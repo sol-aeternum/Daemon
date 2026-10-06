@@ -97,12 +97,18 @@ CREATE TABLE IF NOT EXISTS task_attempts (
                            'failed_terminal', 'cancelled', 'needs_attention')),
     terminal_code TEXT CHECK (terminal_code IS NULL OR terminal_code ~ '^[a-z][a-z0-9_]{0,63}$'),
     partial_ciphertext TEXT,
+    compute_scope_id UUID,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ended_at TIMESTAMPTZ,
     CONSTRAINT task_attempts_epoch_unique UNIQUE (task_id, epoch),
     CONSTRAINT task_attempts_end_consistent CHECK ((outcome = 'running') = (ended_at IS NULL))
 );
+
+COMMENT ON COLUMN task_attempts.compute_scope_id IS
+    'Account compute scope of this attempt. When the attempt is lost, its still-open '
+    'reservations are settled at their full hold before a recovery attempt is admitted, '
+    'so a dead attempt cannot occupy the account''s concurrency slot.';
 
 COMMENT ON COLUMN task_attempts.partial_ciphertext IS
     'Fernet ciphertext of the content this attempt had persisted when it ended, '

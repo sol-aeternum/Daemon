@@ -631,6 +631,35 @@ class TaskStore:
             await self._append_event(conn, task_id, "operation_started", {"tool": tool_name})
             return operation_id
 
+    async def record_compute_scope(
+        self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID
+    ) -> None:
+        """Remember this attempt's account compute scope, under the fence."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await self._locked_for_epoch(conn, task_id, epoch)
+            if row is None:
+                raise LeaseLost("lease lost")
+            await conn.execute(
+                "UPDATE task_attempts SET compute_scope_id = $3 WHERE task_id = $1 AND epoch = $2",
+                task_id,
+                epoch,
+                scope_id,
+            )
+
+    async def ended_compute_scopes(self, task_id: uuid.UUID) -> list[uuid.UUID]:
+        """Compute scopes of this task's attempts that have ended without completing.
+
+        Their reservations may still be open (a crashed worker never settled
+        them). Never includes a running attempt's scope.
+        """
+        rows = await self._pool.fetch(
+            "SELECT compute_scope_id FROM task_attempts "
+            "WHERE task_id = $1 AND outcome NOT IN ('running', 'completed') "
+            "AND compute_scope_id IS NOT NULL",
+            task_id,
+        )
+        return [row["compute_scope_id"] for row in rows]
+
     async def record_event(
         self, task_id: uuid.UUID, epoch: int, kind: str, payload: dict[str, Any] | None = None
     ) -> int:
@@ -858,6 +887,22 @@ class TaskStore:
             cancel_requested=row["cancel_requested_at"] is not None
             and TaskStatus(row["status"]) in ACTIVE_STATUSES,
         )
+
+    async def latest_for_conversation(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> TaskSnapshot | None:
+        """The conversation's most recent task, active or finished."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT t.*, m.content AS result_content
+            FROM tasks t JOIN messages m ON m.id = t.result_message_id
+            WHERE t.conversation_id = $1 AND t.user_id = $2
+            ORDER BY t.created_at DESC LIMIT 1
+            """,
+            conversation_id,
+            user_id,
+        )
+        return self._snapshot_from(row) if row is not None else None
 
     async def events_since(
         self, user_id: uuid.UUID, task_id: uuid.UUID, *, after_seq: int, limit: int = 200

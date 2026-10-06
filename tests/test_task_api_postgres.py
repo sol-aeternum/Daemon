@@ -318,13 +318,19 @@ async def test_second_turn_while_active_is_busy(api: Api):
 
 @pytest.mark.asyncio
 async def test_cancel_endpoint_queued_then_finished(api: Api):
-    task_id = (await _submit(api, key="cancel-me"))["id"]
+    task = await _submit(api, key="cancel-me")
+    task_id = task["id"]
     cancelled = await api.client.post(f"/tasks/{task_id}/cancel")
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
     assert await api.run_worker() == ["skipped"]
     again = await api.client.post(f"/tasks/{task_id}/cancel")
     assert again.status_code == 409
     assert again.json()["detail"] == {"code": "task_finished", "status": "cancelled"}
+    # Another device still finds the finished task and its truthful state.
+    conversation = (await api.client.get(f"/conversations/{task['conversation_id']}")).json()
+    assert conversation["active_task"] is None
+    assert conversation["latest_task"]["id"] == task_id
+    assert conversation["latest_task"]["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,9 @@ class ConversationWithMessagesOut(ConversationOut):
     # The conversation's queued or running durable task, so another device can
     # reattach to it (docs/DURABLE_REQUEST_DESIGN.md §7).
     active_task: TaskOut | None = None
+    # The conversation's most recent task, including a finished one, so
+    # another device can find a cancelled or needs_attention outcome.
+    latest_task: TaskOut | None = None
 
 
 class ConversationListResponse(BaseModel):
@@ -164,11 +167,20 @@ async def get_conversation(
     messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
     conversation = _normalize_conversation(conversation)
     messages = [_normalize_message(m) for m in messages]
-    active_task = None
+    active_task = latest_task = None
     if app_state.db_pool is not None:
-        active = await task_store(app_state).active_for_conversation(auth.user_id, conversation_id)
-        active_task = task_out(active) if active is not None else None
-    return {**conversation, "messages": messages, "active_task": active_task}
+        tasks = task_store(app_state)
+        latest = await tasks.latest_for_conversation(auth.user_id, conversation_id)
+        if latest is not None:
+            latest_task = task_out(latest)
+            if latest.status.value in ("queued", "running"):
+                active_task = latest_task
+    return {
+        **conversation,
+        "messages": messages,
+        "active_task": active_task,
+        "latest_task": latest_task,
+    }
 
 
 @router.patch("/{conversation_id}", response_model=StatusResponse)

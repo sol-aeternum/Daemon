@@ -99,6 +99,7 @@ def test_backoff_grows_and_is_capped():
 
 def _hash(**overrides: Any) -> str:
     base: dict[str, Any] = {
+        "key": "server-secret",
         "conversation_id": None,
         "message": "hello",
         "attachments": None,
@@ -123,3 +124,29 @@ def test_request_hash_distinguishes_what_was_asked():
     assert _hash(model="other") != base
     assert _hash(disable_memory_write=True) != base
     assert _hash(attachments=[{"name": "a.txt", "content": "x"}]) != base
+
+
+def test_request_fingerprint_is_keyed():
+    """A database snapshot alone must not confirm guesses of the input."""
+    import hashlib
+
+    from orchestrator.tasks.inputs import canonical_json
+
+    keyed = _hash()
+    assert keyed != _hash(key="another-secret")
+    unkeyed = hashlib.sha256(
+        canonical_json(
+            {
+                "conversation_id": None,
+                "message": "hello",
+                "attachments": [],
+                "model": "auto",
+                "provider": None,
+                "metadata": {},
+                "disable_memory_write": False,
+            }
+        ).encode()
+    ).hexdigest()
+    assert keyed != unkeyed
+    with pytest.raises(ValueError):
+        _hash(key="")

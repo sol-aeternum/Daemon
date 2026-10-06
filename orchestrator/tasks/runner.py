@@ -24,6 +24,7 @@ from orchestrator.compute_runtime import (
     RETRYABLE_COMPUTE_CODES,
     account_compute,
     compute_error,
+    current_scope,
 )
 from orchestrator.tasks.fence import guard_registry
 from orchestrator.tasks.states import RetryCause, TaskStatus
@@ -246,6 +247,42 @@ async def _system_prompt(memory: Any, db_pool: Any, claim: Claim) -> tuple[str, 
     return prompt, user_timezone
 
 
+async def settle_lost_attempt_holds(store: TaskStore, db_pool: Any, task_id: uuid.UUID) -> int:
+    """Settle reservations a lost attempt left open, at their full hold.
+
+    A crashed worker never settles its holds, and an open foreground hold
+    counts against the account's concurrency ceiling until the generic
+    recovery (2 x request_timeout_s) runs. Settling them as soon as the
+    lease is taken over frees the slot for the recovery attempt. Unknown
+    provider work is never assumed free; a fenced worker that is still alive
+    gets a settlement conflict later and is never charged twice.
+    """
+    from orchestrator.entitlements.errors import ReservationNotFound, SettlementConflict
+    from orchestrator.entitlements.service import EntitlementService
+
+    scopes = await store.ended_compute_scopes(task_id)
+    if not scopes:
+        return 0
+    rows = await db_pool.fetch(
+        "SELECT id, reserved_microusd FROM entitlement_reservations "
+        "WHERE scope_id = ANY($1::uuid[]) AND status = 'open'",
+        scopes,
+    )
+    service = EntitlementService(db_pool)
+    settled = 0
+    for row in rows:
+        try:
+            await service.settle(
+                row["id"],
+                int(row["reserved_microusd"]),
+                usage={"estimated_cost": True, "recovered_after_timeout": True},
+            )
+            settled += 1
+        except (SettlementConflict, ReservationNotFound):
+            continue  # settled by its own worker or recovery meanwhile
+    return settled
+
+
 async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -> None:
     from orchestrator.daemon import stream_sse_chat
 
@@ -270,6 +307,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         profile=str(task_input.get("profile") or "routine"),
         request_id=request_id,
     ):
+        await store.record_compute_scope(claim.task_id, claim.epoch, current_scope().scope_id)
         system_prompt, user_timezone = await _system_prompt(memory, db_pool, claim)
         history = await _history(
             memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
@@ -365,6 +403,11 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     claim = await store.claim(uuid.UUID(task_id), worker_id=WORKER_ID, lease_s=LEASE_S)
     if claim is None:
         return "skipped"
+    try:
+        await settle_lost_attempt_holds(store, ctx["db_pool"], claim.task_id)
+    except Exception:
+        # The generic expired-reservation recovery still settles them later.
+        logger.warning("Could not settle a lost attempt's holds", exc_info=True)
     state = AttemptState(claim=claim)
     execution = asyncio.create_task(_execute(ctx, store, state))
     heartbeat = asyncio.create_task(_heartbeat(store, state, execution))

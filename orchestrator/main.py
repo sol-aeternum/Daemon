@@ -132,6 +132,7 @@ from orchestrator.routes.auth_setup import router as auth_setup_router
 from orchestrator.routes.speech_stream import router as speech_stream_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
 from orchestrator.routes.tasks import router as tasks_router, task_store
+from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.tasks.inputs import chat_request_hash
 from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import ConversationBusy, IdempotencyConflict, TaskNotFound
@@ -2250,6 +2251,7 @@ async def _durable_chat(
         "request_id": request_id,
     }
     request_hash = chat_request_hash(
+        key=validate_and_get_pepper(settings),
         conversation_id=conversation_uuid,
         message=user_message,
         attachments=payload.attachments,

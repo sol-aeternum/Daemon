@@ -600,3 +600,29 @@ async def test_other_accounts_suspension_does_not_affect_this_task(env: Env):
     assert await env.tasks.complete(accepted.task_id, claim.epoch, content="ok") is (
         TaskStatus.COMPLETED
     )
+
+
+@pytest.mark.asyncio
+async def test_latest_task_stays_discoverable_after_it_finishes(env: Env):
+    """Review of #461: another device can find a cancelled task's id and state."""
+    accepted = await _accept(env)
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    assert await env.tasks.active_for_conversation(env.alice, accepted.conversation_id) is None
+    latest = await env.tasks.latest_for_conversation(env.alice, accepted.conversation_id)
+    assert latest is not None and latest.task_id == accepted.task_id
+    assert latest.status is TaskStatus.CANCELLED
+    assert await env.tasks.latest_for_conversation(env.bob, accepted.conversation_id) is None
+
+
+@pytest.mark.asyncio
+async def test_ended_compute_scopes_never_include_the_running_attempt(env: Env):
+    accepted = await _accept(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    lost_scope, live_scope = uuid.uuid4(), uuid.uuid4()
+    await env.tasks.record_compute_scope(accepted.task_id, first.epoch, lost_scope)
+    await _expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert second is not None
+    await env.tasks.record_compute_scope(accepted.task_id, second.epoch, live_scope)
+    assert await env.tasks.ended_compute_scopes(accepted.task_id) == [lost_scope]
