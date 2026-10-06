@@ -33,7 +33,19 @@ export interface Conversation {
   latestTask?: ActiveTask | null;
 }
 
-export type TaskCancelOutcome = 'cancelled' | 'finished' | 'unconfirmed';
+/**
+ * ``cancelled``: the task is cancelled. ``cancelling``: cancellation was
+ * accepted but the running task has not stopped yet. ``finished``: it had
+ * already ended on its own. ``unconfirmed``: no answer either way.
+ */
+export type TaskCancelOutcome =
+  | 'cancelled'
+  | 'cancelling'
+  | 'finished'
+  | 'unconfirmed';
+
+/** A task as found by its idempotency key. */
+export type KeyedTask = { id: string; conversationId: string; status: string };
 
 /** Server-owned work still in progress for a conversation (durable tasks). */
 export interface ActiveTask {
@@ -526,12 +538,12 @@ export function useConversationHistory() {
   }, [fetchConversationById]);
 
   /**
-   * The id of the caller's task created with ``key``: ``null`` when the
-   * server has none (it did not accept that submission), ``undefined`` when
-   * the answer is unknown (network error, older backend).
+   * The caller's task created with ``key``: ``null`` when the server has
+   * none (not accepted, or not yet), ``undefined`` when the answer is
+   * unknown (network error, older backend).
    */
-  const taskIdForKey = useCallback(
-    async (key: string): Promise<string | null | undefined> => {
+  const taskForKey = useCallback(
+    async (key: string): Promise<KeyedTask | null | undefined> => {
       try {
         const response = await apiFetch(
           `/tasks/by-key/${encodeURIComponent(key)}`,
@@ -539,8 +551,34 @@ export function useConversationHistory() {
         );
         if (response.status === 404) return null;
         if (!response.ok) return undefined;
-        const task = (await response.json()) as { id?: unknown };
-        return typeof task.id === 'string' ? task.id : undefined;
+        const task = (await response.json()) as Record<string, unknown>;
+        return typeof task.id === 'string' &&
+          typeof task.conversation_id === 'string' &&
+          typeof task.status === 'string'
+          ? {
+              id: task.id,
+              conversationId: task.conversation_id,
+              status: task.status,
+            }
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
+  /** A task's current status, or ``undefined`` when it cannot be read. */
+  const taskStatus = useCallback(
+    async (taskId: string): Promise<string | undefined> => {
+      try {
+        const response = await apiFetch(
+          `/tasks/${encodeURIComponent(taskId)}`,
+          { headers: await getAuthHeaders() },
+        );
+        if (!response.ok) return undefined;
+        const task = (await response.json()) as { status?: unknown };
+        return typeof task.status === 'string' ? task.status : undefined;
       } catch {
         return undefined;
       }
@@ -560,9 +598,14 @@ export function useConversationHistory() {
           `/tasks/${encodeURIComponent(taskId)}/cancel`,
           { method: 'POST', headers: await getAuthHeaders() },
         );
-        if (response.ok) return 'cancelled';
         if (response.status === 409) return 'finished';
-        return 'unconfirmed';
+        if (!response.ok) return 'unconfirmed';
+        // 200 with status "running": cancellation is requested, but the task
+        // has not stopped yet.
+        const body = (await response.json().catch(() => ({}))) as {
+          status?: unknown;
+        };
+        return body.status === 'cancelled' ? 'cancelled' : 'cancelling';
       } catch {
         return 'unconfirmed';
       }
@@ -588,7 +631,8 @@ export function useConversationHistory() {
     getCurrentConversation,
     refreshCurrentConversation,
     cancelTask,
-    taskIdForKey,
+    taskForKey,
+    taskStatus,
     switchConversation,
     fetchConversationById,
     searchQuery,

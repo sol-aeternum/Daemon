@@ -2,6 +2,8 @@ import { getAuthGeneration, getAuthHeader, refreshIfNeeded } from './auth';
 import { isolateSuggestionBody } from './suggestionSubmission';
 import { keyForSubmission } from './pendingSubmission';
 
+export const DURABLE_CLIENT_FEATURES = ['task-cancel', 'task-reset'];
+
 function lastUserText(messages: unknown): string {
   if (!Array.isArray(messages)) return '';
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -55,6 +57,10 @@ export async function chatTransportFetch(
   assertCurrent();
   body.model = scope.model;
   body.id = scope.conversationId;
+  // This client can drive durable tasks: it cancels explicitly on Stop and
+  // replaces text on a generation reset. The chat proxy forwards this to the
+  // backend; an older cached bundle never declares it and stays request-bound.
+  body.client_features = DURABLE_CLIENT_FEATURES;
   // One key per submission, kept until its outcome is known, so a retry
   // after a lost response or a reload replays the accepted task instead of
   // creating a second one.

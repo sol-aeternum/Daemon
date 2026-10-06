@@ -41,7 +41,8 @@ export interface ConversationHistoryContextValue {
     typeof useConversationHistory
   >['refreshCurrentConversation'];
   cancelTask: ReturnType<typeof useConversationHistory>['cancelTask'];
-  taskIdForKey: ReturnType<typeof useConversationHistory>['taskIdForKey'];
+  taskForKey: ReturnType<typeof useConversationHistory>['taskForKey'];
+  taskStatus: ReturnType<typeof useConversationHistory>['taskStatus'];
   searchQuery: ReturnType<typeof useConversationHistory>['searchQuery'];
   setSearchQuery: ReturnType<typeof useConversationHistory>['setSearchQuery'];
   conversationSearch: ReturnType<

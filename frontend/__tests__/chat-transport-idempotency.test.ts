@@ -107,7 +107,13 @@ it('replays a new chat exactly as first sent after the backend names it', async 
 });
 
 it('fingerprints the attachment fields the page actually sends', async () => {
-  const file = { name: 'a.txt', mime_type: 'text/plain', size: 3 };
+  const file = {
+    id: 'att-1',
+    kind: 'text',
+    name: 'a.txt',
+    mime_type: 'text/plain',
+    size: 3,
+  };
   const first = await send('see file', {
     attachments: [{ ...file, text_content: 'one' }],
   });
@@ -171,4 +177,32 @@ it('falls back to a fresh key when storage is unavailable', () => {
   expect(keyForSubmission({ text: 'hi' }, null).key).not.toBe(
     keyForSubmission({ text: 'hi' }, null).key,
   );
+});
+
+it('treats a reselected file (new attachment id) as a new submission', async () => {
+  const file = {
+    kind: 'text',
+    name: 'a.txt',
+    mime_type: 'text/plain',
+    size: 3,
+  };
+  const first = await send('see file', {
+    attachments: [{ ...file, id: 'first-pick', text_content: 'one' }],
+  });
+  // Same bytes, but the backend's fingerprint includes the id: reusing the
+  // key would only earn a 409 idempotency_conflict.
+  expect(
+    await send('see file', {
+      attachments: [{ ...file, id: 'second-pick', text_content: 'one' }],
+    }),
+  ).not.toBe(first);
+});
+
+it('declares the durable-task features this client supports', async () => {
+  await send('hello');
+  const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+  const body = JSON.parse(
+    (calls[calls.length - 1][1] as RequestInit).body as string,
+  );
+  expect(body.client_features).toEqual(['task-cancel', 'task-reset']);
 });

@@ -11,26 +11,29 @@ const user: DaemonMessage = {
   parts: [{ type: 'text', text: 'hello' }],
 } as DaemonMessage;
 
-function withTask(taskId: string): DaemonMessage {
+function assistantWith(data: Record<string, unknown>): DaemonMessage {
   return {
     id: 'a',
     role: 'assistant',
-    parts: [{ type: 'data-event', data: { type: 'task', task_id: taskId } }],
+    parts: [{ type: 'data-event', data }],
   } as unknown as DaemonMessage;
 }
+
+const withTask = (taskId: string) =>
+  assistantWith({ type: 'task', task_id: taskId, status: 'accepted' });
 
 type Props = {
   messages: DaemonMessage[];
   isLoading: boolean;
   activeTaskId: string | null;
-  streamStarted?: boolean;
 };
 
 function setup(
   initial: Props,
   {
     cancelTask = vi.fn().mockResolvedValue('cancelled'),
-    taskIdForKey = vi.fn().mockResolvedValue(null),
+    taskForKey = vi.fn().mockResolvedValue(null),
+    taskStatus = vi.fn().mockResolvedValue('running'),
     key = 'submission-key' as string | null,
   } = {},
 ) {
@@ -39,16 +42,20 @@ function setup(
     (props: Props) =>
       useDurableStop({
         ...props,
-        streamStarted: props.streamStarted ?? false,
         submissionKeyRef,
         cancelTask,
-        taskIdForKey,
+        taskForKey,
+        taskStatus,
         lookupDelaysMs: [0, 10, 10],
+        pollMs: 5,
+        pollLimitMs: 200,
       }),
     { initialProps: initial },
   );
-  return { hook, cancelTask, taskIdForKey };
+  return { hook, cancelTask, taskForKey, taskStatus };
 }
+
+const task = (id: string) => ({ id, conversationId: 'c', status: 'running' });
 
 describe('Stop for durable chat', () => {
   it('cancels a known task and reports the server outcome', async () => {
@@ -58,6 +65,29 @@ describe('Stop for durable chat', () => {
     );
     await expect(hook.result.current()).resolves.toBe('finished');
     expect(cancelTask).toHaveBeenCalledWith('t1');
+  });
+
+  it('stays pending while an accepted cancellation is still stopping', async () => {
+    // 200 with status "running": cancel requested, task not stopped yet.
+    const taskStatus = vi
+      .fn()
+      .mockResolvedValueOnce('running')
+      .mockResolvedValueOnce(undefined) // a failed read is not an outcome
+      .mockResolvedValueOnce('cancelled');
+    const { hook } = setup(
+      { messages: [user, withTask('t1')], isLoading: true, activeTaskId: null },
+      { cancelTask: vi.fn().mockResolvedValue('cancelling'), taskStatus },
+    );
+    await expect(hook.result.current()).resolves.toBe('cancelled');
+    expect(taskStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports unconfirmed if a stopping task never reaches a terminal state', async () => {
+    const { hook } = setup(
+      { messages: [user, withTask('t1')], isLoading: true, activeTaskId: null },
+      { cancelTask: vi.fn().mockResolvedValue('cancelling') },
+    );
+    await expect(hook.result.current()).resolves.toBe('unconfirmed');
   });
 
   it('uses the followed server task id when this client is not streaming', async () => {
@@ -87,40 +117,25 @@ describe('Stop for durable chat', () => {
   });
 
   it('finds a task accepted after the abort and cancels it', async () => {
-    // Acceptance commits a moment after the client aborted: the first
-    // lookup misses, a retry finds it.
-    const taskIdForKey = vi
+    const taskForKey = vi
       .fn()
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce('committed-late');
+      .mockResolvedValueOnce(task('committed-late'));
     const { hook, cancelTask } = setup(
       { messages: [user], isLoading: true, activeTaskId: null },
-      { taskIdForKey },
+      { taskForKey },
     );
     const outcome = hook.result.current() as Promise<StopOutcome>;
     await act(async () =>
       hook.rerender({ messages: [user], isLoading: false, activeTaskId: null }),
     );
     await expect(outcome).resolves.toBe('cancelled');
-    expect(taskIdForKey).toHaveBeenCalledWith('submission-key');
+    expect(taskForKey).toHaveBeenCalledWith('submission-key');
     expect(cancelTask).toHaveBeenCalledWith('committed-late');
   });
 
-  it('reports a stop as unconfirmed when the server cannot be asked', async () => {
-    const { hook, cancelTask } = setup(
-      { messages: [user], isLoading: true, activeTaskId: null },
-      { taskIdForKey: vi.fn().mockResolvedValue(undefined) },
-    );
-    const outcome = hook.result.current() as Promise<StopOutcome>;
-    await act(async () =>
-      hook.rerender({ messages: [user], isLoading: false, activeTaskId: null }),
-    );
-    await expect(outcome).resolves.toBe('unconfirmed');
-    expect(cancelTask).not.toHaveBeenCalled();
-  });
-
   it('never reports success when the server has not found the task yet', async () => {
-    const { hook, taskIdForKey } = setup({
+    const { hook, taskForKey } = setup({
       messages: [user],
       isLoading: true,
       activeTaskId: null,
@@ -129,24 +144,36 @@ describe('Stop for durable chat', () => {
     await act(async () =>
       hook.rerender({ messages: [user], isLoading: false, activeTaskId: null }),
     );
-    // Acceptance may still be committing: unconfirmed, never "stopped".
     await expect(outcome).resolves.toBe('unconfirmed');
-    expect(taskIdForKey).toHaveBeenCalledTimes(3);
+    expect(taskForKey).toHaveBeenCalledTimes(3);
   });
 
-  it('treats a started stream without a task as request-bound chat', () => {
-    const { hook } = setup({
+  it('treats a turn the backend marked request-bound as cancelled by the abort', async () => {
+    const requestBound = assistantWith({ type: 'request_bound' });
+    const started = setup({
+      messages: [user, requestBound],
+      isLoading: true,
+      activeTaskId: null,
+    });
+    expect(started.hook.result.current()).toBeUndefined();
+
+    // Stop pressed before the marker arrived: resolved by the marker.
+    const early = setup({
       messages: [user],
       isLoading: true,
       activeTaskId: null,
-      streamStarted: true,
     });
-    // A durable task names itself in its first frame; without one the abort
-    // is the cancellation.
-    expect(hook.result.current()).toBeUndefined();
+    const outcome = early.hook.result.current() as Promise<StopOutcome>;
+    early.hook.rerender({
+      messages: [user, requestBound],
+      isLoading: true,
+      activeTaskId: null,
+    });
+    await expect(outcome).resolves.toBe('cancelled');
+    expect(early.cancelTask).not.toHaveBeenCalled();
   });
 
-  it('leaves a request-bound abort to the caller when nothing durable is in flight', () => {
+  it('leaves nothing to do when no submission is in flight', () => {
     const { hook } = setup(
       { messages: [user], isLoading: false, activeTaskId: null },
       { key: null },

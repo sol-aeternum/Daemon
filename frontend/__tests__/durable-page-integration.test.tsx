@@ -26,7 +26,8 @@ const state = vi.hoisted(() => ({
   conversation: null as unknown,
   refresh: vi.fn(),
   cancelTask: vi.fn(),
-  taskIdForKey: vi.fn(),
+  taskForKey: vi.fn(),
+  taskStatus: vi.fn(),
 }));
 const candidate = {
   id: 'candidate',
@@ -64,7 +65,8 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
     getCurrentConversation: () => state.conversation,
     refreshCurrentConversation: state.refresh,
     cancelTask: state.cancelTask,
-    taskIdForKey: state.taskIdForKey,
+    taskForKey: state.taskForKey,
+    taskStatus: state.taskStatus,
     createConversation: vi.fn(),
     updateConversation: vi.fn(),
     setConversationModel: vi.fn(),
@@ -189,7 +191,8 @@ beforeEach(() => {
   state.currentId = 'conv-1';
   state.conversation = runningConversation(true);
   state.cancelTask.mockResolvedValue('cancelled');
-  state.taskIdForKey.mockResolvedValue(null);
+  state.taskForKey.mockResolvedValue(null);
+  state.taskStatus.mockResolvedValue('running');
   state.refresh.mockResolvedValue(runningConversation(true));
 });
 afterEach(() => {

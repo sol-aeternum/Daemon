@@ -144,17 +144,62 @@ export function getDaemonMessageText(message: DaemonMessage): string {
 
   // A durable task that regenerated after an interruption marks the switch
   // with a task_reset event; only the text written after it is current.
+  const text = currentParts(message)
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
+  // A task cancelled elsewhere (another device) ends this live view: say so,
+  // as the persisted copy will.
+  return getDaemonTaskStatus(message) === 'cancelled' && text
+    ? `${text}\n\n${CANCELLED_PARTIAL_NOTICE}`
+    : text;
+}
+
+/** Parts after the last durable-task reset (the current attempt's). */
+function currentParts(message: DaemonMessage): DaemonMessage['parts'] {
   let lastReset = -1;
   message.parts.forEach((part, index) => {
     if (part.type === 'data-event' && part.data.type === 'task_reset') {
       lastReset = index;
     }
   });
-  return message.parts
-    .slice(lastReset + 1)
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('');
+  return message.parts.slice(lastReset + 1);
+}
+
+/** The latest status a live durable-task stream reported for this message. */
+export function getDaemonTaskStatus(
+  message: DaemonMessage | undefined,
+): string | null {
+  if (!message) return null;
+  let status: string | null = null;
+  for (const part of message.parts) {
+    if (
+      part.type === 'data-event' &&
+      part.data.type === 'task' &&
+      typeof part.data.status === 'string'
+    ) {
+      status = part.data.status;
+    }
+  }
+  return status;
+}
+
+/** Durable-task statuses that mean the task's outcome is settled. */
+export const TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'needs_attention',
+]);
+
+/** The backend answered this turn without a durable task (request-bound chat). */
+export function isRequestBound(message: DaemonMessage | undefined): boolean {
+  return Boolean(
+    message?.parts.some(
+      (part) =>
+        part.type === 'data-event' && part.data.type === 'request_bound',
+    ),
+  );
 }
 
 /** The durable task a streamed assistant message belongs to, if any. */
@@ -171,8 +216,10 @@ export function getDaemonTaskId(
 }
 
 export function getDaemonDataEvents(messages: DaemonMessage[]): ChatEvent[] {
+  // Events from an attempt that a regeneration replaced (tool calls, routing)
+  // no longer describe the shown answer.
   return messages.flatMap((message) =>
-    message.parts.flatMap((part) =>
+    currentParts(message).flatMap((part) =>
       part.type === 'data-event' ? [part.data] : [],
     ),
   );

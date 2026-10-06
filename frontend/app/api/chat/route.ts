@@ -10,6 +10,8 @@ const API_URLS = [
 ].filter((url): url is string => Boolean(url));
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+/** Durable-task features this bridge implements. */
+const BRIDGE_FEATURES = new Set(['task-cancel', 'task-reset']);
 
 function buildProxyHeaders(req: Request): Headers {
   const headers = new Headers();
@@ -172,6 +174,7 @@ export async function POST(req: Request) {
     provider,
     suggestion_id,
     idempotency_key,
+    client_features,
   } = await req.json();
 
   const { createUIMessageStream, createUIMessageStreamResponse } =
@@ -205,8 +208,20 @@ export async function POST(req: Request) {
   }
 
   const proxyHeaders = buildProxyHeaders(req);
-  // This bridge replaces shown text on a durable task's generation reset.
-  proxyHeaders.set('X-Daemon-Client-Features', 'task-reset');
+  // Durable execution needs the *browser* to support it (an older cached
+  // bundle does not), so forward only the features both the browser declared
+  // and this bridge implements.
+  const features = Array.isArray(client_features)
+    ? client_features.filter(
+        (feature): feature is string =>
+          typeof feature === 'string' && BRIDGE_FEATURES.has(feature),
+      )
+    : [];
+  if (features.length > 0) {
+    proxyHeaders.set('X-Daemon-Client-Features', features.join(', '));
+  } else {
+    proxyHeaders.delete('X-Daemon-Client-Features');
+  }
   // One key per submission: a retried or replayed request returns the same
   // durable task instead of creating a second one.
   if (
@@ -341,6 +356,11 @@ export async function POST(req: Request) {
         const taskId = backendRes.headers.get('x-daemon-task-id');
         if (taskId) {
           writeData([{ type: 'task', task_id: taskId, status: 'accepted' }]);
+        } else if (features.length > 0) {
+          // This browser could have run durably, but the backend answered
+          // without a task (durable chat off, or an excluded turn): aborting
+          // this request is what cancels it.
+          writeData([{ type: 'request_bound' }]);
         }
 
         const reader = backendRes.body.getReader();

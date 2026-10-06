@@ -9,8 +9,10 @@ import {
   type StopOutcome,
 } from '../hooks/useStopGeneration';
 import {
+  getDaemonDataEvents,
   getDaemonMessageText,
   getDaemonTaskId,
+  isRequestBound,
   normalizeDaemonMessage,
   type DaemonMessage,
 } from '../lib/chatMessages';
@@ -87,6 +89,89 @@ describe('durable chat route bridge', () => {
     expect(new Headers(sent.headers).get('Idempotency-Key')).toBe('key-123');
     expect(getDaemonTaskId(message)).toBe('task-1');
     expect(getDaemonMessageText(message)).toBe('Hi');
+  });
+
+  it('forwards durable features only when the browser declared them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sse([]));
+    vi.stubGlobal('fetch', fetchMock);
+    // An older cached bundle sends no client_features: it must stay
+    // request-bound even though this bridge supports durable tasks.
+    await (await POST(chatRequest({}))).text();
+    expect(
+      new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).has(
+        'X-Daemon-Client-Features',
+      ),
+    ).toBe(false);
+    await (
+      await POST(
+        chatRequest({
+          client_features: ['task-cancel', 'task-reset', 'bogus'],
+        }),
+      )
+    ).text();
+    expect(
+      new Headers((fetchMock.mock.calls[1][1] as RequestInit).headers).get(
+        'X-Daemon-Client-Features',
+      ),
+    ).toBe('task-cancel, task-reset');
+  });
+
+  it('marks a turn the backend answered without a task as request-bound', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(sse([frame('token', { text: 'Hi' })])),
+    );
+    const message = assemble(
+      await readUIMessageChunks(
+        await POST(
+          chatRequest({ client_features: ['task-cancel', 'task-reset'] }),
+        ),
+      ),
+    );
+    expect(isRequestBound(message)).toBe(true);
+    expect(getDaemonTaskId(message)).toBeNull();
+  });
+
+  it('shows a cancellation made on another device in the live view', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          sse(
+            [
+              frame('token', { text: 'Partial' }),
+              frame('task', { task_id: 'task-1', status: 'cancelled' }),
+              frame('done', { status: 'cancelled' }),
+            ],
+            { 'X-Daemon-Task-Id': 'task-1' },
+          ),
+        ),
+    );
+    const message = assemble(
+      await readUIMessageChunks(await POST(chatRequest({}))),
+    );
+    expect(getDaemonMessageText(message)).toMatch(/^Partial\n\nStopped/);
+  });
+
+  it('drops events from an attempt that a reset replaced', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          sse([
+            frame('task', { task_id: 'task-1', status: 'running' }),
+            frame('tool_call', { name: 'web_search', arguments: {} }),
+            frame('task', { task_id: 'task-1', reset: true, content: 'New' }),
+          ]),
+        ),
+    );
+    const message = assemble(
+      await readUIMessageChunks(await POST(chatRequest({}))),
+    );
+    const types = getDaemonDataEvents([message]).map((event) => event.type);
+    expect(types).not.toContain('tool_call');
   });
 
   it('drops an invalid idempotency key rather than forwarding it', async () => {

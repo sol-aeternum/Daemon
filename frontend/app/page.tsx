@@ -21,6 +21,7 @@ import {
   Suspense,
   useMemo,
   useCallback,
+  useLayoutEffect,
 } from 'react';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
@@ -99,6 +100,8 @@ import {
   getDaemonDataEvents,
   getDaemonMessageText,
   getDaemonTaskId,
+  getDaemonTaskStatus,
+  TERMINAL_TASK_STATUSES,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
 
@@ -378,7 +381,8 @@ function ChatContent() {
     getCurrentConversation,
     refreshCurrentConversation,
     cancelTask,
-    taskIdForKey,
+    taskForKey,
+    taskStatus,
     switchConversation,
     setConversationModel,
     searchQuery,
@@ -434,6 +438,18 @@ function ChatContent() {
   const chatRequestGenerationRef = useRef<number | null>(null);
   // Idempotency key of the submission currently (or most recently) in flight.
   const activeSubmissionKeyRef = useRef<string | null>(null);
+  // Files of the latest submitted turn, re-sent when it is regenerated.
+  const lastAttachmentsRef = useRef<unknown[]>([]);
+  // While a Stop is being confirmed the conversation stays busy, so a new
+  // submission cannot race a task that is still stopping.
+  const [stopInFlight, setStopInFlight] = useState(false);
+  // Mirrors stopInFlight for submit handlers declared before it.
+  const stopInFlightRef = useRef(false);
+  // The open conversation id as of the latest render, for async callbacks.
+  const currentIdRef = useRef(currentId);
+  useLayoutEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
   // Set once useChat has returned; used by callbacks created before it.
   const reconcileWithServerRef = useRef<(() => Promise<void>) | null>(null);
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
@@ -536,15 +552,16 @@ function ChatContent() {
       )
         return;
       setConnectionStatus('connected');
-      // Only a clean finish settles the submission. After an abort,
-      // disconnect or error the server may still hold an accepted task, so
-      // the key is kept for a resend to reattach to it.
-      if (
-        !isAbort &&
-        !isDisconnect &&
-        !isError &&
-        activeSubmissionKeyRef.current
-      ) {
+      // The submission is settled once its outcome is known: a clean
+      // finish, or a durable task that reported a terminal state (including
+      // a failure, which arrives as a stream error). After an abort,
+      // disconnect or other error the server may still hold an accepted
+      // task, so the key is kept for a resend to reattach to it.
+      const taskStatusSeen = getDaemonTaskStatus(message);
+      const outcomeKnown =
+        (!isAbort && !isDisconnect && !isError) ||
+        (taskStatusSeen !== null && TERMINAL_TASK_STATUSES.has(taskStatusSeen));
+      if (outcomeKnown && activeSubmissionKeyRef.current) {
         settlePendingSubmission(activeSubmissionKeyRef.current);
       }
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
@@ -591,6 +608,10 @@ function ChatContent() {
       : null;
   const serverTaskBusy =
     !isLoading && Boolean(followedConversation?.activeTask);
+  // Until a conversation's server state has loaded, it may have a running
+  // task: sending then would only meet conversation_busy.
+  const conversationLoading =
+    Boolean(currentId) && currentConversation?.id !== currentId;
   useActiveTaskFollower({
     conversation: followedConversation,
     isStreaming: isLoading,
@@ -613,6 +634,9 @@ function ChatContent() {
       body: {
         id: currentId || latestConversationIdRef.current || null,
         model: activeModel,
+        // Regenerating a turn re-sends its files; without them the backend
+        // would see (and run) a different request.
+        attachments: lastAttachmentsRef.current,
       },
     });
   };
@@ -772,7 +796,13 @@ function ChatContent() {
   const submitChat = async (command?: string) => {
     if (isSubmittingSuggestion || suggestionSubmissionRef.current?.pending)
       return;
-    if ((isLoading && messages.length > 0) || serverTaskBusy) return;
+    if (
+      (isLoading && messages.length > 0) ||
+      serverTaskBusy ||
+      stopInFlightRef.current ||
+      conversationLoading
+    )
+      return;
 
     const generation = getAuthGeneration();
     const binding = draft.setInput;
@@ -797,6 +827,7 @@ function ChatContent() {
     if (!content) return;
 
     suggestionSubmissionRef.current = null;
+    lastAttachmentsRef.current = attachments;
 
     try {
       await sendMessage(
@@ -838,7 +869,8 @@ function ChatContent() {
     isLoading,
   });
 
-  const inputIsBusy = (isLoading && messages.length > 0) || serverTaskBusy;
+  const inputIsBusy =
+    (isLoading && messages.length > 0) || serverTaskBusy || stopInFlight;
   // Durable tasks survive a disconnect, so Stop cancels the task explicitly;
   // closing the app only detaches. The outcome comes from the server and is
   // never assumed: a missing task id is not proof that nothing was accepted.
@@ -846,45 +878,65 @@ function ChatContent() {
     messages,
     activeTaskId: currentConversation?.activeTask?.id ?? null,
     isLoading,
-    streamStarted: status === 'streaming',
     submissionKeyRef: activeSubmissionKeyRef,
     cancelTask,
-    taskIdForKey,
+    taskForKey,
+    taskStatus,
   });
   // Show the server's copy of this submission's turn, identified by the
   // task its idempotency key created (never by matching text): the saved
   // result, a terminal notice, or the still-running task, which the
   // follower then tracks and which keeps the input busy until it ends.
-  const reconcileWithServer = useCallback(async () => {
-    const key = activeSubmissionKeyRef.current;
-    if (!key) return;
-    const taskId = await taskIdForKey(key);
-    if (!taskId) return;
-    const fresh = await refreshCurrentConversation();
-    if (
-      fresh &&
-      (fresh.activeTask?.id === taskId || fresh.latestTask?.id === taskId)
-    ) {
-      setMessages(fresh.messages);
-    }
-  }, [refreshCurrentConversation, setMessages, taskIdForKey]);
+  const reconcileWithServer = useCallback(
+    async (key: string | null = activeSubmissionKeyRef.current) => {
+      if (!key) return;
+      const task = await taskForKey(key);
+      if (!task) return;
+      if (currentIdRef.current !== task.conversationId) {
+        // A new chat accepted before its conversation id reached this page:
+        // open it; the follower then shows the task's progress or result.
+        switchConversation(task.conversationId);
+        return;
+      }
+      const fresh = await refreshCurrentConversation();
+      if (
+        fresh &&
+        (fresh.activeTask?.id === task.id || fresh.latestTask?.id === task.id)
+      ) {
+        setMessages(fresh.messages);
+      }
+    },
+    [refreshCurrentConversation, setMessages, switchConversation, taskForKey],
+  );
   useEffect(() => {
     reconcileWithServerRef.current = reconcileWithServer;
   }, [reconcileWithServer]);
+  useEffect(() => {
+    stopInFlightRef.current = stopInFlight;
+  }, [stopInFlight]);
+  const beforeStop = useCallback((): Promise<StopOutcome> | void => {
+    // Settle and reconcile the submission this Stop was for, even if another
+    // one starts before the server answers.
+    const key = activeSubmissionKeyRef.current;
+    const confirmation = cancelActiveTask();
+    if (!confirmation) return;
+    setStopInFlight(true);
+    return confirmation.then((outcome) => {
+      if (outcome !== 'unconfirmed' && key) settlePendingSubmission(key);
+      setStopInFlight(false);
+      void reconcileWithServer(key);
+      return outcome;
+    });
+  }, [cancelActiveTask, reconcileWithServer]);
   const handleStopResolved = useCallback(
     (outcome: StopOutcome) => {
-      if (outcome !== 'unconfirmed' && activeSubmissionKeyRef.current) {
-        // The outcome is known: a resend is a new submission.
-        settlePendingSubmission(activeSubmissionKeyRef.current);
-      }
       if (outcome === 'unconfirmed') {
         showError(
           'Stop could not be confirmed. The request may still be running; its result will appear here.',
         );
       }
-      void reconcileWithServer();
     },
-    [reconcileWithServer, showError],
+    [showError],
   );
   const {
     stoppedMessageIds,
@@ -899,7 +951,7 @@ function ChatContent() {
     conversationId: suggestionSubmissionRef.current
       ? latestConversationIdRef.current
       : (currentId ?? null),
-    beforeStop: cancelActiveTask,
+    beforeStop,
     onStopResolved: handleStopResolved,
   });
 

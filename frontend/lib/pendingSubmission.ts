@@ -76,7 +76,11 @@ function attachmentShape(attachments: unknown): unknown[] {
       record.data,
       record.url,
     ].find((value) => typeof value === 'string') as string | undefined;
+    // The backend fingerprints the whole serialized attachment, including
+    // its per-selection id: a reselected file is a different request.
     return {
+      id: record.id ?? null,
+      kind: record.kind ?? null,
       name: record.name ?? null,
       type: record.mime_type ?? record.type ?? record.mimeType ?? null,
       size: record.size ?? null,
