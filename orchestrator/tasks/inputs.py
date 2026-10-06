@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 #: Version of the accepted-input schema stored in ``tasks.input_ciphertext``.
@@ -17,6 +18,52 @@ _REQUEST_HASH_DOMAIN = b"daemon.task.request.v1\n"
 def canonical_json(value: Any) -> str:
     """Deterministic JSON: sorted keys, no insignificant whitespace, UTF-8 kept."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RequestFingerprint:
+    """A submission's keyed digest plus the canonical payload it covers.
+
+    The digest is what is compared first. The canonical payload is stored
+    only inside the encrypted task input, so a replay can still be matched
+    after the digest key (the auth pepper) has been rotated.
+    """
+
+    digest: str
+    canonical: str
+
+
+def chat_request_fingerprint(
+    *,
+    key: str,
+    conversation_id: uuid.UUID | None,
+    message: str,
+    attachments: list[dict[str, Any]] | None,
+    model: str | None,
+    provider: str | None,
+    metadata: dict[str, Any] | None,
+    disable_memory_write: bool,
+) -> RequestFingerprint:
+    """Keyed fingerprint of what a submission asks for (see ``chat_request_hash``)."""
+    if not key:
+        raise ValueError("request fingerprint key is required")
+    canonical = canonical_json(
+        {
+            "conversation_id": str(conversation_id) if conversation_id is not None else None,
+            "message": message,
+            "attachments": attachments or [],
+            "model": model or "auto",
+            "provider": provider,
+            "metadata": metadata or {},
+            "disable_memory_write": bool(disable_memory_write),
+        }
+    )
+    digest = hmac.new(
+        key.encode("utf-8"),
+        _REQUEST_HASH_DOMAIN + canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return RequestFingerprint(digest=digest, canonical=canonical)
 
 
 def chat_request_hash(
@@ -38,19 +85,13 @@ def chat_request_hash(
     resubmits with the same idempotency key may send different history for
     the same request, and must get the same task back.
     """
-    if not key:
-        raise ValueError("request fingerprint key is required")
-    payload = {
-        "conversation_id": str(conversation_id) if conversation_id is not None else None,
-        "message": message,
-        "attachments": attachments or [],
-        "model": model or "auto",
-        "provider": provider,
-        "metadata": metadata or {},
-        "disable_memory_write": bool(disable_memory_write),
-    }
-    return hmac.new(
-        key.encode("utf-8"),
-        _REQUEST_HASH_DOMAIN + canonical_json(payload).encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
+    return chat_request_fingerprint(
+        key=key,
+        conversation_id=conversation_id,
+        message=message,
+        attachments=attachments,
+        model=model,
+        provider=provider,
+        metadata=metadata,
+        disable_memory_write=disable_memory_write,
+    ).digest

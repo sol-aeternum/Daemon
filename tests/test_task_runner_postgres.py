@@ -337,7 +337,7 @@ async def test_lost_attempts_hold_is_settled_before_a_one_slot_account_recovers(
     service = EntitlementService(env.pool)
     lost_scope = uuid.uuid4()
     hold = await service.reserve(env.alice, 1000, operation="chat", scope_id=lost_scope)
-    await env.tasks.record_compute_scope(accepted.task_id, first.epoch, lost_scope)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, lost_scope)
     # The free plan allows one concurrent operation: the dead hold blocks the next.
     with pytest.raises(LimitExceeded) as refused:
         await service.reserve(env.alice, 1000, operation="chat", scope_id=uuid.uuid4())
@@ -380,7 +380,7 @@ async def test_failed_hold_settlement_defers_without_consuming_an_attempt(
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.record_compute_scope(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
     await expire_lease(env, accepted.task_id)
 
     real_settle = runner.settle_lost_attempt_holds
@@ -465,3 +465,124 @@ async def test_history_is_cut_at_the_accepted_turn(
     contents = [m.get("content") for m in seen[0] if m.get("role") != "system"]
     assert contents[-1] == "the accepted question"
     assert "/council a later turn" not in contents
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("renewal", ["fails_late", "hangs"])
+async def test_execution_stops_at_the_lease_deadline_whatever_renewal_does(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, renewal: str
+):
+    """Agent review of #466: late or hanging renewals must not extend execution."""
+    monkeypatch.setattr(runner, "LEASE_S", 0.6)
+    monkeypatch.setattr(runner, "LEASE_SAFETY_S", 0.1)
+    monkeypatch.setattr(runner, "HEARTBEAT_S", 0.2)
+    output_times: list[float] = []
+
+    async def long_completion(**_kwargs: Any):
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            output_times.append(asyncio.get_running_loop().time())
+            yield {"type": "content_delta", "content": "x"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", long_completion)
+
+    async def bad_renewal(*_args: Any, **_kwargs: Any) -> Any:
+        if renewal == "hangs":
+            await asyncio.Event().wait()
+        await asyncio.sleep(0.18)  # nearly a whole heartbeat, then fail
+        raise ConnectionError("database unavailable")
+
+    monkeypatch.setattr(env.tasks, "heartbeat", bad_renewal)
+    accepted = await accept_task(env)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "fenced"
+    deadline = started + 0.6 - 0.1
+    assert output_times and max(output_times) <= deadline + 0.15
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_outlasting_the_lease_never_executes(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(runner, "LEASE_S", 0.3)
+    monkeypatch.setattr(runner, "LEASE_SAFETY_S", 0.05)
+    calls: list[str] = []
+
+    async def slow_settle(*_args: Any, **_kwargs: Any) -> int:
+        await asyncio.sleep(0.4)
+        return 0
+
+    async def never(**_kwargs: Any):
+        calls.append("provider")
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr(runner, "settle_lost_attempt_holds", slow_settle)
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", never)
+    accepted = await accept_task(env)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "fenced"
+    assert calls == []
+    row = await env.pool.fetchrow("SELECT * FROM tasks WHERE id = $1", accepted.task_id)
+    assert row["attempt_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_outage_during_recovery_does_not_consume_the_retry(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Agent review of #466: settlement and its deferral both fail, then recovery."""
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await expire_lease(env, accepted.task_id)  # attempt 1 (of 2) executed and was lost
+
+    async def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise ConnectionError("database unavailable")
+
+    with monkeypatch.context() as outage:
+        outage.setattr(runner, "settle_lost_attempt_holds", unavailable)
+        outage.setattr(env.tasks, "defer_claim", unavailable)
+        assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+            "deferred"
+        )
+    # The database is back; the second claim's lease lapses.
+    await expire_lease(env, accepted.task_id)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    row = await env.pool.fetchrow("SELECT * FROM tasks WHERE id = $1", accepted.task_id)
+    assert row["attempt_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_many_later_turns_do_not_evict_the_accepted_context(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Agent review of #466: the window ends at the accepted turn before the limit."""
+    monkeypatch.setenv("CHAT_HISTORY_LIMIT", "3")
+    get_settings.cache_clear()
+    seen: list[list[dict[str, Any]]] = []
+
+    async def capturing_completion(**kwargs: Any):
+        seen.append(kwargs["messages"])
+        yield {"type": "content_delta", "content": "ok"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", capturing_completion)
+    accepted = await accept_task(env, message="the accepted question")
+    for index in range(6):  # more later rows than the history limit
+        await env.memory.insert_message(
+            conversation_id=accepted.conversation_id,
+            user_id=env.alice,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"later turn {index}",
+            status="complete",
+        )
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    contents = [m.get("content") for m in seen[0] if m.get("role") != "system"]
+    assert contents[-1] == "the accepted question"
+    assert not any("later turn" in str(content) for content in contents)

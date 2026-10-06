@@ -110,6 +110,17 @@ async def api(env: Env, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Api]:
     monkeypatch.setattr("orchestrator.main.enforce_rate_limit", no_rate_limit)
     monkeypatch.setattr("orchestrator.main.get_rate_limiter", lambda _request: None)
 
+    def always_authorized(*_args: Any) -> Any:
+        async def check() -> bool:
+            return True
+
+        return check
+
+    # Fixture credentials are not real sessions; the checker itself is tested
+    # separately against real session rows.
+    monkeypatch.setattr("orchestrator.main.observer_authorizer", always_authorized)
+    monkeypatch.setattr("orchestrator.routes.tasks.observer_authorizer", always_authorized)
+
     async def scripted_completion(**_kwargs: Any):
         for chunk in CHUNKS:
             await asyncio.sleep(0.05)
@@ -142,7 +153,11 @@ async def api(env: Env, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Api]:
     original = getattr(app.state, "app_state", None)
     app.state.app_state = state
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"X-Daemon-Client-Features": "task-reset"},
+        ) as client:
             yield Api(env, client, redis, who)
     finally:
         app.dependency_overrides.clear()
@@ -647,3 +662,107 @@ async def test_task_lookup_by_key_is_owner_scoped(api: Api):
     assert (await api.client.get("/tasks/by-key/bad%20key")).status_code == 404
     api.as_user(api.env.bob)
     assert (await api.client.get("/tasks/by-key/early-stop-key")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_revoked_observer_is_closed_while_the_task_keeps_running(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+):
+    """Codex review of #461: a revoked device stops receiving task output."""
+    monkeypatch.setattr(observe_module, "POLL_S", 0.02)
+    monkeypatch.setattr(observe_module, "REAUTH_S", 0.05)
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    allowed = {"value": True}
+
+    async def authorized() -> bool:
+        return allowed["value"]
+
+    frames: list[str] = []
+
+    async def consume() -> None:
+        async for frame in observe_task(
+            env.tasks, None, env.alice, accepted.task_id, request_id="r", authorized=authorized
+        ):
+            frames.append(frame)
+
+    observer = asyncio.create_task(consume())
+    await asyncio.sleep(0.1)
+    allowed["value"] = False  # device revoked
+    await asyncio.wait_for(observer, timeout=5)
+    assert "event: done" not in "".join(frames)
+    assert (await env.tasks.snapshot(env.alice, accepted.task_id)).status.value == "running"
+
+
+@pytest.mark.asyncio
+async def test_observer_authorizer_checks_real_sessions(env: Env):
+    from orchestrator.auth import AuthenticatedDevice
+    from orchestrator.db import AppState
+    from orchestrator.routes.tasks import observer_authorizer
+
+    device_id, session_id = uuid.uuid4(), uuid.uuid4()
+    await env.pool.execute(
+        "INSERT INTO devices (id, user_id, display_name) VALUES ($1, $2, 'phone')",
+        device_id,
+        env.alice,
+    )
+    await env.pool.execute(
+        """
+        INSERT INTO sessions (id, user_id, device_id, client_kind, access_token_hash,
+                              access_expires_at, refresh_token_hash, refresh_expires_at)
+        VALUES ($1, $2, $3, 'web', $4, now() + interval '10 minutes', $5,
+                now() + interval '1 day')
+        """,
+        session_id,
+        env.alice,
+        device_id,
+        uuid.uuid4().hex,
+        uuid.uuid4().hex,
+    )
+    state = AppState(settings=get_settings())
+    state.db_pool = env.pool
+    auth = AuthenticatedDevice(user_id=env.alice, device_id=device_id, session_id=session_id)
+    check = observer_authorizer(state, auth)
+    assert await check() is True
+    await env.pool.execute("UPDATE devices SET revoked_at = now() WHERE id = $1", device_id)
+    assert await check() is False
+    await env.pool.execute("UPDATE devices SET revoked_at = NULL WHERE id = $1", device_id)
+    await env.pool.execute(
+        "UPDATE sessions SET access_expires_at = now() - interval '1 second' WHERE id = $1",
+        session_id,
+    )
+    assert await check() is False
+    bob = AuthenticatedDevice(user_id=env.bob, device_id=device_id, session_id=session_id)
+    assert await observer_authorizer(state, bob)() is False
+
+
+@pytest.mark.asyncio
+async def test_client_without_reset_support_is_told_to_reload(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+):
+    """Codex review of #461: an older cached client must not show attempts concatenated."""
+    monkeypatch.setattr(observe_module, "POLL_S", 0.02)
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.write_partial(accepted.task_id, first.epoch, content="attempt one", delta_seq=1)
+    frames: list[str] = []
+
+    async def consume() -> None:
+        async for frame in observe_task(
+            env.tasks, None, env.alice, accepted.task_id, request_id="r", supports_reset=False
+        ):
+            frames.append(frame)
+
+    observer = asyncio.create_task(consume())
+    await asyncio.sleep(0.1)
+    await expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert second is not None
+    await env.tasks.write_partial(accepted.task_id, second.epoch, content="two", delta_seq=1)
+    await asyncio.wait_for(observer, timeout=5)
+    events = _events("".join(frames))
+    assert _displayed(events) == "attempt one"  # never "attempt onetwo"
+    assert dict(events)["error"]["data"]["code"] == "task_regenerating"
+    assert not any(e == "task" and d["data"].get("reset") for e, d in events)

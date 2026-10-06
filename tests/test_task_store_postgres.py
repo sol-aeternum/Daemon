@@ -44,6 +44,11 @@ async def _accept(env: Env, user=None, *, key=None, message="hello", conversatio
     )
 
 
+async def _execute(env: Env, claim) -> int:
+    """The attempt starts inference work: only now does it count."""
+    return await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4())
+
+
 async def _expire_lease(env: Env, task_id: uuid.UUID) -> None:
     await env.pool.execute(
         "UPDATE tasks SET lease_expires_at = now() - interval '1 second' WHERE id = $1", task_id
@@ -185,7 +190,9 @@ async def test_duplicate_delivery_yields_one_claim(env: Env):
     winners = [c for c in claims if c is not None]
     assert len(winners) == 1 and winners[0].epoch == 1
     row = await _task(env, accepted.task_id)
-    assert row["attempt_count"] == 1 and row["status"] == "running"
+    # Claiming alone consumes no attempt; execution does.
+    assert row["attempt_count"] == 0 and row["status"] == "running"
+    assert await _execute(env, winners[0]) == 1
     assert winners[0].task_input == {"message": "hello"}
     assert winners[0].user_id == env.alice
 
@@ -212,11 +219,13 @@ async def test_lost_attempt_is_regenerated_with_partial_preserved(env: Env):
     accepted = await _accept(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
+    await _execute(env, first)
     await env.tasks.write_partial(accepted.task_id, first.epoch, content="half an ans", delta_seq=3)
     await _expire_lease(env, accepted.task_id)
 
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
-    assert second is not None and second.epoch == 2 and second.attempt_count == 2
+    assert second is not None and second.epoch == 2 and second.attempt_count == 1
+    assert await _execute(env, second) == 2
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
     assert snapshot.content_generation == 2 and snapshot.content_delta_seq == 0
@@ -300,6 +309,7 @@ async def test_lost_attempt_after_material_operation_needs_attention(env: Env):
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert claim is not None
+    await _execute(env, claim)
     op = await env.tasks.begin_operation(
         accepted.task_id,
         claim.epoch,
@@ -344,6 +354,7 @@ async def test_retryable_error_requeues_with_backoff_then_caps(env: Env):
     accepted = await _accept(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
+    await _execute(env, first)
     status = await env.tasks.fail_attempt(
         accepted.task_id, first.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="upstream_busy"
     )
@@ -355,6 +366,7 @@ async def test_retryable_error_requeues_with_backoff_then_caps(env: Env):
     await _make_due(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None and second.epoch == 2
+    await _execute(env, second)
     status = await env.tasks.fail_attempt(
         accepted.task_id, second.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="upstream_busy"
     )
@@ -368,6 +380,7 @@ async def test_repeated_loss_exhausts_attempts(env: Env):
     for worker in ("w1", "w2"):
         claim = await env.tasks.claim(accepted.task_id, worker_id=worker, lease_s=LEASE_S)
         assert claim is not None
+        await _execute(env, claim)
         await _expire_lease(env, accepted.task_id)
     assert await env.tasks.claim(accepted.task_id, worker_id="w3", lease_s=LEASE_S) is None
     row = await _task(env, accepted.task_id)
@@ -620,11 +633,11 @@ async def test_ended_compute_scopes_never_include_the_running_attempt(env: Env):
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
     lost_scope, live_scope = uuid.uuid4(), uuid.uuid4()
-    await env.tasks.record_compute_scope(accepted.task_id, first.epoch, lost_scope)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, lost_scope)
     await _expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None
-    await env.tasks.record_compute_scope(accepted.task_id, second.epoch, live_scope)
+    await env.tasks.begin_execution(accepted.task_id, second.epoch, live_scope)
     assert await env.tasks.ended_compute_scopes(accepted.task_id) == [lost_scope]
 
 
@@ -651,3 +664,60 @@ async def test_requeued_task_is_rewoken_at_its_backoff_not_after_suppression(env
     await _make_due(env, accepted.task_id)
     woken = await env.tasks.due_for_wakeup()
     assert [task_id for task_id, _ in woken] == [accepted.task_id]
+
+
+@pytest.mark.asyncio
+async def test_claims_lost_before_execution_never_exhaust_the_task(env: Env):
+    """Agent review of #466: preparation failures must not consume retries."""
+    accepted = await _accept(env)
+    for worker in ("w1", "w2", "w3", "w4"):
+        claim = await env.tasks.claim(accepted.task_id, worker_id=worker, lease_s=LEASE_S)
+        assert claim is not None and claim.attempt_count == 0
+        await _expire_lease(env, accepted.task_id)  # died before executing
+    final = await env.tasks.claim(accepted.task_id, worker_id="w5", lease_s=LEASE_S)
+    assert final is not None
+    assert await _execute(env, final) == 1
+    assert await env.tasks.complete(accepted.task_id, final.epoch, content="done") is (
+        TaskStatus.COMPLETED
+    )
+
+
+@pytest.mark.asyncio
+async def test_replay_survives_a_rotated_digest_key(env: Env):
+    """Codex review of #461: a pepper rotation must not turn a replay into a conflict."""
+    from orchestrator.tasks.inputs import chat_request_fingerprint
+
+    def fingerprint(key: str, message: str):
+        return chat_request_fingerprint(
+            key=key,
+            conversation_id=None,
+            message=message,
+            attachments=None,
+            model=None,
+            provider=None,
+            metadata=None,
+            disable_memory_write=False,
+        )
+
+    before = fingerprint("pepper-before-rotation", "hello")
+    first = await env.tasks.accept(
+        user_id=env.alice,
+        conversation_id=None,
+        new_conversation_title="t",
+        pipeline="cloud",
+        user_message="hello",
+        task_input={"message": "hello"},
+        request_hash=before.digest,
+        request_canonical=before.canonical,
+        idempotency_key="rotated",
+        assistant_model=None,
+    )
+    after = fingerprint("pepper-after-rotation", "hello")
+    assert after.digest != before.digest
+    replay = await env.tasks.find_by_key(env.alice, "rotated", after.digest, after.canonical)
+    assert replay is not None and replay.task_id == first.task_id
+    # The stored digest follows the current key from now on.
+    assert (await _task(env, first.task_id))["request_hash"] == after.digest
+    different = fingerprint("pepper-after-rotation", "something else")
+    with pytest.raises(IdempotencyConflict):
+        await env.tasks.find_by_key(env.alice, "rotated", different.digest, different.canonical)

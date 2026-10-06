@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
@@ -63,6 +64,54 @@ class CancelOut(BaseModel):
     id: uuid.UUID
     status: str
     cancel_requested: bool
+
+
+#: Header a client sends to declare optional task-stream features it supports.
+CLIENT_FEATURES_HEADER = "X-Daemon-Client-Features"
+
+
+def client_supports_reset(request: Request) -> bool:
+    """Whether the client can replace text on a task generation reset.
+
+    Clients that do not declare it (for example a cached older PWA) are told
+    to reload instead, rather than shown regenerated text appended to the
+    interrupted attempt's.
+    """
+    features = request.headers.get(CLIENT_FEATURES_HEADER, "")
+    return "task-reset" in {item.strip() for item in features.split(",")}
+
+
+def observer_authorizer(
+    app_state: AppState, auth: AuthenticatedDevice
+) -> Callable[[], Awaitable[bool]]:
+    """Re-checks a long-lived observer's credentials (fails closed).
+
+    The task is account-owned and keeps running; only this device's view
+    ends when its session or device is revoked or its access has expired.
+    """
+    pool = app_state.db_pool
+
+    async def still_authorized() -> bool:
+        if pool is None:
+            return False
+        try:
+            return bool(
+                await pool.fetchval(
+                    """
+                    SELECT s.revoked_at IS NULL AND d.revoked_at IS NULL
+                           AND s.access_expires_at > now()
+                    FROM sessions s JOIN devices d ON d.id = s.device_id
+                    WHERE s.id = $1 AND s.device_id = $2 AND s.user_id = $3
+                    """,
+                    auth.session_id,
+                    auth.device_id,
+                    auth.user_id,
+                )
+            )
+        except Exception:
+            return False
+
+    return still_authorized
 
 
 def task_store(app_state: AppState) -> TaskStore:
@@ -140,6 +189,8 @@ async def observe(
         auth.user_id,
         task_id,
         request_id=get_request_id(request) or new_request_id(),
+        authorized=observer_authorizer(app_state, auth),
+        supports_reset=client_supports_reset(request),
     )
     return StreamingResponse(
         stream_with_keepalives(frames, get_settings().sse_keepalive_interval_s),

@@ -16,7 +16,7 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from orchestrator.daemon import now_rfc3339, sse
@@ -39,6 +39,9 @@ RETRYABLE_TERMINAL_CODES = frozenset(
     }
 )
 
+#: How often a long-lived observer re-checks that its caller is still authorised.
+REAUTH_S = 15.0
+
 #: How long the observer waits for a live message before re-reading the snapshot.
 POLL_S = 2.0
 
@@ -52,9 +55,13 @@ _TERMINAL_MESSAGES = {
 
 
 class _Observation:
-    def __init__(self, conversation_id: str, request_id: str) -> None:
+    def __init__(
+        self, conversation_id: str, request_id: str, *, supports_reset: bool = True
+    ) -> None:
         self.conversation_id = conversation_id
         self.request_id = request_id
+        self.supports_reset = supports_reset
+        self.needs_reload = False
         self.generation = 0
         self.delta_seq = 0
         self.displayed = ""
@@ -95,6 +102,24 @@ class _Observation:
         frames: list[str] = []
         content = snapshot.content
         if snapshot.content_generation != self.generation:
+            if self.displayed and not self.supports_reset:
+                # This client would append the regenerated text to what it
+                # already shows. End its stream honestly instead; reopening
+                # the conversation shows the saved result.
+                self.needs_reload = True
+                return [
+                    self.frame(
+                        "error",
+                        {
+                            "code": "task_regenerating",
+                            "message": "This answer is being regenerated after an "
+                            "interruption. Reopen the conversation to see it.",
+                            "retryable": False,
+                        },
+                        evt_id="evt_error",
+                    ),
+                    self.frame("done", {"status": "error", "reason": "task_regenerating"}),
+                ]
             if self.displayed:
                 frames.append(self.task_frame(snapshot, reset=True))
             elif content:
@@ -161,9 +186,21 @@ async def observe_task(
     *,
     request_id: str,
     poll_s: float | None = None,
+    authorized: Callable[[], Awaitable[bool]] | None = None,
+    supports_reset: bool = True,
 ) -> AsyncIterator[str]:
-    """Yield chat SSE frames for ``task_id`` until it reaches a terminal status."""
+    """Yield chat SSE frames for ``task_id`` until it reaches a terminal status.
+
+    ``authorized`` is re-checked every ``REAUTH_S``: an observer whose device
+    or session was revoked, or whose access expired, is closed (the task
+    keeps running; the client reattaches with fresh credentials).
+    ``supports_reset=False`` marks a client that cannot replace text it has
+    shown; on a generation change it is told to reload instead of receiving
+    a reset it would render as appended text.
+    """
     poll_s = POLL_S if poll_s is None else poll_s
+    loop = asyncio.get_running_loop()
+    next_auth_check = loop.time() + REAUTH_S
     pubsub = None
     if redis is not None:
         try:
@@ -177,7 +214,9 @@ async def observe_task(
         snapshot = await store.snapshot(user_id, task_id)
         if snapshot is None:
             return
-        view = _Observation(f"conv_{snapshot.conversation_id}", request_id)
+        view = _Observation(
+            f"conv_{snapshot.conversation_id}", request_id, supports_reset=supports_reset
+        )
         yield view.task_frame(snapshot)
         yield view.frame(
             "conversation",
@@ -188,6 +227,10 @@ async def observe_task(
         for frame in view.catch_up(snapshot):
             yield frame
         while snapshot.status not in TERMINAL_STATUSES:
+            if authorized is not None and loop.time() >= next_auth_check:
+                next_auth_check = loop.time() + REAUTH_S
+                if not await authorized():
+                    return
             message = await _next_message(pubsub, poll_s)
             resync = message is None
             if message is not None:
@@ -220,6 +263,8 @@ async def observe_task(
                 snapshot = refreshed
                 for frame in view.catch_up(snapshot):
                     yield frame
+                if view.needs_reload:
+                    return
                 # The delta that revealed the gap or new generation may now be
                 # exactly the next one; apply it rather than lose it.
                 if (

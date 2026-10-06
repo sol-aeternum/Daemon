@@ -66,6 +66,8 @@ def live_channel(task_id: uuid.UUID) -> str:
 @dataclass
 class AttemptState:
     claim: Claim
+    #: Local, conservative lease expiry (event-loop clock).
+    lease_deadline: float = 0.0
     delta_seq: int = 0
     cancel_requested: bool = False
     account_suspended: bool = False
@@ -138,24 +140,33 @@ def _stop_fenced(state: AttemptState, execution: asyncio.Task[Any]) -> None:
 
 
 async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.Task[Any]) -> None:
+    """Renew the lease and stop execution the moment it can no longer be trusted.
+
+    The local deadline is conservative: a lease is granted at most LEASE_S
+    from the moment a claim or renewal was *requested*, minus a safety
+    margin. Every sleep and every renewal is bounded by the remaining time, so
+    execution stops at the deadline even while a renewal is still pending
+    (§5: no writes or provider work after the lease could have passed on).
+    """
     claim = state.claim
     loop = asyncio.get_running_loop()
-    # Local, conservative view of the lease: it was granted at most LEASE_S
-    # from the last confirmed renewal (or the claim). If renewal cannot be
-    # confirmed before then, another worker may already own the task, so
-    # execution stops (§5: no writes or provider work past the lease).
-    lease_deadline = loop.time() + LEASE_S - LEASE_SAFETY_S
     while not state.fenced:
-        await asyncio.sleep(HEARTBEAT_S)
+        remaining = state.lease_deadline - loop.time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(HEARTBEAT_S, remaining))
         if state.result is not None:
             # This attempt committed its outcome; the lease ended with it and
             # post-completion work must not be cancelled as if fenced.
             return
-        attempted_at = loop.time()
+        remaining = state.lease_deadline - loop.time()
+        if remaining <= 0:
+            break
+        requested_at = loop.time()
         try:
             beat = await asyncio.wait_for(
                 store.heartbeat(claim.task_id, claim.epoch, lease_s=LEASE_S),
-                timeout=HEARTBEAT_S,
+                timeout=min(HEARTBEAT_S, remaining),
             )
         except LeaseLost:
             if state.result is not None:
@@ -163,20 +174,18 @@ async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.T
             _stop_fenced(state, execution)
             return
         except Exception:
-            # A missed beat is tolerable while the lease is still ours.
+            # A missed beat is tolerable while the lease is still ours; the
+            # loop re-checks the deadline before waiting again.
             logger.warning("Task heartbeat failed (task_id=%s)", claim.task_id, exc_info=True)
-            if loop.time() >= lease_deadline and state.result is None:
-                logger.warning(
-                    "Task lease could not be renewed in time (task_id=%s)", claim.task_id
-                )
-                _stop_fenced(state, execution)
-                return
             continue
-        lease_deadline = attempted_at + LEASE_S - LEASE_SAFETY_S
+        state.lease_deadline = requested_at + LEASE_S - LEASE_SAFETY_S
         if beat.cancel_requested:
             state.cancel_requested = True
         if beat.account_suspended:
             state.account_suspended = True
+    if state.result is None and not state.fenced:
+        logger.warning("Task lease could not be renewed in time (task_id=%s)", claim.task_id)
+        _stop_fenced(state, execution)
 
 
 def _parse_frame(frame: str) -> tuple[str | None, dict[str, Any]]:
@@ -215,7 +224,10 @@ async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[
     excluded.
     """
     rows = await store.get_recent_messages(
-        claim.conversation_id, limit=limit, exclude_status=_HISTORY_EXCLUDED
+        claim.conversation_id,
+        limit=limit,
+        exclude_status=_HISTORY_EXCLUDED,
+        until_message_id=claim.user_message_id,
     )
     accepted_ids = [
         index for index, row in enumerate(rows) if row.get("id") == claim.user_message_id
@@ -340,7 +352,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         profile=str(task_input.get("profile") or "routine"),
         request_id=request_id,
     ):
-        await store.record_compute_scope(claim.task_id, claim.epoch, current_scope().scope_id)
+        await store.begin_execution(claim.task_id, claim.epoch, current_scope().scope_id)
         system_prompt, user_timezone = await _system_prompt(memory, db_pool, claim)
         history = await _history(
             memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
@@ -433,6 +445,10 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     if store is None:
         logger.warning("Durable task store unavailable; leaving task for the sweep")
         return "unavailable"
+    loop = asyncio.get_running_loop()
+    # The lease runs from when the claim was requested, not from when this
+    # worker got round to executing.
+    lease_deadline = loop.time() + LEASE_S - LEASE_SAFETY_S
     claim = await store.claim(uuid.UUID(task_id), worker_id=WORKER_ID, lease_s=LEASE_S)
     if claim is None:
         return "skipped"
@@ -443,12 +459,21 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         # account would refuse this attempt and burn it). Hand the task back
         # without consuming the attempt; the sweep retries later.
         logger.warning("Could not settle a lost attempt's holds; deferring", exc_info=True)
-        with contextlib.suppress(LeaseLost):
+        try:
             await store.defer_claim(
                 claim.task_id, claim.epoch, delay_s=DEFER_S, reason="recovery_pending"
             )
+        except Exception:
+            # The database is unavailable for this write too. Nothing executed,
+            # so the lease simply lapses and a later claim starts afresh
+            # without having consumed an attempt.
+            logger.warning("Could not defer the claim; letting the lease lapse", exc_info=True)
         return "deferred"
-    state = AttemptState(claim=claim)
+    if loop.time() >= lease_deadline:
+        # Reconciliation outlasted the lease: another worker may own the task
+        # now. Nothing has executed, so nothing counts against the attempts.
+        return "fenced"
+    state = AttemptState(claim=claim, lease_deadline=lease_deadline)
     execution = asyncio.create_task(_execute(ctx, store, state))
     heartbeat = asyncio.create_task(_heartbeat(store, state, execution))
     try:

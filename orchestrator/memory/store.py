@@ -1078,7 +1078,14 @@ class MemoryStore:
         conversation_id: uuid.UUID,
         limit: int = 20,
         exclude_status: list[str] | None = None,
+        *,
+        until_message_id: uuid.UUID | None = None,
     ) -> list[dict[str, Any]]:
+        """The latest ``limit`` messages, oldest first.
+
+        With ``until_message_id``, the window ends at that message, so later
+        turns can neither appear in nor push earlier context out of it.
+        """
         rows = await self._pool.fetch(
             """
             SELECT * FROM (
@@ -1086,14 +1093,17 @@ class MemoryStore:
                 WHERE conversation_id = $1
                   AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
                   AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[])))
-                ORDER BY created_at DESC
+                  AND ($4::uuid IS NULL OR created_at <= (
+                        SELECT created_at FROM messages WHERE id = $4 AND conversation_id = $1))
+                ORDER BY created_at DESC, id DESC
                 LIMIT $2
             ) sub
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             """,
             conversation_id,
             limit,
             exclude_status,
+            until_message_id,
         )
         results = []
         for r in rows:

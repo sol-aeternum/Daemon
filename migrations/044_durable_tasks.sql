@@ -59,6 +59,8 @@ COMMENT ON COLUMN tasks.input_ciphertext IS
     'Fernet ciphertext of the canonical accepted input (input_version schema).';
 COMMENT ON COLUMN tasks.request_hash IS
     'SHA-256 of the canonical accepted input; decides idempotent replay versus conflict.';
+COMMENT ON COLUMN tasks.attempt_count IS
+    'Attempts that began execution (see task_attempts.execution_started_at).';
 COMMENT ON COLUMN tasks.lease_epoch IS
     'Fencing token. Incremented by every claim; worker writes must match it.';
 COMMENT ON COLUMN tasks.content_generation IS
@@ -98,6 +100,7 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     terminal_code TEXT CHECK (terminal_code IS NULL OR terminal_code ~ '^[a-z][a-z0-9_]{0,63}$'),
     partial_ciphertext TEXT,
     compute_scope_id UUID,
+    execution_started_at TIMESTAMPTZ,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ended_at TIMESTAMPTZ,
@@ -109,6 +112,11 @@ COMMENT ON COLUMN task_attempts.compute_scope_id IS
     'Account compute scope of this attempt. When the attempt is lost, its still-open '
     'reservations are settled at their full hold before a recovery attempt is admitted, '
     'so a dead attempt cannot occupy the account''s concurrency slot.';
+
+COMMENT ON COLUMN task_attempts.execution_started_at IS
+    'When this attempt began inference work. Only attempts that reached it count '
+    'against tasks.max_attempts; a claim lost during preparation (for example '
+    'while settling a predecessor''s holds) does not consume a retry.';
 
 COMMENT ON COLUMN task_attempts.partial_ciphertext IS
     'Fernet ciphertext of the content this attempt had persisted when it ended, '

@@ -282,6 +282,7 @@ class TaskStore:
         idempotency_key: str | None,
         assistant_model: str | None,
         max_attempts: int = 2,
+        request_canonical: str | None = None,
     ) -> AcceptedTask:
         """Atomically record the conversation turn and its task.
 
@@ -290,7 +291,7 @@ class TaskStore:
         request raises :class:`IdempotencyConflict`.
         """
         if idempotency_key is not None:
-            existing = await self._by_key(user_id, idempotency_key, request_hash)
+            existing = await self._by_key(user_id, idempotency_key, request_hash, request_canonical)
             if existing is not None:
                 return existing
         try:
@@ -345,7 +346,11 @@ class TaskStore:
                     conversation_id,
                     user_row["id"],
                     result_row["id"],
-                    self._seal(task_input),
+                    self._seal(
+                        {**task_input, "_request": request_canonical}
+                        if request_canonical is not None
+                        else task_input
+                    ),
                     CHAT_INPUT_VERSION,
                     idempotency_key,
                     request_hash,
@@ -355,7 +360,9 @@ class TaskStore:
         except asyncpg.UniqueViolationError as exc:
             # The transaction rolled back entirely, including the messages.
             if idempotency_key is not None:
-                existing = await self._by_key(user_id, idempotency_key, request_hash)
+                existing = await self._by_key(
+                    user_id, idempotency_key, request_hash, request_canonical
+                )
                 if existing is not None:
                     return existing
             constraint = getattr(exc, "constraint_name", None)
@@ -392,13 +399,21 @@ class TaskStore:
         return self._snapshot_from(row) if row is not None else None
 
     async def find_by_key(
-        self, user_id: uuid.UUID, idempotency_key: str, request_hash: str
+        self,
+        user_id: uuid.UUID,
+        idempotency_key: str,
+        request_hash: str,
+        request_canonical: str | None = None,
     ) -> AcceptedTask | None:
         """The task this account's key created, if any (conflict if the request differs)."""
-        return await self._by_key(user_id, idempotency_key, request_hash)
+        return await self._by_key(user_id, idempotency_key, request_hash, request_canonical)
 
     async def _by_key(
-        self, user_id: uuid.UUID, idempotency_key: str, request_hash: str
+        self,
+        user_id: uuid.UUID,
+        idempotency_key: str,
+        request_hash: str,
+        request_canonical: str | None = None,
     ) -> AcceptedTask | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
@@ -408,7 +423,15 @@ class TaskStore:
         if row is None:
             return None
         if row["request_hash"] != request_hash:
-            raise IdempotencyConflict("idempotency key reused for a different request")
+            # The digest key (auth pepper) may have been rotated since this
+            # task was accepted: compare the canonical request kept in the
+            # encrypted input before declaring a conflict.
+            stored = self._open(row["input_ciphertext"]).get("_request")
+            if request_canonical is None or stored != request_canonical:
+                raise IdempotencyConflict("idempotency key reused for a different request")
+            await self._pool.execute(
+                "UPDATE tasks SET request_hash = $2 WHERE id = $1", row["id"], request_hash
+            )
         return AcceptedTask(
             task_id=row["id"],
             conversation_id=row["conversation_id"],
@@ -525,7 +548,6 @@ class TaskStore:
                 UPDATE tasks
                 SET status = 'running', lease_epoch = lease_epoch + 1,
                     lease_owner = $2, lease_expires_at = now() + make_interval(secs => $3),
-                    attempt_count = attempt_count + 1,
                     content_generation = lease_epoch + 1, content_delta_seq = 0,
                     updated_at = now()
                 WHERE id = $1
@@ -547,12 +569,7 @@ class TaskStore:
             await self._memory.update_message(
                 row["result_message_id"], content="", status="streaming", conn=conn
             )
-            await self._append_event(
-                conn,
-                task_id,
-                "attempt_started",
-                {"epoch": epoch, "attempt": int(claimed["attempt_count"])},
-            )
+            await self._append_event(conn, task_id, "attempt_started", {"epoch": epoch})
             return Claim(
                 task_id=task_id,
                 epoch=epoch,
@@ -655,20 +672,36 @@ class TaskStore:
             await self._append_event(conn, task_id, "operation_started", {"tool": tool_name})
             return operation_id
 
-    async def record_compute_scope(
-        self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID
-    ) -> None:
-        """Remember this attempt's account compute scope, under the fence."""
+    async def begin_execution(self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID) -> int:
+        """Mark this attempt as executing; only now does it count as an attempt.
+
+        Records the attempt's account compute scope (for settling its holds if
+        it is lost) and returns the number of attempts that have executed.
+        Claiming, preparing or reconciling consume no retry, so a database
+        outage during preparation cannot exhaust the task.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await self._locked_for_epoch(conn, task_id, epoch)
             if row is None:
                 raise LeaseLost("lease lost")
+            if int(row["attempt_count"]) >= int(row["max_attempts"]):
+                raise LeaseLost("no attempts left")  # defensive: the claim checks this
+            count = await conn.fetchval(
+                "UPDATE tasks SET attempt_count = attempt_count + 1, updated_at = now() "
+                "WHERE id = $1 RETURNING attempt_count",
+                task_id,
+            )
             await conn.execute(
-                "UPDATE task_attempts SET compute_scope_id = $3 WHERE task_id = $1 AND epoch = $2",
+                "UPDATE task_attempts SET compute_scope_id = $3, execution_started_at = now() "
+                "WHERE task_id = $1 AND epoch = $2",
                 task_id,
                 epoch,
                 scope_id,
             )
+            await self._append_event(
+                conn, task_id, "execution_started", {"epoch": epoch, "attempt": int(count)}
+            )
+            return int(count)
 
     async def ended_compute_scopes(self, task_id: uuid.UUID) -> list[uuid.UUID]:
         """Compute scopes of this task's attempts that have ended without completing.
@@ -839,8 +872,9 @@ class TaskStore:
         """Hand a claimed task back to the queue without consuming its attempt.
 
         Used when a precondition for safe admission (such as settling a lost
-        attempt's holds) cannot be established yet: no provider call has been
-        made, so the attempt does not count against ``max_attempts``.
+        attempt's holds) cannot be established yet. No execution began, so
+        nothing counts against ``max_attempts``; if this write also fails, the
+        lease simply expires and the next claim finds no executed attempt.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await self._locked_for_epoch(conn, task_id, epoch)
@@ -853,7 +887,6 @@ class TaskStore:
                 """
                 UPDATE tasks
                 SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-                    attempt_count = attempt_count - 1,
                     next_wakeup_at = now() + make_interval(secs => $2),
                     last_wake_at = NULL, updated_at = now()
                 WHERE id = $1

@@ -131,9 +131,14 @@ from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
 from orchestrator.routes.speech_stream import router as speech_stream_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
-from orchestrator.routes.tasks import router as tasks_router, task_store
+from orchestrator.routes.tasks import (
+    client_supports_reset,
+    observer_authorizer,
+    router as tasks_router,
+    task_store,
+)
 from orchestrator.auth_pepper import validate_and_get_pepper
-from orchestrator.tasks.inputs import chat_request_hash
+from orchestrator.tasks.inputs import RequestFingerprint, chat_request_fingerprint
 from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import ConversationBusy, IdempotencyConflict, TaskNotFound
 from orchestrator.models_cache import fetch_openrouter_models
@@ -2250,7 +2255,7 @@ async def _durable_chat(
         "trusted_spawn_context": _build_trusted_spawn_context(auth.user_id, payload.metadata),
         "request_id": request_id,
     }
-    request_hash = _durable_request_hash(payload, settings, conversation_uuid, user_message)
+    fingerprint = _durable_request_fingerprint(payload, settings, conversation_uuid, user_message)
     try:
         accepted = await store.accept(
             user_id=auth.user_id,
@@ -2261,7 +2266,8 @@ async def _durable_chat(
             pipeline=pipeline,
             user_message=user_message,
             task_input=task_input,
-            request_hash=request_hash,
+            request_hash=fingerprint.digest,
+            request_canonical=fingerprint.canonical,
             idempotency_key=idempotency_key,
             assistant_model=actual_model if explicit else None,
         )
@@ -2314,7 +2320,9 @@ async def _durable_chat(
             except Exception as enqueue_error:
                 logger.warning("Failed to enqueue title generation: %s", enqueue_error)
 
-    return _observe_task_response(store, app_state, auth, accepted.task_id, request_id, settings)
+    return _observe_task_response(
+        store, app_state, auth, accepted.task_id, request_id, settings, request
+    )
 
 
 def _observe_task_response(
@@ -2324,8 +2332,17 @@ def _observe_task_response(
     task_id: uuid.UUID,
     request_id: str,
     settings: Settings,
+    request: Request,
 ) -> StreamingResponse:
-    frames = observe_task(store, app_state.redis, auth.user_id, task_id, request_id=request_id)
+    frames = observe_task(
+        store,
+        app_state.redis,
+        auth.user_id,
+        task_id,
+        request_id=request_id,
+        authorized=observer_authorizer(app_state, auth),
+        supports_reset=client_supports_reset(request),
+    )
     return StreamingResponse(
         stream_with_keepalives(frames, settings.sse_keepalive_interval_s),
         media_type="text/event-stream",
@@ -2351,13 +2368,13 @@ def _requested_user_message(payload: ChatRequest) -> str:
     return user_message
 
 
-def _durable_request_hash(
+def _durable_request_fingerprint(
     payload: ChatRequest,
     settings: Settings,
     conversation_uuid: uuid.UUID | None,
     user_message: str,
-) -> str:
-    return chat_request_hash(
+) -> RequestFingerprint:
+    return chat_request_fingerprint(
         key=validate_and_get_pepper(settings),
         conversation_id=conversation_uuid,
         message=user_message,
@@ -2399,11 +2416,13 @@ async def _durable_replay(
         except ValueError:
             return None
     store = task_store(app_state)
-    request_hash = _durable_request_hash(
+    fingerprint = _durable_request_fingerprint(
         payload, settings, conversation_uuid, _requested_user_message(payload)
     )
     try:
-        existing = await store.find_by_key(auth.user_id, key, request_hash)
+        existing = await store.find_by_key(
+            auth.user_id, key, fingerprint.digest, fingerprint.canonical
+        )
     except IdempotencyConflict as exc:
         raise HTTPException(
             status_code=409,
@@ -2415,7 +2434,9 @@ async def _durable_replay(
     if existing is None:
         return None
     request_id = get_request_id(request) or new_request_id()
-    return _observe_task_response(store, app_state, auth, existing.task_id, request_id, settings)
+    return _observe_task_response(
+        store, app_state, auth, existing.task_id, request_id, settings, request
+    )
 
 
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)
