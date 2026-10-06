@@ -169,7 +169,8 @@ A task references conversation and workspace context without a memory or filesys
 - The owner comes only from `auth.user_id`. Task queries filter on `id AND user_id` in SQL, and another account's task, control or observation returns **404**, never 403. Idempotency lookups are account-scoped.
 - Workers derive the tenant only from the claimed task row. Before each attempt they recheck that the account is active and its entitlement account is not suspended, that the conversation is still owned and not deleted, and that the route is still qualified. Every store call carries `user_id`.
 - Observers and snapshots require device authentication on every attach. Pub/sub channel names never leave the server.
-- **Deleting a conversation or an account while a task runs: PENDING owner decision** (see §18). Proposed for conversations: one transaction locks the conversation and its active task; a `queued` task is cancelled and deleted with it, while for a `running` task `DELETE /conversations/{id}` requests cancellation and returns **409 `task_running`** until it stops, so an in-flight action keeps its evidence. Account deletion needs a fence-and-drain protocol before its cascade. Neither is approved by §12.
+- **Deleting a conversation while a task runs** (decision 11): one transaction locks the conversation (as acceptance does) and its active task (as claims do). A `queued` task is cancelled and deleted with the conversation. For a `running` task, `DELETE /conversations/{id}` requests cancellation and returns **409 `task_running`** with the task id until it has stopped, so an in-flight action keeps its operation evidence. Finished tasks are deleted with the conversation.
+- **Deleting an account while a task runs** remains pending (decision 12): it needs its own fence-and-drain protocol, designed with deletion propagation and retention, before relying on the cascade.
 - Revoking the submitting device does not cancel the account's tasks; suspension or deletion of the account does. Deletion cascades to the tasks. Suspension is rechecked during an attempt, not only before it: the heartbeat reports it and the worker stops, an operation record is refused, and the final publish ends the task `failed` (`account_suspended`) instead of publishing. Every provider call also passes per-call admission, which already refuses a suspended account (revised in review of #461).
 - Budget: rate limiting and route qualification run in the API at acceptance; `account_compute(..., background=False)` runs in the worker, so durable work still counts against concurrency ceilings. An in-process context variable is not durable ownership; the task row is.
 
@@ -187,6 +188,9 @@ A task references conversation and workspace context without a memory or filesys
 | 8 | Device revocation does not cancel tasks; account suspension or deletion does (§11). |
 | 9 | Slice 1 capacity denial is terminal with manual retry; DEC09 pause, notification and auto-resume complete in slice 4 (§4). |
 | 10 | Add a PostgreSQL service to backend CI so race and fencing tests run instead of skipping; implemented with slice 1. |
+| 11 | (7 October 2026) Deleting a conversation with a queued task cancels and deletes it; with a running task the delete requests cancellation and returns 409 `task_running` until it stops (§11). |
+| 12 | (7 October 2026) Account deletion while tasks run is deferred to its own fence-and-drain design with deletion propagation and retention; slice 1 ships with the flag off. |
+| 13 | (7 October 2026) Review policy for this work: correctness, security and data-loss findings are fixed in the PR; other new findings (later-slice scope, hardening) are filed as tracked issues with a written rationale, and a PR merges once its checks are green and nothing blocking is open. |
 
 ## 13. Design choice C — owned resources and legacy artifact handling (pending)
 
@@ -286,4 +290,4 @@ Run the unchanged backend, frontend, documentation and security gates as well. P
 
 **Approved:** product decisions DEC01–DEC12 and the baseline instructions in the decision record, including the PR-port clarification preserving current main's working metrics and advisor-event compatibility; the architecture in §3–§11 and the decisions in §12. DEC12 approves direction, not the retention schema, consent, restricted-data enforcement, fallback or activity-record implementation; all remain gated.
 
-**Pending:** deleting a conversation or an account while a task runs (§11, proposed contract recorded there), choice C and legacy-file handling (§13), task-budget composition (§15), notification channels, retention, and review of exact DDL and endpoint/SSE payloads in each implementation PR. Baseline bug fixes can proceed independently of this document.
+**Pending:** deleting an account while a task runs (decision 12), choice C and legacy-file handling (§13), task-budget composition (§15), notification channels, retention, and review of exact DDL and endpoint/SSE payloads in each implementation PR. Baseline bug fixes can proceed independently of this document.
