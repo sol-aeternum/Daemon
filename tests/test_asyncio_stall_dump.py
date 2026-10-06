@@ -36,7 +36,9 @@ async def test_case(stalls_on_teardown):
 """
 
 
-def _run(tmp_path: Path, threshold: str | None) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path, threshold: str | None, *, capture: bool = False
+) -> subprocess.CompletedProcess[str]:
     case = tmp_path / "test_stall_case.py"
     case.write_text(_STALL_CASE, encoding="utf-8")
     env = {key: value for key, value in os.environ.items() if key != "DAEMON_PYTEST_ASYNCIO_DUMP_S"}
@@ -49,7 +51,7 @@ def _run(tmp_path: Path, threshold: str | None) -> subprocess.CompletedProcess[s
             "-m",
             "pytest",
             "-q",
-            "-s",
+            *([] if capture else ["-s"]),
             "-p",
             "no:cacheprovider",
             "-p",
@@ -73,6 +75,14 @@ def test_stalled_teardown_dumps_the_pending_await_chain(tmp_path: Path) -> None:
     assert proc.returncode == 0, output
     assert "[asyncio-stall-dump] " in output
     assert "test_case [teardown]" in output
+    assert "_parked_forever_marker" in output
+
+
+def test_dump_escapes_pytest_output_capture(tmp_path: Path) -> None:
+    # CI runs with capture on; teardown stderr would otherwise be swallowed.
+    proc = _run(tmp_path, "1", capture=True)
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
     assert "_parked_forever_marker" in output
 
 

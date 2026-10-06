@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import io
 import inspect
 import os
 import sys
@@ -49,8 +50,24 @@ def _running_loop_in(thread_id: int) -> asyncio.AbstractEventLoop | None:
     return None
 
 
+class _Out(io.StringIO):
+    """Buffer a dump, then write it past pytest's output capture.
+
+    Capture redirects fd 2 during test phases, so (like pytest's faulthandler
+    plugin) the dump goes to a duplicate of the real stderr taken at
+    configure time, when capture is suspended.
+    """
+
+    def flush(self) -> None:
+        text = self.getvalue()
+        self.seek(0)
+        self.truncate()
+        if text:
+            os.write(_stderr_fd if _stderr_fd is not None else 2, text.encode("utf-8", "replace"))
+
+
 def _dump_tasks(label: str) -> None:
-    out = sys.stderr
+    out = _Out()
     tasks = asyncio.all_tasks()
     print(f"\n[asyncio-stall-dump] {label}: {len(tasks)} pending task(s)", file=out)
     for task in tasks:
@@ -115,11 +132,12 @@ class _Watchdog:
                 self._dumped = True
             loop = _running_loop_in(self._main)
             if loop is None:
+                out = _Out()
                 print(
                     f"\n[asyncio-stall-dump] {label}: stalled, no running event loop found",
-                    file=sys.stderr,
-                    flush=True,
+                    file=out,
                 )
+                out.flush()
                 continue
             try:
                 loop.call_soon_threadsafe(_dump_tasks, label)
@@ -128,12 +146,14 @@ class _Watchdog:
 
 
 _watchdog: _Watchdog | None = None
+_stderr_fd: int | None = None
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    global _watchdog
+    global _watchdog, _stderr_fd
     threshold = _threshold()
     if threshold is not None and _watchdog is None:
+        _stderr_fd = os.dup(2)
         _watchdog = _Watchdog(threshold)
 
 
