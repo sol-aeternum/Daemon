@@ -156,7 +156,7 @@ async def api(env: Env, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Api]:
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
-            headers={"X-Daemon-Client-Features": "task-reset"},
+            headers={"X-Daemon-Client-Features": "task-cancel, task-reset"},
         ) as client:
             yield Api(env, client, redis, who)
     finally:
@@ -692,7 +692,8 @@ async def test_revoked_observer_is_closed_while_the_task_keeps_running(
     allowed["value"] = False  # device revoked
     await asyncio.wait_for(observer, timeout=5)
     assert "event: done" not in "".join(frames)
-    assert (await env.tasks.snapshot(env.alice, accepted.task_id)).status.value == "running"
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None and snapshot.status.value == "running"
 
 
 @pytest.mark.asyncio
@@ -766,3 +767,19 @@ async def test_client_without_reset_support_is_told_to_reload(
     assert _displayed(events) == "attempt one"  # never "attempt onetwo"
     assert dict(events)["error"]["data"]["code"] == "task_regenerating"
     assert not any(e == "task" and d["data"].get("reset") for e, d in events)
+
+
+@pytest.mark.asyncio
+async def test_clients_that_cannot_cancel_stay_request_bound(api: Api):
+    """Agent review of #461/#467: a cached client whose Stop only aborts the
+    request must not get durable work it cannot stop."""
+    for features in (None, "task-reset", "something-else"):
+        headers = {"Idempotency-Key": uuid.uuid4().hex}
+        if features is None:
+            headers["X-Daemon-Client-Features"] = ""
+        else:
+            headers["X-Daemon-Client-Features"] = features
+        response = await api.client.post("/chat", json={"message": "hello"}, headers=headers)
+        assert response.status_code == 200
+        assert "X-Daemon-Task-Id" not in response.headers
+    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0

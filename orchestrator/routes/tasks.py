@@ -70,6 +70,11 @@ class CancelOut(BaseModel):
 CLIENT_FEATURES_HEADER = "X-Daemon-Client-Features"
 
 
+def _client_features(request: Request) -> set[str]:
+    features = request.headers.get(CLIENT_FEATURES_HEADER, "")
+    return {item.strip() for item in features.split(",") if item.strip()}
+
+
 def client_supports_reset(request: Request) -> bool:
     """Whether the client can replace text on a task generation reset.
 
@@ -77,8 +82,23 @@ def client_supports_reset(request: Request) -> bool:
     to reload instead, rather than shown regenerated text appended to the
     interrupted attempt's.
     """
-    features = request.headers.get(CLIENT_FEATURES_HEADER, "")
-    return "task-reset" in {item.strip() for item in features.split(",")}
+    return "task-reset" in _client_features(request)
+
+
+#: What a browser must declare for its chat turns to run durably.
+DURABLE_CLIENT_FEATURES = frozenset({"task-cancel", "task-reset"})
+
+
+def client_supports_durable_chat(request: Request) -> bool:
+    """Whether this browser can drive a durable task correctly.
+
+    It must cancel explicitly on Stop (a disconnect only detaches durable
+    work) and replace text on a generation reset. The declaration comes from
+    the browser's own code, forwarded by the chat proxy; an older cached
+    client that does not declare it keeps request-bound chat, where aborting
+    the request is the cancellation.
+    """
+    return DURABLE_CLIENT_FEATURES <= _client_features(request)
 
 
 def observer_authorizer(

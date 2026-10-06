@@ -132,6 +132,7 @@ from orchestrator.routes.auth_setup import router as auth_setup_router
 from orchestrator.routes.speech_stream import router as speech_stream_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
 from orchestrator.routes.tasks import (
+    client_supports_durable_chat,
     client_supports_reset,
     observer_authorizer,
     router as tasks_router,
@@ -2447,7 +2448,8 @@ async def chat(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
-    if settings.durable_chat_enabled:
+    durable_client = settings.durable_chat_enabled and client_supports_durable_chat(request)
+    if durable_client:
         replay = await _durable_replay(payload, request, settings, app_state, auth)
         if replay is not None:
             return replay
@@ -2616,7 +2618,7 @@ async def chat(
         )
 
     if (
-        settings.durable_chat_enabled
+        durable_client
         and payload.suggestion_id is None
         and not is_council_command
         and not is_council_config_response
