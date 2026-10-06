@@ -12,77 +12,22 @@ application ``DATABASE_URL`` is never read.
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from pathlib import Path
 
 import asyncpg
 import pytest
-import pytest_asyncio
-from cryptography.fernet import Fernet
 
-from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.store import MemoryStore
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.tasks.store import (
     ConversationBusy,
+    EffectRefused,
     IdempotencyConflict,
     LeaseLost,
     TaskNotFound,
-    TaskStore,
 )
+from tests.durable_tasks_support import LEASE_S, Env, durable_env_fixture
 
-DSN_ENV = "TASKS_TEST_DATABASE_URL"
-MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
-LEASE_S = 45.0
-
-
-@dataclass
-class Env:
-    pool: asyncpg.Pool
-    tasks: TaskStore
-    memory: MemoryStore
-    alice: uuid.UUID
-    bob: uuid.UUID
-
-
-@pytest_asyncio.fixture
-async def env() -> AsyncIterator[Env]:
-    dsn = os.environ.get(DSN_ENV, "").strip()
-    if not dsn:
-        pytest.skip(f"requires disposable {DSN_ENV}")
-    schema = f"tasks_test_{uuid.uuid4().hex}"
-    admin = await asyncpg.connect(dsn)
-    pool: asyncpg.Pool | None = None
-    try:
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        pool = await asyncpg.create_pool(
-            dsn, min_size=2, max_size=8, server_settings={"search_path": f"{schema}, public"}
-        )
-        async with pool.acquire() as conn:
-            for path in sorted(MIGRATIONS.glob("*.sql")):
-                async with conn.transaction():
-                    await conn.execute(path.read_text())
-        encryption = ContentEncryption(Fernet.generate_key().decode())
-        memory = MemoryStore(pool, encryption)
-        users = []
-        for name in ("alice", "bob"):
-            user_id = uuid.uuid4()
-            await pool.execute(
-                "INSERT INTO users (id, email, name, username) VALUES ($1, $2, $3, $3)",
-                user_id,
-                f"{name}+{user_id.hex}@daemon.test",
-                f"{name}-{user_id.hex[:8]}",
-            )
-            users.append(user_id)
-        yield Env(pool, TaskStore(pool, encryption, memory), memory, users[0], users[1])
-    finally:
-        if pool is not None:
-            await asyncio.wait_for(pool.close(), timeout=10)
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
+env = durable_env_fixture()
 
 
 async def _accept(env: Env, user=None, *, key=None, message="hello", conversation_id=None, h="a"):
@@ -338,7 +283,7 @@ async def test_effect_fence_refuses_near_lease_expiry(env: Env):
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=2)
     assert claim is not None
-    with pytest.raises(LeaseLost):
+    with pytest.raises(EffectRefused):
         await env.tasks.begin_operation(
             accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=10
         )
@@ -601,3 +546,57 @@ async def test_owner_snapshot_tracks_generation_and_delta_seq(env: Env):
         claim.epoch,
     )
     assert snapshot.content_delta_seq == 3
+
+
+async def _suspend(env: Env, user_id: uuid.UUID) -> None:
+    await env.pool.execute(
+        "INSERT INTO entitlement_accounts (user_id, status) VALUES ($1, 'suspended') "
+        "ON CONFLICT (user_id) DO UPDATE SET status = 'suspended'",
+        user_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_material_effect_starts_after_cancel_is_requested(env: Env):
+    """Stop between heartbeats must still block the next effect (review of #461)."""
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    with pytest.raises(EffectRefused):
+        await env.tasks.begin_operation(
+            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+        )
+    assert await env.pool.fetchval("SELECT count(*) FROM task_operations") == 0
+
+
+@pytest.mark.asyncio
+async def test_suspension_mid_attempt_blocks_effects_and_publication(env: Env):
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await _suspend(env, env.alice)
+    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    assert beat.account_suspended and not beat.cancel_requested
+    with pytest.raises(EffectRefused):
+        await env.tasks.begin_operation(
+            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+        )
+    status = await env.tasks.complete(accepted.task_id, claim.epoch, content="should not publish")
+    assert status is TaskStatus.FAILED
+    row = await _task(env, accepted.task_id)
+    assert row["status"] == "failed" and row["terminal_code"] == "account_suspended"
+    assert (await _message(env, accepted.result_message_id))["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_other_accounts_suspension_does_not_affect_this_task(env: Env):
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await _suspend(env, env.bob)
+    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    assert not beat.account_suspended
+    assert await env.tasks.complete(accepted.task_id, claim.epoch, content="ok") is (
+        TaskStatus.COMPLETED
+    )

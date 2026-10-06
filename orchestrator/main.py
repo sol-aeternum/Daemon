@@ -131,6 +131,10 @@ from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
 from orchestrator.routes.speech_stream import router as speech_stream_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
+from orchestrator.routes.tasks import router as tasks_router, task_store
+from orchestrator.tasks.inputs import chat_request_hash
+from orchestrator.tasks.observe import observe_task
+from orchestrator.tasks.store import ConversationBusy, IdempotencyConflict, TaskNotFound
 from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import (
     CLASSIFIER_VERSION,
@@ -2173,6 +2177,165 @@ async def _enforce_chat_ip_rate_limit_before_body_validation(
     return response
 
 
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
+
+async def _durable_chat(
+    *,
+    payload: ChatRequest,
+    request: Request,
+    settings: Settings,
+    app_state: AppState,
+    auth: AuthenticatedDevice,
+    request_id: str,
+    user_message: str,
+    prepared_user_content: str | list[dict[str, Any]],
+    pipeline: str,
+    model_decision: ModelDecision,
+    selected_model: str,
+    actual_model: str,
+    routing_info: dict[str, Any],
+) -> StreamingResponse | None:
+    """Accept a native chat turn durably and observe it (DURABLE_REQUEST_DESIGN §7).
+
+    Returns ``None`` when the turn must stay on the request-bound path (a
+    conversation bound to a contextual-home suggestion). Acceptance fails
+    closed: without a durable record nothing is executed.
+    """
+    store = task_store(app_state)
+    memory = app_state.memory_store
+    assert memory is not None  # task_store() refuses without it
+    idempotency_key = request.headers.get(IDEMPOTENCY_HEADER)
+    if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_idempotency_key", "message": "Invalid key"}
+        )
+
+    conversation_uuid: uuid.UUID | None = None
+    needs_title = payload.conversation_id is None
+    if payload.conversation_id:
+        try:
+            conversation_uuid = uuid.UUID(payload.conversation_id.replace("conv_", ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
+        existing = await memory.get_conversation(conversation_uuid)
+        if not existing or existing.get("user_id") != auth.user_id:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        existing_metadata = existing.get("metadata")
+        if isinstance(existing_metadata, str):
+            existing_metadata = json.loads(existing_metadata)
+        if isinstance(existing_metadata, dict) and existing_metadata.get("home_suggestion") == 1:
+            return None
+        needs_title = (
+            not existing.get("title_locked")
+            and existing.get("title") in (None, "", "New conversation")
+            and await memory.count_messages(conversation_uuid) == 0
+        )
+
+    explicit = model_decision.tier == "explicit"
+    task_input: dict[str, Any] = {
+        "message": user_message,
+        "prepared_content": (
+            prepared_user_content if prepared_user_content != user_message else None
+        ),
+        "auto_route": not explicit,
+        "profile": model_decision.profile,
+        "actual_model": actual_model,
+        "reported_model": selected_model if explicit else "auto",
+        "routing_info": routing_info,
+        "provider": payload.provider,
+        "disable_memory_write": bool(payload.disable_memory_write),
+        "trusted_spawn_context": _build_trusted_spawn_context(auth.user_id, payload.metadata),
+        "request_id": request_id,
+    }
+    request_hash = chat_request_hash(
+        conversation_id=conversation_uuid,
+        message=user_message,
+        attachments=payload.attachments,
+        model=payload.model,
+        provider=payload.provider,
+        metadata=payload.metadata,
+        disable_memory_write=bool(payload.disable_memory_write),
+    )
+    try:
+        accepted = await store.accept(
+            user_id=auth.user_id,
+            conversation_id=conversation_uuid,
+            new_conversation_title=(
+                user_message[:50] + "..." if len(user_message) > 50 else user_message
+            ),
+            pipeline=pipeline,
+            user_message=user_message,
+            task_input=task_input,
+            request_hash=request_hash,
+            idempotency_key=idempotency_key,
+            assistant_model=actual_model if explicit else None,
+        )
+    except IdempotencyConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "message": "This request key was already used for a different request",
+            },
+        ) from exc
+    except ConversationBusy as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "conversation_busy",
+                "message": "This conversation is still working on an earlier request",
+                "task_id": str(exc.active_task_id),
+            },
+        ) from exc
+    except TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
+    except Exception as exc:
+        logger.exception("Durable chat acceptance failed (request_id=%s)", request_id)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "task_unavailable", "message": "Request could not be saved; retry"},
+        ) from exc
+
+    if accepted.created and app_state.redis is not None:
+        # Latency only: the dispatch sweep recovers a lost or failed wake-up.
+        try:
+            wake_seq = await store.mark_woken(accepted.task_id)
+            await app_state.redis.enqueue_job(
+                "run_chat_task",
+                str(accepted.task_id),
+                _job_id=f"task:{accepted.task_id}:{wake_seq}",
+            )
+        except Exception:
+            logger.warning("Task wake-up enqueue failed; the sweep will recover it")
+        if needs_title:
+            try:
+                await app_state.redis.enqueue_job(
+                    "generate_title",
+                    str(accepted.conversation_id),
+                    user_message,
+                    _job_id=f"title:{accepted.conversation_id}",
+                    _defer_by=0,
+                )
+            except Exception as enqueue_error:
+                logger.warning("Failed to enqueue title generation: %s", enqueue_error)
+
+    frames = observe_task(
+        store, app_state.redis, auth.user_id, accepted.task_id, request_id=request_id
+    )
+    return StreamingResponse(
+        stream_with_keepalives(frames, settings.sse_keepalive_interval_s),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "X-Daemon-Task-Id": str(accepted.task_id),
+        },
+    )
+
+
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)
 async def chat(
     payload: ChatRequest,
@@ -2344,6 +2507,30 @@ async def chat(
             status_code=403,
             detail={"code": "modality_unavailable", "message": "Multimodal compute unavailable"},
         )
+
+    if (
+        settings.durable_chat_enabled
+        and payload.suggestion_id is None
+        and not is_council_command
+        and not is_council_config_response
+    ):
+        durable = await _durable_chat(
+            payload=payload,
+            request=request,
+            settings=settings,
+            app_state=app_state,
+            auth=auth,
+            request_id=request_id,
+            user_message=user_message,
+            prepared_user_content=prepared_user_content,
+            pipeline=decision.pipeline,
+            model_decision=model_decision,
+            selected_model=selected_model,
+            actual_model=actual_model,
+            routing_info=routing_info,
+        )
+        if durable is not None:
+            return durable
 
     # Initialize persistence with graceful degradation
     store = app_state.memory_store if app_state else None
@@ -2802,6 +2989,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(tasks_router)
 app.include_router(home_suggestions_router)
 app.include_router(speech_stream_router)
 app.include_router(web_snapshots_router)

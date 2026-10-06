@@ -27,6 +27,13 @@ from orchestrator.tasks.states import (
     retry_backoff_s,
 )
 
+#: Account suspension stops running work (§11); checked at heartbeat, before
+#: material effects and before publication.
+_SUSPENDED = (
+    "EXISTS (SELECT 1 FROM entitlement_accounts a "
+    "WHERE a.user_id = tasks.user_id AND a.status = 'suspended')"
+)
+
 IDEMPOTENCY_INDEX = "uq_tasks_user_idempotency"
 CONVERSATION_ACTIVE_INDEX = "uq_tasks_conversation_active"
 
@@ -70,6 +77,11 @@ class LeaseLost(TaskError):
     """This attempt no longer holds the task's lease; it must stop writing."""
 
 
+class EffectRefused(TaskError):
+    """A material operation may not start: the task was cancelled, its account
+    suspended, or too little lease time remains."""
+
+
 @dataclass(frozen=True, slots=True)
 class AcceptedTask:
     task_id: uuid.UUID
@@ -97,6 +109,7 @@ class Claim:
 @dataclass(frozen=True, slots=True)
 class Heartbeat:
     cancel_requested: bool
+    account_suspended: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,11 +545,11 @@ class TaskStore:
         """Extend this attempt's lease; raises :class:`LeaseLost` when fenced out."""
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                """
+                f"""
                 UPDATE tasks SET lease_expires_at = now() + make_interval(secs => $3),
                                  updated_at = now()
                 WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
-                RETURNING cancel_requested_at
+                RETURNING cancel_requested_at, {_SUSPENDED} AS account_suspended
                 """,
                 task_id,
                 epoch,
@@ -549,7 +562,10 @@ class TaskStore:
                 task_id,
                 epoch,
             )
-            return Heartbeat(cancel_requested=row["cancel_requested_at"] is not None)
+            return Heartbeat(
+                cancel_requested=row["cancel_requested_at"] is not None,
+                account_suspended=bool(row["account_suspended"]),
+            )
 
     async def write_partial(
         self, task_id: uuid.UUID, epoch: int, *, content: str, delta_seq: int
@@ -578,19 +594,30 @@ class TaskStore:
         """Record a material operation before it runs (the effect fence).
 
         Refuses unless this attempt holds the lease with at least
-        ``min_lease_margin_s`` left. The gap between this commit and the actual
+        ``min_lease_margin_s`` left, no cancel has been requested and the
+        account is not suspended. The gap between this commit and the actual
         external call can be narrowed, not closed.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "SELECT id FROM tasks WHERE id = $1 AND lease_epoch = $2 AND status = 'running' "
-                "AND lease_expires_at > now() + make_interval(secs => $3) FOR UPDATE",
+                f"""
+                SELECT id, cancel_requested_at, {_SUSPENDED} AS account_suspended,
+                       lease_expires_at > now() + make_interval(secs => $3) AS lease_margin_ok
+                FROM tasks WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
+                FOR UPDATE
+                """,
                 task_id,
                 epoch,
                 min_lease_margin_s,
             )
             if row is None:
-                raise LeaseLost("lease lost or too close to expiry")
+                raise LeaseLost("lease lost")
+            if row["cancel_requested_at"] is not None:
+                raise EffectRefused("task cancel requested")
+            if row["account_suspended"]:
+                raise EffectRefused("account suspended")
+            if not row["lease_margin_ok"]:
+                raise EffectRefused("lease too close to expiry")
             operation_id = await conn.fetchval(
                 """
                 INSERT INTO task_operations (task_id, epoch, tool_name, effect_class, target_ciphertext)
@@ -603,6 +630,16 @@ class TaskStore:
             )
             await self._append_event(conn, task_id, "operation_started", {"tool": tool_name})
             return operation_id
+
+    async def record_event(
+        self, task_id: uuid.UUID, epoch: int, kind: str, payload: dict[str, Any] | None = None
+    ) -> int:
+        """Append a lifecycle event from the running attempt, under the fence."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await self._locked_for_epoch(conn, task_id, epoch)
+            if row is None:
+                raise LeaseLost("lease lost")
+            return await self._append_event(conn, task_id, kind, payload)
 
     async def finish_operation(self, operation_id: uuid.UUID, *, outcome: str) -> None:
         """Record what a material operation did.
@@ -630,13 +667,28 @@ class TaskStore:
         """Publish the result and complete the task in one transaction.
 
         A cancel requested before this commit wins: the content is kept on the
-        message but the task ends ``cancelled``.
+        message but the task ends ``cancelled``. A suspended account's result is
+        not published: the task ends ``failed`` (``account_suspended``).
         """
         fields = dict(message_fields or {})
         async with self._pool.acquire() as conn, conn.transaction():
             row = await self._locked_for_epoch(conn, task_id, epoch)
             if row is None:
                 raise LeaseLost("lease lost")
+            if row["cancel_requested_at"] is None and await conn.fetchval(
+                "SELECT status = 'suspended' FROM entitlement_accounts WHERE user_id = $1",
+                row["user_id"],
+            ):
+                await self._end_attempt(
+                    conn,
+                    task_id,
+                    epoch,
+                    "failed_terminal",
+                    "account_suspended",
+                    row["result_message_id"],
+                )
+                await self._finish(conn, row, TaskStatus.FAILED, "account_suspended")
+                return TaskStatus.FAILED
             status = (
                 TaskStatus.CANCELLED
                 if row["cancel_requested_at"] is not None

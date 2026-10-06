@@ -17,8 +17,15 @@ def test_daemon_does_not_call_nonexistent_update_message_content():
 
 def test_daemon_calls_update_message_with_content_kwarg():
     text = DAEMON_PY.read_text(encoding="utf-8", errors="ignore")
+    # The assistant row is written through ``message_writer``, which is the
+    # memory store unless a durable task routes it through its lease fence.
+    assert re.search(
+        r"message_writer\s*=\s*message_sink\s+if\s+message_sink\s+is\s+not\s+None"
+        r"\s+else\s+memory_store",
+        text,
+    ), "daemon.py must default the assistant-row writer to memory_store"
     pattern = re.compile(
-        r"await\s+memory_store\.update_message\("
+        r"await\s+(?:memory_store|message_writer)\.update_message\("
         r"(?!\s*update_message_metadata)"
         r"[^)]*?\bcontent\s*=",
         re.DOTALL,

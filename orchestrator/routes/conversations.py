@@ -8,6 +8,7 @@ import uuid
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
+from orchestrator.routes.tasks import TaskOut, task_out, task_store
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -51,6 +52,9 @@ class ConversationOut(BaseModel):
 
 class ConversationWithMessagesOut(ConversationOut):
     messages: list[MessageOut]
+    # The conversation's queued or running durable task, so another device can
+    # reattach to it (docs/DURABLE_REQUEST_DESIGN.md §7).
+    active_task: TaskOut | None = None
 
 
 class ConversationListResponse(BaseModel):
@@ -160,7 +164,11 @@ async def get_conversation(
     messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
     conversation = _normalize_conversation(conversation)
     messages = [_normalize_message(m) for m in messages]
-    return {**conversation, "messages": messages}
+    active_task = None
+    if app_state.db_pool is not None:
+        active = await task_store(app_state).active_for_conversation(auth.user_id, conversation_id)
+        active_task = task_out(active) if active is not None else None
+    return {**conversation, "messages": messages, "active_task": active_task}
 
 
 @router.patch("/{conversation_id}", response_model=StatusResponse)

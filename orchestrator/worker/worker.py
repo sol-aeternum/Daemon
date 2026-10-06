@@ -23,6 +23,8 @@ from orchestrator.memory.encryption import (
     set_shared_encryption_failure_counter,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.tasks.runner import ATTEMPT_TIMEOUT_S, run_chat_task, sweep_tasks
+from orchestrator.tasks.store import TaskStore
 
 from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
@@ -87,6 +89,7 @@ async def on_startup(ctx: WorkerContext) -> None:
     )
     ctx["encryption"] = ContentEncryption(app_settings.daemon_encryption_key)
     ctx["store"] = None
+    ctx["task_store"] = None
 
     validate_database_credentials(app_settings)
 
@@ -102,6 +105,7 @@ async def on_startup(ctx: WorkerContext) -> None:
     ctx["db_pool"] = db_pool
     await initialize_development_pepper(app_settings, db_pool)
     ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
+    ctx["task_store"] = TaskStore(db_pool, ctx["encryption"], ctx["store"])
     logger.info("Worker DB pool created")
     # Background inference admits monitored routes from the attestation snapshot;
     # the worker also runs its own ZDR checks so it enforces revocations itself.
@@ -174,6 +178,9 @@ if _worker_settings.consolidation_nudge_enabled:
 
 cron_jobs.extend(
     [
+        # Durable tasks: re-wake queued work whose wake-up was lost and recover
+        # expired leases (docs/DURABLE_REQUEST_DESIGN.md §3).
+        cron(sweep_tasks, second={0, 15, 30, 45}, keep_result=3600),
         cron(cleanup_web_snapshots, hour=3, minute=45, keep_result=3600),
         cron(
             reconcile_settlement_receipts,
@@ -205,6 +212,11 @@ logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:
 worker = AuditedWorker(
     functions=[
         func(generate_home_suggestions, max_tries=1, keep_result=0),
+        # PostgreSQL owns task retries; arq only wakes. Each provider call
+        # keeps the compute layer's own whole-call deadline, so reservation
+        # recovery never settles a live call; this bounds the whole attempt.
+        func(run_chat_task, max_tries=1, keep_result=0, timeout=ATTEMPT_TIMEOUT_S),
+        func(sweep_tasks, max_tries=1),
         func(extract_memories, max_tries=_worker_settings.retry_attempts, keep_result=0),
         func(generate_title, max_tries=_worker_settings.retry_attempts),
         func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),

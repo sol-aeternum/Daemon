@@ -66,6 +66,11 @@ class MemoryStore:
         self._pool = db_pool
         self._enc = encryption
 
+    @property
+    def encryption(self) -> ContentEncryption:
+        """The content cipher, for stores that share this store's transactions."""
+        return self._enc
+
     def _encrypt_tool_trace(self, trace: list[Any]) -> str:
         return json.dumps(
             {
