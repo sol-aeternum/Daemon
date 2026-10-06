@@ -9,6 +9,8 @@ const API_URLS = [
   'http://localhost:8000',
 ].filter((url): url is string => Boolean(url));
 
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
 function buildProxyHeaders(req: Request): Headers {
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
@@ -169,6 +171,7 @@ export async function POST(req: Request) {
     metadata,
     provider,
     suggestion_id,
+    idempotency_key,
   } = await req.json();
 
   const { createUIMessageStream, createUIMessageStreamResponse } =
@@ -202,6 +205,14 @@ export async function POST(req: Request) {
   }
 
   const proxyHeaders = buildProxyHeaders(req);
+  // One key per submission: a retried or replayed request returns the same
+  // durable task instead of creating a second one.
+  if (
+    typeof idempotency_key === 'string' &&
+    IDEMPOTENCY_KEY_PATTERN.test(idempotency_key)
+  ) {
+    proxyHeaders.set('Idempotency-Key', idempotency_key);
+  }
 
   let backendRes: Response | null = null;
 
@@ -248,7 +259,11 @@ export async function POST(req: Request) {
 
   const stream = createUIMessageStream<DaemonMessage>({
     execute: async ({ writer }) => {
-      const textPartId = 'assistant-text';
+      // A durable task that regenerates after an interruption starts a new
+      // content generation; its text goes into a fresh part after a
+      // task_reset marker, and only text after the last marker is shown.
+      let textPartId = 'assistant-text';
+      let textGeneration = 0;
       let textPartStarted = false;
       let streamFailed = false;
       let errorText = 'Backend stream ended unexpectedly.';
@@ -321,6 +336,11 @@ export async function POST(req: Request) {
           return;
         }
 
+        const taskId = backendRes.headers.get('x-daemon-task-id');
+        if (taskId) {
+          writeData([{ type: 'task', task_id: taskId, status: 'accepted' }]);
+        }
+
         const reader = backendRes.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -379,7 +399,45 @@ export async function POST(req: Request) {
                 continue;
               }
 
-              if (eventType === 'token') {
+              if (eventType === 'task') {
+                const task = payload?.data ?? {};
+                if (task.reset === true) {
+                  if (textPartStarted) {
+                    writer.write({ type: 'text-end', id: textPartId });
+                  }
+                  textGeneration += 1;
+                  textPartId = `assistant-text-${textGeneration}`;
+                  textPartStarted = false;
+                  writeData([
+                    {
+                      type: 'task_reset',
+                      task_id:
+                        typeof task.task_id === 'string'
+                          ? task.task_id
+                          : undefined,
+                      content_generation:
+                        typeof task.content_generation === 'number'
+                          ? task.content_generation
+                          : undefined,
+                    },
+                  ]);
+                  if (typeof task.content === 'string' && task.content) {
+                    sawToken = true;
+                    writeText(task.content);
+                  }
+                } else if (typeof task.task_id === 'string') {
+                  writeData([
+                    {
+                      type: 'task',
+                      task_id: task.task_id,
+                      status:
+                        typeof task.status === 'string'
+                          ? task.status
+                          : undefined,
+                    },
+                  ]);
+                }
+              } else if (eventType === 'token') {
                 const delta =
                   payload?.data?.text ??
                   payload?.data?.delta ??

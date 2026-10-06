@@ -34,6 +34,11 @@ export async function chatTransportFetch(
   assertCurrent();
   body.model = scope.model;
   body.id = scope.conversationId;
+  // One key per submission so a retried request cannot create a second
+  // durable task (the backend replays the first one instead).
+  if (typeof body.idempotency_key !== 'string') {
+    body.idempotency_key = crypto.randomUUID();
+  }
   body = isolateSuggestionBody(body);
   const headers = new Headers(init?.headers);
   const authHeader = getAuthHeader();

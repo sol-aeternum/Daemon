@@ -9,7 +9,14 @@ import { ChatActivityStatus } from '../components/ChatActivityStatus';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { useState, useRef, useEffect, Suspense, useMemo } from 'react';
+import {
+  useState,
+  useRef,
+  useEffect,
+  Suspense,
+  useMemo,
+  useCallback,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
@@ -52,6 +59,7 @@ import { AudioPlaybackProvider } from '../components/AudioPlaybackProvider';
 import { TtsPlaybackBar } from '../components/TtsPlaybackBar';
 import { useEventArchive } from '../hooks/useEventArchive';
 import { useStopGeneration } from '../hooks/useStopGeneration';
+import { useActiveTaskFollower } from '../hooks/useActiveTaskFollower';
 import { useStopShortcut } from '../hooks/useStopShortcut';
 import { formatMessageContent } from '../lib/format';
 import { useAgentStatus } from '../hooks/useAgentStatus';
@@ -83,6 +91,7 @@ import {
   type DaemonMessage,
   getDaemonDataEvents,
   getDaemonMessageText,
+  getDaemonTaskId,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
 
@@ -360,6 +369,8 @@ function ChatContent() {
     updateConversation,
     deleteConversation,
     getCurrentConversation,
+    refreshCurrentConversation,
+    cancelTask,
     switchConversation,
     setConversationModel,
     searchQuery,
@@ -776,6 +787,27 @@ function ChatContent() {
   });
 
   const inputIsBusy = isLoading && messages.length > 0;
+  // Durable tasks survive a disconnect, so Stop cancels the task explicitly
+  // before detaching; closing the app only detaches.
+  const cancelActiveTask = useCallback(() => {
+    const taskId = getDaemonTaskId(messages[messages.length - 1]);
+    if (taskId) void cancelTask(taskId);
+  }, [cancelTask, messages]);
+  // Follow server-owned work this client is not streaming itself (for example
+  // after reopening the conversation on another device). Only a persisted
+  // placeholder qualifies, so a live stream's messages are never replaced.
+  const lastMessage = messages[messages.length - 1];
+  const followsPersistedTask =
+    lastMessage?.role === 'assistant' && lastMessage.status === 'streaming';
+  useActiveTaskFollower({
+    conversation:
+      followsPersistedTask && currentConversation?.id === currentId
+        ? currentConversation
+        : null,
+    isStreaming: isLoading,
+    refresh: refreshCurrentConversation,
+    onUpdate: (conversation) => setMessages(conversation.messages),
+  });
   const {
     stoppedMessageIds,
     stopGeneration: handleStopGeneration,
@@ -788,6 +820,7 @@ function ChatContent() {
     conversationId: suggestionSubmissionRef.current
       ? latestConversationIdRef.current
       : (currentId ?? null),
+    beforeStop: cancelActiveTask,
   });
 
   useStopShortcut({

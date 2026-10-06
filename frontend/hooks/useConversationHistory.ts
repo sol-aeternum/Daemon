@@ -21,6 +21,30 @@ export interface Conversation {
   title_locked: boolean;
   status: string;
   metadata: Record<string, any>;
+  /** The conversation's queued or running durable task, if any. */
+  activeTask?: ActiveTask | null;
+}
+
+/** Server-owned work still in progress for a conversation (durable tasks). */
+export interface ActiveTask {
+  id: string;
+  status: string;
+  content: string;
+  cancelRequested: boolean;
+}
+
+function toActiveTask(value: unknown): ActiveTask | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const task = value as Record<string, unknown>;
+  if (typeof task.id !== 'string' || typeof task.status !== 'string') {
+    return null;
+  }
+  return {
+    id: task.id,
+    status: task.status,
+    content: typeof task.content === 'string' ? task.content : '',
+    cancelRequested: task.cancel_requested === true,
+  };
 }
 
 interface ApiConversation {
@@ -429,6 +453,7 @@ export function useConversationHistory() {
           title_locked: data.title_locked,
           status: data.status,
           metadata: data.metadata || {},
+          activeTask: toActiveTask(data.active_task),
         };
 
         return formattedConv;
@@ -462,6 +487,37 @@ export function useConversationHistory() {
     return currentConversation;
   }, [currentConversation]);
 
+  /** Re-read the open conversation, e.g. while a durable task is running. */
+  const refreshCurrentConversation = useCallback(async () => {
+    if (!currentId) return null;
+    const conversation = await fetchConversationById(currentId);
+    if (conversation) {
+      setCurrentConversation((previous) =>
+        previous === null || previous.id === conversation.id
+          ? conversation
+          : previous,
+      );
+    }
+    return conversation;
+  }, [currentId, fetchConversationById]);
+
+  /** Ask the server to cancel a durable task (Stop, not a disconnect). */
+  const cancelTask = useCallback(
+    async (taskId: string): Promise<boolean> => {
+      try {
+        const response = await apiFetch(
+          `/tasks/${encodeURIComponent(taskId)}/cancel`,
+          { method: 'POST', headers: await getAuthHeaders() },
+        );
+        // 409 means it already finished: nothing left to stop.
+        return response.ok || response.status === 409;
+      } catch {
+        return false;
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
   const switchConversation = useCallback(
     (id: string) => {
       router.push(`/?id=${id}`);
@@ -478,6 +534,8 @@ export function useConversationHistory() {
     setConversationModel,
     deleteConversation,
     getCurrentConversation,
+    refreshCurrentConversation,
+    cancelTask,
     switchConversation,
     fetchConversationById,
     searchQuery,

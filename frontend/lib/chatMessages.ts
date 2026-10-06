@@ -58,12 +58,16 @@ export function normalizeDaemonMessage(
   }
 
   const role = rawRole as DaemonMessage['role'];
-  const content = typeof record.content === 'string' ? record.content : '';
+  const metadata = toRecord(record.metadata) || {};
+  const content = withTaskNotice(
+    role,
+    typeof record.content === 'string' ? record.content : '',
+    metadata,
+  );
   const id =
     typeof record.id === 'string' && record.id.length > 0
       ? record.id
       : `persisted-message-${index}`;
-  const metadata = toRecord(record.metadata) || {};
 
   return {
     ...record,
@@ -75,15 +79,70 @@ export function normalizeDaemonMessage(
   } as DaemonMessage;
 }
 
+/**
+ * Plain-language outcomes for durable tasks that ended without a normal
+ * answer, keyed by the server's terminal code. Unknown or free-text legacy
+ * reasons are left alone.
+ */
+const TASK_TERMINAL_NOTICES: Record<string, string> = {
+  uncertain_effect:
+    'This request was interrupted after an action that may already have happened. Check before retrying.',
+  interrupted: 'This request was interrupted and could not be completed.',
+  account_suspended: 'This request stopped because the account is suspended.',
+  internal_error: 'This request could not be completed.',
+  budget_exceeded:
+    'This request stopped because the compute budget for this period is used up.',
+  trial_exhausted:
+    'This request stopped because the trial allowance is used up.',
+  cancelled: 'Stopped.',
+};
+
+function withTaskNotice(
+  role: string,
+  content: string,
+  metadata: Record<string, unknown>,
+): string {
+  if (role !== 'assistant') return content;
+  const code = metadata.terminal_reason;
+  if (typeof code !== 'string') return content;
+  const notice = TASK_TERMINAL_NOTICES[code];
+  if (!notice) return content;
+  if (!content) return notice;
+  // An uncertain effect must stay visible even when partial text exists.
+  return code === 'uncertain_effect' ? `${content}\n\n${notice}` : content;
+}
+
 export function getDaemonMessageText(message: DaemonMessage): string {
   if (typeof message.content === 'string' && message.content.length > 0) {
     return message.content;
   }
 
+  // A durable task that regenerated after an interruption marks the switch
+  // with a task_reset event; only the text written after it is current.
+  let lastReset = -1;
+  message.parts.forEach((part, index) => {
+    if (part.type === 'data-event' && part.data.type === 'task_reset') {
+      lastReset = index;
+    }
+  });
   return message.parts
+    .slice(lastReset + 1)
     .filter((part) => part.type === 'text')
     .map((part) => part.text)
     .join('');
+}
+
+/** The durable task a streamed assistant message belongs to, if any. */
+export function getDaemonTaskId(
+  message: DaemonMessage | undefined,
+): string | null {
+  if (!message) return null;
+  for (const part of message.parts) {
+    if (part.type === 'data-event' && part.data.type === 'task') {
+      return part.data.task_id;
+    }
+  }
+  return null;
 }
 
 export function getDaemonDataEvents(messages: DaemonMessage[]): ChatEvent[] {

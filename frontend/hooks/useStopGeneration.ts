@@ -18,6 +18,11 @@ type UseStopGenerationOptions = {
    * the ID-less key until `assignConversationId` receives the backend ID.
    */
   conversationId: string | null;
+  /**
+   * Runs before the client stream is detached. Durable tasks keep running
+   * when a client disconnects, so Stop must also cancel them explicitly.
+   */
+  beforeStop?: () => void;
 };
 
 export function useStopGeneration({
@@ -25,6 +30,7 @@ export function useStopGeneration({
   stop,
   archiveEvents,
   conversationId,
+  beforeStop,
 }: UseStopGenerationOptions) {
   // Scoped by conversation ID so New Chat / conversation switches do not
   // wipe markers for the conversation the user navigates back to.
@@ -71,8 +77,9 @@ export function useStopGeneration({
       archiveEvents(latestMessageId);
     }
 
+    beforeStop?.();
     stop();
-  }, [activeKey, archiveEvents, messages, stop]);
+  }, [activeKey, archiveEvents, beforeStop, messages, stop]);
 
   return {
     stoppedMessageIds,

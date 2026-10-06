@@ -125,6 +125,8 @@ export type ChatEvent = BaseEvent &
         models_used: string[];
       }
     | { type: 'council_error'; error: string }
+    | { type: 'task'; task_id: string; status?: string }
+    | { type: 'task_reset'; task_id?: string; content_generation?: number }
     | {
         type: 'rate_limited';
         scope: 'user' | 'session' | 'ip';
@@ -162,6 +164,8 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     'council_done',
     'council_error',
     'rate_limited',
+    'task',
+    'task_reset',
   ];
   return typeof event.type === 'string' && validTypes.includes(event.type);
 }
