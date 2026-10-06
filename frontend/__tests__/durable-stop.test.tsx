@@ -23,6 +23,7 @@ type Props = {
   messages: DaemonMessage[];
   isLoading: boolean;
   activeTaskId: string | null;
+  streamStarted?: boolean;
 };
 
 function setup(
@@ -38,6 +39,7 @@ function setup(
     (props: Props) =>
       useDurableStop({
         ...props,
+        streamStarted: props.streamStarted ?? false,
         submissionKeyRef,
         cancelTask,
         taskIdForKey,
@@ -117,7 +119,7 @@ describe('Stop for durable chat', () => {
     expect(cancelTask).not.toHaveBeenCalled();
   });
 
-  it('concludes nothing was accepted only after repeated lookups', async () => {
+  it('never reports success when the server has not found the task yet', async () => {
     const { hook, taskIdForKey } = setup({
       messages: [user],
       isLoading: true,
@@ -127,8 +129,21 @@ describe('Stop for durable chat', () => {
     await act(async () =>
       hook.rerender({ messages: [user], isLoading: false, activeTaskId: null }),
     );
-    await expect(outcome).resolves.toBe('cancelled');
+    // Acceptance may still be committing: unconfirmed, never "stopped".
+    await expect(outcome).resolves.toBe('unconfirmed');
     expect(taskIdForKey).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats a started stream without a task as request-bound chat', () => {
+    const { hook } = setup({
+      messages: [user],
+      isLoading: true,
+      activeTaskId: null,
+      streamStarted: true,
+    });
+    // A durable task names itself in its first frame; without one the abort
+    // is the cancellation.
+    expect(hook.result.current()).toBeUndefined();
   });
 
   it('leaves a request-bound abort to the caller when nothing durable is in flight', () => {

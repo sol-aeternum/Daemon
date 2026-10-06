@@ -14,6 +14,12 @@ type UseDurableStopOptions = {
   /** The open conversation's running task id known from the server, if any. */
   activeTaskId: string | null;
   isLoading: boolean;
+  /**
+   * The response stream had started. A durable task's first frame names it,
+   * so a started stream with no task id is request-bound chat, where the
+   * abort itself is the cancellation.
+   */
+  streamStarted: boolean;
   /** Idempotency key of the submission in flight. */
   submissionKeyRef: RefObject<string | null>;
   cancelTask: (taskId: string) => Promise<TaskCancelOutcome>;
@@ -36,6 +42,7 @@ export function useDurableStop({
   messages,
   activeTaskId,
   isLoading,
+  streamStarted,
   submissionKeyRef,
   cancelTask,
   taskIdForKey,
@@ -47,11 +54,18 @@ export function useDurableStop({
   const cancelActiveTask = useCallback((): Promise<StopOutcome> | void => {
     const taskId = latestTaskId ?? activeTaskId;
     if (taskId) return cancelTask(taskId);
-    if (!isLoading || !submissionKeyRef.current) return;
+    if (!isLoading || !submissionKeyRef.current || streamStarted) return;
     return new Promise<StopOutcome>((resolve) => {
       pendingRef.current = resolve;
     });
-  }, [activeTaskId, cancelTask, isLoading, latestTaskId, submissionKeyRef]);
+  }, [
+    activeTaskId,
+    cancelTask,
+    isLoading,
+    latestTaskId,
+    streamStarted,
+    submissionKeyRef,
+  ]);
 
   // The task id arrived after Stop: cancel that task.
   useEffect(() => {
@@ -82,7 +96,9 @@ export function useDurableStop({
           return;
         }
       }
-      resolve('cancelled'); // never accepted: nothing is running
+      // Not found yet: acceptance may still be committing, so this is never
+      // reported as a successful stop.
+      resolve('unconfirmed');
     })();
   }, [cancelTask, isLoading, lookupDelaysMs, submissionKeyRef, taskIdForKey]);
 

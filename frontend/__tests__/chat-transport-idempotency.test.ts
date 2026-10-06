@@ -93,10 +93,38 @@ it('treats a changed model or attachment as a new submission', async () => {
   ).not.toBe(base);
 });
 
-it('follows a new chat into the conversation the backend named', async () => {
+it('replays a new chat exactly as first sent after the backend names it', async () => {
   const key = await send('start a chat', { conversationId: null as never });
   promotePendingSubmission(key, 'conv-new');
+  // Resent from the promoted conversation: same key, original (null) scope,
+  // so the backend's request fingerprint matches and it replays the task.
   expect(await send('start a chat', { conversationId: 'conv-new' })).toBe(key);
+  const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+  const body = JSON.parse(
+    (calls[calls.length - 1][1] as RequestInit).body as string,
+  );
+  expect(body.id).toBeNull();
+});
+
+it('fingerprints the attachment fields the page actually sends', async () => {
+  const file = { name: 'a.txt', mime_type: 'text/plain', size: 3 };
+  const first = await send('see file', {
+    attachments: [{ ...file, text_content: 'one' }],
+  });
+  expect(
+    await send('see file', { attachments: [{ ...file, text_content: 'one' }] }),
+  ).toBe(first);
+  expect(
+    await send('see file', { attachments: [{ ...file, text_content: 'two' }] }),
+  ).not.toBe(first);
+});
+
+it('keeps concurrent submissions from different tabs independent', () => {
+  // Two tabs each record a submission; neither rewrites the other's item.
+  const tabA = keyForSubmission({ text: 'from tab A' }, 'conv-a').key;
+  const tabB = keyForSubmission({ text: 'from tab B' }, 'conv-b').key;
+  settlePendingSubmission(tabB);
+  expect(keyForSubmission({ text: 'from tab A' }, 'conv-a').key).toBe(tabA);
 });
 
 it('keeps a key the caller already chose', async () => {
@@ -119,28 +147,20 @@ it('keeps a key the caller already chose', async () => {
 
 it('bounds storage by age and count, and clears on sign-in changes', () => {
   const now = 1_000_000;
-  const old = keyForSubmission({ text: 'old' }, null, now);
-  expect(
-    keyForSubmission(
-      { text: 'old' },
-      null,
-      now + PENDING_SUBMISSION_TTL_MS + 1,
-    ),
-  ).not.toBe(old);
+  const old = keyForSubmission({ text: 'old' }, null, now).key;
+  const later = now + PENDING_SUBMISSION_TTL_MS + 1;
+  expect(keyForSubmission({ text: 'old' }, null, later).key).not.toBe(old);
   for (let index = 0; index < MAX_PENDING_SUBMISSIONS + 5; index += 1) {
-    keyForSubmission({ text: `q${index}` }, null, now);
+    keyForSubmission({ text: `q${index}` }, null, later + index);
   }
-  const stored = JSON.parse(
-    storage.getItem('daemon.pendingSubmissions.v2') ?? '{}',
-  );
-  expect(stored.entries.length).toBe(MAX_PENDING_SUBMISSIONS);
+  expect(storage.length).toBe(MAX_PENDING_SUBMISSIONS);
   clearPendingSubmissions();
-  expect(storage.getItem('daemon.pendingSubmissions.v2')).toBeNull();
+  expect(storage.length).toBe(0);
 });
 
 it('never stores the submitted text', () => {
   keyForSubmission({ text: 'a private question' }, 'conv-a');
-  const stored = storage.getItem('daemon.pendingSubmissions.v2') ?? '';
+  const stored = storage.getItem(storage.key(0) ?? '') ?? '';
   expect(stored).toBeTruthy();
   expect(stored).not.toContain('private');
   expect(stored).not.toContain('question');
@@ -148,7 +168,7 @@ it('never stores the submitted text', () => {
 
 it('falls back to a fresh key when storage is unavailable', () => {
   vi.stubGlobal('localStorage', undefined);
-  expect(keyForSubmission({ text: 'hi' }, null)).not.toBe(
-    keyForSubmission({ text: 'hi' }, null),
+  expect(keyForSubmission({ text: 'hi' }, null).key).not.toBe(
+    keyForSubmission({ text: 'hi' }, null).key,
   );
 });

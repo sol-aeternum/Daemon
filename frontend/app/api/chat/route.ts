@@ -205,6 +205,8 @@ export async function POST(req: Request) {
   }
 
   const proxyHeaders = buildProxyHeaders(req);
+  // This bridge replaces shown text on a durable task's generation reset.
+  proxyHeaders.set('X-Daemon-Client-Features', 'task-reset');
   // One key per submission: a retried or replayed request returns the same
   // durable task instead of creating a second one.
   if (

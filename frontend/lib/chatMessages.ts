@@ -132,11 +132,9 @@ function withTaskNotice(
     TASK_TERMINAL_NOTICES[code] ??
     `This request could not be completed (${code.replace(/_/g, ' ')}).`;
   if (!content) return notice;
-  // Partial text stays, but an uncertain effect or a stop must remain
-  // visible on every device, not only where Stop was pressed.
-  if (code === 'uncertain_effect') return `${content}\n\n${notice}`;
-  if (code === 'cancelled') return `${content}\n\n${CANCELLED_PARTIAL_NOTICE}`;
-  return content;
+  // Partial text stays, but why it stopped must remain visible on every
+  // device, not only where it happened.
+  return `${content}\n\n${code === 'cancelled' ? CANCELLED_PARTIAL_NOTICE : notice}`;
 }
 
 export function getDaemonMessageText(message: DaemonMessage): string {
@@ -177,26 +175,5 @@ export function getDaemonDataEvents(messages: DaemonMessage[]): ChatEvent[] {
     message.parts.flatMap((part) =>
       part.type === 'data-event' ? [part.data] : [],
     ),
-  );
-}
-
-/**
- * Whether the server's copy of a conversation already holds the latest turn
- * this client sent, so replacing the local view with it loses nothing the
- * user typed (a turn the server never accepted stays visible for resending).
- */
-export function serverHasLatestTurn(
-  server: DaemonMessage[],
-  local: DaemonMessage[],
-): boolean {
-  const lastUser = (messages: DaemonMessage[]) =>
-    [...messages].reverse().find((message) => message.role === 'user');
-  const localUser = lastUser(local);
-  if (!localUser) return server.length > 0;
-  const serverUser = lastUser(server);
-  return (
-    serverUser !== undefined &&
-    getDaemonMessageText(serverUser).trim() ===
-      getDaemonMessageText(localUser).trim()
   );
 }

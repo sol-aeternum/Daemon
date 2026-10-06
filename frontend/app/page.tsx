@@ -99,7 +99,6 @@ import {
   getDaemonDataEvents,
   getDaemonMessageText,
   getDaemonTaskId,
-  serverHasLatestTurn,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
 
@@ -435,8 +434,8 @@ function ChatContent() {
   const chatRequestGenerationRef = useRef<number | null>(null);
   // Idempotency key of the submission currently (or most recently) in flight.
   const activeSubmissionKeyRef = useRef<string | null>(null);
-  // Latest rendered messages, for callbacks created before useChat returns.
-  const messagesRef = useRef<DaemonMessage[]>([]);
+  // Set once useChat has returned; used by callbacks created before it.
+  const reconcileWithServerRef = useRef<(() => Promise<void>) | null>(null);
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -571,18 +570,11 @@ function ChatContent() {
       // The stream dropped, but server-owned work may still be running or
       // already finished: show the server's version of this turn. A turn the
       // server never accepted stays as typed, so it can be resent.
-      void refreshCurrentConversation().then((fresh) => {
-        if (fresh && serverHasLatestTurn(fresh.messages, messagesRef.current)) {
-          setMessages(fresh.messages);
-        }
-      });
+      void reconcileWithServerRef.current?.();
     },
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
   // A different sign-in must never reuse another account's pending keys.
   useEffect(() => subscribeAuthGeneration(clearPendingSubmissions), []);
   // Follow server-owned work this client is not streaming itself (for example
@@ -854,27 +846,45 @@ function ChatContent() {
     messages,
     activeTaskId: currentConversation?.activeTask?.id ?? null,
     isLoading,
+    streamStarted: status === 'streaming',
     submissionKeyRef: activeSubmissionKeyRef,
     cancelTask,
     taskIdForKey,
   });
+  // Show the server's copy of this submission's turn, identified by the
+  // task its idempotency key created (never by matching text): the saved
+  // result, a terminal notice, or the still-running task, which the
+  // follower then tracks and which keeps the input busy until it ends.
+  const reconcileWithServer = useCallback(async () => {
+    const key = activeSubmissionKeyRef.current;
+    if (!key) return;
+    const taskId = await taskIdForKey(key);
+    if (!taskId) return;
+    const fresh = await refreshCurrentConversation();
+    if (
+      fresh &&
+      (fresh.activeTask?.id === taskId || fresh.latestTask?.id === taskId)
+    ) {
+      setMessages(fresh.messages);
+    }
+  }, [refreshCurrentConversation, setMessages, taskIdForKey]);
+  useEffect(() => {
+    reconcileWithServerRef.current = reconcileWithServer;
+  }, [reconcileWithServer]);
   const handleStopResolved = useCallback(
     (outcome: StopOutcome) => {
-      if (outcome === 'cancelled') return;
+      if (outcome !== 'unconfirmed' && activeSubmissionKeyRef.current) {
+        // The outcome is known: a resend is a new submission.
+        settlePendingSubmission(activeSubmissionKeyRef.current);
+      }
       if (outcome === 'unconfirmed') {
         showError(
           'Stop could not be confirmed. The request may still be running; its result will appear here.',
         );
       }
-      // Show the server's state: the finished answer, or the task still
-      // running (which the follower then tracks).
-      void refreshCurrentConversation().then((fresh) => {
-        if (fresh && serverHasLatestTurn(fresh.messages, messagesRef.current)) {
-          setMessages(fresh.messages);
-        }
-      });
+      void reconcileWithServer();
     },
-    [refreshCurrentConversation, setMessages, showError],
+    [reconcileWithServer, showError],
   );
   const {
     stoppedMessageIds,

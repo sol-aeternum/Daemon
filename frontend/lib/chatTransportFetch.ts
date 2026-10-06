@@ -59,7 +59,7 @@ export async function chatTransportFetch(
   // after a lost response or a reload replays the accepted task instead of
   // creating a second one.
   if (typeof body.idempotency_key !== 'string') {
-    body.idempotency_key = keyForSubmission(
+    const pending = keyForSubmission(
       {
         text: lastUserText(body.messages),
         model: body.model,
@@ -68,6 +68,10 @@ export async function chatTransportFetch(
       },
       typeof body.id === 'string' ? body.id : null,
     );
+    body.idempotency_key = pending.key;
+    // A resend of a new chat that the backend already accepted must replay
+    // the original request exactly, including its (absent) conversation id.
+    body.id = pending.requestConversationId;
   }
   scope.onSubmissionKey?.(body.idempotency_key as string);
   body = isolateSuggestionBody(body);

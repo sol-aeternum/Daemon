@@ -213,6 +213,10 @@ describe('a durable task reopened on another device', () => {
     await waitFor(() =>
       expect(state.cancelTask).toHaveBeenCalledWith('task-1'),
     );
+    // The server accepted the cancel but the task is still stopping: the
+    // conversation stays busy rather than inviting a conflicting submission.
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
 
     // The server reaches a terminal state: the result shows, input is free.
     state.refresh.mockResolvedValue(runningConversation(false));

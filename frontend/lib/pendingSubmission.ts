@@ -1,27 +1,30 @@
 /**
  * Idempotency keys that survive an ambiguous response or a reload.
  *
- * Each submitted turn gets an entry keyed by its idempotency key and kept
- * until that submission's outcome is known. If the response is lost (network
- * error, closed tab, disconnect) and the same request is sent again to the
- * same conversation, its key is reused, so the backend returns the task it
- * already accepted instead of running it twice.
+ * Each submitted turn gets its own storage item, keyed by its idempotency
+ * key, kept until that submission's outcome is known. If the response is
+ * lost (network error, closed tab, disconnect) and the same request is sent
+ * again to the same conversation, its key and original request scope are
+ * reused, so the backend returns the task it already accepted instead of
+ * running it twice.
  *
- * - Entries are per submission, so another conversation or tab never
- *   overwrites an earlier unresolved one, and settling one leaves the others.
+ * - One item per submission: tabs never read-modify-write a shared list, so
+ *   concurrent submissions cannot overwrite or resurrect each other, and
+ *   settling one leaves the others.
  * - A request matches only if text, model, provider and attachments match:
  *   a changed request is a new submission (the backend would otherwise answer
  *   409 idempotency_conflict).
- * - A new chat's entry is promoted to its conversation id once the backend
- *   names it, so a resend from the promoted conversation still matches.
+ * - A new chat's item follows the conversation the backend names (its match
+ *   scope), while remembering the request's original scope (no conversation)
+ *   so a resend replays exactly the accepted request.
  * - Only non-reversible fingerprints are stored, never the request content.
- * - Entries are cleared on sign-in/sign-out; the backend scopes keys per
+ * - Items are cleared on sign-in/sign-out; the backend scopes keys per
  *   account in any case.
  * - Storage failures (private mode, blocked storage) fall back to a fresh key
  *   per request, which was the behaviour before durable tasks.
  */
 
-const STORAGE_KEY = 'daemon.pendingSubmissions.v2';
+const ITEM_PREFIX = 'daemon.pendingSubmission.v3:';
 /**
  * How long an unresolved submission stays retryable under its key. The
  * backend keeps keys for the task's lifetime; this only bounds local storage.
@@ -30,9 +33,11 @@ export const PENDING_SUBMISSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_PENDING_SUBMISSIONS = 50;
 
 type PendingSubmission = {
-  key: string;
   fingerprint: string;
-  conversationId: string | null;
+  /** Conversation a resend must come from to match (follows promotion). */
+  scope: string | null;
+  /** Conversation the original request named (null for a new chat). */
+  requestConversationId: string | null;
   createdAt: number;
 };
 
@@ -41,6 +46,12 @@ export type SubmissionIdentity = {
   model?: unknown;
   provider?: unknown;
   attachments?: unknown;
+};
+
+export type PendingKey = {
+  key: string;
+  /** The conversation id the original request was sent with. */
+  requestConversationId: string | null;
 };
 
 /** FNV-1a over a canonical string: stable and non-reversible enough for matching. */
@@ -58,12 +69,17 @@ function attachmentShape(attachments: unknown): unknown[] {
   return attachments.map((attachment) => {
     if (typeof attachment !== 'object' || attachment === null) return null;
     const record = attachment as Record<string, unknown>;
-    const content = [record.content, record.data, record.url].find(
-      (value) => typeof value === 'string',
-    ) as string | undefined;
+    const content = [
+      record.text_content,
+      record.data_url,
+      record.content,
+      record.data,
+      record.url,
+    ].find((value) => typeof value === 'string') as string | undefined;
     return {
       name: record.name ?? null,
-      type: record.type ?? record.mimeType ?? null,
+      type: record.mime_type ?? record.type ?? record.mimeType ?? null,
+      size: record.size ?? null,
       content: content ? fnv(content) : null,
     };
   });
@@ -89,84 +105,129 @@ function storage(): Storage | null {
   }
 }
 
-function read(now: number): PendingSubmission[] {
+function readEntry(store: Storage, itemKey: string): PendingSubmission | null {
   try {
-    const raw = storage()?.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const value = JSON.parse(raw) as { entries?: PendingSubmission[] };
-    return (value.entries ?? []).filter(
-      (entry) =>
-        typeof entry?.key === 'string' &&
-        typeof entry.fingerprint === 'string' &&
-        typeof entry.createdAt === 'number' &&
-        now - entry.createdAt < PENDING_SUBMISSION_TTL_MS,
-    );
+    const value = JSON.parse(
+      store.getItem(itemKey) ?? 'null',
+    ) as PendingSubmission | null;
+    if (
+      !value ||
+      typeof value.fingerprint !== 'string' ||
+      typeof value.createdAt !== 'number'
+    ) {
+      return null;
+    }
+    return value;
   } catch {
-    return [];
+    return null;
   }
 }
 
-function write(entries: PendingSubmission[]): void {
-  const store = storage();
-  if (!store) return;
-  try {
-    if (entries.length === 0) {
-      store.removeItem(STORAGE_KEY);
-    } else {
-      const kept = entries.slice(-MAX_PENDING_SUBMISSIONS);
-      store.setItem(STORAGE_KEY, JSON.stringify({ entries: kept }));
-    }
-  } catch {
-    // Storage unavailable: keys are simply not reused across reloads.
+/** Live entries, oldest first; expired or unreadable items are removed. */
+function entries(
+  store: Storage,
+  now: number,
+): Array<[string, PendingSubmission]> {
+  const found: Array<[string, PendingSubmission]> = [];
+  const itemKeys: string[] = [];
+  for (let index = 0; index < store.length; index += 1) {
+    const itemKey = store.key(index);
+    if (itemKey?.startsWith(ITEM_PREFIX)) itemKeys.push(itemKey);
   }
+  for (const itemKey of itemKeys) {
+    const entry = readEntry(store, itemKey);
+    if (!entry || now - entry.createdAt >= PENDING_SUBMISSION_TTL_MS) {
+      store.removeItem(itemKey);
+      continue;
+    }
+    found.push([itemKey.slice(ITEM_PREFIX.length), entry]);
+  }
+  return found.sort((a, b) => a[1].createdAt - b[1].createdAt);
 }
 
 /**
- * The idempotency key for this submission: the key of an unresolved matching
- * submission to the same conversation, or a new one recorded as pending.
+ * The key for this submission: an unresolved matching submission's key and
+ * original scope, or a new key recorded as pending.
  */
 export function keyForSubmission(
   identity: SubmissionIdentity,
   conversationId: string | null,
   now: number = Date.now(),
-): string {
+): PendingKey {
   const fingerprint = submissionFingerprint(identity);
-  const entries = read(now);
-  const match = entries.find(
-    (entry) =>
-      entry.fingerprint === fingerprint &&
-      entry.conversationId === conversationId,
-  );
-  if (match) return match.key;
-  const key = crypto.randomUUID();
-  write([...entries, { key, fingerprint, conversationId, createdAt: now }]);
-  return key;
+  const store = storage();
+  if (!store) {
+    return { key: crypto.randomUUID(), requestConversationId: conversationId };
+  }
+  try {
+    const live = entries(store, now);
+    const match = live.find(
+      ([, entry]) =>
+        entry.fingerprint === fingerprint && entry.scope === conversationId,
+    );
+    if (match) {
+      return {
+        key: match[0],
+        requestConversationId: match[1].requestConversationId,
+      };
+    }
+    for (const [oldKey] of live.slice(
+      0,
+      Math.max(0, live.length - MAX_PENDING_SUBMISSIONS + 1),
+    )) {
+      store.removeItem(ITEM_PREFIX + oldKey);
+    }
+    const key = crypto.randomUUID();
+    const entry: PendingSubmission = {
+      fingerprint,
+      scope: conversationId,
+      requestConversationId: conversationId,
+      createdAt: now,
+    };
+    store.setItem(ITEM_PREFIX + key, JSON.stringify(entry));
+    return { key, requestConversationId: conversationId };
+  } catch {
+    return { key: crypto.randomUUID(), requestConversationId: conversationId };
+  }
 }
 
-/** A new chat's submission now belongs to the conversation the backend named. */
+/** A new chat's submission now matches resends from the conversation the backend named. */
 export function promotePendingSubmission(
   key: string,
   conversationId: string,
-  now: number = Date.now(),
 ): void {
-  const entries = read(now);
-  const entry = entries.find((candidate) => candidate.key === key);
-  if (!entry || entry.conversationId === conversationId) return;
-  entry.conversationId = conversationId;
-  write(entries);
+  const store = storage();
+  if (!store) return;
+  try {
+    const entry = readEntry(store, ITEM_PREFIX + key);
+    if (!entry || entry.scope === conversationId) return;
+    store.setItem(
+      ITEM_PREFIX + key,
+      JSON.stringify({ ...entry, scope: conversationId }),
+    );
+  } catch {
+    // Storage unavailable: the resend simply gets a new key.
+  }
 }
 
 /** Forget one submission once its outcome is known; others stay pending. */
-export function settlePendingSubmission(
-  key: string,
-  now: number = Date.now(),
-): void {
-  const entries = read(now);
-  const remaining = entries.filter((entry) => entry.key !== key);
-  if (remaining.length !== entries.length) write(remaining);
+export function settlePendingSubmission(key: string): void {
+  try {
+    storage()?.removeItem(ITEM_PREFIX + key);
+  } catch {
+    // Nothing to forget.
+  }
 }
 
 /** Forget every pending submission (sign-in or sign-out). */
 export function clearPendingSubmissions(): void {
-  write([]);
+  const store = storage();
+  if (!store) return;
+  try {
+    for (const [key] of entries(store, Date.now())) {
+      store.removeItem(ITEM_PREFIX + key);
+    }
+  } catch {
+    // Nothing to clear.
+  }
 }

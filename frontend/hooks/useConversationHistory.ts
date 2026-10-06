@@ -1,6 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
 import {
@@ -23,6 +29,8 @@ export interface Conversation {
   metadata: Record<string, any>;
   /** The conversation's queued or running durable task, if any. */
   activeTask?: ActiveTask | null;
+  /** The conversation's most recent durable task, finished or not. */
+  latestTask?: ActiveTask | null;
 }
 
 export type TaskCancelOutcome = 'cancelled' | 'finished' | 'unconfirmed';
@@ -456,6 +464,7 @@ export function useConversationHistory() {
           status: data.status,
           metadata: data.metadata || {},
           activeTask: toActiveTask(data.active_task),
+          latestTask: toActiveTask(data.latest_task),
         };
 
         return formattedConv;
@@ -492,7 +501,9 @@ export function useConversationHistory() {
   // The open conversation id as of the latest render, for discarding refreshes
   // that finish after the user has moved to another conversation.
   const currentIdRef = useRef(currentId);
-  useEffect(() => {
+  // A layout effect runs before passive effects, so a refresh that resolves
+  // during the switch already sees the new id.
+  useLayoutEffect(() => {
     currentIdRef.current = currentId;
   }, [currentId]);
 

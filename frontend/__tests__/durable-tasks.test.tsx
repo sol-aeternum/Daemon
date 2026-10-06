@@ -12,7 +12,6 @@ import {
   getDaemonMessageText,
   getDaemonTaskId,
   normalizeDaemonMessage,
-  serverHasLatestTurn,
   type DaemonMessage,
 } from '../lib/chatMessages';
 
@@ -384,28 +383,20 @@ describe('following a task started on another device', () => {
   });
 });
 
-describe('applying server state after a dropped stream', () => {
-  const msg = (role: 'user' | 'assistant', text: string) =>
-    ({
-      id: `${role}-${text}`,
-      role,
-      parts: [{ type: 'text', text }],
-    }) as DaemonMessage;
-
-  it('applies the server copy only when it holds the latest local turn', () => {
-    const local = [
-      msg('user', 'first'),
-      msg('assistant', 'a'),
-      msg('user', 'second'),
-    ];
-    expect(
-      serverHasLatestTurn([msg('user', 'first'), msg('assistant', 'a')], local),
-    ).toBe(false);
-    expect(
-      serverHasLatestTurn(
-        [...local.slice(0, 2), msg('user', 'second'), msg('assistant', 'done')],
-        local,
-      ),
-    ).toBe(true);
+describe('notices on partial failed answers', () => {
+  it('keeps the partial text and says why it stopped, for any task code', () => {
+    for (const code of ['interrupted', 'budget_exceeded', 'some_future_code']) {
+      const text = getDaemonMessageText(
+        normalizeDaemonMessage({
+          id: 'a',
+          role: 'assistant',
+          content: 'Partial',
+          status: 'error',
+          metadata: { terminal_reason: code },
+        })!,
+      );
+      expect(text.startsWith('Partial\n\n')).toBe(true);
+      expect(text.length).toBeGreaterThan('Partial\n\n'.length + 10);
+    }
   });
 });
