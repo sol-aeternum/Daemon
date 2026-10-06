@@ -9,12 +9,23 @@ SDK capability metadata reproducibility is separately tracked by #451.
 The backend job in `.github/workflows/ci.yml` runs
 `bash scripts/run_backend_pytest.sh` after locked dependency synchronization.
 The runner executes the full, unfiltered suite through the installed environment,
-without dependency resolution, retries, new plugins or relaxed assertions.
+without dependency resolution, retries or relaxed assertions. The only addition
+is the opt-in asyncio stall dump described below, which observes and never
+changes test outcomes.
 
 - Verbose test IDs identify the last started test. Completed runs report the
   slowest 30 setup/call/teardown phases separately from other backend gates.
 - Pytest's 120-second faulthandler timer prints thread stacks for a slow test;
   it is diagnostic only, not a short per-test failure limit.
+- The CI Pytest step sets `DAEMON_PYTEST_ASYNCIO_DUMP_S=90`. When a setup,
+  call or teardown phase runs longer than that, `tests/asyncio_stall_dump.py`
+  (wired through `tests/conftest.py`, inert when the variable is unset) prints
+  every pending asyncio task's call graph and every suspended coroutine and
+  async-generator location, lines prefixed `[asyncio-stall-dump]`. It runs
+  before the 120-second faulthandler dump, which shows threads only. The dump
+  is written to a duplicate of the real stderr, so Pytest output capture
+  cannot swallow it. Nothing is cancelled, retried or timed out, and no
+  locals are printed.
 - GNU `timeout` provides a 20-minute process-group deadline, including
   collection/import and shutdown. `SIGABRT` requests Python faulthandler stacks;
   a 15-second kill-after bound stops signal-resistant survivors. Core dumps are
@@ -43,7 +54,10 @@ diagnostics are not permission to probe production or expose private fixtures.
 First run `uv sync --locked` in a credential-free checkout. Then run the same
 shell command as CI. Command-line options allow shorter synthetic deadlines,
 a different artifact directory or selected test IDs; they add no dotenv keys.
-Use `bash scripts/run_backend_pytest.sh --help` for the interface.
+Use `bash scripts/run_backend_pytest.sh --help` for the interface. To get the
+asyncio stall dump locally as in CI, set the threshold in the environment, for
+example `DAEMON_PYTEST_ASYNCIO_DUMP_S=90 bash scripts/run_backend_pytest.sh`
+(any positive number of seconds; unset or empty disables it).
 
 The ordinary local gate command is unchanged. The diagnostic runner is also
 available for bounded reproduction; neither command automatically retries a

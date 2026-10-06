@@ -21,6 +21,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Issue #454: opt-in dump of pending asyncio tasks when a test phase stalls.
+# Inert unless DAEMON_PYTEST_ASYNCIO_DUMP_S is set (the CI pytest step sets it).
+from tests.asyncio_stall_dump import (  # noqa: E402
+    pytest_configure as pytest_configure,
+    pytest_runtest_call as pytest_runtest_call,
+    pytest_runtest_setup as pytest_runtest_setup,
+    pytest_runtest_teardown as pytest_runtest_teardown,
+)
+
 
 # Issue #66 added fail-closed validation of DAEMON_ALLOWED_HOSTS at
 # production import time in orchestrator/main.py. The test environment
