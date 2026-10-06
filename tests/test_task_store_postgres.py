@@ -626,3 +626,13 @@ async def test_ended_compute_scopes_never_include_the_running_attempt(env: Env):
     assert second is not None
     await env.tasks.record_compute_scope(accepted.task_id, second.epoch, live_scope)
     assert await env.tasks.ended_compute_scopes(accepted.task_id) == [lost_scope]
+
+
+@pytest.mark.asyncio
+async def test_queued_task_with_pending_cancel_is_never_claimed(env: Env):
+    accepted = await _accept(env)
+    await env.pool.execute(
+        "UPDATE tasks SET cancel_requested_at = now() WHERE id = $1", accepted.task_id
+    )
+    assert await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S) is None
+    assert (await _task(env, accepted.task_id))["status"] == "cancelled"

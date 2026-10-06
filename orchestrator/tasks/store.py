@@ -378,6 +378,12 @@ class TaskStore:
             created=True,
         )
 
+    async def find_by_key(
+        self, user_id: uuid.UUID, idempotency_key: str, request_hash: str
+    ) -> AcceptedTask | None:
+        """The task this account's key created, if any (conflict if the request differs)."""
+        return await self._by_key(user_id, idempotency_key, request_hash)
+
     async def _by_key(
         self, user_id: uuid.UUID, idempotency_key: str, request_hash: str
     ) -> AcceptedTask | None:
@@ -487,6 +493,11 @@ class TaskStore:
                 if decision.status is not TaskStatus.QUEUED:
                     await self._finish(conn, row, decision.status, decision.terminal_code)
                     return None
+            elif row["cancel_requested_at"] is not None:
+                # Defensive: cancelling a queued task terminalises it directly,
+                # so a pending cancel must never start an attempt.
+                await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
+                return None
             elif await self._material_started(conn, task_id):
                 # Defensive: a queued task never carries operations, because
                 # every retry path checks them first.
@@ -807,6 +818,63 @@ class TaskStore:
             )
             await self._finish(conn, row, decision.status, decision.terminal_code)
             return decision.status
+
+    async def defer_claim(
+        self, task_id: uuid.UUID, epoch: int, *, delay_s: float, reason: str
+    ) -> None:
+        """Hand a claimed task back to the queue without consuming its attempt.
+
+        Used when a precondition for safe admission (such as settling a lost
+        attempt's holds) cannot be established yet: no provider call has been
+        made, so the attempt does not count against ``max_attempts``.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await self._locked_for_epoch(conn, task_id, epoch)
+            if row is None:
+                raise LeaseLost("lease lost")
+            await self._end_attempt(
+                conn, task_id, epoch, "deferred", reason, row["result_message_id"]
+            )
+            await conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                    attempt_count = attempt_count - 1,
+                    next_wakeup_at = now() + make_interval(secs => $2), updated_at = now()
+                WHERE id = $1
+                """,
+                task_id,
+                delay_s,
+            )
+            await self._append_event(conn, task_id, "attempt_deferred", {"epoch": epoch})
+
+    async def operations(self, user_id: uuid.UUID, task_id: uuid.UUID) -> list[dict[str, Any]]:
+        """Owner-scoped evidence of material operations, for deciding on a retry.
+
+        Returns the tool, outcome, timing and the non-content target summary
+        recorded before the call (never bodies or credentials).
+        """
+        rows = await self._pool.fetch(
+            """
+            SELECT o.tool_name, o.outcome, o.started_at, o.completed_at, o.target_ciphertext
+            FROM task_operations o JOIN tasks t ON t.id = o.task_id
+            WHERE o.task_id = $1 AND t.user_id = $2
+            ORDER BY o.started_at
+            LIMIT 50
+            """,
+            task_id,
+            user_id,
+        )
+        return [
+            {
+                "tool": row["tool_name"],
+                "outcome": row["outcome"],
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "target": self._open(row["target_ciphertext"]),
+            }
+            for row in rows
+        ]
 
     async def acknowledge_cancel(self, task_id: uuid.UUID, epoch: int) -> None:
         """The running attempt observed a cancel request and stopped."""

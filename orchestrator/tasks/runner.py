@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 #: Lease length and heartbeat cadence (database clock; §5).
 LEASE_S = 45.0
 HEARTBEAT_S = 10.0
+#: Margin kept between the local lease estimate and the database's lease.
+LEASE_SAFETY_S = 5.0
+#: Delay before retrying a claim whose admission precondition failed.
+DEFER_S = 15.0
 #: Upper bound for one whole attempt (all tool rounds), enforced by arq.
 ATTEMPT_TIMEOUT_S = 600
 #: Budget-period refusals: terminal in slice 1 (DEC09 pause arrives in slice 4).
@@ -126,28 +130,49 @@ class AttemptSink:
             return None
 
 
+def _stop_fenced(state: AttemptState, execution: asyncio.Task[Any]) -> None:
+    # Another attempt may own the task: abort the provider stream now rather
+    # than at the next event, to bound duplicate spend.
+    state.fenced = True
+    execution.cancel()
+
+
 async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.Task[Any]) -> None:
     claim = state.claim
+    loop = asyncio.get_running_loop()
+    # Local, conservative view of the lease: it was granted at most LEASE_S
+    # from the last confirmed renewal (or the claim). If renewal cannot be
+    # confirmed before then, another worker may already own the task, so
+    # execution stops (§5: no writes or provider work past the lease).
+    lease_deadline = loop.time() + LEASE_S - LEASE_SAFETY_S
     while not state.fenced:
         await asyncio.sleep(HEARTBEAT_S)
         if state.result is not None:
             # This attempt committed its outcome; the lease ended with it and
             # post-completion work must not be cancelled as if fenced.
             return
+        attempted_at = loop.time()
         try:
-            beat = await store.heartbeat(claim.task_id, claim.epoch, lease_s=LEASE_S)
+            beat = await asyncio.wait_for(
+                store.heartbeat(claim.task_id, claim.epoch, lease_s=LEASE_S),
+                timeout=HEARTBEAT_S,
+            )
         except LeaseLost:
             if state.result is not None:
                 return
-            # Another attempt owns the task: abort the provider stream now
-            # rather than at the next event, to bound duplicate spend.
-            state.fenced = True
-            execution.cancel()
+            _stop_fenced(state, execution)
             return
         except Exception:
-            # A missed beat is tolerable; the lease outlives several intervals.
+            # A missed beat is tolerable while the lease is still ours.
             logger.warning("Task heartbeat failed (task_id=%s)", claim.task_id, exc_info=True)
+            if loop.time() >= lease_deadline and state.result is None:
+                logger.warning(
+                    "Task lease could not be renewed in time (task_id=%s)", claim.task_id
+                )
+                _stop_fenced(state, execution)
+                return
             continue
+        lease_deadline = attempted_at + LEASE_S - LEASE_SAFETY_S
         if beat.cancel_requested:
             state.cancel_requested = True
         if beat.account_suspended:
@@ -182,16 +207,29 @@ async def _publish(redis: Any, state: AttemptState, message: dict[str, Any]) -> 
 
 
 async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[dict[str, Any]]:
-    # One active task per conversation means no later turn can exist yet; the
-    # task's own placeholder is a streaming row and is excluded.
+    """History as of acceptance: up to and including the accepted user turn.
+
+    Request-bound paths (such as council) may still write to the same
+    conversation after acceptance, so later rows are cut off rather than
+    assumed absent. The task's own placeholder is a streaming row and is
+    excluded.
+    """
     rows = await store.get_recent_messages(
         claim.conversation_id, limit=limit, exclude_status=_HISTORY_EXCLUDED
     )
+    accepted_ids = [
+        index for index, row in enumerate(rows) if row.get("id") == claim.user_message_id
+    ]
+    if not accepted_ids:
+        raise RuntimeError("accepted user turn is not in the recent history window")
+    rows = rows[: accepted_ids[-1] + 1]
     history: list[dict[str, Any]] = []
     for row in rows:
         if row.get("role") in (None, "system") or row.get("content") is None:
             continue
         mapped: dict[str, Any] = {"role": row["role"], "content": row["content"]}
+        if row.get("id") == claim.user_message_id and prepared is not None:
+            mapped["content"] = prepared
         if row.get("reasoning_text"):
             mapped["reasoning"] = row["reasoning_text"]
         if row.get("reasoning_duration_secs") is not None:
@@ -199,11 +237,6 @@ async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[
         if row.get("reasoning_model"):
             mapped["reasoning_model"] = row["reasoning_model"]
         history.append(mapped)
-    if prepared is not None:
-        for message in reversed(history):
-            if message["role"] == "user":
-                message["content"] = prepared
-                break
     return history
 
 
@@ -406,8 +439,15 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     try:
         await settle_lost_attempt_holds(store, ctx["db_pool"], claim.task_id)
     except Exception:
-        # The generic expired-reservation recovery still settles them later.
-        logger.warning("Could not settle a lost attempt's holds", exc_info=True)
+        # Admission must not race a lost attempt's still-open hold (a one-slot
+        # account would refuse this attempt and burn it). Hand the task back
+        # without consuming the attempt; the sweep retries later.
+        logger.warning("Could not settle a lost attempt's holds; deferring", exc_info=True)
+        with contextlib.suppress(LeaseLost):
+            await store.defer_claim(
+                claim.task_id, claim.epoch, delay_s=DEFER_S, reason="recovery_pending"
+            )
+        return "deferred"
     state = AttemptState(claim=claim)
     execution = asyncio.create_task(_execute(ctx, store, state))
     heartbeat = asyncio.create_task(_heartbeat(store, state, execution))

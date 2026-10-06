@@ -370,3 +370,98 @@ async def test_lost_attempts_hold_is_settled_before_a_one_slot_account_recovers(
     assert settled["actual_microusd"] == settled["reserved_microusd"]
     # The slot is free again for the account's next operation.
     assert await service.reserve(env.alice, 1000, operation="chat", scope_id=uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_failed_hold_settlement_defers_without_consuming_an_attempt(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: recovery must not be admitted, or burn the attempt, unsettled."""
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.record_compute_scope(accepted.task_id, first.epoch, uuid.uuid4())
+    await expire_lease(env, accepted.task_id)
+
+    real_settle = runner.settle_lost_attempt_holds
+    failures = iter([True])
+
+    async def settle_fails_once(*args: Any, **kwargs: Any) -> int:
+        if next(failures, False):
+            raise ConnectionError("database briefly unavailable")
+        return await real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "settle_lost_attempt_holds", settle_fails_once)
+    ctx = _ctx(env, FakeRedis())
+    assert await runner.run_chat_task(ctx, str(accepted.task_id)) == "deferred"
+    row = await env.pool.fetchrow("SELECT * FROM tasks WHERE id = $1", accepted.task_id)
+    assert row["status"] == "queued" and row["attempt_count"] == 1
+    await env.pool.execute(
+        "UPDATE tasks SET next_wakeup_at = now() - interval '1 second' WHERE id = $1",
+        accepted.task_id,
+    )
+    assert await runner.run_chat_task(ctx, str(accepted.task_id)) == "completed"
+    outcomes = await env.pool.fetch(
+        "SELECT outcome FROM task_attempts WHERE task_id = $1 ORDER BY epoch", accepted.task_id
+    )
+    assert [r["outcome"] for r in outcomes] == ["lost", "deferred", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_unrenewable_lease_stops_execution(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: a database outage must not let work run past the lease."""
+    monkeypatch.setattr(runner, "LEASE_S", 0.5)
+    monkeypatch.setattr(runner, "LEASE_SAFETY_S", 0.1)
+    monkeypatch.setattr(runner, "HEARTBEAT_S", 0.05)
+
+    async def long_completion(**_kwargs: Any):
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            yield {"type": "content_delta", "content": "x"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", long_completion)
+
+    async def heartbeat_unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise ConnectionError("database unavailable")
+
+    monkeypatch.setattr(env.tasks, "heartbeat", heartbeat_unavailable)
+    accepted = await accept_task(env)
+    redis = FakeRedis()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    assert await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)) == "fenced"
+    assert loop.time() - started < 1.5  # stopped near the lease, not after 3s of output
+    assert len(_deltas(redis, accepted.task_id)) < 30
+
+
+@pytest.mark.asyncio
+async def test_history_is_cut_at_the_accepted_turn(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: a request-bound turn written after acceptance is not this task's context."""
+    seen: list[list[dict[str, Any]]] = []
+
+    async def capturing_completion(**kwargs: Any):
+        seen.append(kwargs["messages"])
+        yield {"type": "content_delta", "content": "ok"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", capturing_completion)
+    accepted = await accept_task(env, message="the accepted question")
+    for role, content in (("user", "/council a later turn"), ("assistant", "council reply")):
+        await env.memory.insert_message(
+            conversation_id=accepted.conversation_id,
+            user_id=env.alice,
+            role=role,
+            content=content,
+            status="complete",
+        )
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    contents = [m.get("content") for m in seen[0] if m.get("role") != "system"]
+    assert contents[-1] == "the accepted question"
+    assert "/council a later turn" not in contents

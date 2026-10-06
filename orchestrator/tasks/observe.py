@@ -73,22 +73,36 @@ class _Observation:
         return self.frame("task", data)
 
     def catch_up(self, snapshot: TaskSnapshot) -> list[str]:
-        """Frames that bring the client from what it shows to ``snapshot``."""
+        """Frames that bring the client from what it shows to ``snapshot``.
+
+        Text and sequence always come from the same snapshot, so after a
+        generation change the next applied delta is the new generation's
+        ``snapshot.content_delta_seq + 1``.
+        """
         frames: list[str] = []
-        replaced = (
-            snapshot.content_generation != self.generation
-            or not snapshot.content.startswith(self.displayed)
-        )
-        if replaced and self.displayed:
+        content = snapshot.content
+        if snapshot.content_generation != self.generation:
+            if self.displayed:
+                frames.append(self.task_frame(snapshot, reset=True))
+            elif content:
+                frames.append(self.frame("token", {"text": content}))
+            self.displayed = content
+            self.generation = snapshot.content_generation
+            self.delta_seq = snapshot.content_delta_seq
+            return frames
+        if content.startswith(self.displayed):
+            if len(content) > len(self.displayed):
+                frames.append(self.frame("token", {"text": content[len(self.displayed) :]}))
+                self.displayed = content
+                self.delta_seq = snapshot.content_delta_seq
+        elif self.displayed.startswith(content):
+            # The snapshot lags what live deltas already showed (content is
+            # persisted about once a second): keep the newer view.
+            pass
+        else:
             frames.append(self.task_frame(snapshot, reset=True))
-            self.displayed = snapshot.content
-        elif snapshot.content.startswith(self.displayed) and len(snapshot.content) > len(
-            self.displayed
-        ):
-            frames.append(self.frame("token", {"text": snapshot.content[len(self.displayed) :]}))
-            self.displayed = snapshot.content
-        self.generation = snapshot.content_generation
-        self.delta_seq = max(self.delta_seq, snapshot.content_delta_seq)
+            self.displayed = content
+            self.delta_seq = snapshot.content_delta_seq
         return frames
 
     def terminal(self, snapshot: TaskSnapshot) -> list[str]:
@@ -192,6 +206,18 @@ async def observe_task(
                 snapshot = refreshed
                 for frame in view.catch_up(snapshot):
                     yield frame
+                # The delta that revealed the gap or new generation may now be
+                # exactly the next one; apply it rather than lose it.
+                if (
+                    message is not None
+                    and message.get("t") == "delta"
+                    and int(message.get("gen") or 0) == view.generation
+                    and int(message.get("seq") or 0) == view.delta_seq + 1
+                    and isinstance(message.get("text"), str)
+                ):
+                    view.delta_seq += 1
+                    view.displayed += message["text"]
+                    yield view.frame("token", {"text": message["text"]})
         for frame in view.terminal(snapshot):
             yield frame
     finally:

@@ -7,6 +7,8 @@ another account is reported exactly like a missing one (404).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -22,6 +24,20 @@ from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+class OperationOut(BaseModel):
+    """A material action the task started, for deciding whether to retry.
+
+    ``target`` holds only the non-content summary recorded before the call
+    (tool, destination fields); never bodies or credentials.
+    """
+
+    tool: str
+    outcome: str
+    started_at: datetime
+    completed_at: datetime | None
+    target: dict[str, Any]
+
+
 class TaskOut(BaseModel):
     id: uuid.UUID
     conversation_id: uuid.UUID
@@ -34,6 +50,8 @@ class TaskOut(BaseModel):
     content: str
     event_seq: int
     cancel_requested: bool
+    # Filled on GET /tasks/{id}; empty where tasks are embedded elsewhere.
+    operations: list[OperationOut] = []
 
 
 class CancelOut(BaseModel):
@@ -71,10 +89,15 @@ async def get_task(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> TaskOut:
-    snapshot = await task_store(app_state).snapshot(auth.user_id, task_id)
+    store = task_store(app_state)
+    snapshot = await store.snapshot(auth.user_id, task_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task_out(snapshot)
+    out = task_out(snapshot)
+    out.operations = [
+        OperationOut(**operation) for operation in await store.operations(auth.user_id, task_id)
+    ]
+    return out
 
 
 @router.get("/{task_id}/events")

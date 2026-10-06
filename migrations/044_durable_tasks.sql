@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     worker_id TEXT NOT NULL CHECK (char_length(worker_id) BETWEEN 1 AND 200),
     outcome TEXT NOT NULL DEFAULT 'running'
         CHECK (outcome IN ('running', 'completed', 'lost', 'failed_retryable',
-                           'failed_terminal', 'cancelled', 'needs_attention')),
+                           'failed_terminal', 'cancelled', 'needs_attention', 'deferred')),
     terminal_code TEXT CHECK (terminal_code IS NULL OR terminal_code ~ '^[a-z][a-z0-9_]{0,63}$'),
     partial_ciphertext TEXT,
     compute_scope_id UUID,

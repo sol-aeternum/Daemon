@@ -2250,16 +2250,7 @@ async def _durable_chat(
         "trusted_spawn_context": _build_trusted_spawn_context(auth.user_id, payload.metadata),
         "request_id": request_id,
     }
-    request_hash = chat_request_hash(
-        key=validate_and_get_pepper(settings),
-        conversation_id=conversation_uuid,
-        message=user_message,
-        attachments=payload.attachments,
-        model=payload.model,
-        provider=payload.provider,
-        metadata=payload.metadata,
-        disable_memory_write=bool(payload.disable_memory_write),
-    )
+    request_hash = _durable_request_hash(payload, settings, conversation_uuid, user_message)
     try:
         accepted = await store.accept(
             user_id=auth.user_id,
@@ -2323,9 +2314,18 @@ async def _durable_chat(
             except Exception as enqueue_error:
                 logger.warning("Failed to enqueue title generation: %s", enqueue_error)
 
-    frames = observe_task(
-        store, app_state.redis, auth.user_id, accepted.task_id, request_id=request_id
-    )
+    return _observe_task_response(store, app_state, auth, accepted.task_id, request_id, settings)
+
+
+def _observe_task_response(
+    store: Any,
+    app_state: AppState,
+    auth: AuthenticatedDevice,
+    task_id: uuid.UUID,
+    request_id: str,
+    settings: Settings,
+) -> StreamingResponse:
+    frames = observe_task(store, app_state.redis, auth.user_id, task_id, request_id=request_id)
     return StreamingResponse(
         stream_with_keepalives(frames, settings.sse_keepalive_interval_s),
         media_type="text/event-stream",
@@ -2333,9 +2333,89 @@ async def _durable_chat(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "X-Daemon-Task-Id": str(accepted.task_id),
+            "X-Daemon-Task-Id": str(task_id),
         },
     )
+
+
+def _requested_user_message(payload: ChatRequest) -> str:
+    """The turn's text exactly as /chat derives it for a non-suggestion request."""
+    last_user_message = None
+    for msg in reversed(payload.messages or []):
+        if msg.get("role") == "user":
+            last_user_message = _extract_text_content(msg.get("content"))
+            break
+    user_message = (last_user_message or payload.message).strip()
+    if not user_message and payload.attachments:
+        user_message = "Please analyze the attached files."
+    return user_message
+
+
+def _durable_request_hash(
+    payload: ChatRequest,
+    settings: Settings,
+    conversation_uuid: uuid.UUID | None,
+    user_message: str,
+) -> str:
+    return chat_request_hash(
+        key=validate_and_get_pepper(settings),
+        conversation_id=conversation_uuid,
+        message=user_message,
+        attachments=payload.attachments,
+        model=payload.model,
+        provider=payload.provider,
+        metadata=payload.metadata,
+        disable_memory_write=bool(payload.disable_memory_write),
+    )
+
+
+async def _durable_replay(
+    payload: ChatRequest,
+    request: Request,
+    settings: Settings,
+    app_state: AppState,
+    auth: AuthenticatedDevice,
+) -> StreamingResponse | None:
+    """Resolve a same-key replay before any new-turn admission (§6).
+
+    A retry after a lost response must attach to the task the first request
+    created, not be charged as a new turn or refused as rate-limited or busy.
+    Per-IP transport throttling still applies. Returns ``None`` when there is
+    nothing to replay.
+    """
+    key = request.headers.get(IDEMPOTENCY_HEADER)
+    if (
+        key is None
+        or not _IDEMPOTENCY_KEY.fullmatch(key)
+        or payload.suggestion_id is not None
+        or app_state.db_pool is None
+        or app_state.memory_store is None
+    ):
+        return None
+    conversation_uuid: uuid.UUID | None = None
+    if payload.conversation_id:
+        try:
+            conversation_uuid = uuid.UUID(payload.conversation_id.replace("conv_", ""))
+        except ValueError:
+            return None
+    store = task_store(app_state)
+    request_hash = _durable_request_hash(
+        payload, settings, conversation_uuid, _requested_user_message(payload)
+    )
+    try:
+        existing = await store.find_by_key(auth.user_id, key, request_hash)
+    except IdempotencyConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "message": "This request key was already used for a different request",
+            },
+        ) from exc
+    if existing is None:
+        return None
+    request_id = get_request_id(request) or new_request_id()
+    return _observe_task_response(store, app_state, auth, existing.task_id, request_id, settings)
 
 
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)
@@ -2346,6 +2426,10 @@ async def chat(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
+    if settings.durable_chat_enabled:
+        replay = await _durable_replay(payload, request, settings, app_state, auth)
+        if replay is not None:
+            return replay
     # Per-issue-#38 rate limit runs after auth so user/session scope
     # values are populated, but before any LLM-backed work so the
     # operator's budget is bounded even when the request would have

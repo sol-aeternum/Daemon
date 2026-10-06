@@ -473,3 +473,94 @@ async def test_needs_attention_is_reported_honestly(env: Env, monkeypatch: pytes
     assert events["error"]["data"]["retryable"] is False
     assert "may already have happened" in events["error"]["data"]["message"]
     assert events["done"]["data"] == {"status": "error", "reason": "uncertain_effect"}
+
+
+@pytest.mark.asyncio
+async def test_replay_is_resolved_before_rate_limiting(api: Api, monkeypatch: pytest.MonkeyPatch):
+    """Review of #461: a lost response retried under exhausted limits still reattaches."""
+    from fastapi import HTTPException
+
+    first, _ = await _stream_with_worker(api, key="limit-key")
+
+    async def exhausted(**_kwargs: Any) -> None:
+        raise HTTPException(status_code=429, detail={"code": "rate_limited"})
+
+    monkeypatch.setattr("orchestrator.main._enforce_chat_rate_limit", exhausted)
+    replay = await _post(api, key="limit-key")
+    assert replay.status_code == 200
+    assert replay.headers["X-Daemon-Task-Id"] == first.headers["X-Daemon-Task-Id"]
+    conflict = await _post(api, message="different", key="limit-key")
+    assert conflict.status_code == 409
+    fresh = await _post(api, message="a new turn", key="new-key")
+    assert fresh.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_task_view_shows_uncertain_operation_evidence(api: Api):
+    """Review of #466: the owner can see what may have happened before retrying."""
+    task = await _submit(api, key="evidence")
+    task_id = uuid.UUID(task["id"])
+    claim = await api.env.tasks.claim(task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await api.env.tasks.begin_operation(
+        task_id,
+        claim.epoch,
+        tool_name="notification_send",
+        target={"tool": "notification_send", "topic": "alerts"},
+        min_lease_margin_s=1,
+    )
+    await expire_lease(api.env, task_id)
+    assert await api.env.tasks.claim(task_id, worker_id="w2", lease_s=LEASE_S) is None
+    view = (await api.client.get(f"/tasks/{task_id}")).json()
+    assert view["status"] == "needs_attention"
+    assert view["operations"] == [
+        {
+            "tool": "notification_send",
+            "outcome": "started",
+            "started_at": view["operations"][0]["started_at"],
+            "completed_at": None,
+            "target": {"tool": "notification_send", "topic": "alerts"},
+        }
+    ]
+    api.as_user(api.env.bob)
+    assert (await api.client.get(f"/tasks/{task_id}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_live_deltas_follow_a_new_generation_with_lower_sequence(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: attempt-2 deltas must not be discarded as already seen."""
+    monkeypatch.setattr(observe_module, "POLL_S", 0.05)
+    redis = FakeRedis()
+    accepted = await accept_task(env)
+    channel = runner.live_channel(accepted.task_id)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.write_partial(accepted.task_id, first.epoch, content="old" * 40, delta_seq=100)
+    frames: list[str] = []
+
+    async def consume() -> None:
+        async for frame in observe_task(
+            env.tasks, redis, env.alice, accepted.task_id, request_id="req_test"
+        ):
+            frames.append(frame)
+
+    observer = asyncio.create_task(consume())
+    while not redis.subscribers:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.1)
+    await expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert second is not None
+    for seq, text in enumerate(["a", "b", "c"], start=1):
+        await redis.publish(
+            channel, json.dumps({"t": "delta", "gen": second.epoch, "seq": seq, "text": text})
+        )
+        await asyncio.sleep(0.05)
+    # Still running: the live view already shows attempt 2's text.
+    assert _displayed(_events("".join(frames))) == "abc"
+    await env.tasks.write_partial(accepted.task_id, second.epoch, content="abc", delta_seq=3)
+    await env.tasks.complete(accepted.task_id, second.epoch, content="abc")
+    await asyncio.wait_for(observer, timeout=10)
+    assert _displayed(_events("".join(frames))) == "abc"
