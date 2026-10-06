@@ -26,6 +26,7 @@ const state = vi.hoisted(() => ({
   conversation: null as unknown,
   refresh: vi.fn(),
   cancelTask: vi.fn(),
+  taskIdForKey: vi.fn(),
 }));
 const candidate = {
   id: 'candidate',
@@ -63,6 +64,7 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
     getCurrentConversation: () => state.conversation,
     refreshCurrentConversation: state.refresh,
     cancelTask: state.cancelTask,
+    taskIdForKey: state.taskIdForKey,
     createConversation: vi.fn(),
     updateConversation: vi.fn(),
     setConversationModel: vi.fn(),
@@ -186,7 +188,8 @@ beforeEach(() => {
   auth.setAccessToken('fixture', Date.now() + 120_000);
   state.currentId = 'conv-1';
   state.conversation = runningConversation(true);
-  state.cancelTask.mockResolvedValue(true);
+  state.cancelTask.mockResolvedValue('cancelled');
+  state.taskIdForKey.mockResolvedValue(null);
   state.refresh.mockResolvedValue(runningConversation(true));
 });
 afterEach(() => {
@@ -220,7 +223,7 @@ describe('a durable task reopened on another device', () => {
   });
 
   it('withdraws Stop and reports it when cancellation is not confirmed', async () => {
-    state.cancelTask.mockResolvedValue(false);
+    state.cancelTask.mockResolvedValue('unconfirmed');
     render(<ChatPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
     await waitFor(() =>

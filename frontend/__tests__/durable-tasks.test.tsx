@@ -4,11 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST } from '../app/api/chat/route';
 import { useActiveTaskFollower } from '../hooks/useActiveTaskFollower';
 import type { Conversation } from '../hooks/useConversationHistory';
-import { useStopGeneration } from '../hooks/useStopGeneration';
+import {
+  useStopGeneration,
+  type StopOutcome,
+} from '../hooks/useStopGeneration';
 import {
   getDaemonMessageText,
   getDaemonTaskId,
   normalizeDaemonMessage,
+  serverHasLatestTurn,
   type DaemonMessage,
 } from '../lib/chatMessages';
 
@@ -118,6 +122,32 @@ describe('durable chat route bridge', () => {
 });
 
 describe('persisted task outcomes', () => {
+  it('keeps a stop visible on a partial answer from any device', () => {
+    const message = normalizeDaemonMessage({
+      id: 'a',
+      role: 'assistant',
+      content: 'Half an answer',
+      status: 'cancelled',
+      metadata: { terminal_reason: 'cancelled' },
+    })!;
+    expect(getDaemonMessageText(message)).toMatch(
+      /^Half an answer\n\nStopped before the answer was finished\.$/,
+    );
+  });
+
+  it('explains any task code, including ones without specific wording', () => {
+    for (const code of ['extended_agents_exceeded', 'some_future_code']) {
+      const message = normalizeDaemonMessage({
+        id: 'a',
+        role: 'assistant',
+        content: '',
+        status: 'error',
+        metadata: { terminal_reason: code },
+      })!;
+      expect(getDaemonMessageText(message).length).toBeGreaterThan(10);
+    }
+  });
+
   it('shows an honest notice instead of an empty failed answer', () => {
     const message = normalizeDaemonMessage({
       id: 'a',
@@ -183,55 +213,69 @@ function StopHarness({
 
 function ConfirmingStopHarness({
   confirm,
-  onStopUnconfirmed,
+  onStopResolved,
 }: {
-  confirm: Promise<boolean>;
-  onStopUnconfirmed: () => void;
+  confirm: Promise<StopOutcome>;
+  onStopResolved: (outcome: StopOutcome) => void;
 }) {
-  const { stopGeneration, stoppedMessageIds } = useStopGeneration({
-    messages: [{ id: 'a', role: 'assistant' }],
-    stop: () => {},
-    archiveEvents: () => {},
-    conversationId: 'conv-1',
-    beforeStop: () => confirm,
-    onStopUnconfirmed,
-  });
+  const { stopGeneration, stoppedMessageIds, stoppingMessageIds } =
+    useStopGeneration({
+      messages: [{ id: 'a', role: 'assistant' }],
+      stop: () => {},
+      archiveEvents: () => {},
+      conversationId: 'conv-1',
+      beforeStop: () => confirm,
+      onStopResolved,
+    });
   return (
     <>
       <button type="button" onClick={stopGeneration}>
         Stop
       </button>
       {stoppedMessageIds.has('a') && <span>(stopped)</span>}
+      {stoppingMessageIds.has('a') && <span>(stopping)</span>}
     </>
   );
 }
 
 describe('Stop confirmation', () => {
-  it('keeps the stopped marker only when the server confirms', async () => {
-    const onStopUnconfirmed = vi.fn();
+  it('shows stopping until the server answers, then stopped', async () => {
+    let answer!: (outcome: StopOutcome) => void;
+    const confirm = new Promise<StopOutcome>((resolve) => {
+      answer = resolve;
+    });
+    const onStopResolved = vi.fn();
     render(
       <ConfirmingStopHarness
-        confirm={Promise.resolve(true)}
-        onStopUnconfirmed={onStopUnconfirmed}
+        confirm={confirm}
+        onStopResolved={onStopResolved}
       />,
     );
-    await act(async () => fireEvent.click(screen.getByText('Stop')));
+    fireEvent.click(screen.getByText('Stop'));
+    expect(screen.getByText('(stopping)')).toBeTruthy();
+    expect(screen.queryByText('(stopped)')).toBeNull();
+    await act(async () => answer('cancelled'));
     expect(screen.getByText('(stopped)')).toBeTruthy();
-    expect(onStopUnconfirmed).not.toHaveBeenCalled();
+    expect(screen.queryByText('(stopping)')).toBeNull();
+    expect(onStopResolved).toHaveBeenCalledWith('cancelled');
   });
 
-  it('withdraws the marker and reports an unconfirmed stop', async () => {
-    const onStopUnconfirmed = vi.fn();
-    render(
-      <ConfirmingStopHarness
-        confirm={Promise.resolve(false)}
-        onStopUnconfirmed={onStopUnconfirmed}
-      />,
-    );
-    await act(async () => fireEvent.click(screen.getByText('Stop')));
-    expect(screen.queryByText('(stopped)')).toBeNull();
-    expect(onStopUnconfirmed).toHaveBeenCalledTimes(1);
-  });
+  it.each(['finished', 'unconfirmed'] as const)(
+    'never shows stopped when the outcome is %s',
+    async (outcome) => {
+      const onStopResolved = vi.fn();
+      render(
+        <ConfirmingStopHarness
+          confirm={Promise.resolve(outcome)}
+          onStopResolved={onStopResolved}
+        />,
+      );
+      await act(async () => fireEvent.click(screen.getByText('Stop')));
+      expect(screen.queryByText('(stopped)')).toBeNull();
+      expect(screen.queryByText('(stopping)')).toBeNull();
+      expect(onStopResolved).toHaveBeenCalledWith(outcome);
+    },
+  );
 });
 
 describe('Stop on a durable task', () => {
@@ -337,5 +381,31 @@ describe('following a task started on another device', () => {
       await vi.advanceTimersByTimeAsync(500);
     });
     expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe('applying server state after a dropped stream', () => {
+  const msg = (role: 'user' | 'assistant', text: string) =>
+    ({
+      id: `${role}-${text}`,
+      role,
+      parts: [{ type: 'text', text }],
+    }) as DaemonMessage;
+
+  it('applies the server copy only when it holds the latest local turn', () => {
+    const local = [
+      msg('user', 'first'),
+      msg('assistant', 'a'),
+      msg('user', 'second'),
+    ];
+    expect(
+      serverHasLatestTurn([msg('user', 'first'), msg('assistant', 'a')], local),
+    ).toBe(false);
+    expect(
+      serverHasLatestTurn(
+        [...local.slice(0, 2), msg('user', 'second'), msg('assistant', 'done')],
+        local,
+      ),
+    ).toBe(true);
   });
 });

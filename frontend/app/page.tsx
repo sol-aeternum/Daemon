@@ -3,7 +3,11 @@
 import { WelcomeScreen } from '../components/WelcomeScreen';
 import { SuggestionSourceContext } from '../components/SuggestionSourceContext';
 import { chatTransportFetch } from '../lib/chatTransportFetch';
-import { settlePendingSubmission } from '../lib/pendingSubmission';
+import {
+  clearPendingSubmissions,
+  promotePendingSubmission,
+  settlePendingSubmission,
+} from '../lib/pendingSubmission';
 import type { HomeSuggestion } from '../lib/homeSuggestions';
 import { ChatHeaderActions } from '../components/ChatHeaderActions';
 import { ChatActivityStatus } from '../components/ChatActivityStatus';
@@ -61,7 +65,9 @@ import { TtsPlaybackBar } from '../components/TtsPlaybackBar';
 import { useEventArchive } from '../hooks/useEventArchive';
 import { useStopGeneration } from '../hooks/useStopGeneration';
 import { useActiveTaskFollower } from '../hooks/useActiveTaskFollower';
+import { useDurableStop } from '../hooks/useDurableStop';
 import { useStopShortcut } from '../hooks/useStopShortcut';
+import type { StopOutcome } from '../hooks/useStopGeneration';
 import { formatMessageContent } from '../lib/format';
 import { useAgentStatus } from '../hooks/useAgentStatus';
 import { AgentStatusList } from '../components/AgentStatusList';
@@ -93,6 +99,7 @@ import {
   getDaemonDataEvents,
   getDaemonMessageText,
   getDaemonTaskId,
+  serverHasLatestTurn,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
 
@@ -372,6 +379,7 @@ function ChatContent() {
     getCurrentConversation,
     refreshCurrentConversation,
     cancelTask,
+    taskIdForKey,
     switchConversation,
     setConversationModel,
     searchQuery,
@@ -425,6 +433,10 @@ function ChatContent() {
     pending: boolean;
   } | null>(null);
   const chatRequestGenerationRef = useRef<number | null>(null);
+  // Idempotency key of the submission currently (or most recently) in flight.
+  const activeSubmissionKeyRef = useRef<string | null>(null);
+  // Latest rendered messages, for callbacks created before useChat returns.
+  const messagesRef = useRef<DaemonMessage[]>([]);
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -495,6 +507,9 @@ function ChatContent() {
             onGeneration: (generation) => {
               chatRequestGenerationRef.current = generation;
             },
+            onSubmissionKey: (key) => {
+              activeSubmissionKeyRef.current = key;
+            },
           }),
       }),
     [activeModel, currentId],
@@ -515,14 +530,24 @@ function ChatContent() {
     transport: chatTransport,
     messages:
       currentConversation?.id === currentId ? currentConversation.messages : [],
-    onFinish: ({ message }) => {
+    onFinish: ({ message, isAbort, isDisconnect, isError }) => {
       if (
         chatRequestGenerationRef.current !== null &&
         chatRequestGenerationRef.current !== getAuthGeneration()
       )
         return;
       setConnectionStatus('connected');
-      settlePendingSubmission();
+      // Only a clean finish settles the submission. After an abort,
+      // disconnect or error the server may still hold an accepted task, so
+      // the key is kept for a resend to reattach to it.
+      if (
+        !isAbort &&
+        !isDisconnect &&
+        !isError &&
+        activeSubmissionKeyRef.current
+      ) {
+        settlePendingSubmission(activeSubmissionKeyRef.current);
+      }
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
         setThoughtFallbackByMessageId((prev) => ({
@@ -544,14 +569,22 @@ function ChatContent() {
       showError(err.message || 'Chat error occurred');
       setConnectionStatus('disconnected');
       // The stream dropped, but server-owned work may still be running or
-      // already finished: show the server's state rather than a dead stream.
+      // already finished: show the server's version of this turn. A turn the
+      // server never accepted stays as typed, so it can be resent.
       void refreshCurrentConversation().then((fresh) => {
-        if (fresh?.activeTask) setMessages(fresh.messages);
+        if (fresh && serverHasLatestTurn(fresh.messages, messagesRef.current)) {
+          setMessages(fresh.messages);
+        }
       });
     },
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  // A different sign-in must never reuse another account's pending keys.
+  useEffect(() => subscribeAuthGeneration(clearPendingSubmissions), []);
   // Follow server-owned work this client is not streaming itself (for example
   // after reopening the conversation on another device, or after a dropped
   // stream). Only a persisted placeholder qualifies, so a live stream's
@@ -815,44 +848,37 @@ function ChatContent() {
 
   const inputIsBusy = (isLoading && messages.length > 0) || serverTaskBusy;
   // Durable tasks survive a disconnect, so Stop cancels the task explicitly;
-  // closing the app only detaches. The result is reported, never assumed:
-  // a Stop that cannot be confirmed is not shown as stopped.
-  const pendingStopRef = useRef<((confirmed: boolean) => void) | null>(null);
-  const cancelActiveTask = useCallback((): Promise<boolean> => {
-    const taskId =
-      getDaemonTaskId(messages[messages.length - 1]) ??
-      currentConversation?.activeTask?.id ??
-      null;
-    if (taskId) return cancelTask(taskId);
-    // Stop before the task id arrived: cancel as soon as it does.
-    return new Promise<boolean>((resolve) => {
-      pendingStopRef.current = resolve;
-    });
-  }, [cancelTask, currentConversation?.activeTask?.id, messages]);
-  useEffect(() => {
-    const resolve = pendingStopRef.current;
-    const taskId = getDaemonTaskId(messages[messages.length - 1]);
-    if (!resolve || !taskId) return;
-    pendingStopRef.current = null;
-    void cancelTask(taskId).then(resolve);
-  }, [cancelTask, messages]);
-  useEffect(() => {
-    // The stream ended without ever naming a task: nothing was accepted.
-    if (!isLoading && pendingStopRef.current) {
-      pendingStopRef.current(true);
-      pendingStopRef.current = null;
-    }
-  }, [isLoading]);
-  const handleStopUnconfirmed = useCallback(() => {
-    showError(
-      'Stop could not be confirmed. The request may still be running; its result will appear here.',
-    );
-    void refreshCurrentConversation().then((fresh) => {
-      if (fresh?.activeTask) setMessages(fresh.messages);
-    });
-  }, [refreshCurrentConversation, setMessages, showError]);
+  // closing the app only detaches. The outcome comes from the server and is
+  // never assumed: a missing task id is not proof that nothing was accepted.
+  const cancelActiveTask = useDurableStop({
+    messages,
+    activeTaskId: currentConversation?.activeTask?.id ?? null,
+    isLoading,
+    submissionKeyRef: activeSubmissionKeyRef,
+    cancelTask,
+    taskIdForKey,
+  });
+  const handleStopResolved = useCallback(
+    (outcome: StopOutcome) => {
+      if (outcome === 'cancelled') return;
+      if (outcome === 'unconfirmed') {
+        showError(
+          'Stop could not be confirmed. The request may still be running; its result will appear here.',
+        );
+      }
+      // Show the server's state: the finished answer, or the task still
+      // running (which the follower then tracks).
+      void refreshCurrentConversation().then((fresh) => {
+        if (fresh && serverHasLatestTurn(fresh.messages, messagesRef.current)) {
+          setMessages(fresh.messages);
+        }
+      });
+    },
+    [refreshCurrentConversation, setMessages, showError],
+  );
   const {
     stoppedMessageIds,
+    stoppingMessageIds,
     stopGeneration: handleStopGeneration,
     assignConversationId,
     clearAssignedConversationId,
@@ -864,7 +890,7 @@ function ChatContent() {
       ? latestConversationIdRef.current
       : (currentId ?? null),
     beforeStop: cancelActiveTask,
-    onStopUnconfirmed: handleStopUnconfirmed,
+    onStopResolved: handleStopResolved,
   });
 
   useStopShortcut({
@@ -1108,6 +1134,11 @@ function ChatContent() {
       // conversation ID. Promote those provisional markers immediately so
       // the router transition does not make the marker disappear.
       assignConversationId(conversationId);
+    }
+    if (activeSubmissionKeyRef.current) {
+      // A new chat's pending submission now belongs to this conversation, so
+      // a resend from here reuses its key.
+      promotePendingSubmission(activeSubmissionKeyRef.current, conversationId);
     }
     const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
@@ -1612,6 +1643,14 @@ function ChatContent() {
                                 (stopped)
                               </div>
                             )}
+                            {stoppingMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopping…)
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -1646,6 +1685,14 @@ function ChatContent() {
                                 className="text-xs text-[var(--color-text-muted)]"
                               >
                                 (stopped)
+                              </div>
+                            )}
+                            {stoppingMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopping…)
                               </div>
                             )}
                             {documentsForMessage.map(

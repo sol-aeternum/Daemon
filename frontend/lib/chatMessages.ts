@@ -94,8 +94,29 @@ const TASK_TERMINAL_NOTICES: Record<string, string> = {
     'This request stopped because the compute budget for this period is used up.',
   trial_exhausted:
     'This request stopped because the trial allowance is used up.',
+  extended_budget_exceeded:
+    'This request stopped because the extended agent budget for this period is used up.',
+  extended_agents_exceeded:
+    'This request stopped because the extended agent runs for this period are used up.',
+  trial_extended_agents_exhausted:
+    'This request stopped because the trial extended agent allowance is used up.',
+  rate_limited:
+    'This request was not run: too many requests. Try again shortly.',
+  concurrency_exceeded:
+    'This request was not run: another request was still running. Try again when it finishes.',
+  capacity_unavailable:
+    'This request was not run: capacity was unavailable. Try again shortly.',
+  account_unavailable:
+    'This request could not run: the account is unavailable.',
+  capability_unavailable:
+    'This request could not run: the capability is unavailable for this account.',
+  route_unavailable:
+    'This request could not run: no approved model route was available.',
   cancelled: 'Stopped.',
 };
+
+const TASK_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const CANCELLED_PARTIAL_NOTICE = 'Stopped before the answer was finished.';
 
 function withTaskNotice(
   role: string,
@@ -104,12 +125,18 @@ function withTaskNotice(
 ): string {
   if (role !== 'assistant') return content;
   const code = metadata.terminal_reason;
-  if (typeof code !== 'string') return content;
-  const notice = TASK_TERMINAL_NOTICES[code];
-  if (!notice) return content;
+  // Durable task codes are snake_case; older rows carry free-text reasons,
+  // which are left alone.
+  if (typeof code !== 'string' || !TASK_CODE.test(code)) return content;
+  const notice =
+    TASK_TERMINAL_NOTICES[code] ??
+    `This request could not be completed (${code.replace(/_/g, ' ')}).`;
   if (!content) return notice;
-  // An uncertain effect must stay visible even when partial text exists.
-  return code === 'uncertain_effect' ? `${content}\n\n${notice}` : content;
+  // Partial text stays, but an uncertain effect or a stop must remain
+  // visible on every device, not only where Stop was pressed.
+  if (code === 'uncertain_effect') return `${content}\n\n${notice}`;
+  if (code === 'cancelled') return `${content}\n\n${CANCELLED_PARTIAL_NOTICE}`;
+  return content;
 }
 
 export function getDaemonMessageText(message: DaemonMessage): string {
@@ -150,5 +177,26 @@ export function getDaemonDataEvents(messages: DaemonMessage[]): ChatEvent[] {
     message.parts.flatMap((part) =>
       part.type === 'data-event' ? [part.data] : [],
     ),
+  );
+}
+
+/**
+ * Whether the server's copy of a conversation already holds the latest turn
+ * this client sent, so replacing the local view with it loses nothing the
+ * user typed (a turn the server never accepted stays visible for resending).
+ */
+export function serverHasLatestTurn(
+  server: DaemonMessage[],
+  local: DaemonMessage[],
+): boolean {
+  const lastUser = (messages: DaemonMessage[]) =>
+    [...messages].reverse().find((message) => message.role === 'user');
+  const localUser = lastUser(local);
+  if (!localUser) return server.length > 0;
+  const serverUser = lastUser(server);
+  return (
+    serverUser !== undefined &&
+    getDaemonMessageText(serverUser).trim() ===
+      getDaemonMessageText(localUser).trim()
   );
 }

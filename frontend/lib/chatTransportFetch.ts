@@ -28,6 +28,8 @@ export async function chatTransportFetch(
     model: string;
     conversationId: string | null;
     onGeneration: (generation: number) => void;
+    /** Receives the idempotency key this request is sent with. */
+    onSubmissionKey?: (key: string) => void;
   },
 ): Promise<Response> {
   let body: Record<string, unknown> =
@@ -58,10 +60,16 @@ export async function chatTransportFetch(
   // creating a second one.
   if (typeof body.idempotency_key !== 'string') {
     body.idempotency_key = keyForSubmission(
-      lastUserText(body.messages),
+      {
+        text: lastUserText(body.messages),
+        model: body.model,
+        provider: body.provider,
+        attachments: body.attachments,
+      },
       typeof body.id === 'string' ? body.id : null,
     );
   }
+  scope.onSubmissionKey?.(body.idempotency_key as string);
   body = isolateSuggestionBody(body);
   const headers = new Headers(init?.headers);
   const authHeader = getAuthHeader();

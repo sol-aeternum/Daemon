@@ -25,6 +25,8 @@ export interface Conversation {
   activeTask?: ActiveTask | null;
 }
 
+export type TaskCancelOutcome = 'cancelled' | 'finished' | 'unconfirmed';
+
 /** Server-owned work still in progress for a conversation (durable tasks). */
 export interface ActiveTask {
   id: string;
@@ -487,32 +489,71 @@ export function useConversationHistory() {
     return currentConversation;
   }, [currentConversation]);
 
-  /** Re-read the open conversation, e.g. while a durable task is running. */
-  const refreshCurrentConversation = useCallback(async () => {
-    if (!currentId) return null;
-    const conversation = await fetchConversationById(currentId);
-    if (conversation) {
-      setCurrentConversation((previous) =>
-        previous === null || previous.id === conversation.id
-          ? conversation
-          : previous,
-      );
-    }
-    return conversation;
-  }, [currentId, fetchConversationById]);
+  // The open conversation id as of the latest render, for discarding refreshes
+  // that finish after the user has moved to another conversation.
+  const currentIdRef = useRef(currentId);
+  useEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
 
-  /** Ask the server to cancel a durable task (Stop, not a disconnect). */
+  /**
+   * Re-read the open conversation, e.g. while a durable task is running.
+   * Resolves to ``null`` when the user has switched conversations meanwhile,
+   * so callers never render one conversation's messages in another.
+   */
+  const refreshCurrentConversation = useCallback(async () => {
+    const requestedId = currentIdRef.current;
+    if (!requestedId) return null;
+    const conversation = await fetchConversationById(requestedId);
+    if (!conversation || currentIdRef.current !== requestedId) return null;
+    setCurrentConversation((previous) =>
+      previous === null || previous.id === conversation.id
+        ? conversation
+        : previous,
+    );
+    return conversation;
+  }, [fetchConversationById]);
+
+  /**
+   * The id of the caller's task created with ``key``: ``null`` when the
+   * server has none (it did not accept that submission), ``undefined`` when
+   * the answer is unknown (network error, older backend).
+   */
+  const taskIdForKey = useCallback(
+    async (key: string): Promise<string | null | undefined> => {
+      try {
+        const response = await apiFetch(
+          `/tasks/by-key/${encodeURIComponent(key)}`,
+          { headers: await getAuthHeaders() },
+        );
+        if (response.status === 404) return null;
+        if (!response.ok) return undefined;
+        const task = (await response.json()) as { id?: unknown };
+        return typeof task.id === 'string' ? task.id : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
+  /**
+   * Ask the server to cancel a durable task (Stop, not a disconnect).
+   * ``cancelled``: the server accepted the cancellation. ``finished``: the
+   * task had already ended on its own. ``unconfirmed``: no answer either way.
+   */
   const cancelTask = useCallback(
-    async (taskId: string): Promise<boolean> => {
+    async (taskId: string): Promise<TaskCancelOutcome> => {
       try {
         const response = await apiFetch(
           `/tasks/${encodeURIComponent(taskId)}/cancel`,
           { method: 'POST', headers: await getAuthHeaders() },
         );
-        // 409 means it already finished: nothing left to stop.
-        return response.ok || response.status === 409;
+        if (response.ok) return 'cancelled';
+        if (response.status === 409) return 'finished';
+        return 'unconfirmed';
       } catch {
-        return false;
+        return 'unconfirmed';
       }
     },
     [apiFetch, getAuthHeaders],
@@ -536,6 +577,7 @@ export function useConversationHistory() {
     getCurrentConversation,
     refreshCurrentConversation,
     cancelTask,
+    taskIdForKey,
     switchConversation,
     fetchConversationById,
     searchQuery,

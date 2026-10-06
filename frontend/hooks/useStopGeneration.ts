@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type StoppableMessage = {
   id?: string;
@@ -22,14 +22,20 @@ type UseStopGenerationOptions = {
    * Runs before the client stream is detached. Durable tasks keep running
    * when a client disconnects, so Stop must also cancel them explicitly.
    */
-  beforeStop?: () => void | Promise<boolean>;
+  beforeStop?: () => void | Promise<StopOutcome>;
   /**
-   * Called when ``beforeStop`` reports that the server did not confirm the
-   * stop. The stopped marker is withdrawn so the UI never claims a
-   * cancellation that did not happen.
+   * Called with the server's answer when ``beforeStop`` returns one. Only
+   * ``cancelled`` marks the message stopped; until then it shows as stopping,
+   * so the UI never claims a cancellation the server did not confirm.
    */
-  onStopUnconfirmed?: () => void;
+  onStopResolved?: (outcome: StopOutcome) => void;
 };
+
+/**
+ * ``cancelled``: the server confirmed it. ``finished``: the work had already
+ * ended on its own. ``unconfirmed``: no confirmation either way.
+ */
+export type StopOutcome = 'cancelled' | 'finished' | 'unconfirmed';
 
 export function useStopGeneration({
   messages,
@@ -37,7 +43,7 @@ export function useStopGeneration({
   archiveEvents,
   conversationId,
   beforeStop,
-  onStopUnconfirmed,
+  onStopResolved,
 }: UseStopGenerationOptions) {
   // Scoped by conversation ID so New Chat / conversation switches do not
   // wipe markers for the conversation the user navigates back to.
@@ -49,22 +55,35 @@ export function useStopGeneration({
   >(null);
   const activeKey = conversationId ?? assignedConversationId ?? NEW_CHAT_KEY;
   const stoppedMessageIds = stoppedByConversation[activeKey] ?? EMPTY_SET;
+  const [stoppingByConversation, setStoppingByConversation] = useState<
+    Record<string, Set<string>>
+  >(() => ({}));
+  const stoppingMessageIds = stoppingByConversation[activeKey] ?? EMPTY_SET;
+
+  // Latest key, so a Stop confirmed after the backend names a new chat lands
+  // on that chat rather than on the provisional key.
+  const activeKeyRef = useRef(activeKey);
+  useEffect(() => {
+    activeKeyRef.current = activeKey;
+  }, [activeKey]);
 
   const assignConversationId = useCallback((nextConversationId: string) => {
     setAssignedConversationId(nextConversationId);
-    setStoppedByConversation((current) => {
-      const pendingStoppedIds = current[NEW_CHAT_KEY];
-      if (!pendingStoppedIds || pendingStoppedIds.size === 0) return current;
+    const promote = (current: Record<string, Set<string>>) => {
+      const pendingIds = current[NEW_CHAT_KEY];
+      if (!pendingIds || pendingIds.size === 0) return current;
 
-      const nextStoppedIds = new Set(current[nextConversationId] ?? EMPTY_SET);
-      for (const messageId of pendingStoppedIds) {
-        nextStoppedIds.add(messageId);
+      const nextIds = new Set(current[nextConversationId] ?? EMPTY_SET);
+      for (const messageId of pendingIds) {
+        nextIds.add(messageId);
       }
 
-      const next = { ...current, [nextConversationId]: nextStoppedIds };
+      const next = { ...current, [nextConversationId]: nextIds };
       delete next[NEW_CHAT_KEY];
       return next;
-    });
+    };
+    setStoppedByConversation(promote);
+    setStoppingByConversation(promote);
   }, []);
 
   const clearAssignedConversationId = useCallback(() => {
@@ -73,38 +92,42 @@ export function useStopGeneration({
 
   const stopGeneration = useCallback(() => {
     const latestMessage = messages[messages.length - 1];
-    const latestMessageId = latestMessage?.id;
-    if (latestMessage?.role === 'assistant' && latestMessageId) {
-      setStoppedByConversation((current) => {
-        const previous = current[activeKey] ?? EMPTY_SET;
-        const next = new Set(previous);
-        next.add(latestMessageId);
-        return { ...current, [activeKey]: next };
+    const latestMessageId =
+      latestMessage?.role === 'assistant' ? latestMessage.id : undefined;
+    const stopKey = activeKey;
+    const mark = (
+      setter: typeof setStoppedByConversation,
+      present: boolean,
+    ) => {
+      if (!latestMessageId) return;
+      const key = stopKey === NEW_CHAT_KEY ? activeKeyRef.current : stopKey;
+      setter((current) => {
+        const next = new Set(current[key] ?? EMPTY_SET);
+        if (present) next.add(latestMessageId);
+        else next.delete(latestMessageId);
+        return { ...current, [key]: next };
       });
-      archiveEvents(latestMessageId);
-    }
+    };
+    if (latestMessageId) archiveEvents(latestMessageId);
 
     const confirmation = beforeStop?.();
     stop();
-    if (confirmation && typeof confirmation.then === 'function') {
-      void confirmation.then((confirmed) => {
-        if (confirmed) return;
-        if (latestMessage?.role === 'assistant' && latestMessageId) {
-          setStoppedByConversation((current) => {
-            const previous = current[activeKey];
-            if (!previous?.has(latestMessageId)) return current;
-            const next = new Set(previous);
-            next.delete(latestMessageId);
-            return { ...current, [activeKey]: next };
-          });
-        }
-        onStopUnconfirmed?.();
-      });
+    if (!confirmation || typeof confirmation.then !== 'function') {
+      // Request-bound streams: aborting the request is the cancellation.
+      mark(setStoppedByConversation, true);
+      return;
     }
-  }, [activeKey, archiveEvents, beforeStop, messages, onStopUnconfirmed, stop]);
+    mark(setStoppingByConversation, true);
+    void confirmation.then((outcome) => {
+      mark(setStoppingByConversation, false);
+      if (outcome === 'cancelled') mark(setStoppedByConversation, true);
+      onStopResolved?.(outcome);
+    });
+  }, [activeKey, archiveEvents, beforeStop, messages, onStopResolved, stop]);
 
   return {
     stoppedMessageIds,
+    stoppingMessageIds,
     stopGeneration,
     assignConversationId,
     clearAssignedConversationId,
