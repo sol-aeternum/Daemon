@@ -59,6 +59,9 @@ jobs:
         # The runner's 20-minute suite deadline leaves room for artifact upload;
         # this step and the job retain separate fallback cancellation bounds.
         timeout-minutes: 25
+        env:
+          # Dump pending asyncio tasks before the 120s faulthandler watchdog (#454).
+          DAEMON_PYTEST_ASYNCIO_DUMP_S: "90"
         run: bash scripts/run_backend_pytest.sh
 
       - name: Upload backend pytest diagnostics
