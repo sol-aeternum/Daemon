@@ -22,7 +22,13 @@ type UseStopGenerationOptions = {
    * Runs before the client stream is detached. Durable tasks keep running
    * when a client disconnects, so Stop must also cancel them explicitly.
    */
-  beforeStop?: () => void;
+  beforeStop?: () => void | Promise<boolean>;
+  /**
+   * Called when ``beforeStop`` reports that the server did not confirm the
+   * stop. The stopped marker is withdrawn so the UI never claims a
+   * cancellation that did not happen.
+   */
+  onStopUnconfirmed?: () => void;
 };
 
 export function useStopGeneration({
@@ -31,6 +37,7 @@ export function useStopGeneration({
   archiveEvents,
   conversationId,
   beforeStop,
+  onStopUnconfirmed,
 }: UseStopGenerationOptions) {
   // Scoped by conversation ID so New Chat / conversation switches do not
   // wipe markers for the conversation the user navigates back to.
@@ -77,9 +84,24 @@ export function useStopGeneration({
       archiveEvents(latestMessageId);
     }
 
-    beforeStop?.();
+    const confirmation = beforeStop?.();
     stop();
-  }, [activeKey, archiveEvents, beforeStop, messages, stop]);
+    if (confirmation && typeof confirmation.then === 'function') {
+      void confirmation.then((confirmed) => {
+        if (confirmed) return;
+        if (latestMessage?.role === 'assistant' && latestMessageId) {
+          setStoppedByConversation((current) => {
+            const previous = current[activeKey];
+            if (!previous?.has(latestMessageId)) return current;
+            const next = new Set(previous);
+            next.delete(latestMessageId);
+            return { ...current, [activeKey]: next };
+          });
+        }
+        onStopUnconfirmed?.();
+      });
+    }
+  }, [activeKey, archiveEvents, beforeStop, messages, onStopUnconfirmed, stop]);
 
   return {
     stoppedMessageIds,

@@ -181,6 +181,59 @@ function StopHarness({
   );
 }
 
+function ConfirmingStopHarness({
+  confirm,
+  onStopUnconfirmed,
+}: {
+  confirm: Promise<boolean>;
+  onStopUnconfirmed: () => void;
+}) {
+  const { stopGeneration, stoppedMessageIds } = useStopGeneration({
+    messages: [{ id: 'a', role: 'assistant' }],
+    stop: () => {},
+    archiveEvents: () => {},
+    conversationId: 'conv-1',
+    beforeStop: () => confirm,
+    onStopUnconfirmed,
+  });
+  return (
+    <>
+      <button type="button" onClick={stopGeneration}>
+        Stop
+      </button>
+      {stoppedMessageIds.has('a') && <span>(stopped)</span>}
+    </>
+  );
+}
+
+describe('Stop confirmation', () => {
+  it('keeps the stopped marker only when the server confirms', async () => {
+    const onStopUnconfirmed = vi.fn();
+    render(
+      <ConfirmingStopHarness
+        confirm={Promise.resolve(true)}
+        onStopUnconfirmed={onStopUnconfirmed}
+      />,
+    );
+    await act(async () => fireEvent.click(screen.getByText('Stop')));
+    expect(screen.getByText('(stopped)')).toBeTruthy();
+    expect(onStopUnconfirmed).not.toHaveBeenCalled();
+  });
+
+  it('withdraws the marker and reports an unconfirmed stop', async () => {
+    const onStopUnconfirmed = vi.fn();
+    render(
+      <ConfirmingStopHarness
+        confirm={Promise.resolve(false)}
+        onStopUnconfirmed={onStopUnconfirmed}
+      />,
+    );
+    await act(async () => fireEvent.click(screen.getByText('Stop')));
+    expect(screen.queryByText('(stopped)')).toBeNull();
+    expect(onStopUnconfirmed).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Stop on a durable task', () => {
   it('cancels the task before detaching the stream', () => {
     const calls: string[] = [];

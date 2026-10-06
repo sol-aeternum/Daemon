@@ -3,6 +3,7 @@
 import { WelcomeScreen } from '../components/WelcomeScreen';
 import { SuggestionSourceContext } from '../components/SuggestionSourceContext';
 import { chatTransportFetch } from '../lib/chatTransportFetch';
+import { settlePendingSubmission } from '../lib/pendingSubmission';
 import type { HomeSuggestion } from '../lib/homeSuggestions';
 import { ChatHeaderActions } from '../components/ChatHeaderActions';
 import { ChatActivityStatus } from '../components/ChatActivityStatus';
@@ -521,6 +522,7 @@ function ChatContent() {
       )
         return;
       setConnectionStatus('connected');
+      settlePendingSubmission();
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
         setThoughtFallbackByMessageId((prev) => ({
@@ -541,10 +543,35 @@ function ChatContent() {
         return;
       showError(err.message || 'Chat error occurred');
       setConnectionStatus('disconnected');
+      // The stream dropped, but server-owned work may still be running or
+      // already finished: show the server's state rather than a dead stream.
+      void refreshCurrentConversation().then((fresh) => {
+        if (fresh?.activeTask) setMessages(fresh.messages);
+      });
     },
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  // Follow server-owned work this client is not streaming itself (for example
+  // after reopening the conversation on another device, or after a dropped
+  // stream). Only a persisted placeholder qualifies, so a live stream's
+  // messages are never replaced. While it runs, the input is busy: Stop is
+  // offered and a conflicting submission is blocked.
+  const lastMessage = messages[messages.length - 1];
+  const followsPersistedTask =
+    lastMessage?.role === 'assistant' && lastMessage.status === 'streaming';
+  const followedConversation =
+    followsPersistedTask && currentConversation?.id === currentId
+      ? currentConversation
+      : null;
+  const serverTaskBusy =
+    !isLoading && Boolean(followedConversation?.activeTask);
+  useActiveTaskFollower({
+    conversation: followedConversation,
+    isStreaming: isLoading,
+    refresh: refreshCurrentConversation,
+    onUpdate: (conversation) => setMessages(conversation.messages),
+  });
 
   useEffect(() => {
     return subscribeAuthGeneration(() => {
@@ -720,7 +747,7 @@ function ChatContent() {
   const submitChat = async (command?: string) => {
     if (isSubmittingSuggestion || suggestionSubmissionRef.current?.pending)
       return;
-    if (isLoading && messages.length > 0) return;
+    if ((isLoading && messages.length > 0) || serverTaskBusy) return;
 
     const generation = getAuthGeneration();
     const binding = draft.setInput;
@@ -786,28 +813,44 @@ function ChatContent() {
     isLoading,
   });
 
-  const inputIsBusy = isLoading && messages.length > 0;
-  // Durable tasks survive a disconnect, so Stop cancels the task explicitly
-  // before detaching; closing the app only detaches.
-  const cancelActiveTask = useCallback(() => {
+  const inputIsBusy = (isLoading && messages.length > 0) || serverTaskBusy;
+  // Durable tasks survive a disconnect, so Stop cancels the task explicitly;
+  // closing the app only detaches. The result is reported, never assumed:
+  // a Stop that cannot be confirmed is not shown as stopped.
+  const pendingStopRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const cancelActiveTask = useCallback((): Promise<boolean> => {
+    const taskId =
+      getDaemonTaskId(messages[messages.length - 1]) ??
+      currentConversation?.activeTask?.id ??
+      null;
+    if (taskId) return cancelTask(taskId);
+    // Stop before the task id arrived: cancel as soon as it does.
+    return new Promise<boolean>((resolve) => {
+      pendingStopRef.current = resolve;
+    });
+  }, [cancelTask, currentConversation?.activeTask?.id, messages]);
+  useEffect(() => {
+    const resolve = pendingStopRef.current;
     const taskId = getDaemonTaskId(messages[messages.length - 1]);
-    if (taskId) void cancelTask(taskId);
+    if (!resolve || !taskId) return;
+    pendingStopRef.current = null;
+    void cancelTask(taskId).then(resolve);
   }, [cancelTask, messages]);
-  // Follow server-owned work this client is not streaming itself (for example
-  // after reopening the conversation on another device). Only a persisted
-  // placeholder qualifies, so a live stream's messages are never replaced.
-  const lastMessage = messages[messages.length - 1];
-  const followsPersistedTask =
-    lastMessage?.role === 'assistant' && lastMessage.status === 'streaming';
-  useActiveTaskFollower({
-    conversation:
-      followsPersistedTask && currentConversation?.id === currentId
-        ? currentConversation
-        : null,
-    isStreaming: isLoading,
-    refresh: refreshCurrentConversation,
-    onUpdate: (conversation) => setMessages(conversation.messages),
-  });
+  useEffect(() => {
+    // The stream ended without ever naming a task: nothing was accepted.
+    if (!isLoading && pendingStopRef.current) {
+      pendingStopRef.current(true);
+      pendingStopRef.current = null;
+    }
+  }, [isLoading]);
+  const handleStopUnconfirmed = useCallback(() => {
+    showError(
+      'Stop could not be confirmed. The request may still be running; its result will appear here.',
+    );
+    void refreshCurrentConversation().then((fresh) => {
+      if (fresh?.activeTask) setMessages(fresh.messages);
+    });
+  }, [refreshCurrentConversation, setMessages, showError]);
   const {
     stoppedMessageIds,
     stopGeneration: handleStopGeneration,
@@ -821,6 +864,7 @@ function ChatContent() {
       ? latestConversationIdRef.current
       : (currentId ?? null),
     beforeStop: cancelActiveTask,
+    onStopUnconfirmed: handleStopUnconfirmed,
   });
 
   useStopShortcut({
