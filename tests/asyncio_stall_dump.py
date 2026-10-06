@@ -66,6 +66,34 @@ class _Out(io.StringIO):
             os.write(_stderr_fd if _stderr_fd is not None else 2, text.encode("utf-8", "replace"))
 
 
+def await_chain(awaitable: Any, *, limit: int = 100) -> list[str]:
+    """Frames of a suspended coroutine and everything it awaits, outermost first.
+
+    Follows ``cr_await`` (coroutines), ``ag_await`` (async generators, such as
+    yield fixtures) and ``gi_yieldfrom`` (generator-based awaitables), which
+    works on every supported Python version.
+    """
+    lines: list[str] = []
+    current = awaitable
+    while current is not None and len(lines) < limit:
+        frame = (
+            getattr(current, "cr_frame", None)
+            or getattr(current, "ag_frame", None)
+            or getattr(current, "gi_frame", None)
+        )
+        if frame is not None:
+            code = frame.f_code
+            lines.append(f"{code.co_filename}:{frame.f_lineno} in {code.co_qualname}")
+        else:
+            lines.append(f"<awaiting {type(current).__name__}>")
+        current = (
+            getattr(current, "cr_await", None)
+            or getattr(current, "ag_await", None)
+            or getattr(current, "gi_yieldfrom", None)
+        )
+    return lines
+
+
 def _dump_tasks(label: str) -> None:
     out = _Out()
     tasks = asyncio.all_tasks()
@@ -77,7 +105,10 @@ def _dump_tasks(label: str) -> None:
             if formatter is not None:
                 print(formatter(task), file=out)
             else:
-                task.print_stack(file=out)
+                # Python < 3.14: Task.print_stack shows one frame for a
+                # suspended task, so walk the await chain explicitly.
+                for line in await_chain(task.get_coro()):
+                    print(f"  {line}", file=out)
         except Exception as exc:  # diagnostics must never raise into the loop
             print(f"[asyncio-stall-dump] could not format task: {exc!r}", file=out)
     # Task call graphs stop at async generators (such as yield fixtures), so

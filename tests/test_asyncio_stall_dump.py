@@ -91,3 +91,31 @@ def test_watchdog_is_inert_without_threshold(tmp_path: Path) -> None:
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
     assert "asyncio-stall-dump" not in output
+
+
+def test_await_chain_follows_nested_awaits_on_any_python() -> None:
+    """The pre-3.14 fallback names every coroutine in a suspended task's chain."""
+    import asyncio
+
+    from tests.asyncio_stall_dump import await_chain
+
+    async def innermost() -> None:
+        await asyncio.Event().wait()
+
+    async def middle() -> None:
+        await innermost()
+
+    async def outer() -> None:
+        await middle()
+
+    async def scenario() -> list[str]:
+        task = asyncio.create_task(outer())
+        await asyncio.sleep(0)
+        try:
+            return await_chain(task.get_coro())
+        finally:
+            task.cancel()
+
+    chain = asyncio.run(scenario())
+    names = [line.rsplit(" in ", 1)[-1] for line in chain]
+    assert [name.split(".")[-1] for name in names[:3]] == ["outer", "middle", "innermost"]
