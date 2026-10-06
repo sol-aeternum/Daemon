@@ -378,6 +378,19 @@ class TaskStore:
             created=True,
         )
 
+    async def task_for_key(self, user_id: uuid.UUID, idempotency_key: str) -> TaskSnapshot | None:
+        """The task this account's key created, if any (no payload comparison)."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT t.*, m.content AS result_content
+            FROM tasks t JOIN messages m ON m.id = t.result_message_id
+            WHERE t.user_id = $1 AND t.idempotency_key = $2
+            """,
+            user_id,
+            idempotency_key,
+        )
+        return self._snapshot_from(row) if row is not None else None
+
     async def find_by_key(
         self, user_id: uuid.UUID, idempotency_key: str, request_hash: str
     ) -> AcceptedTask | None:

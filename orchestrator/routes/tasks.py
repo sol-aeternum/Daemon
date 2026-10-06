@@ -6,6 +6,7 @@ another account is reported exactly like a missing one (404).
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -23,6 +24,9 @@ from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+#: Shape of an accepted Idempotency-Key (mirrors the /chat adapter).
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 class OperationOut(BaseModel):
@@ -82,6 +86,25 @@ def task_out(snapshot: TaskSnapshot) -> TaskOut:
         event_seq=snapshot.event_seq,
         cancel_requested=snapshot.cancel_requested,
     )
+
+
+@router.get("/by-key/{idempotency_key}", response_model=TaskOut)
+async def get_task_by_key(
+    idempotency_key: str,
+    app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> TaskOut:
+    """The caller's task created with this idempotency key.
+
+    Lets a client that stopped or lost a request before learning the task id
+    find out whether the server accepted it (404: it did not, or not yet).
+    """
+    if not IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+        raise HTTPException(status_code=404, detail="Task not found")
+    snapshot = await task_store(app_state).task_for_key(auth.user_id, idempotency_key)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task_out(snapshot)
 
 
 @router.get("/{task_id}", response_model=TaskOut)

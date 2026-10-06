@@ -635,3 +635,15 @@ async def test_only_transient_failures_are_advertised_as_retryable(
     ]
     error = dict(_events("".join(frames)))["error"]["data"]
     assert error["code"] == code and error["retryable"] is retryable
+
+
+@pytest.mark.asyncio
+async def test_task_lookup_by_key_is_owner_scoped(api: Api):
+    """A client that stopped before learning the task id can still find it."""
+    task = await _submit(api, key="early-stop-key")
+    found = await api.client.get("/tasks/by-key/early-stop-key")
+    assert found.status_code == 200 and found.json()["id"] == task["id"]
+    assert (await api.client.get("/tasks/by-key/never-used")).status_code == 404
+    assert (await api.client.get("/tasks/by-key/bad%20key")).status_code == 404
+    api.as_user(api.env.bob)
+    assert (await api.client.get("/tasks/by-key/early-stop-key")).status_code == 404
