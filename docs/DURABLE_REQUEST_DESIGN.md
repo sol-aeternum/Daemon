@@ -29,7 +29,7 @@ Inspected at `6178f282`: `orchestrator/main.py` (`/chat`, `_account_frames`), `o
 
 - **Atomic acceptance.** One transaction creates the conversation when new, inserts the user message and inserts the task with `status='queued'` and `next_wakeup_at=now()`. Acceptance is acknowledged (task id returned, observation stream started) only after commit.
 - **Recoverable dispatch.** A sweep selects `queued` tasks with `next_wakeup_at <= now()` and `running` tasks whose lease has expired, using `FOR UPDATE SKIP LOCKED`, and enqueues a wake-up for each. It runs as an arq cron every 15 seconds. The enqueue issued right after the acceptance commit is only a latency optimisation. A failed enqueue or a flushed queue therefore delays a task by about one sweep interval plus scheduling and backlog delay; it never loses it. The sweep itself runs on arq, so while Redis or every worker is unavailable no task is dispatched; the accepted row stays durable and recovery starts once Redis and a worker return.
-- **Wake-up jobs carry only the task id** (no owner, no content), use job id `task:{id}:{wake_seq}` with `keep_result=0` to avoid arq's result-key deduplication, and `max_tries=1`. Retries are owned by PostgreSQL, not arq. Task execution is its own arq function with a timeout matched to the attempt deadline, not the global 300-second default.
+- **Wake-up jobs carry only the task id** (no owner, no content), use job id `task:{id}:{wake_seq}` with `keep_result=0` to avoid arq's result-key deduplication, and `max_tries=1`. `wake_seq` is a durable column on the task. The post-acceptance enqueue and every sweep wake-up advance it atomically with recording the wake-up (`last_wake_at`), so a wake-up for an expired lease always gets a new job id. arq would otherwise reject the id while the stale attempt's job is still running. Retries are owned by PostgreSQL, not arq. Task execution is its own arq function with a timeout matched to the attempt deadline, not the global 300-second default.
 - Client stream attachment is observation, not ownership of execution lifetime.
 
 Rejected: **A2** (arq jobs as execution authority with a PostgreSQL projection) makes Redis result TTLs and persistence part of the user-facing guarantee. **A3** (a dedicated workflow engine) adds dependencies and operational surface without evidence that current infrastructure is insufficient.
@@ -42,11 +42,11 @@ Logical records. Names are the intended ones; exact columns and indexes are revi
 | --- | --- |
 | `tasks` | Owner (`user_id`, never client-supplied), conversation and message references (§10), encrypted accepted input, status, idempotency key and request hash, lease owner/epoch/expiry, attempt count and cap, cancel request, result message, terminal code/reason, timestamps. Partial unique index: at most one non-terminal task per conversation. |
 | `task_attempts` | One worker run: epoch, worker id, timing, outcome (`completed`, `lost`, `failed_retryable`, `failed_terminal`, `cancelled`), encrypted partial content kept for disclosure, reservation scope ids. A retry or model change does not create a new user task. |
-| `task_operations` | Stable identity for each material tool call: tool name, effect class, authorised target summary, attempt epoch, `started_at`, `completed_at`, outcome and reconciliation evidence. |
+| `task_operations` | Stable identity for each material tool call: tool name, effect class, authorised target summary, attempt epoch, `started_at`, `completed_at`, outcome and reconciliation evidence. The target summary and evidence are ciphertext; plaintext columns are limited to the tool name, effect class, epoch, outcome and timestamps. |
 | `task_events` | Append-only, sequence-numbered lifecycle events (status, routing, tool call/result summaries). Low volume; no token deltas and no hidden reasoning. |
 | Artifact/resource | Owner, opaque identity, storage reference, provenance and lifecycle. Governed by choice C (§13), not slice 1. |
 
-Task and attempt inputs, partial content and event payloads that may contain user content are encrypted with Fernet like messages.
+Task and attempt inputs, partial content, operation targets and evidence, and event payloads that may contain user content are encrypted with Fernet like messages. Plaintext columns hold identifiers, states, codes, counters and timestamps only (revised in review of #461).
 
 **Slice 1 states:** `queued → running → completed | failed | cancelled | needs_attention`. `needs_attention` means work was interrupted and an outcome is uncertain; it is never retried automatically. Later slices add `waiting_input`, `waiting_approval`, `paused_capacity` and `reconciling`.
 
@@ -78,22 +78,24 @@ The material-operation check guards **every** whole-attempt retry path, not only
 
 ## 5. Worker ownership, leases and fencing
 
-- **Claim.** A single conditional update claims the task:
+- **Claim.** One transaction locks the task row (`SELECT ... FOR UPDATE`) and decides everything before any new attempt starts:
+  1. Not due (queued with a future `next_wakeup_at`, or running with a live lease): no-op. Duplicate deliveries end here.
+  2. Running with an expired lease: mark the previous attempt ended. If cancel was requested, finish `cancelled`. Otherwise apply the §4 retry rules: if a material operation exists, finish `needs_attention`; if `attempt_count` has reached `max_attempts`, finish `failed`/`interrupted`. In those cases no attempt starts.
+  3. Only a retry-eligible task is then claimed, still in the same transaction:
 
   ```sql
   UPDATE tasks SET status = 'running', lease_epoch = lease_epoch + 1,
          lease_owner = $worker, lease_expires_at = now() + $lease,
-         attempt_count = attempt_count + 1
-  WHERE id = $1 AND cancel_requested_at IS NULL
-    AND ((status = 'queued' AND next_wakeup_at <= now())
-      OR (status = 'running' AND lease_expires_at < now()))
-  RETURNING lease_epoch, user_id, ...
+         attempt_count = attempt_count + 1,
+         content_generation = lease_epoch + 1, content_delta_seq = 0
+  WHERE id = $1
+  RETURNING lease_epoch, ...
   ```
 
-  Duplicate deliveries match zero rows and exit. Taking over an expired lease marks the previous attempt `lost` in the same transaction and applies the retry rules in §4. Lease arithmetic uses the database clock only, never worker clocks.
-- **Heartbeat.** Roughly every 10 seconds, the worker extends a 45-second lease with `... WHERE id = $1 AND lease_epoch = $e AND status = 'running' RETURNING cancel_requested_at`. Zero rows means the worker has been fenced out: it aborts the provider stream and writes nothing further. The returned cancel flag carries cancellation to the worker.
-- **Fenced writes.** Partial-content updates, operation records and the final publish each lock the task row (`FOR UPDATE`) and check `lease_epoch` in the same transaction.
-- **Attempt deadline.** At most `request_timeout_s`, so the existing 2 × timeout reservation recovery never settles a live attempt.
+  The retry rule is therefore enforced atomically with the claim, not by a later check (revised in review of #461). Lease arithmetic uses the database clock only, never worker clocks.
+- **Heartbeat.** Roughly every 10 seconds, the worker extends a 45-second lease with `... WHERE id = $1 AND lease_epoch = $e AND status = 'running' RETURNING cancel_requested_at, <account suspended>`. Zero rows means the worker has been fenced out: it cancels the provider stream immediately and writes nothing further. The returned flags carry cancellation and account suspension to the worker. Once the attempt has committed its own outcome the heartbeat stops, so post-completion work is never mistaken for fencing.
+- **Fenced writes.** Partial-content updates, operation records and the final publish each lock the task row (`FOR UPDATE`) and check `lease_epoch` and `status = 'running'` in the same transaction. Cancellation does not change the epoch, so the writes that matter also check it under the same lock (revised in review of #461): an operation record is refused once `cancel_requested_at` is set or the account is suspended, and the final publish ends the task `cancelled` (keeping the content) or `failed`/`account_suspended` instead of `completed`. Partial content may still be saved after a cancel request, so the cancelled task keeps what it produced.
+- **Deadlines.** Each provider call keeps the compute layer's whole-call deadline (`request_timeout_s`), so the existing 2 × timeout reservation recovery never settles a live call. A whole attempt, including every tool round, is bounded separately (10 minutes) by the task job's arq timeout.
 - **Graceful shutdown.** Stop claiming and let in-flight attempts finish within the shutdown grace period; abandoned attempts are recovered after lease expiry.
 - **Residual window.** A worker that pauses longer than its lease keeps consuming provider tokens until its next heartbeat or write fails. Duplicate spend is bounded by the lease and the attempt deadline, not eliminated.
 - **PostgreSQL unavailable mid-run.** The worker cannot heartbeat or publish; it stops after its lease. No result is published without the database.
@@ -161,7 +163,7 @@ A task references conversation and workspace context without a memory or filesys
 - The owner comes only from `auth.user_id`. Task queries filter on `id AND user_id` in SQL, and another account's task, control or observation returns **404**, never 403. Idempotency lookups are account-scoped.
 - Workers derive the tenant only from the claimed task row. Before each attempt they recheck that the account is active and its entitlement account is not suspended, that the conversation is still owned and not deleted, and that the route is still qualified. Every store call carries `user_id`.
 - Observers and snapshots require device authentication on every attach. Pub/sub channel names never leave the server.
-- Revoking the submitting device does not cancel the account's tasks; suspension or deletion of the account does.
+- Revoking the submitting device does not cancel the account's tasks; suspension or deletion of the account does. Deletion cascades to the tasks. Suspension is rechecked during an attempt, not only before it: the heartbeat reports it and the worker stops, an operation record is refused, and the final publish ends the task `failed` (`account_suspended`) instead of publishing. Every provider call also passes per-call admission, which already refuses a suspended account (revised in review of #461).
 - Budget: rate limiting and route qualification run in the API at acceptance; `account_compute(..., background=False)` runs in the worker, so durable work still counts against concurrency ceilings. An in-process context variable is not durable ownership; the task row is.
 
 ## 12. Owner decisions recorded on 6 October 2026
@@ -261,6 +263,9 @@ The slices are increments inside broad Stage 1 (DEC10), not a reduction of its s
 | Second submission while a task is active | 409 `conversation_busy` with the active task id. |
 | Account B reads, cancels or observes account A's task, or reuses A's key; forged `user_id` in the payload | 404, or an independent task for B; the forged owner is ignored. |
 | Account suspended while the task is queued | Worker recheck fails the task with no provider call. |
+| Cancel requested between heartbeats, then the attempt tries a material operation | The operation record is refused and the tool is never called. |
+| Account suspended mid-attempt | The heartbeat reports it and the attempt stops; operation records are refused; the final publish ends `failed`/`account_suspended`, not `completed`. |
+| Expired lease while the stale job is still inside arq | The sweep advances `wake_seq`, so the new wake-up has a fresh job id and the takeover is not blocked by arq job uniqueness. |
 
 Run the unchanged backend, frontend, documentation and security gates as well. Passing mocks alone does not demonstrate crash or deployment durability; a staging restart check precedes any release claim.
 
