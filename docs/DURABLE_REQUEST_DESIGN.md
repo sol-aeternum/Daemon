@@ -28,7 +28,7 @@ Inspected at `6178f282`: `orchestrator/main.py` (`/chat`, `_account_frames`), `o
 **Approved: A1 — PostgreSQL task state; existing arq as a wake-up mechanism. Dispatch intent is the task row itself, recovered by a scan; there is no separate outbox table.**
 
 - **Atomic acceptance.** One transaction creates the conversation when new, inserts the user message and inserts the task with `status='queued'` and `next_wakeup_at=now()`. Acceptance is acknowledged (task id returned, observation stream started) only after commit.
-- **Recoverable dispatch.** A sweep selects `queued` tasks with `next_wakeup_at <= now()` and `running` tasks whose lease has expired, using `FOR UPDATE SKIP LOCKED`, and enqueues a wake-up for each. It runs as an arq cron every 15 seconds. The enqueue issued right after the acceptance commit is only a latency optimisation. A failed enqueue, a flushed queue or an unavailable Redis therefore delays a task by at most one sweep interval plus wake-up time; it never loses it.
+- **Recoverable dispatch.** A sweep selects `queued` tasks with `next_wakeup_at <= now()` and `running` tasks whose lease has expired, using `FOR UPDATE SKIP LOCKED`, and enqueues a wake-up for each. It runs as an arq cron every 15 seconds. The enqueue issued right after the acceptance commit is only a latency optimisation. A failed enqueue or a flushed queue therefore delays a task by about one sweep interval plus scheduling and backlog delay; it never loses it. The sweep itself runs on arq, so while Redis or every worker is unavailable no task is dispatched; the accepted row stays durable and recovery starts once Redis and a worker return.
 - **Wake-up jobs carry only the task id** (no owner, no content), use job id `task:{id}:{wake_seq}` with `keep_result=0` to avoid arq's result-key deduplication, and `max_tries=1`. Retries are owned by PostgreSQL, not arq. Task execution is its own arq function with a timeout matched to the attempt deadline, not the global 300-second default.
 - Client stream attachment is observation, not ownership of execution lifetime.
 
@@ -54,12 +54,14 @@ Task and attempt inputs, partial content and event payloads that may contain use
 
 | Cause | Rule |
 | --- | --- |
-| Attempt lost (crash, expired lease) with no material operation started | Regenerate from committed inputs, up to `max_attempts = 2` in total. Keep the earlier partial content on the attempt record and disclose the interruption in message metadata. |
-| Retryable provider/compute error | Re-queue with backoff via `next_wakeup_at`, within the same attempt cap. |
+| Attempt lost (crash, expired lease) with no material operation started in any attempt | Regenerate from committed inputs, up to `max_attempts = 2` in total. Keep the earlier partial content on the attempt record and disclose the interruption in message metadata. |
+| Retryable provider/compute error with no material operation started in any attempt | Re-queue with backoff via `next_wakeup_at`, within the same attempt cap. |
 | Capacity or budget denied | Slice 1: terminal `failed` with the capacity code, an honest message and a manual retry. DEC09 pause, notification and auto-resume arrive in slice 4. |
 | Policy, route or validation failure | Terminal `failed`. |
-| Attempt lost after a material operation started | `needs_attention`; no automatic replay. |
+| Any whole-attempt retry (lost attempt, retryable error, or anything else) after a material operation started | `needs_attention` with the operation evidence preserved; no automatic regeneration from the original input. A later slice may resume from a proven checkpoint that cannot repeat the operation; slice 1 does not. |
 | Attempt cap exhausted | Terminal `failed` with code `interrupted`. |
+
+The material-operation check guards **every** whole-attempt retry path, not only crash recovery. The current tool loop makes further provider calls after a tool runs, so a notification can succeed and the next provider round can then fail retryably; regenerating from the original input would send it again even though no worker crashed.
 
 **Result publication.** The result is the existing encrypted assistant message; each task owns exactly one assistant row, which later attempts overwrite under the fence. `completed` is set only by one transaction that locks the task, checks the lease epoch, marks the message `complete`, marks the task `completed` and appends the lifecycle event. A final token or a successful queue return is not completion. Follow-up jobs (memory extraction, title, skill evaluation, contextual home refresh) remain best-effort after commit; the extraction watermark covers a missed run on the next turn.
 
@@ -119,9 +121,11 @@ Task and attempt inputs, partial content and event payloads that may contain use
 
 **Approved: snapshot + durable lifecycle events + live deltas that are not persisted.** A full persisted per-token event log was rejected: heavy encrypted write volume for no recovery benefit, since the snapshot already holds the content.
 
-- **Snapshot** (`GET /tasks/{id}`): task status, terminal code/reason, partial or final content with a `content_offset`, and the latest `task_events` sequence number.
-- **Durable events** (`task_events`): replayed from a given sequence on reattach; later the basis of the DEC12 activity record.
-- **Live deltas:** published over Redis pub/sub, tagged with character offsets. A client applies only deltas beyond its snapshot offset and re-fetches the snapshot when it detects a gap.
+- **Content generation.** Streamed content is scoped to a `content_generation`, equal to the lease epoch of the attempt that wrote it. A later attempt that overwrites the assistant row starts a new generation.
+- **Snapshot** (`GET /tasks/{id}`): task status, terminal code/reason, `content_generation`, the partial or final content of that generation, the `delta_seq` of the last delta the content includes, and the latest `task_events` sequence number.
+- **Durable events** (`task_events`): replayed from a given sequence on reattach; later the basis of the DEC12 activity record. A generation change is a durable event.
+- **Live deltas:** published over Redis pub/sub, each tagged with `(content_generation, delta_seq)`, where `delta_seq` increases by one per delta within a generation. Sequence numbers rather than character offsets avoid the Python code-point versus JavaScript UTF-16 indexing mismatch. A client applies a delta only when its generation equals the client's and its `delta_seq` is exactly the next one. It drops frames from an older generation, and re-fetches the snapshot on a gap or on any newer generation, replacing (never appending to) the displayed text.
+- **Terminal refresh.** On a terminal event the client re-fetches the snapshot and displays the committed content, so the final display always equals the committed result.
 - **Redis unavailable:** observers fall back to polling the snapshot. Slower, still correct.
 
 ## 9. Failure windows and uncertain effects
@@ -130,13 +134,14 @@ Task and attempt inputs, partial content and event payloads that may contain use
 | --- | --- |
 | Crash before the acceptance commit | Nothing durable. A client retry with the same key creates exactly one task. |
 | Commit succeeds, response lost | Retry with the same key returns the same task. Without a key, a duplicate task is possible (documented). |
-| Commit succeeds, enqueue fails / queue flushed / Redis down | The sweep enqueues the task within one interval. |
+| Commit succeeds, enqueue fails or queue flushed | The sweep enqueues the task after about one interval plus scheduling delay. |
+| Redis or all workers unavailable | Accepted rows stay `queued`; dispatch and expired-lease recovery resume once Redis and a worker return. |
 | Duplicate wake-up delivery | One claim succeeds; the others are no-ops. |
 | Crash after claim, before the provider call | Lease expires; the next attempt runs. No spend from the lost attempt. |
 | Crash during the provider call | The provider may have generated and billed the output. The open reservation settles at the full hold and receipts may refund later. The retry regenerates and pays again: duplicate spend of at most about `max_attempts` × the per-call ceiling, visible in the ledger. |
 | Provider finished, crash before the completion commit | As above. Never `completed` without the commit. |
 | Crash after the completion commit | Result safe. Reservation settles conservatively; follow-up jobs may be missed until the next turn. |
-| Material tool call made, result not saved | `needs_attention`. The user is told what may have happened (for example "a notification to ntfy may have been sent") and offered "retry anyway". No silent repeat. |
+| Material tool call made, then a crash or retryable error before the attempt completes | `needs_attention`. The user is told what may have happened (for example "a notification to ntfy may have been sent") and offered "retry anyway". No silent repeat. |
 | Stale worker resumes after takeover | Heartbeat and writes affect zero rows; its operation insert is refused. It may still spend on its open provider stream until it notices. |
 | Cancel races completion | Whichever locks the task row first wins. Cancel after completion returns 409. Cancel during a material operation reports the effect as possibly performed. |
 | API process crash while a client is attached | Work is unaffected; the client reattaches from the snapshot. |
@@ -165,7 +170,7 @@ A task references conversation and workspace context without a memory or filesys
 | --- | --- |
 | 1 | A1 with dispatch recovered by a sweep over the task table; no separate outbox table (§3). |
 | 2 | B1: `/chat` adapter, task endpoints, `task` SSE event, `X-Daemon-Task-Id`, `Idempotency-Key`; Stop means cancel, disconnect means detach (§6–§7). |
-| 3 | Reconnect by snapshot + durable lifecycle events + ephemeral offset-tagged deltas (§8). |
+| 3 | Reconnect by snapshot + durable lifecycle events + ephemeral deltas scoped to a content generation and sequence (§8; revised in review of #461). |
 | 4 | Slice 1 keeps the full current tool registry behind the effect fence, rather than a read-only subset (§9). |
 | 5 | `max_attempts = 2` for automatic regeneration; at most one duplicate inference spend per task, charged conservatively (§4). |
 | 6 | One non-terminal task per conversation; further submissions get 409 `conversation_busy` (§6). |
@@ -246,9 +251,11 @@ The slices are increments inside broad Stage 1 (DEC10), not a reduction of its s
 | Provider finished, crash before completion commit | Same as mid-stream; never `completed` without the commit. |
 | Crash after completion commit | `completed`; no further attempt; reservation recovered conservatively. |
 | Crash after a material operation is recorded, with or without the call | `needs_attention`; the tool was called no more than once; no automatic retry. |
+| Fake material tool succeeds once, then the next provider round fails retryably | `needs_attention`; recovery never invokes that tool again. |
 | Stale worker resumes after takeover | Its heartbeat and writes affect zero rows; message content comes only from the new epoch; its operation insert is refused. |
 | Attempt cap exhausted | Terminal `failed` with code `interrupted`. |
 | Client disconnects mid-stream, reconnects on another device | Task keeps running; snapshot plus deltas reproduce exactly the final text; a forced delta gap triggers a snapshot re-fetch. |
+| Retry while a client is attached: attempt 2 regenerates different text, a shorter text, and attempt 1 frames arrive late | The client resets on the new generation, drops stale-generation frames, and its displayed text equals the committed result. |
 | Redis unavailable during observation | Snapshot polling still reaches the final state. |
 | Cancel races completion | Whichever locks the row first wins; cancel after completion returns 409. |
 | Second submission while a task is active | 409 `conversation_busy` with the active task id. |
