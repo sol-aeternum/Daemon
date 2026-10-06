@@ -9,6 +9,7 @@ import uuid
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 from orchestrator.routes.tasks import TaskOut, task_out, task_store
+from orchestrator.tasks.store import TaskNotFound
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -221,7 +222,26 @@ async def delete_conversation(
     existing = await store.get_conversation(conversation_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    deleted = await store.delete_conversation(conversation_id)
+    if app_state.db_pool is not None:
+        # Durable tasks: never delete a running task's evidence out from under
+        # an in-flight action (docs/DURABLE_REQUEST_DESIGN.md §11).
+        try:
+            deleted, running_task = await task_store(app_state).delete_conversation(
+                auth.user_id, conversation_id
+            )
+        except TaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
+        if running_task is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "task_running",
+                    "message": "A request in this conversation is still stopping; try again shortly",
+                    "task_id": str(running_task),
+                },
+            )
+    else:
+        deleted = await store.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "deleted"}

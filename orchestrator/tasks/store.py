@@ -798,7 +798,8 @@ class TaskStore:
                     """
                     UPDATE tasks
                     SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-                        next_wakeup_at = now() + make_interval(secs => $2), updated_at = now()
+                        next_wakeup_at = now() + make_interval(secs => $2),
+                        last_wake_at = NULL, updated_at = now()
                     WHERE id = $1
                     """,
                     task_id,
@@ -840,7 +841,8 @@ class TaskStore:
                 UPDATE tasks
                 SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
                     attempt_count = attempt_count - 1,
-                    next_wakeup_at = now() + make_interval(secs => $2), updated_at = now()
+                    next_wakeup_at = now() + make_interval(secs => $2),
+                    last_wake_at = NULL, updated_at = now()
                 WHERE id = $1
                 """,
                 task_id,
@@ -912,6 +914,40 @@ class TaskStore:
                     await self._append_event(conn, task_id, "cancel_requested")
                 return CancelOutcome(TaskStatus.RUNNING, accepted=True)
             return CancelOutcome(status, accepted=False)
+
+    async def delete_conversation(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> tuple[bool, uuid.UUID | None]:
+        """Delete a conversation unless a task in it is still running.
+
+        One transaction locks the conversation (as acceptance does) and its
+        active task (as claims do), so neither can slip in between. A queued
+        task is cancelled and deleted with the conversation; a running task is
+        asked to cancel and the conversation is kept, so an in-flight external
+        effect never loses its evidence. Returns ``(deleted, running_task_id)``.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            owner = await conn.fetchval(
+                "SELECT user_id FROM conversations WHERE id = $1 FOR UPDATE", conversation_id
+            )
+            if owner != user_id:
+                raise TaskNotFound("conversation not found")
+            active = await conn.fetchrow(
+                "SELECT * FROM tasks WHERE conversation_id = $1 AND status IN ('queued', 'running') "
+                "FOR UPDATE",
+                conversation_id,
+            )
+            if active is not None and active["status"] == TaskStatus.RUNNING.value:
+                if active["cancel_requested_at"] is None:
+                    await conn.execute(
+                        "UPDATE tasks SET cancel_requested_at = now(), updated_at = now() "
+                        "WHERE id = $1",
+                        active["id"],
+                    )
+                    await self._append_event(conn, active["id"], "cancel_requested")
+                return False, active["id"]
+            await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
+            return True, None
 
     async def snapshot(self, user_id: uuid.UUID, task_id: uuid.UUID) -> TaskSnapshot | None:
         row = await self._pool.fetchrow(

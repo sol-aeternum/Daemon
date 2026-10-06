@@ -16,7 +16,8 @@ from pydantic import BaseModel
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import AppState, get_app_state
-from orchestrator.daemon import new_request_id
+from orchestrator.config import get_settings
+from orchestrator.daemon import new_request_id, stream_with_keepalives
 from orchestrator.request_id import get_request_id
 from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
@@ -118,7 +119,7 @@ async def observe(
         request_id=get_request_id(request) or new_request_id(),
     )
     return StreamingResponse(
-        frames,
+        stream_with_keepalives(frames, get_settings().sse_keepalive_interval_s),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

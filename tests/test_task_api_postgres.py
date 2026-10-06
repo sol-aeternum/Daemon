@@ -322,7 +322,10 @@ async def test_cancel_endpoint_queued_then_finished(api: Api):
     task_id = task["id"]
     cancelled = await api.client.post(f"/tasks/{task_id}/cancel")
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
-    assert await api.run_worker() == ["skipped"]
+    # Whether or not the wake-up was enqueued before the client left, the
+    # cancelled task never runs.
+    assert await api.run_worker() in ([], ["skipped"])
+    assert await api.env.pool.fetchval("SELECT count(*) FROM task_attempts") == 0
     again = await api.client.post(f"/tasks/{task_id}/cancel")
     assert again.status_code == 409
     assert again.json()["detail"] == {"code": "task_finished", "status": "cancelled"}
@@ -564,3 +567,71 @@ async def test_live_deltas_follow_a_new_generation_with_lower_sequence(
     await env.tasks.complete(accepted.task_id, second.epoch, content="abc")
     await asyncio.wait_for(observer, timeout=10)
     assert _displayed(_events("".join(frames))) == "abc"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_conversation_never_strands_a_running_task(api: Api):
+    """Codex review of #461: deletion must not erase an in-flight task's evidence."""
+    task = await _submit(api, key="delete-me")
+    task_id = uuid.UUID(task["id"])
+    conversation_id = task["conversation_id"]
+    claim = await api.env.tasks.claim(task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+
+    api.as_user(api.env.bob)
+    assert (await api.client.delete(f"/conversations/{conversation_id}")).status_code == 404
+    api.as_user(api.env.alice)
+
+    refused = await api.client.delete(f"/conversations/{conversation_id}")
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "task_running"
+    assert refused.json()["detail"]["task_id"] == str(task_id)
+    view = (await api.client.get(f"/tasks/{task_id}")).json()
+    assert view["status"] == "running" and view["cancel_requested"] is True
+
+    # Once the worker stops, deletion proceeds and takes the task with it.
+    await api.env.tasks.acknowledge_cancel(task_id, claim.epoch)
+    assert (await api.client.delete(f"/conversations/{conversation_id}")).status_code == 200
+    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_conversation_cancels_a_queued_task(api: Api):
+    task = await _submit(api, key="queued-delete")
+    response = await api.client.delete(f"/conversations/{task['conversation_id']}")
+    assert response.status_code == 200
+    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
+    # A late wake-up for the deleted task finds nothing to run.
+    assert await api.run_worker() in ([], ["skipped"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    [("interrupted", True), ("account_suspended", False), ("budget_exceeded", False)],
+)
+async def test_only_transient_failures_are_advertised_as_retryable(
+    env: Env, code: str, retryable: bool
+):
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.pool.execute(
+        "UPDATE tasks SET attempt_count = max_attempts WHERE id = $1", accepted.task_id
+    )
+    from orchestrator.tasks.states import RetryCause as _Cause
+
+    cause = _Cause.LOST if code == "interrupted" else _Cause.TERMINAL_ERROR
+    if code == "interrupted":
+        await expire_lease(env, accepted.task_id)
+        assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
+    else:
+        await env.tasks.fail_attempt(accepted.task_id, claim.epoch, cause=cause, error_code=code)
+    frames = [
+        frame
+        async for frame in observe_task(
+            env.tasks, None, env.alice, accepted.task_id, request_id="req_test"
+        )
+    ]
+    error = dict(_events("".join(frames)))["error"]["data"]
+    assert error["code"] == code and error["retryable"] is retryable

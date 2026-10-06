@@ -636,3 +636,18 @@ async def test_queued_task_with_pending_cancel_is_never_claimed(env: Env):
     )
     assert await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S) is None
     assert (await _task(env, accepted.task_id))["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_requeued_task_is_rewoken_at_its_backoff_not_after_suppression(env: Env):
+    """Codex review of #466: a just-consumed wake-up must not delay the retry."""
+    accepted = await _accept(env)
+    assert await env.tasks.due_for_wakeup() == [(accepted.task_id, 1)]  # wake recorded
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.fail_attempt(
+        accepted.task_id, claim.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="busy"
+    )
+    await _make_due(env, accepted.task_id)
+    woken = await env.tasks.due_for_wakeup()
+    assert [task_id for task_id, _ in woken] == [accepted.task_id]

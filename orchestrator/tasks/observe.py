@@ -26,6 +26,19 @@ from orchestrator.tasks.store import TaskSnapshot, TaskStore
 
 logger = logging.getLogger(__name__)
 
+#: Failed outcomes a new submission may reasonably succeed at (transient
+#: capacity, an interrupted attempt, an internal error). Budget, policy,
+#: route and account outcomes are not advertised as retryable.
+RETRYABLE_TERMINAL_CODES = frozenset(
+    {
+        "interrupted",
+        "internal_error",
+        "rate_limited",
+        "concurrency_exceeded",
+        "capacity_unavailable",
+    }
+)
+
 #: How long the observer waits for a live message before re-reading the snapshot.
 POLL_S = 2.0
 
@@ -126,7 +139,8 @@ class _Observation:
                         "message": _TERMINAL_MESSAGES.get(
                             code, "This task could not be completed."
                         ),
-                        "retryable": status is TaskStatus.FAILED,
+                        "retryable": status is TaskStatus.FAILED
+                        and code in RETRYABLE_TERMINAL_CODES,
                     },
                     evt_id="evt_error",
                 )
