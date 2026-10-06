@@ -28,6 +28,8 @@ def _frozen_attestation_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     72 hours) once the wall clock passed NOW + 72h, failing on every run.
     """
     monkeypatch.setattr(attestation, "utcnow", lambda: NOW)
+
+
 MIGRATION = ROOT / "migrations" / "043_inference_route_attestations.sql"
 ROLLBACK = ROOT / "migrations" / "rollback" / "043_inference_route_attestations.down.sql"
 
