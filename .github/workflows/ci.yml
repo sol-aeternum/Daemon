@@ -20,6 +20,24 @@ jobs:
       # project environment). uv must create/use the same directory in CI or
       # basedpyright exits 3 with "venv .uv-venv subdirectory not found".
       UV_PROJECT_ENVIRONMENT: .uv-venv
+    services:
+      # Disposable database for the durable-task race and fencing tests
+      # (docs/DURABLE_REQUEST_DESIGN.md §12 decision 10). Only
+      # TASKS_TEST_DATABASE_URL points here; other database-gated suites keep
+      # skipping until they are enabled deliberately.
+      tasks-postgres:
+        image: pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337 # pg16
+        env:
+          POSTGRES_USER: tasks
+          POSTGRES_PASSWORD: tasks-ci-only
+          POSTGRES_DB: tasks_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tasks -d tasks_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +80,7 @@ jobs:
         env:
           # Dump pending asyncio tasks before the 120s faulthandler watchdog (#454).
           DAEMON_PYTEST_ASYNCIO_DUMP_S: "90"
+          TASKS_TEST_DATABASE_URL: postgresql://tasks:tasks-ci-only@127.0.0.1:5432/tasks_test
         run: bash scripts/run_backend_pytest.sh
 
       - name: Upload backend pytest diagnostics

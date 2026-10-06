@@ -255,8 +255,11 @@ class MemoryStore:
         user_id: uuid.UUID,
         pipeline: str = "cloud",
         title: str | None = None,
+        *,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             INSERT INTO conversations (user_id, pipeline, title)
             VALUES ($1, $2, $3)
@@ -507,6 +510,7 @@ class MemoryStore:
         reasoning_text: str | None = None,
         reasoning_duration_secs: int | None = None,
         reasoning_model: str | None = None,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
         encrypted_reasoning_text = (
@@ -515,7 +519,8 @@ class MemoryStore:
         encrypted_advisor_traces = (
             self._enc.encrypt(json.dumps(advisor_traces)) if advisor_traces is not None else None
         )
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             INSERT INTO messages
                 (conversation_id, user_id, role, content, model,
@@ -1009,6 +1014,7 @@ class MemoryStore:
         reasoning_text: str | None = None,
         reasoning_duration_secs: int | None = None,
         reasoning_model: str | None = None,
+        conn: Any | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
         metadata_json = self._encrypt_message_metadata(metadata) if metadata is not None else None
@@ -1022,7 +1028,8 @@ class MemoryStore:
         encrypted_advisor_traces = (
             self._enc.encrypt(json.dumps(advisor_traces)) if advisor_traces is not None else None
         )
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             UPDATE messages
             SET content    = COALESCE($2, content),
