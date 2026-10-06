@@ -17,6 +17,17 @@ from orchestrator.entitlements.policy import RoutePolicy, parse_inference_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_attestation_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the module clock to the fixtures' NOW.
+
+    Fixture records are stamped at NOW while several checks ask
+    ``attestation.utcnow()``; with a real clock they went stale (STALE_AFTER,
+    72 hours) once the wall clock passed NOW + 72h, failing on every run.
+    """
+    monkeypatch.setattr(attestation, "utcnow", lambda: NOW)
 MIGRATION = ROOT / "migrations" / "043_inference_route_attestations.sql"
 ROLLBACK = ROOT / "migrations" / "rollback" / "043_inference_route_attestations.down.sql"
 
