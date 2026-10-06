@@ -101,4 +101,4 @@ The product owner also required the README to retain the orchestration, routing 
 - Companion identity/transport, supported desktop packaging and containment.
 - DEC12's retention-class schema, consent UX/storage, restricted-data enforcement, Z/R fallback and activity-record implementation; approval of live provider routes remains separate.
 
-Resolve these at the increment that needs them. See [the durable-request design draft](DURABLE_REQUEST_DESIGN.md) for the next architecture approval boundary.
+Resolve these at the increment that needs them. See [the durable-request design](DURABLE_REQUEST_DESIGN.md) for the architecture approved on 6 October 2026 and the decisions still pending.

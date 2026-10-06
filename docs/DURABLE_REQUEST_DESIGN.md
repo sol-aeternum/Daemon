@@ -1,81 +1,182 @@
-# Durable requests — architecture decision draft
+# Durable requests — architecture decision
 
-Date: 26 September 2026. **Status: PROPOSED; schema, API and execution architecture not approved.**
+Drafted 26 September 2026; revised 6 October 2026 against main `6178f282`. **Status: architecture APPROVED by the product owner on 6 October 2026 (A1, B1, the reconnect model and the slice 1 decisions in §12). Not implemented.** Exact DDL, endpoint payloads and SSE event payloads are reviewed in the implementation PRs against this document; choice C (resource storage and legacy files), notification channels and retention remain pending.
 
-Read [DAEMON.md](DAEMON.md) for canonical identity and [GLOSSARY.md](GLOSSARY.md) for terms. Product behaviour is ratified in [DEC01–DEC12](DAEMON_VISION_DECISIONS.md). This draft translates it into architecture choices; it does not silently approve them. DEC12's opt-in R routes remain implementation-gated; current runtime routing stays Z-only. The dated working-tree assessment is in [DAEMON_RECONCILIATION.md](DAEMON_RECONCILIATION.md); [VISION_INTEGRATION_REPORT.md](VISION_INTEGRATION_REPORT.md) distinguishes that snapshot from current-main PR verification.
+Read [DAEMON.md](DAEMON.md) for canonical identity and [GLOSSARY.md](GLOSSARY.md) for terms. Product behaviour is ratified in [DEC01–DEC12](DAEMON_VISION_DECISIONS.md). This document translates it into architecture; approval of the architecture is recorded in §12 and does not authorise deployment, unrelated rewrites or expanded permissions. DEC12's opt-in R routes remain implementation-gated; current runtime routing stays Z-only. The dated working-tree assessment is in [DAEMON_RECONCILIATION.md](DAEMON_RECONCILIATION.md); [VISION_INTEGRATION_REPORT.md](VISION_INTEGRATION_REPORT.md) distinguishes that snapshot from current-main PR verification.
 
 ## 1. Objective and scope
 
-Implement **broad assistant continuity**: ordinary answers, research and existing supported tools survive client closure through durable acceptance, observable task state and safe interruption recovery (V01/V02/V03/V06/V07, DEC04–DEC06/DEC09–DEC10, AC03/AC09/AC12).
+Implement **broad assistant continuity**: ordinary answers, research and existing supported tools survive client closure through durable acceptance, observable task state and safe interruption recovery (V01/V02/V03/V06/V07, DEC04–DEC06/DEC09–DEC10, AC03/AC09/AC12). Target experience: a user submits a task, closes the phone, and later sees the saved result, or an honest account of what is blocked, on another signed-in device. Execution survives client disconnects and recovers predictably from worker restarts.
 
 Preserve one conversational interface. Background continuation is not a separate user mode. Accepted means recorded and tracked, not an unconditional completion promise. Keep existing account/provider qualification and budget enforcement. Do not enable unregistered advisor tools or retired media execution, or interpret unqualified routes as working capability. Preserve current main's working encryption metrics, council roles and advisor-event/trace compatibility per the PR-port clarification in the decision record.
 
-The first architecture should support account-owned work and future optional projects without claiming restricted-project enforcement exists. A companion, general shell sandbox, new service or dependency is not a prerequisite. No database migration, task endpoint or SSE contract is introduced by this document.
+The architecture supports account-owned work and future optional projects without claiming restricted-project enforcement exists. A companion, general shell sandbox, new service or dependency is not a prerequisite. No exactly-once guarantee is made for external effects (§9).
 
-## 2. Design choice A — source of truth and durable acceptance
+## 2. Current main behaviour this design replaces
 
-### A1 — PostgreSQL task state; existing arq as a wake-up mechanism (recommended)
+Inspected at `6178f282`: `orchestrator/main.py` (`/chat`, `_account_frames`), `orchestrator/daemon.py` (`stream_sse_chat`), `orchestrator/worker/`, `orchestrator/compute_runtime.py` (`account_compute`), `orchestrator/entitlements/{service,receipts}.py`, `orchestrator/auth.py`, `orchestrator/routes/conversations.py`, `orchestrator/tools/builtin.py`, `frontend/app/api/chat/route.ts` and migrations 004/013/037/039/042.
 
-- Persist an account-owned task and its accepted input references before acknowledging acceptance.
-- Persist dispatch intent atomically with acceptance, using a transactional outbox or a recoverable pending-work scan. Do not rely on an uncoordinated database insert followed by a Redis enqueue.
-- Workers claim tasks using durable ownership/lease information. Duplicate queue delivery must not create duplicate logical work.
-- Redis/arq can wake workers, but loss of its queue must not erase accepted work.
+- **Execution is request-bound.** `_account_frames` cancels its producer task when the response consumer goes away; `stream_sse_chat` marks the assistant row `cancelled` when `is_disconnected()` fires. The frontend Stop button works by aborting the fetch. Once disconnect stops cancelling, Stop needs an explicit cancel call.
+- **Partial output already persists.** The assistant row is inserted as `streaming` and its content is updated about once a second. History reads exclude `streaming`, `error` and `cancelled` rows.
+- **Uncertain spend is already conservative.** An open reservation older than 2 × `request_timeout_s` is settled at its full hold (`reconcile_expired_reservations`); provider receipts can later lower, never raise, that charge.
+- **arq constraints.** Global `job_timeout=300`. With the default `keep_result`, reusing a `_job_id` while its result key exists silently drops the enqueue (the memory-extraction path already works around this). Redis runs `redis:7-alpine` with default persistence, so queue loss is a realistic failure.
+- **The chat tool registry has side effects.** `create_default_registry` registers `http_request`, `notification_send`, `reminder_set`, `skill_manage`, `generate_document` and memory write/promote/demote alongside read tools. Even "ordinary answers" can cause material effects.
+- **Existence leak.** `/chat` returns 403 for another account's conversation; `routes/conversations.py` returns 404.
+
+## 3. Design choice A — source of truth and durable acceptance
+
+**Approved: A1 — PostgreSQL task state; existing arq as a wake-up mechanism. Dispatch intent is the task row itself, recovered by a scan; there is no separate outbox table.**
+
+- **Atomic acceptance.** One transaction creates the conversation when new, inserts the user message and inserts the task with `status='queued'` and `next_wakeup_at=now()`. Acceptance is acknowledged (task id returned, observation stream started) only after commit.
+- **Recoverable dispatch.** A sweep selects `queued` tasks with `next_wakeup_at <= now()` and `running` tasks whose lease has expired, using `FOR UPDATE SKIP LOCKED`, and enqueues a wake-up for each. It runs as an arq cron every 15 seconds. The enqueue issued right after the acceptance commit is only a latency optimisation. A failed enqueue, a flushed queue or an unavailable Redis therefore delays a task by at most one sweep interval plus wake-up time; it never loses it.
+- **Wake-up jobs carry only the task id** (no owner, no content), use job id `task:{id}:{wake_seq}` with `keep_result=0` to avoid arq's result-key deduplication, and `max_tries=1`. Retries are owned by PostgreSQL, not arq. Task execution is its own arq function with a timeout matched to the attempt deadline, not the global 300-second default.
 - Client stream attachment is observation, not ownership of execution lifetime.
 
-**Tradeoff:** reuses current PostgreSQL/arq infrastructure and supports queryable state, but requires new records, claims, reconciliation and explicit transaction tests. Outbox versus scan is a remaining mechanism choice; approval of A1 alone does not select one silently.
+Rejected: **A2** (arq jobs as execution authority with a PostgreSQL projection) makes Redis result TTLs and persistence part of the user-facing guarantee. **A3** (a dedicated workflow engine) adds dependencies and operational surface without evidence that current infrastructure is insufficient.
 
-### A2 — arq jobs as execution authority, PostgreSQL projection for task history
+## 4. Records and state model
 
-**Tradeoff:** potentially less dispatch machinery initially, but acceptance/recovery must prove no acknowledged job disappears between Redis and PostgreSQL. Queue result TTL and Redis durability become part of the user-facing guarantee. This is a weaker fit with current durable-state requirements unless those gaps are explicitly solved.
+Logical records. Names are the intended ones; exact columns and indexes are reviewed in the slice 1 migration PR.
 
-### A3 — dedicated durable workflow engine
-
-**Tradeoff:** could supply retries/checkpoints, but adds dependencies, operational surface and migration work. Requires separate approval and evidence that current infrastructure is insufficient. Not recommended merely to resemble the conceptual architecture.
-
-**Approval needed:** select authority/acceptance approach before schema or queue integration.
-
-## 3. Proposed responsibilities and state invariants
-
-Logical responsibilities, not approved table names:
-
-| Responsibility | Required information / invariant |
+| Record | Contents and invariants |
 | --- | --- |
-| Task | Authenticated owner, objective, accepted input references, status, budget/policy context, result references, auto-resume choice and timestamps. Client-supplied owner IDs are never authority. |
-| Attempt | Particular worker run/lease, timing, checkpoint and outcome. A model change or retry does not create a new user task. |
-| Operation | Stable identity, operation class, authorised inputs/destination, attempt/outcome and reconciliation evidence for material effects. |
-| Artifact/resource | Owner, opaque identity, storage reference, content metadata, provenance and lifecycle/scope. Public filename possession is not access authority. |
-| Activity | Observable status/progress/results and blockers, without sensitive prompt dumps or hidden reasoning requirements. |
+| `tasks` | Owner (`user_id`, never client-supplied), conversation and message references (§10), encrypted accepted input, status, idempotency key and request hash, lease owner/epoch/expiry, attempt count and cap, cancel request, result message, terminal code/reason, timestamps. Partial unique index: at most one non-terminal task per conversation. |
+| `task_attempts` | One worker run: epoch, worker id, timing, outcome (`completed`, `lost`, `failed_retryable`, `failed_terminal`, `cancelled`), encrypted partial content kept for disclosure, reservation scope ids. A retry or model change does not create a new user task. |
+| `task_operations` | Stable identity for each material tool call: tool name, effect class, authorised target summary, attempt epoch, `started_at`, `completed_at`, outcome and reconciliation evidence. |
+| `task_events` | Append-only, sequence-numbered lifecycle events (status, routing, tool call/result summaries). Low volume; no token deltas and no hidden reasoning. |
+| Artifact/resource | Owner, opaque identity, storage reference, provenance and lifecycle. Governed by choice C (§13), not slice 1. |
 
-Candidate states: accepted/queued, running, waiting for input/approval/resource, paused for capacity/policy, completed, failed and cancelled. An uncertain material effect needs an explicit reconciliation state or substate. Names and representation remain proposed.
+Task and attempt inputs, partial content and event payloads that may contain user content are encrypted with Fernet like messages.
 
-Invariant requirements:
+**Slice 1 states:** `queued → running → completed | failed | cancelled | needs_attention`. `needs_attention` means work was interrupted and an outcome is uncertain; it is never retried automatically. Later slices add `waiting_input`, `waiting_approval`, `paused_capacity` and `reconciling`.
+
+**Retry rules**
+
+| Cause | Rule |
+| --- | --- |
+| Attempt lost (crash, expired lease) with no material operation started | Regenerate from committed inputs, up to `max_attempts = 2` in total. Keep the earlier partial content on the attempt record and disclose the interruption in message metadata. |
+| Retryable provider/compute error | Re-queue with backoff via `next_wakeup_at`, within the same attempt cap. |
+| Capacity or budget denied | Slice 1: terminal `failed` with the capacity code, an honest message and a manual retry. DEC09 pause, notification and auto-resume arrive in slice 4. |
+| Policy, route or validation failure | Terminal `failed`. |
+| Attempt lost after a material operation started | `needs_attention`; no automatic replay. |
+| Attempt cap exhausted | Terminal `failed` with code `interrupted`. |
+
+**Result publication.** The result is the existing encrypted assistant message; each task owns exactly one assistant row, which later attempts overwrite under the fence. `completed` is set only by one transaction that locks the task, checks the lease epoch, marks the message `complete`, marks the task `completed` and appends the lifecycle event. A final token or a successful queue return is not completion. Follow-up jobs (memory extraction, title, skill evaluation, contextual home refresh) remain best-effort after commit; the extraction watermark covers a missed run on the next turn.
+
+**Invariants**
 
 1. Acknowledged acceptance survives client/API-process failure and queue loss under the documented durability boundary.
-2. Only one valid claim can advance a task at a time; stale attempts cannot publish a newer task's result.
-3. “Completed” follows durable output/outcome publication, not a final model token or successful queue return alone.
+2. Only one valid claim can advance a task at a time; stale attempts cannot publish over a newer attempt's result.
+3. "Completed" follows durable output/outcome publication, not a final model token or successful queue return alone.
 4. Client disconnect does not cancel accepted work; an explicit cancel is separately authorised and raced against commit.
 5. Waiting consumes no inference loop. Clarification permits independent progress without guessing the blocked material choice.
 6. Capacity pause persists progress and interruption-notification intent. User-disabled auto-resume survives restart and overrides a scheduled wake-up.
-7. Resume rechecks permissions, budget and input currency. Material input changes/uncertain effects do not silently reuse old authority.
+7. Resume rechecks permissions, budget and input currency. Material input changes and uncertain effects do not silently reuse old authority.
 8. Retries cannot bypass compute settlement, resource restrictions or side-effect reconciliation.
 
-## 4. Design choice B — client integration and observation
+## 5. Worker ownership, leases and fencing
 
-### B1 — additive task API, chat as a submission/status view (recommended)
+- **Claim.** A single conditional update claims the task:
 
-Expose authenticated task creation/status/control and attach chat messages to task identity. Existing `/chat` can become a compatibility adapter once its migration behaviour is approved. A status lookup must work even if live streaming is unavailable; clients can reattach for progress. Decide persisted event replay versus snapshot-plus-live updates explicitly.
+  ```sql
+  UPDATE tasks SET status = 'running', lease_epoch = lease_epoch + 1,
+         lease_owner = $worker, lease_expires_at = now() + $lease,
+         attempt_count = attempt_count + 1
+  WHERE id = $1 AND cancel_requested_at IS NULL
+    AND ((status = 'queued' AND next_wakeup_at <= now())
+      OR (status = 'running' AND lease_expires_at < now()))
+  RETURNING lease_epoch, user_id, ...
+  ```
 
-**Tradeoff:** clean independent task identity and cross-client lookup; requires API/frontend changes and a compatibility plan. Do not overload old SSE fields with new semantics.
+  Duplicate deliveries match zero rows and exit. Taking over an expired lease marks the previous attempt `lost` in the same transaction and applies the retry rules in §4. Lease arithmetic uses the database clock only, never worker clocks.
+- **Heartbeat.** Roughly every 10 seconds, the worker extends a 45-second lease with `... WHERE id = $1 AND lease_epoch = $e AND status = 'running' RETURNING cancel_requested_at`. Zero rows means the worker has been fenced out: it aborts the provider stream and writes nothing further. The returned cancel flag carries cancellation to the worker.
+- **Fenced writes.** Partial-content updates, operation records and the final publish each lock the task row (`FOR UPDATE`) and check `lease_epoch` in the same transaction.
+- **Attempt deadline.** At most `request_timeout_s`, so the existing 2 × timeout reservation recovery never settles a live attempt.
+- **Graceful shutdown.** Stop claiming and let in-flight attempts finish within the shutdown grace period; abandoned attempts are recovered after lease expiry.
+- **Residual window.** A worker that pauses longer than its lease keeps consuming provider tokens until its next heartbeat or write fails. Duplicate spend is bounded by the lease and the attempt deadline, not eliminated.
+- **PostgreSQL unavailable mid-run.** The worker cannot heartbeat or publish; it stops after its lease. No result is published without the database.
 
-### B2 — retain chat-only submission with conversation/message status as the task surface
+## 6. Tenant-scoped idempotency and duplicate submissions
 
-**Tradeoff:** fewer new concepts initially, but multi-attempt identity, non-chat views, control and replay still need durable contracts. A message row alone is not a recovery design.
+- The client generates an `Idempotency-Key` (UUID) for each submission and stores it with the draft before sending, so an app reload resubmits with the same key.
+- A unique `(user_id, idempotency_key)` index plus a `request_hash` (SHA-256 over the canonical accepted input) decides duplicates. Same key and same hash returns the existing task and attaches to it. Same key and different hash returns **409 `idempotency_conflict`**; the existing task is never overwritten.
+- Keys are scoped per account: another account's identical key creates an independent task and reveals nothing.
+- Clients that send no key (older PWAs) create a new task per request. That matches today's behaviour; the duplicate risk is documented.
+- A submission to a conversation that already has a non-terminal task returns **409 `conversation_busy`** with the active task id. This keeps history order deterministic and matches the current UI, which blocks input while streaming.
 
-**Approval needed:** choose public interaction contract and compatibility scope before endpoint/SSE/client changes. Existing OpenAI-compatible completions may need a separately stated guarantee; do not silently extend or break that protocol.
+## 7. Design choice B — client integration and observation
 
-## 5. Design choice C — owned resources and legacy artifact handling
+**Approved: B1 — additive task API, with `/chat` as a compatibility adapter.**
 
-The original working-tree assessment found missing download ownership checks (#312). Current main at PR preparation (`2bf65150`) already scopes generated downloads and writes to authenticated owner namespaces through `orchestrator/artifacts.py`; unowned root-level files are not served through those routes. Preserve that enforcement. A durable resource registry, task provenance, versioning and lifecycle remain separate work: age-based cleanup is not a user-approved workspace retention contract.
+- **Flag.** A durable-chat environment flag, added under the env-surface parity rules, switches `/chat` from request-bound execution to the adapter: accept, enqueue, then attach an observer that emits the **existing** SSE frame types. Disconnect only detaches the observer.
+- **Additions.** An `X-Daemon-Task-Id` response header and one new `task` SSE event announcing acceptance (task id and status). Endpoints: `GET /tasks/{id}` (snapshot), `GET /tasks/{id}/events` (observe), `POST /tasks/{id}/cancel`. `GET /conversations/{id}` also returns the conversation's active task. Old SSE fields keep their meaning.
+- **Stop means cancel.** The frontend Stop button calls `POST /tasks/{id}/cancel`; closing the app, navigating away or aborting the fetch only detaches. Cached older PWAs only detach when Stop is pressed, and the work continues; this is accepted for the rollout window.
+- **Excluded from slice 1 (request-bound and labelled as such):** council commands and interviews, home-suggestion acceptance, and the OpenAI-compatible `/v1/chat/completions`, which keeps its synchronous protocol with no new durability guarantee.
+- **Database unavailable.** In durable mode `/chat` returns **503** (retryable). The present "continue without persistence" fallback does not apply, because "accepted" must mean saved.
+- Status lookup works without live streaming; clients can reattach at any time.
+
+## 8. Reconnect semantics
+
+**Approved: snapshot + durable lifecycle events + live deltas that are not persisted.** A full persisted per-token event log was rejected: heavy encrypted write volume for no recovery benefit, since the snapshot already holds the content.
+
+- **Snapshot** (`GET /tasks/{id}`): task status, terminal code/reason, partial or final content with a `content_offset`, and the latest `task_events` sequence number.
+- **Durable events** (`task_events`): replayed from a given sequence on reattach; later the basis of the DEC12 activity record.
+- **Live deltas:** published over Redis pub/sub, tagged with character offsets. A client applies only deltas beyond its snapshot offset and re-fetches the snapshot when it detects a gap.
+- **Redis unavailable:** observers fall back to polling the snapshot. Slower, still correct.
+
+## 9. Failure windows and uncertain effects
+
+| Window | Durable outcome and recovery |
+| --- | --- |
+| Crash before the acceptance commit | Nothing durable. A client retry with the same key creates exactly one task. |
+| Commit succeeds, response lost | Retry with the same key returns the same task. Without a key, a duplicate task is possible (documented). |
+| Commit succeeds, enqueue fails / queue flushed / Redis down | The sweep enqueues the task within one interval. |
+| Duplicate wake-up delivery | One claim succeeds; the others are no-ops. |
+| Crash after claim, before the provider call | Lease expires; the next attempt runs. No spend from the lost attempt. |
+| Crash during the provider call | The provider may have generated and billed the output. The open reservation settles at the full hold and receipts may refund later. The retry regenerates and pays again: duplicate spend of at most about `max_attempts` × the per-call ceiling, visible in the ledger. |
+| Provider finished, crash before the completion commit | As above. Never `completed` without the commit. |
+| Crash after the completion commit | Result safe. Reservation settles conservatively; follow-up jobs may be missed until the next turn. |
+| Material tool call made, result not saved | `needs_attention`. The user is told what may have happened (for example "a notification to ntfy may have been sent") and offered "retry anyway". No silent repeat. |
+| Stale worker resumes after takeover | Heartbeat and writes affect zero rows; its operation insert is refused. It may still spend on its open provider stream until it notices. |
+| Cancel races completion | Whichever locks the task row first wins. Cancel after completion returns 409. Cancel during a material operation reports the effect as possibly performed. |
+| API process crash while a client is attached | Work is unaffected; the client reattaches from the snapshot. |
+
+**Effect fence.** Before any material tool runs, the worker inserts a `task_operations` row under the lease fence, refusing when the lease has less than a safety margin left. That distinguishes "never attempted" from "may have happened". The gap between the fence check and the actual external call can be narrowed but not closed. Effects on Daemon's own database (reminders, skills, memory rows) can later commit in the same transaction as their operation row, which makes them effectively-once; external HTTP and notification calls cannot get that guarantee.
+
+## 10. Context references for slice 1
+
+A task references conversation and workspace context without a memory or filesystem redesign:
+
+- **Stored at acceptance:** `conversation_id`, `user_message_id`, `history_cutoff_message_id` (the worker rebuilds history up to that message, so later turns do not change it), the routing decision (`model_decision`, admission profile, `routing_info`), any explicit model/provider choice, `disable_memory_write`, and the prepared text content of attachments (already bounded by the request body limit).
+- **Rebuilt per attempt:** memory context, preferences, timezone, skills index and system prompt; the prompt version is recorded on the attempt. A retry may therefore see newer memory; that is disclosed, not hidden.
+- **Workspace:** the account is the workspace (DEC01). No project columns or file registry are added before choice C and projects exist.
+
+## 11. Tenant isolation and permission checks
+
+- The owner comes only from `auth.user_id`. Task queries filter on `id AND user_id` in SQL, and another account's task, control or observation returns **404**, never 403. Idempotency lookups are account-scoped.
+- Workers derive the tenant only from the claimed task row. Before each attempt they recheck that the account is active and its entitlement account is not suspended, that the conversation is still owned and not deleted, and that the route is still qualified. Every store call carries `user_id`.
+- Observers and snapshots require device authentication on every attach. Pub/sub channel names never leave the server.
+- Revoking the submitting device does not cancel the account's tasks; suspension or deletion of the account does.
+- Budget: rate limiting and route qualification run in the API at acceptance; `account_compute(..., background=False)` runs in the worker, so durable work still counts against concurrency ceilings. An in-process context variable is not durable ownership; the task row is.
+
+## 12. Owner decisions recorded on 6 October 2026
+
+| # | Decision |
+| --- | --- |
+| 1 | A1 with dispatch recovered by a sweep over the task table; no separate outbox table (§3). |
+| 2 | B1: `/chat` adapter, task endpoints, `task` SSE event, `X-Daemon-Task-Id`, `Idempotency-Key`; Stop means cancel, disconnect means detach (§6–§7). |
+| 3 | Reconnect by snapshot + durable lifecycle events + ephemeral offset-tagged deltas (§8). |
+| 4 | Slice 1 keeps the full current tool registry behind the effect fence, rather than a read-only subset (§9). |
+| 5 | `max_attempts = 2` for automatic regeneration; at most one duplicate inference spend per task, charged conservatively (§4). |
+| 6 | One non-terminal task per conversation; further submissions get 409 `conversation_busy` (§6). |
+| 7 | Durable mode fails closed with 503 when the database is unavailable (§7). |
+| 8 | Device revocation does not cancel tasks; account suspension or deletion does (§11). |
+| 9 | Slice 1 capacity denial is terminal with manual retry; DEC09 pause, notification and auto-resume complete in slice 4 (§4). |
+| 10 | Add a PostgreSQL service to backend CI so race and fencing tests run instead of skipping; implemented with slice 1. |
+
+## 13. Design choice C — owned resources and legacy artifact handling (pending)
+
+The original working-tree assessment found missing download ownership checks (#312). Current main at PR preparation (`2bf65150`) already scopes generated downloads and writes to authenticated owner namespaces through `orchestrator/artifacts.py`; unowned root-level files are not served through those routes. Preserve that enforcement. A durable resource registry, task provenance, versioning and lifecycle remain separate work: age-based cleanup is not a user-approved workspace retention contract. Choice C is needed by slice 3, not slice 1.
 
 ### C1 — PostgreSQL ownership metadata with existing filesystem storage initially (recommended starting point)
 
@@ -94,9 +195,9 @@ Extend the existing authenticated owner namespaces with opaque resource IDs and 
 
 Do not delete legacy files, infer all files belong to a singleton account or silently make existing download links public. Do not implement universal 24-hour deletion as though it were the approved workspace retention policy. Exact retention settings and deletion propagation require a separate explicit decision.
 
-## 6. Supported-operation and recovery inventory
+## 14. Supported-operation and recovery inventory
 
-Before implementation, derive the active registry under qualified deployment policy and map each operation into a recovery class. This table identifies categories to audit, not a completed runtime certification.
+Before slice 3, derive the active registry under qualified deployment policy and map each operation into a recovery class. In slice 1, every tool not shown to be safe to repeat is treated as material. This table identifies categories to audit, not a completed runtime certification.
 
 | Category | Candidate recovery rule | Evidence needed |
 | --- | --- | --- |
@@ -109,40 +210,57 @@ Before implementation, derive the active registry under qualified deployment pol
 
 Broad continuity does not mean every tool uses the same retry policy. No unsafe replay is necessary to preserve a request: a recoverable, truthful waiting/reconciliation state is valid.
 
-## 7. Budget and notification contracts to finalise
+## 15. Budget and notification contracts
 
-Preserve `account_compute` and the account reservation ledger across worker dispatch. The authenticated owner and task policy must survive queue boundaries; an in-process context variable is not durable ownership. Whole-task limits must compose with per-call limits, retries and known/unknown usage.
+Preserve `account_compute` and the account reservation ledger across worker dispatch. The authenticated owner and task policy must survive queue boundaries. Whole-task limits must compose with per-call limits, retries and known/unknown usage.
 
-Choose whether a task reserves a bounded run allowance or admits each step against a cumulative task ceiling. Both need fair concurrency and release/settlement rules; neither may erase a task when denied. Do not select pricing or enable routes as part of this migration.
+**Recommended for slice 4 (not yet approved):** admit each step against a cumulative task ceiling through the existing per-call reservation ledger, rather than reserving a bounded run allowance up front, which would hold budget and concurrency for the whole task. Denial pauses the task; it never erases it. Do not select pricing or enable routes as part of this work.
 
-Persist interruption notification intent with the pause. Delivery can retry independently without resuming work. Choose supported notification channels and suppression/deduplication behaviour before promising phone delivery. A visible task record alone is not necessarily an interruption notification.
+Persist interruption-notification intent with the pause. Delivery can retry independently without resuming work. Choose supported notification channels and suppression/deduplication behaviour before promising phone delivery. A visible task record alone is not necessarily an interruption notification.
 
-## 8. Incremental implementation plan after approval
+## 16. Staged implementation plan
 
-1. Repair baseline integration and approve A/B/C plus the necessary legacy/resource lifecycle choices.
-2. Implement durable acceptance, task ownership/query and worker claims, with real PostgreSQL/Redis fault tests.
-3. Move ordinary answer execution behind the durable lifecycle; keep live chat as observation and preserve compatibility.
-4. Integrate research and the declared existing tool set by recovery class, including owned artifact publication. No milestone claim until the declared broad set passes.
-5. Add explicit cancel/clarification, capacity pauses, interruption notification and persisted auto-resume control.
-6. Verify policy/freshness rechecks, cross-account denial and true cross-client reopen. Do not surface restricted projects until their resource/derivative enforcement is verified.
+The slices are increments inside broad Stage 1 (DEC10), not a reduction of its scope. No DEC10 milestone claim until the declared operation set passes slices 1–6, including true cross-client reopen.
 
-These steps are implementation ordering inside broad Stage 1, not a return to the rejected document-only milestone.
+| Slice | Content | Acceptance criteria |
+| --- | --- | --- |
+| 1 — Durable ordinary answers | Records in §4, acceptance/sweep/claim/fence (§3, §5), idempotency (§6), `/chat` adapter behind the flag, task endpoints, Stop-as-cancel in the frontend, snapshot and live observation (§8), effect fence (§9), CI PostgreSQL service. Native chat turns with current auth, model roster and routing. | Close the client mid-answer and reopen on another signed-in device to the same saved result or a truthful status; every §17 scenario reaches its expected durable outcome; Stop cancels; another account cannot read, control or observe a task; all repository gates pass; Feature Matrix updated. |
+| 2 — Research | Longer attempts with checkpoints and their own arq function and timeout; bounded retries for repeatable reads with freshness and provenance rules. Fix #314 (fetch SSRF guards) before fetches retry automatically. | Interrupted research resumes or regenerates within bounds without unbounded repeated calls; sources keep provenance. |
+| 3 — Supported tools | Map every registered tool to a recovery class (§14); internal effects commit with their operation row; document output bound to owned artifacts under choice C. Retired tools stay unavailable. | Crash before/after each tool's effect and before/after output metadata commit: no blind repeat, no false completion, no lost committed output. |
+| 4 — Cumulative budgets and capacity | Task-level ceiling with per-step admission (§15); `paused_capacity`, notification intent, persisted auto-resume opt-out, rechecks before resume (DEC09). | Exhaust capacity: state saved and interruption notified; with auto-resume disabled, restart and restore capacity and the task stays halted; with it enabled, revoked authority, changed inputs and budget are rechecked first. |
+| 5 — Cancellation and clarification | Cancel raced against commit with a list of effects already performed; `waiting_input` with no inference loop (DEC06). | Cancel during execution and publication reports performed and uncertain effects; a material ambiguity waits without guessing and resumes on answer. |
+| 6 — Uncertain-effect reconciliation | Per-tool reconcilers (provider idempotency keys where available), resolve/retry flow for `needs_attention`, operation history in the activity view. | Every `needs_attention` case can be resolved by evidence or by explicit user choice; no automatic replay of an uncertain external effect. |
 
-## 9. Acceptance/fault tests required
+## 17. Deterministic acceptance and fault tests
 
-- Response/connection lost immediately before and after acceptance: no acknowledged request disappears; submission replay does not duplicate it.
-- Database commit succeeds but Redis enqueue fails; worker restart and queue loss: recover accepted work under the documented contract.
-- Two workers claim concurrently; stale worker attempts to publish after lease replacement: one valid task progression.
-- Close the PWA during an answer, research and each supported tool recovery class; reopen on another signed-in client.
-- Crash before/after an external effect and before/after output metadata commit; no blind repeat and no false completed state.
-- Cancel during execution/publication: report effects already performed and preserve evidence of uncertainty.
-- Exhaust capacity: saved state plus interruption notification; disable auto-resume, restart, restore capacity, verify it stays halted.
-- With auto-resume enabled, recheck revoked authority, changed inputs, stale task context and current budget before execution.
-- Deny other-account task/control/resource access. Verify source restrictions on retrieval, outputs and derived memory for any supported restricted scope.
-- Run unchanged backend/frontend/documentation/security gates; passing mocks alone does not demonstrate crash or deployment durability.
+**Harness.** A scripted fake for `completion_with_tools` with `asyncio.Event` gates to pause mid-stream; fake tools that count calls; a `SimulatedCrash(BaseException)` raised at named fault points (after acceptance commit, before enqueue, after claim, mid-stream, after operation insert, after tool call, before and after completion commit); leases expired by SQL (`lease_expires_at = now() - interval '1 second'`), never by sleeping. The state transitions are also a pure function with property tests that always run. Claim and fence races run against real PostgreSQL with two connections (decision 10). No paid inference.
 
-## 10. Approval boundary
+| Scenario | Expected durable outcome |
+| --- | --- |
+| Crash before acceptance commit | No task or message. Retry with the same key creates exactly one task. |
+| Response lost after commit | Retry with the same key returns the same task id; a different payload with that key gets 409. |
+| Commit succeeds, enqueue fails or queue flushed | The sweep enqueues it; it completes exactly once. |
+| Same wake-up delivered twice | One claim; `attempt_count = 1`; one provider call. |
+| Crash after claim, before provider call | Lease expires; attempt 2 completes; one reservation charged. |
+| Crash mid-stream | Attempt 1 `lost` with partial content kept; its reservation settles at the full hold; attempt 2 completes; two provider calls in total. |
+| Provider finished, crash before completion commit | Same as mid-stream; never `completed` without the commit. |
+| Crash after completion commit | `completed`; no further attempt; reservation recovered conservatively. |
+| Crash after a material operation is recorded, with or without the call | `needs_attention`; the tool was called no more than once; no automatic retry. |
+| Stale worker resumes after takeover | Its heartbeat and writes affect zero rows; message content comes only from the new epoch; its operation insert is refused. |
+| Attempt cap exhausted | Terminal `failed` with code `interrupted`. |
+| Client disconnects mid-stream, reconnects on another device | Task keeps running; snapshot plus deltas reproduce exactly the final text; a forced delta gap triggers a snapshot re-fetch. |
+| Redis unavailable during observation | Snapshot polling still reaches the final state. |
+| Cancel races completion | Whichever locks the row first wins; cancel after completion returns 409. |
+| Second submission while a task is active | 409 `conversation_busy` with the active task id. |
+| Account B reads, cancels or observes account A's task, or reuses A's key; forged `user_id` in the payload | 404, or an independent task for B; the forged owner is ignored. |
+| Account suspended while the task is queued | Worker recheck fails the task with no provider call. |
 
-**Pending:** A (durable authority/acceptance mechanism), B (API/client compatibility), C (resource storage/legacy access), task-budget composition, retention/notification details and exact state/event schema.
+Run the unchanged backend, frontend, documentation and security gates as well. Passing mocks alone does not demonstrate crash or deployment durability; a staging restart check precedes any release claim.
 
-**Already approved:** product decisions DEC01–DEC12 and the baseline instructions in the decision record, including the subsequent PR-port clarification preserving current main's working metrics and advisor-event compatibility. DEC12 approves direction, not the retention schema, consent, restricted-data enforcement, fallback or activity-record implementation; all remain gated. Baseline bug fixes can proceed without representing this draft as accepted architecture.
+## 18. Prerequisites and approval boundary
+
+**Prerequisites for slice 1:** a green `scripts/local_ci.sh` on current main before starting, and the CI PostgreSQL service (decision 10). Not blockers: #316 (current main persists `forced_terminal_status`; confirm and close), #312 (already scoped on main), dependency advisories #309/#418 (handled at the gate level), #86 and #90 (the sweep covers the task part of #90). #314 is a prerequisite for slice 2 only.
+
+**Approved:** product decisions DEC01–DEC12 and the baseline instructions in the decision record, including the PR-port clarification preserving current main's working metrics and advisor-event compatibility; the architecture in §3–§11 and the decisions in §12. DEC12 approves direction, not the retention schema, consent, restricted-data enforcement, fallback or activity-record implementation; all remain gated.
+
+**Pending:** choice C and legacy-file handling (§13), task-budget composition (§15), notification channels, retention, and review of exact DDL and endpoint/SSE payloads in each implementation PR. Baseline bug fixes can proceed independently of this document.
