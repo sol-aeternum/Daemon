@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Any
 
 import asyncpg
 import pytest
@@ -887,3 +888,26 @@ async def test_suspension_wins_when_an_expired_cancelled_attempt_is_resolved(env
     assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
     row = await _task(env, accepted.task_id)
     assert row["status"] == "failed" and row["terminal_code"] == "account_suspended"
+
+
+@pytest.mark.asyncio
+async def test_acceptance_is_retried_when_the_busy_task_just_ended(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+):
+    """#477: a conflict whose active task ended before the lookup is retried,
+    not surfaced as a failure."""
+    from orchestrator.tasks import store as store_module
+
+    calls = 0
+    real_once = env.tasks._accept_once
+
+    async def flaky_once(**kwargs: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise store_module._ActiveTaskEnded(RuntimeError("stale unique violation"))
+        return await real_once(**kwargs)
+
+    monkeypatch.setattr(env.tasks, "_accept_once", flaky_once)
+    accepted = await _accept(env)
+    assert accepted.created and calls == 2

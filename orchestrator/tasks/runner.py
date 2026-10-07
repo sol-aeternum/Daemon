@@ -413,7 +413,15 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         request_id=request_id,
     ):
         scope_id = current_scope().scope_id
-        await store.record_compute_scope(claim.task_id, claim.epoch, scope_id)
+        try:
+            await store.record_compute_scope(claim.task_id, claim.epoch, scope_id)
+        except ExecutionRefused as refused:
+            # Stopped before preparation, which may call a provider.
+            if refused.reason == "account_suspended":
+                state.account_suspended = True
+            else:
+                state.cancel_requested = True
+            return
         # Preparation consumes no attempt (§5): a transient failure here is
         # deferred, not counted. The attempt counts immediately before the
         # first provider dispatch, after a fresh cancel/suspension check.
@@ -480,21 +488,34 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                         {"t": "delta", "gen": claim.epoch, "seq": state.delta_seq, "text": text},
                     )
             elif event in _PASSTHROUGH_FRAMES:
-                await _publish(redis, state, {"t": "frame", "gen": claim.epoch, "frame": frame})
+                message: dict[str, Any] = {"t": "frame", "gen": claim.epoch, "frame": frame}
                 if event in {"tool_call", "tool_result"}:
-                    await _record_progress(store, state, event, data.get("name"))
+                    # Persisted first, so an observer that replays it on
+                    # reattach can drop the live copy by sequence (#472).
+                    seq = await _record_progress(store, state, event, data.get("name"))
+                    if seq is not None:
+                        message["seq"] = seq
+                await _publish(redis, state, message)
             elif event == "error":
                 state.requested_terminal = state.requested_terminal or "error"
 
 
-async def _record_progress(store: TaskStore, state: AttemptState, event: str, name: Any) -> None:
-    """Persist a tool progress event under the fence."""
+async def _record_progress(
+    store: TaskStore, state: AttemptState, event: str, name: Any
+) -> int | None:
+    """Persist a tool progress event under the fence; returns its sequence."""
     try:
-        await store.record_event(state.claim.task_id, state.claim.epoch, event, {"name": name})
+        return await store.record_event(
+            state.claim.task_id,
+            state.claim.epoch,
+            event,
+            {"name": name, "epoch": state.claim.epoch},
+        )
     except LeaseLost:
         # Fenced: stop now (the cancel lands at the next await), as the sink
         # and the effect fence do.
         _fence_lost(state)
+        return None
 
 
 def _classify(exc: BaseException) -> tuple[RetryCause, str]:

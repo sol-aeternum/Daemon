@@ -52,6 +52,25 @@ def _target_summary(tool_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _reports_failure(result: Any) -> bool:
+    """Whether a tool's returned result says it did not do what was asked.
+
+    Tools report failure in their JSON result (``{"success": false, ...}`` or
+    an ``error`` without ``success: true``) rather than by raising; recording
+    those as ``succeeded`` would misstate the retry evidence.
+    """
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(result, dict):
+        return False
+    if result.get("success") is False:
+        return True
+    return bool(result.get("error")) and result.get("success") is not True
+
+
 class FencedTool(Tool):
     """Proxy that records a material operation before delegating."""
 
@@ -111,7 +130,7 @@ class FencedTool(Tool):
         except BaseException:
             await self._finish(operation_id, "unknown")
             raise
-        await self._finish(operation_id, "succeeded")
+        await self._finish(operation_id, "failed" if _reports_failure(result) else "succeeded")
         return result
 
     async def _finish(self, operation_id: uuid.UUID, outcome: str) -> None:

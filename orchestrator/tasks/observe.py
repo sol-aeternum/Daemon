@@ -65,6 +65,8 @@ class _Observation:
         self.generation = 0
         self.delta_seq = 0
         self.displayed = ""
+        #: Highest persisted event already replayed to this client.
+        self.event_seq = 0
         self._counter = 0
 
     def frame(self, event: str, data: dict[str, Any], evt_id: str | None = None) -> str:
@@ -243,6 +245,11 @@ async def observe_task(
         view.generation = snapshot.content_generation
         for frame in view.catch_up(snapshot):
             yield frame
+        # Tool progress the client missed while detached (#472): the current
+        # generation's persisted events, before switching to live updates.
+        for frame in await _replayed_progress(store, user_id, task_id, view, snapshot):
+            yield frame
+        view.event_seq = snapshot.event_seq
         while snapshot.status not in TERMINAL_STATUSES:
             if authorized is not None and loop.time() >= next_auth_check:
                 next_auth_check = loop.time() + REAUTH_S
@@ -267,6 +274,9 @@ async def observe_task(
                         continue
                     resync = True  # gap
                 elif kind == "frame" and generation == view.generation:
+                    event_seq = message.get("seq")
+                    if isinstance(event_seq, int) and event_seq <= view.event_seq:
+                        continue  # already replayed from the persisted events
                     frame = message.get("frame")
                     if isinstance(frame, str):
                         yield frame
@@ -299,6 +309,46 @@ async def observe_task(
     finally:
         if pubsub is not None:
             await _close_pubsub(pubsub)
+
+
+#: How many recent persisted events a reattaching observer reads back.
+REPLAY_EVENT_LIMIT = 500
+
+
+async def _replayed_progress(
+    store: TaskStore,
+    user_id: uuid.UUID,
+    task_id: uuid.UUID,
+    view: _Observation,
+    snapshot: TaskSnapshot,
+) -> list[str]:
+    """Frames for the current generation's persisted tool progress.
+
+    Only the tool name is kept at rest, so a replayed call carries no
+    arguments and a replayed result no content; both are marked
+    ``replayed``.
+    """
+    events = await store.events_since(
+        user_id,
+        task_id,
+        after_seq=max(0, snapshot.event_seq - REPLAY_EVENT_LIMIT),
+        limit=REPLAY_EVENT_LIMIT,
+    )
+    frames: list[str] = []
+    for event in events:
+        if event.seq > snapshot.event_seq or event.kind not in {"tool_call", "tool_result"}:
+            continue
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if payload.get("epoch") != snapshot.content_generation:
+            continue  # an earlier attempt's progress
+        name = str(payload.get("name") or "tool")
+        data: dict[str, Any] = {"name": name, "replayed": True}
+        if event.kind == "tool_call":
+            data["arguments"] = {}
+        else:
+            data["result"] = ""
+        frames.append(view.frame(event.kind, data, evt_id=f"evt_{event.kind}_r{event.seq}"))
+    return frames
 
 
 async def _close_pubsub(pubsub: Any) -> None:

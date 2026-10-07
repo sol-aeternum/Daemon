@@ -856,3 +856,71 @@ async def test_a_refused_operation_stops_the_attempt(env: Env):
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await state.execution
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_reports_failure_is_recorded_as_failed(env: Env):
+    """#477: retry evidence must not claim a failed action succeeded."""
+
+    class _FailingTool(_CountingTool):
+        async def execute(self, **_kwargs: Any) -> str:
+            self.calls += 1
+            return json.dumps({"success": False, "error": "HTTP 502"})
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await FencedTool(_FailingTool(), env.tasks, accepted.task_id, claim.epoch).execute()
+    assert (
+        await env.pool.fetchval(
+            "SELECT outcome FROM task_operations WHERE task_id = $1", accepted.task_id
+        )
+        == "failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_preparation_makes_no_provider_backed_call(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """#477: preparation (memory retrieval may call the embedding provider)
+    starts only after a fresh cancel and suspension check."""
+    prepared = 0
+
+    async def counting_prompt(*_args: Any, **_kwargs: Any):
+        nonlocal prepared
+        prepared += 1
+        return "system", None
+
+    monkeypatch.setattr(runner, "_system_prompt", counting_prompt)
+    accepted = await accept_task(env)
+    real_settle = runner.settle_lost_attempt_holds
+
+    async def cancel_then_settle(*args: Any, **kwargs: Any) -> int:
+        await env.tasks.request_cancel(env.alice, accepted.task_id)
+        return await real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "settle_lost_attempt_holds", cancel_then_settle)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "cancelled"
+    )
+    assert prepared == 0
+
+
+@pytest.mark.asyncio
+async def test_a_regenerated_answer_discloses_the_interruption(env: Env, mock_llm: None):
+    """#477 (§4): an answer produced after an interrupted attempt says so."""
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.write_partial(accepted.task_id, first.epoch, content="Half", delta_seq=1)
+    await expire_lease(env, accepted.task_id)  # the worker died mid-answer
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    metadata = await env.pool.fetchval(
+        "SELECT metadata FROM messages WHERE id = $1", accepted.result_message_id
+    )
+    metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+    assert metadata["regenerated_after_interruption"] == 1
