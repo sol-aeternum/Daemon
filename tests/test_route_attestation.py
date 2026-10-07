@@ -867,3 +867,63 @@ def test_observed_values_are_recorded_jsonb_safe() -> None:
     assert check.observed["data_policy"] == {"training": "<str>", "retainsPrompts": "<int>"}
     json.dumps(check.observed)  # serialisable, with no NUL-bearing strings
     assert "\u0000" not in json.dumps(check.observed)
+
+
+@pytest.mark.asyncio
+async def test_stop_completes_when_a_check_absorbs_the_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #454: a library swallowing the cancel must not park the loop in a
+    full-interval sleep while shutdown waits for it."""
+    import asyncio
+
+    entered = asyncio.Event()
+    calls = 0
+
+    async def absorbing_check(_pool: Any) -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        if calls > 1:  # the loop carried on: end it so the test fails, not hangs
+            raise asyncio.CancelledError
+        entered.set()
+        try:
+            await asyncio.Event().wait()  # an in-flight HTTP request
+        except asyncio.CancelledError:
+            return {"routes": 0}  # as an HTTP client's cancel scope might
+        return {"routes": 0}
+
+    monkeypatch.setattr(attestation, "check_once", absorbing_check)
+    attestation._spawn(attestation._check_loop(object(), 3600))
+    await entered.wait()
+    await asyncio.wait_for(attestation.stop(), timeout=2)
+    assert calls == 1  # the absorbed cancel ended the loop
+    assert not attestation._tasks
+
+
+@pytest.mark.asyncio
+async def test_stop_is_bounded_for_a_task_that_ignores_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    monkeypatch.setattr(attestation, "STOP_TIMEOUT_S", 0.1)
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def stubborn() -> None:
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    attestation._spawn(stubborn())
+    await started.wait()  # (this module patches asyncio.sleep to a no-op)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        attestation.logger, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    await asyncio.wait_for(attestation.stop(), timeout=2)
+    assert any("did not stop" in warning for warning in warnings)
+    release.set()
