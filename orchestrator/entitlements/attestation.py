@@ -280,6 +280,8 @@ class AttestationSnapshot:
 
 _snapshot = AttestationSnapshot()
 _tasks: set[asyncio.Task[None]] = set()
+#: Longest that stop() waits for the refresh and check tasks to finish.
+STOP_TIMEOUT_S = 5.0
 #: Every revocation this process has observed or loaded. Monotonic for the life of
 #: the process and merged into every snapshot, so a failed write, a failed refresh or
 #: an older refresh that finishes last never re-admits a revoked baseline.
@@ -382,6 +384,19 @@ async def refresh(pool: Any) -> AttestationSnapshot:
         return _snapshot
 
 
+def _raise_if_cancelling() -> None:
+    """Honour a cancellation that a library absorbed (issue #454).
+
+    A cancel that lands inside an HTTP or database call can be consumed by
+    that library's own cancel-scope or timeout handling, so the call returns
+    normally. Without this check the loop would go back to sleep for a whole
+    interval while ``stop()`` waits for it.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError
+
+
 async def _refresh_loop(pool: Any, interval_s: float) -> None:
     while True:
         await asyncio.sleep(interval_s)
@@ -389,6 +404,7 @@ async def _refresh_loop(pool: Any, interval_s: float) -> None:
             await refresh(pool)
         except Exception:
             logger.warning("Route attestation refresh failed; keeping previous snapshot")
+        _raise_if_cancelling()
 
 
 def _monitored_routes() -> list[MonitorableRoute]:
@@ -419,6 +435,7 @@ async def check_once(pool: Any) -> dict[str, int]:
 async def _check_loop(pool: Any, interval_s: float) -> None:
     while True:
         await check_once(pool)
+        _raise_if_cancelling()
         await asyncio.sleep(interval_s)
 
 
@@ -437,11 +454,15 @@ async def stop() -> None:
     tasks = list(_tasks)
     for task in tasks:
         task.cancel()
-    for task in tasks:
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+    if tasks:
+        # Bounded: shutdown never waits indefinitely on a task that does not
+        # honour cancellation (issue #454); such a task is logged and dropped.
+        _, pending = await asyncio.wait(tasks, timeout=STOP_TIMEOUT_S)
+        for task in tasks:
+            if task in pending:
+                logger.warning("Route attestation task did not stop within %ss", STOP_TIMEOUT_S)
+            elif not task.cancelled():
+                task.exception()  # retrieve, so it is not reported as unobserved
     _tasks.clear()
 
 
