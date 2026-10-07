@@ -2413,6 +2413,36 @@ def _durable_request_fingerprint(
     )
 
 
+async def _refuse_if_task_active(
+    payload: ChatRequest, app_state: AppState, auth: AuthenticatedDevice
+) -> None:
+    """Raise 409 conversation_busy when a durable task is active in the conversation."""
+    if not payload.conversation_id or app_state.db_pool is None or app_state.memory_store is None:
+        return
+    try:
+        conversation_uuid = uuid.UUID(payload.conversation_id.replace("conv_", ""))
+    except ValueError:
+        return
+    try:
+        active = await task_store(app_state).active_for_conversation(
+            auth.user_id, conversation_uuid
+        )
+    except Exception:
+        # The database is unreachable: no worker can be advancing a task
+        # either, and request-bound chat keeps its own degradation path.
+        logger.warning("Active-task check failed; continuing", exc_info=True)
+        return
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "conversation_busy",
+                "message": "This conversation is still working on an earlier request",
+                "task_id": str(active.task_id),
+            },
+        )
+
+
 async def _durable_replay(
     payload: ChatRequest,
     request: Request,
@@ -2458,13 +2488,19 @@ async def _durable_replay(
                 "message": "This request key was already used for a different request",
             },
         ) from exc
-    except Exception:
-        if settings.durable_chat_enabled:
-            raise
-        # Durable chat is off: request-bound chat must not depend on the task
-        # tables. If they are unreachable, no worker can run a task either.
-        logger.warning("Task replay lookup failed; continuing request-bound", exc_info=True)
-        return None
+    except Exception as exc:
+        # Fail closed: this key may belong to accepted durable work (which
+        # the worker runs whatever the flag says), so running the request
+        # again request-bound could repeat it. The client retries.
+        logger.warning("Task replay lookup failed (key present)", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "replay_check_unavailable",
+                "message": "Could not check for an earlier copy of this request. Try again.",
+                "retryable": True,
+            },
+        ) from exc
     if existing is None:
         return None
     request_id = get_request_id(request) or new_request_id()
@@ -2669,6 +2705,12 @@ async def chat(
         )
         if durable is not None:
             return durable
+
+    # One active task per conversation applies to every new turn (§6): a
+    # request-bound turn (a client without the durable capabilities, council,
+    # or any turn while the flag is off) must not run beside a durable task
+    # that still owns this conversation.
+    await _refuse_if_task_active(payload, app_state, auth)
 
     # Initialize persistence with graceful degradation
     store = app_state.memory_store if app_state else None

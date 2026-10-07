@@ -907,3 +907,40 @@ async def test_client_without_reset_is_told_to_reopen_when_terminal_text_differs
     events = _events("".join(view.terminal(snapshot)))
     assert any(e == "error" and d["data"]["code"] == "task_regenerating" for e, d in events)
     assert not any(e == "task" and d["data"].get("reset") for e, d in events)
+
+
+@pytest.mark.asyncio
+async def test_failed_replay_check_fails_closed_even_with_the_flag_off(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: a key that may belong to durable work is never run again
+    request-bound because its lookup failed."""
+    from orchestrator.tasks.store import TaskStore
+
+    async def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise ConnectionError("database unavailable")
+
+    monkeypatch.setenv("DURABLE_CHAT_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(TaskStore, "find_by_key", unavailable)
+    response = await _post(api, key="maybe-accepted")
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "replay_check_unavailable"
+    assert await api.env.pool.fetchval("SELECT count(*) FROM messages") == 0
+
+
+@pytest.mark.asyncio
+async def test_request_bound_turns_respect_an_active_durable_task(api: Api):
+    """Review of #466: a client without the durable capabilities cannot run a
+    turn beside a durable task that still owns the conversation."""
+    accepted = await _submit(api, key="durable-first")
+    before = await api.env.pool.fetchval("SELECT count(*) FROM messages")
+    response = await api.client.post(
+        "/chat",
+        json={"message": "another question", "conversation_id": accepted["conversation_id"]},
+        headers={"X-Daemon-Client-Features": ""},
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "conversation_busy" and detail["task_id"] == accepted["id"]
+    assert await api.env.pool.fetchval("SELECT count(*) FROM messages") == before
