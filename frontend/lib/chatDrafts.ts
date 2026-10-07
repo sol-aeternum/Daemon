@@ -76,6 +76,8 @@ const pendingRestores = new Map<DraftEntry, string[]>();
 const held = new Map<string, HeldSubmission>();
 // Hydrated held submissions still waiting for their files.
 const heldRestores = new Map<string, string[]>();
+// Settles once held submissions' files are back after a reload (or at once).
+let heldHydrated: Promise<void> = Promise.resolve();
 
 function emit(): void {
   persist();
@@ -246,14 +248,17 @@ function hydrate(): void {
     }
   }
   const store = getAttachmentStore();
-  void store
-    ?.deleteSavedBefore(Date.now() - ATTACHMENT_TTL_MS)
-    .catch(() => undefined)
-    .then(() =>
-      pendingRestores.size > 0 || heldRestores.size > 0
-        ? restoreAttachments(generation)
-        : undefined,
-    );
+  heldHydrated = store
+    ? store
+        .deleteSavedBefore(Date.now() - ATTACHMENT_TTL_MS)
+        .catch(() => undefined)
+        .then(() =>
+          pendingRestores.size > 0 || heldRestores.size > 0
+            ? restoreAttachments(generation)
+            : undefined,
+        )
+        .catch(() => undefined)
+    : Promise.resolve();
   if (!store) {
     pendingRestores.clear();
     heldRestores.clear();
@@ -491,14 +496,20 @@ export function promoteHeldSubmission(
   emit();
 }
 
+/** Resolves once held submissions' files are back after a reload. */
+export function heldSubmissionsReady(): Promise<void> {
+  return heldHydrated;
+}
+
 /**
  * Put a held submission back in its conversation's composer, if that
  * composer is empty, so sending it again reuses its key. The submission stays
- * held. Returns whether it was restored.
+ * held. Returns whether it was restored. Await ``heldSubmissionsReady`` first
+ * after a reload: a submission whose files are still loading is not restored.
  */
 export function restoreHeldSubmission(key: string): boolean {
   const submission = held.get(key);
-  if (!submission) return false;
+  if (!submission || heldRestores.has(key)) return false;
   let entry = entries.get(submission.conversationId);
   if (entry) {
     const { input, pendingAttachments } = entry.snapshot;

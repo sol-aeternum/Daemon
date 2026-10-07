@@ -5,6 +5,7 @@ import * as auth from '../lib/auth';
 import {
   getChatDraft,
   heldSubmission,
+  heldSubmissionsReady,
   isHeldResend,
   latestHeldSubmission,
   promoteHeldSubmission,
@@ -20,10 +21,12 @@ import {
 
 class MemoryAttachmentStore implements AttachmentStore {
   records = new Map<string, File>();
+  gate: Promise<void> | null = null;
   async put({ id, file }: PersistedAttachment) {
     this.records.set(id, file);
   }
   async getMany(ids: string[]) {
+    if (this.gate) await this.gate;
     return ids.flatMap((id) => {
       const file = this.records.get(id);
       return file ? [{ id, file }] : [];
@@ -121,6 +124,25 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     const held = heldSubmission('key-1');
     expect(held?.input).toBe('Summarise the notes');
     expect(held?.pendingAttachments[0].id).toBe('att-1');
+  });
+
+  it('are restored only once their files are back after a reload', async () => {
+    sendFrom('conv-a', 'key-1');
+    await flush();
+    cleanup();
+    let open!: () => void;
+    store.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    await act(() => reloadChatDraftsForTests());
+    // Files still loading: restoring now would drop them.
+    expect(restoreHeldSubmission('key-1')).toBe(false);
+    open();
+    await act(() => heldSubmissionsReady());
+    expect(restoreHeldSubmission('key-1')).toBe(true);
+    expect(getChatDraft('conv-a').pendingAttachments.map((a) => a.id)).toEqual([
+      'att-1',
+    ]);
   });
 
   it('follow a new chat to its conversation and are released with the outcome', () => {

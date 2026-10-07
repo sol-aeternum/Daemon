@@ -19,6 +19,7 @@ import {
 } from '../lib/pendingSubmission';
 import {
   heldSubmission,
+  heldSubmissionsReady,
   isHeldResend,
   latestHeldSubmission,
   promoteHeldSubmission,
@@ -480,8 +481,9 @@ function ChatContent() {
   const activeSubmissionScopeRef = useRef<string | null>(null);
   // A new send starts with no key of its own until its transport assigns
   // one: an early Stop must never resolve an earlier submission's task.
-  const beginSend = () => {
-    activeSubmissionKeyRef.current = null;
+  const beginSend = (key: string | null = null) => {
+    // The key is known here for every keyed send; the transport confirms it.
+    activeSubmissionKeyRef.current = key;
     activeSubmissionScopeRef.current =
       currentIdRef.current || latestConversationIdRef.current || null;
   };
@@ -500,6 +502,14 @@ function ChatContent() {
   // that, so restoring a refused submission must wait until then.
   const composerSendInFlightRef = useRef(false);
   const deferredRestoresRef = useRef<string[]>([]);
+  // Keys this page resent (a held draft or a retry): a rejection of such a
+  // key is ambiguous, since the key may already belong to an accepted task.
+  const resentKeysRef = useRef(new Set<string>());
+  // Refused submissions waiting for an empty composer to return to.
+  const rejectedWaitingRef = useRef(new Set<string>());
+  const returnRejectedRef = useRef<((key: string) => Promise<void>) | null>(
+    null,
+  );
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -608,26 +618,29 @@ function ChatContent() {
       const rejection = getRequestRejection(message);
       if (rejection && activeSubmissionKeyRef.current) {
         const key = activeSubmissionKeyRef.current;
-        if (rejection.code === 'idempotency_conflict') {
-          // The key already belongs to an accepted request (for example a
-          // reselected file): show that task rather than run anything new.
+        if (
+          rejection.code === 'idempotency_conflict' ||
+          resentKeysRef.current.has(key)
+        ) {
+          // The key may already belong to an accepted request (a reselected
+          // file, or a resend refused by an outer limit before the replay
+          // check): resolve it with the server rather than release it.
           void reconcileWithServerRef.current?.(key);
-        } else {
+        } else if (composerSendInFlightRef.current) {
           // Refused before acceptance: nothing exists for this key. The text
-          // goes back in the composer, and a resend (perhaps with another
-          // model) is a new submission.
-          if (composerSendInFlightRef.current) {
-            deferredRestoresRef.current.push(key);
-          } else {
-            restoreHeldSubmission(key);
-            settleSubmission(key);
-          }
+          // goes back to the composer once the send has finished clearing it,
+          // and a resend (perhaps with another model) is a new submission.
+          deferredRestoresRef.current.push(key);
+        } else {
+          void returnRejectedRef.current?.(key);
         }
       }
       const taskStatusSeen = getDaemonTaskStatus(message);
       const outcomeKnown =
-        (!isAbort && !isDisconnect && !isError) ||
-        (taskStatusSeen !== null && TERMINAL_TASK_STATUSES.has(taskStatusSeen));
+        !rejection &&
+        ((!isAbort && !isDisconnect && !isError) ||
+          (taskStatusSeen !== null &&
+            TERMINAL_TASK_STATUSES.has(taskStatusSeen)));
       if (outcomeKnown && activeSubmissionKeyRef.current) {
         settleSubmission(activeSubmissionKeyRef.current);
       } else if (activeSubmissionKeyRef.current) {
@@ -767,7 +780,8 @@ function ChatContent() {
     // Retrying an unresolved turn resends it under its own key (a replay if
     // the backend already accepted it); a settled turn regenerates anew.
     const held = latestHeldSubmission(conversationId);
-    beginSend();
+    if (held) resentKeysRef.current.add(held.key);
+    beginSend(held?.key ?? null);
     void regenerate({
       body: {
         id: conversationId,
@@ -980,14 +994,14 @@ function ChatContent() {
     // unchanged (after a lost response or a reload) reuses its key, so the
     // backend replays what it already accepted. Anything else is new.
     const held = command ? undefined : latestHeldSubmission(conversationScope);
-    const key = isHeldResend(held, input, pendingAttachments)
-      ? held.key
-      : crypto.randomUUID();
+    const resend = isHeldResend(held, input, pendingAttachments);
+    const key = resend ? held.key : crypto.randomUUID();
+    if (resend) resentKeysRef.current.add(key);
     if (!command) draft.holdSubmission(key, input, pendingAttachments);
 
     composerSendInFlightRef.current = true;
     try {
-      beginSend();
+      beginSend(key);
       await sendMessage(
         { text: content },
         {
@@ -1011,8 +1025,7 @@ function ChatContent() {
     } finally {
       composerSendInFlightRef.current = false;
       for (const refused of deferredRestoresRef.current.splice(0)) {
-        restoreHeldSubmission(refused);
-        settleSubmission(refused);
+        void returnRejectedRef.current?.(refused);
       }
     }
   };
@@ -1062,11 +1075,13 @@ function ChatContent() {
         // Never accepted: the held draft goes back in the composer, so
         // sending it again reuses its key (safe even if it lands late).
         notFound: (key) => {
-          if (restoreHeldSubmission(key)) {
-            showError(
-              'Your message may not have been sent. It is back in the composer; send it again to retry.',
-            );
-          }
+          void heldSubmissionsReady().then(() => {
+            if (restoreHeldSubmission(key)) {
+              showError(
+                'Your message may not have been sent. It is back in the composer; send it again to retry.',
+              );
+            }
+          });
         },
         promote: (key, conversationId) => {
           promoteSubmission(key, conversationId);
@@ -1100,7 +1115,33 @@ function ChatContent() {
   );
   useEffect(() => {
     reconcileWithServerRef.current = reconcileWithServer;
-  }, [reconcileWithServer]);
+    // A refused submission goes back to its composer and is never lost: if
+    // the composer already holds a newer draft, it stays held until the
+    // composer is empty again.
+    returnRejectedRef.current = async (key: string) => {
+      await heldSubmissionsReady();
+      if (restoreHeldSubmission(key)) {
+        settleSubmission(key);
+      } else if (heldSubmission(key)) {
+        rejectedWaitingRef.current.add(key);
+        showError(
+          'Your earlier message was not sent. It will return to the composer when the composer is empty.',
+        );
+      } else {
+        settlePendingSubmission(key);
+      }
+    };
+  }, [reconcileWithServer, showError]);
+  useEffect(() => {
+    if (input || pendingAttachments.length > 0) return;
+    for (const key of rejectedWaitingRef.current) {
+      if (restoreHeldSubmission(key)) {
+        rejectedWaitingRef.current.delete(key);
+        settleSubmission(key);
+        break;
+      }
+    }
+  }, [input, pendingAttachments]);
   // After a reload (or on a later visit), resolve submissions whose outcome
   // this browser never saw, by key. Entries younger than a minute may still
   // be in flight in another tab and are left to it.
@@ -1109,6 +1150,7 @@ function ChatContent() {
     if (reconciledOnLoadRef.current) return;
     reconciledOnLoadRef.current = true;
     void (async () => {
+      await heldSubmissionsReady();
       const settledBefore = Date.now() - UNRESOLVED_MIN_AGE_MS;
       for (const { key, entry } of unresolvedSubmissions().slice(0, 10)) {
         if (entry.createdAt > settledBefore) continue;
@@ -1914,18 +1956,28 @@ function ChatContent() {
                                       null,
                                     attachments: [],
                                   };
-                                  beginSend();
+                                  // Held under a stable key like a
+                                  // composer send, so a retry replays it.
+                                  const text = `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`;
+                                  const scope =
+                                    currentId ||
+                                    latestConversationIdRef.current ||
+                                    null;
+                                  const held = latestHeldSubmission(scope);
+                                  const resend = isHeldResend(held, text, []);
+                                  const key = resend
+                                    ? held.key
+                                    : crypto.randomUUID();
+                                  if (resend) resentKeysRef.current.add(key);
+                                  draft.holdSubmission(key, text, []);
+                                  beginSend(key);
                                   void sendMessage(
-                                    {
-                                      text: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,
-                                    },
+                                    { text },
                                     {
                                       body: {
-                                        id:
-                                          currentId ||
-                                          latestConversationIdRef.current ||
-                                          null,
+                                        id: scope,
                                         model: activeModel,
+                                        idempotency_key: key,
                                       },
                                     },
                                   );
