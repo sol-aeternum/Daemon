@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   attachmentsForRetry,
   reconcileSubmission,
-  settledSubmission,
 } from '../lib/durableRecovery';
 
 const file = { id: 'f1', name: 'a.txt', text_content: 'secret' };
@@ -35,9 +34,10 @@ function deps(
     currentId: vi.fn(() => ids[Math.min(call++, ids.length - 1)]),
     taskForKey: vi.fn(async () => task),
     settle: vi.fn(),
-    track: vi.fn(),
+    record: vi.fn(),
     open: vi.fn(),
     showSaved: vi.fn(async () => {}),
+    lookupDelaysMs: [0, 0, 0],
   };
 }
 
@@ -62,7 +62,7 @@ describe('reconcileSubmission', () => {
     ]);
     await reconcileSubmission('k1', d);
     expect(d.settle).not.toHaveBeenCalled();
-    expect(d.track).toHaveBeenCalledWith({ key: 'k1', taskId: 't' });
+    expect(d.record).toHaveBeenCalledWith('k1', 't');
     expect(d.showSaved).toHaveBeenCalledWith('t');
   });
 
@@ -106,37 +106,22 @@ describe('reconcileSubmission', () => {
   });
 });
 
-describe('settledSubmission', () => {
-  const tracked = { key: 'k1', taskId: 't' };
-
-  it('settles once the followed task has ended', () => {
-    expect(
-      settledSubmission(tracked, {
-        activeTask: null,
-        latestTask: { id: 't', status: 'completed' },
-      }),
-    ).toBe('k1');
-    expect(
-      settledSubmission(tracked, {
-        activeTask: null,
-        latestTask: { id: 't', status: 'needs_attention' },
-      }),
-    ).toBe('k1');
+it('looks again while acceptance may still be committing', async () => {
+  const d = deps(null, [null, null]);
+  d.taskForKey.mockResolvedValueOnce(null).mockResolvedValueOnce({
+    id: 't',
+    conversationId: 'conv-new',
+    status: 'running',
   });
+  await reconcileSubmission('k1', d);
+  expect(d.taskForKey).toHaveBeenCalledTimes(2);
+  expect(d.open).toHaveBeenCalledWith('conv-new');
+});
 
-  it('keeps the key while the task runs or when the conversation says nothing of it', () => {
-    expect(
-      settledSubmission(tracked, {
-        activeTask: { id: 't' },
-        latestTask: { id: 't', status: 'running' },
-      }),
-    ).toBeNull();
-    expect(
-      settledSubmission(tracked, {
-        activeTask: null,
-        latestTask: { id: 'other', status: 'completed' },
-      }),
-    ).toBeNull();
-    expect(settledSubmission(null, { activeTask: null })).toBeNull();
-  });
+it('stops looking when the lookup itself fails', async () => {
+  const d = deps(null, [null]);
+  d.taskForKey.mockResolvedValueOnce(undefined as never);
+  await reconcileSubmission('k1', d);
+  expect(d.taskForKey).toHaveBeenCalledTimes(1);
+  expect(d.settle).not.toHaveBeenCalled();
 });

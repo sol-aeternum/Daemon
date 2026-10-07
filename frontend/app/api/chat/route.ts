@@ -1,5 +1,5 @@
 import type { ChatEvent } from '@/lib/events';
-import type { DaemonMessage } from '@/lib/chatMessages';
+import { TERMINAL_TASK_STATUSES, type DaemonMessage } from '@/lib/chatMessages';
 import { appendDaemonClientIpHeaders } from '../_lib/clientIp';
 
 const API_URLS = [
@@ -367,6 +367,9 @@ export async function POST(req: Request) {
         const decoder = new TextDecoder();
         let buffer = '';
         let sawToken = false;
+        // A durable stream is complete only once the task reported a terminal
+        // status; an earlier end is a disconnect (the task runs on).
+        let sawTerminalTask = !taskId;
 
         // Stop-button abort: when the browser-side `req.signal` fires (the user
         // clicked Stop), release the backend reader so the connection drops and
@@ -423,6 +426,12 @@ export async function POST(req: Request) {
 
               if (eventType === 'task') {
                 const task = payload?.data ?? {};
+                if (
+                  typeof task.status === 'string' &&
+                  TERMINAL_TASK_STATUSES.has(task.status)
+                ) {
+                  sawTerminalTask = true;
+                }
                 if (task.reset === true) {
                   if (textPartStarted) {
                     writer.write({ type: 'text-end', id: textPartId });
@@ -447,7 +456,13 @@ export async function POST(req: Request) {
                     sawToken = true;
                     writeText(task.content);
                   }
-                } else if (typeof task.task_id === 'string') {
+                }
+                // A reset can also carry the task's status (the terminal
+                // snapshot replacing uncommitted text): never drop it.
+                if (
+                  typeof task.task_id === 'string' &&
+                  (task.reset !== true || typeof task.status === 'string')
+                ) {
                   writeData([
                     {
                       type: 'task',
@@ -697,6 +712,13 @@ export async function POST(req: Request) {
           }
         } finally {
           req.signal.removeEventListener('abort', onAbort);
+        }
+        if (!sawTerminalTask && !streamFailed && !req.signal.aborted) {
+          // The observer ended early (e.g. a transient database error). Keep
+          // the submission unresolved so the client reconciles with the task.
+          errorText =
+            'The connection was interrupted. Your request is still being worked on; its result will appear here.';
+          streamFailed = true;
         }
       } catch {
         if (!req.signal.aborted) {

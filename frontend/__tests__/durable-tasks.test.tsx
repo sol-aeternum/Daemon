@@ -91,6 +91,61 @@ describe('durable chat route bridge', () => {
     expect(getDaemonMessageText(message)).toBe('Hi');
   });
 
+  it('reports a durable stream that ends before the task did as a disconnect', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          sse(
+            [
+              frame('task', { task_id: 'task-1', status: 'running' }),
+              frame('token', { text: 'Partial' }),
+            ],
+            { 'X-Daemon-Task-Id': 'task-1' },
+          ),
+        ),
+    );
+    const chunks = await readUIMessageChunks(
+      await POST(chatRequest({ id: 'conv-1' })),
+    );
+    // Not a normal finish: the client keeps the key and reconciles.
+    expect(chunks.some((chunk) => chunk.type === 'finish')).toBe(false);
+    expect(chunks.some((chunk) => chunk.type === 'error')).toBe(true);
+  });
+
+  it('finishes normally once the task reported a terminal status, also via a reset', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sse(
+          [
+            frame('token', { text: 'Uncommitted text' }),
+            frame('task', {
+              task_id: 'task-1',
+              status: 'cancelled',
+              reset: true,
+              content: 'Kept',
+            }),
+          ],
+          { 'X-Daemon-Task-Id': 'task-1' },
+        ),
+      ),
+    );
+    const chunks = await readUIMessageChunks(
+      await POST(chatRequest({ id: 'conv-1' })),
+    );
+    expect(chunks.some((chunk) => chunk.type === 'finish')).toBe(true);
+    const message = assemble(chunks);
+    const text = getDaemonMessageText(message);
+    expect(text.startsWith('Kept')).toBe(true); // then the cancellation notice
+    expect(text).not.toContain('Uncommitted');
+    const statuses = getDaemonDataEvents([message])
+      .filter((event) => event.type === 'task')
+      .map((event) => (event as { status?: string }).status);
+    expect(statuses).toContain('cancelled');
+  });
+
   it('forwards durable features only when the browser declared them', async () => {
     const fetchMock = vi.fn().mockResolvedValue(sse([]));
     vi.stubGlobal('fetch', fetchMock);

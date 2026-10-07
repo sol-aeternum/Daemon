@@ -6,13 +6,13 @@ import { chatTransportFetch } from '../lib/chatTransportFetch';
 import {
   attachmentsForRetry,
   reconcileSubmission,
-  settledSubmission,
   type LastTurn,
-  type TrackedSubmission,
 } from '../lib/durableRecovery';
 import {
   clearPendingSubmissions,
   promotePendingSubmission,
+  recordSubmissionTask,
+  settleFinishedSubmissions,
   settlePendingSubmission,
 } from '../lib/pendingSubmission';
 import type { HomeSuggestion } from '../lib/homeSuggestions';
@@ -462,8 +462,10 @@ function ChatContent() {
   const stopSeqRef = useRef(0);
   const stopInFlight =
     stoppingIn !== undefined && stoppingIn === (currentId ?? null);
-  // A running task whose submission key is settled when the follower sees it end.
-  const trackedSubmissionRef = useRef<TrackedSubmission | null>(null);
+  // The conversation the in-flight submission belongs to (``null``: an
+  // unnamed new chat, promoted when named). Stop settles that submission's
+  // key only when it stops a task in the same conversation.
+  const activeSubmissionScopeRef = useRef<string | null>(null);
   // Mirrors stopInFlight for submit handlers declared before it.
   const stopInFlightRef = useRef(false);
   // The open conversation id as of the latest render, for async callbacks.
@@ -545,6 +547,8 @@ function ChatContent() {
             },
             onSubmissionKey: (key) => {
               activeSubmissionKeyRef.current = key;
+              activeSubmissionScopeRef.current =
+                currentIdRef.current || latestConversationIdRef.current || null;
             },
           }),
       }),
@@ -585,13 +589,11 @@ function ChatContent() {
       if (outcomeKnown && activeSubmissionKeyRef.current) {
         settlePendingSubmission(activeSubmissionKeyRef.current);
       } else if (activeSubmissionKeyRef.current) {
+        // Unresolved: remember its task, so the key is settled when any
+        // later view of the conversation shows that task finished.
         const taskId = getDaemonTaskId(message);
-        if (taskId) {
-          trackedSubmissionRef.current = {
-            key: activeSubmissionKeyRef.current,
-            taskId,
-          };
-        }
+        if (taskId)
+          recordSubmissionTask(activeSubmissionKeyRef.current, taskId);
       }
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
@@ -621,6 +623,15 @@ function ChatContent() {
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  // As soon as the stream names its task, store it with the submission.
+  const streamedTaskId = isLoading
+    ? getDaemonTaskId(messages[messages.length - 1])
+    : null;
+  useEffect(() => {
+    if (streamedTaskId && activeSubmissionKeyRef.current) {
+      recordSubmissionTask(activeSubmissionKeyRef.current, streamedTaskId);
+    }
+  }, [streamedTaskId]);
   // A different sign-in must never reuse another account's pending keys.
   // (A token refresh in another tab is not an account change: clearing then
   // would let a retry run accepted work twice.)
@@ -647,20 +658,19 @@ function ChatContent() {
     conversation: followedConversation,
     isStreaming: isLoading,
     refresh: refreshCurrentConversation,
-    onUpdate: (conversation) => {
-      setMessages(conversation.messages);
-      // A followed task that ended settles its submission: retyping the
-      // request later is a new run, not a replay.
-      const settled = settledSubmission(
-        trackedSubmissionRef.current,
-        conversation,
-      );
-      if (settled) {
-        settlePendingSubmission(settled);
-        trackedSubmissionRef.current = null;
-      }
-    },
+    onUpdate: (conversation) => setMessages(conversation.messages),
   });
+  // Whenever a conversation's server state is seen (opened, refreshed or
+  // followed), settle submissions whose task it shows has finished: retyping
+  // such a request later is a new run, not a replay. Covers tasks that ended
+  // while another conversation was open, and survives reloads.
+  useEffect(() => {
+    if (currentConversation) {
+      settleFinishedSubmissions(currentConversation, (status) =>
+        TERMINAL_TASK_STATUSES.has(status),
+      );
+    }
+  }, [currentConversation]);
 
   useEffect(() => {
     return subscribeAuthGeneration(() => {
@@ -941,9 +951,7 @@ function ChatContent() {
         currentId: () => currentIdRef.current,
         taskForKey,
         settle: settlePendingSubmission,
-        track: (submission) => {
-          trackedSubmissionRef.current = submission;
-        },
+        record: recordSubmissionTask,
         // A new chat accepted before its conversation id reached this page:
         // the follower then shows the task's progress or result.
         open: switchConversation,
@@ -968,13 +976,18 @@ function ChatContent() {
   const beforeStop = useCallback((): Promise<StopOutcome> | void => {
     // Settle and reconcile the submission this Stop was for, even if another
     // one starts before the server answers.
-    const key = activeSubmissionKeyRef.current;
+    const scope =
+      currentIdRef.current || latestConversationIdRef.current || null;
+    // Only this conversation's submission: a pending one from elsewhere
+    // must keep its key whatever happens to the task stopped here.
+    const key =
+      activeSubmissionScopeRef.current === scope
+        ? activeSubmissionKeyRef.current
+        : null;
     const confirmation = cancelActiveTask();
     if (!confirmation) return;
     const seq = ++stopSeqRef.current;
-    setStoppingIn(
-      currentIdRef.current || latestConversationIdRef.current || null,
-    );
+    setStoppingIn(scope);
     return confirmation.then((outcome) => {
       if (outcome !== 'unconfirmed' && key) settlePendingSubmission(key);
       if (seq === stopSeqRef.current) setStoppingIn(undefined);
@@ -1259,6 +1272,9 @@ function ChatContent() {
     }
     if (lastTurnRef.current?.conversationId === null) {
       lastTurnRef.current = { ...lastTurnRef.current, conversationId };
+    }
+    if (activeSubmissionScopeRef.current === null) {
+      activeSubmissionScopeRef.current = conversationId;
     }
     // A Stop pressed before the new chat was named belongs to it.
     setStoppingIn((previous) =>

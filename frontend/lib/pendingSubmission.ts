@@ -28,9 +28,10 @@ const ITEM_PREFIX = 'daemon.pendingSubmission.v3:';
 /**
  * How long an unresolved submission stays retryable under its key. The
  * backend keeps keys for the task's lifetime; this only bounds local storage.
+ * There is deliberately no count limit: evicting an unresolved key could let
+ * a retry run accepted work twice. Entries leave when settled or expired.
  */
 export const PENDING_SUBMISSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const MAX_PENDING_SUBMISSIONS = 50;
 
 type PendingSubmission = {
   fingerprint: string;
@@ -39,6 +40,8 @@ type PendingSubmission = {
   /** Conversation the original request named (null for a new chat). */
   requestConversationId: string | null;
   createdAt: number;
+  /** The durable task the backend created for it, once known. */
+  taskId?: string;
 };
 
 export type SubmissionIdentity = {
@@ -175,12 +178,6 @@ export function keyForSubmission(
         requestConversationId: match[1].requestConversationId,
       };
     }
-    for (const [oldKey] of live.slice(
-      0,
-      Math.max(0, live.length - MAX_PENDING_SUBMISSIONS + 1),
-    )) {
-      store.removeItem(ITEM_PREFIX + oldKey);
-    }
     const key = crypto.randomUUID();
     const entry: PendingSubmission = {
       fingerprint,
@@ -211,6 +208,54 @@ export function promotePendingSubmission(
     );
   } catch {
     // Storage unavailable: the resend simply gets a new key.
+  }
+}
+
+/** Remember which task the backend created for a submission. */
+export function recordSubmissionTask(key: string, taskId: string): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    const entry = readEntry(store, ITEM_PREFIX + key);
+    if (!entry || entry.taskId === taskId) return;
+    store.setItem(ITEM_PREFIX + key, JSON.stringify({ ...entry, taskId }));
+  } catch {
+    // Storage unavailable: settlement then relies on the stream's outcome.
+  }
+}
+
+type ConversationTasks = {
+  id: string;
+  activeTask?: { id: string } | null;
+  latestTask?: { id: string; status: string } | null;
+};
+
+/**
+ * Settle submissions of ``conversation`` whose task it shows has finished
+ * (its latest task, in a terminal state, and not active). Works after a
+ * reload or on another visit: the task id is stored with the submission.
+ */
+export function settleFinishedSubmissions(
+  conversation: ConversationTasks,
+  isTerminal: (status: string) => boolean,
+): void {
+  const latest = conversation.latestTask;
+  if (
+    !latest ||
+    !isTerminal(latest.status) ||
+    conversation.activeTask?.id === latest.id
+  )
+    return;
+  const store = storage();
+  if (!store) return;
+  try {
+    for (const [key, entry] of entries(store, Date.now())) {
+      if (entry.taskId === latest.id && entry.scope === conversation.id) {
+        store.removeItem(ITEM_PREFIX + key);
+      }
+    }
+  } catch {
+    // Nothing to settle.
   }
 }
 

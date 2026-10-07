@@ -4,9 +4,10 @@ import { chatTransportFetch } from '../lib/chatTransportFetch';
 import {
   clearPendingSubmissions,
   keyForSubmission,
-  MAX_PENDING_SUBMISSIONS,
   PENDING_SUBMISSION_TTL_MS,
   promotePendingSubmission,
+  recordSubmissionTask,
+  settleFinishedSubmissions,
   settlePendingSubmission,
 } from '../lib/pendingSubmission';
 
@@ -153,17 +154,52 @@ it('keeps a key the caller already chose', async () => {
   expect(body.idempotency_key).toBe('retry-same');
 });
 
-it('bounds storage by age and count, and clears on sign-in changes', () => {
+it('bounds storage by age only, never evicting unresolved keys, and clears on sign-in changes', () => {
   const now = 1_000_000;
   const old = keyForSubmission({ text: 'old' }, null, now).key;
   const later = now + PENDING_SUBMISSION_TTL_MS + 1;
   expect(keyForSubmission({ text: 'old' }, null, later).key).not.toBe(old);
-  for (let index = 0; index < MAX_PENDING_SUBMISSIONS + 5; index += 1) {
+  const first = keyForSubmission({ text: 'q0' }, null, later).key;
+  for (let index = 1; index < 80; index += 1) {
     keyForSubmission({ text: `q${index}` }, null, later + index);
   }
-  expect(storage.length).toBe(MAX_PENDING_SUBMISSIONS);
+  // Review of #467: the oldest unresolved submission keeps its key.
+  expect(keyForSubmission({ text: 'q0' }, null, later + 100).key).toBe(first);
   clearPendingSubmissions();
   expect(storage.length).toBe(0);
+});
+
+it('settles a submission once its conversation shows that task finished', () => {
+  const { key } = keyForSubmission({ text: 'hello' }, 'conv-a');
+  recordSubmissionTask(key, 'task-1');
+  const terminal = (status: string) => status === 'completed';
+  // Still running, or another task: kept.
+  settleFinishedSubmissions(
+    {
+      id: 'conv-a',
+      activeTask: { id: 'task-1' },
+      latestTask: { id: 'task-1', status: 'running' },
+    },
+    terminal,
+  );
+  settleFinishedSubmissions(
+    {
+      id: 'conv-a',
+      activeTask: null,
+      latestTask: { id: 'task-2', status: 'completed' },
+    },
+    terminal,
+  );
+  expect(keyForSubmission({ text: 'hello' }, 'conv-a').key).toBe(key);
+  settleFinishedSubmissions(
+    {
+      id: 'conv-a',
+      activeTask: null,
+      latestTask: { id: 'task-1', status: 'completed' },
+    },
+    terminal,
+  );
+  expect(keyForSubmission({ text: 'hello' }, 'conv-a').key).not.toBe(key);
 });
 
 it('never stores the submitted text', () => {
