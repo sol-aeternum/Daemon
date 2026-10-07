@@ -1,4 +1,9 @@
-import { TERMINAL_TASK_STATUSES } from './chatMessages';
+import {
+  getDaemonTaskId,
+  isRequestBound,
+  TERMINAL_TASK_STATUSES,
+  type DaemonMessage,
+} from './chatMessages';
 
 /** Files of the latest submitted turn and the conversation they were sent to. */
 export type LastTurn = {
@@ -32,6 +37,8 @@ type ReconcileDeps = {
   settle: (key: string) => void;
   /** Remember the submission's task, so its key is settled once it ends. */
   record: (key: string, taskId: string) => void;
+  /** The submission belongs to the task's conversation (a new chat's is named). */
+  promote: (key: string, conversationId: string) => void;
   open: (conversationId: string) => void;
   /** Show the server's copy of the open conversation's turn for this task. */
   showSaved: (taskId: string) => Promise<void>;
@@ -66,12 +73,36 @@ export async function reconcileSubmission(
     if (task !== null) break; // found, or the lookup itself failed
   }
   if (!task) return;
-  if (TERMINAL_TASK_STATUSES.has(task.status)) deps.settle(key);
-  else deps.record(key, task.id);
+  if (TERMINAL_TASK_STATUSES.has(task.status)) {
+    deps.settle(key);
+  } else {
+    deps.promote(key, task.conversationId);
+    deps.record(key, task.id);
+  }
   const now = deps.currentId();
   if (now === task.conversationId) {
     await deps.showSaved(task.id);
   } else if (startedIn === null && now === null) {
     deps.open(task.conversationId);
   }
+}
+
+/**
+ * Whether this client should detach from the durable task it is streaming:
+ * the user has opened another conversation than the one the stream belongs
+ * to. Detaching only aborts the observer; the task keeps running. Request-
+ * bound streams (where aborting would cancel) are never detached here.
+ */
+export function shouldDetachStream(
+  isStreaming: boolean,
+  latest: DaemonMessage | undefined,
+  streamConversationId: string | null,
+  openConversationId: string | null,
+): boolean {
+  return (
+    isStreaming &&
+    getDaemonTaskId(latest) !== null &&
+    !isRequestBound(latest) &&
+    streamConversationId !== openConversationId
+  );
 }

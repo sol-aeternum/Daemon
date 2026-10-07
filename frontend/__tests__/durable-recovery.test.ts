@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   attachmentsForRetry,
   reconcileSubmission,
+  shouldDetachStream,
 } from '../lib/durableRecovery';
+import type { DaemonMessage } from '../lib/chatMessages';
 
 const file = { id: 'f1', name: 'a.txt', text_content: 'secret' };
 
@@ -35,6 +37,7 @@ function deps(
     taskForKey: vi.fn(async () => task),
     settle: vi.fn(),
     record: vi.fn(),
+    promote: vi.fn(),
     open: vi.fn(),
     showSaved: vi.fn(async () => {}),
     lookupDelaysMs: [0, 0, 0],
@@ -115,6 +118,8 @@ it('looks again while acceptance may still be committing', async () => {
   });
   await reconcileSubmission('k1', d);
   expect(d.taskForKey).toHaveBeenCalledTimes(2);
+  // Review of #467: the pending key now belongs to the recovered chat.
+  expect(d.promote).toHaveBeenCalledWith('k1', 'conv-new');
   expect(d.open).toHaveBeenCalledWith('conv-new');
 });
 
@@ -124,4 +129,31 @@ it('stops looking when the lookup itself fails', async () => {
   await reconcileSubmission('k1', d);
   expect(d.taskForKey).toHaveBeenCalledTimes(1);
   expect(d.settle).not.toHaveBeenCalled();
+});
+
+describe('shouldDetachStream', () => {
+  const durable = {
+    id: 'm',
+    role: 'assistant',
+    parts: [{ type: 'data-event', data: { type: 'task', task_id: 't' } }],
+  } as unknown as DaemonMessage;
+  const requestBound = {
+    id: 'm',
+    role: 'assistant',
+    parts: [{ type: 'data-event', data: { type: 'request_bound' } }],
+  } as unknown as DaemonMessage;
+
+  it('detaches a durable stream when another conversation is opened', () => {
+    // Review of #467: Stop in B must never cancel A's task.
+    expect(shouldDetachStream(true, durable, 'conv-a', 'conv-b')).toBe(true);
+    expect(shouldDetachStream(true, durable, 'conv-a', null)).toBe(true);
+  });
+
+  it('keeps streaming in its own conversation, and never aborts request-bound turns', () => {
+    expect(shouldDetachStream(true, durable, 'conv-a', 'conv-a')).toBe(false);
+    expect(shouldDetachStream(false, durable, 'conv-a', 'conv-b')).toBe(false);
+    expect(shouldDetachStream(true, requestBound, 'conv-a', 'conv-b')).toBe(
+      false,
+    );
+  });
 });

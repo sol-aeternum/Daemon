@@ -11,20 +11,24 @@
  * - One item per submission: tabs never read-modify-write a shared list, so
  *   concurrent submissions cannot overwrite or resurrect each other, and
  *   settling one leaves the others.
- * - A request matches only if text, model, provider and attachments match:
- *   a changed request is a new submission (the backend would otherwise answer
- *   409 idempotency_conflict).
+ * - A request matches if its text and attachments match. The model and
+ *   provider it was accepted with are stored and replayed exactly, so a resend
+ *   after a reload (when the picker may have reset to auto) reattaches to the
+ *   accepted task instead of starting a second one.
  * - A new chat's item follows the conversation the backend names (its match
  *   scope), while remembering the request's original scope (no conversation)
  *   so a resend replays exactly the accepted request.
- * - Only non-reversible fingerprints are stored, never the request content.
+ * - Only salted SHA-256 fingerprints are stored, never the request content.
+ *   The random per-browser salt is replaced on sign-in/sign-out. Without
+ *   WebCrypto (an insecure context) every request gets a fresh key.
  * - Items are cleared on sign-in/sign-out; the backend scopes keys per
  *   account in any case.
  * - Storage failures (private mode, blocked storage) fall back to a fresh key
  *   per request, which was the behaviour before durable tasks.
  */
 
-const ITEM_PREFIX = 'daemon.pendingSubmission.v3:';
+const ITEM_PREFIX = 'daemon.pendingSubmission.v4:';
+const SALT_ITEM = 'daemon.pendingSubmission.salt';
 /**
  * How long an unresolved submission stays retryable under its key. The
  * backend keeps keys for the task's lifetime; this only bounds local storage.
@@ -40,6 +44,9 @@ type PendingSubmission = {
   /** Conversation the original request named (null for a new chat). */
   requestConversationId: string | null;
   createdAt: number;
+  /** The model and provider it was accepted with, replayed on a resend. */
+  model?: unknown;
+  provider?: unknown;
   /** The durable task the backend created for it, once known. */
   taskId?: string;
 };
@@ -55,16 +62,25 @@ export type PendingKey = {
   key: string;
   /** The conversation id the original request was sent with. */
   requestConversationId: string | null;
+  /** The model and provider to send (the original ones on a resend). */
+  model: unknown;
+  provider: unknown;
 };
 
-/** FNV-1a over a canonical string: stable and non-reversible enough for matching. */
-function fnv(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
+function hex(bytes: ArrayBuffer | Uint8Array): string {
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/** This browser's random salt, created on first use. */
+function salt(store: Storage): string {
+  let value = store.getItem(SALT_ITEM);
+  if (!value || !/^[0-9a-f]{64}$/.test(value)) {
+    value = hex(crypto.getRandomValues(new Uint8Array(32)));
+    store.setItem(SALT_ITEM, value);
   }
-  return `${text.length}:${hash.toString(16)}`;
+  return value;
 }
 
 function attachmentShape(attachments: unknown): unknown[] {
@@ -78,7 +94,7 @@ function attachmentShape(attachments: unknown): unknown[] {
       record.content,
       record.data,
       record.url,
-    ].find((value) => typeof value === 'string') as string | undefined;
+    ].find((value) => typeof value === 'string');
     // The backend fingerprints the whole serialized attachment, including
     // its per-selection id: a reselected file is a different request.
     return {
@@ -87,20 +103,26 @@ function attachmentShape(attachments: unknown): unknown[] {
       name: record.name ?? null,
       type: record.mime_type ?? record.type ?? record.mimeType ?? null,
       size: record.size ?? null,
-      content: content ? fnv(content) : null,
+      content: content ?? null,
     };
   });
 }
 
-/** Fingerprint of everything that decides whether a resend is the same request. */
-export function submissionFingerprint(identity: SubmissionIdentity): string {
-  return fnv(
-    JSON.stringify([
-      identity.text,
-      identity.model ?? 'auto',
-      identity.provider ?? null,
-      attachmentShape(identity.attachments),
-    ]),
+/**
+ * Salted SHA-256 of what decides whether a resend is the same request: its
+ * text and attachments (the model and provider are replayed, not matched).
+ */
+export async function submissionFingerprint(
+  identity: SubmissionIdentity,
+  saltHex: string,
+): Promise<string> {
+  const canonical = JSON.stringify([
+    saltHex,
+    identity.text,
+    attachmentShape(identity.attachments),
+  ]);
+  return hex(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)),
   );
 }
 
@@ -153,42 +175,50 @@ function entries(
 }
 
 /**
- * The key for this submission: an unresolved matching submission's key and
- * original scope, or a new key recorded as pending.
+ * The key for this submission: an unresolved matching submission's key,
+ * original scope, model and provider, or a new key recorded as pending.
  */
-export function keyForSubmission(
+export async function keyForSubmission(
   identity: SubmissionIdentity,
   conversationId: string | null,
   now: number = Date.now(),
-): PendingKey {
-  const fingerprint = submissionFingerprint(identity);
+): Promise<PendingKey> {
+  const fresh: PendingKey = {
+    key: crypto.randomUUID(),
+    requestConversationId: conversationId,
+    model: identity.model,
+    provider: identity.provider,
+  };
   const store = storage();
-  if (!store) {
-    return { key: crypto.randomUUID(), requestConversationId: conversationId };
-  }
+  if (!store || !globalThis.crypto?.subtle) return fresh;
   try {
+    const fingerprint = await submissionFingerprint(identity, salt(store));
     const live = entries(store, now);
     const match = live.find(
       ([, entry]) =>
         entry.fingerprint === fingerprint && entry.scope === conversationId,
     );
     if (match) {
+      const [key, entry] = match;
       return {
-        key: match[0],
-        requestConversationId: match[1].requestConversationId,
+        key,
+        requestConversationId: entry.requestConversationId,
+        model: 'model' in entry ? entry.model : identity.model,
+        provider: 'provider' in entry ? entry.provider : identity.provider,
       };
     }
-    const key = crypto.randomUUID();
     const entry: PendingSubmission = {
       fingerprint,
       scope: conversationId,
       requestConversationId: conversationId,
       createdAt: now,
+      model: identity.model ?? null,
+      provider: identity.provider ?? null,
     };
-    store.setItem(ITEM_PREFIX + key, JSON.stringify(entry));
-    return { key, requestConversationId: conversationId };
+    store.setItem(ITEM_PREFIX + fresh.key, JSON.stringify(entry));
+    return fresh;
   } catch {
-    return { key: crypto.randomUUID(), requestConversationId: conversationId };
+    return fresh;
   }
 }
 
@@ -296,6 +326,8 @@ export function clearPendingSubmissions(): void {
     for (const [key] of entries(store, Date.now())) {
       store.removeItem(ITEM_PREFIX + key);
     }
+    // A new account gets a new salt: fingerprints never correlate across.
+    store.removeItem(SALT_ITEM);
   } catch {
     // Nothing to clear.
   }

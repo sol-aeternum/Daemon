@@ -6,6 +6,7 @@ import { chatTransportFetch } from '../lib/chatTransportFetch';
 import {
   attachmentsForRetry,
   reconcileSubmission,
+  shouldDetachStream,
   type LastTurn,
 } from '../lib/durableRecovery';
 import {
@@ -619,6 +620,22 @@ function ChatContent() {
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  // Leaving the conversation whose durable task this client is streaming
+  // detaches from it (the task runs on server-side, and its own page follows
+  // it); it never cancels it, and the newly opened conversation loads and
+  // works independently. Request-bound streams are left as they were.
+  useEffect(() => {
+    if (
+      shouldDetachStream(
+        isLoading,
+        messages[messages.length - 1],
+        activeSubmissionScopeRef.current,
+        currentId ?? null,
+      )
+    ) {
+      stopChat();
+    }
+  }, [currentId, isLoading, messages, stopChat]);
   // As soon as the stream names its task, store it with the submission.
   const streamedTaskId = isLoading
     ? getDaemonTaskId(messages[messages.length - 1])
@@ -968,6 +985,15 @@ function ChatContent() {
         taskForKey,
         settle: settlePendingSubmission,
         record: recordSubmissionTask,
+        promote: (key, conversationId) => {
+          promotePendingSubmission(key, conversationId);
+          if (
+            activeSubmissionKeyRef.current === key &&
+            activeSubmissionScopeRef.current === null
+          ) {
+            activeSubmissionScopeRef.current = conversationId;
+          }
+        },
         // A new chat accepted before its conversation id reached this page:
         // the follower then shows the task's progress or result.
         open: switchConversation,

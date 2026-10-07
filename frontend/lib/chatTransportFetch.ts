@@ -72,7 +72,7 @@ export async function chatTransportFetch(
   // after a lost response or a reload replays the accepted task instead of
   // creating a second one.
   if (typeof body.idempotency_key !== 'string') {
-    const pending = keyForSubmission(
+    const pending = await keyForSubmission(
       {
         text: lastUserText(body.messages),
         model: body.model,
@@ -81,10 +81,15 @@ export async function chatTransportFetch(
       },
       typeof body.id === 'string' ? body.id : null,
     );
+    assertCurrent();
     body.idempotency_key = pending.key;
-    // A resend of a new chat that the backend already accepted must replay
-    // the original request exactly, including its (absent) conversation id.
+    // A resend of a request the backend may already have accepted replays it
+    // exactly: its (possibly absent) conversation id, and the model and
+    // provider it was sent with, even if the picker has since reset.
     body.id = pending.requestConversationId;
+    body.model = pending.model ?? 'auto';
+    if (pending.provider == null) delete body.provider;
+    else body.provider = pending.provider;
   }
   scope.onSubmissionKey?.(body.idempotency_key as string);
   return send(requestInput, init, body);

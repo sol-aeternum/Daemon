@@ -89,12 +89,40 @@ it('keeps one entry per submission across conversations', async () => {
   expect(await send('question B', { conversationId: 'conv-b' })).not.toBe(b);
 });
 
-it('treats a changed model or attachment as a new submission', async () => {
+it('treats changed attachments as a new submission', async () => {
   const base = await send('hello');
-  expect(await send('hello', { model: 'other-model' })).not.toBe(base);
   expect(
     await send('hello', { attachments: [{ name: 'a.txt', content: 'x' }] }),
   ).not.toBe(base);
+});
+
+it('replays the original model when the picker reset before a resend', async () => {
+  // Review of #467: a reload resets the picker to auto; the resend must
+  // reattach to the accepted task, sent with its original model.
+  const base = await send('hello', { model: 'chosen-model' });
+  expect(await send('hello', { model: 'auto' })).toBe(base);
+  const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+  const body = JSON.parse(
+    (calls[calls.length - 1][1] as RequestInit).body as string,
+  );
+  expect(body.model).toBe('chosen-model');
+});
+
+it('uses a salted digest, replaced on sign-in changes', async () => {
+  await keyForSubmission({ text: 'hello' }, 'conv-a');
+  const entry = JSON.parse(
+    storage.getItem(
+      [...Array(storage.length).keys()]
+        .map((index) => storage.key(index) ?? '')
+        .find((key) => key.startsWith('daemon.pendingSubmission.v4:')) ?? '',
+    ) ?? '{}',
+  );
+  expect(entry.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  const saltBefore = storage.getItem('daemon.pendingSubmission.salt');
+  expect(saltBefore).toMatch(/^[0-9a-f]{64}$/);
+  clearPendingSubmissions();
+  await keyForSubmission({ text: 'hello' }, 'conv-a');
+  expect(storage.getItem('daemon.pendingSubmission.salt')).not.toBe(saltBefore);
 });
 
 it('replays a new chat exactly as first sent after the backend names it', async () => {
@@ -129,12 +157,14 @@ it('fingerprints the attachment fields the page actually sends', async () => {
   ).not.toBe(first);
 });
 
-it('keeps concurrent submissions from different tabs independent', () => {
+it('keeps concurrent submissions from different tabs independent', async () => {
   // Two tabs each record a submission; neither rewrites the other's item.
-  const tabA = keyForSubmission({ text: 'from tab A' }, 'conv-a').key;
-  const tabB = keyForSubmission({ text: 'from tab B' }, 'conv-b').key;
+  const tabA = (await keyForSubmission({ text: 'from tab A' }, 'conv-a')).key;
+  const tabB = (await keyForSubmission({ text: 'from tab B' }, 'conv-b')).key;
   settlePendingSubmission(tabB);
-  expect(keyForSubmission({ text: 'from tab A' }, 'conv-a').key).toBe(tabA);
+  expect((await keyForSubmission({ text: 'from tab A' }, 'conv-a')).key).toBe(
+    tabA,
+  );
 });
 
 it('keeps a key the caller already chose', async () => {
@@ -155,23 +185,27 @@ it('keeps a key the caller already chose', async () => {
   expect(body.idempotency_key).toBe('retry-same');
 });
 
-it('bounds storage by age only, never evicting unresolved keys, and clears on sign-in changes', () => {
+it('bounds storage by age only, never evicting unresolved keys, and clears on sign-in changes', async () => {
   const now = 1_000_000;
-  const old = keyForSubmission({ text: 'old' }, null, now).key;
+  const old = (await keyForSubmission({ text: 'old' }, null, now)).key;
   const later = now + PENDING_SUBMISSION_TTL_MS + 1;
-  expect(keyForSubmission({ text: 'old' }, null, later).key).not.toBe(old);
-  const first = keyForSubmission({ text: 'q0' }, null, later).key;
+  expect((await keyForSubmission({ text: 'old' }, null, later)).key).not.toBe(
+    old,
+  );
+  const first = (await keyForSubmission({ text: 'q0' }, null, later)).key;
   for (let index = 1; index < 80; index += 1) {
-    keyForSubmission({ text: `q${index}` }, null, later + index);
+    await keyForSubmission({ text: `q${index}` }, null, later + index);
   }
   // Review of #467: the oldest unresolved submission keeps its key.
-  expect(keyForSubmission({ text: 'q0' }, null, later + 100).key).toBe(first);
+  expect((await keyForSubmission({ text: 'q0' }, null, later + 100)).key).toBe(
+    first,
+  );
   clearPendingSubmissions();
   expect(storage.length).toBe(0);
 });
 
-it('settles a submission once its conversation shows that task finished', () => {
-  const { key } = keyForSubmission({ text: 'hello' }, 'conv-a');
+it('settles a submission once its conversation shows that task finished', async () => {
+  const { key } = await keyForSubmission({ text: 'hello' }, 'conv-a');
   recordSubmissionTask(key, 'task-1');
   const terminal = (status: string) => status === 'completed';
   // Still running, or another task: kept.
@@ -191,7 +225,7 @@ it('settles a submission once its conversation shows that task finished', () => 
     },
     terminal,
   );
-  expect(keyForSubmission({ text: 'hello' }, 'conv-a').key).toBe(key);
+  expect((await keyForSubmission({ text: 'hello' }, 'conv-a')).key).toBe(key);
   settleFinishedSubmissions(
     {
       id: 'conv-a',
@@ -200,21 +234,23 @@ it('settles a submission once its conversation shows that task finished', () => 
     },
     terminal,
   );
-  expect(keyForSubmission({ text: 'hello' }, 'conv-a').key).not.toBe(key);
+  expect((await keyForSubmission({ text: 'hello' }, 'conv-a')).key).not.toBe(
+    key,
+  );
 });
 
-it('never stores the submitted text', () => {
-  keyForSubmission({ text: 'a private question' }, 'conv-a');
+it('never stores the submitted text', async () => {
+  await keyForSubmission({ text: 'a private question' }, 'conv-a');
   const stored = storage.getItem(storage.key(0) ?? '') ?? '';
   expect(stored).toBeTruthy();
   expect(stored).not.toContain('private');
   expect(stored).not.toContain('question');
 });
 
-it('falls back to a fresh key when storage is unavailable', () => {
+it('falls back to a fresh key when storage is unavailable', async () => {
   vi.stubGlobal('localStorage', undefined);
-  expect(keyForSubmission({ text: 'hi' }, null).key).not.toBe(
-    keyForSubmission({ text: 'hi' }, null).key,
+  expect((await keyForSubmission({ text: 'hi' }, null)).key).not.toBe(
+    (await keyForSubmission({ text: 'hi' }, null)).key,
   );
 });
 
@@ -275,10 +311,10 @@ it('sends suggestions request-bound: features kept, no key recorded', async () =
   expect(storage.length).toBe(0); // no pending submission the request lacks
 });
 
-it("lists a conversation's unresolved submissions with known tasks", () => {
-  const a = keyForSubmission({ text: 'first' }, 'conv-a').key;
-  keyForSubmission({ text: 'no task yet' }, 'conv-a');
-  const other = keyForSubmission({ text: 'elsewhere' }, 'conv-b').key;
+it("lists a conversation's unresolved submissions with known tasks", async () => {
+  const a = (await keyForSubmission({ text: 'first' }, 'conv-a')).key;
+  await keyForSubmission({ text: 'no task yet' }, 'conv-a');
+  const other = (await keyForSubmission({ text: 'elsewhere' }, 'conv-b')).key;
   recordSubmissionTask(a, 'task-a');
   recordSubmissionTask(other, 'task-b');
   expect(pendingTasksIn('conv-a')).toEqual([{ key: a, taskId: 'task-a' }]);
