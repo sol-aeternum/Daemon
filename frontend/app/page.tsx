@@ -9,8 +9,8 @@ import {
   type LastTurn,
 } from '../lib/durableRecovery';
 import {
-  clearPendingSubmissions,
   promotePendingSubmission,
+  pendingTasksIn,
   recordSubmissionTask,
   settleFinishedSubmissions,
   settlePendingSubmission,
@@ -83,11 +83,7 @@ import { OfflineIndicator } from '../components/OfflineIndicator';
 import { RetryButton } from '../components/RetryButton';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import {
-  getAuthGeneration,
-  subscribeAccountChange,
-  subscribeAuthGeneration,
-} from '../lib/auth';
+import { getAuthGeneration, subscribeAuthGeneration } from '../lib/auth';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import { RoutingNotice } from '../components/RoutingNotice';
 import MarkdownMessage from '../components/MarkdownMessage';
@@ -632,10 +628,8 @@ function ChatContent() {
       recordSubmissionTask(activeSubmissionKeyRef.current, streamedTaskId);
     }
   }, [streamedTaskId]);
-  // A different sign-in must never reuse another account's pending keys.
-  // (A token refresh in another tab is not an account change: clearing then
-  // would let a retry run accepted work twice.)
-  useEffect(() => subscribeAccountChange(clearPendingSubmissions), []);
+  // Pending keys are cleared by the auth transitions themselves (sign-in and
+  // sign-out, in lib/auth.ts), also when this page is not mounted.
   // Follow server-owned work this client is not streaming itself (for example
   // after reopening the conversation on another device, or after a dropped
   // stream). Only a persisted placeholder qualifies, so a live stream's
@@ -665,12 +659,28 @@ function ChatContent() {
   // such a request later is a new run, not a replay. Covers tasks that ended
   // while another conversation was open, and survives reloads.
   useEffect(() => {
-    if (currentConversation) {
-      settleFinishedSubmissions(currentConversation, (status) =>
-        TERMINAL_TASK_STATUSES.has(status),
-      );
+    if (!currentConversation) return;
+    settleFinishedSubmissions(currentConversation, (status) =>
+      TERMINAL_TASK_STATUSES.has(status),
+    );
+    // A task a newer one has superseded is no longer the conversation's
+    // latest: ask the server about it directly (a few per view).
+    const shown = new Set(
+      [
+        currentConversation.activeTask?.id,
+        currentConversation.latestTask?.id,
+      ].filter(Boolean),
+    );
+    for (const { key, taskId } of pendingTasksIn(currentConversation.id)
+      .filter(({ taskId }) => !shown.has(taskId))
+      .slice(0, 5)) {
+      void taskStatus(taskId).then((status) => {
+        if (status && TERMINAL_TASK_STATUSES.has(status)) {
+          settlePendingSubmission(key);
+        }
+      });
     }
-  }, [currentConversation]);
+  }, [currentConversation, taskStatus]);
 
   useEffect(() => {
     return subscribeAuthGeneration(() => {
@@ -851,6 +861,12 @@ function ChatContent() {
   const submitChat = async (command?: string) => {
     if (isSubmittingSuggestion || suggestionSubmissionRef.current?.pending)
       return;
+    if (conversationLoading) {
+      // Never drop a send silently: the conversation (and any task running
+      // in it) is still being loaded, and failed loads are retried.
+      showError('This conversation is still loading. Try again in a moment.');
+      return;
+    }
     if (
       (isLoading && messages.length > 0) ||
       serverTaskBusy ||

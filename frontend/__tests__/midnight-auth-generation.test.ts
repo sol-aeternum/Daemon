@@ -259,16 +259,30 @@ describe('tab-local auth generation', () => {
     expect(auth.getAccessToken()).toBeNull();
   });
 
-  it('reports account changes for sign-in and sign-out, never for a remote token refresh', async () => {
+  it('clears pending submission keys on sign-in and sign-out, never on a remote token refresh', async () => {
+    const items = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      get length() {
+        return items.size;
+      },
+      key: (index: number) => [...items.keys()][index] ?? null,
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => void items.set(key, value),
+      removeItem: (key: string) => void items.delete(key),
+      clear: () => items.clear(),
+    });
     const auth = await import('../lib/auth');
-    const accountChanged = vi.fn();
-    auth.subscribeAccountChange(accountChanged);
-    auth.setAccessToken('local', Date.now() + 120_000);
-    expect(accountChanged).toHaveBeenCalledTimes(1);
-    AuthChannel.instance.receive('refreshed');
-    expect(accountChanged).toHaveBeenCalledTimes(1);
-    AuthChannel.instance.receive('cleared');
-    expect(accountChanged).toHaveBeenCalledTimes(2);
+    const pending = await import('../lib/pendingSubmission');
+    const pend = () => pending.keyForSubmission({ text: 'q' }, 'conv-a').key;
+
+    const first = pend();
+    auth.setAccessToken('signed-in', Date.now() + 120_000); // sign-in
+    const second = pend();
+    expect(second).not.toBe(first);
+    AuthChannel.instance.receive('refreshed'); // another tab rotated its token
+    expect(pend()).toBe(second);
+    AuthChannel.instance.receive('cleared'); // signed out elsewhere
+    expect(pend()).not.toBe(second);
   });
 
   it('a current refresh 401 still clears auth and broadcasts the established event', async () => {

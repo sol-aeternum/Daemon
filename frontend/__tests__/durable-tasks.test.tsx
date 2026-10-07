@@ -260,6 +260,22 @@ describe('durable chat route bridge', () => {
   });
 });
 
+describe('live task outcomes', () => {
+  it('shows a cancellation that came before the first token', () => {
+    const message = {
+      id: 'm',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'data-event',
+          data: { type: 'task', task_id: 'task-1', status: 'cancelled' },
+        },
+      ],
+    } as unknown as DaemonMessage;
+    expect(getDaemonMessageText(message)).toBe('Stopped.');
+  });
+});
+
 describe('persisted task outcomes', () => {
   it('keeps a stop visible on a partial answer from any device', () => {
     const message = normalizeDaemonMessage({

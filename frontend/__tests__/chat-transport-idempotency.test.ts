@@ -6,6 +6,7 @@ import {
   keyForSubmission,
   PENDING_SUBMISSION_TTL_MS,
   promotePendingSubmission,
+  pendingTasksIn,
   recordSubmissionTask,
   settleFinishedSubmissions,
   settlePendingSubmission,
@@ -272,4 +273,13 @@ it('sends suggestions request-bound: features kept, no key recorded', async () =
   expect(body.idempotency_key).toBeUndefined();
   expect(reported).toEqual([null]);
   expect(storage.length).toBe(0); // no pending submission the request lacks
+});
+
+it("lists a conversation's unresolved submissions with known tasks", () => {
+  const a = keyForSubmission({ text: 'first' }, 'conv-a').key;
+  keyForSubmission({ text: 'no task yet' }, 'conv-a');
+  const other = keyForSubmission({ text: 'elsewhere' }, 'conv-b').key;
+  recordSubmissionTask(a, 'task-a');
+  recordSubmissionTask(other, 'task-b');
+  expect(pendingTasksIn('conv-a')).toEqual([{ key: a, taskId: 'task-a' }]);
 });

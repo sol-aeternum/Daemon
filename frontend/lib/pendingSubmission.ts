@@ -259,6 +259,26 @@ export function settleFinishedSubmissions(
   }
 }
 
+/**
+ * Unresolved submissions of ``conversationId`` whose task is known, for
+ * checking tasks a newer one has superseded as the conversation's latest.
+ */
+export function pendingTasksIn(
+  conversationId: string,
+): Array<{ key: string; taskId: string }> {
+  const store = storage();
+  if (!store) return [];
+  try {
+    return entries(store, Date.now()).flatMap(([key, entry]) =>
+      entry.scope === conversationId && entry.taskId
+        ? [{ key, taskId: entry.taskId }]
+        : [],
+    );
+  } catch {
+    return [];
+  }
+}
+
 /** Forget one submission once its outcome is known; others stay pending. */
 export function settlePendingSubmission(key: string): void {
   try {

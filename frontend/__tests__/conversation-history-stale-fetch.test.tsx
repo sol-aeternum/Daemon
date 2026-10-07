@@ -77,3 +77,29 @@ it('ignores an older conversation fetch that finishes after the current one', as
   await act(async () => pending.get('conv-a')!.resolve(conversation('conv-a')));
   expect(screen.getByText('open:conv-b')).toBeTruthy();
 });
+
+it('retries a conversation that failed to load', async () => {
+  let calls = 0;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.endsWith('/conversations/conv-a')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ conversations: [] })),
+        );
+      }
+      calls += 1;
+      return Promise.resolve(
+        calls === 1
+          ? new Response('unavailable', { status: 503 })
+          : conversation('conv-a'),
+      );
+    }),
+  );
+  state.search = 'id=conv-a';
+  render(<OpenConversation />);
+  // The first load fails; the retry (after about a second) succeeds.
+  await screen.findByText('open:conv-a', undefined, { timeout: 4000 });
+  expect(calls).toBe(2);
+});

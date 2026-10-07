@@ -14,6 +14,9 @@ import {
   normalizeDaemonMessages,
 } from '@/lib/chatMessages';
 
+/** Delays before re-trying a conversation that failed to load. */
+export const CONVERSATION_RETRY_DELAYS_MS = [1000, 3000, 10000];
+
 export interface Conversation {
   id: string;
   title: string;
@@ -499,16 +502,26 @@ export function useConversationHistory() {
     // An older fetch that finishes after a newer one must not replace the
     // open conversation with the one the user left.
     let stale = false;
-    const fetchConversationDetails = async () => {
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    // A failed load is retried: the open conversation must not stay unloaded
+    // (its composer is held until its server state, and any task, is known).
+    const fetchConversationDetails = async (attempt: number) => {
       const conversation = await fetchConversationById(currentId);
-      if (conversation && !stale) {
+      if (stale) return;
+      if (conversation) {
         setCurrentConversation(conversation);
+      } else if (attempt < CONVERSATION_RETRY_DELAYS_MS.length) {
+        retry = setTimeout(
+          () => void fetchConversationDetails(attempt + 1),
+          CONVERSATION_RETRY_DELAYS_MS[attempt],
+        );
       }
     };
 
-    fetchConversationDetails();
+    void fetchConversationDetails(0);
     return () => {
       stale = true;
+      if (retry) clearTimeout(retry);
     };
   }, [currentId, fetchConversationById]);
 

@@ -150,9 +150,11 @@ export function getDaemonMessageText(message: DaemonMessage): string {
     .join('');
   // A task cancelled elsewhere (another device) ends this live view: say so,
   // as the persisted copy will.
-  return getDaemonTaskStatus(message) === 'cancelled' && text
+  if (getDaemonTaskStatus(message) !== 'cancelled') return text;
+  // Cancelled before the first token: the persisted copy says "Stopped."
+  return text
     ? `${text}\n\n${CANCELLED_PARTIAL_NOTICE}`
-    : text;
+    : TASK_TERMINAL_NOTICES.cancelled;
 }
 
 /** Parts after the last durable-task reset (the current attempt's). */
