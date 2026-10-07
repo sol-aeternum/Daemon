@@ -334,8 +334,18 @@ async def stream_sse_chat(
     user_timezone: str | None = None,
     max_output_tokens: int | None = None,
     call_overrides: dict[str, Any] | None = None,
+    message_sink: Any = None,
+    tool_guard: Callable[[Any], None] | None = None,
 ) -> AsyncIterator[str]:
+    """Stream one chat turn as SSE frames.
+
+    ``message_sink`` receives the assistant row's ``insert_message`` and
+    ``update_message`` calls instead of ``memory_store`` (a durable task routes
+    them through its lease fence); tools and memory still use ``memory_store``.
+    ``tool_guard`` may wrap tools in the turn's registry before use.
+    """
     provider, model = effective_provider_and_model(settings, provider_config)
+    message_writer = message_sink if message_sink is not None else memory_store
     model_for_events = reported_model or actual_model or model
 
     evt_counter = 0
@@ -385,7 +395,7 @@ async def stream_sse_chat(
             )
 
         try:
-            updated = await memory_store.update_message(
+            updated = await message_writer.update_message(
                 message_id=assistant_message_id,
                 content="".join(final_text_parts),
                 tool_calls=persisted_tool_calls,
@@ -471,7 +481,7 @@ async def stream_sse_chat(
         try:
             if memory_store and conversation_uuid and user_id:
                 try:
-                    inserted = await memory_store.insert_message(
+                    inserted = await message_writer.insert_message(
                         conversation_id=conversation_uuid,
                         user_id=user_id,
                         role="assistant",
@@ -519,6 +529,8 @@ async def stream_sse_chat(
                     disable_memory_write=disable_memory_write,
                     conversation_id=conversation_uuid,
                 )
+                if tool_guard is not None:
+                    tool_guard(registry)
                 pending_tool_calls: list[str] = []
                 # Free plans cap tool rounds per turn; paid plans get the
                 # global safety ceiling instead of a per-turn commercial cap.
@@ -620,7 +632,7 @@ async def stream_sse_chat(
                                 or (current_time - _last_persist_s) >= _persist_interval_s
                             ):
                                 try:
-                                    await memory_store.update_message(
+                                    await message_writer.update_message(
                                         message_id=assistant_message_id,
                                         content="".join(final_text_parts),
                                     )
@@ -1027,7 +1039,7 @@ async def stream_sse_chat(
 
                 if assistant_message_id:
                     # Update existing message
-                    updated = await memory_store.update_message(
+                    updated = await message_writer.update_message(
                         message_id=assistant_message_id,
                         content=content,
                         tool_calls=persisted_tool_calls,
@@ -1041,9 +1053,15 @@ async def stream_sse_chat(
                         metadata=final_metadata or None,
                     )
                     assistant_message_terminalized = updated is not None
+                    # A durable task's commit can end differently than asked
+                    # (a cancel or suspension won the race); success-only
+                    # follow-ups below must see the committed status.
+                    committed_status = updated.get("status") if isinstance(updated, dict) else None
+                    if isinstance(committed_status, str):
+                        persisted_status = committed_status
                 else:
                     # Insert new message
-                    inserted = await memory_store.insert_message(
+                    inserted = await message_writer.insert_message(
                         conversation_id=conversation_uuid,
                         user_id=user_id,
                         role="assistant",

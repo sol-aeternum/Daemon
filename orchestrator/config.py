@@ -164,6 +164,11 @@ class Settings(BaseSettings):
     # Development fallback: stream a canned response without calling any provider.
     mock_llm: bool = False
 
+    # Durable task continuity (docs/DURABLE_REQUEST_DESIGN.md): when enabled,
+    # native /chat turns are accepted durably and executed by the worker, so
+    # closing the client never cancels them. Off until the rollout is approved.
+    durable_chat_enabled: bool = False
+
     @property
     def sse_keepalive_interval_s(self) -> float:
         return (

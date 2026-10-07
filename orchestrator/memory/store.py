@@ -29,6 +29,24 @@ def is_explicit_memory(memory: dict[str, Any]) -> bool:
 
 logger = logging.getLogger(__name__)
 EXTRACTION_SKIPPED_TERMINAL_STATUSES = frozenset({"error", "cancelled"})
+#: Terminal reason of a durable task stopped after a material operation began.
+UNCERTAIN_EFFECT_REASON = "uncertain_effect"
+
+
+def uncertain_effect_note(tools: Any) -> str:
+    """What later turns see in place of a task that may have had an effect.
+
+    The interrupted reply is otherwise excluded from history like any error,
+    which would leave the user's request looking unanswered and invite the
+    model to carry it out again.
+    """
+    names = [str(t) for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+    started = f" It had started: {', '.join(names)}." if names else ""
+    return (
+        "[This request was interrupted after starting an action that may have taken "
+        f"effect.{started} Whether it completed is unknown. Do not repeat it without "
+        "first asking the user to confirm.]"
+    )
 
 
 def _default_embedding_model() -> str:
@@ -65,6 +83,11 @@ class MemoryStore:
     def __init__(self, db_pool: asyncpg.Pool, encryption: ContentEncryption) -> None:
         self._pool = db_pool
         self._enc = encryption
+
+    @property
+    def encryption(self) -> ContentEncryption:
+        """The content cipher, for stores that share this store's transactions."""
+        return self._enc
 
     def _encrypt_tool_trace(self, trace: list[Any]) -> str:
         return json.dumps(
@@ -255,8 +278,11 @@ class MemoryStore:
         user_id: uuid.UUID,
         pipeline: str = "cloud",
         title: str | None = None,
+        *,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             INSERT INTO conversations (user_id, pipeline, title)
             VALUES ($1, $2, $3)
@@ -507,6 +533,7 @@ class MemoryStore:
         reasoning_text: str | None = None,
         reasoning_duration_secs: int | None = None,
         reasoning_model: str | None = None,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
         encrypted_reasoning_text = (
@@ -515,7 +542,8 @@ class MemoryStore:
         encrypted_advisor_traces = (
             self._enc.encrypt(json.dumps(advisor_traces)) if advisor_traces is not None else None
         )
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             INSERT INTO messages
                 (conversation_id, user_id, role, content, model,
@@ -1009,6 +1037,7 @@ class MemoryStore:
         reasoning_text: str | None = None,
         reasoning_duration_secs: int | None = None,
         reasoning_model: str | None = None,
+        conn: Any | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
         metadata_json = self._encrypt_message_metadata(metadata) if metadata is not None else None
@@ -1022,7 +1051,8 @@ class MemoryStore:
         encrypted_advisor_traces = (
             self._enc.encrypt(json.dumps(advisor_traces)) if advisor_traces is not None else None
         )
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             UPDATE messages
             SET content    = COALESCE($2, content),
@@ -1066,22 +1096,36 @@ class MemoryStore:
         conversation_id: uuid.UUID,
         limit: int = 20,
         exclude_status: list[str] | None = None,
+        *,
+        until_message_id: uuid.UUID | None = None,
     ) -> list[dict[str, Any]]:
+        """The latest ``limit`` messages, oldest first.
+
+        With ``until_message_id``, the window ends at that message, so later
+        turns can neither appear in nor push earlier context out of it.
+        """
         rows = await self._pool.fetch(
             """
             SELECT * FROM (
                 SELECT * FROM messages
                 WHERE conversation_id = $1
                   AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
-                  AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[])))
-                ORDER BY created_at DESC
+                  AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[]))
+                       OR metadata->>'terminal_reason' = $5
+                       OR (jsonb_typeof(metadata->'uncertain_tools') = 'array'
+                           AND metadata->'uncertain_tools' <> '[]'::jsonb))
+                  AND ($4::uuid IS NULL OR created_at <= (
+                        SELECT created_at FROM messages WHERE id = $4 AND conversation_id = $1))
+                ORDER BY created_at DESC, id DESC
                 LIMIT $2
             ) sub
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             """,
             conversation_id,
             limit,
             exclude_status,
+            until_message_id,
+            UNCERTAIN_EFFECT_REASON,
         )
         results = []
         for r in rows:
@@ -1092,7 +1136,23 @@ class MemoryStore:
             if d.get("advisor_traces") is not None:
                 d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
             self._decrypt_message_tool_traces(d)
-            results.append(_normalize_message(d))
+            d = _normalize_message(d)
+            metadata = d.get("metadata") or {}
+            if (
+                exclude_status
+                and d.get("status") in exclude_status
+                and (
+                    metadata.get("terminal_reason") == UNCERTAIN_EFFECT_REASON
+                    or bool(metadata.get("uncertain_tools"))
+                )
+            ):
+                # Kept so the request does not look unanswered, but never as
+                # a partial answer: an explicit marker of the possible effect.
+                d["content"] = uncertain_effect_note(metadata.get("uncertain_tools"))
+                d["reasoning_text"] = None
+                d["tool_calls"] = []
+                d["tool_results"] = []
+            results.append(d)
         return results
 
     # ------------------------------------------------------------------

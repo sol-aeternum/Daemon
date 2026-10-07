@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from orchestrator.main import (
     CORS_ALLOW_HEADERS,
     CORS_ALLOW_METHODS,
+    CORS_EXPOSE_HEADERS,
     app,
     warn_on_unsafe_cors_wildcards,
 )
@@ -93,7 +94,10 @@ def test_cors_credentials_config_uses_explicit_methods_and_headers() -> None:
         # own correlation handle. The response always carries a
         # server-generated X-Request-ID regardless (PR #218 round-1).
         "X-Request-ID",
+        "Idempotency-Key",
+        "X-Daemon-Client-Features",
     }
+    assert set(CORS_EXPOSE_HEADERS) == {"X-Request-ID", "X-Daemon-Task-Id"}
 
 
 def test_cors_wildcard_warning_is_available(caplog: pytest.LogCaptureFixture) -> None:

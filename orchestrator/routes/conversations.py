@@ -8,6 +8,8 @@ import uuid
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
+from orchestrator.routes.tasks import TaskOut, task_out, task_store
+from orchestrator.tasks.store import TaskNotFound
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -51,6 +53,12 @@ class ConversationOut(BaseModel):
 
 class ConversationWithMessagesOut(ConversationOut):
     messages: list[MessageOut]
+    # The conversation's queued or running durable task, so another device can
+    # reattach to it (docs/DURABLE_REQUEST_DESIGN.md §7).
+    active_task: TaskOut | None = None
+    # The conversation's most recent task, including a finished one, so
+    # another device can find a cancelled or needs_attention outcome.
+    latest_task: TaskOut | None = None
 
 
 class ConversationListResponse(BaseModel):
@@ -160,7 +168,20 @@ async def get_conversation(
     messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
     conversation = _normalize_conversation(conversation)
     messages = [_normalize_message(m) for m in messages]
-    return {**conversation, "messages": messages}
+    active_task = latest_task = None
+    if app_state.db_pool is not None:
+        tasks = task_store(app_state)
+        latest = await tasks.latest_for_conversation(auth.user_id, conversation_id)
+        if latest is not None:
+            latest_task = task_out(latest)
+            if latest.status.value in ("queued", "running"):
+                active_task = latest_task
+    return {
+        **conversation,
+        "messages": messages,
+        "active_task": active_task,
+        "latest_task": latest_task,
+    }
 
 
 @router.patch("/{conversation_id}", response_model=StatusResponse)
@@ -201,7 +222,26 @@ async def delete_conversation(
     existing = await store.get_conversation(conversation_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    deleted = await store.delete_conversation(conversation_id)
+    if app_state.db_pool is not None:
+        # Durable tasks: never delete a running task's evidence out from under
+        # an in-flight action (docs/DURABLE_REQUEST_DESIGN.md §11).
+        try:
+            deleted, running_task = await task_store(app_state).delete_conversation(
+                auth.user_id, conversation_id
+            )
+        except TaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
+        if running_task is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "task_running",
+                    "message": "A request in this conversation is still stopping; try again shortly",
+                    "task_id": str(running_task),
+                },
+            )
+    else:
+        deleted = await store.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "deleted"}

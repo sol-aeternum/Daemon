@@ -34,6 +34,9 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def names(self) -> list[str]:
+        return list(self._tools)
+
     def list_schemas(self) -> list[dict[str, Any]]:
         return [tool.to_openai_schema() for tool in self._tools.values()]
 
