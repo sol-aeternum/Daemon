@@ -113,7 +113,9 @@ vi.mock('../components/ChatInputBar', () => ({
       {isLoading ? (
         <button onClick={onStop}>Stop</button>
       ) : (
-        <button onClick={() => onSubmit()}>Send</button>
+        <button type="button" onClick={() => onSubmit()}>
+          Send
+        </button>
       )}
     </div>
   ),
@@ -271,5 +273,39 @@ describe('a durable task reopened on another device', () => {
         screen.getByText(/Stop could not be confirmed/, { exact: false }),
       ).toBeTruthy(),
     );
+  });
+});
+
+describe('a submission whose outcome is unknown (#476)', () => {
+  it('is resent from the restored draft under its own key', async () => {
+    const { restoreHeldSubmission } = await import('../lib/chatDrafts');
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    state.send.mockResolvedValue(undefined);
+    render(<ChatPage />);
+    const composer = await screen.findByLabelText('Composer');
+    fireEvent.change(composer, { target: { value: 'book the table' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    const firstKey = state.send.mock.calls[0][1].body.idempotency_key;
+    expect(firstKey).toMatch(/^[0-9a-f-]{36}$/);
+
+    // The response was lost and no task was found: the draft comes back.
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe(''),
+    );
+    act(() => {
+      restoreHeldSubmission(firstKey);
+    });
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe('book the table'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).toBe(firstKey);
   });
 });

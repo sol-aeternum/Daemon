@@ -8,8 +8,10 @@ import {
   clearDraftText,
   getAttachmentStore,
   loadDraftText,
+  loadHeldSubmissions,
   saveDraftText,
   type PersistedDraft,
+  type PersistedHeld,
 } from './draftPersistence';
 import type { SetStateAction } from 'react';
 
@@ -36,6 +38,21 @@ export interface ChatDraftScope {
   readonly entry: DraftEntry;
 }
 
+/**
+ * A sent draft held until its outcome is known. Its idempotency key belongs
+ * to it: resending it unchanged (for example after a lost response, or after
+ * a reload) reuses the key, so the backend replays the task it already
+ * accepted instead of running it again. Kept like a draft (this tab's
+ * session; attachments in the attachment store) and discarded with drafts.
+ */
+export interface HeldSubmission {
+  readonly key: string;
+  /** The conversation it belongs to (an unnamed new chat's is promoted). */
+  conversationId: string | null;
+  readonly input: string;
+  pendingAttachments: DraftAttachment[];
+}
+
 export interface ChatDraftSubmission {
   readonly scope: ChatDraftScope;
   readonly input: string;
@@ -55,6 +72,10 @@ const persistedIds = new Map<string, number>();
 // Hydrated entries still waiting for their files, with the IDs to restore. Any
 // attachment change by the user cancels the restore for that entry.
 const pendingRestores = new Map<DraftEntry, string[]>();
+// Sent drafts awaiting their outcome, by idempotency key (insertion order).
+const held = new Map<string, HeldSubmission>();
+// Hydrated held submissions still waiting for their files.
+const heldRestores = new Map<string, string[]>();
 
 function emit(): void {
   persist();
@@ -89,11 +110,35 @@ function persist(): void {
       drafts.push({ conversationId, input, attachmentIds });
     }
   }
+  const heldRecords: PersistedHeld[] = [];
+  for (const submission of held.values()) {
+    const attachmentIds = [...(heldRestores.get(submission.key) ?? [])];
+    for (const { id, file } of submission.pendingAttachments) {
+      if (store && !persistedIds.has(id)) {
+        if (
+          file.size > MAX_PERSISTED_FILE_BYTES ||
+          total + file.size > MAX_PERSISTED_TOTAL_BYTES
+        )
+          continue;
+        persistedIds.set(id, file.size);
+        total += file.size;
+        void store.put({ id, file }).catch(() => persistedIds.delete(id));
+      }
+      if (persistedIds.has(id)) attachmentIds.push(id);
+    }
+    for (const id of attachmentIds) referenced.add(id);
+    heldRecords.push({
+      key: submission.key,
+      conversationId: submission.conversationId,
+      input: submission.input,
+      attachmentIds,
+    });
+  }
   const stale = [...persistedIds.keys()].filter((id) => !referenced.has(id));
   for (const id of stale) persistedIds.delete(id);
   if (store && stale.length > 0)
     void store.delete(stale).catch(() => undefined);
-  saveDraftText(drafts);
+  saveDraftText(drafts, heldRecords);
 }
 
 function cancelRestore(entry: DraftEntry): void {
@@ -107,6 +152,8 @@ subscribeAuthGeneration(() => {
   for (const entry of entries.values()) entry.snapshot = EMPTY;
   entries.clear();
   pendingRestores.clear();
+  held.clear();
+  heldRestores.clear();
   const ids = [...persistedIds.keys()];
   persistedIds.clear();
   clearDraftText();
@@ -124,7 +171,12 @@ async function restoreAttachments(expectedGeneration: number): Promise<void> {
     pendingRestores.clear();
     return;
   }
-  const wanted = [...new Set([...pendingRestores.values()].flat())];
+  const wanted = [
+    ...new Set([
+      ...[...pendingRestores.values()].flat(),
+      ...[...heldRestores.values()].flat(),
+    ]),
+  ];
   let found: Map<string, File>;
   try {
     found = new Map(
@@ -153,6 +205,18 @@ async function restoreAttachments(expectedGeneration: number): Promise<void> {
       };
     }
   }
+  for (const [key, ids] of [...heldRestores]) {
+    heldRestores.delete(key);
+    const submission = held.get(key);
+    if (!submission) continue;
+    for (const id of ids) {
+      const file = found.get(id);
+      if (!file) continue;
+      persistedIds.set(id, file.size);
+      submission.pendingAttachments.push({ id, file });
+      void store.put({ id, file }).catch(() => undefined);
+    }
+  }
   emit();
 }
 
@@ -169,14 +233,31 @@ function hydrate(): void {
       for (const id of draft.attachmentIds) persistedIds.set(id, 0);
     }
   }
+  for (const record of loadHeldSubmissions()) {
+    held.set(record.key, {
+      key: record.key,
+      conversationId: record.conversationId,
+      input: record.input,
+      pendingAttachments: [],
+    });
+    if (record.attachmentIds.length > 0) {
+      heldRestores.set(record.key, record.attachmentIds);
+      for (const id of record.attachmentIds) persistedIds.set(id, 0);
+    }
+  }
   const store = getAttachmentStore();
   void store
     ?.deleteSavedBefore(Date.now() - ATTACHMENT_TTL_MS)
     .catch(() => undefined)
     .then(() =>
-      pendingRestores.size > 0 ? restoreAttachments(generation) : undefined,
+      pendingRestores.size > 0 || heldRestores.size > 0
+        ? restoreAttachments(generation)
+        : undefined,
     );
-  if (!store) pendingRestores.clear();
+  if (!store) {
+    pendingRestores.clear();
+    heldRestores.clear();
+  }
 }
 
 if (typeof window !== 'undefined') hydrate();
@@ -185,6 +266,8 @@ if (typeof window !== 'undefined') hydrate();
 export function reloadChatDraftsForTests(): Promise<void> {
   entries.clear();
   pendingRestores.clear();
+  held.clear();
+  heldRestores.clear();
   persistedIds.clear();
   generation = getAuthGeneration();
   hydrate();
@@ -335,6 +418,101 @@ export function transferChatDraft(
   if (entries.has(assignedId)) return false;
   entries.delete(null);
   entries.set(assignedId, scope.entry);
+  emit();
+  return true;
+}
+
+/**
+ * Hold a sent draft under ``key`` until its outcome is known. A resend of the
+ * same draft (unchanged text and attachments) then reuses that key.
+ */
+export function holdSubmission(
+  scope: ChatDraftScope,
+  key: string,
+  input: string,
+  pendingAttachments: DraftAttachment[],
+): void {
+  if (
+    scope.generation !== getAuthGeneration() ||
+    scope.generation !== generation
+  )
+    return;
+  held.delete(key); // re-insert as the newest
+  held.set(key, {
+    key,
+    conversationId: scope.conversationId,
+    input,
+    pendingAttachments: [...pendingAttachments],
+  });
+  emit();
+}
+
+/** The newest held submission of ``conversationId``, if any. */
+export function latestHeldSubmission(
+  conversationId: string | null,
+): HeldSubmission | undefined {
+  let latest: HeldSubmission | undefined;
+  for (const submission of held.values()) {
+    if (submission.conversationId === conversationId) latest = submission;
+  }
+  return latest;
+}
+
+export function heldSubmission(key: string): HeldSubmission | undefined {
+  return held.get(key);
+}
+
+/** Whether ``input``/``attachments`` are exactly the held submission (a resend). */
+export function isHeldResend(
+  submission: HeldSubmission | undefined,
+  input: string,
+  pendingAttachments: DraftAttachment[],
+): submission is HeldSubmission {
+  if (!submission || submission.input !== input) return false;
+  const ids = (list: DraftAttachment[]) => list.map((a) => a.id).join('\u0000');
+  return ids(submission.pendingAttachments) === ids(pendingAttachments);
+}
+
+/** The outcome is known: forget the held submission (and, unless used, its files). */
+export function releaseSubmission(key: string): void {
+  if (!held.delete(key)) return;
+  heldRestores.delete(key);
+  emit();
+}
+
+/** A new chat's held submission now belongs to the named conversation. */
+export function promoteHeldSubmission(
+  key: string,
+  conversationId: string,
+): void {
+  const submission = held.get(key);
+  if (!submission || submission.conversationId === conversationId) return;
+  submission.conversationId = conversationId;
+  emit();
+}
+
+/**
+ * Put a held submission back in its conversation's composer, if that
+ * composer is empty, so sending it again reuses its key. The submission stays
+ * held. Returns whether it was restored.
+ */
+export function restoreHeldSubmission(key: string): boolean {
+  const submission = held.get(key);
+  if (!submission) return false;
+  let entry = entries.get(submission.conversationId);
+  if (entry) {
+    const { input, pendingAttachments } = entry.snapshot;
+    if (input || pendingAttachments.length > 0 || pendingRestores.has(entry))
+      return false;
+  } else {
+    entry = { snapshot: EMPTY };
+    entries.set(submission.conversationId, entry);
+  }
+  entry.snapshot = {
+    ...entry.snapshot,
+    input: submission.input,
+    pendingAttachments: [...submission.pendingAttachments],
+  };
   emit();
   return true;
 }

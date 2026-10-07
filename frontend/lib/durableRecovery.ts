@@ -40,6 +40,8 @@ type ReconcileDeps = {
   /** The submission belongs to the task's conversation (a new chat's is named). */
   promote: (key: string, conversationId: string) => void;
   open: (conversationId: string) => void;
+  /** No task exists for the key (after the retries): it was never accepted. */
+  notFound?: (key: string) => void;
   /** Show the server's copy of the open conversation's turn for this task. */
   showSaved: (taskId: string) => Promise<void>;
   lookupDelaysMs?: number[];
@@ -72,6 +74,7 @@ export async function reconcileSubmission(
     task = await deps.taskForKey(key);
     if (task !== null) break; // found, or the lookup itself failed
   }
+  if (task === null) deps.notFound?.(key);
   if (!task) return;
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
     deps.settle(key);

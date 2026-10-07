@@ -272,18 +272,23 @@ describe('tab-local auth generation', () => {
       clear: () => items.clear(),
     });
     const auth = await import('../lib/auth');
-    const pending = await import('../lib/pendingSubmission');
-    const pend = async () =>
-      (await pending.keyForSubmission({ text: 'q' }, 'conv-a')).key;
+    const pendingSubmissions = await import('../lib/pendingSubmission');
+    const meta = {
+      scope: 'conv-a',
+      requestConversationId: 'conv-a',
+      model: 'auto',
+      provider: null,
+    };
+    const pending = () => pendingSubmissions.unresolvedSubmissions().length;
 
-    const first = await pend();
+    pendingSubmissions.registerSubmission('k1', meta);
     auth.setAccessToken('signed-in', Date.now() + 120_000); // sign-in
-    const second = await pend();
-    expect(second).not.toBe(first);
+    expect(pending()).toBe(0);
+    pendingSubmissions.registerSubmission('k2', meta);
     AuthChannel.instance.receive('refreshed'); // another tab rotated its token
-    expect(await pend()).toBe(second);
+    expect(pending()).toBe(1);
     AuthChannel.instance.receive('cleared'); // signed out elsewhere
-    expect(await pend()).not.toBe(second);
+    expect(pending()).toBe(0);
   });
 
   it('a current refresh 401 still clears auth and broadcasts the established event', async () => {

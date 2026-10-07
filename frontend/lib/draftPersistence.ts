@@ -23,6 +23,14 @@ export interface PersistedDraft {
   attachmentIds: string[];
 }
 
+/** A sent draft held until its outcome is known (see lib/chatDrafts). */
+export interface PersistedHeld {
+  key: string;
+  conversationId: string | null;
+  input: string;
+  attachmentIds: string[];
+}
+
 export interface PersistedAttachment {
   id: string;
   file: File;
@@ -89,41 +97,70 @@ function isPersistedDraft(value: unknown): value is PersistedDraft {
   );
 }
 
-/** This tab's saved drafts, or none if they belong to another sign-in. */
-export function loadDraftText(): PersistedDraft[] {
+function isPersistedHeld(value: unknown): value is PersistedHeld {
+  if (!value || typeof value !== 'object') return false;
+  const held = value as Record<string, unknown>;
+  return (
+    typeof held.key === 'string' &&
+    held.key.length > 0 &&
+    isPersistedDraft({
+      conversationId: held.conversationId,
+      input: held.input,
+      attachmentIds: held.attachmentIds,
+    })
+  );
+}
+
+function loadRecord(): { drafts: PersistedDraft[]; held: PersistedHeld[] } {
   const storage = session();
-  if (!storage) return [];
+  if (!storage) return { drafts: [], held: [] };
   try {
     const raw = storage.getItem(TEXT_KEY);
-    if (!raw) return [];
+    if (!raw) return { drafts: [], held: [] };
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const held = parsed?.held ?? [];
     if (
       parsed?.v !== 1 ||
       parsed.epoch !== readAuthEpoch() ||
       !Array.isArray(parsed.drafts) ||
-      !parsed.drafts.every(isPersistedDraft)
+      !parsed.drafts.every(isPersistedDraft) ||
+      !Array.isArray(held) ||
+      !held.every(isPersistedHeld)
     ) {
       storage.removeItem(TEXT_KEY);
-      return [];
+      return { drafts: [], held: [] };
     }
-    return parsed.drafts;
+    return { drafts: parsed.drafts, held };
   } catch {
     clearDraftText();
-    return [];
+    return { drafts: [], held: [] };
   }
 }
 
-export function saveDraftText(drafts: PersistedDraft[]): void {
+/** This tab's saved drafts, or none if they belong to another sign-in. */
+export function loadDraftText(): PersistedDraft[] {
+  return loadRecord().drafts;
+}
+
+/** This tab's held submissions, under the same rules as its drafts. */
+export function loadHeldSubmissions(): PersistedHeld[] {
+  return loadRecord().held;
+}
+
+export function saveDraftText(
+  drafts: PersistedDraft[],
+  held: PersistedHeld[] = [],
+): void {
   const storage = session();
   if (!storage) return;
   try {
-    if (drafts.length === 0) {
+    if (drafts.length === 0 && held.length === 0) {
       storage.removeItem(TEXT_KEY);
       return;
     }
     storage.setItem(
       TEXT_KEY,
-      JSON.stringify({ v: 1, epoch: readAuthEpoch(), drafts }),
+      JSON.stringify({ v: 1, epoch: readAuthEpoch(), drafts, held }),
     );
   } catch {
     // Quota or disabled storage: the in-memory draft still works.

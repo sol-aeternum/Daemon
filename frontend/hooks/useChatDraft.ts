@@ -12,6 +12,7 @@ import {
   clearChatDraftSubmission,
   clearSubmittedChatDraft,
   getChatDraft,
+  holdSubmission,
   openChatDraft,
   resetChatDraft,
   setChatDraftAttachments,
@@ -63,6 +64,14 @@ function createBinding(
     clearSubmission: (submission: ChatDraftSubmission) => {
       if (canWrite()) clearChatDraftSubmission(scope, submission);
     },
+    /** Hold a sent draft under its idempotency key until the outcome is known. */
+    holdSubmission: (
+      key: string,
+      input: string,
+      attachments: DraftAttachment[],
+    ) => {
+      if (canWrite()) holdSubmission(scope, key, input, attachments);
+    },
     transferToConversation: (assignedId: string) =>
       canWrite() && transferChatDraft(scope, assignedId),
   };
@@ -102,6 +111,7 @@ export function useChatDraft(conversationId: string | null) {
     clearSubmittedDraft: binding.clearSubmittedDraft,
     captureSubmission: binding.captureSubmission,
     clearSubmission: binding.clearSubmission,
+    holdSubmission: binding.holdSubmission,
     transferToConversation: binding.transferToConversation,
   };
 }
