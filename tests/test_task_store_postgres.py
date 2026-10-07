@@ -312,6 +312,37 @@ async def test_expired_lease_is_fenced_before_any_takeover(env: Env):
 
 
 @pytest.mark.asyncio
+async def test_lease_that_expires_while_waiting_for_the_row_lock_is_fenced(env: Env):
+    """Review of #466: a locking query's predicate is evaluated before the lock
+    wait, so expiry must be rechecked once the lock is held."""
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=1)
+    assert claim is not None
+    holder = await env.pool.acquire()
+    try:
+        transaction = holder.transaction()
+        await transaction.start()
+        await holder.execute("SELECT 1 FROM tasks WHERE id = $1 FOR UPDATE", accepted.task_id)
+        blocked = [
+            asyncio.create_task(
+                env.tasks.write_partial(accepted.task_id, claim.epoch, content="late", delta_seq=1)
+            ),
+            asyncio.create_task(
+                env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+            ),
+        ]
+        await asyncio.sleep(1.3)  # the lease lapses while both wait for the lock
+        await transaction.commit()
+    finally:
+        await env.pool.release(holder)
+    for attempt in blocked:
+        with pytest.raises(LeaseLost):
+            await attempt
+    row = await _task(env, accepted.task_id)
+    assert row["lease_expires_at"] < await env.pool.fetchval("SELECT clock_timestamp()")
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_extends_lease_and_reports_cancel(env: Env):
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=5)
@@ -364,6 +395,25 @@ async def test_lost_attempt_after_material_operation_needs_attention(env: Env):
     assert (await _message(env, accepted.result_message_id))["status"] == "error"
     operation = await env.pool.fetchrow("SELECT * FROM task_operations WHERE id = $1", op)
     assert operation["outcome"] == "started"
+    # Review of #466: the next turn must not see the request as unanswered.
+    history = await env.memory.get_recent_messages(
+        accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
+    )
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    note = history[-1]["content"]
+    assert "notification_send" in note and "Do not repeat it" in note
+    assert "ntfy" not in note  # tool names only, never targets
+    # A plain failure (no possible effect) is still left out of history.
+    failed = await _accept(env, message="second", conversation_id=accepted.conversation_id)
+    retry = await env.tasks.claim(failed.task_id, worker_id="w3", lease_s=LEASE_S)
+    assert retry is not None
+    await env.tasks.fail_attempt(
+        failed.task_id, retry.epoch, cause=RetryCause.TERMINAL_ERROR, error_code="route_unavailable"
+    )
+    history = await env.memory.get_recent_messages(
+        accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
+    )
+    assert [m["role"] for m in history] == ["user", "assistant", "user"]
 
 
 @pytest.mark.asyncio

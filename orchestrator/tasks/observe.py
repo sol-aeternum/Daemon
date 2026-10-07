@@ -209,6 +209,9 @@ async def observe_task(
             await pubsub.subscribe(live_channel(task_id))
         except Exception:
             logger.info("Live task updates unavailable; observing by snapshot")
+            if pubsub is not None:
+                # A failed subscribe may already hold a pool connection.
+                await _close_pubsub(pubsub)
             pubsub = None
     try:
         snapshot = await store.snapshot(user_id, task_id)
@@ -281,9 +284,15 @@ async def observe_task(
             yield frame
     finally:
         if pubsub is not None:
-            with contextlib.suppress(Exception):
-                await pubsub.unsubscribe()
-                await pubsub.aclose()
+            await _close_pubsub(pubsub)
+
+
+async def _close_pubsub(pubsub: Any) -> None:
+    """Release a pub/sub connection; closing proceeds even if unsubscribing fails."""
+    with contextlib.suppress(Exception):
+        await pubsub.unsubscribe()
+    with contextlib.suppress(Exception):
+        await pubsub.aclose()
 
 
 async def _next_message(pubsub: Any, poll_s: float) -> dict[str, Any] | None:

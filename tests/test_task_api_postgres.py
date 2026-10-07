@@ -320,6 +320,21 @@ async def test_idempotent_replay_and_conflict(api: Api):
 
 
 @pytest.mark.asyncio
+async def test_a_different_per_message_model_is_a_different_request(api: Api):
+    """Review of #466: the fingerprint covers the model that will actually run."""
+    await _submit(api, key="model-key", messages=[{"role": "user", "content": "hello"}])
+    async with asyncio.timeout(10):  # a wrong replay would attach and wait for the task
+        conflict = await _post(
+            api,
+            key="model-key",
+            messages=[{"role": "user", "content": "hello", "model": "another-model"}],
+        )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 1
+
+
+@pytest.mark.asyncio
 async def test_second_turn_while_active_is_busy(api: Api):
     task = await _submit(api, key="k1")
     busy = await _post(api, message="again", key="k2", conversation_id=task["conversation_id"])
@@ -783,3 +798,37 @@ async def test_clients_that_cannot_cancel_stay_request_bound(api: Api):
         assert response.status_code == 200
         assert "X-Daemon-Task-Id" not in response.headers
     assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_live_subscription_releases_its_connection(env: Env):
+    """Review of #466: a pub/sub whose subscribe fails is closed, not leaked."""
+    closed: list[str] = []
+
+    class FailingPubSub:
+        async def subscribe(self, _channel: str) -> None:
+            raise ConnectionError("redis unavailable")
+
+        async def unsubscribe(self) -> None:
+            closed.append("unsubscribe")
+            raise ConnectionError("still unavailable")
+
+        async def aclose(self) -> None:
+            closed.append("aclose")
+
+    class FailingRedis:
+        def pubsub(self) -> FailingPubSub:
+            return FailingPubSub()
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="done")
+    frames = [
+        frame
+        async for frame in observe_task(
+            env.tasks, FailingRedis(), env.alice, accepted.task_id, request_id="req_test"
+        )
+    ]
+    assert frames  # observed by snapshot instead
+    assert closed == ["unsubscribe", "aclose"]

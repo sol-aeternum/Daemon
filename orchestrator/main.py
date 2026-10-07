@@ -196,13 +196,17 @@ CORS_ALLOW_HEADERS = (
     "Content-Type",
     "X-CSRF-Token",
     "X-Request-ID",
+    # Durable chat: submission dedupe and the client's declared ability to
+    # stop and reset a task (docs/DURABLE_REQUEST_DESIGN.md §6-§8).
+    "Idempotency-Key",
+    "X-Daemon-Client-Features",
 )
 
 # Headers the browser is allowed to read on a CORS response. Exposing
 # ``X-Request-ID`` lets browser code correlate its errors with server-side
 # logs; the value is server-generated (round-1 Codex finding on PR #218)
 # so an attacker cannot pre-stage collisions.
-CORS_EXPOSE_HEADERS = ("X-Request-ID",)
+CORS_EXPOSE_HEADERS = ("X-Request-ID", "X-Daemon-Task-Id")
 
 
 def warn_on_unsafe_cors_wildcards(
@@ -2369,21 +2373,43 @@ def _requested_user_message(payload: ChatRequest) -> str:
     return user_message
 
 
+def _user_model_choice(payload: ChatRequest, last_user_msg: dict[str, Any] | None) -> str:
+    """The model the user asked for: the request's, or the latest user message's override."""
+    choice = payload.model or "auto"
+    if choice == "auto" and last_user_msg:
+        msg_model = last_user_msg.get("model")
+        if isinstance(msg_model, str):
+            msg_model = msg_model.strip()
+            if msg_model and msg_model != "auto":
+                choice = msg_model
+    return choice
+
+
 def _durable_request_fingerprint(
     payload: ChatRequest,
     settings: Settings,
     conversation_uuid: uuid.UUID | None,
     user_message: str,
 ) -> RequestFingerprint:
+    last_user_msg = next(
+        (msg for msg in reversed(payload.messages or []) if msg.get("role") == "user"), None
+    )
+    content = last_user_msg.get("content") if last_user_msg else None
     return chat_request_fingerprint(
         key=validate_and_get_pepper(settings),
         conversation_id=conversation_uuid,
         message=user_message,
         attachments=payload.attachments,
-        model=payload.model,
+        # What will actually run: a per-message override changes the model.
+        model=_user_model_choice(payload, last_user_msg),
         provider=payload.provider,
         metadata=payload.metadata,
         disable_memory_write=bool(payload.disable_memory_write),
+        content_parts=(
+            [part for part in content if isinstance(part, dict)]
+            if isinstance(content, list)
+            else None
+        ),
     )
 
 
@@ -2562,13 +2588,7 @@ async def chat(
 
     decision = route_message(user_message, payload.metadata)
 
-    user_model_choice = payload.model or "auto"
-    if user_model_choice == "auto" and last_user_msg:
-        msg_model = last_user_msg.get("model")
-        if isinstance(msg_model, str):
-            msg_model = msg_model.strip()
-            if msg_model and msg_model != "auto":
-                user_model_choice = msg_model
+    user_model_choice = _user_model_choice(payload, last_user_msg)
     turn_count = len(incoming_messages) if incoming_messages else 0
 
     model_decision = select_model_tier(

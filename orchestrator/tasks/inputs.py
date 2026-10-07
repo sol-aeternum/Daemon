@@ -43,6 +43,7 @@ def chat_request_fingerprint(
     provider: str | None,
     metadata: dict[str, Any] | None,
     disable_memory_write: bool,
+    content_parts: list[dict[str, Any]] | None = None,
 ) -> RequestFingerprint:
     """Keyed fingerprint of what a submission asks for (see ``chat_request_hash``)."""
     if not key:
@@ -56,6 +57,9 @@ def chat_request_fingerprint(
             "provider": provider,
             "metadata": metadata or {},
             "disable_memory_write": bool(disable_memory_write),
+            # Structured parts of the latest user message (images and the like)
+            # are part of the request even when its text is unchanged.
+            "content_parts": content_parts or [],
         }
     )
     digest = hmac.new(
@@ -76,6 +80,7 @@ def chat_request_hash(
     provider: str | None,
     metadata: dict[str, Any] | None,
     disable_memory_write: bool,
+    content_parts: list[dict[str, Any]] | None = None,
 ) -> str:
     """Keyed fingerprint (HMAC-SHA-256) of what a submission *asks for*.
 
@@ -94,4 +99,5 @@ def chat_request_hash(
         provider=provider,
         metadata=metadata,
         disable_memory_write=disable_memory_write,
+        content_parts=content_parts,
     ).digest

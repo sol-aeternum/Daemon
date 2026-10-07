@@ -239,6 +239,17 @@ class TaskStore:
         metadata: dict[str, Any] = {"terminal_status": _MESSAGE_STATUS[status]}
         if terminal_code:
             metadata["terminal_reason"] = terminal_code
+        if status is TaskStatus.NEEDS_ATTENTION:
+            # Tool names only (no targets): later turns are told which action
+            # may already have happened (see uncertain_effect_note).
+            metadata["uncertain_tools"] = [
+                r["tool_name"]
+                for r in await conn.fetch(
+                    "SELECT tool_name FROM task_operations WHERE task_id = $1 "
+                    "GROUP BY tool_name ORDER BY min(started_at)",
+                    row["id"],
+                )
+            ]
         await self._memory.update_message(
             row["result_message_id"],
             status=_MESSAGE_STATUS[status],
@@ -261,15 +272,24 @@ class TaskStore:
         )
 
     async def _locked_for_epoch(self, conn: Any, task_id: uuid.UUID, epoch: int) -> Any:
-        # The epoch alone is not ownership: a worker paused past its lease must
-        # not write even if no takeover has happened yet. clock_timestamp(), not
-        # the transaction's now(), so time spent waiting for the lock counts.
-        return await conn.fetchrow(
+        """Lock the task for this attempt, or return None if it no longer owns it.
+
+        The epoch alone is not ownership: a worker paused past its lease must
+        not write even if no takeover has happened yet. The expiry is checked
+        by a separate statement once the lock is held, because a locking
+        query's own predicates are evaluated before any wait for the lock.
+        """
+        row = await conn.fetchrow(
             "SELECT * FROM tasks WHERE id = $1 AND lease_epoch = $2 AND status = 'running' "
-            f"AND {_LEASE_HELD} FOR UPDATE",
+            "FOR UPDATE",
             task_id,
             epoch,
         )
+        if row is None or not await conn.fetchval(
+            f"SELECT {_LEASE_HELD} FROM tasks WHERE id = $1", task_id
+        ):
+            return None
+        return row
 
     # ------------------------------------------------------------------ #
     # Acceptance
@@ -600,19 +620,20 @@ class TaskStore:
     async def heartbeat(self, task_id: uuid.UUID, epoch: int, *, lease_s: float) -> Heartbeat:
         """Extend this attempt's lease; raises :class:`LeaseLost` when fenced out."""
         async with self._pool.acquire() as conn, conn.transaction():
+            # An expired lease is never revived, even before a takeover.
+            if await self._locked_for_epoch(conn, task_id, epoch) is None:
+                raise LeaseLost("lease lost")
             row = await conn.fetchrow(
                 f"""
-                UPDATE tasks SET lease_expires_at = now() + make_interval(secs => $3),
-                                 updated_at = now()
-                WHERE id = $1 AND lease_epoch = $2 AND status = 'running' AND {_LEASE_HELD}
+                UPDATE tasks
+                SET lease_expires_at = clock_timestamp() + make_interval(secs => $2),
+                    updated_at = now()
+                WHERE id = $1
                 RETURNING cancel_requested_at, {_SUSPENDED} AS account_suspended
                 """,
                 task_id,
-                epoch,
                 lease_s,
             )
-            if row is None:
-                raise LeaseLost("lease lost")
             await conn.execute(
                 "UPDATE task_attempts SET heartbeat_at = now() WHERE task_id = $1 AND epoch = $2",
                 task_id,
@@ -655,20 +676,20 @@ class TaskStore:
         external call can be narrowed, not closed.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            if await self._locked_for_epoch(conn, task_id, epoch) is None:
+                raise LeaseLost("lease lost")
+            # Read under the lock, so a cancel, suspension or lapse that
+            # committed while this waited is seen.
             row = await conn.fetchrow(
                 f"""
-                SELECT id, cancel_requested_at, {_SUSPENDED} AS account_suspended,
-                       lease_expires_at > now() + make_interval(secs => $3) AS lease_margin_ok
-                FROM tasks
-                WHERE id = $1 AND lease_epoch = $2 AND status = 'running' AND {_LEASE_HELD}
-                FOR UPDATE
+                SELECT cancel_requested_at, {_SUSPENDED} AS account_suspended,
+                       lease_expires_at > clock_timestamp() + make_interval(secs => $2)
+                           AS lease_margin_ok
+                FROM tasks WHERE id = $1
                 """,
                 task_id,
-                epoch,
                 min_lease_margin_s,
             )
-            if row is None:
-                raise LeaseLost("lease lost")
             if row["cancel_requested_at"] is not None:
                 raise EffectRefused("task cancel requested")
             if row["account_suspended"]:

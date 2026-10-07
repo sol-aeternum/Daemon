@@ -124,6 +124,9 @@ def test_request_hash_distinguishes_what_was_asked():
     assert _hash(model="other") != base
     assert _hash(disable_memory_write=True) != base
     assert _hash(attachments=[{"name": "a.txt", "content": "x"}]) != base
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
+    assert _hash(content_parts=[image]) != base
+    assert _hash(content_parts=None) == _hash(content_parts=[])
 
 
 def test_request_fingerprint_is_keyed():

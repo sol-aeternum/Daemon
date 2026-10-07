@@ -29,6 +29,24 @@ def is_explicit_memory(memory: dict[str, Any]) -> bool:
 
 logger = logging.getLogger(__name__)
 EXTRACTION_SKIPPED_TERMINAL_STATUSES = frozenset({"error", "cancelled"})
+#: Terminal reason of a durable task stopped after a material operation began.
+UNCERTAIN_EFFECT_REASON = "uncertain_effect"
+
+
+def uncertain_effect_note(tools: Any) -> str:
+    """What later turns see in place of a task that may have had an effect.
+
+    The interrupted reply is otherwise excluded from history like any error,
+    which would leave the user's request looking unanswered and invite the
+    model to carry it out again.
+    """
+    names = [str(t) for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+    started = f" It had started: {', '.join(names)}." if names else ""
+    return (
+        "[This request was interrupted after starting an action that may have taken "
+        f"effect.{started} Whether it completed is unknown. Do not repeat it without "
+        "first asking the user to confirm.]"
+    )
 
 
 def _default_embedding_model() -> str:
@@ -1092,7 +1110,8 @@ class MemoryStore:
                 SELECT * FROM messages
                 WHERE conversation_id = $1
                   AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
-                  AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[])))
+                  AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[]))
+                       OR metadata->>'terminal_reason' = $5)
                   AND ($4::uuid IS NULL OR created_at <= (
                         SELECT created_at FROM messages WHERE id = $4 AND conversation_id = $1))
                 ORDER BY created_at DESC, id DESC
@@ -1104,6 +1123,7 @@ class MemoryStore:
             limit,
             exclude_status,
             until_message_id,
+            UNCERTAIN_EFFECT_REASON,
         )
         results = []
         for r in rows:
@@ -1114,7 +1134,20 @@ class MemoryStore:
             if d.get("advisor_traces") is not None:
                 d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
             self._decrypt_message_tool_traces(d)
-            results.append(_normalize_message(d))
+            d = _normalize_message(d)
+            metadata = d.get("metadata") or {}
+            if (
+                exclude_status
+                and d.get("status") in exclude_status
+                and metadata.get("terminal_reason") == UNCERTAIN_EFFECT_REASON
+            ):
+                # Kept so the request does not look unanswered, but never as
+                # a partial answer: an explicit marker of the possible effect.
+                d["content"] = uncertain_effect_note(metadata.get("uncertain_tools"))
+                d["reasoning_text"] = None
+                d["tool_calls"] = []
+                d["tool_results"] = []
+            results.append(d)
         return results
 
     # ------------------------------------------------------------------
