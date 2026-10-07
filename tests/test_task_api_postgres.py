@@ -258,6 +258,13 @@ async def test_closing_the_client_does_not_cancel_and_another_device_sees_the_re
     task_id = await api.env.pool.fetchval("SELECT id FROM tasks")
     # The disconnect may land before the post-commit wake-up was enqueued; the
     # dispatch sweep recovers that window. Either way the task runs once.
+    if not api.redis.enqueued:
+        # The wake-up was recorded but its enqueue was cut off: the sweep waits
+        # out the 60 s wake-up throttle (§3). Model that time having passed.
+        await api.env.pool.execute(
+            "UPDATE tasks SET last_wake_at = now() - interval '61 seconds' "
+            "WHERE last_wake_at IS NOT NULL"
+        )
     await runner.sweep_tasks({"task_store": api.env.tasks, "redis": api.redis})
     assert await api.run_worker() == ["completed"]
 
@@ -878,3 +885,25 @@ async def test_terminal_snapshot_replaces_uncommitted_live_text(env: Env):
     events = _events("".join(view.terminal(snapshot)))
     resets = [d["data"] for e, d in events if e == "task" and d["data"].get("reset")]
     assert resets and resets[0]["content"] == "Kept"
+
+
+@pytest.mark.asyncio
+async def test_client_without_reset_is_told_to_reopen_when_terminal_text_differs(env: Env):
+    """Review of #466: a client that cannot replace text must not keep showing
+    output the terminal transaction did not commit."""
+    from orchestrator.tasks.observe import _Observation
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.write_partial(accepted.task_id, claim.epoch, content="Kept", delta_seq=1)
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch)
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None
+    view = _Observation("conv", "req", supports_reset=False)
+    view.generation = snapshot.content_generation
+    view.displayed = "Kept, and more that was never saved"
+    events = _events("".join(view.terminal(snapshot)))
+    assert any(e == "error" and d["data"]["code"] == "task_regenerating" for e, d in events)
+    assert not any(e == "task" and d["data"].get("reset") for e, d in events)

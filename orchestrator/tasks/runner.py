@@ -151,6 +151,9 @@ class AttemptSink:
                 self._state.requested_terminal = status
             return self._row()
         except LeaseLost:
+            # Stop the whole attempt now: a provider call between frames would
+            # otherwise run on beside the recovery attempt.
+            _fence_lost(self._state)
             self._state.fenced = True
             return None
 
@@ -165,8 +168,9 @@ def _interrupt(state: AttemptState, execution: asyncio.Task[Any]) -> None:
 
 
 def _fence_lost(state: AttemptState) -> None:
-    # The effect fence found the lease gone: stop the whole attempt now.
-    if state.execution is not None and state.result is None:
+    # The lease is gone (seen by the effect fence or a fenced write): stop
+    # the whole attempt now, once.
+    if state.execution is not None and state.result is None and not state.fenced:
         _stop_fenced(state, state.execution)
 
 
@@ -515,6 +519,14 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     lease_deadline = loop.time() + LEASE_S - LEASE_SAFETY_S
     claim = await store.claim(uuid.UUID(task_id), worker_id=WORKER_ID, lease_s=LEASE_S)
     if claim is None:
+        # The claim may have ended the task (a lost attempt that needs
+        # attention, exhausted its attempts or was cancelled): free the dead
+        # attempt's open holds now rather than at generic recovery. Only
+        # ended attempts' scopes are touched, so this is safe when skipped.
+        try:
+            await settle_lost_attempt_holds(store, ctx["db_pool"], uuid.UUID(task_id))
+        except Exception:
+            logger.warning("Could not settle a lost attempt's holds", exc_info=True)
         return "skipped"
     try:
         await settle_lost_attempt_holds(store, ctx["db_pool"], claim.task_id)

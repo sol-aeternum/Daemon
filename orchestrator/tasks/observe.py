@@ -107,19 +107,7 @@ class _Observation:
                 # already shows. End its stream honestly instead; reopening
                 # the conversation shows the saved result.
                 self.needs_reload = True
-                return [
-                    self.frame(
-                        "error",
-                        {
-                            "code": "task_regenerating",
-                            "message": "This answer is being regenerated after an "
-                            "interruption. Reopen the conversation to see it.",
-                            "retryable": False,
-                        },
-                        evt_id="evt_error",
-                    ),
-                    self.frame("done", {"status": "error", "reason": "task_regenerating"}),
-                ]
+                return self._reload_frames()
             if self.displayed:
                 frames.append(self.task_frame(snapshot, reset=True))
             elif content:
@@ -143,14 +131,34 @@ class _Observation:
             self.delta_seq = snapshot.content_delta_seq
         return frames
 
+    def _reload_frames(self) -> list[str]:
+        return [
+            self.frame(
+                "error",
+                {
+                    "code": "task_regenerating",
+                    "message": "This answer is being regenerated after an "
+                    "interruption. Reopen the conversation to see it.",
+                    "retryable": False,
+                },
+                evt_id="evt_error",
+            ),
+            self.frame("done", {"status": "error", "reason": "task_regenerating"}),
+        ]
+
     def terminal(self, snapshot: TaskSnapshot) -> list[str]:
         status = snapshot.status
         # The terminal snapshot is authoritative: live text it did not commit
         # (for example a result withheld for a suspended account) is replaced.
         # A lagging snapshot is only tolerated while the task is running.
-        stale = self.supports_reset and self.displayed != snapshot.content
-        frames = [self.task_frame(snapshot, reset=stale)]
-        if stale:
+        stale = self.displayed != snapshot.content
+        if stale and not self.supports_reset and not snapshot.content.startswith(self.displayed):
+            # This client cannot replace what it shows: tell it to reopen the
+            # conversation, which shows the committed result.
+            return self._reload_frames()
+        reset = stale and self.supports_reset
+        frames = [self.task_frame(snapshot, reset=reset)]
+        if reset:
             self.displayed = snapshot.content
         if status is TaskStatus.COMPLETED:
             frames.append(

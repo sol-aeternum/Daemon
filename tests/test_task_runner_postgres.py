@@ -728,3 +728,47 @@ async def test_completion_reports_the_committed_status_to_the_engine(env: Env):
     sink = runner.AttemptSink(env.tasks, runner.AttemptState(claim=claim))
     row = await sink.update_message(content="answer", status="complete")
     assert row is not None and row["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_holds_are_settled_when_the_claim_ends_the_task(env: Env, mock_llm: None):
+    """Review of #466: a lost attempt that recovery terminalizes (here: it had
+    started a material operation) must not keep its hold until generic recovery."""
+    from orchestrator.entitlements.service import EntitlementService
+
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    scope = uuid.uuid4()
+    hold = await EntitlementService(env.pool).reserve(
+        env.alice, 1000, operation="chat", scope_id=scope
+    )
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, scope)
+    await env.tasks.begin_operation(
+        accepted.task_id, first.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+    )
+    await expire_lease(env, accepted.task_id)  # the worker died mid-operation
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "skipped"
+    assert await _status(env, accepted.task_id) == "needs_attention"
+    assert (
+        await env.pool.fetchval(
+            "SELECT status FROM entitlement_reservations WHERE id = $1", hold.id
+        )
+        == "settled"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fenced_write_stops_the_attempt_at_once(env: Env):
+    """Review of #466: a partial write that finds the lease gone cancels execution."""
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    state = runner.AttemptState(claim=claim)
+    state.execution = asyncio.create_task(asyncio.Event().wait())  # a stalled provider call
+    await expire_lease(env, accepted.task_id)
+    assert await runner.AttemptSink(env.tasks, state).update_message(content="late") is None
+    assert state.fenced
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):  # never cancelled would time out instead
+            await state.execution
