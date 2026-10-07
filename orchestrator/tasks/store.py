@@ -573,6 +573,11 @@ class TaskStore:
                 return None
             if row["lease_expired"]:
                 epoch = int(row["lease_epoch"])
+                # Suspension wins over a cancel or a retry, here as at
+                # publication: a suspended account's task ends failed.
+                if await self._account_suspended(conn, row["user_id"]):
+                    await self._end_suspended(conn, row, epoch)
+                    return None
                 if row["cancel_requested_at"] is not None:
                     await self._end_attempt(
                         conn, task_id, epoch, "cancelled", None, row["result_message_id"]

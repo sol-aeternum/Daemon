@@ -873,3 +873,17 @@ async def test_a_cancelled_task_that_started_an_action_stays_visible_in_history(
     )
     assert [m["role"] for m in history] == ["user", "assistant"]
     assert "notification_send" in history[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_suspension_wins_when_an_expired_cancelled_attempt_is_resolved(env: Env):
+    """Review of #466: the expired-lease recovery path checks suspension first."""
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    await _suspend(env, env.alice)
+    await _expire_lease(env, accepted.task_id)  # the worker died
+    assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
+    row = await _task(env, accepted.task_id)
+    assert row["status"] == "failed" and row["terminal_code"] == "account_suspended"
