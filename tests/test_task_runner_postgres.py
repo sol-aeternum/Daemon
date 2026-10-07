@@ -789,3 +789,70 @@ async def test_progress_persistence_that_finds_the_lease_gone_stops_the_attempt(
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await state.execution
+
+
+@pytest.mark.asyncio
+async def test_a_preparation_failure_consumes_no_attempt(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: transient failures while preparing the prompt or history
+    are deferred, not counted (§5), and still end once the wait is over."""
+    real_prompt = runner._system_prompt
+    failures = 3
+
+    async def flaky_prompt(*args: Any, **kwargs: Any):
+        nonlocal failures
+        if failures:
+            failures -= 1
+            raise ConnectionError("message read failed")
+        return await real_prompt(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_system_prompt", flaky_prompt)
+    accepted = await accept_task(env)
+    for _ in range(3):  # more failures than max_attempts allows
+        assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+            "queued"
+        )
+        await env.pool.execute(
+            "UPDATE tasks SET next_wakeup_at = now() WHERE id = $1", accepted.task_id
+        )
+    assert await _attempts(env, accepted.task_id) == (0, ["deferred"] * 3)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+
+    failures = 1
+    late = await accept_task(env, message="second")
+    await env.pool.execute(
+        "UPDATE tasks SET created_at = now() - make_interval(secs => $2) WHERE id = $1",
+        late.task_id,
+        runner.ADMISSION_WAIT_S + 1,
+    )
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(late.task_id)) == "failed"
+    assert (
+        await env.pool.fetchval("SELECT terminal_code FROM tasks WHERE id = $1", late.task_id)
+        == "preparation_failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_operation_stops_the_attempt(env: Env):
+    """Review of #466: a cancel seen by the effect fence interrupts at once."""
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    reasons: list[str] = []
+    inner = _CountingTool()
+    await FencedTool(
+        inner, env.tasks, accepted.task_id, claim.epoch, None, reasons.append
+    ).execute()
+    assert inner.calls == 0 and reasons == ["cancel_requested"]
+
+    state = runner.AttemptState(claim=claim)
+    state.execution = asyncio.create_task(asyncio.Event().wait())
+    runner._operation_refused(state, "cancel_requested")
+    assert state.cancel_requested and state.interrupted
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await state.execution

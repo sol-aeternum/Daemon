@@ -62,12 +62,14 @@ class FencedTool(Tool):
         task_id: uuid.UUID,
         epoch: int,
         on_lease_lost: Callable[[], None] | None = None,
+        on_refused: Callable[[str], None] | None = None,
     ) -> None:
         self._inner = inner
         self._store = store
         self._task_id = task_id
         self._epoch = epoch
         self._on_lease_lost = on_lease_lost
+        self._on_refused = on_refused
         self.name = inner.name
         self.description = inner.description
         self.parameters = inner.parameters
@@ -96,8 +98,11 @@ class FencedTool(Tool):
             return json.dumps(
                 {"success": False, "error": "Not performed: this task attempt was superseded."}
             )
-        except EffectRefused:
-            # Cancelled, suspended or out of lease time: the effect is not attempted.
+        except EffectRefused as refused:
+            # Cancelled, suspended or out of lease time: the effect is not
+            # attempted, and a cancel or suspension stops the attempt now.
+            if self._on_refused is not None:
+                self._on_refused(refused.reason)
             return json.dumps(
                 {"success": False, "error": "Not performed: this task can no longer act."}
             )
@@ -123,9 +128,10 @@ def guard_registry(
     task_id: uuid.UUID,
     epoch: int,
     on_lease_lost: Callable[[], None] | None = None,
+    on_refused: Callable[[str], None] | None = None,
 ) -> None:
     """Wrap every material tool in ``registry`` with the effect fence."""
     for name in registry.names():
         tool = registry.get(name)
         if tool is not None and is_material(name) and not isinstance(tool, FencedTool):
-            registry.register(FencedTool(tool, store, task_id, epoch, on_lease_lost))
+            registry.register(FencedTool(tool, store, task_id, epoch, on_lease_lost, on_refused))

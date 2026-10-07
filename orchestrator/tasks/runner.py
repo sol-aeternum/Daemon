@@ -93,6 +93,8 @@ class AttemptState:
     interrupted: bool = False
     #: The task running the chat engine for this attempt.
     execution: asyncio.Task[Any] | None = None
+    #: The attempt was counted and may have reached a provider.
+    executing: bool = False
     result: TaskStatus | None = None
     requested_terminal: str | None = None
     error: BaseException | None = None
@@ -165,6 +167,19 @@ def _interrupt(state: AttemptState, execution: asyncio.Task[Any]) -> None:
         return
     state.interrupted = True
     execution.cancel()
+
+
+def _operation_refused(state: AttemptState, reason: str) -> None:
+    # The effect fence saw a cancel or suspension the heartbeat has not yet:
+    # stop now rather than continue to another provider round.
+    if reason == "cancel_requested":
+        state.cancel_requested = True
+    elif reason == "account_suspended":
+        state.account_suspended = True
+    else:
+        return  # too little lease left: the heartbeat decides
+    if state.execution is not None:
+        _interrupt(state, state.execution)
 
 
 def _fence_lost(state: AttemptState) -> None:
@@ -397,11 +412,20 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         profile=str(task_input.get("profile") or "routine"),
         request_id=request_id,
     ):
+        scope_id = current_scope().scope_id
+        await store.record_compute_scope(claim.task_id, claim.epoch, scope_id)
+        # Preparation consumes no attempt (§5): a transient failure here is
+        # deferred, not counted. The attempt counts immediately before the
+        # first provider dispatch, after a fresh cancel/suspension check.
+        system_prompt, user_timezone = await _system_prompt(memory, db_pool, claim)
+        history = await _history(
+            memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
+        )
         try:
             await store.begin_execution(
                 claim.task_id,
                 claim.epoch,
-                current_scope().scope_id,
+                scope_id,
                 prompt_version=str(DAEMON_PROMPT_VERSION),
             )
         except ExecutionRefused as refused:
@@ -411,10 +435,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             else:
                 state.cancel_requested = True
             return
-        system_prompt, user_timezone = await _system_prompt(memory, db_pool, claim)
-        history = await _history(
-            memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
-        )
+        state.executing = True
         frames = stream_sse_chat(
             settings=settings,
             provider_config=provider_config,
@@ -437,7 +458,12 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             user_timezone=user_timezone,
             message_sink=AttemptSink(store, state),
             tool_guard=lambda registry: guard_registry(
-                registry, store, claim.task_id, claim.epoch, lambda: _fence_lost(state)
+                registry,
+                store,
+                claim.task_id,
+                claim.epoch,
+                lambda: _fence_lost(state),
+                lambda reason: _operation_refused(state, reason),
             ),
         )
         async for frame in frames:
@@ -494,6 +520,24 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
             return (await store.acknowledge_cancel(claim.task_id, claim.epoch)).value
         if state.account_suspended:
             cause, code = RetryCause.TERMINAL_ERROR, "account_suspended"
+        elif state.error is not None and not state.executing:
+            # Failed while preparing (or refused admission while preparing):
+            # nothing was counted or dispatched. Wait and retry, bounded by
+            # the same limit as admission waits; after it, the failure counts.
+            cause, code = _classify(state.error)
+            if cause is RetryCause.RETRYABLE_ERROR:
+                reason = "preparation_failed" if code == "internal_error" else code
+                if await store.defer_execution(
+                    claim.task_id,
+                    claim.epoch,
+                    delay_s=DEFER_S,
+                    reason=reason,
+                    max_wait_s=ADMISSION_WAIT_S,
+                    before_dispatch=True,
+                ):
+                    return TaskStatus.QUEUED.value
+                # Waited too long: end honestly rather than retry uncounted forever.
+                cause, code = RetryCause.TERMINAL_ERROR, reason
         elif state.error is not None:
             cause, code = _classify(state.error)
             if code in ADMISSION_CODES and await store.defer_execution(

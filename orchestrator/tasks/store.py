@@ -82,7 +82,12 @@ class LeaseLost(TaskError):
 
 class EffectRefused(TaskError):
     """A material operation may not start: the task was cancelled, its account
-    suspended, or too little lease time remains."""
+    suspended, or too little lease time remains. ``reason`` is
+    ``cancel_requested``, ``account_suspended`` or ``lease_margin``."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class ExecutionRefused(TaskError):
@@ -721,11 +726,11 @@ class TaskStore:
                 min_lease_margin_s,
             )
             if row["cancel_requested_at"] is not None:
-                raise EffectRefused("task cancel requested")
+                raise EffectRefused("cancel_requested")
             if row["account_suspended"]:
-                raise EffectRefused("account suspended")
+                raise EffectRefused("account_suspended")
             if not row["lease_margin_ok"]:
-                raise EffectRefused("lease too close to expiry")
+                raise EffectRefused("lease_margin")
             operation_id = await conn.fetchval(
                 """
                 INSERT INTO task_operations (task_id, epoch, tool_name, effect_class, target_ciphertext)
@@ -738,6 +743,24 @@ class TaskStore:
             )
             await self._append_event(conn, task_id, "operation_started", {"tool": tool_name})
             return operation_id
+
+    async def record_compute_scope(
+        self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID
+    ) -> None:
+        """Link this attempt's account compute scope before any reservation.
+
+        Preparation (memory retrieval) can reserve under the scope before the
+        attempt is counted; a lost attempt's holds are found through it.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            if await self._locked_for_epoch(conn, task_id, epoch) is None:
+                raise LeaseLost("lease lost")
+            await conn.execute(
+                "UPDATE task_attempts SET compute_scope_id = $3 WHERE task_id = $1 AND epoch = $2",
+                task_id,
+                epoch,
+                scope_id,
+            )
 
     async def begin_execution(
         self,
@@ -977,7 +1000,14 @@ class TaskStore:
             await self._append_event(conn, task_id, "attempt_deferred", {"epoch": epoch})
 
     async def defer_execution(
-        self, task_id: uuid.UUID, epoch: int, *, delay_s: float, reason: str, max_wait_s: float
+        self,
+        task_id: uuid.UUID,
+        epoch: int,
+        *,
+        delay_s: float,
+        reason: str,
+        max_wait_s: float,
+        before_dispatch: bool = False,
     ) -> bool:
         """Re-queue an attempt the account refused admission, returning its attempt.
 
@@ -988,6 +1018,10 @@ class TaskStore:
         was granted in the attempt's compute scope, a material operation was
         recorded, or the task has already waited ``max_wait_s`` since
         acceptance; the caller then applies the ordinary retry rules.
+
+        ``before_dispatch``: the attempt failed while preparing, before it was
+        counted, so no provider call can have been made; reservations from
+        preparation (memory retrieval) do not prevent the deferral.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await self._locked_for_epoch(conn, task_id, epoch)
@@ -998,9 +1032,9 @@ class TaskStore:
                 SELECT t.created_at > now() - make_interval(secs => $3)
                        AND NOT EXISTS (
                            SELECT 1 FROM task_operations o WHERE o.task_id = $1 AND o.epoch = $2)
-                       AND NOT EXISTS (
+                       AND ($4 OR NOT EXISTS (
                            SELECT 1 FROM entitlement_reservations r
-                           WHERE r.scope_id = a.compute_scope_id) AS admissible,
+                           WHERE r.scope_id = a.compute_scope_id)) AS admissible,
                        a.execution_started_at IS NOT NULL AS counted
                 FROM tasks t JOIN task_attempts a ON a.task_id = t.id AND a.epoch = $2
                 WHERE t.id = $1
@@ -1008,6 +1042,7 @@ class TaskStore:
                 task_id,
                 epoch,
                 max_wait_s,
+                before_dispatch,
             )
             if check is None or not check["admissible"]:
                 return False
