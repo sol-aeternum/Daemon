@@ -1,5 +1,5 @@
 import type { ChatEvent } from '@/lib/events';
-import type { DaemonMessage } from '@/lib/chatMessages';
+import { TERMINAL_TASK_STATUSES, type DaemonMessage } from '@/lib/chatMessages';
 import { appendDaemonClientIpHeaders } from '../_lib/clientIp';
 
 const API_URLS = [
@@ -8,6 +8,10 @@ const API_URLS = [
   'http://backend:8000',
   'http://localhost:8000',
 ].filter((url): url is string => Boolean(url));
+
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+/** Durable-task features this bridge implements. */
+const BRIDGE_FEATURES = new Set(['task-cancel', 'task-reset']);
 
 function buildProxyHeaders(req: Request): Headers {
   const headers = new Headers();
@@ -169,6 +173,8 @@ export async function POST(req: Request) {
     metadata,
     provider,
     suggestion_id,
+    idempotency_key,
+    client_features,
   } = await req.json();
 
   const { createUIMessageStream, createUIMessageStreamResponse } =
@@ -202,6 +208,28 @@ export async function POST(req: Request) {
   }
 
   const proxyHeaders = buildProxyHeaders(req);
+  // Durable execution needs the *browser* to support it (an older cached
+  // bundle does not), so forward only the features both the browser declared
+  // and this bridge implements.
+  const features = Array.isArray(client_features)
+    ? client_features.filter(
+        (feature): feature is string =>
+          typeof feature === 'string' && BRIDGE_FEATURES.has(feature),
+      )
+    : [];
+  if (features.length > 0) {
+    proxyHeaders.set('X-Daemon-Client-Features', features.join(', '));
+  } else {
+    proxyHeaders.delete('X-Daemon-Client-Features');
+  }
+  // One key per submission: a retried or replayed request returns the same
+  // durable task instead of creating a second one.
+  if (
+    typeof idempotency_key === 'string' &&
+    IDEMPOTENCY_KEY_PATTERN.test(idempotency_key)
+  ) {
+    proxyHeaders.set('Idempotency-Key', idempotency_key);
+  }
 
   let backendRes: Response | null = null;
 
@@ -248,7 +276,11 @@ export async function POST(req: Request) {
 
   const stream = createUIMessageStream<DaemonMessage>({
     execute: async ({ writer }) => {
-      const textPartId = 'assistant-text';
+      // A durable task that regenerates after an interruption starts a new
+      // content generation; its text goes into a fresh part after a
+      // task_reset marker, and only text after the last marker is shown.
+      let textPartId = 'assistant-text';
+      let textGeneration = 0;
       let textPartStarted = false;
       let streamFailed = false;
       let errorText = 'Backend stream ended unexpectedly.';
@@ -321,10 +353,23 @@ export async function POST(req: Request) {
           return;
         }
 
+        const taskId = backendRes.headers.get('x-daemon-task-id');
+        if (taskId) {
+          writeData([{ type: 'task', task_id: taskId, status: 'accepted' }]);
+        } else if (features.length > 0) {
+          // This browser could have run durably, but the backend answered
+          // without a task (durable chat off, or an excluded turn): aborting
+          // this request is what cancels it.
+          writeData([{ type: 'request_bound' }]);
+        }
+
         const reader = backendRes.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         let sawToken = false;
+        // A durable stream is complete only once the task reported a terminal
+        // status; an earlier end is a disconnect (the task runs on).
+        let sawTerminalTask = !taskId;
 
         // Stop-button abort: when the browser-side `req.signal` fires (the user
         // clicked Stop), release the backend reader so the connection drops and
@@ -379,7 +424,57 @@ export async function POST(req: Request) {
                 continue;
               }
 
-              if (eventType === 'token') {
+              if (eventType === 'task') {
+                const task = payload?.data ?? {};
+                if (
+                  typeof task.status === 'string' &&
+                  TERMINAL_TASK_STATUSES.has(task.status)
+                ) {
+                  sawTerminalTask = true;
+                }
+                if (task.reset === true) {
+                  if (textPartStarted) {
+                    writer.write({ type: 'text-end', id: textPartId });
+                  }
+                  textGeneration += 1;
+                  textPartId = `assistant-text-${textGeneration}`;
+                  textPartStarted = false;
+                  writeData([
+                    {
+                      type: 'task_reset',
+                      task_id:
+                        typeof task.task_id === 'string'
+                          ? task.task_id
+                          : undefined,
+                      content_generation:
+                        typeof task.content_generation === 'number'
+                          ? task.content_generation
+                          : undefined,
+                    },
+                  ]);
+                  if (typeof task.content === 'string' && task.content) {
+                    sawToken = true;
+                    writeText(task.content);
+                  }
+                }
+                // A reset can also carry the task's status (the terminal
+                // snapshot replacing uncommitted text): never drop it.
+                if (
+                  typeof task.task_id === 'string' &&
+                  (task.reset !== true || typeof task.status === 'string')
+                ) {
+                  writeData([
+                    {
+                      type: 'task',
+                      task_id: task.task_id,
+                      status:
+                        typeof task.status === 'string'
+                          ? task.status
+                          : undefined,
+                    },
+                  ]);
+                }
+              } else if (eventType === 'token') {
                 const delta =
                   payload?.data?.text ??
                   payload?.data?.delta ??
@@ -617,6 +712,13 @@ export async function POST(req: Request) {
           }
         } finally {
           req.signal.removeEventListener('abort', onAbort);
+        }
+        if (!sawTerminalTask && !streamFailed && !req.signal.aborted) {
+          // The observer ended early (e.g. a transient database error). Keep
+          // the submission unresolved so the client reconciles with the task.
+          errorText =
+            'The connection was interrupted. Your request is still being worked on; its result will appear here.';
+          streamFailed = true;
         }
       } catch {
         if (!req.signal.aborted) {

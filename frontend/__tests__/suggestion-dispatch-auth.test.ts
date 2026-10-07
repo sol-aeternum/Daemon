@@ -106,6 +106,8 @@ it('sends an unchanged lifetime once, with null destination and no internal guar
     model: 'auto',
     suggestion_id: 'candidate',
     messages: [{ role: 'user', parts: [{ type: 'text', text: prompt }] }],
+    // Declared so the bridge marks the turn request-bound; no idempotency key.
+    client_features: ['task-cancel', 'task-reset'],
   });
 });
 

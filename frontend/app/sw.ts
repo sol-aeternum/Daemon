@@ -15,6 +15,8 @@ import {
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  clearCachedTaskEntries,
+  isPrivateTaskRequest,
   shouldUseGeneralRuntimeCache,
 } from '../lib/pwaCaching';
 import {
@@ -33,6 +35,12 @@ declare const self: ServiceWorkerGlobalScope;
 const runtimeCaching: RuntimeCaching[] = [
   {
     matcher: ({ url }) => isPrivateSpeechRequest(url),
+    handler: new NetworkOnly(),
+  },
+  {
+    // Task snapshots hold plaintext content and status that must never be
+    // served stale or to another account.
+    matcher: ({ url }) => isPrivateTaskRequest(url),
     handler: new NetworkOnly(),
   },
   {
@@ -109,6 +117,7 @@ self.addEventListener('activate', (event) => {
     Promise.all([
       ...legacyApiCacheNames.map((cacheName) => caches.delete(cacheName)),
       clearLegacySnapshotEntries(caches, self.location.origin),
+      clearCachedTaskEntries(caches),
     ]),
   );
 });

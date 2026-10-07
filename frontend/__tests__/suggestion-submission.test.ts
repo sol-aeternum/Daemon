@@ -26,6 +26,24 @@ describe('isolated suggestion transport', () => {
     });
   });
 
+  it('keeps the declared client features so the turn is marked request-bound', () => {
+    expect(
+      isolateSuggestionBody({
+        suggestion_id: 'opaque-candidate',
+        model: 'auto',
+        client_features: ['task-cancel', 'task-reset'],
+        idempotency_key: 'never-sent',
+        messages: [],
+      }),
+    ).toEqual({
+      id: null,
+      suggestion_id: 'opaque-candidate',
+      model: 'auto',
+      client_features: ['task-cancel', 'task-reset'],
+      messages: [],
+    });
+  });
+
   it('leaves ordinary chat transport unchanged', () => {
     const body = {
       id: 'current',

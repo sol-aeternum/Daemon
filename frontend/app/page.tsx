@@ -3,13 +3,34 @@
 import { WelcomeScreen } from '../components/WelcomeScreen';
 import { SuggestionSourceContext } from '../components/SuggestionSourceContext';
 import { chatTransportFetch } from '../lib/chatTransportFetch';
+import {
+  attachmentsForRetry,
+  reconcileSubmission,
+  shouldDetachStream,
+  type LastTurn,
+} from '../lib/durableRecovery';
+import {
+  promotePendingSubmission,
+  pendingTasksIn,
+  recordSubmissionTask,
+  settleFinishedSubmissions,
+  settlePendingSubmission,
+} from '../lib/pendingSubmission';
 import type { HomeSuggestion } from '../lib/homeSuggestions';
 import { ChatHeaderActions } from '../components/ChatHeaderActions';
 import { ChatActivityStatus } from '../components/ChatActivityStatus';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { useState, useRef, useEffect, Suspense, useMemo } from 'react';
+import {
+  useState,
+  useRef,
+  useEffect,
+  Suspense,
+  useMemo,
+  useCallback,
+  useLayoutEffect,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
@@ -52,7 +73,10 @@ import { AudioPlaybackProvider } from '../components/AudioPlaybackProvider';
 import { TtsPlaybackBar } from '../components/TtsPlaybackBar';
 import { useEventArchive } from '../hooks/useEventArchive';
 import { useStopGeneration } from '../hooks/useStopGeneration';
+import { useActiveTaskFollower } from '../hooks/useActiveTaskFollower';
+import { useDurableStop } from '../hooks/useDurableStop';
 import { useStopShortcut } from '../hooks/useStopShortcut';
+import type { StopOutcome } from '../hooks/useStopGeneration';
 import { formatMessageContent } from '../lib/format';
 import { useAgentStatus } from '../hooks/useAgentStatus';
 import { AgentStatusList } from '../components/AgentStatusList';
@@ -83,6 +107,9 @@ import {
   type DaemonMessage,
   getDaemonDataEvents,
   getDaemonMessageText,
+  getDaemonTaskId,
+  getDaemonTaskStatus,
+  TERMINAL_TASK_STATUSES,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
 
@@ -360,6 +387,10 @@ function ChatContent() {
     updateConversation,
     deleteConversation,
     getCurrentConversation,
+    refreshCurrentConversation,
+    cancelTask,
+    taskForKey,
+    taskStatus,
     switchConversation,
     setConversationModel,
     searchQuery,
@@ -413,6 +444,46 @@ function ChatContent() {
     pending: boolean;
   } | null>(null);
   const chatRequestGenerationRef = useRef<number | null>(null);
+  // Idempotency key of the submission currently (or most recently) in flight.
+  const activeSubmissionKeyRef = useRef<string | null>(null);
+  // Files of the latest submitted turn and the conversation they were sent
+  // to, re-sent only when that same conversation's turn is regenerated.
+  const lastTurnRef = useRef<LastTurn>(null);
+  // While a Stop is being confirmed its conversation stays busy, so a new
+  // submission cannot race a task that is still stopping. Other
+  // conversations are unaffected. ``null``: an unnamed new chat;
+  // ``undefined``: no Stop pending.
+  const [stoppingIn, setStoppingIn] = useState<string | null | undefined>(
+    undefined,
+  );
+  const stopSeqRef = useRef(0);
+  // The Stop still being confirmed, so a repeated press can wait for it.
+  const pendingStopRef = useRef<{
+    scope: string | null;
+    outcome: Promise<StopOutcome>;
+  } | null>(null);
+  const stopInFlight =
+    stoppingIn !== undefined && stoppingIn === (currentId ?? null);
+  // The conversation the in-flight submission belongs to (``null``: an
+  // unnamed new chat, promoted when named). Stop settles that submission's
+  // key only when it stops a task in the same conversation.
+  const activeSubmissionScopeRef = useRef<string | null>(null);
+  // A new send starts with no key of its own until its transport assigns
+  // one: an early Stop must never resolve an earlier submission's task.
+  const beginSend = () => {
+    activeSubmissionKeyRef.current = null;
+    activeSubmissionScopeRef.current =
+      currentIdRef.current || latestConversationIdRef.current || null;
+  };
+  // Mirrors stopInFlight for submit handlers declared before it.
+  const stopInFlightRef = useRef(false);
+  // The open conversation id as of the latest render, for async callbacks.
+  const currentIdRef = useRef(currentId);
+  useLayoutEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
+  // Set once useChat has returned; used by callbacks created before it.
+  const reconcileWithServerRef = useRef<(() => Promise<void>) | null>(null);
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -483,6 +554,12 @@ function ChatContent() {
             onGeneration: (generation) => {
               chatRequestGenerationRef.current = generation;
             },
+            onSubmissionKey: (key, conversationId) => {
+              activeSubmissionKeyRef.current = key;
+              // The conversation the request was queued in, not the route
+              // now: the user may have navigated while the key was made.
+              activeSubmissionScopeRef.current = conversationId;
+            },
           }),
       }),
     [activeModel, currentId],
@@ -503,7 +580,28 @@ function ChatContent() {
     transport: chatTransport,
     messages:
       currentConversation?.id === currentId ? currentConversation.messages : [],
-    onFinish: ({ message }) => {
+    onFinish: ({ message, isAbort, isDisconnect, isError }) => {
+      // Durable bookkeeping first, even after another tab's token refresh
+      // bumped the generation: keys belong to an account and are cleared on
+      // a real account change, so settling or recording here is always safe.
+      // The submission is settled once its outcome is known: a clean
+      // finish, or a durable task that reported a terminal state (including
+      // a failure, which arrives as a stream error). After an abort,
+      // disconnect or other error the server may still hold an accepted
+      // task, so the key is kept for a resend to reattach to it.
+      const taskStatusSeen = getDaemonTaskStatus(message);
+      const outcomeKnown =
+        (!isAbort && !isDisconnect && !isError) ||
+        (taskStatusSeen !== null && TERMINAL_TASK_STATUSES.has(taskStatusSeen));
+      if (outcomeKnown && activeSubmissionKeyRef.current) {
+        settlePendingSubmission(activeSubmissionKeyRef.current);
+      } else if (activeSubmissionKeyRef.current) {
+        // Unresolved: remember its task, so the key is settled when any
+        // later view of the conversation shows that task finished.
+        const taskId = getDaemonTaskId(message);
+        if (taskId)
+          recordSubmissionTask(activeSubmissionKeyRef.current, taskId);
+      }
       if (
         chatRequestGenerationRef.current !== null &&
         chatRequestGenerationRef.current !== getAuthGeneration()
@@ -523,6 +621,11 @@ function ChatContent() {
       thinkingDurationRef.current = 0;
     },
     onError: (err) => {
+      // The stream dropped, but server-owned work may still be running or
+      // already finished: show the server's version of this turn. A turn the
+      // server never accepted stays as typed, so it can be resent. This runs
+      // even after another tab's token refresh (lookups are account-scoped).
+      void reconcileWithServerRef.current?.();
       if (
         chatRequestGenerationRef.current !== null &&
         chatRequestGenerationRef.current !== getAuthGeneration()
@@ -534,6 +637,84 @@ function ChatContent() {
   });
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  // Leaving the conversation whose durable task this client is streaming
+  // detaches from it (the task runs on server-side, and its own page follows
+  // it); it never cancels it, and the newly opened conversation loads and
+  // works independently. Request-bound streams are left as they were.
+  useEffect(() => {
+    if (
+      shouldDetachStream(
+        isLoading,
+        messages[messages.length - 1],
+        activeSubmissionScopeRef.current,
+        currentId ?? null,
+      )
+    ) {
+      stopChat();
+    }
+  }, [currentId, isLoading, messages, stopChat]);
+  // As soon as the stream names its task, store it with the submission.
+  const streamedTaskId = isLoading
+    ? getDaemonTaskId(messages[messages.length - 1])
+    : null;
+  useEffect(() => {
+    if (streamedTaskId && activeSubmissionKeyRef.current) {
+      recordSubmissionTask(activeSubmissionKeyRef.current, streamedTaskId);
+    }
+  }, [streamedTaskId]);
+  // Pending keys are cleared by the auth transitions themselves (sign-in and
+  // sign-out, in lib/auth.ts), also when this page is not mounted.
+  // Follow server-owned work this client is not streaming itself (for example
+  // after reopening the conversation on another device, or after a dropped
+  // stream). Only a persisted placeholder qualifies, so a live stream's
+  // messages are never replaced. While it runs, the input is busy: Stop is
+  // offered and a conflicting submission is blocked.
+  const lastMessage = messages[messages.length - 1];
+  const followsPersistedTask =
+    lastMessage?.role === 'assistant' && lastMessage.status === 'streaming';
+  const followedConversation =
+    followsPersistedTask && currentConversation?.id === currentId
+      ? currentConversation
+      : null;
+  const serverTaskBusy =
+    !isLoading && Boolean(followedConversation?.activeTask);
+  // Until a conversation's server state has loaded, it may have a running
+  // task: sending then would only meet conversation_busy.
+  const conversationLoading =
+    Boolean(currentId) && currentConversation?.id !== currentId;
+  useActiveTaskFollower({
+    conversation: followedConversation,
+    isStreaming: isLoading,
+    refresh: refreshCurrentConversation,
+    onUpdate: (conversation) => setMessages(conversation.messages),
+  });
+  // Whenever a conversation's server state is seen (opened, refreshed or
+  // followed), settle submissions whose task it shows has finished: retyping
+  // such a request later is a new run, not a replay. Covers tasks that ended
+  // while another conversation was open, and survives reloads.
+  useEffect(() => {
+    if (!currentConversation) return;
+    settleFinishedSubmissions(currentConversation, (status) =>
+      TERMINAL_TASK_STATUSES.has(status),
+    );
+    // A task a newer one has superseded is no longer the conversation's
+    // latest: ask the server about it directly (a few per view).
+    const shown = new Set(
+      [
+        currentConversation.activeTask?.id,
+        currentConversation.latestTask?.id,
+      ].filter(Boolean),
+    );
+    for (const { key, taskId } of pendingTasksIn(currentConversation.id)
+      .filter(({ taskId }) => !shown.has(taskId))
+      .slice(0, 5)) {
+      void taskStatus(taskId).then((status) => {
+        if (status && TERMINAL_TASK_STATUSES.has(status)) {
+          settlePendingSubmission(key);
+        }
+      });
+    }
+  }, [currentConversation, taskStatus]);
 
   useEffect(() => {
     return subscribeAuthGeneration(() => {
@@ -546,10 +727,16 @@ function ChatContent() {
   }, [stopChat, setMessages]);
   const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
   const reload = () => {
+    const conversationId = currentId || latestConversationIdRef.current || null;
+    beginSend();
     void regenerate({
       body: {
-        id: currentId || latestConversationIdRef.current || null,
+        id: conversationId,
         model: activeModel,
+        // Regenerating a turn re-sends its files; without them the backend
+        // would see (and run) a different request. Another conversation's
+        // files are never sent.
+        attachments: attachmentsForRetry(lastTurnRef.current, conversationId),
       },
     });
   };
@@ -709,7 +896,19 @@ function ChatContent() {
   const submitChat = async (command?: string) => {
     if (isSubmittingSuggestion || suggestionSubmissionRef.current?.pending)
       return;
-    if (isLoading && messages.length > 0) return;
+    if (conversationLoading) {
+      // Never drop a send silently: the conversation (and any task running
+      // in it) is still being loaded, and failed loads are retried.
+      showError('This conversation is still loading. Try again in a moment.');
+      return;
+    }
+    if (
+      (isLoading && messages.length > 0) ||
+      serverTaskBusy ||
+      stopInFlightRef.current ||
+      conversationLoading
+    )
+      return;
 
     const generation = getAuthGeneration();
     const binding = draft.setInput;
@@ -734,8 +933,13 @@ function ChatContent() {
     if (!content) return;
 
     suggestionSubmissionRef.current = null;
+    lastTurnRef.current = {
+      conversationId: currentId || latestConversationIdRef.current || null,
+      attachments,
+    };
 
     try {
+      beginSend();
       await sendMessage(
         { text: content },
         {
@@ -775,9 +979,106 @@ function ChatContent() {
     isLoading,
   });
 
-  const inputIsBusy = isLoading && messages.length > 0;
+  const inputIsBusy =
+    (isLoading && messages.length > 0) || serverTaskBusy || stopInFlight;
+  // Durable tasks survive a disconnect, so Stop cancels the task explicitly;
+  // closing the app only detaches. The outcome comes from the server and is
+  // never assumed: a missing task id is not proof that nothing was accepted.
+  const cancelActiveTask = useDurableStop({
+    messages,
+    activeTaskId: currentConversation?.activeTask?.id ?? null,
+    isLoading,
+    submissionKeyRef: activeSubmissionKeyRef,
+    cancelTask,
+    taskForKey,
+    taskStatus,
+  });
+  // Show the server's copy of this submission's turn, identified by the
+  // task its idempotency key created (never by matching text): the saved
+  // result, a terminal notice, or the still-running task, which the
+  // follower then tracks and which keeps the input busy until it ends.
+  const reconcileWithServer = useCallback(
+    (key: string | null = activeSubmissionKeyRef.current) =>
+      reconcileSubmission(key, {
+        currentId: () => currentIdRef.current,
+        taskForKey,
+        settle: settlePendingSubmission,
+        record: recordSubmissionTask,
+        promote: (key, conversationId) => {
+          promotePendingSubmission(key, conversationId);
+          if (
+            activeSubmissionKeyRef.current === key &&
+            activeSubmissionScopeRef.current === null
+          ) {
+            activeSubmissionScopeRef.current = conversationId;
+          }
+        },
+        // A new chat accepted before its conversation id reached this page:
+        // the follower then shows the task's progress or result.
+        open: switchConversation,
+        showSaved: async (taskId) => {
+          const fresh = await refreshCurrentConversation();
+          if (
+            fresh &&
+            (fresh.activeTask?.id === taskId || fresh.latestTask?.id === taskId)
+          ) {
+            setMessages(fresh.messages);
+          }
+        },
+      }),
+    [refreshCurrentConversation, setMessages, switchConversation, taskForKey],
+  );
+  useEffect(() => {
+    reconcileWithServerRef.current = reconcileWithServer;
+  }, [reconcileWithServer]);
+  useEffect(() => {
+    stopInFlightRef.current = stopInFlight;
+  }, [stopInFlight]);
+  const beforeStop = useCallback((): Promise<StopOutcome> | void => {
+    // Settle and reconcile the submission this Stop was for, even if another
+    // one starts before the server answers.
+    const scope =
+      currentIdRef.current || latestConversationIdRef.current || null;
+    // Only this conversation's submission: a pending one from elsewhere
+    // must keep its key whatever happens to the task stopped here.
+    // A second press while this conversation's Stop is still being
+    // confirmed waits for the same answer; it never counts as a stop of its
+    // own (the stream is already aborted, so it would look request-bound).
+    const pending = pendingStopRef.current;
+    if (pending && pending.scope === scope) return pending.outcome;
+    const key =
+      activeSubmissionScopeRef.current === scope
+        ? activeSubmissionKeyRef.current
+        : null;
+    const confirmation = cancelActiveTask();
+    if (!confirmation) return;
+    const seq = ++stopSeqRef.current;
+    setStoppingIn(scope);
+    const outcome = confirmation.then((result) => {
+      if (result !== 'unconfirmed' && key) settlePendingSubmission(key);
+      if (seq === stopSeqRef.current) setStoppingIn(undefined);
+      if (pendingStopRef.current?.outcome === outcome) {
+        pendingStopRef.current = null;
+      }
+      void reconcileWithServer(key);
+      return result;
+    });
+    pendingStopRef.current = { scope, outcome };
+    return outcome;
+  }, [cancelActiveTask, reconcileWithServer]);
+  const handleStopResolved = useCallback(
+    (outcome: StopOutcome) => {
+      if (outcome === 'unconfirmed') {
+        showError(
+          'Stop could not be confirmed. The request may still be running; its result will appear here.',
+        );
+      }
+    },
+    [showError],
+  );
   const {
     stoppedMessageIds,
+    stoppingMessageIds,
     stopGeneration: handleStopGeneration,
     assignConversationId,
     clearAssignedConversationId,
@@ -788,6 +1089,8 @@ function ChatContent() {
     conversationId: suggestionSubmissionRef.current
       ? latestConversationIdRef.current
       : (currentId ?? null),
+    beforeStop,
+    onStopResolved: handleStopResolved,
   });
 
   useStopShortcut({
@@ -878,12 +1181,14 @@ function ChatContent() {
     // No composer receipt, file serialisation, draft reset or draft transfer.
     // The backend alone creates the destination after revalidating the source.
     suggestionSubmissionRef.current = { generation, messageId, pending: true };
+    lastTurnRef.current = null;
     chatRequestGenerationRef.current = generation;
     latestConversationIdRef.current = null;
     setIsSubmittingSuggestion(true);
     clearAssignedConversationId();
     setMessages([]);
     try {
+      beginSend();
       await sendMessage(
         { text: suggestion.prompt },
         {
@@ -1032,6 +1337,21 @@ function ChatContent() {
       // the router transition does not make the marker disappear.
       assignConversationId(conversationId);
     }
+    if (activeSubmissionKeyRef.current) {
+      // A new chat's pending submission now belongs to this conversation, so
+      // a resend from here reuses its key.
+      promotePendingSubmission(activeSubmissionKeyRef.current, conversationId);
+    }
+    if (lastTurnRef.current?.conversationId === null) {
+      lastTurnRef.current = { ...lastTurnRef.current, conversationId };
+    }
+    if (activeSubmissionScopeRef.current === null) {
+      activeSubmissionScopeRef.current = conversationId;
+    }
+    // A Stop pressed before the new chat was named belongs to it.
+    setStoppingIn((previous) =>
+      previous === null ? conversationId : previous,
+    );
     const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
     const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
@@ -1488,6 +1808,15 @@ function ChatContent() {
                               <CouncilInterviewCard
                                 event={councilInterviewEvent}
                                 onSendConfig={(config) => {
+                                  // A retry of this turn re-sends no files.
+                                  lastTurnRef.current = {
+                                    conversationId:
+                                      currentId ||
+                                      latestConversationIdRef.current ||
+                                      null,
+                                    attachments: [],
+                                  };
+                                  beginSend();
                                   void sendMessage(
                                     {
                                       text: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,
@@ -1535,6 +1864,14 @@ function ChatContent() {
                                 (stopped)
                               </div>
                             )}
+                            {stoppingMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopping…)
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -1569,6 +1906,14 @@ function ChatContent() {
                                 className="text-xs text-[var(--color-text-muted)]"
                               >
                                 (stopped)
+                              </div>
+                            )}
+                            {stoppingMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopping…)
                               </div>
                             )}
                             {documentsForMessage.map(

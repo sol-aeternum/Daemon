@@ -37,6 +37,12 @@ export interface ConversationHistoryContextValue {
   fetchConversationById: ReturnType<
     typeof useConversationHistory
   >['fetchConversationById'];
+  refreshCurrentConversation: ReturnType<
+    typeof useConversationHistory
+  >['refreshCurrentConversation'];
+  cancelTask: ReturnType<typeof useConversationHistory>['cancelTask'];
+  taskForKey: ReturnType<typeof useConversationHistory>['taskForKey'];
+  taskStatus: ReturnType<typeof useConversationHistory>['taskStatus'];
   searchQuery: ReturnType<typeof useConversationHistory>['searchQuery'];
   setSearchQuery: ReturnType<typeof useConversationHistory>['setSearchQuery'];
   conversationSearch: ReturnType<

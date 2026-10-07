@@ -1,6 +1,7 @@
 'use client';
 
 import { discardAllPersistedDrafts } from './draftPersistence';
+import { clearPendingSubmissions } from './pendingSubmission';
 
 export interface AuthTokens {
   accessToken: string;
@@ -61,6 +62,9 @@ export function getAccessToken(): string | null {
 
 export function setAccessToken(token: string, expiresAtMs: number): void {
   discardAllPersistedDrafts();
+  // Sign-in: another account's unresolved submission keys must not be
+  // reused or promoted. Token rotation never comes through here.
+  clearPendingSubmissions();
   _authGeneration += 1;
   _authMutation += 1;
   _accessToken = token;
@@ -70,6 +74,7 @@ export function setAccessToken(token: string, expiresAtMs: number): void {
 
 export function clearLocalAuthState(): void {
   discardAllPersistedDrafts();
+  clearPendingSubmissions();
   _authGeneration += 1;
   _authMutation += 1;
   _accessToken = null;
