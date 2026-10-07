@@ -15,7 +15,8 @@ import {
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
-  clearCachedTaskEntries,
+  clearCachedPrivateEntries,
+  isBackendApiRequest,
   isPrivateTaskRequest,
   shouldUseGeneralRuntimeCache,
 } from '../lib/pwaCaching';
@@ -35,6 +36,12 @@ declare const self: ServiceWorkerGlobalScope;
 const runtimeCaching: RuntimeCaching[] = [
   {
     matcher: ({ url }) => isPrivateSpeechRequest(url),
+    handler: new NetworkOnly(),
+  },
+  {
+    // Nothing from the backend is ever cached: its responses are
+    // authenticated, account-scoped and often plaintext content (#474).
+    matcher: ({ url }) => isBackendApiRequest(url, self.location.origin),
     handler: new NetworkOnly(),
   },
   {
@@ -117,7 +124,7 @@ self.addEventListener('activate', (event) => {
     Promise.all([
       ...legacyApiCacheNames.map((cacheName) => caches.delete(cacheName)),
       clearLegacySnapshotEntries(caches, self.location.origin),
-      clearCachedTaskEntries(caches),
+      clearCachedPrivateEntries(caches, self.location.origin),
     ]),
   );
 });
