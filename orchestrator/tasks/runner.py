@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -167,6 +168,50 @@ def _interrupt(state: AttemptState, execution: asyncio.Task[Any]) -> None:
         return
     state.interrupted = True
     execution.cancel()
+
+
+def _guard_tools(registry: Any, store: TaskStore, state: AttemptState) -> None:
+    """Fence material tools, and make repeatable fetches idempotent per task."""
+    claim = state.claim
+    guard_registry(
+        registry,
+        store,
+        claim.task_id,
+        claim.epoch,
+        lambda: _fence_lost(state),
+        lambda reason: _operation_refused(state, reason),
+    )
+    fetch = registry.get("web_fetch")
+    if fetch is not None and hasattr(fetch, "refresh_guard"):
+        # A regenerated attempt reuses what an earlier attempt of this task
+        # refreshed rather than fetching and snapshotting it again (#475).
+        fetch.refresh_guard = _TaskRefreshGuard(store, state)
+
+
+def _page_key(url: str, mode: str) -> str:
+    # Only a digest is kept, so the event never needs the URL itself.
+    return hashlib.sha256(f"{mode}\n{url}".encode()).hexdigest()
+
+
+class _TaskRefreshGuard:
+    """web_fetch refreshes, remembered per task across attempts."""
+
+    def __init__(self, store: TaskStore, state: AttemptState) -> None:
+        self._store = store
+        self._state = state
+
+    async def refreshed(self, url: str, mode: str) -> bool:
+        pages = await self._store.refreshed_pages(self._state.claim.task_id)
+        return _page_key(url, mode) in pages
+
+    async def record(self, url: str, mode: str) -> None:
+        claim = self._state.claim
+        try:
+            await self._store.record_event(
+                claim.task_id, claim.epoch, "page_refreshed", {"key": _page_key(url, mode)}
+            )
+        except LeaseLost:
+            _fence_lost(self._state)
 
 
 def _operation_refused(state: AttemptState, reason: str) -> None:
@@ -413,7 +458,15 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         request_id=request_id,
     ):
         scope_id = current_scope().scope_id
-        await store.record_compute_scope(claim.task_id, claim.epoch, scope_id)
+        try:
+            await store.record_compute_scope(claim.task_id, claim.epoch, scope_id)
+        except ExecutionRefused as refused:
+            # Stopped before preparation, which may call a provider.
+            if refused.reason == "account_suspended":
+                state.account_suspended = True
+            else:
+                state.cancel_requested = True
+            return
         # Preparation consumes no attempt (§5): a transient failure here is
         # deferred, not counted. The attempt counts immediately before the
         # first provider dispatch, after a fresh cancel/suspension check.
@@ -457,14 +510,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             disable_memory_write=bool(task_input.get("disable_memory_write")),
             user_timezone=user_timezone,
             message_sink=AttemptSink(store, state),
-            tool_guard=lambda registry: guard_registry(
-                registry,
-                store,
-                claim.task_id,
-                claim.epoch,
-                lambda: _fence_lost(state),
-                lambda reason: _operation_refused(state, reason),
-            ),
+            tool_guard=lambda registry: _guard_tools(registry, store, state),
         )
         async for frame in frames:
             event, envelope = _parse_frame(frame)
@@ -480,21 +526,34 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                         {"t": "delta", "gen": claim.epoch, "seq": state.delta_seq, "text": text},
                     )
             elif event in _PASSTHROUGH_FRAMES:
-                await _publish(redis, state, {"t": "frame", "gen": claim.epoch, "frame": frame})
+                message: dict[str, Any] = {"t": "frame", "gen": claim.epoch, "frame": frame}
                 if event in {"tool_call", "tool_result"}:
-                    await _record_progress(store, state, event, data.get("name"))
+                    # Persisted first, so an observer that replays it on
+                    # reattach can drop the live copy by sequence (#472).
+                    seq = await _record_progress(store, state, event, data.get("name"))
+                    if seq is not None:
+                        message["seq"] = seq
+                await _publish(redis, state, message)
             elif event == "error":
                 state.requested_terminal = state.requested_terminal or "error"
 
 
-async def _record_progress(store: TaskStore, state: AttemptState, event: str, name: Any) -> None:
-    """Persist a tool progress event under the fence."""
+async def _record_progress(
+    store: TaskStore, state: AttemptState, event: str, name: Any
+) -> int | None:
+    """Persist a tool progress event under the fence; returns its sequence."""
     try:
-        await store.record_event(state.claim.task_id, state.claim.epoch, event, {"name": name})
+        return await store.record_event(
+            state.claim.task_id,
+            state.claim.epoch,
+            event,
+            {"name": name, "epoch": state.claim.epoch},
+        )
     except LeaseLost:
         # Fenced: stop now (the cancel lands at the next await), as the sink
         # and the effect fence do.
         _fence_lost(state)
+        return None
 
 
 def _classify(exc: BaseException) -> tuple[RetryCause, str]:

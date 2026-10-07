@@ -856,3 +856,142 @@ async def test_a_refused_operation_stops_the_attempt(env: Env):
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await state.execution
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("returned", "expected"),
+    [
+        # A reported error is no proof nothing happened (a write can time out
+        # after the server accepted it): the effect may have happened.
+        ({"success": False, "error": "Request failed: timeout"}, "unknown"),
+        ({"error": "HTTP 502"}, "unknown"),
+        # Only an explicit statement that nothing was done is a failure.
+        ({"success": False, "performed": False, "error": "invalid"}, "failed"),
+        ({"success": True}, "succeeded"),
+    ],
+)
+async def test_tool_results_are_recorded_honestly(
+    env: Env, returned: dict[str, Any], expected: str
+):
+    """#477 and review of #478: retry evidence never claims a definite outcome
+    the tool cannot prove."""
+
+    class _ReportingTool(_CountingTool):
+        async def execute(self, **_kwargs: Any) -> str:
+            self.calls += 1
+            return json.dumps(returned)
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await FencedTool(_ReportingTool(), env.tasks, accepted.task_id, claim.epoch).execute()
+    assert (
+        await env.pool.fetchval(
+            "SELECT outcome FROM task_operations WHERE task_id = $1", accepted.task_id
+        )
+        == expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_preparation_makes_no_provider_backed_call(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """#477: preparation (memory retrieval may call the embedding provider)
+    starts only after a fresh cancel and suspension check."""
+    prepared = 0
+
+    async def counting_prompt(*_args: Any, **_kwargs: Any):
+        nonlocal prepared
+        prepared += 1
+        return "system", None
+
+    monkeypatch.setattr(runner, "_system_prompt", counting_prompt)
+    accepted = await accept_task(env)
+    real_settle = runner.settle_lost_attempt_holds
+
+    async def cancel_then_settle(*args: Any, **kwargs: Any) -> int:
+        await env.tasks.request_cancel(env.alice, accepted.task_id)
+        return await real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "settle_lost_attempt_holds", cancel_then_settle)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "cancelled"
+    )
+    assert prepared == 0
+
+
+@pytest.mark.asyncio
+async def test_a_regenerated_answer_discloses_the_interruption(env: Env, mock_llm: None):
+    """#477 (§4): an answer produced after an interrupted attempt says so."""
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.write_partial(accepted.task_id, first.epoch, content="Half", delta_seq=1)
+    await expire_lease(env, accepted.task_id)  # the worker died mid-answer
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    metadata = await env.pool.fetchval(
+        "SELECT metadata FROM messages WHERE id = $1", accepted.result_message_id
+    )
+    metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+    assert metadata["regenerated_after_interruption"] == 1
+
+
+@pytest.mark.asyncio
+async def test_interruption_is_disclosed_even_if_the_next_attempt_never_executes(
+    env: Env,
+):
+    """Review of #478: the count comes from the attempts, not attempt_count."""
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert second is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    await env.tasks.acknowledge_cancel(accepted.task_id, second.epoch)
+    metadata = await env.pool.fetchval(
+        "SELECT metadata FROM messages WHERE id = $1", accepted.result_message_id
+    )
+    metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+    assert metadata["regenerated_after_interruption"] == 1
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: Env):
+    """#475 and review of #478: refreshes are keyed by task identity (no
+    cross-host clock comparison) and survive into a regenerated attempt."""
+    from orchestrator.tools.web_fetch import WebFetchTool
+
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    registry = ToolRegistry()
+    fetch = WebFetchTool()
+    registry.register(fetch)
+    runner._guard_tools(registry, env.tasks, runner.AttemptState(claim=first))
+    guard = fetch.refresh_guard
+    assert guard is not None
+    assert not await guard.refreshed("https://example.com/a", "article")
+    await guard.record("https://example.com/a", "article")
+
+    await expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert second is not None
+    later = ToolRegistry()
+    refetch = WebFetchTool()
+    later.register(refetch)
+    runner._guard_tools(later, env.tasks, runner.AttemptState(claim=second))
+    assert refetch.refresh_guard is not None
+    assert await refetch.refresh_guard.refreshed("https://example.com/a", "article")
+    assert not await refetch.refresh_guard.refreshed("https://example.com/a", "metadata")
+    # Only a digest is stored, never the URL.
+    payloads = await env.pool.fetch(
+        "SELECT payload_ciphertext FROM task_events WHERE kind = 'page_refreshed'"
+    )
+    assert payloads and all("example.com" not in str(p) for p in payloads)

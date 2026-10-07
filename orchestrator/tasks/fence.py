@@ -52,6 +52,31 @@ def _target_summary(tool_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _outcome_of(result: Any) -> str:
+    """The recorded outcome of a material tool, from what it returned.
+
+    A returned error is not proof that nothing happened: a write can time out
+    after the server accepted it. Such a result is recorded ``unknown`` (the
+    evidence then says the effect may have happened), and ``failed`` only when
+    the tool states explicitly that it did not perform the action
+    (``"performed": false``). Anything else counts as ``succeeded``.
+    """
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return "succeeded"
+    if not isinstance(result, dict):
+        return "succeeded"
+    if result.get("performed") is False:
+        return "failed"
+    if result.get("success") is False or (
+        bool(result.get("error")) and result.get("success") is not True
+    ):
+        return "unknown"
+    return "succeeded"
+
+
 class FencedTool(Tool):
     """Proxy that records a material operation before delegating."""
 
@@ -111,7 +136,7 @@ class FencedTool(Tool):
         except BaseException:
             await self._finish(operation_id, "unknown")
             raise
-        await self._finish(operation_id, "succeeded")
+        await self._finish(operation_id, _outcome_of(result))
         return result
 
     async def _finish(self, operation_id: uuid.UUID, outcome: str) -> None:

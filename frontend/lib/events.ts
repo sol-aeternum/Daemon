@@ -71,8 +71,16 @@ export type ChatEvent = BaseEvent &
         type: 'tool_call';
         name: string;
         arguments: Record<string, any>;
+        /** Re-sent from the task's saved progress on reattach (name only). */
+        replayed?: boolean;
       } & TraceMeta)
-    | ({ type: 'tool_result'; name: string; result: any } & TraceMeta)
+    | ({
+        type: 'tool_result';
+        name: string;
+        result: any;
+        /** Re-sent from the task's saved progress on reattach (no content). */
+        replayed?: boolean;
+      } & TraceMeta)
     | ({
         type: 'advisor_start';
         domain: string;

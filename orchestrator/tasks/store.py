@@ -68,6 +68,32 @@ class IdempotencyConflict(TaskError):
     """The idempotency key was already used for a different request."""
 
 
+async def _disclose_regeneration(conn: Any, metadata: dict[str, Any], row: Any) -> None:
+    """Mark a result that a later attempt regenerated after an interruption.
+
+    §4: an interrupted attempt is disclosed, not hidden. Only the number of
+    earlier attempts that executed is recorded (their partial text stays on
+    the attempt records), counted from the attempts themselves, so it does
+    not depend on whether the current attempt reached inference.
+    """
+    earlier = await conn.fetchval(
+        "SELECT count(*) FROM task_attempts "
+        "WHERE task_id = $1 AND epoch < $2 AND execution_started_at IS NOT NULL",
+        row["id"],
+        int(row["lease_epoch"]),
+    )
+    if earlier:
+        metadata["regenerated_after_interruption"] = int(earlier)
+
+
+class _ActiveTaskEnded(Exception):
+    """The conflicting active task finished before it could be named."""
+
+    def __init__(self, violation: BaseException) -> None:
+        super().__init__("active task ended")
+        self.violation = violation
+
+
 class ConversationBusy(TaskError):
     """The conversation already has a non-terminal task."""
 
@@ -253,6 +279,7 @@ class TaskStore:
         metadata: dict[str, Any] = {"terminal_status": _MESSAGE_STATUS[status]}
         if terminal_code:
             metadata["terminal_reason"] = terminal_code
+        await _disclose_regeneration(conn, metadata, row)
         if status is not TaskStatus.COMPLETED:
             # Tool names only (no targets): later turns are told which action
             # may already have happened, whether the task needs attention,
@@ -346,6 +373,47 @@ class TaskStore:
         request_canonical: str | None = None,
     ) -> AcceptedTask:
         """Atomically record the conversation turn and its task.
+
+        If the conversation's previous task ended between this transaction's
+        conflict and the follow-up lookup, acceptance is retried once rather
+        than surfacing the stale uniqueness violation.
+        """
+        for retry in (False, True):
+            try:
+                return await self._accept_once(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    new_conversation_title=new_conversation_title,
+                    pipeline=pipeline,
+                    user_message=user_message,
+                    task_input=task_input,
+                    request_hash=request_hash,
+                    idempotency_key=idempotency_key,
+                    assistant_model=assistant_model,
+                    max_attempts=max_attempts,
+                    request_canonical=request_canonical,
+                )
+            except _ActiveTaskEnded as ended:
+                if retry:
+                    raise ended.violation from None
+        raise AssertionError("unreachable")
+
+    async def _accept_once(
+        self,
+        *,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
+        new_conversation_title: str | None,
+        pipeline: str,
+        user_message: str,
+        task_input: dict[str, Any],
+        request_hash: str,
+        idempotency_key: str | None,
+        assistant_model: str | None,
+        max_attempts: int = 2,
+        request_canonical: str | None = None,
+    ) -> AcceptedTask:
+        """One acceptance transaction (see :meth:`accept`).
 
         Nothing is acknowledged before this commits. A replay with the same key
         and request returns the existing task; the same key with a different
@@ -445,6 +513,7 @@ class TaskStore:
                 )
                 if active is not None:
                     raise ConversationBusy(active) from None
+                raise _ActiveTaskEnded(exc) from None
             raise
         return AcceptedTask(
             task_id=task_id,
@@ -758,8 +827,15 @@ class TaskStore:
         attempt is counted; a lost attempt's holds are found through it.
         """
         async with self._pool.acquire() as conn, conn.transaction():
-            if await self._locked_for_epoch(conn, task_id, epoch) is None:
+            row = await self._locked_for_epoch(conn, task_id, epoch)
+            if row is None:
                 raise LeaseLost("lease lost")
+            # Preparation can call the embedding provider: a cancel or
+            # suspension that committed since the claim stops it first.
+            if await self._account_suspended(conn, row["user_id"]):
+                raise ExecutionRefused("account_suspended")
+            if row["cancel_requested_at"] is not None:
+                raise ExecutionRefused("cancel_requested")
             await conn.execute(
                 "UPDATE task_attempts SET compute_scope_id = $3 WHERE task_id = $1 AND epoch = $2",
                 task_id,
@@ -836,6 +912,20 @@ class TaskStore:
                 raise LeaseLost("lease lost")
             return await self._append_event(conn, task_id, kind, payload)
 
+    async def refreshed_pages(self, task_id: uuid.UUID) -> set[str]:
+        """Keys of the pages this task has refreshed in any attempt (#475)."""
+        rows = await self._pool.fetch(
+            "SELECT payload_ciphertext FROM task_events "
+            "WHERE task_id = $1 AND kind = 'page_refreshed'",
+            task_id,
+        )
+        keys: set[str] = set()
+        for row in rows:
+            payload = self._open(row["payload_ciphertext"])
+            if isinstance(payload, dict) and isinstance(payload.get("key"), str):
+                keys.add(payload["key"])
+        return keys
+
     async def finish_operation(self, operation_id: uuid.UUID, *, outcome: str) -> None:
         """Record what a material operation did.
 
@@ -882,6 +972,7 @@ class TaskStore:
             )
             metadata = dict(fields.pop("metadata", None) or {})
             metadata["terminal_status"] = _MESSAGE_STATUS[status]
+            await _disclose_regeneration(conn, metadata, row)
             if status is TaskStatus.CANCELLED:
                 # Cancelled rows leave history; keep any started action visible.
                 started = await self._started_tools(conn, task_id)

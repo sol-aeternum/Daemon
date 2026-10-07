@@ -173,3 +173,40 @@ async def test_list_trimming_preserves_next_unreturned_source(reader):
 async def test_unowned_tool_fails_closed():
     result = json.loads(await WebFetchTool().execute(url="https://example.com"))
     assert result == {"error": "snapshot_storage_unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_durable_refresh_counts_once_per_task(reader):
+    """#475: a regenerated attempt reuses what an earlier attempt of the same
+    task refreshed instead of fetching and snapshotting the page again."""
+    tool, store, snapshot = reader
+    refreshed: set[tuple[str, str]] = set()
+
+    class _Guard:
+        async def refreshed(self, url: str, mode: str) -> bool:
+            return (url, mode) in refreshed
+
+        async def record(self, url: str, mode: str) -> None:
+            refreshed.add((url, mode))
+
+    tool.refresh_guard = _Guard()
+    tool._fetch_service = SimpleNamespace(
+        fetch=AsyncMock(
+            return_value=SimpleNamespace(
+                content=snapshot.content,
+                final_url=snapshot.final_url,
+                title="Page",
+                source_url=snapshot.source_url,
+                extraction_version="web-reader-v1",
+            )
+        )
+    )
+    # First refresh in this task: fetched as asked, and remembered.
+    await tool.execute(url=snapshot.source_url, force_refresh=True)
+    tool._fetch_service.fetch.assert_awaited_once()
+    assert refreshed == {(snapshot.source_url, "article")}
+    # A later attempt asking again reuses the snapshot.
+    result = json.loads(await tool.execute(url=snapshot.source_url, force_refresh=True))
+    assert result["snapshot_id"] == str(snapshot.id)
+    tool._fetch_service.fetch.assert_awaited_once()
+    store.create.assert_awaited_once()

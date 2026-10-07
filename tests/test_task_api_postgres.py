@@ -944,3 +944,44 @@ async def test_request_bound_turns_respect_an_active_durable_task(api: Api):
     detail = response.json()["detail"]
     assert detail["code"] == "conversation_busy" and detail["task_id"] == accepted["id"]
     assert await api.env.pool.fetchval("SELECT count(*) FROM messages") == before
+
+
+@pytest.mark.asyncio
+async def test_reattaching_replays_the_current_attempts_tool_progress(env: Env):
+    """#472: tool progress missed while detached is replayed once, from the
+    current generation only, and its live copy is not shown twice."""
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert first is not None
+    await env.tasks.record_event(
+        accepted.task_id, first.epoch, "tool_call", {"name": "old_tool", "epoch": first.epoch}
+    )
+    await expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert second is not None
+    seq = await env.tasks.record_event(
+        accepted.task_id, second.epoch, "tool_call", {"name": "web_search", "epoch": second.epoch}
+    )
+    redis = FakeRedis()
+    channel = runner.live_channel(accepted.task_id)
+    frames: list[str] = []
+
+    async def consume() -> None:
+        async for frame in observe_task(
+            env.tasks, redis, env.alice, accepted.task_id, request_id="r", poll_s=0.05
+        ):
+            frames.append(frame)
+
+    observer = asyncio.create_task(consume())
+    while not redis.subscribers:
+        await asyncio.sleep(0.01)
+    live = 'event: tool_call\ndata: {"data": {"name": "web_search", "arguments": {}}}\n\n'
+    await redis.publish(
+        channel, json.dumps({"t": "frame", "gen": second.epoch, "frame": live, "seq": seq})
+    )
+    await asyncio.sleep(0.2)
+    await env.tasks.complete(accepted.task_id, second.epoch, content="done")
+    await asyncio.wait_for(observer, timeout=10)
+    calls = [d for e, d in _events("".join(frames)) if e == "tool_call"]
+    assert [c["data"]["name"] for c in calls] == ["web_search"]
+    assert calls[0]["data"]["replayed"] is True
