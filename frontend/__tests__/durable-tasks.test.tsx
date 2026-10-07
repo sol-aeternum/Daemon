@@ -260,6 +260,29 @@ describe('durable chat route bridge', () => {
   });
 });
 
+describe('task resets', () => {
+  it('keep the conversation identity and task status from before the reset', () => {
+    // Review of #467: a fast regeneration must not hide the conversation the
+    // backend created, or the page never adopts the new chat.
+    const message = {
+      id: 'm',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'data-event',
+          data: { type: 'conversation', conversation_id: 'conv-new' },
+        },
+        { type: 'data-event', data: { type: 'tool_call', name: 'web_search' } },
+        { type: 'data-event', data: { type: 'task_reset', task_id: 't' } },
+        { type: 'text', text: 'Regenerated' },
+      ],
+    } as unknown as DaemonMessage;
+    const types = getDaemonDataEvents([message]).map((event) => event.type);
+    expect(types).toContain('conversation');
+    expect(types).not.toContain('tool_call'); // the replaced attempt's progress
+  });
+});
+
 describe('live task outcomes', () => {
   it('shows a cancellation that came before the first token', () => {
     const message = {

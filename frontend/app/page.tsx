@@ -463,6 +463,13 @@ function ChatContent() {
   // unnamed new chat, promoted when named). Stop settles that submission's
   // key only when it stops a task in the same conversation.
   const activeSubmissionScopeRef = useRef<string | null>(null);
+  // A new send starts with no key of its own until its transport assigns
+  // one: an early Stop must never resolve an earlier submission's task.
+  const beginSend = () => {
+    activeSubmissionKeyRef.current = null;
+    activeSubmissionScopeRef.current =
+      currentIdRef.current || latestConversationIdRef.current || null;
+  };
   // Mirrors stopInFlight for submit handlers declared before it.
   const stopInFlightRef = useRef(false);
   // The open conversation id as of the latest render, for async callbacks.
@@ -711,6 +718,7 @@ function ChatContent() {
   const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
   const reload = () => {
     const conversationId = currentId || latestConversationIdRef.current || null;
+    beginSend();
     void regenerate({
       body: {
         id: conversationId,
@@ -921,6 +929,7 @@ function ChatContent() {
     };
 
     try {
+      beginSend();
       await sendMessage(
         { text: content },
         {
@@ -1159,6 +1168,7 @@ function ChatContent() {
     clearAssignedConversationId();
     setMessages([]);
     try {
+      beginSend();
       await sendMessage(
         { text: suggestion.prompt },
         {
@@ -1786,6 +1796,7 @@ function ChatContent() {
                                       null,
                                     attachments: [],
                                   };
+                                  beginSend();
                                   void sendMessage(
                                     {
                                       text: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,

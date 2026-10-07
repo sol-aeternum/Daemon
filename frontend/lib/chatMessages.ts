@@ -217,12 +217,27 @@ export function getDaemonTaskId(
   return null;
 }
 
+/**
+ * Events that describe the request rather than one attempt's output: they
+ * stay valid across a regeneration (the conversation the backend created,
+ * the task and its status, the request-bound marker).
+ */
+const REQUEST_SCOPED_EVENTS = new Set([
+  'conversation',
+  'task',
+  'request_bound',
+]);
+
 export function getDaemonDataEvents(messages: DaemonMessage[]): ChatEvent[] {
   // Events from an attempt that a regeneration replaced (tool calls, routing)
-  // no longer describe the shown answer.
-  return messages.flatMap((message) =>
-    currentParts(message).flatMap((part) =>
-      part.type === 'data-event' ? [part.data] : [],
-    ),
-  );
+  // no longer describe the shown answer; request-scoped ones always count.
+  return messages.flatMap((message) => {
+    const current = new Set(currentParts(message));
+    return message.parts.flatMap((part) =>
+      part.type === 'data-event' &&
+      (current.has(part) || REQUEST_SCOPED_EVENTS.has(part.data.type))
+        ? [part.data]
+        : [],
+    );
+  });
 }
