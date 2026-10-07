@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from orchestrator.services.fetch.service import FetchService
 from orchestrator.services.fetch.models import EXTRACTION_VERSION_V1, FetchContentError
 from orchestrator.services.web_snapshots import WebSnapshot, WebSnapshotError, WebSnapshotStore
 from orchestrator.tools.registry import Tool
+
+
+class RefreshGuard(Protocol):
+    """Remembers, per durable task, which pages it has already refreshed."""
+
+    async def refreshed(self, url: str, mode: str) -> bool: ...
+
+    async def record(self, url: str, mode: str) -> None: ...
 
 
 class WebFetchTool(Tool):
@@ -50,10 +57,11 @@ class WebFetchTool(Tool):
         self._fetch_service: FetchService | None = None
         self._allowance: Callable[[str], bool] | None = None
         self._created = 0
-        #: Durable tasks set this to the task's acceptance time: a refresh
-        #: counts once per task, so a regenerated attempt reuses the snapshot
-        #: an earlier attempt already refreshed instead of fetching again.
-        self.refresh_floor: datetime | None = None
+        #: Durable tasks set this: a refresh counts once per task, so a
+        #: regenerated attempt reuses the snapshot an earlier attempt already
+        #: refreshed instead of fetching it again (#475). Keyed by task
+        #: identity, never by comparing clocks of different hosts.
+        self.refresh_guard: RefreshGuard | None = None
 
     def set_result_allowance(self, allowance: Callable[[str], bool] | None) -> None:
         self._allowance = allowance
@@ -177,18 +185,15 @@ class WebFetchTool(Tool):
                     return self._error("url_or_snapshot_id_required")
                 # Extraction version belongs to this immutable representation.
                 version = EXTRACTION_VERSION_V1
+                guard = self.refresh_guard
+                refreshed_before = (
+                    refresh and guard is not None and await guard.refreshed(url, mode)
+                )
                 snapshot = (
                     None
-                    if refresh and self.refresh_floor is None
+                    if refresh and not refreshed_before
                     else await store.find_latest(user, conversation, url, mode, version)
                 )
-                if (
-                    refresh
-                    and snapshot is not None
-                    and self.refresh_floor is not None
-                    and snapshot.retrieved_at < self.refresh_floor
-                ):
-                    snapshot = None  # older than this task: refresh as asked
                 if snapshot is None:
                     if self._created >= store.settings.web_snapshot_max_new_per_turn:
                         return self._error("snapshot_turn_limit")
@@ -212,6 +217,8 @@ class WebFetchTool(Tool):
                         extraction_version=fetched.extraction_version,
                     )
                     self._created += 1
+                    if refresh and self.refresh_guard is not None:
+                        await self.refresh_guard.record(url, mode)
             start = self._integer(kwargs, "start_char", 0, 0)
             if start > snapshot.content_chars:
                 return self._error("offset_out_of_range")

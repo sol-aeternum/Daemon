@@ -180,23 +180,33 @@ async def test_durable_refresh_counts_once_per_task(reader):
     """#475: a regenerated attempt reuses what an earlier attempt of the same
     task refreshed instead of fetching and snapshotting the page again."""
     tool, store, snapshot = reader
-    tool._fetch_service = SimpleNamespace(fetch=AsyncMock())
-    # The snapshot was retrieved after the task was accepted: reuse it.
-    tool.refresh_floor = snapshot.retrieved_at - timedelta(minutes=1)
+    refreshed: set[tuple[str, str]] = set()
+
+    class _Guard:
+        async def refreshed(self, url: str, mode: str) -> bool:
+            return (url, mode) in refreshed
+
+        async def record(self, url: str, mode: str) -> None:
+            refreshed.add((url, mode))
+
+    tool.refresh_guard = _Guard()
+    tool._fetch_service = SimpleNamespace(
+        fetch=AsyncMock(
+            return_value=SimpleNamespace(
+                content=snapshot.content,
+                final_url=snapshot.final_url,
+                title="Page",
+                source_url=snapshot.source_url,
+                extraction_version="web-reader-v1",
+            )
+        )
+    )
+    # First refresh in this task: fetched as asked, and remembered.
+    await tool.execute(url=snapshot.source_url, force_refresh=True)
+    tool._fetch_service.fetch.assert_awaited_once()
+    assert refreshed == {(snapshot.source_url, "article")}
+    # A later attempt asking again reuses the snapshot.
     result = json.loads(await tool.execute(url=snapshot.source_url, force_refresh=True))
     assert result["snapshot_id"] == str(snapshot.id)
-    tool._fetch_service.fetch.assert_not_awaited()
-    store.create.assert_not_awaited()
-
-    # A snapshot older than the task is refreshed as asked.
-    tool.refresh_floor = snapshot.retrieved_at + timedelta(minutes=1)
-    tool._fetch_service.fetch.return_value = SimpleNamespace(
-        content=snapshot.content,
-        final_url=snapshot.final_url,
-        title="Page",
-        source_url=snapshot.source_url,
-        extraction_version="web-reader-v1",
-    )
-    await tool.execute(url=snapshot.source_url, force_refresh=True)
     tool._fetch_service.fetch.assert_awaited_once()
     store.create.assert_awaited_once()

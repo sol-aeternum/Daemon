@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,16 +68,22 @@ class IdempotencyConflict(TaskError):
     """The idempotency key was already used for a different request."""
 
 
-def _disclose_regeneration(metadata: dict[str, Any], row: Any) -> None:
+async def _disclose_regeneration(conn: Any, metadata: dict[str, Any], row: Any) -> None:
     """Mark a result that a later attempt regenerated after an interruption.
 
     §4: an interrupted attempt is disclosed, not hidden. Only the number of
-    earlier executed attempts is recorded (their partial text stays on the
-    attempt records).
+    earlier attempts that executed is recorded (their partial text stays on
+    the attempt records), counted from the attempts themselves, so it does
+    not depend on whether the current attempt reached inference.
     """
-    earlier = int(row["attempt_count"]) - 1
-    if earlier > 0:
-        metadata["regenerated_after_interruption"] = earlier
+    earlier = await conn.fetchval(
+        "SELECT count(*) FROM task_attempts "
+        "WHERE task_id = $1 AND epoch < $2 AND execution_started_at IS NOT NULL",
+        row["id"],
+        int(row["lease_epoch"]),
+    )
+    if earlier:
+        metadata["regenerated_after_interruption"] = int(earlier)
 
 
 class _ActiveTaskEnded(Exception):
@@ -142,8 +147,6 @@ class Claim:
     attempt_count: int
     max_attempts: int
     task_input: dict[str, Any]
-    #: When the task was accepted (database clock).
-    accepted_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,7 +279,7 @@ class TaskStore:
         metadata: dict[str, Any] = {"terminal_status": _MESSAGE_STATUS[status]}
         if terminal_code:
             metadata["terminal_reason"] = terminal_code
-        _disclose_regeneration(metadata, row)
+        await _disclose_regeneration(conn, metadata, row)
         if status is not TaskStatus.COMPLETED:
             # Tool names only (no targets): later turns are told which action
             # may already have happened, whether the task needs attention,
@@ -721,7 +724,6 @@ class TaskStore:
                 attempt_count=int(claimed["attempt_count"]),
                 max_attempts=int(row["max_attempts"]),
                 task_input=self._open(row["input_ciphertext"]),
-                accepted_at=row["created_at"],
             )
 
     async def heartbeat(self, task_id: uuid.UUID, epoch: int, *, lease_s: float) -> Heartbeat:
@@ -910,6 +912,20 @@ class TaskStore:
                 raise LeaseLost("lease lost")
             return await self._append_event(conn, task_id, kind, payload)
 
+    async def refreshed_pages(self, task_id: uuid.UUID) -> set[str]:
+        """Keys of the pages this task has refreshed in any attempt (#475)."""
+        rows = await self._pool.fetch(
+            "SELECT payload_ciphertext FROM task_events "
+            "WHERE task_id = $1 AND kind = 'page_refreshed'",
+            task_id,
+        )
+        keys: set[str] = set()
+        for row in rows:
+            payload = self._open(row["payload_ciphertext"])
+            if isinstance(payload, dict) and isinstance(payload.get("key"), str):
+                keys.add(payload["key"])
+        return keys
+
     async def finish_operation(self, operation_id: uuid.UUID, *, outcome: str) -> None:
         """Record what a material operation did.
 
@@ -956,7 +972,7 @@ class TaskStore:
             )
             metadata = dict(fields.pop("metadata", None) or {})
             metadata["terminal_status"] = _MESSAGE_STATUS[status]
-            _disclose_regeneration(metadata, row)
+            await _disclose_regeneration(conn, metadata, row)
             if status is TaskStatus.CANCELLED:
                 # Cancelled rows leave history; keep any started action visible.
                 started = await self._started_tools(conn, task_id)

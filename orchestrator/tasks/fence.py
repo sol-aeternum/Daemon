@@ -52,23 +52,29 @@ def _target_summary(tool_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _reports_failure(result: Any) -> bool:
-    """Whether a tool's returned result says it did not do what was asked.
+def _outcome_of(result: Any) -> str:
+    """The recorded outcome of a material tool, from what it returned.
 
-    Tools report failure in their JSON result (``{"success": false, ...}`` or
-    an ``error`` without ``success: true``) rather than by raising; recording
-    those as ``succeeded`` would misstate the retry evidence.
+    A returned error is not proof that nothing happened: a write can time out
+    after the server accepted it. Such a result is recorded ``unknown`` (the
+    evidence then says the effect may have happened), and ``failed`` only when
+    the tool states explicitly that it did not perform the action
+    (``"performed": false``). Anything else counts as ``succeeded``.
     """
     if isinstance(result, str):
         try:
             result = json.loads(result)
         except (TypeError, ValueError):
-            return False
+            return "succeeded"
     if not isinstance(result, dict):
-        return False
-    if result.get("success") is False:
-        return True
-    return bool(result.get("error")) and result.get("success") is not True
+        return "succeeded"
+    if result.get("performed") is False:
+        return "failed"
+    if result.get("success") is False or (
+        bool(result.get("error")) and result.get("success") is not True
+    ):
+        return "unknown"
+    return "succeeded"
 
 
 class FencedTool(Tool):
@@ -130,7 +136,7 @@ class FencedTool(Tool):
         except BaseException:
             await self._finish(operation_id, "unknown")
             raise
-        await self._finish(operation_id, "failed" if _reports_failure(result) else "succeeded")
+        await self._finish(operation_id, _outcome_of(result))
         return result
 
     async def _finish(self, operation_id: uuid.UUID, outcome: str) -> None:

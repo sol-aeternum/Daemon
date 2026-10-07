@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -181,10 +182,36 @@ def _guard_tools(registry: Any, store: TaskStore, state: AttemptState) -> None:
         lambda reason: _operation_refused(state, reason),
     )
     fetch = registry.get("web_fetch")
-    if fetch is not None and hasattr(fetch, "refresh_floor"):
+    if fetch is not None and hasattr(fetch, "refresh_guard"):
         # A regenerated attempt reuses what an earlier attempt of this task
         # refreshed rather than fetching and snapshotting it again (#475).
-        fetch.refresh_floor = claim.accepted_at
+        fetch.refresh_guard = _TaskRefreshGuard(store, state)
+
+
+def _page_key(url: str, mode: str) -> str:
+    # Only a digest is kept, so the event never needs the URL itself.
+    return hashlib.sha256(f"{mode}\n{url}".encode()).hexdigest()
+
+
+class _TaskRefreshGuard:
+    """web_fetch refreshes, remembered per task across attempts."""
+
+    def __init__(self, store: TaskStore, state: AttemptState) -> None:
+        self._store = store
+        self._state = state
+
+    async def refreshed(self, url: str, mode: str) -> bool:
+        pages = await self._store.refreshed_pages(self._state.claim.task_id)
+        return _page_key(url, mode) in pages
+
+    async def record(self, url: str, mode: str) -> None:
+        claim = self._state.claim
+        try:
+            await self._store.record_event(
+                claim.task_id, claim.epoch, "page_refreshed", {"key": _page_key(url, mode)}
+            )
+        except LeaseLost:
+            _fence_lost(self._state)
 
 
 def _operation_refused(state: AttemptState, reason: str) -> None:
