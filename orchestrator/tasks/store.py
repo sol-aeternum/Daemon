@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -141,6 +142,8 @@ class Claim:
     attempt_count: int
     max_attempts: int
     task_input: dict[str, Any]
+    #: When the task was accepted (database clock).
+    accepted_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,6 +721,7 @@ class TaskStore:
                 attempt_count=int(claimed["attempt_count"]),
                 max_attempts=int(row["max_attempts"]),
                 task_input=self._open(row["input_ciphertext"]),
+                accepted_at=row["created_at"],
             )
 
     async def heartbeat(self, task_id: uuid.UUID, epoch: int, *, lease_s: float) -> Heartbeat:

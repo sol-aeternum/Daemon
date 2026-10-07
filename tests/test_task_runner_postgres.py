@@ -924,3 +924,18 @@ async def test_a_regenerated_answer_discloses_the_interruption(env: Env, mock_ll
     )
     metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
     assert metadata["regenerated_after_interruption"] == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_attempts_make_web_fetch_refreshes_idempotent_per_task(env: Env):
+    """#475: the runner gives web_fetch the task's acceptance time."""
+    from orchestrator.tools.web_fetch import WebFetchTool
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None and claim.accepted_at is not None
+    registry = ToolRegistry()
+    fetch = WebFetchTool()
+    registry.register(fetch)
+    runner._guard_tools(registry, env.tasks, runner.AttemptState(claim=claim))
+    assert fetch.refresh_floor == claim.accepted_at

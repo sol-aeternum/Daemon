@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from collections.abc import Callable
 from typing import Any
 
@@ -49,6 +50,10 @@ class WebFetchTool(Tool):
         self._fetch_service: FetchService | None = None
         self._allowance: Callable[[str], bool] | None = None
         self._created = 0
+        #: Durable tasks set this to the task's acceptance time: a refresh
+        #: counts once per task, so a regenerated attempt reuses the snapshot
+        #: an earlier attempt already refreshed instead of fetching again.
+        self.refresh_floor: datetime | None = None
 
     def set_result_allowance(self, allowance: Callable[[str], bool] | None) -> None:
         self._allowance = allowance
@@ -174,9 +179,16 @@ class WebFetchTool(Tool):
                 version = EXTRACTION_VERSION_V1
                 snapshot = (
                     None
-                    if refresh
+                    if refresh and self.refresh_floor is None
                     else await store.find_latest(user, conversation, url, mode, version)
                 )
+                if (
+                    refresh
+                    and snapshot is not None
+                    and self.refresh_floor is not None
+                    and snapshot.retrieved_at < self.refresh_floor
+                ):
+                    snapshot = None  # older than this task: refresh as asked
                 if snapshot is None:
                     if self._created >= store.settings.web_snapshot_max_new_per_turn:
                         return self._error("snapshot_turn_limit")

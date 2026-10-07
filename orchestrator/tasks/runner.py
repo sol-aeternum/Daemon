@@ -169,6 +169,24 @@ def _interrupt(state: AttemptState, execution: asyncio.Task[Any]) -> None:
     execution.cancel()
 
 
+def _guard_tools(registry: Any, store: TaskStore, state: AttemptState) -> None:
+    """Fence material tools, and make repeatable fetches idempotent per task."""
+    claim = state.claim
+    guard_registry(
+        registry,
+        store,
+        claim.task_id,
+        claim.epoch,
+        lambda: _fence_lost(state),
+        lambda reason: _operation_refused(state, reason),
+    )
+    fetch = registry.get("web_fetch")
+    if fetch is not None and hasattr(fetch, "refresh_floor"):
+        # A regenerated attempt reuses what an earlier attempt of this task
+        # refreshed rather than fetching and snapshotting it again (#475).
+        fetch.refresh_floor = claim.accepted_at
+
+
 def _operation_refused(state: AttemptState, reason: str) -> None:
     # The effect fence saw a cancel or suspension the heartbeat has not yet:
     # stop now rather than continue to another provider round.
@@ -465,14 +483,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             disable_memory_write=bool(task_input.get("disable_memory_write")),
             user_timezone=user_timezone,
             message_sink=AttemptSink(store, state),
-            tool_guard=lambda registry: guard_registry(
-                registry,
-                store,
-                claim.task_id,
-                claim.epoch,
-                lambda: _fence_lost(state),
-                lambda reason: _operation_refused(state, reason),
-            ),
+            tool_guard=lambda registry: _guard_tools(registry, store, state),
         )
         async for frame in frames:
             event, envelope = _parse_frame(frame)
