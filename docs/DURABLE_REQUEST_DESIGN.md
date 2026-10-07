@@ -193,6 +193,7 @@ A task references conversation and workspace context without a memory or filesys
 | 11 | (7 October 2026) Deleting a conversation with a queued task cancels and deletes it; with a running task the delete requests cancellation and returns 409 `task_running` until it stops (§11). |
 | 12 | (7 October 2026) Account deletion while tasks run is deferred to its own fence-and-drain design with deletion propagation and retention; slice 1 ships with the flag off. |
 | 13 | (7 October 2026) Review policy for this work: correctness, security and data-loss findings are fixed in the PR; other new findings (later-slice scope, hardening) are filed as tracked issues with a written rationale, and a PR merges once its checks are green and nothing blocking is open. |
+| 14 | (7 October 2026) Merge gate for slice 1: #466 and #467 merge once CI is green and no P1 review finding is open on the current head. Remaining P2 findings, and later findings on merged code, are tracked in #477, which blocks enabling `DURABLE_CHAT_ENABLED` rather than merging. |
 
 ## 13. Design choice C — owned resources and legacy artifact handling (pending)
 
