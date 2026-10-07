@@ -6,7 +6,9 @@ import { chatTransportFetch } from '../lib/chatTransportFetch';
 import {
   attachmentsForRetry,
   reconcileSubmission,
+  settledSubmission,
   type LastTurn,
+  type TrackedSubmission,
 } from '../lib/durableRecovery';
 import {
   clearPendingSubmissions,
@@ -81,7 +83,11 @@ import { OfflineIndicator } from '../components/OfflineIndicator';
 import { RetryButton } from '../components/RetryButton';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { getAuthGeneration, subscribeAuthGeneration } from '../lib/auth';
+import {
+  getAuthGeneration,
+  subscribeAccountChange,
+  subscribeAuthGeneration,
+} from '../lib/auth';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import { RoutingNotice } from '../components/RoutingNotice';
 import MarkdownMessage from '../components/MarkdownMessage';
@@ -446,9 +452,18 @@ function ChatContent() {
   // Files of the latest submitted turn and the conversation they were sent
   // to, re-sent only when that same conversation's turn is regenerated.
   const lastTurnRef = useRef<LastTurn>(null);
-  // While a Stop is being confirmed the conversation stays busy, so a new
-  // submission cannot race a task that is still stopping.
-  const [stopInFlight, setStopInFlight] = useState(false);
+  // While a Stop is being confirmed its conversation stays busy, so a new
+  // submission cannot race a task that is still stopping. Other
+  // conversations are unaffected. ``null``: an unnamed new chat;
+  // ``undefined``: no Stop pending.
+  const [stoppingIn, setStoppingIn] = useState<string | null | undefined>(
+    undefined,
+  );
+  const stopSeqRef = useRef(0);
+  const stopInFlight =
+    stoppingIn !== undefined && stoppingIn === (currentId ?? null);
+  // A running task whose submission key is settled when the follower sees it end.
+  const trackedSubmissionRef = useRef<TrackedSubmission | null>(null);
   // Mirrors stopInFlight for submit handlers declared before it.
   const stopInFlightRef = useRef(false);
   // The open conversation id as of the latest render, for async callbacks.
@@ -569,6 +584,14 @@ function ChatContent() {
         (taskStatusSeen !== null && TERMINAL_TASK_STATUSES.has(taskStatusSeen));
       if (outcomeKnown && activeSubmissionKeyRef.current) {
         settlePendingSubmission(activeSubmissionKeyRef.current);
+      } else if (activeSubmissionKeyRef.current) {
+        const taskId = getDaemonTaskId(message);
+        if (taskId) {
+          trackedSubmissionRef.current = {
+            key: activeSubmissionKeyRef.current,
+            taskId,
+          };
+        }
       }
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
@@ -599,7 +622,9 @@ function ChatContent() {
 
   const isLoading = status === 'submitted' || status === 'streaming';
   // A different sign-in must never reuse another account's pending keys.
-  useEffect(() => subscribeAuthGeneration(clearPendingSubmissions), []);
+  // (A token refresh in another tab is not an account change: clearing then
+  // would let a retry run accepted work twice.)
+  useEffect(() => subscribeAccountChange(clearPendingSubmissions), []);
   // Follow server-owned work this client is not streaming itself (for example
   // after reopening the conversation on another device, or after a dropped
   // stream). Only a persisted placeholder qualifies, so a live stream's
@@ -622,7 +647,19 @@ function ChatContent() {
     conversation: followedConversation,
     isStreaming: isLoading,
     refresh: refreshCurrentConversation,
-    onUpdate: (conversation) => setMessages(conversation.messages),
+    onUpdate: (conversation) => {
+      setMessages(conversation.messages);
+      // A followed task that ended settles its submission: retyping the
+      // request later is a new run, not a replay.
+      const settled = settledSubmission(
+        trackedSubmissionRef.current,
+        conversation,
+      );
+      if (settled) {
+        settlePendingSubmission(settled);
+        trackedSubmissionRef.current = null;
+      }
+    },
   });
 
   useEffect(() => {
@@ -904,6 +941,9 @@ function ChatContent() {
         currentId: () => currentIdRef.current,
         taskForKey,
         settle: settlePendingSubmission,
+        track: (submission) => {
+          trackedSubmissionRef.current = submission;
+        },
         // A new chat accepted before its conversation id reached this page:
         // the follower then shows the task's progress or result.
         open: switchConversation,
@@ -931,10 +971,13 @@ function ChatContent() {
     const key = activeSubmissionKeyRef.current;
     const confirmation = cancelActiveTask();
     if (!confirmation) return;
-    setStopInFlight(true);
+    const seq = ++stopSeqRef.current;
+    setStoppingIn(
+      currentIdRef.current || latestConversationIdRef.current || null,
+    );
     return confirmation.then((outcome) => {
       if (outcome !== 'unconfirmed' && key) settlePendingSubmission(key);
-      setStopInFlight(false);
+      if (seq === stopSeqRef.current) setStoppingIn(undefined);
       void reconcileWithServer(key);
       return outcome;
     });
@@ -1217,6 +1260,10 @@ function ChatContent() {
     if (lastTurnRef.current?.conversationId === null) {
       lastTurnRef.current = { ...lastTurnRef.current, conversationId };
     }
+    // A Stop pressed before the new chat was named belongs to it.
+    setStoppingIn((previous) =>
+      previous === null ? conversationId : previous,
+    );
     const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
     const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
@@ -1673,6 +1720,14 @@ function ChatContent() {
                               <CouncilInterviewCard
                                 event={councilInterviewEvent}
                                 onSendConfig={(config) => {
+                                  // A retry of this turn re-sends no files.
+                                  lastTurnRef.current = {
+                                    conversationId:
+                                      currentId ||
+                                      latestConversationIdRef.current ||
+                                      null,
+                                    attachments: [],
+                                  };
                                   void sendMessage(
                                     {
                                       text: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,

@@ -259,6 +259,18 @@ describe('tab-local auth generation', () => {
     expect(auth.getAccessToken()).toBeNull();
   });
 
+  it('reports account changes for sign-in and sign-out, never for a remote token refresh', async () => {
+    const auth = await import('../lib/auth');
+    const accountChanged = vi.fn();
+    auth.subscribeAccountChange(accountChanged);
+    auth.setAccessToken('local', Date.now() + 120_000);
+    expect(accountChanged).toHaveBeenCalledTimes(1);
+    AuthChannel.instance.receive('refreshed');
+    expect(accountChanged).toHaveBeenCalledTimes(1);
+    AuthChannel.instance.receive('cleared');
+    expect(accountChanged).toHaveBeenCalledTimes(2);
+  });
+
   it('a current refresh 401 still clears auth and broadcasts the established event', async () => {
     const auth = await import('../lib/auth');
     auth.setAccessToken('old', 0);

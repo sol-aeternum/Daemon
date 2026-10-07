@@ -36,6 +36,9 @@ let _authGeneration = 0;
 let _authMutation = 0;
 const _generationListeners = new Set<() => void>();
 let _generationAuthListenerInstalled = false;
+// Sign-in and sign-out only. Unlike the generation, a token rotation (local
+// or announced by another tab) is not an account change.
+const _accountListeners = new Set<() => void>();
 
 export function getAuthGeneration(): number {
   return _authGeneration;
@@ -55,6 +58,24 @@ function _notifyAuthGeneration(): void {
   for (const listener of _generationListeners) listener();
 }
 
+/**
+ * Called when this tab signs in or out (including a sign-out announced by
+ * another tab), never for a token refresh. For state that must not outlive
+ * an account but should survive token rotation.
+ */
+export function subscribeAccountChange(listener: () => void): () => void {
+  _accountListeners.add(listener);
+  if (!_generationAuthListenerInstalled) {
+    _generationAuthListenerInstalled = true;
+    listenForAuthEvents(() => {});
+  }
+  return () => _accountListeners.delete(listener);
+}
+
+function _notifyAccountChange(): void {
+  for (const listener of _accountListeners) listener();
+}
+
 export function getAccessToken(): string | null {
   return _accessToken;
 }
@@ -66,6 +87,7 @@ export function setAccessToken(token: string, expiresAtMs: number): void {
   _accessToken = token;
   _expiresAt = expiresAtMs;
   _notifyAuthGeneration();
+  _notifyAccountChange();
 }
 
 export function clearLocalAuthState(): void {
@@ -75,6 +97,7 @@ export function clearLocalAuthState(): void {
   _accessToken = null;
   _expiresAt = 0;
   _notifyAuthGeneration();
+  _notifyAccountChange();
 }
 
 export function clearAuthState(): void {

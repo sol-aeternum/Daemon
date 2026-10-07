@@ -496,14 +496,20 @@ export function useConversationHistory() {
       return;
     }
 
+    // An older fetch that finishes after a newer one must not replace the
+    // open conversation with the one the user left.
+    let stale = false;
     const fetchConversationDetails = async () => {
       const conversation = await fetchConversationById(currentId);
-      if (conversation) {
+      if (conversation && !stale) {
         setCurrentConversation(conversation);
       }
     };
 
     fetchConversationDetails();
+    return () => {
+      stale = true;
+    };
   }, [currentId, fetchConversationById]);
 
   const getCurrentConversation = useCallback(() => {

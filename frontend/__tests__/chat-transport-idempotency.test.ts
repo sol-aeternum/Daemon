@@ -62,7 +62,9 @@ async function send(
       model,
       conversationId,
       onGeneration: vi.fn(),
-      onSubmissionKey: (key) => keys.push(key),
+      onSubmissionKey: (key) => {
+        if (key) keys.push(key);
+      },
     },
   );
   return keys[keys.length - 1];
@@ -205,4 +207,33 @@ it('declares the durable-task features this client supports', async () => {
     (calls[calls.length - 1][1] as RequestInit).body as string,
   );
   expect(body.client_features).toEqual(['task-cancel', 'task-reset']);
+});
+
+it('sends suggestions request-bound: features kept, no key recorded', async () => {
+  const reported: Array<string | null> = [];
+  await chatTransportFetch(
+    '/api/chat',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        suggestion_id: 'candidate',
+        __suggestionAuthGeneration: 1,
+        messages: [{ role: 'user', parts: [{ type: 'text', text: 'plan' }] }],
+      }),
+    },
+    {
+      model: 'auto',
+      conversationId: null,
+      onGeneration: vi.fn(),
+      onSubmissionKey: (key) => reported.push(key),
+    },
+  );
+  const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+  const body = JSON.parse(
+    (calls[calls.length - 1][1] as RequestInit).body as string,
+  );
+  expect(body.client_features).toEqual(['task-cancel', 'task-reset']);
+  expect(body.idempotency_key).toBeUndefined();
+  expect(reported).toEqual([null]);
+  expect(storage.length).toBe(0); // no pending submission the request lacks
 });

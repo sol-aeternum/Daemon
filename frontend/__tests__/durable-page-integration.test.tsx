@@ -229,6 +229,28 @@ describe('a durable task reopened on another device', () => {
     );
   });
 
+  it('keeps only the stopping conversation busy', async () => {
+    state.cancelTask.mockResolvedValue('cancelling');
+    const view = render(<ChatPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() =>
+      expect(state.cancelTask).toHaveBeenCalledWith('task-1'),
+    );
+    // conv-1's task is still stopping; the user opens another conversation.
+    const other = {
+      ...runningConversation(false),
+      id: 'conv-2',
+      title: 'Another chat',
+    };
+    state.currentId = 'conv-2';
+    state.conversation = other;
+    state.refresh.mockResolvedValue(other);
+    view.rerender(<ChatPage />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy(),
+    );
+  });
+
   it('withdraws Stop and reports it when cancellation is not confirmed', async () => {
     state.cancelTask.mockResolvedValue('unconfirmed');
     render(<ChatPage />);

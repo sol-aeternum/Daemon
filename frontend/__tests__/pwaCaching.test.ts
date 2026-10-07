@@ -37,6 +37,26 @@ describe('PWA runtime cache boundaries', () => {
     ).toBe(false);
   });
 
+  it('excludes task reads under a path-prefixed API base', () => {
+    const base = 'https://backend.fixture/daemon';
+    for (const path of ['/daemon/tasks/by-key/k1', '/daemon/tasks/0b0c1f9e']) {
+      const url = new URL(`https://backend.fixture${path}`);
+      expect(isPrivateTaskRequest(url, base)).toBe(true);
+    }
+    expect(
+      isPrivateTaskRequest(
+        new URL('https://backend.fixture/daemon/taskbar'),
+        base,
+      ),
+    ).toBe(false);
+    expect(
+      isPrivateTaskRequest(
+        new URL('https://elsewhere.fixture/daemon/tasks/1'),
+        base,
+      ),
+    ).toBe(false);
+  });
+
   it('classifies same-origin /api/* requests as network-only', () => {
     expect(
       isSameOriginApiRequest(new URL('https://daemon.test/api/chat'), true),

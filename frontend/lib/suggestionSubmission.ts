@@ -17,5 +17,10 @@ export function isolateSuggestionBody(
     model: body.model,
     suggestion_id: body.suggestion_id,
     messages: lastUser ? [lastUser] : [],
+    // Suggestions run request-bound; declaring the client's features lets the
+    // bridge say so, so Stop knows aborting the request is the cancellation.
+    ...(Array.isArray(body.client_features)
+      ? { client_features: body.client_features }
+      : {}),
   };
 }

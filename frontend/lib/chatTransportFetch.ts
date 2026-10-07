@@ -30,11 +30,11 @@ export async function chatTransportFetch(
     model: string;
     conversationId: string | null;
     onGeneration: (generation: number) => void;
-    /** Receives the idempotency key this request is sent with. */
-    onSubmissionKey?: (key: string) => void;
+    /** Receives the idempotency key this request is sent with (none for suggestions). */
+    onSubmissionKey?: (key: string | null) => void;
   },
 ): Promise<Response> {
-  let body: Record<string, unknown> =
+  const body: Record<string, unknown> =
     typeof init?.body === 'string' ? JSON.parse(init.body) : {};
   const generation = body.suggestion_id
     ? body.__suggestionAuthGeneration
@@ -61,6 +61,13 @@ export async function chatTransportFetch(
   // replaces text on a generation reset. The chat proxy forwards this to the
   // backend; an older cached bundle never declares it and stays request-bound.
   body.client_features = DURABLE_CLIENT_FEATURES;
+  if (typeof body.suggestion_id === 'string' && body.suggestion_id) {
+    // Suggestion acceptance is request-bound and never deduplicated by key:
+    // record no pending submission that the request would not carry.
+    delete body.idempotency_key;
+    scope.onSubmissionKey?.(null);
+    return send(requestInput, init, isolateSuggestionBody(body));
+  }
   // One key per submission, kept until its outcome is known, so a retry
   // after a lost response or a reload replays the accepted task instead of
   // creating a second one.
@@ -80,7 +87,14 @@ export async function chatTransportFetch(
     body.id = pending.requestConversationId;
   }
   scope.onSubmissionKey?.(body.idempotency_key as string);
-  body = isolateSuggestionBody(body);
+  return send(requestInput, init, body);
+}
+
+function send(
+  requestInput: RequestInfo | URL,
+  init: RequestInit | undefined,
+  body: Record<string, unknown>,
+): Promise<Response> {
   const headers = new Headers(init?.headers);
   const authHeader = getAuthHeader();
   if (authHeader) headers.set('Authorization', authHeader);

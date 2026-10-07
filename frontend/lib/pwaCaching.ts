@@ -1,4 +1,7 @@
-import { isWebSnapshotRequest } from './webSnapshotPaths';
+import {
+  configuredSnapshotApiBase,
+  isWebSnapshotRequest,
+} from './webSnapshotPaths';
 
 export function isSameOriginApiRequest(url: URL, sameOrigin: boolean): boolean {
   return sameOrigin && url.pathname.startsWith('/api/');
@@ -13,8 +16,25 @@ export function isPrivateSpeechRequest(url: URL): boolean {
  * Durable task reads carry message content and live status for the signed-in
  * account, also when they go straight to the backend origin.
  */
-export function isPrivateTaskRequest(url: URL): boolean {
-  return /^\/tasks(?:\/|$)/.test(url.pathname);
+export function isPrivateTaskRequest(
+  url: URL,
+  configured = configuredSnapshotApiBase(),
+): boolean {
+  const taskPath = /^\/tasks(?:\/|$)/;
+  if (taskPath.test(url.pathname)) return true;
+  // The API base may carry a path prefix (``https://host/daemon``).
+  try {
+    const base = new URL(configured);
+    const prefix = base.pathname.replace(/\/+$/, '');
+    return (
+      url.origin === base.origin &&
+      prefix !== '' &&
+      url.pathname.startsWith(`${prefix}/`) &&
+      taskPath.test(url.pathname.slice(prefix.length))
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function shouldUseGeneralRuntimeCache(
