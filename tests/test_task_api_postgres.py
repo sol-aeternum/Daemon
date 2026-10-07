@@ -397,6 +397,31 @@ async def test_flag_off_keeps_the_request_bound_path(api: Api, monkeypatch: pyte
     assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
 
 
+@pytest.mark.asyncio
+async def test_accepted_key_replays_after_the_flag_is_switched_off(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: a rollback must not turn a retry into a second run."""
+    accepted = await _submit(api, key="before-rollback")
+    claim = await api.env.tasks.claim(uuid.UUID(accepted["id"]), worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await api.env.tasks.complete(claim.task_id, claim.epoch, content="first run")
+    monkeypatch.setenv("DURABLE_CHAT_ENABLED", "false")
+    get_settings.cache_clear()
+    async with asyncio.timeout(10):
+        replay = await _post(api, key="before-rollback")
+    assert replay.status_code == 200
+    assert replay.headers["X-Daemon-Task-Id"] == accepted["id"]
+    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 1
+    assert (
+        await api.env.pool.fetchval(
+            "SELECT count(*) FROM messages WHERE conversation_id = $1",
+            uuid.UUID(accepted["conversation_id"]),
+        )
+        == 2
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Observer content-generation rules (review of #461)
 # --------------------------------------------------------------------------- #
@@ -832,3 +857,24 @@ async def test_failed_live_subscription_releases_its_connection(env: Env):
     ]
     assert frames  # observed by snapshot instead
     assert closed == ["unsubscribe", "aclose"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_snapshot_replaces_uncommitted_live_text(env: Env):
+    """Review of #466: text shown live but not committed is replaced at the end."""
+    from orchestrator.tasks.observe import _Observation
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.write_partial(accepted.task_id, claim.epoch, content="Kept", delta_seq=1)
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch)
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None and snapshot.content == "Kept"
+    view = _Observation("conv", "req", supports_reset=True)
+    view.generation = snapshot.content_generation
+    view.displayed = "Kept, and more that was never saved"
+    events = _events("".join(view.terminal(snapshot)))
+    resets = [d["data"] for e, d in events if e == "task" and d["data"].get("reset")]
+    assert resets and resets[0]["content"] == "Kept"

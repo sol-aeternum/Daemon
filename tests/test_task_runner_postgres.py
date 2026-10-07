@@ -91,6 +91,12 @@ async def test_task_completes_and_live_deltas_rebuild_the_result(env: Env, mock_
 
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None and snapshot.status is TaskStatus.COMPLETED
+    # The attempt records the system prompt version it ran with (§10).
+    from orchestrator.prompts import DAEMON_PROMPT_VERSION
+
+    assert await env.pool.fetchval(
+        "SELECT prompt_version FROM task_attempts WHERE task_id = $1", accepted.task_id
+    ) == str(DAEMON_PROMPT_VERSION)
     assert snapshot.content == MOCK_TEXT
     deltas = _deltas(redis, accepted.task_id)
     assert [d["seq"] for d in deltas] == list(range(1, len(deltas) + 1))
@@ -126,6 +132,15 @@ async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
     env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(runner, "HEARTBEAT_S", 0.05)
+
+    async def stalls_after_three_chunks(**_kwargs: Any):
+        # Deterministic: the stream cannot finish before the cancel is seen.
+        for chunk in CHUNKS[:3]:
+            yield {"type": "content_delta", "content": chunk}
+        await asyncio.Event().wait()
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", stalls_after_three_chunks)
     accepted = await accept_task(env)
     redis = FakeRedis()
     job = asyncio.create_task(runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)))
@@ -135,8 +150,7 @@ async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
     assert await asyncio.wait_for(job, timeout=10) == "cancelled"
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None and snapshot.status is TaskStatus.CANCELLED
-    assert snapshot.content and MOCK_TEXT.startswith(snapshot.content)
-    assert snapshot.content != MOCK_TEXT
+    assert snapshot.content == "".join(CHUNKS[:3])  # the partial answer is kept
 
 
 @pytest.mark.asyncio
@@ -276,9 +290,14 @@ async def test_superseded_attempt_never_runs_material_tool(env: Env):
     await expire_lease(env, accepted.task_id)
     assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is not None
     inner = _CountingTool()
-    result = await FencedTool(inner, env.tasks, accepted.task_id, stale.epoch).execute()
+    lost: list[bool] = []
+    result = await FencedTool(
+        inner, env.tasks, accepted.task_id, stale.epoch, lambda: lost.append(True)
+    ).execute()
     assert inner.calls == 0 and json.loads(result)["success"] is False
     assert await env.pool.fetchval("SELECT count(*) FROM task_operations") == 0
+    # Review of #466: the attempt is told to stop, not just handed a tool error.
+    assert lost == [True]
 
 
 @pytest.mark.asyncio
@@ -665,3 +684,47 @@ async def test_admission_refusal_counts_once_work_began_or_the_wait_is_over(
         )
     assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "queued"
     assert await _attempts(env, accepted.task_id) == (1, ["failed_retryable"])
+
+
+@pytest.mark.asyncio
+async def test_cancel_between_claim_and_execution_makes_no_provider_call(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: a Stop that lands after the claim stops before inference."""
+    calls = 0
+
+    async def counting_completion(**_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", counting_completion)
+    accepted = await accept_task(env)
+    real_settle = runner.settle_lost_attempt_holds
+
+    async def cancel_then_settle(*args: Any, **kwargs: Any) -> int:
+        await env.tasks.request_cancel(env.alice, accepted.task_id)
+        return await real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "settle_lost_attempt_holds", cancel_then_settle)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "cancelled"
+    )
+    assert calls == 0
+    assert (
+        await env.pool.fetchval("SELECT attempt_count FROM tasks WHERE id = $1", accepted.task_id)
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_reports_the_committed_status_to_the_engine(env: Env):
+    """Review of #466: when a cancel wins the commit, success-only follow-ups
+    (trust signal, extraction, skill evaluation) must not run."""
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    sink = runner.AttemptSink(env.tasks, runner.AttemptState(claim=claim))
+    row = await sink.update_message(content="answer", status="complete")
+    assert row is not None and row["status"] == "cancelled"

@@ -28,7 +28,8 @@ from orchestrator.compute_runtime import (
 )
 from orchestrator.tasks.fence import guard_registry
 from orchestrator.tasks.states import RetryCause, TaskStatus
-from orchestrator.tasks.store import Claim, LeaseLost, TaskStore
+from orchestrator.prompts import DAEMON_PROMPT_VERSION
+from orchestrator.tasks.store import Claim, ExecutionRefused, LeaseLost, TaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ LEASE_S = 45.0
 HEARTBEAT_S = 10.0
 #: Margin kept between the local lease estimate and the database's lease.
 LEASE_SAFETY_S = 5.0
+#: How long a cancelled or suspended attempt may take to stop at its next
+#: frame before its execution is interrupted (a provider can stall between
+#: frames, and Stop must not wait for it).
+STOP_GRACE_S = 2.0
 #: Delay before retrying a claim whose admission precondition failed.
 DEFER_S = 15.0
 #: Account admission refusals that clear on their own (a busy slot, a full
@@ -59,6 +64,12 @@ CAPACITY_CODES = frozenset(
 )
 #: Frames forwarded to attached observers as-is (never persisted).
 _PASSTHROUGH_FRAMES = frozenset({"routing", "thinking", "tool_call", "tool_result", "metadata"})
+#: Message status the result row carries for each status ``complete`` commits.
+_COMMITTED_MESSAGE_STATUS = {
+    TaskStatus.COMPLETED: "complete",
+    TaskStatus.CANCELLED: "cancelled",
+    TaskStatus.FAILED: "error",
+}
 #: Message states that never feed back into a model's history.
 _HISTORY_EXCLUDED = ["streaming", "error", "cancelled"]
 
@@ -78,6 +89,10 @@ class AttemptState:
     cancel_requested: bool = False
     account_suspended: bool = False
     fenced: bool = False
+    #: Execution was cancelled by this attempt after a cancel or suspension.
+    interrupted: bool = False
+    #: The task running the chat engine for this attempt.
+    execution: asyncio.Task[Any] | None = None
     result: TaskStatus | None = None
     requested_terminal: str | None = None
     error: BaseException | None = None
@@ -124,7 +139,9 @@ class AttemptSink:
                     content=content or "",
                     message_fields=message_fields,
                 )
-                return self._row()
+                # The status actually committed: a cancel or suspension may
+                # have won, and the engine then skips success-only work.
+                return {**self._row(), "status": _COMMITTED_MESSAGE_STATUS[self._state.result]}
             if content is not None:
                 await self._store.write_partial(
                     claim.task_id, claim.epoch, content=content, delta_seq=self._state.delta_seq
@@ -136,6 +153,21 @@ class AttemptSink:
         except LeaseLost:
             self._state.fenced = True
             return None
+
+
+def _interrupt(state: AttemptState, execution: asyncio.Task[Any]) -> None:
+    # The engine stops at its next frame once ``stopping`` is set; a provider
+    # call that produces no frame is interrupted here instead.
+    if execution.done() or state.result is not None or state.fenced:
+        return
+    state.interrupted = True
+    execution.cancel()
+
+
+def _fence_lost(state: AttemptState) -> None:
+    # The effect fence found the lease gone: stop the whole attempt now.
+    if state.execution is not None and state.result is None:
+        _stop_fenced(state, state.execution)
 
 
 def _stop_fenced(state: AttemptState, execution: asyncio.Task[Any]) -> None:
@@ -185,10 +217,13 @@ async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.T
             logger.warning("Task heartbeat failed (task_id=%s)", claim.task_id, exc_info=True)
             continue
         state.lease_deadline = requested_at + LEASE_S - LEASE_SAFETY_S
+        was_stopping = state.cancel_requested or state.account_suspended
         if beat.cancel_requested:
             state.cancel_requested = True
         if beat.account_suspended:
             state.account_suspended = True
+        if not was_stopping and (state.cancel_requested or state.account_suspended):
+            loop.call_later(STOP_GRACE_S, _interrupt, state, execution)
     if state.result is None and not state.fenced:
         logger.warning("Task lease could not be renewed in time (task_id=%s)", claim.task_id)
         _stop_fenced(state, execution)
@@ -358,7 +393,20 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         profile=str(task_input.get("profile") or "routine"),
         request_id=request_id,
     ):
-        await store.begin_execution(claim.task_id, claim.epoch, current_scope().scope_id)
+        try:
+            await store.begin_execution(
+                claim.task_id,
+                claim.epoch,
+                current_scope().scope_id,
+                prompt_version=str(DAEMON_PROMPT_VERSION),
+            )
+        except ExecutionRefused as refused:
+            # Stopped between the claim and inference: no provider call.
+            if refused.reason == "account_suspended":
+                state.account_suspended = True
+            else:
+                state.cancel_requested = True
+            return
         system_prompt, user_timezone = await _system_prompt(memory, db_pool, claim)
         history = await _history(
             memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
@@ -384,7 +432,9 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             disable_memory_write=bool(task_input.get("disable_memory_write")),
             user_timezone=user_timezone,
             message_sink=AttemptSink(store, state),
-            tool_guard=lambda registry: guard_registry(registry, store, claim.task_id, claim.epoch),
+            tool_guard=lambda registry: guard_registry(
+                registry, store, claim.task_id, claim.epoch, lambda: _fence_lost(state)
+            ),
         )
         async for frame in frames:
             event, envelope = _parse_frame(frame)
@@ -489,11 +539,15 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         return "fenced"
     state = AttemptState(claim=claim, lease_deadline=lease_deadline)
     execution = asyncio.create_task(_execute(ctx, store, state))
+    state.execution = execution
     heartbeat = asyncio.create_task(_heartbeat(store, state, execution))
     try:
         await execution
     except asyncio.CancelledError:
-        if not state.fenced:
+        current = asyncio.current_task()
+        if (current is not None and current.cancelling()) or not (
+            state.fenced or state.interrupted
+        ):
             # Worker shutdown: the lease expires and a later claim recovers.
             raise
     except Exception as exc:

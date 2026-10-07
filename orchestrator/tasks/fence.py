@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from orchestrator.tasks.store import EffectRefused, LeaseLost, TaskStore
@@ -54,11 +55,19 @@ def _target_summary(tool_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
 class FencedTool(Tool):
     """Proxy that records a material operation before delegating."""
 
-    def __init__(self, inner: Tool, store: TaskStore, task_id: uuid.UUID, epoch: int) -> None:
+    def __init__(
+        self,
+        inner: Tool,
+        store: TaskStore,
+        task_id: uuid.UUID,
+        epoch: int,
+        on_lease_lost: Callable[[], None] | None = None,
+    ) -> None:
         self._inner = inner
         self._store = store
         self._task_id = task_id
         self._epoch = epoch
+        self._on_lease_lost = on_lease_lost
         self.name = inner.name
         self.description = inner.description
         self.parameters = inner.parameters
@@ -80,7 +89,10 @@ class FencedTool(Tool):
                 min_lease_margin_s=MIN_LEASE_MARGIN_S,
             )
         except LeaseLost:
-            # This attempt no longer owns the task: the effect is not attempted.
+            # This attempt no longer owns the task: the effect is not attempted,
+            # and the attempt stops now rather than at its next heartbeat.
+            if self._on_lease_lost is not None:
+                self._on_lease_lost()
             return json.dumps(
                 {"success": False, "error": "Not performed: this task attempt was superseded."}
             )
@@ -105,9 +117,15 @@ class FencedTool(Tool):
             logger.warning("Could not record task operation outcome", exc_info=True)
 
 
-def guard_registry(registry: Any, store: TaskStore, task_id: uuid.UUID, epoch: int) -> None:
+def guard_registry(
+    registry: Any,
+    store: TaskStore,
+    task_id: uuid.UUID,
+    epoch: int,
+    on_lease_lost: Callable[[], None] | None = None,
+) -> None:
     """Wrap every material tool in ``registry`` with the effect fence."""
     for name in registry.names():
         tool = registry.get(name)
         if tool is not None and is_material(name) and not isinstance(tool, FencedTool):
-            registry.register(FencedTool(tool, store, task_id, epoch))
+            registry.register(FencedTool(tool, store, task_id, epoch, on_lease_lost))

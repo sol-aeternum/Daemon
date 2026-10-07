@@ -809,3 +809,18 @@ async def test_replay_survives_a_rotated_digest_key(env: Env):
     different = fingerprint("pepper-after-rotation", "something else")
     with pytest.raises(IdempotencyConflict):
         await env.tasks.find_by_key(env.alice, "rotated", different.digest, different.canonical)
+
+
+@pytest.mark.asyncio
+async def test_execution_is_refused_after_a_cancel_or_suspension(env: Env):
+    """Review of #466: begin_execution rechecks what may have changed since the claim."""
+    from orchestrator.tasks.store import ExecutionRefused
+
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    with pytest.raises(ExecutionRefused) as refused:
+        await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4())
+    assert refused.value.reason == "cancel_requested"
+    assert (await _task(env, accepted.task_id))["attempt_count"] == 0

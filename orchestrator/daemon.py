@@ -1053,6 +1053,12 @@ async def stream_sse_chat(
                         metadata=final_metadata or None,
                     )
                     assistant_message_terminalized = updated is not None
+                    # A durable task's commit can end differently than asked
+                    # (a cancel or suspension won the race); success-only
+                    # follow-ups below must see the committed status.
+                    committed_status = updated.get("status") if isinstance(updated, dict) else None
+                    if isinstance(committed_status, str):
+                        persisted_status = committed_status
                 else:
                     # Insert new message
                     inserted = await message_writer.insert_message(

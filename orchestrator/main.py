@@ -2458,6 +2458,13 @@ async def _durable_replay(
                 "message": "This request key was already used for a different request",
             },
         ) from exc
+    except Exception:
+        if settings.durable_chat_enabled:
+            raise
+        # Durable chat is off: request-bound chat must not depend on the task
+        # tables. If they are unreachable, no worker can run a task either.
+        logger.warning("Task replay lookup failed; continuing request-bound", exc_info=True)
+        return None
     if existing is None:
         return None
     request_id = get_request_id(request) or new_request_id()
@@ -2475,10 +2482,12 @@ async def chat(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
     durable_client = settings.durable_chat_enabled and client_supports_durable_chat(request)
-    if durable_client:
-        replay = await _durable_replay(payload, request, settings, app_state, auth)
-        if replay is not None:
-            return replay
+    # Replays come first even when durable chat is switched off or this client
+    # cannot drive it: a key accepted before a rollback must reattach to its
+    # task (which the worker still runs), never run again request-bound.
+    replay = await _durable_replay(payload, request, settings, app_state, auth)
+    if replay is not None:
+        return replay
     # Per-issue-#38 rate limit runs after auth so user/session scope
     # values are populated, but before any LLM-backed work so the
     # operator's budget is bounded even when the request would have

@@ -145,7 +145,13 @@ class _Observation:
 
     def terminal(self, snapshot: TaskSnapshot) -> list[str]:
         status = snapshot.status
-        frames = [self.task_frame(snapshot)]
+        # The terminal snapshot is authoritative: live text it did not commit
+        # (for example a result withheld for a suspended account) is replaced.
+        # A lagging snapshot is only tolerated while the task is running.
+        stale = self.supports_reset and self.displayed != snapshot.content
+        frames = [self.task_frame(snapshot, reset=stale)]
+        if stale:
+            self.displayed = snapshot.content
         if status is TaskStatus.COMPLETED:
             frames.append(
                 self.frame(

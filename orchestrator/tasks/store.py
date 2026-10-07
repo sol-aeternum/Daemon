@@ -85,6 +85,15 @@ class EffectRefused(TaskError):
     suspended, or too little lease time remains."""
 
 
+class ExecutionRefused(TaskError):
+    """An attempt may not start inference: ``reason`` is ``cancel_requested``
+    or ``account_suspended``. Nothing was counted or started."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True, slots=True)
 class AcceptedTask:
     task_id: uuid.UUID
@@ -709,13 +718,22 @@ class TaskStore:
             await self._append_event(conn, task_id, "operation_started", {"tool": tool_name})
             return operation_id
 
-    async def begin_execution(self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID) -> int:
+    async def begin_execution(
+        self,
+        task_id: uuid.UUID,
+        epoch: int,
+        scope_id: uuid.UUID,
+        *,
+        prompt_version: str | None = None,
+    ) -> int:
         """Mark this attempt as executing; only now does it count as an attempt.
 
         Records the attempt's account compute scope (for settling its holds if
-        it is lost) and returns the number of attempts that have executed.
-        Claiming, preparing or reconciling consume no retry, so a database
-        outage during preparation cannot exhaust the task.
+        it is lost) and the system prompt version it runs with, and returns the
+        number of attempts that have executed. Claiming, preparing or
+        reconciling consume no retry, so a database outage during preparation
+        cannot exhaust the task. A cancel or suspension that committed since
+        the claim raises :class:`ExecutionRefused` before any inference.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await self._locked_for_epoch(conn, task_id, epoch)
@@ -723,17 +741,22 @@ class TaskStore:
                 raise LeaseLost("lease lost")
             if int(row["attempt_count"]) >= int(row["max_attempts"]):
                 raise LeaseLost("no attempts left")  # defensive: the claim checks this
+            if row["cancel_requested_at"] is not None:
+                raise ExecutionRefused("cancel_requested")
+            if await conn.fetchval(f"SELECT {_SUSPENDED} FROM tasks WHERE id = $1", task_id):
+                raise ExecutionRefused("account_suspended")
             count = await conn.fetchval(
                 "UPDATE tasks SET attempt_count = attempt_count + 1, updated_at = now() "
                 "WHERE id = $1 RETURNING attempt_count",
                 task_id,
             )
             await conn.execute(
-                "UPDATE task_attempts SET compute_scope_id = $3, execution_started_at = now() "
-                "WHERE task_id = $1 AND epoch = $2",
+                "UPDATE task_attempts SET compute_scope_id = $3, execution_started_at = now(), "
+                "prompt_version = $4 WHERE task_id = $1 AND epoch = $2",
                 task_id,
                 epoch,
                 scope_id,
+                prompt_version,
             )
             await self._append_event(
                 conn, task_id, "execution_started", {"epoch": epoch, "attempt": int(count)}

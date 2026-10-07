@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     partial_ciphertext TEXT,
     compute_scope_id UUID,
     execution_started_at TIMESTAMPTZ,
+    prompt_version TEXT CHECK (prompt_version IS NULL OR char_length(prompt_version) <= 64),
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ended_at TIMESTAMPTZ,
@@ -112,6 +113,10 @@ COMMENT ON COLUMN task_attempts.compute_scope_id IS
     'Account compute scope of this attempt. When the attempt is lost, its still-open '
     'reservations are settled at their full hold before a recovery attempt is admitted, '
     'so a dead attempt cannot occupy the account''s concurrency slot.';
+
+COMMENT ON COLUMN task_attempts.prompt_version IS
+    'System prompt version (orchestrator.prompts.DAEMON_PROMPT_VERSION) the attempt '
+    'executed with; a retry across a deployment may differ from the first attempt.';
 
 COMMENT ON COLUMN task_attempts.execution_started_at IS
     'When this attempt began inference work. Only attempts that reached it count '
