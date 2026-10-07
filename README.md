@@ -212,14 +212,14 @@ The repository contains a hosted assistant foundation — FastAPI backend, PWA c
 3. **Add optional device extensions.** Prove scoped access on one desktop platform and the cross-device reference workflow, including its presentation-generation and validation dependencies.
 4. **Expand supported actions and platforms.** Add conflict-safe writeback and other operations only with tested permission and recovery boundaries.
 
-The vision's [delivery gates](docs/DAEMON_VISION.md#11-delivery-sequence-and-acceptance-criteria) define the intended evidence. Detailed architecture remains proposed in [DURABLE_REQUEST_DESIGN.md](docs/DURABLE_REQUEST_DESIGN.md); local inference and general computer control are not prerequisites for the first milestone.
+The vision's [delivery gates](docs/DAEMON_VISION.md#11-delivery-sequence-and-acceptance-criteria) define the intended evidence. Detailed architecture is approved but not implemented in [DURABLE_REQUEST_DESIGN.md](docs/DURABLE_REQUEST_DESIGN.md); local inference and general computer control are not prerequisites for the first milestone.
 
 ## Documentation
 
 - [What Daemon is — read first](docs/DAEMON.md) and [glossary](docs/GLOSSARY.md)
 - [Product vision](docs/DAEMON_VISION.md) and [approved decisions](docs/DAEMON_VISION_DECISIONS.md)
 - [Stage 0 reconciliation](docs/DAEMON_RECONCILIATION.md) and [integration evidence](docs/VISION_INTEGRATION_REPORT.md)
-- [Durable-request design — proposed](docs/DURABLE_REQUEST_DESIGN.md)
+- [Durable-request design — approved, not implemented](docs/DURABLE_REQUEST_DESIGN.md)
 - [Documentation authority map](docs/SOURCES_OF_TRUTH.md), [feature matrix](docs/FEATURE_MATRIX.md), and [roadmap](docs/ROADMAP.md)
 
 ## License

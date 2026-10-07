@@ -14,7 +14,7 @@ Active implementation work, including current waves and task-level tracking, is 
 
 - **Active Plans**: [../.sisyphus/plans/](../.sisyphus/plans/)
 - **Product Direction**: [Daemon vision](DAEMON_VISION.md) and [approved interview decisions](DAEMON_VISION_DECISIONS.md).
-- **Current Focus**: Integrate the vision, stabilise continuity-critical baseline defects, then approve [durable-request architecture](DURABLE_REQUEST_DESIGN.md) before implementing broad assistant continuity. See [integration evidence](VISION_INTEGRATION_REPORT.md); this is not a completed feature milestone.
+- **Current Focus**: Integrate the vision, stabilise continuity-critical baseline defects, then implement broad assistant continuity in slices per the approved [durable-request architecture](DURABLE_REQUEST_DESIGN.md). See [integration evidence](VISION_INTEGRATION_REPORT.md); this is not a completed feature milestone.
 
 ## 3. Memory Evolution
 
