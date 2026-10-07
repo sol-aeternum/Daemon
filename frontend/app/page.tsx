@@ -4,6 +4,11 @@ import { WelcomeScreen } from '../components/WelcomeScreen';
 import { SuggestionSourceContext } from '../components/SuggestionSourceContext';
 import { chatTransportFetch } from '../lib/chatTransportFetch';
 import {
+  attachmentsForRetry,
+  reconcileSubmission,
+  type LastTurn,
+} from '../lib/durableRecovery';
+import {
   clearPendingSubmissions,
   promotePendingSubmission,
   settlePendingSubmission,
@@ -438,8 +443,9 @@ function ChatContent() {
   const chatRequestGenerationRef = useRef<number | null>(null);
   // Idempotency key of the submission currently (or most recently) in flight.
   const activeSubmissionKeyRef = useRef<string | null>(null);
-  // Files of the latest submitted turn, re-sent when it is regenerated.
-  const lastAttachmentsRef = useRef<unknown[]>([]);
+  // Files of the latest submitted turn and the conversation they were sent
+  // to, re-sent only when that same conversation's turn is regenerated.
+  const lastTurnRef = useRef<LastTurn>(null);
   // While a Stop is being confirmed the conversation stays busy, so a new
   // submission cannot race a task that is still stopping.
   const [stopInFlight, setStopInFlight] = useState(false);
@@ -630,13 +636,15 @@ function ChatContent() {
   }, [stopChat, setMessages]);
   const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
   const reload = () => {
+    const conversationId = currentId || latestConversationIdRef.current || null;
     void regenerate({
       body: {
-        id: currentId || latestConversationIdRef.current || null,
+        id: conversationId,
         model: activeModel,
         // Regenerating a turn re-sends its files; without them the backend
-        // would see (and run) a different request.
-        attachments: lastAttachmentsRef.current,
+        // would see (and run) a different request. Another conversation's
+        // files are never sent.
+        attachments: attachmentsForRetry(lastTurnRef.current, conversationId),
       },
     });
   };
@@ -827,7 +835,10 @@ function ChatContent() {
     if (!content) return;
 
     suggestionSubmissionRef.current = null;
-    lastAttachmentsRef.current = attachments;
+    lastTurnRef.current = {
+      conversationId: currentId || latestConversationIdRef.current || null,
+      attachments,
+    };
 
     try {
       await sendMessage(
@@ -888,24 +899,24 @@ function ChatContent() {
   // result, a terminal notice, or the still-running task, which the
   // follower then tracks and which keeps the input busy until it ends.
   const reconcileWithServer = useCallback(
-    async (key: string | null = activeSubmissionKeyRef.current) => {
-      if (!key) return;
-      const task = await taskForKey(key);
-      if (!task) return;
-      if (currentIdRef.current !== task.conversationId) {
+    (key: string | null = activeSubmissionKeyRef.current) =>
+      reconcileSubmission(key, {
+        currentId: () => currentIdRef.current,
+        taskForKey,
+        settle: settlePendingSubmission,
         // A new chat accepted before its conversation id reached this page:
-        // open it; the follower then shows the task's progress or result.
-        switchConversation(task.conversationId);
-        return;
-      }
-      const fresh = await refreshCurrentConversation();
-      if (
-        fresh &&
-        (fresh.activeTask?.id === task.id || fresh.latestTask?.id === task.id)
-      ) {
-        setMessages(fresh.messages);
-      }
-    },
+        // the follower then shows the task's progress or result.
+        open: switchConversation,
+        showSaved: async (taskId) => {
+          const fresh = await refreshCurrentConversation();
+          if (
+            fresh &&
+            (fresh.activeTask?.id === taskId || fresh.latestTask?.id === taskId)
+          ) {
+            setMessages(fresh.messages);
+          }
+        },
+      }),
     [refreshCurrentConversation, setMessages, switchConversation, taskForKey],
   );
   useEffect(() => {
@@ -1043,6 +1054,7 @@ function ChatContent() {
     // No composer receipt, file serialisation, draft reset or draft transfer.
     // The backend alone creates the destination after revalidating the source.
     suggestionSubmissionRef.current = { generation, messageId, pending: true };
+    lastTurnRef.current = null;
     chatRequestGenerationRef.current = generation;
     latestConversationIdRef.current = null;
     setIsSubmittingSuggestion(true);
@@ -1201,6 +1213,9 @@ function ChatContent() {
       // A new chat's pending submission now belongs to this conversation, so
       // a resend from here reuses its key.
       promotePendingSubmission(activeSubmissionKeyRef.current, conversationId);
+    }
+    if (lastTurnRef.current?.conversationId === null) {
+      lastTurnRef.current = { ...lastTurnRef.current, conversationId };
     }
     const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);

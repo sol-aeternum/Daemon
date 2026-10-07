@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  isPrivateTaskRequest,
   shouldUseGeneralRuntimeCache,
 } from '@/lib/pwaCaching';
 
@@ -21,6 +22,21 @@ describe('PWA runtime cache boundaries', () => {
       isPrivateSpeechRequest(new URL('https://backend.fixture/tts-example')),
     ).toBe(false);
   });
+  it('excludes durable task reads on direct backend origins', () => {
+    for (const path of [
+      '/tasks/by-key/k1',
+      '/tasks/0b0c1f9e',
+      '/tasks/0b0c1f9e/events',
+    ]) {
+      const url = new URL(`https://backend.fixture${path}`);
+      expect(isPrivateTaskRequest(url)).toBe(true);
+      expect(shouldUseGeneralRuntimeCache(url, false)).toBe(false);
+    }
+    expect(
+      isPrivateTaskRequest(new URL('https://backend.fixture/tasksheet.png')),
+    ).toBe(false);
+  });
+
   it('classifies same-origin /api/* requests as network-only', () => {
     expect(
       isSameOriginApiRequest(new URL('https://daemon.test/api/chat'), true),
