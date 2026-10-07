@@ -824,3 +824,52 @@ async def test_execution_is_refused_after_a_cancel_or_suspension(env: Env):
         await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4())
     assert refused.value.reason == "cancel_requested"
     assert (await _task(env, accepted.task_id))["attempt_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_suspension_wins_over_a_cancel_at_publication(env: Env):
+    """Review of #466: a cancel must not restore output to a suspended account."""
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    await _suspend(env, env.alice)
+    status = await env.tasks.complete(accepted.task_id, claim.epoch, content="full answer")
+    assert status is TaskStatus.FAILED
+    row = await _task(env, accepted.task_id)
+    assert row["terminal_code"] == "account_suspended"
+    assert (await _message(env, accepted.result_message_id))["content"] != "full answer"
+
+
+@pytest.mark.asyncio
+async def test_suspension_wins_over_a_cancel_when_the_attempt_stops(env: Env):
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    await _suspend(env, env.alice)
+    assert await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch) is TaskStatus.FAILED
+    assert (await _task(env, accepted.task_id))["terminal_code"] == "account_suspended"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_task_that_started_an_action_stays_visible_in_history(env: Env):
+    """Review of #466: cancellation after a material operation must not hide it."""
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    await _execute(env, claim)
+    await env.tasks.begin_operation(
+        accepted.task_id,
+        claim.epoch,
+        tool_name="notification_send",
+        target={"channel": "ntfy"},
+        min_lease_margin_s=1,
+    )
+    await env.tasks.request_cancel(env.alice, accepted.task_id)
+    assert await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch) is TaskStatus.CANCELLED
+    history = await env.memory.get_recent_messages(
+        accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
+    )
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert "notification_send" in history[-1]["content"]

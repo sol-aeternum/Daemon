@@ -248,17 +248,13 @@ class TaskStore:
         metadata: dict[str, Any] = {"terminal_status": _MESSAGE_STATUS[status]}
         if terminal_code:
             metadata["terminal_reason"] = terminal_code
-        if status is TaskStatus.NEEDS_ATTENTION:
+        if status is not TaskStatus.COMPLETED:
             # Tool names only (no targets): later turns are told which action
-            # may already have happened (see uncertain_effect_note).
-            metadata["uncertain_tools"] = [
-                r["tool_name"]
-                for r in await conn.fetch(
-                    "SELECT tool_name FROM task_operations WHERE task_id = $1 "
-                    "GROUP BY tool_name ORDER BY min(started_at)",
-                    row["id"],
-                )
-            ]
+            # may already have happened, whether the task needs attention,
+            # was cancelled or failed after starting it (uncertain_effect_note).
+            started = await self._started_tools(conn, row["id"])
+            if started or status is TaskStatus.NEEDS_ATTENTION:
+                metadata["uncertain_tools"] = started
         await self._memory.update_message(
             row["result_message_id"],
             status=_MESSAGE_STATUS[status],
@@ -279,6 +275,31 @@ class TaskStore:
             """,
             task_id,
         )
+
+    async def _account_suspended(self, conn: Any, user_id: uuid.UUID) -> bool:
+        return bool(
+            await conn.fetchval(
+                "SELECT status = 'suspended' FROM entitlement_accounts WHERE user_id = $1",
+                user_id,
+            )
+        )
+
+    async def _started_tools(self, conn: Any, task_id: uuid.UUID) -> list[str]:
+        """Material tools this task started (names only), oldest first."""
+        return [
+            r["tool_name"]
+            for r in await conn.fetch(
+                "SELECT tool_name FROM task_operations WHERE task_id = $1 "
+                "GROUP BY tool_name ORDER BY min(started_at)",
+                task_id,
+            )
+        ]
+
+    async def _end_suspended(self, conn: Any, row: Any, epoch: int) -> None:
+        await self._end_attempt(
+            conn, row["id"], epoch, "failed_terminal", "account_suspended", row["result_message_id"]
+        )
+        await self._finish(conn, row, TaskStatus.FAILED, "account_suspended")
 
     async def _locked_for_epoch(self, conn: Any, task_id: uuid.UUID, epoch: int) -> Any:
         """Lock the task for this attempt, or return None if it no longer owns it.
@@ -741,10 +762,10 @@ class TaskStore:
                 raise LeaseLost("lease lost")
             if int(row["attempt_count"]) >= int(row["max_attempts"]):
                 raise LeaseLost("no attempts left")  # defensive: the claim checks this
-            if row["cancel_requested_at"] is not None:
-                raise ExecutionRefused("cancel_requested")
             if await conn.fetchval(f"SELECT {_SUSPENDED} FROM tasks WHERE id = $1", task_id):
                 raise ExecutionRefused("account_suspended")
+            if row["cancel_requested_at"] is not None:
+                raise ExecutionRefused("cancel_requested")
             count = await conn.fetchval(
                 "UPDATE tasks SET attempt_count = attempt_count + 1, updated_at = now() "
                 "WHERE id = $1 RETURNING attempt_count",
@@ -821,19 +842,10 @@ class TaskStore:
             row = await self._locked_for_epoch(conn, task_id, epoch)
             if row is None:
                 raise LeaseLost("lease lost")
-            if row["cancel_requested_at"] is None and await conn.fetchval(
-                "SELECT status = 'suspended' FROM entitlement_accounts WHERE user_id = $1",
-                row["user_id"],
-            ):
-                await self._end_attempt(
-                    conn,
-                    task_id,
-                    epoch,
-                    "failed_terminal",
-                    "account_suspended",
-                    row["result_message_id"],
-                )
-                await self._finish(conn, row, TaskStatus.FAILED, "account_suspended")
+            # Suspension wins over a cancel: a suspended account's result is
+            # never published, whatever else was requested.
+            if await self._account_suspended(conn, row["user_id"]):
+                await self._end_suspended(conn, row, epoch)
                 return TaskStatus.FAILED
             status = (
                 TaskStatus.CANCELLED
@@ -842,6 +854,11 @@ class TaskStore:
             )
             metadata = dict(fields.pop("metadata", None) or {})
             metadata["terminal_status"] = _MESSAGE_STATUS[status]
+            if status is TaskStatus.CANCELLED:
+                # Cancelled rows leave history; keep any started action visible.
+                started = await self._started_tools(conn, task_id)
+                if started:
+                    metadata["uncertain_tools"] = started
             await self._memory.update_message(
                 row["result_message_id"],
                 content=content,
@@ -883,6 +900,9 @@ class TaskStore:
             row = await self._locked_for_epoch(conn, task_id, epoch)
             if row is None:
                 raise LeaseLost("lease lost")
+            if await self._account_suspended(conn, row["user_id"]):
+                await self._end_suspended(conn, row, epoch)
+                return TaskStatus.FAILED
             if row["cancel_requested_at"] is not None:
                 await self._end_attempt(
                     conn, task_id, epoch, "cancelled", "cancelled", row["result_message_id"]
@@ -1040,16 +1060,23 @@ class TaskStore:
             for row in rows
         ]
 
-    async def acknowledge_cancel(self, task_id: uuid.UUID, epoch: int) -> None:
-        """The running attempt observed a cancel request and stopped."""
+    async def acknowledge_cancel(self, task_id: uuid.UUID, epoch: int) -> TaskStatus:
+        """The running attempt observed a cancel request and stopped.
+
+        A suspended account ends ``failed`` (``account_suspended``) instead.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await self._locked_for_epoch(conn, task_id, epoch)
             if row is None:
                 raise LeaseLost("lease lost")
+            if await self._account_suspended(conn, row["user_id"]):
+                await self._end_suspended(conn, row, epoch)
+                return TaskStatus.FAILED
             await self._end_attempt(
                 conn, task_id, epoch, "cancelled", "cancelled", row["result_message_id"]
             )
             await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
+            return TaskStatus.CANCELLED
 
     # ------------------------------------------------------------------ #
     # Owner-facing reads and control

@@ -456,12 +456,19 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             elif event in _PASSTHROUGH_FRAMES:
                 await _publish(redis, state, {"t": "frame", "gen": claim.epoch, "frame": frame})
                 if event in {"tool_call", "tool_result"}:
-                    with contextlib.suppress(LeaseLost):
-                        await store.record_event(
-                            claim.task_id, claim.epoch, event, {"name": data.get("name")}
-                        )
+                    await _record_progress(store, state, event, data.get("name"))
             elif event == "error":
                 state.requested_terminal = state.requested_terminal or "error"
+
+
+async def _record_progress(store: TaskStore, state: AttemptState, event: str, name: Any) -> None:
+    """Persist a tool progress event under the fence."""
+    try:
+        await store.record_event(state.claim.task_id, state.claim.epoch, event, {"name": name})
+    except LeaseLost:
+        # Fenced: stop now (the cancel lands at the next await), as the sink
+        # and the effect fence do.
+        _fence_lost(state)
 
 
 def _classify(exc: BaseException) -> tuple[RetryCause, str]:
@@ -482,9 +489,9 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
     if state.fenced:
         return "fenced"
     try:
-        if state.cancel_requested:
-            await store.acknowledge_cancel(claim.task_id, claim.epoch)
-            return TaskStatus.CANCELLED.value
+        # Suspension wins over a cancel (the store rechecks it either way).
+        if state.cancel_requested and not state.account_suspended:
+            return (await store.acknowledge_cancel(claim.task_id, claim.epoch)).value
         if state.account_suspended:
             cause, code = RetryCause.TERMINAL_ERROR, "account_suspended"
         elif state.error is not None:

@@ -131,7 +131,8 @@ async def test_duplicate_delivery_runs_once(env: Env, mock_llm: None):
 async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
     env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(runner, "HEARTBEAT_S", 0.05)
+    # Long enough for a beat to open a pool connection, so the cancel is seen.
+    monkeypatch.setattr(runner, "HEARTBEAT_S", 0.25)
 
     async def stalls_after_three_chunks(**_kwargs: Any):
         # Deterministic: the stream cannot finish before the cancel is seen.
@@ -771,4 +772,20 @@ async def test_a_fenced_write_stops_the_attempt_at_once(env: Env):
     assert state.fenced
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):  # never cancelled would time out instead
+            await state.execution
+
+
+@pytest.mark.asyncio
+async def test_progress_persistence_that_finds_the_lease_gone_stops_the_attempt(env: Env):
+    """Review of #466: a fenced tool-event write cancels execution too."""
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert claim is not None
+    state = runner.AttemptState(claim=claim)
+    state.execution = asyncio.create_task(asyncio.Event().wait())
+    await expire_lease(env, accepted.task_id)
+    await runner._record_progress(env.tasks, state, "tool_call", "web_search")
+    assert state.fenced
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
             await state.execution

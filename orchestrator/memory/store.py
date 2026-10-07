@@ -1111,7 +1111,9 @@ class MemoryStore:
                 WHERE conversation_id = $1
                   AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
                   AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[]))
-                       OR metadata->>'terminal_reason' = $5)
+                       OR metadata->>'terminal_reason' = $5
+                       OR (jsonb_typeof(metadata->'uncertain_tools') = 'array'
+                           AND metadata->'uncertain_tools' <> '[]'::jsonb))
                   AND ($4::uuid IS NULL OR created_at <= (
                         SELECT created_at FROM messages WHERE id = $4 AND conversation_id = $1))
                 ORDER BY created_at DESC, id DESC
@@ -1139,7 +1141,10 @@ class MemoryStore:
             if (
                 exclude_status
                 and d.get("status") in exclude_status
-                and metadata.get("terminal_reason") == UNCERTAIN_EFFECT_REASON
+                and (
+                    metadata.get("terminal_reason") == UNCERTAIN_EFFECT_REASON
+                    or bool(metadata.get("uncertain_tools"))
+                )
             ):
                 # Kept so the request does not look unanswered, but never as
                 # a partial answer: an explicit marker of the possible effect.
