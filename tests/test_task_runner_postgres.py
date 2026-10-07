@@ -586,3 +586,82 @@ async def test_many_later_turns_do_not_evict_the_accepted_context(
     contents = [m.get("content") for m in seen[0] if m.get("role") != "system"]
     assert contents[-1] == "the accepted question"
     assert not any("later turn" in str(content) for content in contents)
+
+
+def _refuse_admission(
+    monkeypatch: pytest.MonkeyPatch, env: Env, *, refusals: int, reserve_first: bool = False
+) -> None:
+    """The account refuses the first ``refusals`` provider calls with
+    ``concurrency_exceeded``, as a free plan's single slot does while another
+    chat runs. ``reserve_first`` grants a hold in the attempt's scope first."""
+    from orchestrator.compute_runtime import current_scope
+    from orchestrator.entitlements.service import EntitlementService
+
+    calls = 0
+
+    async def completion(**_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        if calls <= refusals:
+            if reserve_first:
+                await EntitlementService(env.pool).reserve(
+                    env.alice, 1000, operation="chat", scope_id=current_scope().scope_id
+                )
+            raise ComputeUnavailable("concurrency_exceeded", "refused")
+        for chunk in CHUNKS:
+            yield {"type": "content_delta", "content": chunk}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", completion)
+
+
+async def _attempts(env: Env, task_id: uuid.UUID) -> tuple[int, list[str]]:
+    count = await env.pool.fetchval("SELECT attempt_count FROM tasks WHERE id = $1", task_id)
+    rows = await env.pool.fetch(
+        "SELECT outcome FROM task_attempts WHERE task_id = $1 ORDER BY epoch", task_id
+    )
+    return count, [row["outcome"] for row in rows]
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_an_account_slot_consumes_no_attempts(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """Review of #466: a one-slot account's second chat waits for the slot
+    instead of exhausting its attempts while the first chat runs."""
+    _refuse_admission(monkeypatch, env, refusals=3)
+    accepted = await accept_task(env)
+    for _ in range(3):  # more refusals than max_attempts allows
+        assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+            "queued"
+        )
+        row = await env.pool.fetchrow(
+            "SELECT next_wakeup_at > now() AS later, terminal_code FROM tasks WHERE id = $1",
+            accepted.task_id,
+        )
+        assert row["later"] and row["terminal_code"] is None
+        await env.pool.execute(
+            "UPDATE tasks SET next_wakeup_at = now() WHERE id = $1", accepted.task_id
+        )
+    assert await _attempts(env, accepted.task_id) == (0, ["deferred"] * 3)
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
+        "completed"
+    )
+    assert await _attempts(env, accepted.task_id) == (1, ["deferred"] * 3 + ["completed"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["reservation_granted", "waited_too_long"])
+async def test_admission_refusal_counts_once_work_began_or_the_wait_is_over(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, why: str
+):
+    _refuse_admission(monkeypatch, env, refusals=1, reserve_first=why == "reservation_granted")
+    accepted = await accept_task(env)
+    if why == "waited_too_long":
+        await env.pool.execute(
+            "UPDATE tasks SET created_at = now() - make_interval(secs => $2) WHERE id = $1",
+            accepted.task_id,
+            runner.ADMISSION_WAIT_S + 1,
+        )
+    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "queued"
+    assert await _attempts(env, accepted.task_id) == (1, ["failed_retryable"])

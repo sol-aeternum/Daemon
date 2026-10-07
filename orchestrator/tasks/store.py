@@ -33,6 +33,9 @@ _SUSPENDED = (
     "EXISTS (SELECT 1 FROM entitlement_accounts a "
     "WHERE a.user_id = tasks.user_id AND a.status = 'suspended')"
 )
+#: The attempt's lease is still current. An expired lease is never renewed
+#: or written through, whether or not another worker has taken it over yet.
+_LEASE_HELD = "tasks.lease_expires_at > clock_timestamp()"
 
 IDEMPOTENCY_INDEX = "uq_tasks_user_idempotency"
 CONVERSATION_ACTIVE_INDEX = "uq_tasks_conversation_active"
@@ -258,9 +261,12 @@ class TaskStore:
         )
 
     async def _locked_for_epoch(self, conn: Any, task_id: uuid.UUID, epoch: int) -> Any:
+        # The epoch alone is not ownership: a worker paused past its lease must
+        # not write even if no takeover has happened yet. clock_timestamp(), not
+        # the transaction's now(), so time spent waiting for the lock counts.
         return await conn.fetchrow(
             "SELECT * FROM tasks WHERE id = $1 AND lease_epoch = $2 AND status = 'running' "
-            "FOR UPDATE",
+            f"AND {_LEASE_HELD} FOR UPDATE",
             task_id,
             epoch,
         )
@@ -589,7 +595,7 @@ class TaskStore:
                 f"""
                 UPDATE tasks SET lease_expires_at = now() + make_interval(secs => $3),
                                  updated_at = now()
-                WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
+                WHERE id = $1 AND lease_epoch = $2 AND status = 'running' AND {_LEASE_HELD}
                 RETURNING cancel_requested_at, {_SUSPENDED} AS account_suspended
                 """,
                 task_id,
@@ -644,7 +650,8 @@ class TaskStore:
                 f"""
                 SELECT id, cancel_requested_at, {_SUSPENDED} AS account_suspended,
                        lease_expires_at > now() + make_interval(secs => $3) AS lease_margin_ok
-                FROM tasks WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
+                FROM tasks
+                WHERE id = $1 AND lease_epoch = $2 AND status = 'running' AND {_LEASE_HELD}
                 FOR UPDATE
                 """,
                 task_id,
@@ -895,6 +902,62 @@ class TaskStore:
                 delay_s,
             )
             await self._append_event(conn, task_id, "attempt_deferred", {"epoch": epoch})
+
+    async def defer_execution(
+        self, task_id: uuid.UUID, epoch: int, *, delay_s: float, reason: str, max_wait_s: float
+    ) -> bool:
+        """Re-queue an attempt the account refused admission, returning its attempt.
+
+        A concurrency or rate refusal of the attempt's first reservation means
+        no provider work started: the attempt is ended ``deferred``, its count
+        is given back and the task waits for the slot instead of exhausting
+        ``max_attempts``. Returns False, changing nothing, if any reservation
+        was granted in the attempt's compute scope, a material operation was
+        recorded, or the task has already waited ``max_wait_s`` since
+        acceptance; the caller then applies the ordinary retry rules.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await self._locked_for_epoch(conn, task_id, epoch)
+            if row is None:
+                raise LeaseLost("lease lost")
+            check = await conn.fetchrow(
+                """
+                SELECT t.created_at > now() - make_interval(secs => $3)
+                       AND NOT EXISTS (
+                           SELECT 1 FROM task_operations o WHERE o.task_id = $1 AND o.epoch = $2)
+                       AND NOT EXISTS (
+                           SELECT 1 FROM entitlement_reservations r
+                           WHERE r.scope_id = a.compute_scope_id) AS admissible,
+                       a.execution_started_at IS NOT NULL AS counted
+                FROM tasks t JOIN task_attempts a ON a.task_id = t.id AND a.epoch = $2
+                WHERE t.id = $1
+                """,
+                task_id,
+                epoch,
+                max_wait_s,
+            )
+            if check is None or not check["admissible"]:
+                return False
+            await self._end_attempt(
+                conn, task_id, epoch, "deferred", reason, row["result_message_id"]
+            )
+            await conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                    attempt_count = attempt_count - $3::int,
+                    next_wakeup_at = now() + make_interval(secs => $2),
+                    last_wake_at = NULL, updated_at = now()
+                WHERE id = $1
+                """,
+                task_id,
+                delay_s,
+                1 if check["counted"] else 0,
+            )
+            await self._append_event(
+                conn, task_id, "attempt_deferred", {"epoch": epoch, "code": reason}
+            )
+            return True
 
     async def operations(self, user_id: uuid.UUID, task_id: uuid.UUID) -> list[dict[str, Any]]:
         """Owner-scoped evidence of material operations, for deciding on a retry.

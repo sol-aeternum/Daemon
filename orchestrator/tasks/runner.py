@@ -39,6 +39,12 @@ HEARTBEAT_S = 10.0
 LEASE_SAFETY_S = 5.0
 #: Delay before retrying a claim whose admission precondition failed.
 DEFER_S = 15.0
+#: Account admission refusals that clear on their own (a busy slot, a full
+#: rate window). Refused before any provider work, they defer the task
+#: without consuming an attempt.
+ADMISSION_CODES = frozenset({"concurrency_exceeded", "rate_limited"})
+#: How long after acceptance a task may keep waiting for admission.
+ADMISSION_WAIT_S = 900.0
 #: Upper bound for one whole attempt (all tool rounds), enforced by arq.
 ATTEMPT_TIMEOUT_S = 600
 #: Budget-period refusals: terminal in slice 1 (DEC09 pause arrives in slice 4).
@@ -429,6 +435,14 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
             cause, code = RetryCause.TERMINAL_ERROR, "account_suspended"
         elif state.error is not None:
             cause, code = _classify(state.error)
+            if code in ADMISSION_CODES and await store.defer_execution(
+                claim.task_id,
+                claim.epoch,
+                delay_s=DEFER_S,
+                reason=code,
+                max_wait_s=ADMISSION_WAIT_S,
+            ):
+                return TaskStatus.QUEUED.value
         else:
             # The engine ended without publishing a result (an internal error
             # it reported in-stream, or an unexpected early stop).

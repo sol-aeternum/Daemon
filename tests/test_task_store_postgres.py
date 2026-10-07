@@ -274,6 +274,38 @@ async def test_stale_worker_is_fenced_out_of_every_write(env: Env):
 
 
 @pytest.mark.asyncio
+async def test_expired_lease_is_fenced_before_any_takeover(env: Env):
+    """Review of #466: a worker paused past its lease must not write or renew it,
+    even while no other worker has claimed the task yet."""
+    accepted = await _accept(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
+    assert claim is not None
+    await _expire_lease(env, accepted.task_id)
+    expired_at = (await _task(env, accepted.task_id))["lease_expires_at"]
+
+    with pytest.raises(LeaseLost):
+        await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    with pytest.raises(LeaseLost):
+        await env.tasks.write_partial(accepted.task_id, claim.epoch, content="late", delta_seq=1)
+    with pytest.raises(LeaseLost):
+        await env.tasks.begin_operation(
+            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=0
+        )
+    with pytest.raises(LeaseLost):
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="late final")
+    with pytest.raises(LeaseLost):
+        await env.tasks.fail_attempt(
+            accepted.task_id, claim.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="x"
+        )
+
+    row = await _task(env, accepted.task_id)
+    assert row["status"] == "running" and row["lease_expires_at"] == expired_at  # not revived
+    assert await env.pool.fetchval("SELECT count(*) FROM task_operations") == 0
+    takeover = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert takeover is not None and takeover.epoch == claim.epoch + 1
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_extends_lease_and_reports_cancel(env: Env):
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=5)
