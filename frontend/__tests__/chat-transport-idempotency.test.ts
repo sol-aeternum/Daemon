@@ -319,3 +319,24 @@ it("lists a conversation's unresolved submissions with known tasks", async () =>
   recordSubmissionTask(other, 'task-b');
   expect(pendingTasksIn('conv-a')).toEqual([{ key: a, taskId: 'task-a' }]);
 });
+
+it('reports the conversation the request was queued in with its key', async () => {
+  const reported: Array<[string | null, string | null]> = [];
+  await chatTransportFetch(
+    '/api/chat',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: [{ role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      }),
+    },
+    {
+      model: 'auto',
+      conversationId: 'conv-queued',
+      onGeneration: vi.fn(),
+      onSubmissionKey: (key, conversationId) =>
+        reported.push([key, conversationId]),
+    },
+  );
+  expect(reported[0][1]).toBe('conv-queued');
+});

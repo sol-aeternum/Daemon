@@ -229,6 +229,17 @@ describe('a durable task reopened on another device', () => {
     );
   });
 
+  it('waits for the pending confirmation when Stop is pressed again', async () => {
+    // Review of #467: a repeated press must not count as a stop of its own.
+    state.cancelTask.mockResolvedValue('cancelling');
+    render(<ChatPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(state.cancelTask).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await act(async () => {});
+    expect(state.cancelTask).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps only the stopping conversation busy', async () => {
     state.cancelTask.mockResolvedValue('cancelling');
     const view = render(<ChatPage />);

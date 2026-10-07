@@ -50,3 +50,24 @@ export function shouldUseGeneralRuntimeCache(
     !isWebSnapshotRequest(url, appOrigin)
   );
 }
+
+/**
+ * Remove task responses an earlier service worker may have cached in the
+ * general runtime cache (before /tasks was network-only). Other entries and
+ * caches are left alone; nothing is created.
+ */
+export async function clearCachedTaskEntries(
+  storage: CacheStorage,
+  configured = configuredSnapshotApiBase(),
+): Promise<void> {
+  if (!(await storage.keys()).includes('others')) return;
+  const cache = await storage.open('others');
+  const requests = await cache.keys();
+  await Promise.all(
+    requests
+      .filter((request) =>
+        isPrivateTaskRequest(new URL(request.url), configured),
+      )
+      .map((request) => cache.delete(request)),
+  );
+}

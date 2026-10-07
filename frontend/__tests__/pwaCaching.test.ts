@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  clearCachedTaskEntries,
   isPrivateTaskRequest,
   shouldUseGeneralRuntimeCache,
 } from '@/lib/pwaCaching';
@@ -100,5 +101,25 @@ describe('PWA runtime cache boundaries', () => {
         false,
       ),
     ).toBe(true);
+  });
+});
+
+describe('service worker upgrade', () => {
+  it('purges task responses an earlier worker cached, and nothing else', async () => {
+    const entries = new Map<string, true>([
+      ['https://backend.fixture/tasks/abc', true],
+      ['https://backend.fixture/tasks/by-key/k1', true],
+      ['https://daemon.test/icons/icon.png', true],
+    ]);
+    const cache = {
+      keys: async () => [...entries.keys()].map((url) => new Request(url)),
+      delete: async (request: Request) => entries.delete(request.url),
+    };
+    const storage = {
+      keys: async () => ['others'],
+      open: async () => cache,
+    } as unknown as CacheStorage;
+    await clearCachedTaskEntries(storage, 'https://backend.fixture');
+    expect([...entries.keys()]).toEqual(['https://daemon.test/icons/icon.png']);
   });
 });

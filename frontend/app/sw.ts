@@ -15,6 +15,7 @@ import {
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  clearCachedTaskEntries,
   isPrivateTaskRequest,
   shouldUseGeneralRuntimeCache,
 } from '../lib/pwaCaching';
@@ -116,6 +117,7 @@ self.addEventListener('activate', (event) => {
     Promise.all([
       ...legacyApiCacheNames.map((cacheName) => caches.delete(cacheName)),
       clearLegacySnapshotEntries(caches, self.location.origin),
+      clearCachedTaskEntries(caches),
     ]),
   );
 });

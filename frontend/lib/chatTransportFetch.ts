@@ -30,8 +30,15 @@ export async function chatTransportFetch(
     model: string;
     conversationId: string | null;
     onGeneration: (generation: number) => void;
-    /** Receives the idempotency key this request is sent with (none for suggestions). */
-    onSubmissionKey?: (key: string | null) => void;
+    /**
+     * Receives the idempotency key this request is sent with (none for
+     * suggestions) and the conversation it was queued in, as captured here,
+     * whatever the route has become since.
+     */
+    onSubmissionKey?: (
+      key: string | null,
+      conversationId: string | null,
+    ) => void;
   },
 ): Promise<Response> {
   const body: Record<string, unknown> =
@@ -65,7 +72,7 @@ export async function chatTransportFetch(
     // Suggestion acceptance is request-bound and never deduplicated by key:
     // record no pending submission that the request would not carry.
     delete body.idempotency_key;
-    scope.onSubmissionKey?.(null);
+    scope.onSubmissionKey?.(null, null);
     return send(requestInput, init, isolateSuggestionBody(body));
   }
   // One key per submission, kept until its outcome is known, so a retry
@@ -91,7 +98,7 @@ export async function chatTransportFetch(
     if (pending.provider == null) delete body.provider;
     else body.provider = pending.provider;
   }
-  scope.onSubmissionKey?.(body.idempotency_key as string);
+  scope.onSubmissionKey?.(body.idempotency_key as string, scope.conversationId);
   return send(requestInput, init, body);
 }
 

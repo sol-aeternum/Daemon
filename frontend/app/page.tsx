@@ -457,6 +457,11 @@ function ChatContent() {
     undefined,
   );
   const stopSeqRef = useRef(0);
+  // The Stop still being confirmed, so a repeated press can wait for it.
+  const pendingStopRef = useRef<{
+    scope: string | null;
+    outcome: Promise<StopOutcome>;
+  } | null>(null);
   const stopInFlight =
     stoppingIn !== undefined && stoppingIn === (currentId ?? null);
   // The conversation the in-flight submission belongs to (``null``: an
@@ -549,10 +554,11 @@ function ChatContent() {
             onGeneration: (generation) => {
               chatRequestGenerationRef.current = generation;
             },
-            onSubmissionKey: (key) => {
+            onSubmissionKey: (key, conversationId) => {
               activeSubmissionKeyRef.current = key;
-              activeSubmissionScopeRef.current =
-                currentIdRef.current || latestConversationIdRef.current || null;
+              // The conversation the request was queued in, not the route
+              // now: the user may have navigated while the key was made.
+              activeSubmissionScopeRef.current = conversationId;
             },
           }),
       }),
@@ -575,12 +581,9 @@ function ChatContent() {
     messages:
       currentConversation?.id === currentId ? currentConversation.messages : [],
     onFinish: ({ message, isAbort, isDisconnect, isError }) => {
-      if (
-        chatRequestGenerationRef.current !== null &&
-        chatRequestGenerationRef.current !== getAuthGeneration()
-      )
-        return;
-      setConnectionStatus('connected');
+      // Durable bookkeeping first, even after another tab's token refresh
+      // bumped the generation: keys belong to an account and are cleared on
+      // a real account change, so settling or recording here is always safe.
       // The submission is settled once its outcome is known: a clean
       // finish, or a durable task that reported a terminal state (including
       // a failure, which arrives as a stream error). After an abort,
@@ -599,6 +602,12 @@ function ChatContent() {
         if (taskId)
           recordSubmissionTask(activeSubmissionKeyRef.current, taskId);
       }
+      if (
+        chatRequestGenerationRef.current !== null &&
+        chatRequestGenerationRef.current !== getAuthGeneration()
+      )
+        return;
+      setConnectionStatus('connected');
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
         setThoughtFallbackByMessageId((prev) => ({
@@ -612,6 +621,11 @@ function ChatContent() {
       thinkingDurationRef.current = 0;
     },
     onError: (err) => {
+      // The stream dropped, but server-owned work may still be running or
+      // already finished: show the server's version of this turn. A turn the
+      // server never accepted stays as typed, so it can be resent. This runs
+      // even after another tab's token refresh (lookups are account-scoped).
+      void reconcileWithServerRef.current?.();
       if (
         chatRequestGenerationRef.current !== null &&
         chatRequestGenerationRef.current !== getAuthGeneration()
@@ -619,10 +633,6 @@ function ChatContent() {
         return;
       showError(err.message || 'Chat error occurred');
       setConnectionStatus('disconnected');
-      // The stream dropped, but server-owned work may still be running or
-      // already finished: show the server's version of this turn. A turn the
-      // server never accepted stays as typed, so it can be resent.
-      void reconcileWithServerRef.current?.();
     },
   });
 
@@ -1031,6 +1041,11 @@ function ChatContent() {
       currentIdRef.current || latestConversationIdRef.current || null;
     // Only this conversation's submission: a pending one from elsewhere
     // must keep its key whatever happens to the task stopped here.
+    // A second press while this conversation's Stop is still being
+    // confirmed waits for the same answer; it never counts as a stop of its
+    // own (the stream is already aborted, so it would look request-bound).
+    const pending = pendingStopRef.current;
+    if (pending && pending.scope === scope) return pending.outcome;
     const key =
       activeSubmissionScopeRef.current === scope
         ? activeSubmissionKeyRef.current
@@ -1039,12 +1054,17 @@ function ChatContent() {
     if (!confirmation) return;
     const seq = ++stopSeqRef.current;
     setStoppingIn(scope);
-    return confirmation.then((outcome) => {
-      if (outcome !== 'unconfirmed' && key) settlePendingSubmission(key);
+    const outcome = confirmation.then((result) => {
+      if (result !== 'unconfirmed' && key) settlePendingSubmission(key);
       if (seq === stopSeqRef.current) setStoppingIn(undefined);
+      if (pendingStopRef.current?.outcome === outcome) {
+        pendingStopRef.current = null;
+      }
       void reconcileWithServer(key);
-      return outcome;
+      return result;
     });
+    pendingStopRef.current = { scope, outcome };
+    return outcome;
   }, [cancelActiveTask, reconcileWithServer]);
   const handleStopResolved = useCallback(
     (outcome: StopOutcome) => {
