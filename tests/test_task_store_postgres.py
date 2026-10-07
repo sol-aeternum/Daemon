@@ -94,6 +94,12 @@ async def test_acceptance_records_turn_and_task_atomically(env: Env):
         accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
     )
     assert [m["role"] for m in history] == ["user"]
+    # Both rows come from one transaction; the answer still sorts after its prompt.
+    ordered = await env.pool.fetch(
+        "SELECT id FROM messages WHERE conversation_id = $1 ORDER BY created_at",
+        accepted.conversation_id,
+    )
+    assert [r["id"] for r in ordered] == [accepted.user_message_id, accepted.result_message_id]
     events = await env.tasks.events_since(env.alice, accepted.task_id, after_seq=0)
     assert [e.kind for e in events] == ["accepted"]
 

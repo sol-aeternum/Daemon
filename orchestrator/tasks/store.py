@@ -334,10 +334,19 @@ class TaskStore:
                 )
                 # Both rows default to the transaction's now(); give the
                 # placeholder a strictly later timestamp so history ordering
-                # never ties the answer with its question.
+                # never ties the answer with its question (even within one
+                # clock tick).
                 await conn.execute(
-                    "UPDATE messages SET created_at = clock_timestamp() WHERE id = $1",
+                    """
+                    UPDATE messages
+                    SET created_at = GREATEST(
+                        clock_timestamp(),
+                        (SELECT created_at FROM messages WHERE id = $2)
+                            + interval '1 microsecond')
+                    WHERE id = $1
+                    """,
                     result_row["id"],
+                    user_row["id"],
                 )
                 task_id = await conn.fetchval(
                     """
