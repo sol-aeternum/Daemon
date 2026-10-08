@@ -54,10 +54,12 @@ cleanup() {
   if [[ $KEEP -eq 0 ]]; then
     compose down -v --remove-orphans >/dev/null 2>&1 || true
   fi
+  for dir in "${CREATED_DIRS[@]}"; do rmdir "$dir" 2>/dev/null || true; done
   rm -rf "$WORK"
   echo "drill log: $LOG"
   exit $status
 }
+CREATED_DIRS=()
 trap cleanup EXIT
 
 python3 - "$ENV_FILE" <<'PY'
@@ -83,9 +85,27 @@ with open(path, "w") as handle:
 os.chmod(path, 0o600)
 PY
 
+# Mount points for the project volumes below: created here, owned by you,
+# so Docker does not create them as root inside the checkout.
+for dir in data .daemon; do
+  if [[ ! -e "$ROOT/$dir" ]]; then mkdir -p "$ROOT/$dir"; CREATED_DIRS+=("$ROOT/$dir"); fi
+done
+
+# The containers bind-mount this checkout and run as root. Runtime state
+# (data/, .daemon/) goes to project volumes and no bytecode is written, so
+# nothing root-owned is left in the checkout (it would break local tests).
 cat >"$OVERRIDE" <<YAML
+x-drill-state: &drill-state
+  volumes:
+    - drill_data:/app/data
+    - drill_daemon:/app/.daemon
+  environment:
+    - PYTHONDONTWRITEBYTECODE=1
 services:
+  migrate:
+    <<: *drill-state
   backend:
+    <<: *drill-state
     ports: !override
       - "127.0.0.1:$PORT:8000"
     depends_on: !override
@@ -93,10 +113,15 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+  worker:
+    <<: *drill-state
   postgres:
     ports: !reset []
   redis:
     ports: !reset []
+volumes:
+  drill_data:
+  drill_daemon:
 YAML
 
 http() { # method path [json] -> body on stdout, status in $HTTP_STATUS
@@ -268,4 +293,7 @@ wait "$OBSERVER" || true
 grep -q '"status": *"completed"' "$WORK/observe-C" || fail "C: observer did not see completion"
 log "C: PASS (reattached observer saw the task complete)"
 
+LEFT=$(find "$ROOT" -path "$ROOT/.venv" -prune -o -path "$ROOT/frontend/node_modules" -prune \
+  -o -not -user "$(id -u)" -print 2>/dev/null | head -3)
+[[ -z "$LEFT" ]] || fail "files not owned by you were left in the checkout: $LEFT"
 log "ALL PASS"
