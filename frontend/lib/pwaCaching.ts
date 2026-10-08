@@ -37,6 +37,30 @@ export function isPrivateTaskRequest(
   }
 }
 
+/**
+ * Every request to the configured backend is private (#474): authenticated
+ * reads such as conversations, memories and tasks must never be stored by
+ * the service worker, and routes added later are covered without a list.
+ * The backend is the configured API base's origin, limited to its path
+ * prefix when it has one. A base on the app's own origin without a prefix
+ * cannot be told apart from the app shell, so the path rules apply there.
+ */
+export function isBackendApiRequest(
+  url: URL,
+  appOrigin: string,
+  configured = configuredSnapshotApiBase(),
+): boolean {
+  try {
+    const base = new URL(configured);
+    if (url.origin !== base.origin) return false;
+    const prefix = base.pathname.replace(/\/+$/, '');
+    if (prefix === '') return base.origin !== appOrigin;
+    return url.pathname === prefix || url.pathname.startsWith(`${prefix}/`);
+  } catch {
+    return false;
+  }
+}
+
 export function shouldUseGeneralRuntimeCache(
   url: URL,
   sameOrigin: boolean,
@@ -47,17 +71,20 @@ export function shouldUseGeneralRuntimeCache(
     !/^\/home-suggestions(?:\/|$)/.test(url.pathname) &&
     !isPrivateSpeechRequest(url) &&
     !isPrivateTaskRequest(url) &&
+    !isBackendApiRequest(url, appOrigin) &&
     !isWebSnapshotRequest(url, appOrigin)
   );
 }
 
 /**
- * Remove task responses an earlier service worker may have cached in the
- * general runtime cache (before /tasks was network-only). Other entries and
- * caches are left alone; nothing is created.
+ * Remove private responses an earlier service worker may have cached in the
+ * general runtime cache: task reads and anything from the backend (before
+ * they were network-only). Other entries and caches are left alone; nothing
+ * is created.
  */
-export async function clearCachedTaskEntries(
+export async function clearCachedPrivateEntries(
   storage: CacheStorage,
+  appOrigin: string,
   configured = configuredSnapshotApiBase(),
 ): Promise<void> {
   if (!(await storage.keys()).includes('others')) return;
@@ -65,9 +92,13 @@ export async function clearCachedTaskEntries(
   const requests = await cache.keys();
   await Promise.all(
     requests
-      .filter((request) =>
-        isPrivateTaskRequest(new URL(request.url), configured),
-      )
+      .filter((request) => {
+        const url = new URL(request.url);
+        return (
+          isPrivateTaskRequest(url, configured) ||
+          isBackendApiRequest(url, appOrigin, configured)
+        );
+      })
       .map((request) => cache.delete(request)),
   );
 }

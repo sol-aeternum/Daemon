@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
-  clearCachedTaskEntries,
+  clearCachedPrivateEntries,
+  isBackendApiRequest,
   isPrivateTaskRequest,
   shouldUseGeneralRuntimeCache,
 } from '@/lib/pwaCaching';
@@ -119,7 +120,65 @@ describe('service worker upgrade', () => {
       keys: async () => ['others'],
       open: async () => cache,
     } as unknown as CacheStorage;
-    await clearCachedTaskEntries(storage, 'https://backend.fixture');
+    await clearCachedPrivateEntries(
+      storage,
+      'https://daemon.test',
+      'https://other-backend.fixture',
+    );
+    expect([...entries.keys()]).toEqual(['https://daemon.test/icons/icon.png']);
+  });
+});
+
+describe('backend origin (#474)', () => {
+  const app = 'https://daemon.test';
+
+  it('never caches anything from a dedicated backend origin', () => {
+    const base = 'https://api.daemon.test';
+    for (const path of [
+      '/conversations',
+      '/conversations/abc',
+      '/memories',
+      '/x',
+    ]) {
+      const url = new URL(`${base}${path}`);
+      expect(isBackendApiRequest(url, app, base)).toBe(true);
+    }
+    expect(
+      isBackendApiRequest(new URL('https://cdn.daemon.test/x.png'), app, base),
+    ).toBe(false);
+  });
+
+  it('limits a path-prefixed base to its prefix', () => {
+    const base = 'https://daemon.test/daemon/';
+    expect(
+      isBackendApiRequest(new URL(`${app}/daemon/conversations/1`), app, base),
+    ).toBe(true);
+    expect(isBackendApiRequest(new URL(`${app}/daemon`), app, base)).toBe(true);
+    expect(isBackendApiRequest(new URL(`${app}/daemonic`), app, base)).toBe(
+      false,
+    );
+    expect(isBackendApiRequest(new URL(`${app}/chat`), app, base)).toBe(false);
+  });
+
+  it('never treats the app shell as the backend', () => {
+    expect(isBackendApiRequest(new URL(`${app}/chat`), app, app)).toBe(false);
+  });
+
+  it('purges backend responses an earlier worker cached, and nothing else', async () => {
+    const entries = new Map<string, true>([
+      ['https://api.daemon.test/conversations/abc', true],
+      ['https://api.daemon.test/memories', true],
+      ['https://daemon.test/icons/icon.png', true],
+    ]);
+    const cache = {
+      keys: async () => [...entries.keys()].map((url) => new Request(url)),
+      delete: async (request: Request) => entries.delete(request.url),
+    };
+    const storage = {
+      keys: async () => ['others'],
+      open: async () => cache,
+    } as unknown as CacheStorage;
+    await clearCachedPrivateEntries(storage, app, 'https://api.daemon.test');
     expect([...entries.keys()]).toEqual(['https://daemon.test/icons/icon.png']);
   });
 });
