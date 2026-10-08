@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useChatDraft } from '../hooks/useChatDraft';
 import * as auth from '../lib/auth';
 import {
+  acceptSubmission,
   getChatDraft,
   heldSubmission,
   heldSubmissionComplete,
@@ -173,6 +174,71 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     expect(latestHeldSubmission('conv-new')?.key).toBe('key-1');
     releaseSubmission('key-1');
     expect(heldSubmission('key-1')).toBeUndefined();
+  });
+
+  it('empty the composer still holding them once the server has the task', () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    const file = new File(['bytes'], 'notes.txt', { type: 'text/plain' });
+    const attachments = [{ id: 'att-1', file }];
+    act(() => {
+      result.current.setInput('Summarise the notes');
+      result.current.setPendingAttachments(attachments);
+    });
+    // Sent, and the stream is still running: the composer has not been
+    // cleared yet when the task is accepted.
+    act(() =>
+      result.current.holdSubmission(
+        'key-1',
+        'Summarise the notes',
+        attachments,
+      ),
+    );
+    act(() => acceptSubmission('key-1'));
+    expect(heldSubmission('key-1')).toBeUndefined();
+    expect(result.current.input).toBe('');
+    expect(result.current.pendingAttachments).toEqual([]);
+  });
+
+  it('keep a composer edited since, when the server has the task', () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => result.current.setInput('Summarise the notes'));
+    act(() =>
+      result.current.holdSubmission('key-1', 'Summarise the notes', []),
+    );
+    act(() => result.current.setInput('Summarise the notes, briefly'));
+    act(() => acceptSubmission('key-1'));
+    expect(heldSubmission('key-1')).toBeUndefined();
+    expect(result.current.input).toBe('Summarise the notes, briefly');
+  });
+
+  it('empty a composer a reload restored with them once the task is found', async () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    const file = new File(['bytes'], 'notes.txt', { type: 'text/plain' });
+    const attachments = [{ id: 'att-1', file }];
+    act(() => {
+      result.current.setInput('Summarise the notes');
+      result.current.setPendingAttachments(attachments);
+    });
+    act(() =>
+      result.current.holdSubmission(
+        'key-1',
+        'Summarise the notes',
+        attachments,
+      ),
+    );
+    await flush();
+    cleanup();
+    // Reloaded before the stream named its task: the draft comes back as
+    // ordinary composer text, then reconciliation finds the running task.
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    await waitFor(() =>
+      expect(getChatDraft('conv-a').pendingAttachments).toHaveLength(1),
+    );
+    expect(getChatDraft('conv-a').input).toBe('Summarise the notes');
+    act(() => acceptSubmission('key-1'));
+    expect(getChatDraft('conv-a').input).toBe('');
+    expect(getChatDraft('conv-a').pendingAttachments).toEqual([]);
   });
 
   it('are discarded with drafts when the sign-in changes', () => {

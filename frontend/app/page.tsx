@@ -18,6 +18,7 @@ import {
   unresolvedSubmissions,
 } from '../lib/pendingSubmission';
 import {
+  acceptSubmission,
   heldSubmission,
   heldSubmissionComplete,
   heldSubmissionsReady,
@@ -657,7 +658,7 @@ function ChatContent() {
           (taskStatusSeen !== null &&
             TERMINAL_TASK_STATUSES.has(taskStatusSeen)));
       if (outcomeKnown && activeSubmissionKeyRef.current) {
-        settleSubmission(activeSubmissionKeyRef.current);
+        finishSubmission(activeSubmissionKeyRef.current);
       } else if (activeSubmissionKeyRef.current) {
         // Unresolved: remember its task, so the key is settled when any
         // later view of the conversation shows that task finished.
@@ -759,7 +760,7 @@ function ChatContent() {
     for (const key of finishedSubmissionKeys(currentConversation, (status) =>
       TERMINAL_TASK_STATUSES.has(status),
     )) {
-      settleSubmission(key);
+      finishSubmission(key);
     }
     // A task a newer one has superseded is no longer the conversation's
     // latest: ask the server about it directly (a few per view).
@@ -774,7 +775,7 @@ function ChatContent() {
       .slice(0, 5)) {
       void taskStatus(taskId).then((status) => {
         if (status && TERMINAL_TASK_STATUSES.has(status)) {
-          settleSubmission(key);
+          finishSubmission(key);
         }
       });
     }
@@ -1090,7 +1091,7 @@ function ChatContent() {
       reconcileSubmission(key, {
         currentId: () => currentIdRef.current,
         taskForKey,
-        settle: settleSubmission,
+        settle: finishSubmission,
         record: recordSubmission,
         // Never accepted: the held draft goes back in the composer, so
         // sending it again reuses its key (safe even if it lands late).
@@ -1187,7 +1188,7 @@ function ChatContent() {
             settlePendingSubmission(key);
           }
         } else if (TERMINAL_TASK_STATUSES.has(task.status)) {
-          settleSubmission(key);
+          finishSubmission(key);
         } else {
           promoteSubmission(key, task.conversationId);
           recordSubmission(key, task.id);
@@ -1219,7 +1220,7 @@ function ChatContent() {
     const seq = ++stopSeqRef.current;
     setStoppingIn(scope);
     const outcome = confirmation.then((result) => {
-      if (result !== 'unconfirmed' && key) settleSubmission(key);
+      if (result !== 'unconfirmed' && key) finishSubmission(key);
       if (seq === stopSeqRef.current) setStoppingIn(undefined);
       if (pendingStopRef.current?.outcome === outcome) {
         pendingStopRef.current = null;
@@ -2226,19 +2227,32 @@ function AudioPlaybackScopedProvider({
 /** Unresolved submissions younger than this are left to the tab sending them. */
 const UNRESOLVED_MIN_AGE_MS = 60_000;
 
-/** A submission's outcome is known: forget its key and its held draft. */
+/**
+ * A submission was refused or cannot be resent: forget its key and its held
+ * draft. Whatever the composer shows (perhaps that draft, put back) stays.
+ */
 function settleSubmission(key: string): void {
   settlePendingSubmission(key);
   releaseSubmission(key);
 }
 
 /**
- * The server has the submission's task: its held draft is no longer needed
- * for a resend, while the key stays pending until the task ends.
+ * The server ran the submission (its task ended, or a request-bound turn
+ * finished): forget its key, and the draft that still holds it.
+ */
+function finishSubmission(key: string): void {
+  settlePendingSubmission(key);
+  acceptSubmission(key);
+}
+
+/**
+ * The server has the submission's task: its held draft (and the composer
+ * text, if unchanged) is no longer needed for a resend, while the key stays
+ * pending until the task ends.
  */
 function recordSubmission(key: string, taskId: string): void {
   recordSubmissionTask(key, taskId);
-  releaseSubmission(key);
+  acceptSubmission(key);
 }
 
 /** A new chat's submission now belongs to the conversation the backend named. */

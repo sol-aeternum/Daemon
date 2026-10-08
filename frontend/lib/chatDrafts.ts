@@ -514,6 +514,38 @@ export function releaseSubmission(key: string): void {
   emit();
 }
 
+/**
+ * The server has the held submission's task (running or finished): forget the
+ * submission, and empty its conversation's composer if that still holds
+ * exactly what was submitted. Left there (for example restored by a reload
+ * while the task ran), sending it again would be a new request under a new
+ * key and run the same work twice. A composer edited since is kept.
+ */
+export function acceptSubmission(key: string): void {
+  const submission = held.get(key);
+  if (!submission) return;
+  const entry = entries.get(submission.conversationId);
+  if (
+    entry &&
+    !pendingRestores.has(entry) &&
+    heldSubmissionComplete(key) &&
+    (entry.snapshot.input || entry.snapshot.pendingAttachments.length > 0) &&
+    isHeldResend(
+      submission,
+      entry.snapshot.input,
+      entry.snapshot.pendingAttachments,
+    )
+  ) {
+    entry.snapshot = {
+      ...entry.snapshot,
+      input: '',
+      pendingAttachments: [],
+      restoredKey: undefined,
+    };
+  }
+  releaseSubmission(key);
+}
+
 /** A new chat's held submission now belongs to the named conversation. */
 export function promoteHeldSubmission(
   key: string,

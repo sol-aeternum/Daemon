@@ -335,6 +335,39 @@ function rejectedReply(status: number, code: string) {
   };
 }
 
+describe('a submission whose task the server accepted (#479 review)', () => {
+  it('leaves the composer before the stream ends, so a reload cannot resend it', async () => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    // The task is named, then the connection drops; sendMessage has not
+    // resolved, so the composer was not cleared on its way out.
+    state.send.mockImplementation(() => {
+      state.chatOptions?.onFinish?.({
+        message: {
+          id: 'r',
+          role: 'assistant',
+          parts: [
+            {
+              type: 'data-event',
+              data: { type: 'task', task_id: 'task-9', status: 'running' },
+            },
+          ],
+        },
+        isAbort: false,
+        isDisconnect: true,
+        isError: false,
+      });
+      return new Promise(() => {});
+    });
+    render(<ChatPage />);
+    const composer = await screen.findByLabelText('Composer');
+    fireEvent.change(composer, { target: { value: 'book the table' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getChatDraft('conv-1').input).toBe(''));
+  });
+});
+
 describe('identical text typed again (#479 review)', () => {
   it('is a new request, not a resend of a held submission', async () => {
     state.conversation = runningConversation(false);
