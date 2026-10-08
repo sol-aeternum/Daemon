@@ -189,7 +189,7 @@ Retained beyond the account, and listed as such on the deletion screen:
 | A second browser offline during a reset purge reconnects | Its drafts from the older content generation are discarded on its next authenticated response. |
 | An artifact store is unreachable at grace end | Verification is retried for 24 hours, then the location is raised to the operator and recorded; the owner was told this case is finished by the operator. |
 | Expired challenges and invites under an overwritten address | The finite sweep removes them. |
-| A database dump older than 30 days still exists | Journal entries are kept until the oldest existing dump postdates their terminal entry; rotation removes such dumps. |
+| A database dump older than 30 days still exists | Journal entries are kept while any retained dump's inventory lacks their applied markers; rotation removes such dumps. |
 | Terminal entry appended, backup taken before its commit, commit fails then recovers, older backups expire | Journal cleanup refuses while that backup (without the marker) remains; restoring it replays the purge. |
 | Backup inventory unavailable | No journal entry is removed. |
 | Another account | Unaffected throughout (tenant isolation). |
