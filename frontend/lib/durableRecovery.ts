@@ -40,6 +40,8 @@ type ReconcileDeps = {
   /** The submission belongs to the task's conversation (a new chat's is named). */
   promote: (key: string, conversationId: string) => void;
   open: (conversationId: string) => void;
+  /** No task exists for the key (after the retries): it was never accepted. */
+  notFound?: (key: string) => void;
   /** Show the server's copy of the open conversation's turn for this task. */
   showSaved: (taskId: string) => Promise<void>;
   lookupDelaysMs?: number[];
@@ -72,12 +74,16 @@ export async function reconcileSubmission(
     task = await deps.taskForKey(key);
     if (task !== null) break; // found, or the lookup itself failed
   }
+  if (task === null) deps.notFound?.(key);
   if (!task) return;
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
     deps.settle(key);
   } else {
-    deps.promote(key, task.conversationId);
+    // Record first: that clears the composer still holding the submission,
+    // which is found under the conversation it was sent from (``null`` for
+    // a new chat), before promotion moves the submission to its new one.
     deps.record(key, task.id);
+    deps.promote(key, task.conversationId);
   }
   const now = deps.currentId();
   if (now === task.conversationId) {

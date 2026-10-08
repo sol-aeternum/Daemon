@@ -308,7 +308,13 @@ export async function POST(req: Request) {
 
         if (backendRes.status === 429) {
           const detail = await readCapacityDetailFromResponse(backendRes);
+          // Refused before acceptance: no task exists for this key.
+          const rejected = () =>
+            writeData([
+              { type: 'request_rejected', status: 429, code: detail.code },
+            ]);
           if (detail.code && detail.code !== 'rate_limited') {
+            rejected();
             errorText = formatCapacityMessage(detail, 'Chat request failed.');
             streamFailed = true;
             return;
@@ -340,11 +346,23 @@ export async function POST(req: Request) {
           writeText(
             `You are sending messages too quickly. Please wait a moment before trying again.`,
           );
+          rejected();
           return;
         }
 
         if (!backendRes.ok || !backendRes.body) {
           const detail = await readCapacityDetailFromResponse(backendRes);
+          if (backendRes.status >= 400 && backendRes.status < 500) {
+            // Refused before acceptance: no task exists for this key (a 5xx
+            // stays ambiguous, so the client reconciles instead).
+            writeData([
+              {
+                type: 'request_rejected',
+                status: backendRes.status,
+                code: detail.code,
+              },
+            ]);
+          }
           errorText = formatCapacityMessage(
             detail,
             `Backend error (${backendRes.status}): unable to stream response.`,

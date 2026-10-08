@@ -103,3 +103,38 @@ it('retries a conversation that failed to load', async () => {
   await screen.findByText('open:conv-a', undefined, { timeout: 4000 });
   expect(calls).toBe(2);
 });
+
+it('keeps retrying after the listed delays, until the backend recovers', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        if (!String(input).endsWith('/conversations/conv-a')) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ conversations: [] })),
+          );
+        }
+        calls += 1;
+        return Promise.resolve(
+          calls <= 5
+            ? new Response('unavailable', { status: 503 })
+            : conversation('conv-a'),
+        );
+      }),
+    );
+    state.search = 'id=conv-a';
+    render(<OpenConversation />);
+    // Five failures span more than the listed delays (1 + 3 + 10 + 30 s).
+    for (const ms of [1000, 3000, 10000, 30000, 30000]) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    }
+    await screen.findByText('open:conv-a');
+    expect(calls).toBe(6);
+  } finally {
+    vi.useRealTimers();
+  }
+});

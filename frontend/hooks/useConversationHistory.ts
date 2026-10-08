@@ -14,8 +14,8 @@ import {
   normalizeDaemonMessages,
 } from '@/lib/chatMessages';
 
-/** Delays before re-trying a conversation that failed to load. */
-export const CONVERSATION_RETRY_DELAYS_MS = [1000, 3000, 10000];
+/** Delays before re-trying a conversation that failed to load (the last repeats). */
+export const CONVERSATION_RETRY_DELAYS_MS = [1000, 3000, 10000, 30000];
 
 export interface Conversation {
   id: string;
@@ -510,10 +510,14 @@ export function useConversationHistory() {
       if (stale) return;
       if (conversation) {
         setCurrentConversation(conversation);
-      } else if (attempt < CONVERSATION_RETRY_DELAYS_MS.length) {
+      } else {
+        // Keep trying while the conversation is open (the last delay
+        // repeats), so it becomes usable as soon as the backend recovers.
         retry = setTimeout(
           () => void fetchConversationDetails(attempt + 1),
-          CONVERSATION_RETRY_DELAYS_MS[attempt],
+          CONVERSATION_RETRY_DELAYS_MS[
+            Math.min(attempt, CONVERSATION_RETRY_DELAYS_MS.length - 1)
+          ],
         );
       }
     };

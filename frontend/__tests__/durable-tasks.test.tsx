@@ -146,6 +146,40 @@ describe('durable chat route bridge', () => {
     expect(statuses).toContain('cancelled');
   });
 
+  it('marks a refusal before acceptance, but not an ambiguous server error', async () => {
+    const reply = (status: number, code: string) =>
+      new Response(JSON.stringify({ detail: { code, message: 'no' } }), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(reply(403, 'route_unavailable')),
+    );
+    let chunks = await readUIMessageChunks(
+      await POST(chatRequest({ id: 'c' })),
+    );
+    const rejected = chunks.find(
+      (chunk) =>
+        chunk.type === 'data-event' &&
+        (chunk.data as { type?: string }).type === 'request_rejected',
+    );
+    expect(rejected?.data).toMatchObject({
+      status: 403,
+      code: 'route_unavailable',
+    });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(503, 'internal')));
+    chunks = await readUIMessageChunks(await POST(chatRequest({ id: 'c' })));
+    expect(
+      chunks.some(
+        (chunk) =>
+          chunk.type === 'data-event' &&
+          (chunk.data as { type?: string }).type === 'request_rejected',
+      ),
+    ).toBe(false);
+  });
+
   it('forwards durable features only when the browser declared them', async () => {
     const fetchMock = vi.fn().mockResolvedValue(sse([]));
     vi.stubGlobal('fetch', fetchMock);
@@ -300,6 +334,35 @@ describe('live task outcomes', () => {
 });
 
 describe('persisted task outcomes', () => {
+  it('shows a cancel that won the completion race, with no reason code', () => {
+    const message = normalizeDaemonMessage({
+      id: 'a',
+      role: 'assistant',
+      content: 'A late answer',
+      status: 'cancelled',
+      metadata: { terminal_status: 'cancelled' },
+    })!;
+    expect(getDaemonMessageText(message)).toBe(
+      'A late answer\n\nStopped before the answer was finished.',
+    );
+  });
+
+  it('discloses an answer regenerated after an interruption', () => {
+    const message = normalizeDaemonMessage({
+      id: 'a',
+      role: 'assistant',
+      content: 'The full answer',
+      status: 'complete',
+      metadata: {
+        terminal_status: 'complete',
+        regenerated_after_interruption: 1,
+      },
+    })!;
+    expect(getDaemonMessageText(message)).toBe(
+      'The full answer\n\nThis answer was regenerated after an interruption.',
+    );
+  });
+
   it('keeps a stop visible on a partial answer from any device', () => {
     const message = normalizeDaemonMessage({
       id: 'a',

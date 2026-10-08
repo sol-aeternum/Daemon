@@ -63,6 +63,7 @@ export function normalizeDaemonMessage(
     role,
     typeof record.content === 'string' ? record.content : '',
     metadata,
+    record.status,
   );
   const id =
     typeof record.id === 'string' && record.id.length > 0
@@ -118,23 +119,41 @@ const TASK_TERMINAL_NOTICES: Record<string, string> = {
 const TASK_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const CANCELLED_PARTIAL_NOTICE = 'Stopped before the answer was finished.';
 
+const REGENERATED_NOTICE = 'This answer was regenerated after an interruption.';
+
 function withTaskNotice(
   role: string,
   content: string,
   metadata: Record<string, unknown>,
+  status?: unknown,
 ): string {
   if (role !== 'assistant') return content;
-  const code = metadata.terminal_reason;
+  // A regenerated answer says so (§4: interruptions are disclosed).
+  const regenerated =
+    typeof metadata.regenerated_after_interruption === 'number' &&
+    metadata.regenerated_after_interruption > 0;
+  const withRegeneration = (text: string) =>
+    regenerated ? `${text}\n\n${REGENERATED_NOTICE}` : text;
+  // A cancel that won the completion race leaves no reason code, only the
+  // cancelled status; it must read as stopped, like any other cancel.
+  const code =
+    metadata.terminal_reason ??
+    (status === 'cancelled' || metadata.terminal_status === 'cancelled'
+      ? 'cancelled'
+      : undefined);
   // Durable task codes are snake_case; older rows carry free-text reasons,
   // which are left alone.
-  if (typeof code !== 'string' || !TASK_CODE.test(code)) return content;
+  if (typeof code !== 'string' || !TASK_CODE.test(code))
+    return content ? withRegeneration(content) : content;
   const notice =
     TASK_TERMINAL_NOTICES[code] ??
     `This request could not be completed (${code.replace(/_/g, ' ')}).`;
   if (!content) return notice;
   // Partial text stays, but why it stopped must remain visible on every
   // device, not only where it happened.
-  return `${content}\n\n${code === 'cancelled' ? CANCELLED_PARTIAL_NOTICE : notice}`;
+  return withRegeneration(
+    `${content}\n\n${code === 'cancelled' ? CANCELLED_PARTIAL_NOTICE : notice}`,
+  );
 }
 
 export function getDaemonMessageText(message: DaemonMessage): string {
@@ -195,6 +214,22 @@ export const TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /** The backend answered this turn without a durable task (request-bound chat). */
+/** The backend's refusal of this request before acceptance, if it refused. */
+export function getRequestRejection(
+  message: DaemonMessage | undefined,
+): { status: number; code?: string } | null {
+  for (const part of message?.parts ?? []) {
+    if (part.type === 'data-event' && part.data.type === 'request_rejected') {
+      const data = part.data as { status?: unknown; code?: unknown };
+      return {
+        status: typeof data.status === 'number' ? data.status : 0,
+        code: typeof data.code === 'string' ? data.code : undefined,
+      };
+    }
+  }
+  return null;
+}
+
 export function isRequestBound(message: DaemonMessage | undefined): boolean {
   return Boolean(
     message?.parts.some(

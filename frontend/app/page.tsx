@@ -10,12 +10,24 @@ import {
   type LastTurn,
 } from '../lib/durableRecovery';
 import {
+  finishedSubmissionKeys,
   promotePendingSubmission,
   pendingTasksIn,
   recordSubmissionTask,
-  settleFinishedSubmissions,
   settlePendingSubmission,
+  unresolvedSubmissions,
 } from '../lib/pendingSubmission';
+import {
+  acceptSubmission,
+  heldSubmission,
+  heldSubmissionComplete,
+  heldSubmissionsReady,
+  isHeldResend,
+  latestHeldSubmission,
+  promoteHeldSubmission,
+  releaseSubmission,
+  restoreHeldSubmission,
+} from '../lib/chatDrafts';
 import type { HomeSuggestion } from '../lib/homeSuggestions';
 import { ChatHeaderActions } from '../components/ChatHeaderActions';
 import { ChatActivityStatus } from '../components/ChatActivityStatus';
@@ -109,6 +121,7 @@ import {
   getDaemonMessageText,
   getDaemonTaskId,
   getDaemonTaskStatus,
+  getRequestRejection,
   TERMINAL_TASK_STATUSES,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
@@ -470,8 +483,23 @@ function ChatContent() {
   const activeSubmissionScopeRef = useRef<string | null>(null);
   // A new send starts with no key of its own until its transport assigns
   // one: an early Stop must never resolve an earlier submission's task.
-  const beginSend = () => {
-    activeSubmissionKeyRef.current = null;
+  // A held submission that lost some of its files (too large to keep, or
+  // expired) can't be resent under its key: that would be a different
+  // request. With no task for its key, it is dropped, and the owner told.
+  const dropIncompleteHeld = useCallback(
+    (key: string): boolean => {
+      if (!heldSubmission(key) || heldSubmissionComplete(key)) return false;
+      settleSubmission(key);
+      showError(
+        'A message that may not have been sent could not be recovered with its files. Please attach them and send it again.',
+      );
+      return true;
+    },
+    [showError],
+  );
+  const beginSend = (key: string | null = null) => {
+    // The key is known here for every keyed send; the transport confirms it.
+    activeSubmissionKeyRef.current = key;
     activeSubmissionScopeRef.current =
       currentIdRef.current || latestConversationIdRef.current || null;
   };
@@ -483,7 +511,21 @@ function ChatContent() {
     currentIdRef.current = currentId;
   }, [currentId]);
   // Set once useChat has returned; used by callbacks created before it.
-  const reconcileWithServerRef = useRef<(() => Promise<void>) | null>(null);
+  const reconcileWithServerRef = useRef<
+    ((key?: string | null) => Promise<void>) | null
+  >(null);
+  // A composer send is awaiting sendMessage: its draft is cleared only after
+  // that, so restoring a refused submission must wait until then.
+  const composerSendInFlightRef = useRef(false);
+  const deferredRestoresRef = useRef<string[]>([]);
+  // Keys this page resent (a held draft or a retry): a rejection of such a
+  // key is ambiguous, since the key may already belong to an accepted task.
+  const resentKeysRef = useRef(new Set<string>());
+  // Refused submissions waiting for an empty composer to return to.
+  const rejectedWaitingRef = useRef(new Set<string>());
+  const returnRejectedRef = useRef<((key: string) => Promise<void>) | null>(
+    null,
+  );
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -589,18 +631,39 @@ function ChatContent() {
       // a failure, which arrives as a stream error). After an abort,
       // disconnect or other error the server may still hold an accepted
       // task, so the key is kept for a resend to reattach to it.
+      const rejection = getRequestRejection(message);
+      if (rejection && activeSubmissionKeyRef.current) {
+        const key = activeSubmissionKeyRef.current;
+        if (
+          rejection.code === 'idempotency_conflict' ||
+          resentKeysRef.current.has(key)
+        ) {
+          // The key may already belong to an accepted request (a reselected
+          // file, or a resend refused by an outer limit before the replay
+          // check): resolve it with the server rather than release it.
+          void reconcileWithServerRef.current?.(key);
+        } else if (composerSendInFlightRef.current) {
+          // Refused before acceptance: nothing exists for this key. The text
+          // goes back to the composer once the send has finished clearing it,
+          // and a resend (perhaps with another model) is a new submission.
+          deferredRestoresRef.current.push(key);
+        } else {
+          void returnRejectedRef.current?.(key);
+        }
+      }
       const taskStatusSeen = getDaemonTaskStatus(message);
       const outcomeKnown =
-        (!isAbort && !isDisconnect && !isError) ||
-        (taskStatusSeen !== null && TERMINAL_TASK_STATUSES.has(taskStatusSeen));
+        !rejection &&
+        ((!isAbort && !isDisconnect && !isError) ||
+          (taskStatusSeen !== null &&
+            TERMINAL_TASK_STATUSES.has(taskStatusSeen)));
       if (outcomeKnown && activeSubmissionKeyRef.current) {
-        settlePendingSubmission(activeSubmissionKeyRef.current);
+        finishSubmission(activeSubmissionKeyRef.current);
       } else if (activeSubmissionKeyRef.current) {
         // Unresolved: remember its task, so the key is settled when any
         // later view of the conversation shows that task finished.
         const taskId = getDaemonTaskId(message);
-        if (taskId)
-          recordSubmissionTask(activeSubmissionKeyRef.current, taskId);
+        if (taskId) recordSubmission(activeSubmissionKeyRef.current, taskId);
       }
       if (
         chatRequestGenerationRef.current !== null &&
@@ -659,7 +722,7 @@ function ChatContent() {
     : null;
   useEffect(() => {
     if (streamedTaskId && activeSubmissionKeyRef.current) {
-      recordSubmissionTask(activeSubmissionKeyRef.current, streamedTaskId);
+      recordSubmission(activeSubmissionKeyRef.current, streamedTaskId);
     }
   }, [streamedTaskId]);
   // Pending keys are cleared by the auth transitions themselves (sign-in and
@@ -694,9 +757,11 @@ function ChatContent() {
   // while another conversation was open, and survives reloads.
   useEffect(() => {
     if (!currentConversation) return;
-    settleFinishedSubmissions(currentConversation, (status) =>
+    for (const key of finishedSubmissionKeys(currentConversation, (status) =>
       TERMINAL_TASK_STATUSES.has(status),
-    );
+    )) {
+      finishSubmission(key);
+    }
     // A task a newer one has superseded is no longer the conversation's
     // latest: ask the server about it directly (a few per view).
     const shown = new Set(
@@ -710,7 +775,7 @@ function ChatContent() {
       .slice(0, 5)) {
       void taskStatus(taskId).then((status) => {
         if (status && TERMINAL_TASK_STATUSES.has(status)) {
-          settlePendingSubmission(key);
+          finishSubmission(key);
         }
       });
     }
@@ -728,11 +793,16 @@ function ChatContent() {
   const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
   const reload = () => {
     const conversationId = currentId || latestConversationIdRef.current || null;
-    beginSend();
+    // Retrying an unresolved turn resends it under its own key (a replay if
+    // the backend already accepted it); a settled turn regenerates anew.
+    const held = latestHeldSubmission(conversationId);
+    if (held) resentKeysRef.current.add(held.key);
+    beginSend(held?.key ?? null);
     void regenerate({
       body: {
         id: conversationId,
         model: activeModel,
+        ...(held ? { idempotency_key: held.key } : {}),
         // Regenerating a turn re-sends its files; without them the backend
         // would see (and run) a different request. Another conversation's
         // files are never sent.
@@ -933,20 +1003,34 @@ function ChatContent() {
     if (!content) return;
 
     suggestionSubmissionRef.current = null;
-    lastTurnRef.current = {
-      conversationId: currentId || latestConversationIdRef.current || null,
-      attachments,
-    };
+    const conversationScope =
+      currentId || latestConversationIdRef.current || null;
+    lastTurnRef.current = { conversationId: conversationScope, attachments };
+    // The key belongs to the submitted draft: resending the held draft
+    // unchanged (after a lost response or a reload) reuses its key, so the
+    // backend replays what it already accepted. Anything else is new.
+    // Only the draft that was put back from a held submission, unedited, is
+    // its resend; the same text typed anew is a new request with a new key.
+    const held =
+      command || !draft.restoredKey
+        ? undefined
+        : heldSubmission(draft.restoredKey);
+    const resend = isHeldResend(held, input, pendingAttachments);
+    const key = resend ? held.key : crypto.randomUUID();
+    if (resend) resentKeysRef.current.add(key);
+    if (!command) draft.holdSubmission(key, input, pendingAttachments);
 
+    composerSendInFlightRef.current = true;
     try {
-      beginSend();
+      beginSend(key);
       await sendMessage(
         { text: content },
         {
           body: {
-            id: currentId || latestConversationIdRef.current || null,
+            id: conversationScope,
             model: activeModel,
             attachments,
+            idempotency_key: key,
           },
         },
       );
@@ -959,6 +1043,11 @@ function ChatContent() {
         err instanceof Error ? err.message : 'Failed to send message';
       showError(message);
       setConnectionStatus('disconnected');
+    } finally {
+      composerSendInFlightRef.current = false;
+      for (const refused of deferredRestoresRef.current.splice(0)) {
+        void returnRejectedRef.current?.(refused);
+      }
     }
   };
 
@@ -1002,10 +1091,22 @@ function ChatContent() {
       reconcileSubmission(key, {
         currentId: () => currentIdRef.current,
         taskForKey,
-        settle: settlePendingSubmission,
-        record: recordSubmissionTask,
+        settle: finishSubmission,
+        record: recordSubmission,
+        // Never accepted: the held draft goes back in the composer, so
+        // sending it again reuses its key (safe even if it lands late).
+        notFound: (key) => {
+          void heldSubmissionsReady().then(() => {
+            if (dropIncompleteHeld(key)) return;
+            if (restoreHeldSubmission(key)) {
+              showError(
+                'Your message may not have been sent. It is back in the composer; send it again to retry.',
+              );
+            }
+          });
+        },
         promote: (key, conversationId) => {
-          promotePendingSubmission(key, conversationId);
+          promoteSubmission(key, conversationId);
           if (
             activeSubmissionKeyRef.current === key &&
             activeSubmissionScopeRef.current === null
@@ -1026,11 +1127,76 @@ function ChatContent() {
           }
         },
       }),
-    [refreshCurrentConversation, setMessages, switchConversation, taskForKey],
+    [
+      dropIncompleteHeld,
+      refreshCurrentConversation,
+      setMessages,
+      showError,
+      switchConversation,
+      taskForKey,
+    ],
   );
   useEffect(() => {
     reconcileWithServerRef.current = reconcileWithServer;
-  }, [reconcileWithServer]);
+    // A refused submission goes back to its composer and is never lost: if
+    // the composer already holds a newer draft, it stays held until the
+    // composer is empty again.
+    returnRejectedRef.current = async (key: string) => {
+      await heldSubmissionsReady();
+      if (dropIncompleteHeld(key)) return;
+      if (restoreHeldSubmission(key)) {
+        settleSubmission(key);
+      } else if (heldSubmission(key)) {
+        rejectedWaitingRef.current.add(key);
+        showError(
+          'Your earlier message was not sent. It will return to the composer when the composer is empty.',
+        );
+      } else {
+        settlePendingSubmission(key);
+      }
+    };
+  }, [dropIncompleteHeld, reconcileWithServer, showError]);
+  useEffect(() => {
+    if (input || pendingAttachments.length > 0) return;
+    for (const key of rejectedWaitingRef.current) {
+      if (restoreHeldSubmission(key)) {
+        rejectedWaitingRef.current.delete(key);
+        settleSubmission(key);
+        break;
+      }
+    }
+  }, [input, pendingAttachments]);
+  // After a reload (or on a later visit), resolve submissions whose outcome
+  // this browser never saw, by key. Entries younger than a minute may still
+  // be in flight in another tab and are left to it.
+  const reconciledOnLoadRef = useRef(false);
+  useEffect(() => {
+    if (reconciledOnLoadRef.current) return;
+    reconciledOnLoadRef.current = true;
+    void (async () => {
+      await heldSubmissionsReady();
+      const settledBefore = Date.now() - UNRESOLVED_MIN_AGE_MS;
+      for (const { key, entry } of unresolvedSubmissions().slice(0, 10)) {
+        if (entry.createdAt > settledBefore) continue;
+        const task = await taskForKey(key);
+        if (task === undefined) continue; // unknown: try again next time
+        if (task === null) {
+          // Never accepted. A held draft goes back to its composer (sending
+          // it reuses the key); without one there is nothing to resend.
+          if (dropIncompleteHeld(key)) continue;
+          if (!restoreHeldSubmission(key) && !heldSubmission(key)) {
+            settlePendingSubmission(key);
+          }
+        } else if (TERMINAL_TASK_STATUSES.has(task.status)) {
+          finishSubmission(key);
+        } else {
+          // Record (clearing the composer it was sent from) before promoting.
+          recordSubmission(key, task.id);
+          promoteSubmission(key, task.conversationId);
+        }
+      }
+    })();
+  }, [dropIncompleteHeld, taskForKey]);
   useEffect(() => {
     stopInFlightRef.current = stopInFlight;
   }, [stopInFlight]);
@@ -1055,7 +1221,7 @@ function ChatContent() {
     const seq = ++stopSeqRef.current;
     setStoppingIn(scope);
     const outcome = confirmation.then((result) => {
-      if (result !== 'unconfirmed' && key) settlePendingSubmission(key);
+      if (result !== 'unconfirmed' && key) finishSubmission(key);
       if (seq === stopSeqRef.current) setStoppingIn(undefined);
       if (pendingStopRef.current?.outcome === outcome) {
         pendingStopRef.current = null;
@@ -1340,7 +1506,7 @@ function ChatContent() {
     if (activeSubmissionKeyRef.current) {
       // A new chat's pending submission now belongs to this conversation, so
       // a resend from here reuses its key.
-      promotePendingSubmission(activeSubmissionKeyRef.current, conversationId);
+      promoteSubmission(activeSubmissionKeyRef.current, conversationId);
     }
     if (lastTurnRef.current?.conversationId === null) {
       lastTurnRef.current = { ...lastTurnRef.current, conversationId };
@@ -1816,11 +1982,14 @@ function ChatContent() {
                                       null,
                                     attachments: [],
                                   };
+                                  // Council configuration runs request-
+                                  // bound (DURABLE_REQUEST_DESIGN §7): no
+                                  // task exists to replay, so it is not
+                                  // held, and a retry is a new run.
+                                  const text = `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`;
                                   beginSend();
                                   void sendMessage(
-                                    {
-                                      text: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,
-                                    },
+                                    { text },
                                     {
                                       body: {
                                         id:
@@ -2054,6 +2223,43 @@ function AudioPlaybackScopedProvider({
   return (
     <AudioPlaybackProvider scope={scope}>{children}</AudioPlaybackProvider>
   );
+}
+
+/** Unresolved submissions younger than this are left to the tab sending them. */
+const UNRESOLVED_MIN_AGE_MS = 60_000;
+
+/**
+ * A submission was refused or cannot be resent: forget its key and its held
+ * draft. Whatever the composer shows (perhaps that draft, put back) stays.
+ */
+function settleSubmission(key: string): void {
+  settlePendingSubmission(key);
+  releaseSubmission(key);
+}
+
+/**
+ * The server ran the submission (its task ended, or a request-bound turn
+ * finished): forget its key, and the draft that still holds it.
+ */
+function finishSubmission(key: string): void {
+  settlePendingSubmission(key);
+  acceptSubmission(key);
+}
+
+/**
+ * The server has the submission's task: its held draft (and the composer
+ * text, if unchanged) is no longer needed for a resend, while the key stays
+ * pending until the task ends.
+ */
+function recordSubmission(key: string, taskId: string): void {
+  recordSubmissionTask(key, taskId);
+  acceptSubmission(key);
+}
+
+/** A new chat's submission now belongs to the conversation the backend named. */
+function promoteSubmission(key: string, conversationId: string): void {
+  promotePendingSubmission(key, conversationId);
+  promoteHeldSubmission(key, conversationId);
 }
 
 export default function ChatPage() {

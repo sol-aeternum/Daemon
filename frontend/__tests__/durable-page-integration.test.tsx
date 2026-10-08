@@ -28,6 +28,9 @@ const state = vi.hoisted(() => ({
   cancelTask: vi.fn(),
   taskForKey: vi.fn(),
   taskStatus: vi.fn(),
+  chatOptions: null as null | {
+    onFinish?: (event: Record<string, unknown>) => void;
+  },
 }));
 const candidate = {
   id: 'candidate',
@@ -43,9 +46,10 @@ vi.mock('next/navigation', () => ({
 vi.mock('@ai-sdk/react', async () => {
   const { useState } = await import('react');
   return {
-    useChat: () => {
+    useChat: (options: typeof state.chatOptions) => {
       const [messages, setMessages] = useState<DaemonMessage[]>([]);
       state.setMessages = setMessages;
+      state.chatOptions = options;
       return {
         messages,
         setMessages,
@@ -113,7 +117,9 @@ vi.mock('../components/ChatInputBar', () => ({
       {isLoading ? (
         <button onClick={onStop}>Stop</button>
       ) : (
-        <button onClick={() => onSubmit()}>Send</button>
+        <button type="button" onClick={() => onSubmit()}>
+          Send
+        </button>
       )}
     </div>
   ),
@@ -271,5 +277,186 @@ describe('a durable task reopened on another device', () => {
         screen.getByText(/Stop could not be confirmed/, { exact: false }),
       ).toBeTruthy(),
     );
+  });
+});
+
+describe('a submission whose outcome is unknown (#476)', () => {
+  it('is resent from the restored draft under its own key', async () => {
+    const { restoreHeldSubmission } = await import('../lib/chatDrafts');
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    state.send.mockResolvedValue(undefined);
+    render(<ChatPage />);
+    const composer = await screen.findByLabelText('Composer');
+    fireEvent.change(composer, { target: { value: 'book the table' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    const firstKey = state.send.mock.calls[0][1].body.idempotency_key;
+    expect(firstKey).toMatch(/^[0-9a-f-]{36}$/);
+
+    // The response was lost and no task was found: the draft comes back.
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe(''),
+    );
+    act(() => {
+      restoreHeldSubmission(firstKey);
+    });
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe('book the table'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).toBe(firstKey);
+  });
+});
+
+function rejectedReply(status: number, code: string) {
+  // What the AI SDK does: onFinish runs inside sendMessage, before it resolves.
+  return async () => {
+    state.chatOptions?.onFinish?.({
+      message: {
+        id: 'r',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'data-event',
+            data: { type: 'request_rejected', status, code },
+          },
+        ],
+      },
+      isAbort: false,
+      isDisconnect: false,
+      isError: false,
+    });
+  };
+}
+
+describe('a submission whose task the server accepted (#479 review)', () => {
+  it('leaves the composer before the stream ends, so a reload cannot resend it', async () => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    // The task is named, then the connection drops; sendMessage has not
+    // resolved, so the composer was not cleared on its way out.
+    state.send.mockImplementation(() => {
+      state.chatOptions?.onFinish?.({
+        message: {
+          id: 'r',
+          role: 'assistant',
+          parts: [
+            {
+              type: 'data-event',
+              data: { type: 'task', task_id: 'task-9', status: 'running' },
+            },
+          ],
+        },
+        isAbort: false,
+        isDisconnect: true,
+        isError: false,
+      });
+      return new Promise(() => {});
+    });
+    render(<ChatPage />);
+    const composer = await screen.findByLabelText('Composer');
+    fireEvent.change(composer, { target: { value: 'book the table' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getChatDraft('conv-1').input).toBe(''));
+  });
+});
+
+describe('identical text typed again (#479 review)', () => {
+  it('is a new request, not a resend of a held submission', async () => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    state.send.mockResolvedValue(undefined);
+    render(<ChatPage />);
+    const composer = await screen.findByLabelText('Composer');
+    fireEvent.change(composer, { target: { value: 'same words' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe(''),
+    );
+    // The first is still unresolved (held), but this draft was typed anew.
+    fireEvent.change(screen.getByLabelText('Composer'), {
+      target: { value: 'same words' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).not.toBe(
+      state.send.mock.calls[0][1].body.idempotency_key,
+    );
+  });
+});
+
+describe('a submission refused before acceptance (#476, #479 review)', () => {
+  beforeEach(() => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+  });
+
+  const composer = () =>
+    screen.getByLabelText('Composer') as HTMLTextAreaElement;
+
+  it('returns to the composer when rate limited, with its key settled', async () => {
+    const { pendingSubmission } = await import('../lib/pendingSubmission');
+    state.send.mockImplementation(rejectedReply(429, 'rate_limited'));
+    render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'try this' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(composer().value).toBe('try this'));
+    const key = state.send.mock.calls[0][1].body.idempotency_key;
+    expect(pendingSubmission(key)).toBeNull();
+  });
+
+  it('is kept, not lost, while the composer holds a newer draft', async () => {
+    state.send.mockResolvedValue(undefined);
+    render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'first message' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(composer().value).toBe(''));
+    fireEvent.change(composer(), { target: { value: 'next draft' } });
+    // The first send is refused only now (not during a composer send).
+    await act(async () => rejectedReply(403, 'route_unavailable')());
+    await waitFor(() =>
+      expect(screen.getByText(/will return to the composer/)).toBeTruthy(),
+    );
+    expect(composer().value).toBe('next draft');
+    fireEvent.change(composer(), { target: { value: '' } });
+    await waitFor(() => expect(composer().value).toBe('first message'));
+  });
+
+  it('is resolved by key, not released, when it was a resend', async () => {
+    const { heldSubmission, restoreHeldSubmission } =
+      await import('../lib/chatDrafts');
+    state.send.mockResolvedValueOnce(undefined);
+    render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'book it' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    const key = state.send.mock.calls[0][1].body.idempotency_key;
+    await waitFor(() => expect(composer().value).toBe(''));
+    act(() => {
+      restoreHeldSubmission(key);
+    });
+    await waitFor(() => expect(composer().value).toBe('book it'));
+    // The resend is refused by an outer limit before the replay check.
+    state.send.mockImplementationOnce(rejectedReply(429, 'rate_limited'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.taskForKey).toHaveBeenCalledWith(key));
+    // Its held draft is not released as if nothing existed for the key.
+    expect(heldSubmission(key)).toBeDefined();
   });
 });

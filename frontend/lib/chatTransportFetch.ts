@@ -1,26 +1,8 @@
 import { getAuthGeneration, getAuthHeader, refreshIfNeeded } from './auth';
 import { isolateSuggestionBody } from './suggestionSubmission';
-import { keyForSubmission } from './pendingSubmission';
+import { pendingSubmission, registerSubmission } from './pendingSubmission';
 
 export const DURABLE_CLIENT_FEATURES = ['task-cancel', 'task-reset'];
-
-function lastUserText(messages: unknown): string {
-  if (!Array.isArray(messages)) return '';
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index] as {
-      role?: unknown;
-      content?: unknown;
-      parts?: Array<{ type?: unknown; text?: unknown }>;
-    };
-    if (message?.role !== 'user') continue;
-    if (typeof message.content === 'string') return message.content;
-    return (message.parts ?? [])
-      .filter((part) => part.type === 'text' && typeof part.text === 'string')
-      .map((part) => part.text as string)
-      .join('');
-  }
-  return '';
-}
 
 /** The lifetime belongs to this queued send, not to the mutable active chat. */
 export async function chatTransportFetch(
@@ -75,28 +57,30 @@ export async function chatTransportFetch(
     scope.onSubmissionKey?.(null, null);
     return send(requestInput, init, isolateSuggestionBody(body));
   }
-  // One key per submission, kept until its outcome is known, so a retry
-  // after a lost response or a reload replays the accepted task instead of
-  // creating a second one.
-  if (typeof body.idempotency_key !== 'string') {
-    const pending = await keyForSubmission(
-      {
-        text: lastUserText(body.messages),
-        model: body.model,
-        provider: body.provider,
-        attachments: body.attachments,
-      },
-      typeof body.id === 'string' ? body.id : null,
-    );
-    assertCurrent();
-    body.idempotency_key = pending.key;
+  // The key belongs to the submitted draft (the page passes it): resending a
+  // held draft reuses its key, so the backend replays the task it already
+  // accepted instead of creating a second one. Other sends get a fresh key.
+  const key =
+    typeof body.idempotency_key === 'string' && body.idempotency_key
+      ? body.idempotency_key
+      : crypto.randomUUID();
+  body.idempotency_key = key;
+  const recorded = pendingSubmission(key);
+  if (recorded) {
     // A resend of a request the backend may already have accepted replays it
     // exactly: its (possibly absent) conversation id, and the model and
     // provider it was sent with, even if the picker has since reset.
-    body.id = pending.requestConversationId;
-    body.model = pending.model ?? 'auto';
-    if (pending.provider == null) delete body.provider;
-    else body.provider = pending.provider;
+    body.id = recorded.requestConversationId;
+    body.model = recorded.model ?? 'auto';
+    if (recorded.provider == null) delete body.provider;
+    else body.provider = recorded.provider;
+  } else {
+    registerSubmission(key, {
+      scope: scope.conversationId,
+      requestConversationId: typeof body.id === 'string' ? body.id : null,
+      model: body.model,
+      provider: body.provider,
+    });
   }
   scope.onSubmissionKey?.(body.idempotency_key as string, scope.conversationId);
   return send(requestInput, init, body);

@@ -1,130 +1,50 @@
 /**
- * Idempotency keys that survive an ambiguous response or a reload.
+ * Index of submissions whose outcome is not yet known, by idempotency key.
  *
- * Each submitted turn gets its own storage item, keyed by its idempotency
- * key, kept until that submission's outcome is known. If the response is
- * lost (network error, closed tab, disconnect) and the same request is sent
- * again to the same conversation, its key and original request scope are
- * reused, so the backend returns the task it already accepted instead of
- * running it twice.
+ * The key itself belongs to the submitted draft (``lib/chatDrafts``): a
+ * resend of that held draft reuses it, so the backend returns the task it
+ * already accepted instead of running it twice. This index records only what
+ * is needed to resolve a key with the server later, after a reload or on
+ * another visit. It never stores message content or anything derived from
+ * it.
  *
  * - One item per submission: tabs never read-modify-write a shared list, so
- *   concurrent submissions cannot overwrite or resurrect each other, and
- *   settling one leaves the others.
- * - A request matches if its text and attachments match. The model and
- *   provider it was accepted with are stored and replayed exactly, so a resend
- *   after a reload (when the picker may have reset to auto) reattaches to the
- *   accepted task instead of starting a second one.
- * - A new chat's item follows the conversation the backend names (its match
+ *   concurrent submissions cannot overwrite or resurrect each other.
+ * - A new chat's item follows the conversation the backend names (its
  *   scope), while remembering the request's original scope (no conversation)
  *   so a resend replays exactly the accepted request.
- * - Only salted SHA-256 fingerprints are stored, never the request content.
- *   The random per-browser salt is replaced on sign-in/sign-out. Without
- *   WebCrypto (an insecure context) every request gets a fresh key.
- * - Items are cleared on sign-in/sign-out; the backend scopes keys per
- *   account in any case.
- * - Storage failures (private mode, blocked storage) fall back to a fresh key
- *   per request, which was the behaviour before durable tasks.
+ * - The model and provider the request was sent with are kept, so a resend
+ *   after a reload (when the picker may have reset) replays them exactly.
+ * - Items are cleared on sign-in/sign-out (lib/auth); the backend scopes keys
+ *   per account in any case. Unresolved items are checked with the server on
+ *   load and otherwise expire after ``PENDING_SUBMISSION_TTL_MS``.
  */
 
-const ITEM_PREFIX = 'daemon.pendingSubmission.v4:';
-const SALT_ITEM = 'daemon.pendingSubmission.salt';
-/**
- * How long an unresolved submission stays retryable under its key. The
- * backend keeps keys for the task's lifetime; this only bounds local storage.
- * There is deliberately no count limit: evicting an unresolved key could let
- * a retry run accepted work twice. Entries leave when settled or expired.
- */
+const ITEM_PREFIX = 'daemon.pendingSubmission.v5:';
+/** Older formats (content fingerprints) are removed on sight. */
+const LEGACY_PREFIXES = [
+  'daemon.pendingSubmission.v3:',
+  'daemon.pendingSubmission.v4:',
+];
+const LEGACY_SALT = 'daemon.pendingSubmission.salt';
+/** How long an unresolved submission is kept without a server answer. */
 export const PENDING_SUBMISSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-type PendingSubmission = {
-  fingerprint: string;
-  /** Conversation a resend must come from to match (follows promotion). */
+export type SubmissionMeta = {
+  /** Conversation the submission belongs to (follows promotion). */
   scope: string | null;
   /** Conversation the original request named (null for a new chat). */
   requestConversationId: string | null;
-  createdAt: number;
-  /** The model and provider it was accepted with, replayed on a resend. */
-  model?: unknown;
-  provider?: unknown;
-  /** The durable task the backend created for it, once known. */
-  taskId?: string;
-};
-
-export type SubmissionIdentity = {
-  text: string;
-  model?: unknown;
-  provider?: unknown;
-  attachments?: unknown;
-};
-
-export type PendingKey = {
-  key: string;
-  /** The conversation id the original request was sent with. */
-  requestConversationId: string | null;
-  /** The model and provider to send (the original ones on a resend). */
+  /** The model and provider it was sent with, replayed on a resend. */
   model: unknown;
   provider: unknown;
 };
 
-function hex(bytes: ArrayBuffer | Uint8Array): string {
-  return [...new Uint8Array(bytes)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/** This browser's random salt, created on first use. */
-function salt(store: Storage): string {
-  let value = store.getItem(SALT_ITEM);
-  if (!value || !/^[0-9a-f]{64}$/.test(value)) {
-    value = hex(crypto.getRandomValues(new Uint8Array(32)));
-    store.setItem(SALT_ITEM, value);
-  }
-  return value;
-}
-
-function attachmentShape(attachments: unknown): unknown[] {
-  if (!Array.isArray(attachments)) return [];
-  return attachments.map((attachment) => {
-    if (typeof attachment !== 'object' || attachment === null) return null;
-    const record = attachment as Record<string, unknown>;
-    const content = [
-      record.text_content,
-      record.data_url,
-      record.content,
-      record.data,
-      record.url,
-    ].find((value) => typeof value === 'string');
-    // The backend fingerprints the whole serialized attachment, including
-    // its per-selection id: a reselected file is a different request.
-    return {
-      id: record.id ?? null,
-      kind: record.kind ?? null,
-      name: record.name ?? null,
-      type: record.mime_type ?? record.type ?? record.mimeType ?? null,
-      size: record.size ?? null,
-      content: content ?? null,
-    };
-  });
-}
-
-/**
- * Salted SHA-256 of what decides whether a resend is the same request: its
- * text and attachments (the model and provider are replayed, not matched).
- */
-export async function submissionFingerprint(
-  identity: SubmissionIdentity,
-  saltHex: string,
-): Promise<string> {
-  const canonical = JSON.stringify([
-    saltHex,
-    identity.text,
-    attachmentShape(identity.attachments),
-  ]);
-  return hex(
-    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)),
-  );
-}
+export type PendingSubmission = SubmissionMeta & {
+  createdAt: number;
+  /** The durable task the backend created for it, once known. */
+  taskId?: string;
+};
 
 function storage(): Storage | null {
   try {
@@ -141,8 +61,9 @@ function readEntry(store: Storage, itemKey: string): PendingSubmission | null {
     ) as PendingSubmission | null;
     if (
       !value ||
-      typeof value.fingerprint !== 'string' ||
-      typeof value.createdAt !== 'number'
+      typeof value.createdAt !== 'number' ||
+      !('scope' in value) ||
+      'fingerprint' in value
     ) {
       return null;
     }
@@ -150,6 +71,52 @@ function readEntry(store: Storage, itemKey: string): PendingSubmission | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * An older (content-fingerprint) record keeps its key: the fingerprint is
+ * dropped and the rest moves to the current format, so an unresolved
+ * submission from a cached older client can still be resolved by key.
+ */
+function migrateLegacy(
+  store: Storage,
+  itemKey: string,
+  found: Array<[string, PendingSubmission]>,
+): void {
+  const prefix = LEGACY_PREFIXES.find((p) => itemKey.startsWith(p));
+  let migrated: PendingSubmission | null = null;
+  if (prefix) {
+    try {
+      const value = JSON.parse(store.getItem(itemKey) ?? 'null') as Record<
+        string,
+        unknown
+      > | null;
+      if (value && typeof value.createdAt === 'number') {
+        const scope = typeof value.scope === 'string' ? value.scope : null;
+        migrated = {
+          scope,
+          // A new chat's original request named no conversation (null).
+          requestConversationId:
+            typeof value.requestConversationId === 'string' ||
+            value.requestConversationId === null
+              ? value.requestConversationId
+              : scope,
+          model: value.model ?? null,
+          provider: value.provider ?? null,
+          createdAt: value.createdAt,
+          ...(typeof value.taskId === 'string' ? { taskId: value.taskId } : {}),
+        };
+      }
+    } catch {
+      migrated = null;
+    }
+  }
+  store.removeItem(itemKey);
+  if (!prefix || !migrated) return;
+  const key = itemKey.slice(prefix.length);
+  if (Date.now() - migrated.createdAt >= PENDING_SUBMISSION_TTL_MS) return;
+  store.setItem(ITEM_PREFIX + key, JSON.stringify(migrated));
+  found.push([key, migrated]);
 }
 
 /** Live entries, oldest first; expired or unreadable items are removed. */
@@ -161,9 +128,20 @@ function entries(
   const itemKeys: string[] = [];
   for (let index = 0; index < store.length; index += 1) {
     const itemKey = store.key(index);
-    if (itemKey?.startsWith(ITEM_PREFIX)) itemKeys.push(itemKey);
+    if (!itemKey) continue;
+    if (
+      itemKey.startsWith(ITEM_PREFIX) ||
+      itemKey === LEGACY_SALT ||
+      LEGACY_PREFIXES.some((prefix) => itemKey.startsWith(prefix))
+    ) {
+      itemKeys.push(itemKey);
+    }
   }
   for (const itemKey of itemKeys) {
+    if (!itemKey.startsWith(ITEM_PREFIX)) {
+      migrateLegacy(store, itemKey, found);
+      continue;
+    }
     const entry = readEntry(store, itemKey);
     if (!entry || now - entry.createdAt >= PENDING_SUBMISSION_TTL_MS) {
       store.removeItem(itemKey);
@@ -174,55 +152,55 @@ function entries(
   return found.sort((a, b) => a[1].createdAt - b[1].createdAt);
 }
 
-/**
- * The key for this submission: an unresolved matching submission's key,
- * original scope, model and provider, or a new key recorded as pending.
- */
-export async function keyForSubmission(
-  identity: SubmissionIdentity,
-  conversationId: string | null,
+/** Record a submission about to be sent under ``key`` (a resend keeps its record). */
+export function registerSubmission(
+  key: string,
+  meta: SubmissionMeta,
   now: number = Date.now(),
-): Promise<PendingKey> {
-  const fresh: PendingKey = {
-    key: crypto.randomUUID(),
-    requestConversationId: conversationId,
-    model: identity.model,
-    provider: identity.provider,
-  };
+): void {
   const store = storage();
-  if (!store || !globalThis.crypto?.subtle) return fresh;
+  if (!store) return;
   try {
-    const fingerprint = await submissionFingerprint(identity, salt(store));
-    const live = entries(store, now);
-    const match = live.find(
-      ([, entry]) =>
-        entry.fingerprint === fingerprint && entry.scope === conversationId,
-    );
-    if (match) {
-      const [key, entry] = match;
-      return {
-        key,
-        requestConversationId: entry.requestConversationId,
-        model: 'model' in entry ? entry.model : identity.model,
-        provider: 'provider' in entry ? entry.provider : identity.provider,
-      };
-    }
+    if (readEntry(store, ITEM_PREFIX + key)) return;
     const entry: PendingSubmission = {
-      fingerprint,
-      scope: conversationId,
-      requestConversationId: conversationId,
+      ...meta,
+      model: meta.model ?? null,
+      provider: meta.provider ?? null,
       createdAt: now,
-      model: identity.model ?? null,
-      provider: identity.provider ?? null,
     };
-    store.setItem(ITEM_PREFIX + fresh.key, JSON.stringify(entry));
-    return fresh;
+    store.setItem(ITEM_PREFIX + key, JSON.stringify(entry));
   } catch {
-    return fresh;
+    // Storage unavailable: the held draft still carries the key in this tab.
   }
 }
 
-/** A new chat's submission now matches resends from the conversation the backend named. */
+/** The recorded submission for ``key``, if it is still unresolved. */
+export function pendingSubmission(key: string): PendingSubmission | null {
+  const store = storage();
+  if (!store) return null;
+  try {
+    return readEntry(store, ITEM_PREFIX + key);
+  } catch {
+    return null;
+  }
+}
+
+/** Unresolved submissions, newest first, for resolving with the server. */
+export function unresolvedSubmissions(
+  now: number = Date.now(),
+): Array<{ key: string; entry: PendingSubmission }> {
+  const store = storage();
+  if (!store) return [];
+  try {
+    return entries(store, now)
+      .reverse()
+      .map(([key, entry]) => ({ key, entry }));
+  } catch {
+    return [];
+  }
+}
+
+/** A new chat's submission now belongs to the conversation the backend named. */
 export function promotePendingSubmission(
   key: string,
   conversationId: string,
@@ -237,7 +215,7 @@ export function promotePendingSubmission(
       JSON.stringify({ ...entry, scope: conversationId }),
     );
   } catch {
-    // Storage unavailable: the resend simply gets a new key.
+    // Storage unavailable: reconciliation by key still finds the task.
   }
 }
 
@@ -261,31 +239,30 @@ type ConversationTasks = {
 };
 
 /**
- * Settle submissions of ``conversation`` whose task it shows has finished
- * (its latest task, in a terminal state, and not active). Works after a
- * reload or on another visit: the task id is stored with the submission.
+ * Keys of ``conversation``'s submissions whose task it shows has finished
+ * (its latest task, in a terminal state, and not active).
  */
-export function settleFinishedSubmissions(
+export function finishedSubmissionKeys(
   conversation: ConversationTasks,
   isTerminal: (status: string) => boolean,
-): void {
+): string[] {
   const latest = conversation.latestTask;
   if (
     !latest ||
     !isTerminal(latest.status) ||
     conversation.activeTask?.id === latest.id
   )
-    return;
+    return [];
   const store = storage();
-  if (!store) return;
+  if (!store) return [];
   try {
-    for (const [key, entry] of entries(store, Date.now())) {
-      if (entry.taskId === latest.id && entry.scope === conversation.id) {
-        store.removeItem(ITEM_PREFIX + key);
-      }
-    }
+    return entries(store, Date.now()).flatMap(([key, entry]) =>
+      entry.taskId === latest.id && entry.scope === conversation.id
+        ? [key]
+        : [],
+    );
   } catch {
-    // Nothing to settle.
+    return [];
   }
 }
 
@@ -326,8 +303,6 @@ export function clearPendingSubmissions(): void {
     for (const [key] of entries(store, Date.now())) {
       store.removeItem(ITEM_PREFIX + key);
     }
-    // A new account gets a new salt: fingerprints never correlate across.
-    store.removeItem(SALT_ITEM);
   } catch {
     // Nothing to clear.
   }

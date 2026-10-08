@@ -136,6 +136,9 @@ export type ChatEvent = BaseEvent &
     | { type: 'task'; task_id: string; status?: string }
     | { type: 'task_reset'; task_id?: string; content_generation?: number }
     | { type: 'request_bound' }
+    // The backend refused the request before accepting it (4xx): no task
+    // exists for its idempotency key.
+    | { type: 'request_rejected'; status: number; code?: string }
     | {
         type: 'rate_limited';
         scope: 'user' | 'session' | 'ip';
@@ -176,6 +179,7 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     'task',
     'task_reset',
     'request_bound',
+    'request_rejected',
   ];
   return typeof event.type === 'string' && validTypes.includes(event.type);
 }
