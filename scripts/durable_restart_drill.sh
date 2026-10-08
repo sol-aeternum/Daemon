@@ -44,8 +44,18 @@ LOG="${DRILL_LOG:-${TMPDIR:-/tmp}/daemon-drill-$(date -u +%Y%m%dT%H%M%SZ).log}"
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 fail() { log "FAIL: $*"; exit 1; }
 
+# Compose gives the caller's shell variables precedence over --env-file, and
+# docker-compose.yml forwards MOCK_LLM and provider keys into the services. A
+# shell exporting MOCK_LLM=false or a real key must never reach a provider
+# from this synthetically attested stack, so Compose sees only the drill's
+# values (plus what it needs to find Docker).
 compose() {
-  docker compose -p "$PROJECT" --project-directory "$ROOT" \
+  env -i PATH="$PATH" HOME="$HOME" \
+    ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
+    ${DOCKER_CONTEXT:+DOCKER_CONTEXT="$DOCKER_CONTEXT"} \
+    ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} \
+    ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} \
+    docker compose -p "$PROJECT" --project-directory "$ROOT" \
     -f "$ROOT/docker-compose.yml" -f "$OVERRIDE" --env-file "$ENV_FILE" "$@"
 }
 
@@ -79,6 +89,11 @@ values = {
     "DAEMON_INFERENCE_POLICY": "config/inference_policy.production.json",
     "DURABLE_CHAT_ENABLED": "true",
 }
+# No credentials of any kind: Compose would otherwise default these to blank
+# with a warning each. Blank keys also mean no provider could be reached.
+for key in ("OPENROUTER_API_KEY", "VOYAGE_API_KEY", "OPENAI_API_KEY",
+            "BRAVE_API_KEY", "XAI_API_KEY", "FAL_KEY", "DAEMON_ADMIN_API_KEY"):
+    values[key] = ""
 with open(path, "w") as handle:
     for key, value in values.items():
         handle.write(f"{key}={value}\n")
@@ -184,6 +199,11 @@ log "building and starting project '$PROJECT' from $ROOT (port $PORT)"
 compose build migrate backend worker >>"$LOG" 2>&1 || fail "build failed (see log)"
 compose up -d postgres redis migrate backend worker >>"$LOG" 2>&1 || fail "up failed"
 wait_health
+for service in backend worker; do
+  # Belt and braces: the mock must be what each service actually runs with.
+  mock=$(compose exec -T "$service" printenv MOCK_LLM 2>/dev/null | tr -d '\r\n' || true)
+  [[ "$mock" == "true" ]] || fail "$service runs with MOCK_LLM='$mock', not the mock"
+done
 
 SETUP=""
 for _ in $(seq 1 30); do
