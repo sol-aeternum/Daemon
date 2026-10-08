@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  isPrivateArtifactRequest,
   clearCachedPrivateEntries,
   isBackendApiRequest,
   isPrivateTaskRequest,
@@ -180,5 +181,68 @@ describe('backend origin (#474)', () => {
     } as unknown as CacheStorage;
     await clearCachedPrivateEntries(storage, app, 'https://api.daemon.test');
     expect([...entries.keys()]).toEqual(['https://daemon.test/icons/icon.png']);
+  });
+});
+
+describe('generated artifacts (#481 review)', () => {
+  const app = 'https://daemon.test';
+
+  it('are never cached, through the app origin or the backend', () => {
+    for (const origin of [app, 'https://backend.fixture']) {
+      for (const path of [
+        '/generated-images/a.png',
+        '/generated-files/report.csv',
+        '/generated-audio/b.mp3',
+      ]) {
+        const url = new URL(`${origin}${path}`);
+        expect(isPrivateArtifactRequest(url)).toBe(true);
+        expect(shouldUseGeneralRuntimeCache(url, origin === app, app)).toBe(
+          false,
+        );
+      }
+    }
+    expect(isPrivateArtifactRequest(new URL(`${app}/icons/icon.png`))).toBe(
+      false,
+    );
+    expect(isPrivateArtifactRequest(new URL(`${app}/generated-imagesx`))).toBe(
+      false,
+    );
+  });
+
+  it('are purged from the general and image caches an earlier worker filled', async () => {
+    const caches = new Map<string, Map<string, true>>([
+      [
+        'others',
+        new Map([
+          [`${app}/generated-files/report.csv`, true],
+          [`${app}/chat`, true],
+        ]),
+      ],
+      [
+        'images',
+        new Map([
+          [`${app}/generated-images/a.png`, true],
+          [`${app}/icons/icon.png`, true],
+        ]),
+      ],
+      ['fonts', new Map([[`${app}/generated-files/odd.woff2`, true]])],
+    ]);
+    const storage = {
+      keys: async () => [...caches.keys()],
+      open: async (name: string) => {
+        const entries = caches.get(name)!;
+        return {
+          keys: async () => [...entries.keys()].map((url) => new Request(url)),
+          delete: async (request: Request) => entries.delete(request.url),
+        };
+      },
+    } as unknown as CacheStorage;
+    await clearCachedPrivateEntries(storage, app, app);
+    expect([...caches.get('others')!.keys()]).toEqual([`${app}/chat`]);
+    expect([...caches.get('images')!.keys()]).toEqual([
+      `${app}/icons/icon.png`,
+    ]);
+    // Only the runtime caches that could hold them are touched.
+    expect(caches.get('fonts')!.size).toBe(1);
   });
 });

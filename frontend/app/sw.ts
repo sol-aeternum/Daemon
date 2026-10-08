@@ -15,6 +15,7 @@ import {
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  isPrivateArtifactRequest,
   clearCachedPrivateEntries,
   isBackendApiRequest,
   isPrivateTaskRequest,
@@ -36,6 +37,12 @@ declare const self: ServiceWorkerGlobalScope;
 const runtimeCaching: RuntimeCaching[] = [
   {
     matcher: ({ url }) => isPrivateSpeechRequest(url),
+    handler: new NetworkOnly(),
+  },
+  {
+    // Generated artifacts belong to one account and are checked on every
+    // read, on any origin (ahead of the image cache below).
+    matcher: ({ url }) => isPrivateArtifactRequest(url),
     handler: new NetworkOnly(),
   },
   {

@@ -13,6 +13,16 @@ export function isPrivateSpeechRequest(url: URL): boolean {
 }
 
 /**
+ * Generated images, files and audio are the account's own artifacts, served
+ * only to their owner. They are never cached, whether they come from the
+ * backend or through the app's own origin (the ``/generated-files/`` proxy
+ * route), where the backend-origin rule cannot see them.
+ */
+export function isPrivateArtifactRequest(url: URL): boolean {
+  return /^\/generated-(?:images|files|audio)\//.test(url.pathname);
+}
+
+/**
  * Durable task reads carry message content and live status for the signed-in
  * account, also when they go straight to the backend origin.
  */
@@ -70,35 +80,46 @@ export function shouldUseGeneralRuntimeCache(
     !isSameOriginApiRequest(url, sameOrigin) &&
     !/^\/home-suggestions(?:\/|$)/.test(url.pathname) &&
     !isPrivateSpeechRequest(url) &&
+    !isPrivateArtifactRequest(url) &&
     !isPrivateTaskRequest(url) &&
     !isBackendApiRequest(url, appOrigin) &&
     !isWebSnapshotRequest(url, appOrigin)
   );
 }
 
+/** Runtime caches an earlier worker could have stored private responses in. */
+const PRIVATE_ENTRY_CACHES = ['others', 'images'];
+
 /**
  * Remove private responses an earlier service worker may have cached in the
- * general runtime cache: task reads and anything from the backend (before
- * they were network-only). Other entries and caches are left alone; nothing
- * is created.
+ * general and image runtime caches: task reads, generated artifacts and
+ * anything from the backend (before they were network-only). Other entries
+ * and caches are left alone; nothing is created.
  */
 export async function clearCachedPrivateEntries(
   storage: CacheStorage,
   appOrigin: string,
   configured = configuredSnapshotApiBase(),
 ): Promise<void> {
-  if (!(await storage.keys()).includes('others')) return;
-  const cache = await storage.open('others');
-  const requests = await cache.keys();
+  const present = await storage.keys();
   await Promise.all(
-    requests
-      .filter((request) => {
-        const url = new URL(request.url);
-        return (
-          isPrivateTaskRequest(url, configured) ||
-          isBackendApiRequest(url, appOrigin, configured)
+    PRIVATE_ENTRY_CACHES.filter((name) => present.includes(name)).map(
+      async (name) => {
+        const cache = await storage.open(name);
+        const requests = await cache.keys();
+        await Promise.all(
+          requests
+            .filter((request) => {
+              const url = new URL(request.url);
+              return (
+                isPrivateTaskRequest(url, configured) ||
+                isPrivateArtifactRequest(url) ||
+                isBackendApiRequest(url, appOrigin, configured)
+              );
+            })
+            .map((request) => cache.delete(request)),
         );
-      })
-      .map((request) => cache.delete(request)),
+      },
+    ),
   );
 }
