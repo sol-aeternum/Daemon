@@ -283,9 +283,10 @@ npx svg-to-png public/icons/icon.svg --width 512 --height 512 -o public/icons/ic
 
 `next.config.mjs` wires Serwist into production webpack builds, registers the
 generated worker automatically, and leaves service workers disabled outside
-production. `app/sw.ts` is the source of truth for precaching, activation, and
-runtime cache policy. Generated worker bundles are ignored and recreated by the
-locked production build.
+production. `app/sw.ts` is the source of truth for precaching and activation;
+the runtime cache rules, in match order, are in `lib/pwaRuntimeCaching.ts`.
+Generated worker bundles are ignored and recreated by the locked production
+build.
 
 **Caching Strategies:**
 
@@ -299,8 +300,10 @@ locked production build.
      `/generated-audio/`) on any origin, matched on the decoded path; fetched with
      `cache: 'no-store'` so the browser's HTTP cache is bypassed too (the backend and
      the `/generated-files/` proxy also send `Cache-Control: private, no-store`)
-   - Everything from the configured backend origin, durable task reads, speech and
-     web snapshots
+   - Speech (`/tts`), also fetched with `cache: 'no-store'`; the artifact rule comes
+     first so no overlapping rule shadows it (`/generated-audio/` is also speech)
+   - Everything from the configured backend origin, durable task reads and web
+     snapshots
    - On activation, matching entries an earlier worker stored are removed from all
      runtime caches (the three below and the general `others` fallback); app assets
      and the precache are left alone
