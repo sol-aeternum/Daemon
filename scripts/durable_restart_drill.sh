@@ -19,9 +19,11 @@
 #   C  an observer reattaches after a backend restart and sees the result.
 #
 # Usage: scripts/durable_restart_drill.sh [--keep]   (--keep: leave the stack up)
+# Each run uses its own Compose project (daemon-drill-<random>, or
+# DRILL_PROJECT), which must not exist yet; only that project is removed.
 set -euo pipefail
 
-PROJECT="${DRILL_PROJECT:-daemon-drill}"
+PROJECT="${DRILL_PROJECT:-daemon-drill-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')}"
 PORT="${DRILL_PORT:-18080}"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
@@ -37,9 +39,6 @@ if [[ -e "$ROOT/.env" ]]; then
   echo "refusing to run from a checkout with a .env; use a clean worktree" >&2
   exit 2
 fi
-WORK="$(mktemp -d)"
-ENV_FILE="$WORK/drill.env"
-OVERRIDE="$WORK/drill.override.yml"
 BASE="http://127.0.0.1:$PORT"
 LOG="${DRILL_LOG:-${TMPDIR:-/tmp}/daemon-drill-$(date -u +%Y%m%dT%H%M%SZ).log}"
 
@@ -63,37 +62,82 @@ compose() {
     -f "$ROOT/docker-compose.yml" -f "$OVERRIDE" --env-file "$ENV_FILE" "$@"
 }
 
+# Lists the project's Docker resources of one kind; fails (never prints
+# nothing) when Docker cannot be asked.
+project_resources() { # kind
+  local all=()
+  [[ $1 == container ]] && all=(--all)
+  docker "$1" ls -q "${all[@]}" --filter "label=com.docker.compose.project=$PROJECT"
+}
+
+SCENARIOS_PASSED=0
 cleanup() {
-  local status=$?
+  local status=$? kind left
   if [[ $KEEP -eq 0 ]]; then
-    compose down -v --remove-orphans >/dev/null 2>&1 || true
+    # Teardown is part of the result: a stack left running (flag on, mock
+    # stack, volumes) fails the drill with the command to remove it.
+    if ! compose down -v --remove-orphans >>"$LOG" 2>&1; then
+      log "FAIL: teardown failed; remove it with: docker compose -p $PROJECT down -v --remove-orphans"
+      status=1
+    fi
+    for kind in container volume network; do
+      if ! left=$(project_resources "$kind" 2>>"$LOG") || [[ -n "$left" ]]; then
+        log "FAIL: project $PROJECT still has a $kind (or Docker could not be asked); remove it with: docker compose -p $PROJECT down -v --remove-orphans"
+        status=1
+        break
+      fi
+    done
   fi
   for dir in "${CREATED_DIRS[@]}"; do rmdir "$dir" 2>/dev/null || true; done
   rm -rf "$WORK"
+  rmdir "$LOCK" 2>/dev/null || true
+  if [[ $status -eq 0 && $SCENARIOS_PASSED -eq 1 ]]; then
+    if [[ $KEEP -eq 1 ]]; then
+      log "ALL PASS (stack kept as project $PROJECT; teardown not verified)"
+    else
+      log "ALL PASS (project $PROJECT removed and verified gone)"
+    fi
+  fi
   echo "drill log: $LOG"
   exit $status
 }
-# Teardown runs "down -v", which deletes the project's volumes: never adopt
-# a project that already exists (an earlier --keep run, or a name another
-# stack uses). Checked before the teardown trap is installed.
+
+# Teardown runs "down -v", which deletes the project's volumes: this run must
+# own the project. Reserve its name first (two runs with the same name cannot
+# both pass), then refuse a name that already has any resource, failing
+# closed if Docker cannot be asked. All before the teardown trap exists.
+LOCK="${TMPDIR:-/tmp}/$PROJECT.drill-lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "refusing to run: another drill holds project '$PROJECT' ($LOCK)" >&2
+  exit 2
+fi
 for kind in container volume network; do
-  all=(); [[ $kind == container ]] && all=(--all)
-  if [[ -n "$(docker "$kind" ls -q "${all[@]}" \
-      --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)" ]]; then
+  if ! existing=$(project_resources "$kind"); then
+    rmdir "$LOCK"
+    echo "refusing to run: could not list Docker ${kind}s for project '$PROJECT'" >&2
+    exit 2
+  fi
+  if [[ -n "$existing" ]]; then
+    rmdir "$LOCK"
     echo "refusing to run: Compose project '$PROJECT' already has a $kind." >&2
     echo "Remove it, or set DRILL_PROJECT to an unused name." >&2
     exit 2
   fi
 done
 # The override below uses !override and !reset (Compose 2.24.4 or later).
-COMPOSE_VERSION=$(docker compose version --short 2>/dev/null | sed 's/^v//')
+COMPOSE_VERSION=$(docker compose version --short 2>/dev/null | sed 's/^v//' || true)
 if ! printf '2.24.4\n%s\n' "$COMPOSE_VERSION" | sort -VC; then
+  rmdir "$LOCK"
   echo "refusing to run: Docker Compose 2.24.4 or later is required (found '${COMPOSE_VERSION:-none}')" >&2
   exit 2
 fi
 
+WORK="$(mktemp -d)"
+ENV_FILE="$WORK/drill.env"
+OVERRIDE="$WORK/drill.override.yml"
 CREATED_DIRS=()
 trap cleanup EXIT
+log "project $PROJECT reserved"
 
 python3 - "$ENV_FILE" <<'PY'
 import base64, os, secrets, sys
@@ -339,4 +383,5 @@ log "C: PASS (reattached observer saw the task complete)"
 LEFT=$(find "$ROOT" -path "$ROOT/.venv" -prune -o -path "$ROOT/frontend/node_modules" -prune \
   -o -not -user "$(id -u)" -print 2>/dev/null | head -3)
 [[ -z "$LEFT" ]] || fail "files not owned by you were left in the checkout: $LEFT"
-log "ALL PASS"
+log "all scenarios passed; tearing down"
+SCENARIOS_PASSED=1
