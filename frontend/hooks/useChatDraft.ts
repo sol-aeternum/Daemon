@@ -105,6 +105,7 @@ export function useChatDraft(conversationId: string | null) {
   return {
     input: draft.input,
     pendingAttachments: draft.pendingAttachments,
+    restoredKey: draft.restoredKey,
     setInput: binding.setInput,
     setPendingAttachments: binding.setPendingAttachments,
     resetDraft: binding.resetDraft,

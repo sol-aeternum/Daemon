@@ -19,6 +19,7 @@ import {
 } from '../lib/pendingSubmission';
 import {
   heldSubmission,
+  heldSubmissionComplete,
   heldSubmissionsReady,
   isHeldResend,
   latestHeldSubmission,
@@ -481,6 +482,20 @@ function ChatContent() {
   const activeSubmissionScopeRef = useRef<string | null>(null);
   // A new send starts with no key of its own until its transport assigns
   // one: an early Stop must never resolve an earlier submission's task.
+  // A held submission that lost some of its files (too large to keep, or
+  // expired) can't be resent under its key: that would be a different
+  // request. With no task for its key, it is dropped, and the owner told.
+  const dropIncompleteHeld = useCallback(
+    (key: string): boolean => {
+      if (!heldSubmission(key) || heldSubmissionComplete(key)) return false;
+      settleSubmission(key);
+      showError(
+        'A message that may not have been sent could not be recovered with its files. Please attach them and send it again.',
+      );
+      return true;
+    },
+    [showError],
+  );
   const beginSend = (key: string | null = null) => {
     // The key is known here for every keyed send; the transport confirms it.
     activeSubmissionKeyRef.current = key;
@@ -993,7 +1008,12 @@ function ChatContent() {
     // The key belongs to the submitted draft: resending the held draft
     // unchanged (after a lost response or a reload) reuses its key, so the
     // backend replays what it already accepted. Anything else is new.
-    const held = command ? undefined : latestHeldSubmission(conversationScope);
+    // Only the draft that was put back from a held submission, unedited, is
+    // its resend; the same text typed anew is a new request with a new key.
+    const held =
+      command || !draft.restoredKey
+        ? undefined
+        : heldSubmission(draft.restoredKey);
     const resend = isHeldResend(held, input, pendingAttachments);
     const key = resend ? held.key : crypto.randomUUID();
     if (resend) resentKeysRef.current.add(key);
@@ -1076,6 +1096,7 @@ function ChatContent() {
         // sending it again reuses its key (safe even if it lands late).
         notFound: (key) => {
           void heldSubmissionsReady().then(() => {
+            if (dropIncompleteHeld(key)) return;
             if (restoreHeldSubmission(key)) {
               showError(
                 'Your message may not have been sent. It is back in the composer; send it again to retry.',
@@ -1106,6 +1127,7 @@ function ChatContent() {
         },
       }),
     [
+      dropIncompleteHeld,
       refreshCurrentConversation,
       setMessages,
       showError,
@@ -1120,6 +1142,7 @@ function ChatContent() {
     // composer is empty again.
     returnRejectedRef.current = async (key: string) => {
       await heldSubmissionsReady();
+      if (dropIncompleteHeld(key)) return;
       if (restoreHeldSubmission(key)) {
         settleSubmission(key);
       } else if (heldSubmission(key)) {
@@ -1131,7 +1154,7 @@ function ChatContent() {
         settlePendingSubmission(key);
       }
     };
-  }, [reconcileWithServer, showError]);
+  }, [dropIncompleteHeld, reconcileWithServer, showError]);
   useEffect(() => {
     if (input || pendingAttachments.length > 0) return;
     for (const key of rejectedWaitingRef.current) {
@@ -1159,6 +1182,7 @@ function ChatContent() {
         if (task === null) {
           // Never accepted. A held draft goes back to its composer (sending
           // it reuses the key); without one there is nothing to resend.
+          if (dropIncompleteHeld(key)) continue;
           if (!restoreHeldSubmission(key) && !heldSubmission(key)) {
             settlePendingSubmission(key);
           }
@@ -1170,7 +1194,7 @@ function ChatContent() {
         }
       }
     })();
-  }, [taskForKey]);
+  }, [dropIncompleteHeld, taskForKey]);
   useEffect(() => {
     stopInFlightRef.current = stopInFlight;
   }, [stopInFlight]);

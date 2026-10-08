@@ -25,6 +25,11 @@ export interface ChatDraft {
   pendingAttachments: DraftAttachment[];
   /** Changes only on explicit discard; old setters cannot undo a reset. */
   epoch: number;
+  /**
+   * The held submission this draft was put back from. Cleared by any edit:
+   * only the restored draft itself, unchanged, may resend under that key.
+   */
+  restoredKey?: string;
 }
 
 interface DraftEntry {
@@ -51,6 +56,8 @@ export interface HeldSubmission {
   conversationId: string | null;
   readonly input: string;
   pendingAttachments: DraftAttachment[];
+  /** How many files it was sent with; fewer present means it cannot be replayed. */
+  readonly attachmentCount: number;
 }
 
 export interface ChatDraftSubmission {
@@ -109,7 +116,14 @@ function persist(): void {
     }
     for (const id of attachmentIds) referenced.add(id);
     if (input || attachmentIds.length > 0) {
-      drafts.push({ conversationId, input, attachmentIds });
+      drafts.push({
+        conversationId,
+        input,
+        attachmentIds,
+        ...(entry.snapshot.restoredKey
+          ? { restoredKey: entry.snapshot.restoredKey }
+          : {}),
+      });
     }
   }
   const heldRecords: PersistedHeld[] = [];
@@ -134,6 +148,7 @@ function persist(): void {
       conversationId: submission.conversationId,
       input: submission.input,
       attachmentIds,
+      attachmentCount: submission.attachmentCount,
     });
   }
   const stale = [...persistedIds.keys()].filter((id) => !referenced.has(id));
@@ -226,7 +241,14 @@ function hydrate(): void {
   const saved = loadDraftText();
   for (const draft of saved) {
     const entry: DraftEntry = {
-      snapshot: { input: draft.input, pendingAttachments: [], epoch: 0 },
+      snapshot: {
+        input: draft.input,
+        pendingAttachments: [],
+        epoch: 0,
+        ...(typeof draft.restoredKey === 'string'
+          ? { restoredKey: draft.restoredKey }
+          : {}),
+      },
     };
     entries.set(draft.conversationId, entry);
     if (draft.attachmentIds.length > 0) {
@@ -241,6 +263,7 @@ function hydrate(): void {
       conversationId: record.conversationId,
       input: record.input,
       pendingAttachments: [],
+      attachmentCount: record.attachmentCount ?? record.attachmentIds.length,
     });
     if (record.attachmentIds.length > 0) {
       heldRestores.set(record.key, record.attachmentIds);
@@ -343,7 +366,7 @@ export function setChatDraftInput(
   // An updater may itself change auth/reset the draft. Recheck before writing.
   if (!isCurrent(scope) || scope.entry.snapshot !== previous) return;
   if (input === previous.input) return;
-  scope.entry.snapshot = { ...previous, input };
+  scope.entry.snapshot = { ...previous, input, restoredKey: undefined };
   emit();
 }
 
@@ -357,7 +380,11 @@ export function setChatDraftAttachments(
   if (!isCurrent(scope) || scope.entry.snapshot !== previous) return;
   if (pendingAttachments === previous.pendingAttachments) return;
   cancelRestore(scope.entry);
-  scope.entry.snapshot = { ...previous, pendingAttachments };
+  scope.entry.snapshot = {
+    ...previous,
+    pendingAttachments,
+    restoredKey: undefined,
+  };
   emit();
 }
 
@@ -382,6 +409,7 @@ export function clearSubmittedChatDraft(
   }
   scope.entry.snapshot = {
     ...previous,
+    restoredKey: undefined,
     input: previous.input === input ? '' : previous.input,
     pendingAttachments:
       previous.pendingAttachments === pendingAttachments
@@ -448,6 +476,7 @@ export function holdSubmission(
     conversationId: scope.conversationId,
     input,
     pendingAttachments: [...pendingAttachments],
+    attachmentCount: pendingAttachments.length,
   });
   emit();
 }
@@ -496,6 +525,20 @@ export function promoteHeldSubmission(
   emit();
 }
 
+/**
+ * Whether a held submission still has every file it was sent with. One whose
+ * files could not be kept (too large, or expired) cannot be replayed under
+ * its key: resending it would be a different request.
+ */
+export function heldSubmissionComplete(key: string): boolean {
+  const submission = held.get(key);
+  return (
+    !!submission &&
+    !heldRestores.has(key) &&
+    submission.pendingAttachments.length === submission.attachmentCount
+  );
+}
+
 /** Resolves once held submissions' files are back after a reload. */
 export function heldSubmissionsReady(): Promise<void> {
   return heldHydrated;
@@ -509,7 +552,7 @@ export function heldSubmissionsReady(): Promise<void> {
  */
 export function restoreHeldSubmission(key: string): boolean {
   const submission = held.get(key);
-  if (!submission || heldRestores.has(key)) return false;
+  if (!submission || !heldSubmissionComplete(key)) return false;
   let entry = entries.get(submission.conversationId);
   if (entry) {
     const { input, pendingAttachments } = entry.snapshot;
@@ -523,6 +566,7 @@ export function restoreHeldSubmission(key: string): boolean {
     ...entry.snapshot,
     input: submission.input,
     pendingAttachments: [...submission.pendingAttachments],
+    restoredKey: key,
   };
   emit();
   return true;

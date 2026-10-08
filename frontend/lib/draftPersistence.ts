@@ -21,6 +21,8 @@ export interface PersistedDraft {
   conversationId: string | null;
   input: string;
   attachmentIds: string[];
+  /** The held submission this draft was restored from, if unedited. */
+  restoredKey?: string;
 }
 
 /** A sent draft held until its outcome is known (see lib/chatDrafts). */
@@ -29,6 +31,8 @@ export interface PersistedHeld {
   conversationId: string | null;
   input: string;
   attachmentIds: string[];
+  /** How many files the submission had (some may not have been persistable). */
+  attachmentCount?: number;
 }
 
 export interface PersistedAttachment {

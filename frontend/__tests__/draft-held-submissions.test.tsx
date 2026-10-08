@@ -5,6 +5,7 @@ import * as auth from '../lib/auth';
 import {
   getChatDraft,
   heldSubmission,
+  heldSubmissionComplete,
   heldSubmissionsReady,
   isHeldResend,
   latestHeldSubmission,
@@ -143,6 +144,27 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     expect(getChatDraft('conv-a').pendingAttachments.map((a) => a.id)).toEqual([
       'att-1',
     ]);
+  });
+
+  it('cannot be replayed once a file is gone (too large to keep, or expired)', async () => {
+    sendFrom('conv-a', 'key-1');
+    await flush();
+    cleanup();
+    store.records.clear(); // the file expired (or was never persistable)
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    expect(heldSubmission('key-1')?.input).toBe('Summarise the notes');
+    expect(heldSubmissionComplete('key-1')).toBe(false);
+    expect(restoreHeldSubmission('key-1')).toBe(false);
+  });
+
+  it('mark the restored draft with its key until the draft is edited', () => {
+    sendFrom('conv-a', 'key-1');
+    expect(restoreHeldSubmission('key-1')).toBe(true);
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    expect(result.current.restoredKey).toBe('key-1');
+    act(() => result.current.setInput('Summarise the notes, briefly'));
+    expect(result.current.restoredKey).toBeUndefined();
   });
 
   it('follow a new chat to its conversation and are released with the outcome', () => {

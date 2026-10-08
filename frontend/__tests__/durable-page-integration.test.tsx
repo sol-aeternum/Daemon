@@ -335,6 +335,33 @@ function rejectedReply(status: number, code: string) {
   };
 }
 
+describe('identical text typed again (#479 review)', () => {
+  it('is a new request, not a resend of a held submission', async () => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    state.send.mockResolvedValue(undefined);
+    render(<ChatPage />);
+    const composer = await screen.findByLabelText('Composer');
+    fireEvent.change(composer, { target: { value: 'same words' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe(''),
+    );
+    // The first is still unresolved (held), but this draft was typed anew.
+    fireEvent.change(screen.getByLabelText('Composer'), {
+      target: { value: 'same words' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).not.toBe(
+      state.send.mock.calls[0][1].body.idempotency_key,
+    );
+  });
+});
+
 describe('a submission refused before acceptance (#476, #479 review)', () => {
   beforeEach(() => {
     state.conversation = runningConversation(false);
