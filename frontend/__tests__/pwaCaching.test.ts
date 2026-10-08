@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  isPrivateArtifactRequest,
   clearCachedPrivateEntries,
   isBackendApiRequest,
   isPrivateTaskRequest,
@@ -180,5 +181,126 @@ describe('backend origin (#474)', () => {
     } as unknown as CacheStorage;
     await clearCachedPrivateEntries(storage, app, 'https://api.daemon.test');
     expect([...entries.keys()]).toEqual(['https://daemon.test/icons/icon.png']);
+  });
+});
+
+describe('generated artifacts (#481 review)', () => {
+  const app = 'https://daemon.test';
+
+  it('are never cached, through the app origin or the backend', () => {
+    for (const origin of [app, 'https://backend.fixture']) {
+      for (const path of [
+        '/generated-images/a.png',
+        '/generated-files/report.csv',
+        '/generated-audio/b.mp3',
+      ]) {
+        const url = new URL(`${origin}${path}`);
+        expect(isPrivateArtifactRequest(url)).toBe(true);
+        expect(shouldUseGeneralRuntimeCache(url, origin === app, app)).toBe(
+          false,
+        );
+      }
+    }
+    expect(isPrivateArtifactRequest(new URL(`${app}/icons/icon.png`))).toBe(
+      false,
+    );
+    expect(isPrivateArtifactRequest(new URL(`${app}/generated-imagesx`))).toBe(
+      false,
+    );
+  });
+
+  it('are recognised however their path is encoded (#484 review)', () => {
+    for (const path of [
+      '/%67enerated-images/a.png',
+      '/generated-images%2Fa.png',
+      '/generated%2Dfiles/report.csv',
+      '//generated-audio/b.mp3',
+    ]) {
+      const url = new URL(`${app}${path}`);
+      expect(isPrivateArtifactRequest(url)).toBe(true);
+      expect(shouldUseGeneralRuntimeCache(url, true, app)).toBe(false);
+    }
+    // Undecodable: treated as private rather than cached.
+    expect(isPrivateArtifactRequest(new URL(`${app}/%E0%A4%A.png`))).toBe(true);
+    expect(isPrivateArtifactRequest(new URL(`${app}/icons/%69con.png`))).toBe(
+      false,
+    );
+  });
+
+  it('are recognised under a path-prefixed API base', () => {
+    expect(
+      isPrivateArtifactRequest(
+        new URL(`${app}/daemon/generated-files/report.csv`),
+        `${app}/daemon`,
+      ),
+    ).toBe(true);
+    expect(
+      isPrivateArtifactRequest(
+        new URL(`${app}/other/generated-files/report.csv`),
+        `${app}/daemon`,
+      ),
+    ).toBe(false);
+  });
+
+  it('are purged from every runtime cache an earlier worker filled', async () => {
+    const caches = new Map<string, Map<string, true>>([
+      [
+        'others',
+        new Map([
+          [`${app}/generated-files/report.csv`, true],
+          [`${app}/chat`, true],
+        ]),
+      ],
+      [
+        'images',
+        new Map([
+          [`${app}/generated-images/a.png`, true],
+          [`${app}/%67enerated-images/b.png`, true],
+          [`${app}/icons/icon.png`, true],
+        ]),
+      ],
+      [
+        'static-resources',
+        new Map([
+          [`${app}/generated-files/report.js`, true],
+          [`${app}/generated-files/theme.css`, true],
+          [`${app}/_next/static/app.js`, true],
+        ]),
+      ],
+      [
+        'fonts',
+        new Map([
+          [`${app}/generated-files/odd.woff2`, true],
+          [`${app}/fonts/inter.woff2`, true],
+        ]),
+      ],
+      [
+        'serwist-precache-v2',
+        new Map([[`${app}/generated-files/never-here.js`, true]]),
+      ],
+    ]);
+    const storage = {
+      keys: async () => [...caches.keys()],
+      open: async (name: string) => {
+        const entries = caches.get(name)!;
+        return {
+          keys: async () => [...entries.keys()].map((url) => new Request(url)),
+          delete: async (request: Request) => entries.delete(request.url),
+        };
+      },
+    } as unknown as CacheStorage;
+    await clearCachedPrivateEntries(storage, app, app);
+    expect([...caches.get('others')!.keys()]).toEqual([`${app}/chat`]);
+    expect([...caches.get('images')!.keys()]).toEqual([
+      `${app}/icons/icon.png`,
+    ]);
+    expect([...caches.get('static-resources')!.keys()]).toEqual([
+      `${app}/_next/static/app.js`,
+    ]);
+    expect([...caches.get('fonts')!.keys()]).toEqual([
+      `${app}/fonts/inter.woff2`,
+    ]);
+    // The precache is not a runtime cache and is left alone.
+    expect(caches.get('serwist-precache-v2')!.size).toBe(1);
   });
 });

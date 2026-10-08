@@ -283,28 +283,47 @@ npx svg-to-png public/icons/icon.svg --width 512 --height 512 -o public/icons/ic
 
 `next.config.mjs` wires Serwist into production webpack builds, registers the
 generated worker automatically, and leaves service workers disabled outside
-production. `app/sw.ts` is the source of truth for precaching, activation, and
-runtime cache policy. Generated worker bundles are ignored and recreated by the
-locked production build.
+production. `app/sw.ts` is the source of truth for precaching and activation;
+the runtime cache rules, in match order, are in `lib/pwaRuntimeCaching.ts`.
+Generated worker bundles are ignored and recreated by the locked production
+build.
 
 **Caching Strategies:**
 
-1. **Same-origin API Routes** (`/api/*`): NetworkOnly
+1. **Same-origin API Routes** (`/api/*`): network only, never cached
    - Never caches authenticated API responses
    - Explicitly excluded from the general runtime-cache fallback
    - Removes cache names used by legacy API-caching configurations on activation
 
-2. **Static Assets** (JS, CSS): CacheFirst
+2. **Private responses**: network only and never cached, matched before every
+   extension-based rule
+   - Generated images, files and audio (`/generated-images/`, `/generated-files/`,
+     `/generated-audio/`) on any origin, matched on the decoded path; refetched with
+     `cache: 'no-store'` by `fetchPrivateUncached`, navigations included (Serwist's
+     `NetworkOnly` drops `fetchOptions` for navigations and may answer with the
+     navigation preload, which the HTTP cache can serve), so the browser's HTTP cache
+     is bypassed too (the backend and the `/generated-files/` proxy also send
+     `Cache-Control: private, no-store`)
+   - Speech (`/tts`), fetched the same way; the artifact rule comes
+     first so no overlapping rule shadows it (`/generated-audio/` is also speech)
+   - Everything from the configured backend (its origin, limited to its path prefix
+     when it has one), durable task reads, web snapshots and same-origin `/api/*`,
+     all fetched the same way; artifacts are also matched under the API prefix
+   - On activation, matching entries an earlier worker stored are removed from all
+     runtime caches (the three below and the general `others` fallback); app assets
+     and the precache are left alone
+
+3. **Static Assets** (JS, CSS): CacheFirst
    - Serve from cache immediately
    - Fetch only on cache miss or after expiration
    - 30-day expiration
 
-3. **Images**: StaleWhileRevalidate
+4. **Images**: StaleWhileRevalidate
    - Serve cached version immediately
    - Fetch fresh version in background
    - Next request gets updated image
 
-4. **Fonts**: CacheFirst
+5. **Fonts**: CacheFirst
    - Aggressive caching (1 year)
    - Fonts rarely change
 

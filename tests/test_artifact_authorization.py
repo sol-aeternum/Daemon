@@ -89,6 +89,8 @@ async def test_generated_artifact_downloads_are_scoped_to_authenticated_owner(
         owner_response = await client.get(route)
         assert owner_response.status_code == 200
         assert owner_response.content == b"owner-a"
+        # Never kept by a browser or shared cache (#484 review).
+        assert owner_response.headers["cache-control"] == "private, no-store"
 
         current_owner["user_id"] = USER_B
         wrong_owner_response = await client.get(route)

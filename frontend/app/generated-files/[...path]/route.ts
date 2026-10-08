@@ -52,6 +52,8 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
         headers: {
           'content-type': contentType,
           'content-disposition': contentDisposition,
+          // The owner's artifact: never kept by the browser or a shared cache.
+          'cache-control': 'private, no-store',
         },
       });
     } catch (error) {

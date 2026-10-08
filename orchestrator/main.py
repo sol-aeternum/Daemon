@@ -1848,6 +1848,12 @@ TTS_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "tts_cache"
 TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# Generated artifacts belong to one account and are checked on every read:
+# no browser or shared cache may keep them (filenames can repeat across
+# owners, so a cached copy could be served after an account switch).
+PRIVATE_ARTIFACT_HEADERS = {"Cache-Control": "private, no-store"}
+
+
 @app.get("/generated-images/{filename}")
 async def serve_generated_image(
     filename: str,
@@ -1863,7 +1869,7 @@ async def serve_generated_image(
         media_type = "image/jpeg"
     elif filename.endswith(".webp"):
         media_type = "image/webp"
-    return FileResponse(filepath, media_type=media_type)
+    return FileResponse(filepath, media_type=media_type, headers=PRIVATE_ARTIFACT_HEADERS)
 
 
 def _resolve_safe_file_path(
@@ -1895,7 +1901,7 @@ async def serve_generated_audio(
         media_type = "audio/wav"
     elif filename.endswith((".ogg", ".opus")):
         media_type = "audio/ogg"
-    return FileResponse(filepath, media_type=media_type)
+    return FileResponse(filepath, media_type=media_type, headers=PRIVATE_ARTIFACT_HEADERS)
 
 
 @app.get("/generated-files/{filename}")
@@ -1919,7 +1925,7 @@ async def serve_generated_file(
     elif filename.endswith(".txt"):
         media_type = "text/plain"
 
-    return FileResponse(filepath, media_type=media_type)
+    return FileResponse(filepath, media_type=media_type, headers=PRIVATE_ARTIFACT_HEADERS)
 
 
 @app.post("/tts")
