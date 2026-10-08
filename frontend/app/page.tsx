@@ -19,10 +19,10 @@ import {
 } from '../lib/pendingSubmission';
 import {
   acceptSubmission,
+  heldResendStatus,
   heldSubmission,
   heldSubmissionComplete,
   heldSubmissionsReady,
-  isHeldResend,
   latestHeldSubmission,
   promoteHeldSubmission,
   releaseSubmission,
@@ -796,6 +796,24 @@ function ChatContent() {
     // Retrying an unresolved turn resends it under its own key (a replay if
     // the backend already accepted it); a settled turn regenerates anew.
     const held = latestHeldSubmission(conversationId);
+    const retryAttachments = attachmentsForRetry(
+      lastTurnRef.current,
+      conversationId,
+    );
+    if (
+      held &&
+      (!heldSubmissionComplete(held.key) ||
+        retryAttachments.length !== held.attachmentCount)
+    ) {
+      // Its files are gone (or this page no longer has them): retrying
+      // under its key would send a different request. Resolve it instead;
+      // if it was never accepted it goes back to the composer.
+      showError(
+        'This message cannot be retried with its files. Checking whether it was already sent…',
+      );
+      void reconcileWithServerRef.current?.(held.key);
+      return;
+    }
     if (held) resentKeysRef.current.add(held.key);
     beginSend(held?.key ?? null);
     void regenerate({
@@ -806,7 +824,7 @@ function ChatContent() {
         // Regenerating a turn re-sends its files; without them the backend
         // would see (and run) a different request. Another conversation's
         // files are never sent.
-        attachments: attachmentsForRetry(lastTurnRef.current, conversationId),
+        attachments: retryAttachments,
       },
     });
   };
@@ -1011,12 +1029,27 @@ function ChatContent() {
     // backend replays what it already accepted. Anything else is new.
     // Only the draft that was put back from a held submission, unedited, is
     // its resend; the same text typed anew is a new request with a new key.
-    const held =
-      command || !draft.restoredKey
-        ? undefined
-        : heldSubmission(draft.restoredKey);
-    const resend = isHeldResend(held, input, pendingAttachments);
-    const key = resend ? held.key : crypto.randomUUID();
+    // A draft that is a held submission (``restoredKey``) resends only
+    // exactly what was sent, with every file, under its key. Missing or
+    // still-loading files must never go out under that key, nor rerun the
+    // request under a new one: the key is resolved with the server first.
+    const heldKey = command ? undefined : draft.restoredKey;
+    const status = heldKey
+      ? heldResendStatus(heldKey, input, pendingAttachments)
+      : 'new';
+    if (status === 'loading') {
+      showError('Your attachments are still loading. Try again in a moment.');
+      return;
+    }
+    if (status === 'incomplete' && heldKey) {
+      showError(
+        'Some files of this message are missing, so it cannot be sent again as it was. Checking whether it was already sent…',
+      );
+      void reconcileWithServerRef.current?.(heldKey);
+      return;
+    }
+    const resend = status === 'resend' && !!heldKey;
+    const key = resend && heldKey ? heldKey : crypto.randomUUID();
     if (resend) resentKeysRef.current.add(key);
     if (!command) draft.holdSubmission(key, input, pendingAttachments);
 

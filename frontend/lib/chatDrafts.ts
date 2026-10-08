@@ -26,8 +26,10 @@ export interface ChatDraft {
   /** Changes only on explicit discard; old setters cannot undo a reset. */
   epoch: number;
   /**
-   * The held submission this draft was put back from. Cleared by any edit:
-   * only the restored draft itself, unchanged, may resend under that key.
+   * The held submission this draft is: the draft that was sent (until it is
+   * cleared), or one put back from a held submission. Cleared by any edit:
+   * only that draft itself, unchanged, may resend under that key, and only
+   * that draft is emptied when the server accepts the key.
    */
   restoredKey?: string;
 }
@@ -85,6 +87,8 @@ const held = new Map<string, HeldSubmission>();
 const heldRestores = new Map<string, string[]>();
 // Settles once held submissions' files are back after a reload (or at once).
 let heldHydrated: Promise<void> = Promise.resolve();
+/** Whether ``heldHydrated`` has resolved (held files are back, or gone). */
+let heldLoaded = true;
 
 function emit(): void {
   persist();
@@ -271,6 +275,7 @@ function hydrate(): void {
     }
   }
   const store = getAttachmentStore();
+  heldLoaded = !store;
   heldHydrated = store
     ? store
         .deleteSavedBefore(Date.now() - ATTACHMENT_TTL_MS)
@@ -281,6 +286,9 @@ function hydrate(): void {
             : undefined,
         )
         .catch(() => undefined)
+        .then(() => {
+          heldLoaded = true;
+        })
     : Promise.resolve();
   if (!store) {
     pendingRestores.clear();
@@ -470,7 +478,28 @@ export function holdSubmission(
     scope.generation !== generation
   )
     return;
+  const existing = held.get(key);
+  // Never overwrite a held submission with a different request (for
+  // example one that lost files): it is the evidence of what was sent.
+  if (
+    existing &&
+    (existing.input !== input ||
+      existing.attachmentCount !== pendingAttachments.length)
+  )
+    return;
   held.delete(key); // re-insert as the newest
+  // The draft being sent is this submission until it is cleared or edited.
+  if (
+    isCurrent(scope) &&
+    sameContent(
+      scope.entry.snapshot.input,
+      scope.entry.snapshot.pendingAttachments,
+      input,
+      pendingAttachments,
+    )
+  ) {
+    scope.entry.snapshot = { ...scope.entry.snapshot, restoredKey: key };
+  }
   held.set(key, {
     key,
     conversationId: scope.conversationId,
@@ -502,9 +531,26 @@ export function isHeldResend(
   input: string,
   pendingAttachments: DraftAttachment[],
 ): submission is HeldSubmission {
-  if (!submission || submission.input !== input) return false;
+  return (
+    !!submission &&
+    sameContent(
+      submission.input,
+      submission.pendingAttachments,
+      input,
+      pendingAttachments,
+    )
+  );
+}
+
+function sameContent(
+  inputA: string,
+  attachmentsA: DraftAttachment[],
+  inputB: string,
+  attachmentsB: DraftAttachment[],
+): boolean {
+  if (inputA !== inputB) return false;
   const ids = (list: DraftAttachment[]) => list.map((a) => a.id).join('\u0000');
-  return ids(submission.pendingAttachments) === ids(pendingAttachments);
+  return ids(attachmentsA) === ids(attachmentsB);
 }
 
 /** The outcome is known: forget the held submission (and, unless used, its files). */
@@ -516,26 +562,17 @@ export function releaseSubmission(key: string): void {
 
 /**
  * The server has the held submission's task (running or finished): forget the
- * submission, and empty its conversation's composer if that still holds
- * exactly what was submitted. Left there (for example restored by a reload
- * while the task ran), sending it again would be a new request under a new
- * key and run the same work twice. A composer edited since is kept.
+ * submission, and empty the composer that still is that submission (marked
+ * with its key: the draft that was sent, or put back, and not edited since,
+ * also after a reload). Left there, sending it again would be a new request
+ * under a new key and run the same work twice. Identity, not text, decides:
+ * the same words typed again are a different draft and are kept.
  */
 export function acceptSubmission(key: string): void {
-  const submission = held.get(key);
-  if (!submission) return;
-  const entry = entries.get(submission.conversationId);
-  if (
-    entry &&
-    !pendingRestores.has(entry) &&
-    heldSubmissionComplete(key) &&
-    (entry.snapshot.input || entry.snapshot.pendingAttachments.length > 0) &&
-    isHeldResend(
-      submission,
-      entry.snapshot.input,
-      entry.snapshot.pendingAttachments,
-    )
-  ) {
+  if (!held.has(key)) return;
+  for (const entry of entries.values()) {
+    if (entry.snapshot.restoredKey !== key) continue;
+    cancelRestore(entry);
     entry.snapshot = {
       ...entry.snapshot,
       input: '',
@@ -569,6 +606,32 @@ export function heldSubmissionComplete(key: string): boolean {
     !heldRestores.has(key) &&
     submission.pendingAttachments.length === submission.attachmentCount
   );
+}
+
+/**
+ * How a draft that is held submission ``key`` (its ``restoredKey``) may be
+ * sent with ``input``/``pendingAttachments``:
+ * - ``new``: nothing is held under the key any more (its outcome is known),
+ *   so this is a new request with a new key;
+ * - ``resend``: exactly the held submission, with every file: resend it under
+ *   its key (a replay if the server already has it);
+ * - ``loading``: its files are still being loaded after a reload;
+ * - ``incomplete``: some of its files are gone. Sending would be a different
+ *   request under the same key, or rerun it under a new one, so it must not
+ *   be sent until the key is resolved with the server.
+ */
+export function heldResendStatus(
+  key: string,
+  input: string,
+  pendingAttachments: DraftAttachment[],
+): 'new' | 'resend' | 'loading' | 'incomplete' {
+  const submission = held.get(key);
+  if (!submission) return 'new';
+  if (!heldLoaded || heldRestores.has(key)) return 'loading';
+  if (!heldSubmissionComplete(key)) return 'incomplete';
+  return isHeldResend(submission, input, pendingAttachments)
+    ? 'resend'
+    : 'incomplete';
 }
 
 /** Resolves once held submissions' files are back after a reload. */

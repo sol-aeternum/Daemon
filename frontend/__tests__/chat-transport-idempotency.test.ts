@@ -163,6 +163,66 @@ it('migrates older records, keeping their keys but not their fingerprints', asyn
   }
 });
 
+function legacyRecord(createdAt: number, taskId?: string): string {
+  return JSON.stringify({
+    fingerprint: 'ab'.repeat(32),
+    scope: 'conv-a',
+    requestConversationId: null,
+    model: 'chosen',
+    provider: null,
+    createdAt,
+    ...(taskId ? { taskId } : {}),
+  });
+}
+
+it('keeps an older record when its migration cannot be written (#479 review)', () => {
+  const createdAt = Date.now() - 1000;
+  storage.setItem(
+    'daemon.pendingSubmission.v4:legacy-key',
+    legacyRecord(createdAt),
+  );
+  const write = storage.setItem;
+  storage.setItem = () => {
+    throw new DOMException('full', 'QuotaExceededError');
+  };
+  // The key is still listed for reconciliation, and nothing was deleted.
+  expect(unresolvedSubmissions().map(({ key }) => key)).toEqual(['legacy-key']);
+  expect(
+    storage.getItem('daemon.pendingSubmission.v4:legacy-key'),
+  ).not.toBeNull();
+  storage.setItem = write;
+  // A later pass migrates it.
+  expect(unresolvedSubmissions().map(({ key }) => key)).toEqual(['legacy-key']);
+  expect(pendingSubmission('legacy-key')?.createdAt).toBe(createdAt);
+  expect(storage.getItem('daemon.pendingSubmission.v4:legacy-key')).toBeNull();
+});
+
+it('never overwrites a current record with an older copy of the same key', () => {
+  registerSubmission('shared-key', {
+    scope: 'conv-new',
+    requestConversationId: null,
+    model: 'current',
+    provider: null,
+  });
+  recordSubmissionTask('shared-key', 'task-new');
+  storage.setItem(
+    'daemon.pendingSubmission.v4:shared-key',
+    legacyRecord(Date.now() - 5000, 'task-old'),
+  );
+  expect(unresolvedSubmissions().map(({ key }) => key)).toEqual(['shared-key']);
+  expect(pendingSubmission('shared-key')?.taskId).toBe('task-new');
+  expect(storage.getItem('daemon.pendingSubmission.v4:shared-key')).toBeNull();
+});
+
+it('settling a key also removes an older copy kept by a failed migration', () => {
+  storage.setItem(
+    'daemon.pendingSubmission.v4:legacy-key',
+    legacyRecord(Date.now() - 1000),
+  );
+  settlePendingSubmission('legacy-key');
+  expect(unresolvedSubmissions()).toEqual([]);
+});
+
 it('falls back to a fresh key when storage is unavailable', async () => {
   vi.stubGlobal('localStorage', undefined);
   const a = await send('hi');
