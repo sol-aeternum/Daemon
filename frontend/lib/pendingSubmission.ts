@@ -325,9 +325,21 @@ export function clearPendingSubmissions(): void {
   const store = storage();
   if (!store) return;
   try {
-    for (const [key] of entries(store, Date.now())) {
-      store.removeItem(ITEM_PREFIX + key);
+    // Every stored form, without migrating first: an older copy kept by a
+    // failed migration must not survive into the next account.
+    const itemKeys: string[] = [];
+    for (let index = 0; index < store.length; index += 1) {
+      const itemKey = store.key(index);
+      if (
+        itemKey &&
+        (itemKey.startsWith(ITEM_PREFIX) ||
+          itemKey === LEGACY_SALT ||
+          LEGACY_PREFIXES.some((prefix) => itemKey.startsWith(prefix)))
+      ) {
+        itemKeys.push(itemKey);
+      }
     }
+    for (const itemKey of itemKeys) store.removeItem(itemKey);
   } catch {
     // Nothing to clear.
   }

@@ -998,37 +998,6 @@ function ChatContent() {
     )
       return;
 
-    const generation = getAuthGeneration();
-    const binding = draft.setInput;
-    const receipt = draft.captureSubmission(input, pendingAttachments);
-    const trimmedInput = (command ?? input).trim();
-    const attachments =
-      !command && pendingAttachments.length > 0
-        ? await serializeAttachments(pendingAttachments)
-        : [];
-    if (
-      !chatMountedRef.current ||
-      generation !== getAuthGeneration() ||
-      draftRef.current.setInput !== binding
-    )
-      return;
-    const content =
-      trimmedInput ||
-      (attachments.length > 0
-        ? `Attached ${attachments.length} file${attachments.length === 1 ? '' : 's'}.`
-        : '');
-
-    if (!content) return;
-
-    suggestionSubmissionRef.current = null;
-    const conversationScope =
-      currentId || latestConversationIdRef.current || null;
-    lastTurnRef.current = { conversationId: conversationScope, attachments };
-    // The key belongs to the submitted draft: resending the held draft
-    // unchanged (after a lost response or a reload) reuses its key, so the
-    // backend replays what it already accepted. Anything else is new.
-    // Only the draft that was put back from a held submission, unedited, is
-    // its resend; the same text typed anew is a new request with a new key.
     // A draft that is a held submission (``restoredKey``) resends only
     // exactly what was sent, with every file, under its key. Missing or
     // still-loading files must never go out under that key, nor rerun the
@@ -1050,6 +1019,42 @@ function ChatContent() {
     }
     const resend = status === 'resend' && !!heldKey;
     const key = resend && heldKey ? heldKey : crypto.randomUUID();
+    const generation = getAuthGeneration();
+    const binding = draft.setInput;
+    const receipt = draft.captureSubmission(input, pendingAttachments);
+    const trimmedInput = (command ?? input).trim();
+    const attachments =
+      !command && pendingAttachments.length > 0
+        ? await serializeAttachments(pendingAttachments)
+        : [];
+    if (
+      !chatMountedRef.current ||
+      generation !== getAuthGeneration() ||
+      draftRef.current.setInput !== binding
+    )
+      return;
+    // The held submission may have been resolved while its files were read
+    // (the server had it, or refused it): this send is then not needed, and
+    // must never go out again under a new key.
+    if (resend && heldResendStatus(key, input, pendingAttachments) !== 'resend')
+      return;
+    const content =
+      trimmedInput ||
+      (attachments.length > 0
+        ? `Attached ${attachments.length} file${attachments.length === 1 ? '' : 's'}.`
+        : '');
+
+    if (!content) return;
+
+    suggestionSubmissionRef.current = null;
+    const conversationScope =
+      currentId || latestConversationIdRef.current || null;
+    lastTurnRef.current = { conversationId: conversationScope, attachments };
+    // The key belongs to the submitted draft: resending the held draft
+    // unchanged (after a lost response or a reload) reuses its key, so the
+    // backend replays what it already accepted. Anything else is new.
+    // Only the draft that was put back from a held submission, unedited, is
+    // its resend; the same text typed anew is a new request with a new key.
     if (resend) resentKeysRef.current.add(key);
     if (!command) draft.holdSubmission(key, input, pendingAttachments);
 

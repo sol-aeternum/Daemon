@@ -11,6 +11,7 @@ import type { ReactNode } from 'react';
 import type { DaemonMessage } from '../lib/chatMessages';
 import * as auth from '../lib/auth';
 import {
+  acceptSubmission,
   getChatDraft,
   heldSubmission,
   heldSubmissionsReady,
@@ -555,6 +556,34 @@ describe('a held draft whose files are missing (#479 source review)', () => {
     expect(state.regenerate).not.toHaveBeenCalled();
     expect(state.taskForKey).toHaveBeenCalledWith('key-1');
     expect(heldSubmission('key-1')?.attachmentCount).toBe(1);
+  });
+
+  it('is not resent under a new key when its key is resolved while its files are read', async () => {
+    // The held draft's file is still being read when reconciliation finds
+    // that the server already accepted its key.
+    let finishRead!: (text: string) => void;
+    const file = new File(['bytes'], 'notes.txt', { type: 'text/plain' });
+    Object.defineProperty(file, 'text', {
+      value: () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    });
+    await act(() => reloadChatDraftsForTests());
+    const scope = openChatDraft('conv-1', auth.getAuthGeneration());
+    const attachments = [{ id: 'att-2', file }];
+    setChatDraftInput(scope, 'Read this file');
+    setChatDraftAttachments(scope, attachments);
+    holdSubmission(scope, 'key-2', 'Read this file', attachments);
+    render(<ChatPage />);
+    await waitFor(() => expect(composerValue()).toBe('Read this file'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(finishRead).toBeTypeOf('function'));
+    act(() => acceptSubmission('key-2'));
+    await act(async () => finishRead('contents'));
+    await act(async () => new Promise((r) => setTimeout(r, 0)));
+    expect(state.send).not.toHaveBeenCalled();
+    expect(getChatDraft('conv-1').input).toBe('');
   });
 
   it('is not dispatched before its files have loaded', async () => {

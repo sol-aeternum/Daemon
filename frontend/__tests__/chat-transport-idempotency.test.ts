@@ -214,6 +214,22 @@ it('never overwrites a current record with an older copy of the same key', () =>
   expect(storage.getItem('daemon.pendingSubmission.v4:shared-key')).toBeNull();
 });
 
+it('clearing on an account change removes older copies too (#485 review)', () => {
+  storage.setItem(
+    'daemon.pendingSubmission.v4:legacy-key',
+    legacyRecord(Date.now() - 1000),
+  );
+  registerSubmission('current-key', {
+    scope: null,
+    requestConversationId: null,
+    model: null,
+    provider: null,
+  });
+  clearPendingSubmissions();
+  expect(storage.getItem('daemon.pendingSubmission.v4:legacy-key')).toBeNull();
+  expect(unresolvedSubmissions()).toEqual([]);
+});
+
 it('settling a key also removes an older copy kept by a failed migration', () => {
   storage.setItem(
     'daemon.pendingSubmission.v4:legacy-key',
