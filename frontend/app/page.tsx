@@ -1956,28 +1956,21 @@ function ChatContent() {
                                       null,
                                     attachments: [],
                                   };
-                                  // Held under a stable key like a
-                                  // composer send, so a retry replays it.
+                                  // Council configuration runs request-
+                                  // bound (DURABLE_REQUEST_DESIGN §7): no
+                                  // task exists to replay, so it is not
+                                  // held, and a retry is a new run.
                                   const text = `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`;
-                                  const scope =
-                                    currentId ||
-                                    latestConversationIdRef.current ||
-                                    null;
-                                  const held = latestHeldSubmission(scope);
-                                  const resend = isHeldResend(held, text, []);
-                                  const key = resend
-                                    ? held.key
-                                    : crypto.randomUUID();
-                                  if (resend) resentKeysRef.current.add(key);
-                                  draft.holdSubmission(key, text, []);
-                                  beginSend(key);
+                                  beginSend();
                                   void sendMessage(
                                     { text },
                                     {
                                       body: {
-                                        id: scope,
+                                        id:
+                                          currentId ||
+                                          latestConversationIdRef.current ||
+                                          null,
                                         model: activeModel,
-                                        idempotency_key: key,
                                       },
                                     },
                                   );

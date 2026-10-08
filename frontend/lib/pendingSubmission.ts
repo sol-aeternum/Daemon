@@ -73,7 +73,53 @@ function readEntry(store: Storage, itemKey: string): PendingSubmission | null {
   }
 }
 
-/** Live entries, oldest first; expired, unreadable or legacy items are removed. */
+/**
+ * An older (content-fingerprint) record keeps its key: the fingerprint is
+ * dropped and the rest moves to the current format, so an unresolved
+ * submission from a cached older client can still be resolved by key.
+ */
+function migrateLegacy(
+  store: Storage,
+  itemKey: string,
+  found: Array<[string, PendingSubmission]>,
+): void {
+  const prefix = LEGACY_PREFIXES.find((p) => itemKey.startsWith(p));
+  let migrated: PendingSubmission | null = null;
+  if (prefix) {
+    try {
+      const value = JSON.parse(store.getItem(itemKey) ?? 'null') as Record<
+        string,
+        unknown
+      > | null;
+      if (value && typeof value.createdAt === 'number') {
+        const scope = typeof value.scope === 'string' ? value.scope : null;
+        migrated = {
+          scope,
+          // A new chat's original request named no conversation (null).
+          requestConversationId:
+            typeof value.requestConversationId === 'string' ||
+            value.requestConversationId === null
+              ? value.requestConversationId
+              : scope,
+          model: value.model ?? null,
+          provider: value.provider ?? null,
+          createdAt: value.createdAt,
+          ...(typeof value.taskId === 'string' ? { taskId: value.taskId } : {}),
+        };
+      }
+    } catch {
+      migrated = null;
+    }
+  }
+  store.removeItem(itemKey);
+  if (!prefix || !migrated) return;
+  const key = itemKey.slice(prefix.length);
+  if (Date.now() - migrated.createdAt >= PENDING_SUBMISSION_TTL_MS) return;
+  store.setItem(ITEM_PREFIX + key, JSON.stringify(migrated));
+  found.push([key, migrated]);
+}
+
+/** Live entries, oldest first; expired or unreadable items are removed. */
 function entries(
   store: Storage,
   now: number,
@@ -93,7 +139,7 @@ function entries(
   }
   for (const itemKey of itemKeys) {
     if (!itemKey.startsWith(ITEM_PREFIX)) {
-      store.removeItem(itemKey);
+      migrateLegacy(store, itemKey, found);
       continue;
     }
     const entry = readEntry(store, itemKey);

@@ -128,18 +128,39 @@ it('replays the original model and conversation when a held draft is resent', as
   expect(body.model).toBe('chosen-model');
 });
 
-it('removes older content-fingerprint entries and their salt', async () => {
-  storage.setItem('daemon.pendingSubmission.v4:old', '{"fingerprint":"ab"}');
+it('migrates older records, keeping their keys but not their fingerprints', async () => {
+  // Review of #479: a cached older client's unresolved key must survive.
+  const createdAt = Date.now() - 1000;
+  storage.setItem(
+    'daemon.pendingSubmission.v4:legacy-key',
+    JSON.stringify({
+      fingerprint: 'ab'.repeat(32),
+      scope: 'conv-a',
+      requestConversationId: null,
+      model: 'chosen',
+      provider: null,
+      createdAt,
+      taskId: 'task-9',
+    }),
+  );
+  storage.setItem('daemon.pendingSubmission.v4:broken', '{"fingerprint":"ab"}');
   storage.setItem('daemon.pendingSubmission.salt', 'ab'.repeat(32));
-  registerSubmission('k', {
-    scope: null,
+  expect(unresolvedSubmissions().map(({ key }) => key)).toEqual(['legacy-key']);
+  expect(pendingSubmission('legacy-key')).toEqual({
+    scope: 'conv-a',
     requestConversationId: null,
-    model: 'auto',
+    model: 'chosen',
     provider: null,
+    createdAt,
+    taskId: 'task-9',
   });
-  expect(unresolvedSubmissions().map(({ key }) => key)).toEqual(['k']);
-  expect(storage.getItem('daemon.pendingSubmission.v4:old')).toBeNull();
-  expect(storage.getItem('daemon.pendingSubmission.salt')).toBeNull();
+  for (const gone of [
+    'daemon.pendingSubmission.v4:legacy-key',
+    'daemon.pendingSubmission.v4:broken',
+    'daemon.pendingSubmission.salt',
+  ]) {
+    expect(storage.getItem(gone)).toBeNull();
+  }
 });
 
 it('falls back to a fresh key when storage is unavailable', async () => {
