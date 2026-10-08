@@ -9,6 +9,7 @@ import {
   getAttachmentStore,
   loadDraftText,
   loadHeldSubmissions,
+  savedDraftsMarkHeld,
   saveDraftText,
   type PersistedDraft,
   type PersistedHeld,
@@ -261,7 +262,29 @@ function hydrate(): void {
       for (const id of draft.attachmentIds) persistedIds.set(id, 0);
     }
   }
-  for (const record of loadHeldSubmissions()) {
+  const heldRecords = loadHeldSubmissions();
+  if (!savedDraftsMarkHeld()) {
+    // Saved by the earlier version, which did not mark the sent draft with
+    // its key: a draft exactly matching a held submission (same conversation,
+    // text and files) is that sent draft, so it is marked now. Otherwise,
+    // once the server accepted the key, the draft would stay and sending it
+    // would run the same request again under a new key.
+    for (const draft of saved) {
+      if (draft.restoredKey) continue;
+      const match = heldRecords.find(
+        (record) =>
+          record.conversationId === draft.conversationId &&
+          record.input === draft.input &&
+          record.attachmentIds.join('\u0000') ===
+            draft.attachmentIds.join('\u0000'),
+      );
+      const entry = entries.get(draft.conversationId);
+      if (match && entry) {
+        entry.snapshot = { ...entry.snapshot, restoredKey: match.key };
+      }
+    }
+  }
+  for (const record of heldRecords) {
     held.set(record.key, {
       key: record.key,
       conversationId: record.conversationId,

@@ -246,7 +246,13 @@ describe('chat drafts survive a reload of the same tab', () => {
       ]);
     });
     const saved = JSON.parse(sessionStorage.getItem(TEXT_KEY)!);
-    expect(Object.keys(saved).sort()).toEqual(['drafts', 'epoch', 'held', 'v']);
+    expect(Object.keys(saved).sort()).toEqual([
+      'drafts',
+      'epoch',
+      'held',
+      'heldMarks',
+      'v',
+    ]);
     expect(saved.drafts).toEqual([
       { conversationId: 'chat', input: 'plain', attachmentIds: ['a1'] },
     ]);

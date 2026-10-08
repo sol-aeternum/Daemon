@@ -115,12 +115,19 @@ function isPersistedHeld(value: unknown): value is PersistedHeld {
   );
 }
 
-function loadRecord(): { drafts: PersistedDraft[]; held: PersistedHeld[] } {
+type LoadedRecord = {
+  drafts: PersistedDraft[];
+  held: PersistedHeld[];
+  /** Written by a version that marks each sent draft with its held key. */
+  heldMarks: boolean;
+};
+
+function loadRecord(): LoadedRecord {
   const storage = session();
-  if (!storage) return { drafts: [], held: [] };
+  if (!storage) return { drafts: [], held: [], heldMarks: true };
   try {
     const raw = storage.getItem(TEXT_KEY);
-    if (!raw) return { drafts: [], held: [] };
+    if (!raw) return { drafts: [], held: [], heldMarks: true };
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const held = parsed?.held ?? [];
     if (
@@ -132,13 +139,26 @@ function loadRecord(): { drafts: PersistedDraft[]; held: PersistedHeld[] } {
       !held.every(isPersistedHeld)
     ) {
       storage.removeItem(TEXT_KEY);
-      return { drafts: [], held: [] };
+      return { drafts: [], held: [], heldMarks: true };
     }
-    return { drafts: parsed.drafts, held };
+    return {
+      drafts: parsed.drafts,
+      held,
+      heldMarks: parsed.heldMarks === true,
+    };
   } catch {
     clearDraftText();
-    return { drafts: [], held: [] };
+    return { drafts: [], held: [], heldMarks: true };
   }
+}
+
+/**
+ * Whether the saved drafts were written by a version that marks the sent
+ * draft with its held key (``restoredKey``). An earlier version's sent draft
+ * carries no mark and is recognised by matching its held submission instead.
+ */
+export function savedDraftsMarkHeld(): boolean {
+  return loadRecord().heldMarks;
 }
 
 /** This tab's saved drafts, or none if they belong to another sign-in. */
@@ -164,7 +184,13 @@ export function saveDraftText(
     }
     storage.setItem(
       TEXT_KEY,
-      JSON.stringify({ v: 1, epoch: readAuthEpoch(), drafts, held }),
+      JSON.stringify({
+        v: 1,
+        heldMarks: true,
+        epoch: readAuthEpoch(),
+        drafts,
+        held,
+      }),
     );
   } catch {
     // Quota or disabled storage: the in-memory draft still works.

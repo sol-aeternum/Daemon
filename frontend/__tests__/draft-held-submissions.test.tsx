@@ -306,6 +306,61 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     );
   });
 
+  it("mark an earlier version's sent draft so acceptance clears it (#485 review)", async () => {
+    // Written before drafts carried their held key: no heldMarks, no
+    // restoredKey on the sent draft.
+    sendFrom('conv-a', 'key-1');
+    await flush();
+    const saved = JSON.parse(sessionStorage.getItem('daemon:chat-drafts:v1')!);
+    sessionStorage.setItem(
+      'daemon:chat-drafts:v1',
+      JSON.stringify({
+        v: 1,
+        epoch: saved.epoch,
+        held: saved.held,
+        drafts: [
+          {
+            conversationId: 'conv-a',
+            input: 'Summarise the notes',
+            attachmentIds: ['att-1'],
+          },
+          {
+            conversationId: 'conv-b',
+            input: 'Something else',
+            attachmentIds: [],
+          },
+        ],
+      }),
+    );
+    cleanup();
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    expect(getChatDraft('conv-a').restoredKey).toBe('key-1');
+    expect(getChatDraft('conv-b').restoredKey).toBeUndefined();
+    act(() => acceptSubmission('key-1'));
+    expect(getChatDraft('conv-a').input).toBe('');
+    expect(getChatDraft('conv-b').input).toBe('Something else');
+  });
+
+  it('never mark a draft by content when this version saved it', async () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => result.current.setInput('Same words'));
+    act(() =>
+      result.current.holdSubmission(
+        'key-1',
+        'Same words',
+        result.current.pendingAttachments,
+      ),
+    );
+    // Cleared, then the same words typed again as a new draft.
+    act(() => result.current.setInput(''));
+    act(() => result.current.setInput('Same words'));
+    await flush();
+    cleanup();
+    await act(() => reloadChatDraftsForTests());
+    expect(getChatDraft('conv-a').restoredKey).toBeUndefined();
+  });
+
   it('are discarded with drafts when the sign-in changes', () => {
     sendFrom('conv-a', 'key-1');
     act(() => auth.clearLocalAuthState());
