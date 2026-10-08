@@ -227,6 +227,21 @@ describe('generated artifacts (#481 review)', () => {
     );
   });
 
+  it('are recognised under a path-prefixed API base', () => {
+    expect(
+      isPrivateArtifactRequest(
+        new URL(`${app}/daemon/generated-files/report.csv`),
+        `${app}/daemon`,
+      ),
+    ).toBe(true);
+    expect(
+      isPrivateArtifactRequest(
+        new URL(`${app}/other/generated-files/report.csv`),
+        `${app}/daemon`,
+      ),
+    ).toBe(false);
+  });
+
   it('are purged from every runtime cache an earlier worker filled', async () => {
     const caches = new Map<string, Map<string, true>>([
       [

@@ -8,7 +8,6 @@ import {
   CacheFirst,
   ExpirationPlugin,
   NetworkFirst,
-  NetworkOnly,
   StaleWhileRevalidate,
 } from 'serwist';
 
@@ -20,11 +19,15 @@ import {
   isSameOriginApiRequest,
   shouldUseGeneralRuntimeCache,
 } from './pwaCaching';
-import { isWebSnapshotRequest } from './webSnapshotPaths';
+import {
+  configuredSnapshotApiBase,
+  isWebSnapshotRequest,
+} from './webSnapshotPaths';
 
 /**
- * Fetches a private response (an account's artifact or speech) straight from
- * the network, never from the browser's HTTP cache. A plain ``NetworkOnly``
+ * Fetches a private response (an account's artifact, speech, or anything from
+ * the backend) straight from the network, never from the browser's HTTP
+ * cache. A plain ``NetworkOnly``
  * strategy is not enough: Serwist drops its ``fetchOptions`` for navigations
  * and may answer one with the navigation-preload response, which the browser
  * can serve from its HTTP cache (an entry from before these responses were
@@ -49,13 +52,16 @@ export const fetchPrivateUncached: RouteHandlerCallback = async ({
   return fetch(request, { cache: 'no-store' });
 };
 
-export function createRuntimeCaching(appOrigin: string): RuntimeCaching[] {
+export function createRuntimeCaching(
+  appOrigin: string,
+  configured = configuredSnapshotApiBase(),
+): RuntimeCaching[] {
   return [
     {
       // Generated artifacts belong to one account and are checked on every
       // read, on any origin (ahead of the image cache below). First, so no
       // overlapping rule (``/generated-audio/`` is also speech) can shadow it.
-      matcher: ({ url }) => isPrivateArtifactRequest(url),
+      matcher: ({ url }) => isPrivateArtifactRequest(url, configured),
       // Also bypass the browser's HTTP cache: a stored response for a filename
       // another owner also has must never stand in for the owner check.
       handler: fetchPrivateUncached,
@@ -68,25 +74,25 @@ export function createRuntimeCaching(appOrigin: string): RuntimeCaching[] {
     {
       // Nothing from the backend is ever cached: its responses are
       // authenticated, account-scoped and often plaintext content (#474).
-      matcher: ({ url }) => isBackendApiRequest(url, appOrigin),
-      handler: new NetworkOnly(),
+      matcher: ({ url }) => isBackendApiRequest(url, appOrigin, configured),
+      handler: fetchPrivateUncached,
     },
     {
       // Task snapshots hold plaintext content and status that must never be
       // served stale or to another account.
-      matcher: ({ url }) => isPrivateTaskRequest(url),
-      handler: new NetworkOnly(),
+      matcher: ({ url }) => isPrivateTaskRequest(url, configured),
+      handler: fetchPrivateUncached,
     },
     {
       // HTTP no-store does not constrain Cache API writes. Both direct-backend
       // and relative snapshot GETs must bypass all runtime-cache strategies.
-      matcher: ({ url }) => isWebSnapshotRequest(url, appOrigin),
-      handler: new NetworkOnly(),
+      matcher: ({ url }) => isWebSnapshotRequest(url, appOrigin, configured),
+      handler: fetchPrivateUncached,
     },
     {
       // Never cache authenticated responses from same-origin API routes.
       matcher: ({ url, sameOrigin }) => isSameOriginApiRequest(url, sameOrigin),
-      handler: new NetworkOnly(),
+      handler: fetchPrivateUncached,
     },
     {
       matcher: /\.(?:js|css)$/,

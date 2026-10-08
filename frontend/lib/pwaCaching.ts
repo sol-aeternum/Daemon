@@ -19,7 +19,10 @@ export function isPrivateSpeechRequest(url: URL): boolean {
  * through the app's own origin (the ``/generated-files/`` proxy route),
  * where the backend-origin rule cannot see them.
  */
-export function isPrivateArtifactRequest(url: URL): boolean {
+export function isPrivateArtifactRequest(
+  url: URL,
+  configured = configuredSnapshotApiBase(),
+): boolean {
   // The backend decodes the path before routing, so ``/%67enerated-images/``
   // and ``/generated-images%2Fa.png`` still reach the artifact routes: match
   // the decoded path. A path that cannot be decoded is treated as private.
@@ -29,7 +32,21 @@ export function isPrivateArtifactRequest(url: URL): boolean {
   } catch {
     return true;
   }
-  return /^\/+generated-(?:images|files|audio)\//.test(path);
+  const artifact = /^\/+generated-(?:images|files|audio)\//;
+  if (artifact.test(path)) return true;
+  // Under a path-prefixed API base (``https://host/daemon``) too.
+  try {
+    const base = new URL(configured);
+    const prefix = base.pathname.replace(/\/+$/, '');
+    return (
+      url.origin === base.origin &&
+      prefix !== '' &&
+      path.startsWith(`${prefix}/`) &&
+      artifact.test(path.slice(prefix.length))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -127,7 +144,7 @@ export async function clearCachedPrivateEntries(
               const url = new URL(request.url);
               return (
                 isPrivateTaskRequest(url, configured) ||
-                isPrivateArtifactRequest(url) ||
+                isPrivateArtifactRequest(url, configured) ||
                 isBackendApiRequest(url, appOrigin, configured)
               );
             })

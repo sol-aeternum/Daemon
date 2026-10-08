@@ -290,12 +290,13 @@ build.
 
 **Caching Strategies:**
 
-1. **Same-origin API Routes** (`/api/*`): NetworkOnly
+1. **Same-origin API Routes** (`/api/*`): network only, never cached
    - Never caches authenticated API responses
    - Explicitly excluded from the general runtime-cache fallback
    - Removes cache names used by legacy API-caching configurations on activation
 
-2. **Private responses**: NetworkOnly, matched before every extension-based rule
+2. **Private responses**: network only and never cached, matched before every
+   extension-based rule
    - Generated images, files and audio (`/generated-images/`, `/generated-files/`,
      `/generated-audio/`) on any origin, matched on the decoded path; refetched with
      `cache: 'no-store'` by `fetchPrivateUncached`, navigations included (Serwist's
@@ -305,8 +306,9 @@ build.
      `Cache-Control: private, no-store`)
    - Speech (`/tts`), fetched the same way; the artifact rule comes
      first so no overlapping rule shadows it (`/generated-audio/` is also speech)
-   - Everything from the configured backend origin, durable task reads and web
-     snapshots
+   - Everything from the configured backend (its origin, limited to its path prefix
+     when it has one), durable task reads, web snapshots and same-origin `/api/*`,
+     all fetched the same way; artifacts are also matched under the API prefix
    - On activation, matching entries an earlier worker stored are removed from all
      runtime caches (the three below and the general `others` fallback); app assets
      and the precache are left alone
