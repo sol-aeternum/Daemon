@@ -187,7 +187,7 @@ A task references conversation and workspace context without a memory or filesys
 | 5 | `max_attempts = 2` for automatic regeneration. A retry may repeat every provider call the lost attempt made, so duplicate spend is bounded per §9 (attempts × provider calls per attempt × per-call ceiling), charged conservatively (§4; wording corrected in review of #461). |
 | 6 | One non-terminal task per conversation; further submissions get 409 `conversation_busy` (§6). |
 | 7 | Durable mode fails closed with 503 when the database is unavailable (§7). |
-| 8 | Device revocation does not cancel tasks; account suspension does (§11). The account-deletion half is superseded by decision 12: until its fence-and-drain design is approved, deletion is not an authorised cancellation path (revised in Codex review of #461). |
+| 8 | Device revocation does not cancel tasks; account suspension does (§11). The account-deletion half is superseded by decision 12: its fence-and-drain design is approved in [ACCOUNT_DELETION_DESIGN.md](ACCOUNT_DELETION_DESIGN.md) (8 October 2026), but until it is implemented deletion is not an authorised cancellation path (revised in Codex review of #461). |
 | 9 | Slice 1 capacity denial is terminal with manual retry; DEC09 pause, notification and auto-resume complete in slice 4 (§4). |
 | 10 | Add a PostgreSQL service to backend CI so race and fencing tests run instead of skipping; implemented with slice 1. |
 | 11 | (7 October 2026) Deleting a conversation with a queued task cancels and deletes it; with a running task the delete requests cancellation and returns 409 `task_running` until it stops (§11). |
@@ -297,4 +297,4 @@ Run the unchanged backend, frontend, documentation and security gates as well. P
 
 **Approved:** product decisions DEC01–DEC12 and the baseline instructions in the decision record, including the PR-port clarification preserving current main's working metrics and advisor-event compatibility; the architecture in §3–§11 and the decisions in §12. DEC12 approves direction, not the retention schema, consent, restricted-data enforcement, fallback or activity-record implementation; all remain gated.
 
-**Pending:** deleting an account while a task runs (decision 12), choice C and legacy-file handling (§13), task-budget composition (§15), notification channels, retention, and review of exact DDL and endpoint/SSE payloads in each implementation PR. Baseline bug fixes can proceed independently of this document.
+**Pending:** implementing account deletion while a task runs (decision 12; its design is approved in [ACCOUNT_DELETION_DESIGN.md](ACCOUNT_DELETION_DESIGN.md), and implementation, migrations and API changes need separate approval), choice C and legacy-file handling (§13), task-budget composition (§15), notification channels, retention, and review of exact DDL and endpoint/SSE payloads in each implementation PR. Baseline bug fixes can proceed independently of this document.
