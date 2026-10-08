@@ -209,7 +209,7 @@ describe('generated artifacts (#481 review)', () => {
     );
   });
 
-  it('are purged from the general and image caches an earlier worker filled', async () => {
+  it('are purged from every runtime cache an earlier worker filled', async () => {
     const caches = new Map<string, Map<string, true>>([
       [
         'others',
@@ -225,7 +225,25 @@ describe('generated artifacts (#481 review)', () => {
           [`${app}/icons/icon.png`, true],
         ]),
       ],
-      ['fonts', new Map([[`${app}/generated-files/odd.woff2`, true]])],
+      [
+        'static-resources',
+        new Map([
+          [`${app}/generated-files/report.js`, true],
+          [`${app}/generated-files/theme.css`, true],
+          [`${app}/_next/static/app.js`, true],
+        ]),
+      ],
+      [
+        'fonts',
+        new Map([
+          [`${app}/generated-files/odd.woff2`, true],
+          [`${app}/fonts/inter.woff2`, true],
+        ]),
+      ],
+      [
+        'serwist-precache-v2',
+        new Map([[`${app}/generated-files/never-here.js`, true]]),
+      ],
     ]);
     const storage = {
       keys: async () => [...caches.keys()],
@@ -242,7 +260,13 @@ describe('generated artifacts (#481 review)', () => {
     expect([...caches.get('images')!.keys()]).toEqual([
       `${app}/icons/icon.png`,
     ]);
-    // Only the runtime caches that could hold them are touched.
-    expect(caches.get('fonts')!.size).toBe(1);
+    expect([...caches.get('static-resources')!.keys()]).toEqual([
+      `${app}/_next/static/app.js`,
+    ]);
+    expect([...caches.get('fonts')!.keys()]).toEqual([
+      `${app}/fonts/inter.woff2`,
+    ]);
+    // The precache is not a runtime cache and is left alone.
+    expect(caches.get('serwist-precache-v2')!.size).toBe(1);
   });
 });

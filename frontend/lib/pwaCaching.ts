@@ -87,14 +87,18 @@ export function shouldUseGeneralRuntimeCache(
   );
 }
 
-/** Runtime caches an earlier worker could have stored private responses in. */
-const PRIVATE_ENTRY_CACHES = ['others', 'images'];
+/**
+ * Every runtime cache an earlier worker could have stored private responses
+ * in: the extension-based caches matched any origin and path, so a
+ * protected ``/generated-files/x.js`` or ``.woff2`` could sit in them too.
+ */
+const PRIVATE_ENTRY_CACHES = ['others', 'images', 'static-resources', 'fonts'];
 
 /**
- * Remove private responses an earlier service worker may have cached in the
- * general and image runtime caches: task reads, generated artifacts and
- * anything from the backend (before they were network-only). Other entries
- * and caches are left alone; nothing is created.
+ * Remove private responses an earlier service worker may have cached in any
+ * of its runtime caches: task reads, generated artifacts and anything from
+ * the backend (before they were network-only). Other entries, and the
+ * precache, are left alone; nothing is created.
  */
 export async function clearCachedPrivateEntries(
   storage: CacheStorage,
