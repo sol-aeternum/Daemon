@@ -94,7 +94,7 @@ The product owner also required the README to retain the orchestration, routing 
 
 ## Remaining decisions
 
-- Retention durations, limits, exports, backups and cascading deletion.
+- Retention durations, limits, exports, backups and cascading deletion. (For account deletion and reset these were approved on 8 October 2026 in [ACCOUNT_DELETION_DESIGN.md](ACCOUNT_DELETION_DESIGN.md) §9: seven-day grace, 30-day backups, derived data deleted, no tombstones. Other retention remains open.)
 - Restriction changes after information has already been used elsewhere.
 - Durable tasks: the acceptance transaction, dispatch, claims, leases, fencing and the additive task API are approved in the durable-request design. Still pending: each slice's exact DDL and payloads (reviewed with that slice), resource schemas beyond chat tasks, and operation-specific reconciliation.
 - Notification channels, freshness/expiry policy, cancellation/revocation bounds.

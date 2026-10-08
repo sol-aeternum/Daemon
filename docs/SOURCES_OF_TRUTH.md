@@ -65,7 +65,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/MIDNIGHT_UI.md` | N/A | Engineering | raw-log | Owner-approved experimental UI/remediation scope and dated source/runtime acceptance limits; not deployment or model-routing authority |
 | `docs/CONTEXTUAL_HOME_IMPLEMENTATION.md` | N/A | Product/Engineering | ungated-reference | Approved conversation-only contextual home contract, dated implementation/review evidence and release limitations; runtime authority remains in code and gated checks |
 | `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved continuity architecture (6 October 2026); slice 1 implemented behind `DURABLE_CHAT_ENABLED` (off); enabling is gated by #477 |
-| `docs/ACCOUNT_DELETION_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Proposed fence-and-drain protocol for account deletion (#469); not approved, not implemented |
+| `docs/ACCOUNT_DELETION_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved account deletion and reset protocol (8 October 2026, #469); not implemented; DDL/API reviewed per implementation PR |
 | `docs/VISION_INTEGRATION_REPORT.md` | N/A | Engineering | raw-log | Integration changes, current gate evidence and blockers |
 | `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
 | `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |
