@@ -12,8 +12,10 @@
 #   A  accepted while the worker is down; the backend restarts; the worker
 #      returns and the task completes exactly once; a same-key replay
 #      returns the same task.
-#   B  the worker is killed mid-stream (SIGKILL); after the lease lapses a
-#      restarted worker regenerates the answer to completion.
+#   B  the worker is killed (SIGKILL) while its attempt runs; after the lease
+#      lapses a restarted worker regenerates the answer to completion. The
+#      mock streams too fast to target a token, so the kill can land before
+#      the first one; mid-stream crashes are covered by the unit fault points.
 #   C  an observer reattaches after a backend restart and sees the result.
 #
 # Usage: scripts/durable_restart_drill.sh [--keep]   (--keep: leave the stack up)
@@ -54,6 +56,8 @@ compose() {
     ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
     ${DOCKER_CONTEXT:+DOCKER_CONTEXT="$DOCKER_CONTEXT"} \
     ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} \
+    ${DOCKER_TLS_VERIFY:+DOCKER_TLS_VERIFY="$DOCKER_TLS_VERIFY"} \
+    ${DOCKER_CERT_PATH:+DOCKER_CERT_PATH="$DOCKER_CERT_PATH"} \
     ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} \
     docker compose -p "$PROJECT" --project-directory "$ROOT" \
     -f "$ROOT/docker-compose.yml" -f "$OVERRIDE" --env-file "$ENV_FILE" "$@"
@@ -69,6 +73,25 @@ cleanup() {
   echo "drill log: $LOG"
   exit $status
 }
+# Teardown runs "down -v", which deletes the project's volumes: never adopt
+# a project that already exists (an earlier --keep run, or a name another
+# stack uses). Checked before the teardown trap is installed.
+for kind in container volume network; do
+  all=(); [[ $kind == container ]] && all=(--all)
+  if [[ -n "$(docker "$kind" ls -q "${all[@]}" \
+      --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)" ]]; then
+    echo "refusing to run: Compose project '$PROJECT' already has a $kind." >&2
+    echo "Remove it, or set DRILL_PROJECT to an unused name." >&2
+    exit 2
+  fi
+done
+# The override below uses !override and !reset (Compose 2.24.4 or later).
+COMPOSE_VERSION=$(docker compose version --short 2>/dev/null | sed 's/^v//')
+if ! printf '2.24.4\n%s\n' "$COMPOSE_VERSION" | sort -VC; then
+  echo "refusing to run: Docker Compose 2.24.4 or later is required (found '${COMPOSE_VERSION:-none}')" >&2
+  exit 2
+fi
+
 CREATED_DIRS=()
 trap cleanup EXIT
 
@@ -262,7 +285,7 @@ REPLAY=$(submit "$KEY_A" "drill A")
 [[ "$REPLAY" == "$TASK_A" ]] || fail "A: same-key replay returned '$REPLAY'"
 log "A: PASS (completed once; same-key replay returned the same task)"
 
-# --- B: worker killed mid-stream --------------------------------------------
+# --- B: worker killed while its attempt runs --------------------------------------------
 WORKER=$(compose ps -q worker)
 B_DONE=0
 for try in 1 2 3; do
@@ -282,8 +305,8 @@ for try in 1 2 3; do
   if [[ $killed -eq 1 ]]; then B_DONE=1; break; fi
   log "B: try $try finished before the kill window; retrying"
 done
-[[ $B_DONE -eq 1 ]] || fail "B: could not kill the worker mid-stream in 3 tries"
-log "B: worker killed mid-stream (task $TASK_B); waiting out the lease, then restarting"
+[[ $B_DONE -eq 1 ]] || fail "B: could not kill the worker while running in 3 tries"
+log "B: worker killed while running (task $TASK_B); waiting out the lease, then restarting"
 [[ $(task_field "$TASK_B" status) == running ]] || fail "B: not running after the kill"
 compose start worker >>"$LOG" 2>&1
 wait_status "$TASK_B" completed 180
