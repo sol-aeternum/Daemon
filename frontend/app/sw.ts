@@ -43,7 +43,9 @@ const runtimeCaching: RuntimeCaching[] = [
     // Generated artifacts belong to one account and are checked on every
     // read, on any origin (ahead of the image cache below).
     matcher: ({ url }) => isPrivateArtifactRequest(url),
-    handler: new NetworkOnly(),
+    // Also bypass the browser's HTTP cache: a stored response for a filename
+    // another owner also has must never stand in for the owner check.
+    handler: new NetworkOnly({ fetchOptions: { cache: 'no-store' } }),
   },
   {
     // Nothing from the backend is ever cached: its responses are

@@ -14,12 +14,22 @@ export function isPrivateSpeechRequest(url: URL): boolean {
 
 /**
  * Generated images, files and audio are the account's own artifacts, served
- * only to their owner. They are never cached, whether they come from the
- * backend or through the app's own origin (the ``/generated-files/`` proxy
- * route), where the backend-origin rule cannot see them.
+ * only to their owner. They are never cached, neither by the service worker
+ * nor by the browser's HTTP cache, whether they come from the backend or
+ * through the app's own origin (the ``/generated-files/`` proxy route),
+ * where the backend-origin rule cannot see them.
  */
 export function isPrivateArtifactRequest(url: URL): boolean {
-  return /^\/generated-(?:images|files|audio)\//.test(url.pathname);
+  // The backend decodes the path before routing, so ``/%67enerated-images/``
+  // and ``/generated-images%2Fa.png`` still reach the artifact routes: match
+  // the decoded path. A path that cannot be decoded is treated as private.
+  let path: string;
+  try {
+    path = decodeURIComponent(url.pathname);
+  } catch {
+    return true;
+  }
+  return /^\/+generated-(?:images|files|audio)\//.test(path);
 }
 
 /**

@@ -294,17 +294,28 @@ locked production build.
    - Explicitly excluded from the general runtime-cache fallback
    - Removes cache names used by legacy API-caching configurations on activation
 
-2. **Static Assets** (JS, CSS): CacheFirst
+2. **Private responses**: NetworkOnly, matched before every extension-based rule
+   - Generated images, files and audio (`/generated-images/`, `/generated-files/`,
+     `/generated-audio/`) on any origin, matched on the decoded path; fetched with
+     `cache: 'no-store'` so the browser's HTTP cache is bypassed too (the backend and
+     the `/generated-files/` proxy also send `Cache-Control: private, no-store`)
+   - Everything from the configured backend origin, durable task reads, speech and
+     web snapshots
+   - On activation, matching entries an earlier worker stored are removed from all
+     runtime caches (the three below and the general `others` fallback); app assets
+     and the precache are left alone
+
+3. **Static Assets** (JS, CSS): CacheFirst
    - Serve from cache immediately
    - Fetch only on cache miss or after expiration
    - 30-day expiration
 
-3. **Images**: StaleWhileRevalidate
+4. **Images**: StaleWhileRevalidate
    - Serve cached version immediately
    - Fetch fresh version in background
    - Next request gets updated image
 
-4. **Fonts**: CacheFirst
+5. **Fonts**: CacheFirst
    - Aggressive caching (1 year)
    - Fonts rarely change
 

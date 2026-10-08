@@ -209,6 +209,24 @@ describe('generated artifacts (#481 review)', () => {
     );
   });
 
+  it('are recognised however their path is encoded (#484 review)', () => {
+    for (const path of [
+      '/%67enerated-images/a.png',
+      '/generated-images%2Fa.png',
+      '/generated%2Dfiles/report.csv',
+      '//generated-audio/b.mp3',
+    ]) {
+      const url = new URL(`${app}${path}`);
+      expect(isPrivateArtifactRequest(url)).toBe(true);
+      expect(shouldUseGeneralRuntimeCache(url, true, app)).toBe(false);
+    }
+    // Undecodable: treated as private rather than cached.
+    expect(isPrivateArtifactRequest(new URL(`${app}/%E0%A4%A.png`))).toBe(true);
+    expect(isPrivateArtifactRequest(new URL(`${app}/icons/%69con.png`))).toBe(
+      false,
+    );
+  });
+
   it('are purged from every runtime cache an earlier worker filled', async () => {
     const caches = new Map<string, Map<string, true>>([
       [
@@ -222,6 +240,7 @@ describe('generated artifacts (#481 review)', () => {
         'images',
         new Map([
           [`${app}/generated-images/a.png`, true],
+          [`${app}/%67enerated-images/b.png`, true],
           [`${app}/icons/icon.png`, true],
         ]),
       ],
