@@ -297,10 +297,13 @@ build.
 
 2. **Private responses**: NetworkOnly, matched before every extension-based rule
    - Generated images, files and audio (`/generated-images/`, `/generated-files/`,
-     `/generated-audio/`) on any origin, matched on the decoded path; fetched with
-     `cache: 'no-store'` so the browser's HTTP cache is bypassed too (the backend and
-     the `/generated-files/` proxy also send `Cache-Control: private, no-store`)
-   - Speech (`/tts`), also fetched with `cache: 'no-store'`; the artifact rule comes
+     `/generated-audio/`) on any origin, matched on the decoded path; refetched with
+     `cache: 'no-store'` by `fetchPrivateUncached`, navigations included (Serwist's
+     `NetworkOnly` drops `fetchOptions` for navigations and may answer with the
+     navigation preload, which the HTTP cache can serve), so the browser's HTTP cache
+     is bypassed too (the backend and the `/generated-files/` proxy also send
+     `Cache-Control: private, no-store`)
+   - Speech (`/tts`), fetched the same way; the artifact rule comes
      first so no overlapping rule shadows it (`/generated-audio/` is also speech)
    - Everything from the configured backend origin, durable task reads and web
      snapshots

@@ -3,7 +3,7 @@
  * matching rule handles a request). Kept apart from ``app/sw.ts`` so the
  * order itself is tested.
  */
-import type { RuntimeCaching } from 'serwist';
+import type { RouteHandlerCallback, RuntimeCaching } from 'serwist';
 import {
   CacheFirst,
   ExpirationPlugin,
@@ -22,6 +22,33 @@ import {
 } from './pwaCaching';
 import { isWebSnapshotRequest } from './webSnapshotPaths';
 
+/**
+ * Fetches a private response (an account's artifact or speech) straight from
+ * the network, never from the browser's HTTP cache. A plain ``NetworkOnly``
+ * strategy is not enough: Serwist drops its ``fetchOptions`` for navigations
+ * and may answer one with the navigation-preload response, which the browser
+ * can serve from its HTTP cache (an entry from before these responses were
+ * marked no-store, or another account's). So every request, a navigation
+ * included, is refetched here with ``cache: 'no-store'`` and the preload is
+ * ignored. Navigations a service worker sees are always to its own origin.
+ */
+export const fetchPrivateUncached: RouteHandlerCallback = async ({
+  request,
+}) => {
+  if (request.mode === 'navigate') {
+    return fetch(
+      new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        credentials: 'same-origin',
+        redirect: 'follow',
+        cache: 'no-store',
+      }),
+    );
+  }
+  return fetch(request, { cache: 'no-store' });
+};
+
 export function createRuntimeCaching(appOrigin: string): RuntimeCaching[] {
   return [
     {
@@ -31,12 +58,12 @@ export function createRuntimeCaching(appOrigin: string): RuntimeCaching[] {
       matcher: ({ url }) => isPrivateArtifactRequest(url),
       // Also bypass the browser's HTTP cache: a stored response for a filename
       // another owner also has must never stand in for the owner check.
-      handler: new NetworkOnly({ fetchOptions: { cache: 'no-store' } }),
+      handler: fetchPrivateUncached,
     },
     {
       // Speech is the account's own too: same HTTP-cache bypass.
       matcher: ({ url }) => isPrivateSpeechRequest(url),
-      handler: new NetworkOnly({ fetchOptions: { cache: 'no-store' } }),
+      handler: fetchPrivateUncached,
     },
     {
       // Nothing from the backend is ever cached: its responses are
