@@ -11,14 +11,25 @@ import type { ReactNode } from 'react';
 import type { DaemonMessage } from '../lib/chatMessages';
 import * as auth from '../lib/auth';
 import {
+  acceptSubmission,
   getChatDraft,
+  heldSubmission,
+  heldSubmissionsReady,
+  holdSubmission,
   openChatDraft,
+  reloadChatDraftsForTests,
   setChatDraftInput,
   setChatDraftAttachments,
 } from '../lib/chatDrafts';
+import {
+  setAttachmentStoreForTests,
+  type AttachmentStore,
+  type PersistedAttachment,
+} from '../lib/draftPersistence';
 
 const state = vi.hoisted(() => ({
   send: vi.fn(),
+  regenerate: vi.fn(),
   stop: vi.fn(),
   replace: vi.fn(),
   currentId: null as string | null,
@@ -54,6 +65,7 @@ vi.mock('@ai-sdk/react', async () => {
         messages,
         setMessages,
         sendMessage: state.send,
+        regenerate: state.regenerate,
         stop: state.stop,
         status: 'ready',
       };
@@ -135,7 +147,11 @@ vi.mock('../components/ChatHeaderActions', () => ({
   ChatHeaderActions: () => null,
 }));
 vi.mock('../components/ConnectionStatus', () => ({
-  ConnectionStatus: () => null,
+  ConnectionStatus: ({ onReconnect }: { onReconnect: () => void }) => (
+    <button type="button" onClick={onReconnect}>
+      Reconnect
+    </button>
+  ),
 }));
 vi.mock('../components/TtsPlaybackBar', () => ({ TtsPlaybackBar: () => null }));
 vi.mock('../components/TextToSpeechButton', () => ({
@@ -458,5 +474,135 @@ describe('a submission refused before acceptance (#476, #479 review)', () => {
     await waitFor(() => expect(state.taskForKey).toHaveBeenCalledWith(key));
     // Its held draft is not released as if nothing existed for the key.
     expect(heldSubmission(key)).toBeDefined();
+  });
+});
+
+class MemoryAttachmentStore implements AttachmentStore {
+  records = new Map<string, File>();
+  gate: Promise<void> | null = null;
+  async put({ id, file }: PersistedAttachment) {
+    this.records.set(id, file);
+  }
+  async getMany(ids: string[]) {
+    if (this.gate) await this.gate;
+    return ids.flatMap((id) => {
+      const file = this.records.get(id);
+      return file ? [{ id, file }] : [];
+    });
+  }
+  async delete(ids: string[]) {
+    for (const id of ids) this.records.delete(id);
+  }
+  async clear() {
+    this.records.clear();
+  }
+  async deleteSavedBefore() {}
+}
+
+describe('a held draft whose files are missing (#479 source review)', () => {
+  let files: MemoryAttachmentStore;
+  const composerValue = () =>
+    (screen.getByLabelText('Composer') as HTMLTextAreaElement).value;
+
+  beforeEach(async () => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    state.send.mockResolvedValue(undefined);
+    files = new MemoryAttachmentStore();
+    setAttachmentStoreForTests(files);
+    await act(() => reloadChatDraftsForTests());
+    // A sent (or put back) draft with one file, held under its key.
+    const scope = openChatDraft('conv-1', auth.getAuthGeneration());
+    const attachments = [
+      { id: 'att-1', file: new File(['bytes'], 'notes.txt') },
+    ];
+    setChatDraftInput(scope, 'Summarise the notes');
+    setChatDraftAttachments(scope, attachments);
+    holdSubmission(scope, 'key-1', 'Summarise the notes', attachments);
+    await act(async () => new Promise((r) => setTimeout(r, 0)));
+  });
+  afterEach(() => setAttachmentStoreForTests(undefined));
+
+  it('is not dispatched after its file expired; its key is resolved instead', async () => {
+    files.records.clear(); // the stored file expired
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    expect(getChatDraft('conv-1').restoredKey).toBe('key-1');
+    state.taskForKey.mockImplementation(() => new Promise(() => {}));
+    render(<ChatPage />);
+    await waitFor(() => expect(composerValue()).toBe('Summarise the notes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() =>
+      expect(screen.getByText(/cannot be sent again as it was/)).toBeTruthy(),
+    );
+    expect(state.send).not.toHaveBeenCalled();
+    expect(state.taskForKey).toHaveBeenCalledWith('key-1');
+    // The held evidence is untouched: still one file under its key.
+    expect(heldSubmission('key-1')?.attachmentCount).toBe(1);
+    expect(composerValue()).toBe('Summarise the notes');
+  });
+
+  it('is not retried under its key without its files', async () => {
+    // A fresh page (after a reload) no longer has the turn's files to resend.
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    state.taskForKey.mockImplementation(() => new Promise(() => {}));
+    render(<ChatPage />);
+    await waitFor(() => expect(composerValue()).toBe('Summarise the notes'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reconnect' })[0]);
+    await waitFor(() =>
+      expect(screen.getByText(/cannot be retried with its files/)).toBeTruthy(),
+    );
+    expect(state.regenerate).not.toHaveBeenCalled();
+    expect(state.taskForKey).toHaveBeenCalledWith('key-1');
+    expect(heldSubmission('key-1')?.attachmentCount).toBe(1);
+  });
+
+  it('is not resent under a new key when its key is resolved while its files are read', async () => {
+    // The held draft's file is still being read when reconciliation finds
+    // that the server already accepted its key.
+    let finishRead!: (text: string) => void;
+    const file = new File(['bytes'], 'notes.txt', { type: 'text/plain' });
+    Object.defineProperty(file, 'text', {
+      value: () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    });
+    await act(() => reloadChatDraftsForTests());
+    const scope = openChatDraft('conv-1', auth.getAuthGeneration());
+    const attachments = [{ id: 'att-2', file }];
+    setChatDraftInput(scope, 'Read this file');
+    setChatDraftAttachments(scope, attachments);
+    holdSubmission(scope, 'key-2', 'Read this file', attachments);
+    render(<ChatPage />);
+    await waitFor(() => expect(composerValue()).toBe('Read this file'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(finishRead).toBeTypeOf('function'));
+    act(() => acceptSubmission('key-2'));
+    await act(async () => finishRead('contents'));
+    await act(async () => new Promise((r) => setTimeout(r, 0)));
+    expect(state.send).not.toHaveBeenCalled();
+    expect(getChatDraft('conv-1').input).toBe('');
+  });
+
+  it('is not dispatched before its files have loaded', async () => {
+    let open!: () => void;
+    files.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    await act(() => reloadChatDraftsForTests());
+    render(<ChatPage />);
+    await waitFor(() => expect(composerValue()).toBe('Summarise the notes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.getByText(/still loading/)).toBeTruthy());
+    expect(state.send).not.toHaveBeenCalled();
+    open();
+    await act(() => heldSubmissionsReady());
+    // With its file back it resends exactly, under its own key.
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body.idempotency_key).toBe('key-1');
+    expect(state.send.mock.calls[0][1].body.attachments).toHaveLength(1);
   });
 });

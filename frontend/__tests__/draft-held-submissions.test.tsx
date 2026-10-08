@@ -5,6 +5,7 @@ import * as auth from '../lib/auth';
 import {
   acceptSubmission,
   getChatDraft,
+  heldResendStatus,
   heldSubmission,
   heldSubmissionComplete,
   heldSubmissionsReady,
@@ -250,6 +251,114 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     promoteHeldSubmission('key-1', 'conv-new');
     expect(getChatDraft(null).input).toBe('');
     expect(heldSubmission('key-1')).toBeUndefined();
+  });
+
+  it('keep a retyped identical draft when the old submission is accepted (identity, not text)', () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => result.current.setInput('Summarise the notes'));
+    act(() =>
+      result.current.holdSubmission('key-1', 'Summarise the notes', []),
+    );
+    expect(result.current.restoredKey).toBe('key-1'); // the sent draft
+    // The user clears the composer, then types the same words as a new draft.
+    act(() => result.current.setInput(''));
+    act(() => result.current.setInput('Summarise the notes'));
+    expect(result.current.restoredKey).toBeUndefined();
+    act(() => acceptSubmission('key-1'));
+    expect(heldSubmission('key-1')).toBeUndefined();
+    expect(result.current.input).toBe('Summarise the notes');
+  });
+
+  it('never overwrite a held submission with a different request under its key', () => {
+    const { attachments } = sendFrom('conv-a', 'key-1');
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() =>
+      result.current.holdSubmission('key-1', 'Summarise the notes', []),
+    );
+    expect(heldSubmission('key-1')?.attachmentCount).toBe(1);
+    expect(heldSubmission('key-1')?.pendingAttachments).toEqual(attachments);
+  });
+
+  it('allow a resend under the key only with every file, once loaded', async () => {
+    const { attachments } = sendFrom('conv-a', 'key-1');
+    expect(heldResendStatus('key-1', 'Summarise the notes', attachments)).toBe(
+      'resend',
+    );
+    expect(heldResendStatus('key-1', 'Summarise the notes', [])).toBe(
+      'incomplete',
+    );
+    expect(heldResendStatus('key-2', 'anything', [])).toBe('new');
+    await flush();
+    cleanup();
+    let open!: () => void;
+    store.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    await act(() => reloadChatDraftsForTests());
+    expect(heldResendStatus('key-1', 'Summarise the notes', [])).toBe(
+      'loading',
+    );
+    store.records.clear(); // the file expired meanwhile
+    open();
+    await act(() => heldSubmissionsReady());
+    expect(heldResendStatus('key-1', 'Summarise the notes', [])).toBe(
+      'incomplete',
+    );
+  });
+
+  it("mark an earlier version's sent draft so acceptance clears it (#485 review)", async () => {
+    // Written before drafts carried their held key: no heldMarks, no
+    // restoredKey on the sent draft.
+    sendFrom('conv-a', 'key-1');
+    await flush();
+    const saved = JSON.parse(sessionStorage.getItem('daemon:chat-drafts:v1')!);
+    sessionStorage.setItem(
+      'daemon:chat-drafts:v1',
+      JSON.stringify({
+        v: 1,
+        epoch: saved.epoch,
+        held: saved.held,
+        drafts: [
+          {
+            conversationId: 'conv-a',
+            input: 'Summarise the notes',
+            attachmentIds: ['att-1'],
+          },
+          {
+            conversationId: 'conv-b',
+            input: 'Something else',
+            attachmentIds: [],
+          },
+        ],
+      }),
+    );
+    cleanup();
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    expect(getChatDraft('conv-a').restoredKey).toBe('key-1');
+    expect(getChatDraft('conv-b').restoredKey).toBeUndefined();
+    act(() => acceptSubmission('key-1'));
+    expect(getChatDraft('conv-a').input).toBe('');
+    expect(getChatDraft('conv-b').input).toBe('Something else');
+  });
+
+  it('never mark a draft by content when this version saved it', async () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => result.current.setInput('Same words'));
+    act(() =>
+      result.current.holdSubmission(
+        'key-1',
+        'Same words',
+        result.current.pendingAttachments,
+      ),
+    );
+    // Cleared, then the same words typed again as a new draft.
+    act(() => result.current.setInput(''));
+    act(() => result.current.setInput('Same words'));
+    await flush();
+    cleanup();
+    await act(() => reloadChatDraftsForTests());
+    expect(getChatDraft('conv-a').restoredKey).toBeUndefined();
   });
 
   it('are discarded with drafts when the sign-in changes', () => {

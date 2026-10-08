@@ -77,6 +77,11 @@ function readEntry(store: Storage, itemKey: string): PendingSubmission | null {
  * An older (content-fingerprint) record keeps its key: the fingerprint is
  * dropped and the rest moves to the current format, so an unresolved
  * submission from a cached older client can still be resolved by key.
+ *
+ * The current record is written (and read back) before the older one is
+ * removed: if the write fails, the older record stays for a later attempt
+ * and this pass still returns the migrated view. A current record for the
+ * same key is newer and is never overwritten.
  */
 function migrateLegacy(
   store: Storage,
@@ -111,11 +116,28 @@ function migrateLegacy(
       migrated = null;
     }
   }
-  store.removeItem(itemKey);
-  if (!prefix || !migrated) return;
+  if (!prefix || !migrated) {
+    store.removeItem(itemKey); // unreadable, or the old salt: nothing to keep
+    return;
+  }
   const key = itemKey.slice(prefix.length);
-  if (Date.now() - migrated.createdAt >= PENDING_SUBMISSION_TTL_MS) return;
-  store.setItem(ITEM_PREFIX + key, JSON.stringify(migrated));
+  if (Date.now() - migrated.createdAt >= PENDING_SUBMISSION_TTL_MS) {
+    store.removeItem(itemKey);
+    return;
+  }
+  if (readEntry(store, ITEM_PREFIX + key)) {
+    // Already migrated (or recreated by a newer tab): that record is found
+    // on its own; only the older copy goes.
+    store.removeItem(itemKey);
+    return;
+  }
+  try {
+    store.setItem(ITEM_PREFIX + key, JSON.stringify(migrated));
+  } catch {
+    found.push([key, migrated]); // kept in its older form; retried later
+    return;
+  }
+  if (readEntry(store, ITEM_PREFIX + key)) store.removeItem(itemKey);
   found.push([key, migrated]);
 }
 
@@ -289,7 +311,10 @@ export function pendingTasksIn(
 /** Forget one submission once its outcome is known; others stay pending. */
 export function settlePendingSubmission(key: string): void {
   try {
-    storage()?.removeItem(ITEM_PREFIX + key);
+    const store = storage();
+    store?.removeItem(ITEM_PREFIX + key);
+    // An older copy kept by a failed migration must not bring it back.
+    for (const prefix of LEGACY_PREFIXES) store?.removeItem(prefix + key);
   } catch {
     // Nothing to forget.
   }
@@ -300,9 +325,21 @@ export function clearPendingSubmissions(): void {
   const store = storage();
   if (!store) return;
   try {
-    for (const [key] of entries(store, Date.now())) {
-      store.removeItem(ITEM_PREFIX + key);
+    // Every stored form, without migrating first: an older copy kept by a
+    // failed migration must not survive into the next account.
+    const itemKeys: string[] = [];
+    for (let index = 0; index < store.length; index += 1) {
+      const itemKey = store.key(index);
+      if (
+        itemKey &&
+        (itemKey.startsWith(ITEM_PREFIX) ||
+          itemKey === LEGACY_SALT ||
+          LEGACY_PREFIXES.some((prefix) => itemKey.startsWith(prefix)))
+      ) {
+        itemKeys.push(itemKey);
+      }
     }
+    for (const itemKey of itemKeys) store.removeItem(itemKey);
   } catch {
     // Nothing to clear.
   }
