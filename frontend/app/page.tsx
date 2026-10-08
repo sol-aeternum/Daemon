@@ -1190,8 +1190,9 @@ function ChatContent() {
         } else if (TERMINAL_TASK_STATUSES.has(task.status)) {
           finishSubmission(key);
         } else {
-          promoteSubmission(key, task.conversationId);
+          // Record (clearing the composer it was sent from) before promoting.
           recordSubmission(key, task.id);
+          promoteSubmission(key, task.conversationId);
         }
       }
     })();

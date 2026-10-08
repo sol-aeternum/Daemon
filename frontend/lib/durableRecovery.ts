@@ -79,8 +79,11 @@ export async function reconcileSubmission(
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
     deps.settle(key);
   } else {
-    deps.promote(key, task.conversationId);
+    // Record first: that clears the composer still holding the submission,
+    // which is found under the conversation it was sent from (``null`` for
+    // a new chat), before promotion moves the submission to its new one.
     deps.record(key, task.id);
+    deps.promote(key, task.conversationId);
   }
   const now = deps.currentId();
   if (now === task.conversationId) {

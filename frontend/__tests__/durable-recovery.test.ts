@@ -69,6 +69,18 @@ describe('reconcileSubmission', () => {
     expect(d.showSaved).toHaveBeenCalledWith('t');
   });
 
+  it('records the task before promoting a new chat (#479 review)', async () => {
+    const d = deps({ id: 't', conversationId: 'conv-new', status: 'running' }, [
+      null,
+    ]);
+    await reconcileSubmission('k1', d);
+    // Recording clears the composer the submission was sent from, which is
+    // looked up by the conversation it belongs to before promotion.
+    expect(d.record.mock.invocationCallOrder[0]).toBeLessThan(
+      d.promote.mock.invocationCallOrder[0],
+    );
+  });
+
   it("opens an unnamed new chat's task while the user is still there", async () => {
     const d = deps({ id: 't', conversationId: 'conv-new', status: 'running' }, [
       null,

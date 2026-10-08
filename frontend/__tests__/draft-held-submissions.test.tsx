@@ -241,6 +241,17 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     expect(getChatDraft('conv-a').pendingAttachments).toEqual([]);
   });
 
+  it("empty a new chat's composer when accepted before promotion", () => {
+    const { result } = renderHook(() => useChatDraft(null));
+    act(() => result.current.setInput('Plan the trip'));
+    act(() => result.current.holdSubmission('key-1', 'Plan the trip', []));
+    // Reconciliation after a reload: record (accept) first, then promote.
+    act(() => acceptSubmission('key-1'));
+    promoteHeldSubmission('key-1', 'conv-new');
+    expect(getChatDraft(null).input).toBe('');
+    expect(heldSubmission('key-1')).toBeUndefined();
+  });
+
   it('are discarded with drafts when the sign-in changes', () => {
     sendFrom('conv-a', 'key-1');
     act(() => auth.clearLocalAuthState());
