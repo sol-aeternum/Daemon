@@ -360,7 +360,131 @@ describe('#477 submission reliability closeout', () => {
     expect(composer.value).toBe('newer draft');
     fireEvent.change(composer, { target: { value: '' } });
     await waitFor(() => expect(composer.value).toBe('old request'));
+    expect(heldSubmission('held-old')).toBeDefined();
+    expect(pendingSubmission('held-old')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body.idempotency_key).toBe('held-old');
   });
+
+  it.each(['conv-1', null])(
+    'keeps a queued uncertain %s draft and its files under the same key after reload and late acceptance',
+    async (conversationId) => {
+      const files = new MemoryAttachmentStore();
+      setAttachmentStoreForTests(files);
+      try {
+        state.currentId = conversationId;
+        if (conversationId === null) state.conversation = null;
+        const scope = openChatDraft(conversationId, auth.getAuthGeneration());
+        const file = new File(['exact bytes'], 'notes.txt', {
+          type: 'text/plain',
+        });
+        Object.defineProperty(file, 'text', {
+          value: async () => 'exact bytes',
+        });
+        const attachments = [{ id: 'queued-file', file }];
+        setChatDraftInput(scope, 'read my notes');
+        setChatDraftAttachments(scope, attachments);
+        holdSubmission(scope, 'queued-files-key', 'read my notes', attachments);
+        setChatDraftInput(scope, 'newer draft');
+        setChatDraftAttachments(scope, []);
+        pending('queued-files-key', conversationId);
+        await act(() => reloadChatDraftsForTests());
+        await act(() => heldSubmissionsReady());
+        render(<ChatPage />);
+        await waitFor(() =>
+          expect(screen.getByText(/will return to the composer/)).toBeTruthy(),
+        );
+        const composer = screen.getByLabelText(
+          'Composer',
+        ) as HTMLTextAreaElement;
+        expect(composer.value).toBe('newer draft');
+        expect(state.send).not.toHaveBeenCalled();
+        // Acceptance commits after the null lookup. A resend must replay this
+        // identity, not allocate a second new-chat task under another key.
+        state.send.mockImplementation(async () => {
+          state.chatOptions?.onFinish?.({
+            message: {
+              id: 'late-accepted-reply',
+              role: 'assistant',
+              parts: [
+                {
+                  type: 'data-event',
+                  data: {
+                    type: 'task',
+                    task_id: 'late-task',
+                    status: 'running',
+                  },
+                },
+              ],
+            },
+            isDisconnect: true,
+            isError: false,
+            isAbort: false,
+          });
+        });
+        fireEvent.change(composer, { target: { value: '' } });
+        await waitFor(() => expect(composer.value).toBe('read my notes'));
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+        await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+        const body = state.send.mock.calls[0][1].body;
+        expect(body.idempotency_key).toBe('queued-files-key');
+        expect(body.id).toBe(conversationId);
+        expect(body.attachments).toEqual([
+          expect.objectContaining({
+            name: 'notes.txt',
+            text_content: 'exact bytes',
+          }),
+        ]);
+        expect(pendingSubmission('queued-files-key')?.taskId).toBe('late-task');
+      } finally {
+        setAttachmentStoreForTests(undefined);
+      }
+    },
+  );
+
+  it.each([
+    [
+      undefined,
+      { success: false, error: 'notification timed out' },
+      'not recorded',
+    ],
+    ['invalid', { success: true }, 'not recorded'],
+    [undefined, { performed: false }, 'not recorded'],
+    [
+      'unknown',
+      { success: false, error: 'notification timed out' },
+      'not recorded',
+    ],
+    ['failed', { performed: false }, '1 issue'],
+    ['succeeded', { success: true }, '+1 other tool'],
+  ])(
+    'hydrates historical outcome %s without inferring effects from raw payloads',
+    async (outcome, result, label) => {
+      const conversation = runningConversation(false);
+      state.conversation = {
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.role === 'assistant'
+            ? {
+                ...message,
+                tool_calls: [{ name: 'notification_send', arguments: {} }],
+                tool_results: [{ name: 'notification_send', result, outcome }],
+              }
+            : message,
+        ),
+      };
+      render(<ChatPage />);
+      const activity = await screen.findByRole('button', {
+        name: new RegExp(
+          `Tool activity:.*${String(label).replace('+', '\\+')}`,
+        ),
+      });
+      expect(activity).toBeTruthy();
+      if (label === 'not recorded')
+        expect(activity.getAttribute('aria-label')).not.toContain('issue');
+    },
+  );
 
   it('reconnects the failed turn key rather than a newer held submission', async () => {
     render(<ChatPage />);
@@ -667,6 +791,14 @@ describe('a submission refused before acceptance (#476, #479 review)', () => {
     expect(composer().value).toBe('next draft');
     fireEvent.change(composer(), { target: { value: '' } });
     await waitFor(() => expect(composer().value).toBe('first message'));
+    const refusedKey = state.send.mock.calls[0][1].body.idempotency_key;
+    expect(pendingSubmission(refusedKey)).toBeNull();
+    expect(heldSubmission(refusedKey)).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).not.toBe(
+      refusedKey,
+    );
   });
 
   it('is resolved by key, not released, when it was a resend', async () => {

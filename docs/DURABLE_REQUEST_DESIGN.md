@@ -314,6 +314,13 @@ never proof of success. Raw tool bodies, headers and credentials are not added t
 the durable event log. Admission-deferred attempts and same-generation text
 corrections do not count as regenerated inference.
 
+For the #492 review follow-up, the owner approved saving that same bounded
+outcome on durable message `tool_results` as an additive conversation-history
+field. Historical rows without a valid saved outcome display `unknown`; raw
+error or success payloads cannot reconstruct proof of an effect. A missing
+by-key lookup retains the original submission key even when its draft must wait
+behind newer composer input; only an explicit refusal releases that identity.
+
 These are implementation approvals for the bounded closeout, not gate clearance,
 deployment or enablement authority. #469 account fence-and-drain and #486 legacy
 HTTP-cache privacy remain separate dependencies; #488 provider submissions,

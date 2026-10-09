@@ -128,6 +128,47 @@ async def test_duplicate_delivery_runs_once(env: Env, mock_llm: None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"success": False, "error": "notification timed out"}, "unknown"),
+        ({"performed": False, "error": "not sent"}, "failed"),
+        ({"success": True}, "succeeded"),
+    ],
+)
+async def test_saved_tool_outcome_matches_live_and_progress_replay(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, result: dict, expected: str
+):
+    async def scripted_tool_completion(**_kwargs: Any):
+        yield {"type": "tool_executing", "name": "notification_send", "arguments": {}}
+        yield {"type": "tool_result", "name": "notification_send", "result": json.dumps(result)}
+        yield {"type": "content_delta", "content": MOCK_TEXT}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", scripted_tool_completion)
+    accepted = await accept_task(env)
+    redis = FakeRedis()
+    assert await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)) == "completed"
+    history = await env.memory.get_recent_messages(accepted.conversation_id)
+    saved = next(m for m in history if m["role"] == "assistant")
+    assert saved["tool_results"] == [
+        {"name": "notification_send", "result": result, "outcome": expected}
+    ]
+    frames = [
+        runner._parse_frame(message["frame"])
+        for _, message in redis.published
+        if message["t"] == "frame"
+    ]
+    live = [envelope["data"] for kind, envelope in frames if kind == "tool_result"]
+    assert [item["outcome"] for item in live] == [expected]
+    event = await env.pool.fetchrow(
+        "SELECT payload_ciphertext FROM task_events WHERE task_id = $1 AND kind = 'tool_result'",
+        accepted.task_id,
+    )
+    assert env.tasks._open(event["payload_ciphertext"])["outcome"] == expected
+
+
+@pytest.mark.asyncio
 async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
     env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
 ):

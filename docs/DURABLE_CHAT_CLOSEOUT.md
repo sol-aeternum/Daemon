@@ -121,4 +121,30 @@ Exact-head CI, detailed commands and independent-review adjudication are recorde
 in the draft PR. Local verification is not deployment or enablement clearance.
 No merge or deployment is part of this task; #477 must remain open.
 
+### Current-head review follow-up (#492)
+
+Codex found two P1 gaps in the initial closeout: saved tool results omitted the
+bounded live/replay outcome, and the queued restoration path released uncertain
+submission keys as if they were explicitly refused. The owner approved additive
+saved-result outcomes and conservative historical fallback on 9 October 2026.
+The durable completion sink now saves the same result classifier without
+mutating engine rows. Historical results missing valid bounded evidence remain
+unknown. Queued by-key misses retain their original identity through resend;
+explicitly refused drafts still resend as new submissions.
+
+Regression coverage includes sink non-mutation, PostgreSQL message-history/live/
+progress outcome agreement, actual page history hydration, and queued resend
+after reload with retained files in both existing and new conversations. Late
+acceptance and queued explicit-refusal behavior are checked separately. The
+initial green gates and no-confirmed-findings source reviews above are historical
+evidence, not clearance for these follow-up changes; exact-head checks and fresh
+review adjudication remain recorded in the draft PR.
+
+Local follow-up verification passed all 16 blocking gates: 5,441 backend tests
+passed with 123 skipped and 1,066 frontend tests passed. A further final-state
+A–D restart proof passed with verified disposal. Fresh read-only `review-go`
+found no blocking repair defects; the primary executed the checks. Browser
+inventory again reported 25 passed and 16 failed, with causality limitations
+still tracked by #490; audit and full Bandit inventory remain separate debt.
+
 #488 provider retries, #487 OpenUI and #489 artifact catalog remain separate.

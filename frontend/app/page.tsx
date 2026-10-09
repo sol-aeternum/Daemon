@@ -230,11 +230,11 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
       name: getOptionalString(toolResult.name) || 'tool',
       result: toolResult.result,
     };
-    // A recorded bounded outcome travels with the persisted row (#477);
-    // legacy rows have none and render as unknown, never success.
-    if (isToolResultOutcome(toolResult.outcome)) {
-      event.outcome = toolResult.outcome;
-    }
+    // Saved durable rows carry the same bounded evidence as live/replay. Old
+    // rows must not infer an effect's outcome from a raw error or success body.
+    event.outcome = isToolResultOutcome(toolResult.outcome)
+      ? toolResult.outcome
+      : 'unknown';
 
     const id = getOptionalString(toolResult.id);
     if (id) event.id = id;
@@ -541,8 +541,8 @@ function ChatContent() {
   // Keys this page resent (a held draft or a retry): a rejection of such a
   // key is ambiguous, since the key may already belong to an accepted task.
   const resentKeysRef = useRef(new Set<string>());
-  // Refused submissions waiting for an empty composer to return to.
-  const rejectedWaitingRef = useRef(new Set<string>());
+  // Held submissions waiting for an empty composer, with their certainty kept.
+  const waitingRestoresRef = useRef(new Map<string, 'refused' | 'uncertain'>());
   const returnRejectedRef = useRef<((key: string) => Promise<void>) | null>(
     null,
   );
@@ -1252,7 +1252,7 @@ function ChatContent() {
       if (restoreHeldSubmission(key)) {
         settleSubmission(key);
       } else if (heldSubmission(key)) {
-        rejectedWaitingRef.current.add(key);
+        waitingRestoresRef.current.set(key, 'refused');
         showError(
           'Your earlier message was not sent. It will return to the composer when the composer is empty.',
         );
@@ -1263,10 +1263,12 @@ function ChatContent() {
   }, [dropIncompleteHeld, reconcileWithServer, showError]);
   useEffect(() => {
     if (input || pendingAttachments.length > 0) return;
-    for (const key of rejectedWaitingRef.current) {
+    for (const [key, disposition] of waitingRestoresRef.current) {
       if (restoreHeldSubmission(key)) {
-        rejectedWaitingRef.current.delete(key);
-        settleSubmission(key);
+        waitingRestoresRef.current.delete(key);
+        // A by-key miss can precede a late acceptance. Only a confirmed
+        // refusal releases identity; uncertain drafts resend their held key.
+        if (disposition === 'refused') settleSubmission(key);
         break;
       }
     }
@@ -1308,7 +1310,7 @@ function ChatContent() {
         if (dropIncompleteHeld(key)) return 'settled';
         if (!restoreHeldSubmission(key)) {
           if (heldSubmission(key)) {
-            rejectedWaitingRef.current.add(key);
+            waitingRestoresRef.current.set(key, 'uncertain');
             showError(
               'Your earlier message was not sent. It will return to the composer when the composer is empty.',
             );

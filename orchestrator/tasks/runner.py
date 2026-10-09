@@ -134,6 +134,17 @@ class AttemptSink:
         try:
             if status == "complete":
                 message_fields = {key: value for key, value in fields.items() if value is not None}
+                tool_results = message_fields.get("tool_results")
+                if isinstance(tool_results, list):
+                    # The engine saves raw results before the runner annotates
+                    # live frames. History must carry that same bounded evidence,
+                    # without mutating the engine's accumulator or result bodies.
+                    message_fields["tool_results"] = [
+                        {**row, "outcome": _outcome_of(row.get("result"))}
+                        if isinstance(row, dict)
+                        else row
+                        for row in tool_results
+                    ]
                 if metadata:
                     message_fields["metadata"] = metadata
                 self._state.result = await self._store.complete(
