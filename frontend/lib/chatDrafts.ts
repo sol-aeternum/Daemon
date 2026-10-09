@@ -99,10 +99,28 @@ function emit(): void {
 function persist(): void {
   if (typeof window === 'undefined') return;
   const store = getAttachmentStore();
+  // Ids still wanted by drafts or held submissions. Everything else stored
+  // is freed FIRST: capacity admitted for a submission that was released
+  // (accepted or refused) must be retried for newer files in this same
+  // pass, or a file skipped under the cap would never be saved again.
   const referenced = new Set<string>();
-  const drafts: PersistedDraft[] = [];
+  for (const entry of entries.values()) {
+    // Files being restored after a reload are kept even when their latest
+    // snapshot does not mention them yet.
+    for (const id of pendingRestores.get(entry) ?? []) referenced.add(id);
+    for (const { id } of entry.snapshot.pendingAttachments) referenced.add(id);
+  }
+  for (const submission of held.values()) {
+    for (const id of heldRestores.get(submission.key) ?? []) referenced.add(id);
+    for (const { id } of submission.pendingAttachments) referenced.add(id);
+  }
+  const stale = [...persistedIds.keys()].filter((id) => !referenced.has(id));
+  for (const id of stale) persistedIds.delete(id);
+  if (store && stale.length > 0)
+    void store.delete(stale).catch(() => undefined);
   let total = 0;
   for (const bytes of persistedIds.values()) total += bytes;
+  const drafts: PersistedDraft[] = [];
   for (const [conversationId, entry] of entries) {
     const { input, pendingAttachments } = entry.snapshot;
     const attachmentIds = [...(pendingRestores.get(entry) ?? [])];
@@ -119,7 +137,6 @@ function persist(): void {
       }
       if (persistedIds.has(id)) attachmentIds.push(id);
     }
-    for (const id of attachmentIds) referenced.add(id);
     if (input || attachmentIds.length > 0) {
       drafts.push({
         conversationId,
@@ -147,7 +164,6 @@ function persist(): void {
       }
       if (persistedIds.has(id)) attachmentIds.push(id);
     }
-    for (const id of attachmentIds) referenced.add(id);
     heldRecords.push({
       key: submission.key,
       conversationId: submission.conversationId,
@@ -156,10 +172,6 @@ function persist(): void {
       attachmentCount: submission.attachmentCount,
     });
   }
-  const stale = [...persistedIds.keys()].filter((id) => !referenced.has(id));
-  for (const id of stale) persistedIds.delete(id);
-  if (store && stale.length > 0)
-    void store.delete(stale).catch(() => undefined);
   saveDraftText(drafts, heldRecords);
 }
 

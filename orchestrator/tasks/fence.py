@@ -59,22 +59,28 @@ def _outcome_of(result: Any) -> str:
     after the server accepted it. Such a result is recorded ``unknown`` (the
     evidence then says the effect may have happened), and ``failed`` only when
     the tool states explicitly that it did not perform the action
-    (``"performed": false``). Anything else counts as ``succeeded``.
+    (``"performed": false``). Missing/legacy evidence is unknown, not success.
     """
     if isinstance(result, str):
         try:
             result = json.loads(result)
         except (TypeError, ValueError):
-            return "succeeded"
+            return "unknown"
     if not isinstance(result, dict):
-        return "succeeded"
+        return "unknown"
     if result.get("performed") is False:
         return "failed"
     if result.get("success") is False or (
         bool(result.get("error")) and result.get("success") is not True
     ):
         return "unknown"
-    return "succeeded"
+    status = result.get("status")
+    if isinstance(status, int) and not isinstance(status, bool):
+        # HTTP error responses do not prove that a write had no effect.
+        return "succeeded" if 200 <= status < 300 else "unknown"
+    if result.get("success") is True or result.get("performed") is True:
+        return "succeeded"
+    return "unknown"
 
 
 class FencedTool(Tool):
@@ -121,7 +127,11 @@ class FencedTool(Tool):
             if self._on_lease_lost is not None:
                 self._on_lease_lost()
             return json.dumps(
-                {"success": False, "error": "Not performed: this task attempt was superseded."}
+                {
+                    "success": False,
+                    "performed": False,
+                    "error": "Not performed: this task attempt was superseded.",
+                }
             )
         except EffectRefused as refused:
             # Cancelled, suspended or out of lease time: the effect is not
@@ -129,7 +139,11 @@ class FencedTool(Tool):
             if self._on_refused is not None:
                 self._on_refused(refused.reason)
             return json.dumps(
-                {"success": False, "error": "Not performed: this task can no longer act."}
+                {
+                    "success": False,
+                    "performed": False,
+                    "error": "Not performed: this task can no longer act.",
+                }
             )
         try:
             result = await self._inner.execute(**kwargs)

@@ -27,7 +27,7 @@ from orchestrator.compute_runtime import (
     compute_error,
     current_scope,
 )
-from orchestrator.tasks.fence import guard_registry
+from orchestrator.tasks.fence import _outcome_of, guard_registry
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
 from orchestrator.tasks.store import Claim, ExecutionRefused, LeaseLost, TaskStore
@@ -200,18 +200,31 @@ class _TaskRefreshGuard:
         self._store = store
         self._state = state
 
-    async def refreshed(self, url: str, mode: str) -> bool:
-        pages = await self._store.refreshed_pages(self._state.claim.task_id)
-        return _page_key(url, mode) in pages
+    @staticmethod
+    def _key(url: str, mode: str, version: str, refresh: bool) -> str:
+        return hashlib.sha256(f"{version}\n{mode}\n{refresh}\n{url}".encode()).hexdigest()
 
-    async def record(self, url: str, mode: str) -> None:
-        claim = self._state.claim
-        try:
-            await self._store.record_event(
-                claim.task_id, claim.epoch, "page_refreshed", {"key": _page_key(url, mode)}
-            )
-        except LeaseLost:
-            _fence_lost(self._state)
+    async def pinned(self, url: str, mode: str, version: str, refresh: bool) -> uuid.UUID | None:
+        return await self._store.pinned_page(
+            self._state.claim,
+            self._key(url, mode, version, refresh),
+            _page_key(url, mode) if refresh else None,
+        )
+
+    def publication_hook(self, url: str, mode: str, version: str, refresh: bool):
+        async def publish(conn: Any, snapshot_id: uuid.UUID) -> None:
+            try:
+                await self._store.pin_page(
+                    conn, self._state.claim, self._key(url, mode, version, refresh), snapshot_id
+                )
+            except LeaseLost:
+                _fence_lost(self._state)
+                raise
+            except ExecutionRefused as refused:
+                _operation_refused(self._state, refused.reason)
+                raise
+
+        return publish
 
 
 def _operation_refused(state: AttemptState, reason: str) -> None:
@@ -526,20 +539,30 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                         {"t": "delta", "gen": claim.epoch, "seq": state.delta_seq, "text": text},
                     )
             elif event in _PASSTHROUGH_FRAMES:
-                message: dict[str, Any] = {"t": "frame", "gen": claim.epoch, "frame": frame}
+                data = {**data, "content_generation": claim.epoch}
+                message: dict[str, Any] = {"t": "frame", "gen": claim.epoch}
                 if event in {"tool_call", "tool_result"}:
                     # Persisted first, so an observer that replays it on
                     # reattach can drop the live copy by sequence (#472).
-                    seq = await _record_progress(store, state, event, data.get("name"))
+                    seq = await _record_progress(store, state, event, data.get("name"), data)
                     if seq is not None:
                         message["seq"] = seq
+                        data["event_seq"] = seq
+                    if event == "tool_result":
+                        data["outcome"] = _outcome_of(data.get("result"))
+                envelope["data"] = data
+                message["frame"] = f"event: {event}\ndata: {json.dumps(envelope)}\n\n"
                 await _publish(redis, state, message)
             elif event == "error":
                 state.requested_terminal = state.requested_terminal or "error"
 
 
 async def _record_progress(
-    store: TaskStore, state: AttemptState, event: str, name: Any
+    store: TaskStore,
+    state: AttemptState,
+    event: str,
+    name: Any,
+    data: dict[str, Any] | None = None,
 ) -> int | None:
     """Persist a tool progress event under the fence; returns its sequence."""
     try:
@@ -547,7 +570,15 @@ async def _record_progress(
             state.claim.task_id,
             state.claim.epoch,
             event,
-            {"name": name, "epoch": state.claim.epoch},
+            {
+                "name": str(name or "tool")[:100],
+                "epoch": state.claim.epoch,
+                **(
+                    {"outcome": _outcome_of((data or {}).get("result"))}
+                    if event == "tool_result"
+                    else {}
+                ),
+            },
         )
     except LeaseLost:
         # Fenced: stop now (the cancel lands at the next await), as the sink

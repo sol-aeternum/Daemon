@@ -37,6 +37,10 @@ export interface ConversationHistoryContextValue {
   fetchConversationById: ReturnType<
     typeof useConversationHistory
   >['fetchConversationById'];
+  /** Why the open conversation no longer loads (#477), if it stopped trying. */
+  conversationLoadFailure: ReturnType<
+    typeof useConversationHistory
+  >['conversationLoadFailure'];
   refreshCurrentConversation: ReturnType<
     typeof useConversationHistory
   >['refreshCurrentConversation'];

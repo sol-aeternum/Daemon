@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from orchestrator.services.fetch.service import FetchService
@@ -12,11 +12,15 @@ from orchestrator.tools.registry import Tool
 
 
 class RefreshGuard(Protocol):
-    """Remembers, per durable task, which pages it has already refreshed."""
+    """Trusted task provenance, never model-supplied owner/epoch arguments."""
 
-    async def refreshed(self, url: str, mode: str) -> bool: ...
+    async def pinned(
+        self, url: str, mode: str, version: str, refresh: bool
+    ) -> uuid.UUID | None: ...
 
-    async def record(self, url: str, mode: str) -> None: ...
+    def publication_hook(
+        self, url: str, mode: str, version: str, refresh: bool
+    ) -> Callable[[Any, uuid.UUID], Awaitable[None]]: ...
 
 
 class WebFetchTool(Tool):
@@ -186,12 +190,12 @@ class WebFetchTool(Tool):
                 # Extraction version belongs to this immutable representation.
                 version = EXTRACTION_VERSION_V1
                 guard = self.refresh_guard
-                refreshed_before = (
-                    refresh and guard is not None and await guard.refreshed(url, mode)
-                )
+                pinned = await guard.pinned(url, mode, version, refresh) if guard else None
                 snapshot = (
-                    None
-                    if refresh and not refreshed_before
+                    await store.get(user, conversation, pinned)
+                    if pinned is not None
+                    else None
+                    if refresh
                     else await store.find_latest(user, conversation, url, mode, version)
                 )
                 if snapshot is None:
@@ -206,6 +210,8 @@ class WebFetchTool(Tool):
                     )
                     if fetched is None:
                         return self._error("fetch_failed")
+                    if fetched.extraction_version != version:
+                        return self._error("snapshot_representation_mismatch")
                     snapshot = await store.create(
                         user,
                         conversation,
@@ -215,10 +221,11 @@ class WebFetchTool(Tool):
                         content=fetched.content,
                         extract_mode=mode,
                         extraction_version=fetched.extraction_version,
+                        on_created=guard.publication_hook(url, mode, version, refresh)
+                        if guard is not None
+                        else None,
                     )
                     self._created += 1
-                    if refresh and self.refresh_guard is not None:
-                        await self.refresh_guard.record(url, mode)
             start = self._integer(kwargs, "start_char", 0, 0)
             if start > snapshot.content_chars:
                 return self._error("offset_out_of_range")

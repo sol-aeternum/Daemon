@@ -289,9 +289,35 @@ The slices are increments inside broad Stage 1 (DEC10), not a reduction of its s
 | Worker dies holding a reservation on a one-slot account | At takeover the lost attempt's open hold is settled at its full hold before the recovery attempt is admitted; the recovery is not refused for concurrency. |
 | Task cancelled or stopped at `needs_attention`, then the conversation is opened on another device | `latest_task` names the task and its terminal status; the result row shows its notice. |
 
-Run the unchanged backend, frontend, documentation and security gates as well. Passing mocks alone does not demonstrate crash or deployment durability; a staging restart check precedes any release claim. The restart check is `scripts/durable_restart_drill.sh` (owner decision, 8 October 2026: a disposable local Compose project with its own volumes, the flag on and the deterministic mock LLM; it never touches the live project). It checks that a task accepted while the worker is down survives a backend restart and completes exactly once with a same-key replay returning it; that a worker killed while its attempt is `running` (claimed, though the instant mock may not have streamed a token yet; mid-stream crashes are the unit fault points above) leaves a `lost` attempt that a restarted worker recovers to completion after the lease; and that an observer reattaching after a backend restart sees the result. Because the drill stack has no provider keys, it records a synthetic route attestation in its own database (the mock never contacts a provider). It passed three consecutive runs on 8 October 2026 against main `06e6f6a3`, and again against main `2e3aca9f` once it kept container state off the checkout (it leaves no file it did not create there). Compose runs with only the drill's own variables, so a caller's shell exporting `MOCK_LLM=false` or provider keys cannot reach the services, and the drill fails unless both backend and worker run with the mock; it passed with such a hostile environment exported (revised in Codex review of #483). Each run uses its own Compose project (`daemon-drill-<random>`, or `DRILL_PROJECT`), reserved by a lock so two runs cannot share it, and refuses a name that already has containers, volumes or networks, failing closed when Docker cannot be asked; its teardown deletes only that project's volumes. Teardown is part of the result: the drill reports `ALL PASS` only after the project is removed and verified gone, and a failed teardown fails it with the command to recover. These preflight and teardown paths are tested with a stub `docker` (`tests/test_durable_restart_drill_script.py`). It requires Compose 2.24.4 or later.
+Run the unchanged backend, frontend, documentation and security gates as well. Passing mocks alone does not demonstrate deployment durability; a restart check precedes any release claim. The owner selected `scripts/durable_restart_drill.sh` on 8 October 2026: a disposable local Compose project with its own volumes, the flag on and synthetic inference, never the live project. The original #483 drill killed an attempt on `running`, not proven persisted output; its passing runs against `06e6f6a3` and `2e3aca9f` are historical baseline evidence, not proof of the stronger #477 criteria. The closeout uses an explicit test-only gated provider transport while retaining real compute reservations/settlements. It kills only after committed partial output, verifies the exact recovered answer with a distinct authenticated device, exercises Redis-gap event recovery, and checks no material-effect repetition. See [DURABLE_CHAT_CLOSEOUT.md](DURABLE_CHAT_CLOSEOUT.md) for the acceptance ledger and proof details. Compose still receives only the drill's variables, refuses live/pre-existing project resources, reserves the project name, and deletes only its own project volumes. `ALL PASS` requires verified teardown; the refusal and teardown regressions remain in `tests/test_durable_restart_drill_script.py`. Compose 2.24.4 or later is required. No deployment or flag enablement is authorized by a passing local drill.
 
 ## 18. Prerequisites and approval boundary
+
+### Reliability closeout decisions (9 October 2026, #477)
+
+The owner approved a shared PostgreSQL transaction for snapshot creation and its
+encrypted task marker, preserving account → conversation → task lock order.
+Fetching remains outside the transaction. The marker pins the exact snapshot
+identity; retry resolves that owned snapshot rather than the latest page version.
+A missing or expired pinned snapshot is reported unavailable, not silently
+fetched again. This requires no new database columns. A crash before the shared
+commit may repeat the uncommitted read; a crash after it must reuse the committed
+snapshot without another fetch or insertion.
+
+The owner also approved minimal backward-compatible fields on existing task/tool
+frames: durable event sequence, content generation, historical lifecycle kind and
+epoch, bounded `succeeded` / `failed` / `unknown` operation outcome, and an explicit
+regeneration count. No new SSE event types, endpoints or task-management mode are
+introduced. Current task status remains authoritative; historical lifecycle
+evidence cannot regress it. Legacy or empty replay evidence is outcome-unknown,
+never proof of success. Raw tool bodies, headers and credentials are not added to
+the durable event log. Admission-deferred attempts and same-generation text
+corrections do not count as regenerated inference.
+
+These are implementation approvals for the bounded closeout, not gate clearance,
+deployment or enablement authority. #469 account fence-and-drain and #486 legacy
+HTTP-cache privacy remain separate dependencies; #488 provider submissions,
+#487 OpenUI and #489 artifact catalog are not absorbed by this work.
 
 **Prerequisites for slice 1:** a green `scripts/local_ci.sh` on current main before starting, and the CI PostgreSQL service (decision 10). Not blockers: #316 (current main persists `forced_terminal_status`; confirm and close), #312 (already scoped on main), dependency advisories #309/#418 (handled at the gate level), #86 and #90 (the sweep covers the task part of #90). #314 is a prerequisite for slice 2 only.
 

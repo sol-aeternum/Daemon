@@ -28,10 +28,10 @@ Authorization is never derived from a guessable value.
 
 Admission is atomic and serialized.
     ``create()`` runs one transaction that (1) locks the owner's ``users`` row
-    ``FOR UPDATE`` — the per-account serialization point, so two concurrent
+    ``FOR NO KEY UPDATE`` — the per-account serialization point, so two concurrent
     saves for the same account cannot both read the same pre-insert usage sum
     and both pass; (2) locks and re-reads the owned ``conversations`` row
-    ``FOR UPDATE``, which both proves ownership and blocks behind a concurrent
+    ``FOR NO KEY UPDATE``, which both proves ownership and blocks behind a concurrent
     conversation deletion; (3) deletes that account's already-expired rows so a
     delayed cleanup sweep can never consume live quota; (4) recomputes
     conversation and account byte/count usage from retained rows only; (5)
@@ -40,7 +40,7 @@ Admission is atomic and serialized.
 
 Deletion races fail closed.
     If the conversation (or the account) is deleted while a fetch is in flight,
-    the ``FOR UPDATE`` re-read finds no owned row and the save is rejected with
+    the locked re-read finds no owned row and the save is rejected with
     ``WebSnapshotOwnerMismatch``. If a delete commits between the re-read and
     the insert, the foreign key raises and is translated into the same typed
     error. The store never recreates a conversation and never writes an orphan
@@ -86,6 +86,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
 from typing import Any, Final, NoReturn, TypeAlias, cast
 import uuid
 
@@ -573,6 +574,7 @@ class WebSnapshotStore:
         final_url: str | None = None,
         title: str | None = None,
         now: datetime | None = None,
+        on_created: Callable[[Connection, uuid.UUID], Awaitable[None]] | None = None,
     ) -> WebSnapshot:
         """Retain one immutable snapshot under atomic owner and quota admission.
 
@@ -661,6 +663,11 @@ class WebSnapshotStore:
                         retrieved_at,
                         expires_at,
                     )
+                    if on_created is not None:
+                        # Trusted worker hook: locks task only AFTER account and
+                        # conversation, then fences and pins this exact row in
+                        # the same transaction. No network I/O in this hook.
+                        await on_created(conn, snapshot_id)
         except asyncpg.ForeignKeyViolationError as exc:
             # The account or the conversation was deleted between the locked
             # re-read and the insert. Reject the save; never recreate the
@@ -695,9 +702,11 @@ class WebSnapshotStore:
         Locking the ``users`` row (rather than an advisory lock) means account
         quota admission serializes against every other snapshot save for the
         same account across every backend and worker process, and it does so
-        without introducing a second locking primitive.
+        without introducing a second locking primitive. NO KEY UPDATE still
+        excludes saves, updates and deletion, but permits foreign-key KEY SHARE
+        checks by task control while publication waits for its task fence.
         """
-        found = await conn.fetchval("SELECT id FROM users WHERE id = $1 FOR UPDATE", user_id)
+        found = await conn.fetchval("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", user_id)
         if found is None:
             raise WebSnapshotOwnerMismatch("account_unavailable")
 
@@ -733,7 +742,7 @@ class WebSnapshotStore:
         cannot be resurrected or written through.
         """
         found = await conn.fetchval(
-            "SELECT id FROM conversations WHERE id = $1 AND user_id = $2 FOR UPDATE",
+            "SELECT id FROM conversations WHERE id = $1 AND user_id = $2 FOR NO KEY UPDATE",
             conversation_id,
             user_id,
         )

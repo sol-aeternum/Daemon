@@ -37,7 +37,12 @@ function conversation(id: string): Response {
 
 function OpenConversation() {
   const history = useConversationHistory();
-  return <p>open:{history.getCurrentConversation()?.id ?? 'none'}</p>;
+  return (
+    <>
+      <p>open:{history.getCurrentConversation()?.id ?? 'none'}</p>
+      <p>failure:{history.conversationLoadFailure ?? 'none'}</p>
+    </>
+  );
 }
 
 afterEach(() => {
@@ -104,7 +109,7 @@ it('retries a conversation that failed to load', async () => {
   expect(calls).toBe(2);
 });
 
-it('keeps retrying after the listed delays, until the backend recovers', async () => {
+it('stops transient retries at the cap with an actionable failure state', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     let calls = 0;
@@ -126,15 +131,45 @@ it('keeps retrying after the listed delays, until the backend recovers', async (
     );
     state.search = 'id=conv-a';
     render(<OpenConversation />);
-    // Five failures span more than the listed delays (1 + 3 + 10 + 30 s).
+    // Initial load plus four retries, then no more requests.
     for (const ms of [1000, 3000, 10000, 30000, 30000]) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(ms);
       });
     }
-    await screen.findByText('open:conv-a');
-    expect(calls).toBe(6);
+    expect(screen.getByText('failure:exhausted')).toBeTruthy();
+    expect(calls).toBe(5);
   } finally {
     vi.useRealTimers();
   }
 });
+
+it.each([403, 404])(
+  'stops permanently unavailable %s conversation lookup without retries',
+  async (status) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let calls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL) => {
+          if (String(input).endsWith('/conversations/conv-a')) {
+            calls++;
+            return Promise.resolve(new Response('unavailable', { status }));
+          }
+          return Promise.resolve(
+            new Response(JSON.stringify({ conversations: [] })),
+          );
+        }),
+      );
+      state.search = 'id=conv-a';
+      render(<OpenConversation />);
+      await act(async () => {});
+      expect(screen.getByText('failure:permanent')).toBeTruthy();
+      await act(async () => vi.advanceTimersByTimeAsync(120_000));
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

@@ -26,6 +26,10 @@ import {
   type AttachmentStore,
   type PersistedAttachment,
 } from '../lib/draftPersistence';
+import {
+  pendingSubmission,
+  registerSubmission,
+} from '../lib/pendingSubmission';
 
 const state = vi.hoisted(() => ({
   send: vi.fn(),
@@ -39,6 +43,9 @@ const state = vi.hoisted(() => ({
   cancelTask: vi.fn(),
   taskForKey: vi.fn(),
   taskStatus: vi.fn(),
+  switchConversation: vi.fn(),
+  messages: [] as DaemonMessage[],
+  conversationLoadFailure: null as null | 'permanent' | 'exhausted',
   chatOptions: null as null | {
     onFinish?: (event: Record<string, unknown>) => void;
   },
@@ -60,6 +67,7 @@ vi.mock('@ai-sdk/react', async () => {
     useChat: (options: typeof state.chatOptions) => {
       const [messages, setMessages] = useState<DaemonMessage[]>([]);
       state.setMessages = setMessages;
+      state.messages = messages;
       state.chatOptions = options;
       return {
         messages,
@@ -86,7 +94,8 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
     createConversation: vi.fn(),
     updateConversation: vi.fn(),
     setConversationModel: vi.fn(),
-    switchConversation: vi.fn(),
+    switchConversation: state.switchConversation,
+    conversationLoadFailure: state.conversationLoadFailure,
     fetchConversationById: vi.fn(),
     refreshConversations: vi.fn(),
   }),
@@ -205,21 +214,229 @@ function runningConversation(active: boolean) {
   };
 }
 
+const storageValues = new Map<string, string>();
+const testStorage: Storage = {
+  get length() {
+    return storageValues.size;
+  },
+  key: (index) => [...storageValues.keys()][index] ?? null,
+  getItem: (key) => storageValues.get(key) ?? null,
+  setItem: (key, value) => {
+    storageValues.set(key, value);
+  },
+  removeItem: (key) => {
+    storageValues.delete(key);
+  },
+  clear: () => storageValues.clear(),
+};
 beforeEach(() => {
-  vi.stubGlobal('localStorage', window.localStorage);
-  vi.clearAllMocks();
+  vi.stubGlobal('localStorage', testStorage);
+  vi.resetAllMocks();
   auth.clearLocalAuthState();
   auth.setAccessToken('fixture', Date.now() + 120_000);
   state.currentId = 'conv-1';
+  state.conversationLoadFailure = null;
   state.conversation = runningConversation(true);
   state.cancelTask.mockResolvedValue('cancelled');
   state.taskForKey.mockResolvedValue(null);
   state.taskStatus.mockResolvedValue('running');
   state.refresh.mockResolvedValue(runningConversation(true));
+  state.send.mockResolvedValue(undefined);
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+describe('#477 submission reliability closeout', () => {
+  beforeEach(() => {
+    state.conversation = runningConversation(false);
+    state.refresh.mockResolvedValue(runningConversation(false));
+    state.send.mockResolvedValue(undefined);
+  });
+  function pending(key: string, scope: string | null = 'conv-1', age = 61_000) {
+    registerSubmission(
+      key,
+      { scope, requestConversationId: scope, model: 'auto', provider: null },
+      Date.now() - age,
+    );
+  }
+  const task = (status = 'running') => ({
+    id: 'loaded-task',
+    conversationId: 'loaded-conv',
+    status,
+  });
+
+  it.each(['running', 'completed'])(
+    'opens the accepted new-chat %s answer discovered on Home',
+    async (status) => {
+      state.currentId = null;
+      state.conversation = null;
+      pending('home-key', null);
+      state.taskForKey.mockResolvedValue(task(status));
+      render(<ChatPage />);
+      await waitFor(() =>
+        expect(state.switchConversation).toHaveBeenCalledWith('loaded-conv'),
+      );
+    },
+  );
+
+  it('does not pull Home into an unrelated conversation pending key', async () => {
+    state.currentId = null;
+    state.conversation = null;
+    pending('other-key');
+    state.taskForKey.mockResolvedValue(task());
+    render(<ChatPage />);
+    await waitFor(() =>
+      expect(state.taskForKey).toHaveBeenCalledWith('other-key'),
+    );
+    expect(state.switchConversation).not.toHaveBeenCalled();
+  });
+
+  it('does not apply a late Home lookup after navigation, even when back Home', async () => {
+    state.currentId = null;
+    state.conversation = null;
+    pending('late-home', null);
+    let resolve!: (value: ReturnType<typeof task>) => void;
+    state.taskForKey.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const view = render(<ChatPage />);
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    state.currentId = 'conv-1';
+    state.conversation = runningConversation(false);
+    view.rerender(<ChatPage />);
+    // The new route starts its own reconciliation; keep it unresolved.
+    state.taskForKey.mockImplementation(() => new Promise(() => {}));
+    state.currentId = null;
+    state.conversation = null;
+    view.rerender(<ChatPage />);
+    await act(async () => resolve(task()));
+    expect(state.switchConversation).not.toHaveBeenCalled();
+  });
+
+  it('revisits a key that was younger than a minute on mount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    pending('young', 'conv-1', 10_000);
+    render(<ChatPage />);
+    await act(async () => {});
+    expect(state.taskForKey).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(50_000));
+    expect(state.taskForKey).toHaveBeenCalledWith('young');
+    expect(pendingSubmission('young')).toBeNull();
+  });
+
+  it('cancels age revisits on unmount and never settles failed lookups', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    pending('young', 'conv-1', 10_000);
+    const view = render(<ChatPage />);
+    await act(async () => {});
+    view.unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(state.taskForKey).not.toHaveBeenCalled();
+    state.taskForKey.mockResolvedValue(undefined);
+    render(<ChatPage />);
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTimeAsync(20_000));
+    expect(state.taskForKey).toHaveBeenCalledTimes(3);
+    expect(pendingSubmission('young')).not.toBeNull();
+  });
+
+  it('queues a never-accepted held draft behind newer input and restores when empty', async () => {
+    const scope = openChatDraft('conv-1', auth.getAuthGeneration());
+    setChatDraftInput(scope, 'old request');
+    holdSubmission(scope, 'held-old', 'old request', []);
+    setChatDraftInput(scope, 'newer draft');
+    pending('held-old');
+    render(<ChatPage />);
+    await waitFor(() =>
+      expect(screen.getByText(/will return to the composer/)).toBeTruthy(),
+    );
+    const composer = screen.getByLabelText('Composer') as HTMLTextAreaElement;
+    expect(composer.value).toBe('newer draft');
+    fireEvent.change(composer, { target: { value: '' } });
+    await waitFor(() => expect(composer.value).toBe('old request'));
+  });
+
+  it('reconnects the failed turn key rather than a newer held submission', async () => {
+    render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'failed turn' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    const key = state.send.mock.calls[0][1].body.idempotency_key;
+    await waitFor(() => expect(getChatDraft('conv-1').input).toBe(''));
+    const scope = openChatDraft('conv-1', auth.getAuthGeneration());
+    act(() =>
+      holdSubmission(scope, 'newer-key', 'unrelated newer request', []),
+    );
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reconnect' })[0]);
+    expect(state.regenerate.mock.calls[0][0].body.idempotency_key).toBe(key);
+  });
+
+  it('removes only the rejected exchange before restoring and resending it', async () => {
+    render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'refused prompt' },
+    });
+    state.send.mockImplementation(async () => {
+      state.setMessages?.([
+        {
+          id: 'independent',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'older answer' }],
+        },
+        {
+          id: 'refused-user',
+          role: 'user',
+          parts: [{ type: 'text', text: 'refused prompt' }],
+        },
+        {
+          id: 'r',
+          role: 'assistant',
+          parts: [
+            {
+              type: 'data-event',
+              data: {
+                type: 'request_rejected',
+                status: 429,
+                code: 'rate_limited',
+              },
+            },
+          ],
+        },
+      ]);
+      await rejectedReply(429, 'rate_limited')();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Composer') as HTMLTextAreaElement).value,
+      ).toBe('refused prompt'),
+    );
+    expect(state.messages.map((m) => m.id)).toEqual(['independent']);
+    state.send.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).not.toBe(
+      state.send.mock.calls[0][1].body.idempotency_key,
+    );
+  });
+
+  it('shows permanent conversation lookup failure with a Home action', async () => {
+    state.conversation = null;
+    state.conversationLoadFailure = 'permanent';
+    render(<ChatPage />);
+    expect(
+      await screen.findByText(/This conversation is not available/),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Go to Home' })).toBeTruthy();
+  });
 });
 
 describe('a durable task reopened on another device', () => {

@@ -12,11 +12,13 @@
 #   A  accepted while the worker is down; the backend restarts; the worker
 #      returns and the task completes exactly once; a same-key replay
 #      returns the same task.
-#   B  the worker is killed (SIGKILL) while its attempt runs; after the lease
-#      lapses a restarted worker regenerates the answer to completion. The
-#      mock streams too fast to target a token, so the kill can land before
-#      the first one; mid-stream crashes are covered by the unit fault points.
-#   C  an observer reattaches after a backend restart and sees the result.
+#   B  a file-gated synthetic provider is killed only after partial output is
+#      committed. SQL expires its lease; a second authenticated client sees
+#      the exact recovered result, notice, settlements and stale-worker fence.
+#   C  an observer reattaches after a backend restart while Redis publications
+#      are dropped; durable lifecycle/tool events and the result are recovered.
+#   D  a synthetic material effect is performed once before a worker kill;
+#      recovery preserves its evidence at needs_attention without repeating it.
 #
 # Usage: scripts/durable_restart_drill.sh [--keep]   (--keep: leave the stack up)
 # Each run uses its own Compose project (daemon-drill-<random>, or
@@ -43,7 +45,13 @@ BASE="http://127.0.0.1:$PORT"
 LOG="${DRILL_LOG:-${TMPDIR:-/tmp}/daemon-drill-$(date -u +%Y%m%dT%H%M%SZ).log}"
 
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG"; }
-fail() { log "FAIL: $*"; exit 1; }
+fail() {
+  log "FAIL: $*"
+  # Synthetic-only runtime diagnostics must survive verified disposal so a
+  # failing fixture can be diagnosed without retaining an enabled stack.
+  compose logs --no-color --tail 150 backend worker >>"$LOG" 2>&1 || true
+  exit 1
+}
 
 # Compose gives the caller's shell variables precedence over --env-file, and
 # docker-compose.yml forwards MOCK_LLM and provider keys into the services. A
@@ -72,24 +80,42 @@ project_resources() { # kind
 
 SCENARIOS_PASSED=0
 cleanup() {
-  local status=$? kind left
+  local status=$? kind left pid teardown_ok=1
+  # Only this shell's still-running children (for example an observer curl),
+  # never unrelated processes. Stop them before disposing of their files.
+  for pid in $(jobs -pr); do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   if [[ $KEEP -eq 0 ]]; then
     # Teardown is part of the result: a stack left running (flag on, mock
     # stack, volumes) fails the drill with the command to remove it.
     if ! compose down -v --remove-orphans >>"$LOG" 2>&1; then
       log "FAIL: teardown failed; remove it with: docker compose -p $PROJECT down -v --remove-orphans"
       status=1
+      teardown_ok=0
     fi
     for kind in container volume network; do
       if ! left=$(project_resources "$kind" 2>>"$LOG") || [[ -n "$left" ]]; then
         log "FAIL: project $PROJECT still has a $kind (or Docker could not be asked); remove it with: docker compose -p $PROJECT down -v --remove-orphans"
         status=1
+        teardown_ok=0
         break
       fi
     done
   fi
   for dir in "${CREATED_DIRS[@]}"; do rmdir "$dir" 2>/dev/null || true; done
-  rm -rf "$WORK"
+  if [[ $KEEP -eq 0 && $teardown_ok -eq 1 ]]; then
+    rm -rf "$WORK"
+  else
+    # Keep the generated, permission-restricted fixture configuration until
+    # its resources are disposed. Without it Compose cannot parse the required
+    # DB password, making recovery after a Docker failure unusable.
+    log "retained disposable teardown configuration: $WORK"
+    printf 'recovery: env -i PATH=%q HOME=%q docker compose -p %q --project-directory %q -f %q -f %q --env-file %q down -v --remove-orphans\n' \
+      "$PATH" "$HOME" "$PROJECT" "$ROOT" "$ROOT/docker-compose.yml" "$OVERRIDE" "$ENV_FILE"
+    printf 'after verified teardown remove retained configuration: %q\n' "$WORK"
+  fi
   rmdir "$LOCK" 2>/dev/null || true
   if [[ $status -eq 0 && $SCENARIOS_PASSED -eq 1 ]]; then
     if [[ $KEEP -eq 1 ]]; then
@@ -197,6 +223,7 @@ services:
         condition: service_completed_successfully
   worker:
     <<: *drill-state
+    command: ["python", "scripts/durable_restart_fixture.py", "worker"]
   postgres:
     ports: !reset []
   redis:
@@ -233,10 +260,26 @@ wait_status() { # task status timeout_s
   while (( SECONDS < deadline )); do
     status=$(task_field "$1" status)
     [[ "$status" == "$2" ]] && return 0
+    if [[ "$status" == failed || "$status" == cancelled || "$status" == needs_attention ]]; then
+      fail "task $1 ended at '$status', expected '$2'"
+    fi
     sleep 1
   done
   fail "task $1 is '$status', expected '$2' within $3s"
 }
+
+wait_partial() { # task: the provider gate prevents completion while this polls
+  local deadline=$((SECONDS + 60)) content=""
+  while (( SECONDS < deadline )); do
+    content=$(task_field "$1" content)
+    [[ "$content" == "(drill) " ]] && return 0
+    sleep 0.05
+  done
+  fail "task $1 did not commit the gated partial output (last '$content')"
+}
+
+control() { compose exec -T backend python -c "from pathlib import Path; Path('/app/.daemon/durable-drill/$1').touch()"; }
+proof() { compose exec -T backend python scripts/durable_restart_assertions.py "$@"; }
 
 submit() { # key message -> task id; the client disconnects right after acceptance
   local key=$1 message=$2 id="" pid
@@ -264,9 +307,9 @@ submit() { # key message -> task id; the client disconnects right after acceptan
 
 log "building and starting project '$PROJECT' from $ROOT (port $PORT)"
 compose build migrate backend worker >>"$LOG" 2>&1 || fail "build failed (see log)"
-compose up -d postgres redis migrate backend worker >>"$LOG" 2>&1 || fail "up failed"
+compose up -d postgres redis migrate backend >>"$LOG" 2>&1 || fail "up failed"
 wait_health
-for service in backend worker; do
+for service in backend; do
   # Belt and braces: the mock must be what each service actually runs with.
   mock=$(compose exec -T "$service" printenv MOCK_LLM 2>/dev/null | tr -d '\r\n' || true)
   [[ "$mock" == "true" ]] || fail "$service runs with MOCK_LLM='$mock', not the mock"
@@ -283,6 +326,11 @@ done
 TOKEN=$(http POST /v1/auth/setup "{\"setup_token\": \"$SETUP\"}" | json "d['access_token']")
 [[ -n "$TOKEN" ]] || fail "setup did not return an access token ($HTTP_STATUS)"
 log "signed in as the drill owner"
+compose exec -T backend python -c "from pathlib import Path; p=Path('/app/.daemon/durable-drill'); p.mkdir(); (p/'permit').write_text('disposable synthetic fixture only')"
+# Fixture-only issuance in this disposable database, using the normal token
+# helper and a distinct device/session. No new auth endpoint or live account.
+TOKEN_TWO=$(proof session)
+[[ -n "$TOKEN_TWO" && "$TOKEN_TWO" != "$TOKEN" ]] || fail "second client was not issued independently"
 
 # Admission requires a ZDR-attested route. A real deployment attests routes by
 # checking providers; this throwaway stack has no provider keys and, with the
@@ -301,16 +349,12 @@ while read -r route baseline; do
     "INSERT INTO inference_route_attestations (route_id, baseline_sha256, outcome, reasons)
      VALUES ('$route', '$baseline', 'attested', '{drill_fixture}')" >/dev/null
 done <"$WORK/routes"
-compose restart backend worker >>"$LOG" 2>&1
+compose restart backend >>"$LOG" 2>&1
 wait_health
 log "attested $(wc -l <"$WORK/routes") routes synthetically (drill fixture)"
-# The mock LLM streams fixed tokens; the saved result is whatever the engine
-# persists for it, so the drill checks completion and attempt counts rather
-# than exact text.
 
 # --- A: accepted while the worker is down, across a backend restart -------
 log "A: stopping the worker, then submitting"
-compose stop worker >>"$LOG" 2>&1
 KEY_A=$(python3 -c 'import uuid; print(uuid.uuid4())')
 TASK_A=$(submit "$KEY_A" "drill A")
 [[ -n "$TASK_A" ]] || fail "A: no task id (durable acceptance failed)"
@@ -320,47 +364,37 @@ compose restart backend >>"$LOG" 2>&1
 wait_health
 [[ $(task_field "$TASK_A" status) == queued ]] || fail "A: lost across the backend restart"
 log "A: still queued after the restart; starting the worker"
-compose start worker >>"$LOG" 2>&1
+compose up -d worker >>"$LOG" 2>&1
+[[ $(compose exec -T worker printenv MOCK_LLM | tr -d '\r\n') == true ]] || fail "worker mock setting overridden"
 wait_status "$TASK_A" completed 120
+[[ $(compose exec -T worker cat .daemon/durable-drill/installed) == "guarded synthetic transport" ]] || fail "worker did not install the synthetic guarded transport"
 CONTENT=$(task_field "$TASK_A" content)
-[[ -n "$CONTENT" && "$CONTENT" != None ]] || fail "A: no saved result"
+[[ "$CONTENT" == "(drill) committed answer A" ]] || fail "A: saved result differs from mock output"
 [[ $(task_field "$TASK_A" attempt_count) == 1 ]] || fail "A: ran more than once"
 REPLAY=$(submit "$KEY_A" "drill A")
 [[ "$REPLAY" == "$TASK_A" ]] || fail "A: same-key replay returned '$REPLAY'"
 log "A: PASS (completed once; same-key replay returned the same task)"
 
-# --- B: worker killed while its attempt runs --------------------------------------------
+# --- B: deterministic post-persistence worker kill -------------------------------------
 WORKER=$(compose ps -q worker)
-B_DONE=0
-for try in 1 2 3; do
-  KEY_B=$(python3 -c 'import uuid; print(uuid.uuid4())')
-  TASK_B=$(submit "$KEY_B" "drill B")
-  [[ -n "$TASK_B" ]] || fail "B: no task id"
-  killed=0
-  for _ in $(seq 1 200); do
-    status=$(task_field "$TASK_B" status)
-    if [[ "$status" == running ]]; then
-      docker kill "$WORKER" >/dev/null && killed=1
-      break
-    fi
-    [[ "$status" == completed ]] && break
-    sleep 0.05
-  done
-  if [[ $killed -eq 1 ]]; then B_DONE=1; break; fi
-  log "B: try $try finished before the kill window; retrying"
-done
-[[ $B_DONE -eq 1 ]] || fail "B: could not kill the worker while running in 3 tries"
-log "B: worker killed while running (task $TASK_B); waiting out the lease, then restarting"
+KEY_B=$(python3 -c 'import uuid; print(uuid.uuid4())')
+TASK_B=$(submit "$KEY_B" "drill B")
+[[ -n "$TASK_B" ]] || fail "B: no task id"
+wait_partial "$TASK_B"
+docker kill "$WORKER" >/dev/null
+log "B: killed only after committed partial output (task $TASK_B)"
 [[ $(task_field "$TASK_B" status) == running ]] || fail "B: not running after the kill"
+proof expire "$TASK_B"
 compose start worker >>"$LOG" 2>&1
+TOKEN_ONE=$TOKEN
+TOKEN=$TOKEN_TWO
 wait_status "$TASK_B" completed 180
 CONTENT=$(task_field "$TASK_B" content)
-[[ -n "$CONTENT" && "$CONTENT" != None ]] || fail "B: no saved result"
-OUTCOMES=$(compose exec -T postgres psql -tA -U daemon -d daemon -c \
-  "SELECT string_agg(outcome, ',' ORDER BY epoch) FROM task_attempts WHERE task_id = '$TASK_B'")
-[[ "$OUTCOMES" == *lost* && "$OUTCOMES" == *completed ]] \
-  || fail "B: attempt outcomes were '$OUTCOMES' (expected a lost attempt, then completed)"
-log "B: PASS (killed attempt recorded lost; recovered after the lease; outcomes $OUTCOMES)"
+[[ "$CONTENT" == "(drill) committed answer B" ]] || fail "B: second client saw different committed text"
+[[ $(submit "$KEY_B" "drill B") == "$TASK_B" ]] || fail "B: second-client same-key replay changed task"
+proof B "$TASK_B" | tee -a "$LOG"
+TOKEN=$TOKEN_ONE
+log "B: PASS (second authenticated device, persisted partial, lost/completed, settlements, stale fencing)"
 
 # --- C: observer reattaches after a backend restart -----------------------
 compose stop worker >>"$LOG" 2>&1
@@ -370,15 +404,53 @@ TASK_C=$(submit "$KEY_C" "drill C")
 log "C: task $TASK_C queued; restarting the backend before reattaching"
 compose restart backend >>"$LOG" 2>&1
 wait_health
+control drop-redis
 curl -sS -N --max-time 150 "$BASE/tasks/$TASK_C/events" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $TOKEN_TWO" \
   -H 'X-Daemon-Client-Features: task-cancel, task-reset' >"$WORK/observe-C" 2>/dev/null &
 OBSERVER=$!
-sleep 2
 compose start worker >>"$LOG" 2>&1
+wait_partial "$TASK_C"
+control release-C
 wait "$OBSERVER" || true
-grep -q '"status": *"completed"' "$WORK/observe-C" || fail "C: observer did not see completion"
-log "C: PASS (reattached observer saw the task complete)"
+python3 - "$WORK/observe-C" <<'PY'
+import json, sys
+frames = []
+for block in open(sys.argv[1]).read().split('\n\n'):
+    for line in block.splitlines():
+        if line.startswith('data:'):
+            frames.append(json.loads(line[5:]))
+assert any(f.get('type') == 'final' and f['data'].get('text') == '(drill) committed answer C' for f in frames), 'committed result not recovered'
+progress = [f for f in frames if f.get('type') in ('tool_call', 'tool_result')]
+assert len(progress) == 2, 'tool progress missing or duplicated after Redis gap'
+# calculate's legacy result has no explicit success flag; its bounded
+# recorded outcome is conservatively unknown, never fabricated success.
+assert progress[-1]['data'].get('outcome') == 'unknown', 'truthful persisted tool outcome missing'
+seqs = [f['data']['event_seq'] for f in frames if 'event_seq' in f.get('data', {}) and (f['data'].get('lifecycle_kind') or f.get('type') in ('tool_call', 'tool_result'))]
+assert seqs and seqs == sorted(set(seqs)), 'durable cursor order/deduplication failed'
+assert any(f['data'].get('lifecycle_kind') == 'attempt_started' for f in frames), 'lifecycle evidence missing'
+PY
+log "C: PASS (second client recovered lifecycle, tool outcome and exact result across Redis delivery gap)"
+compose exec -T backend python -c "from pathlib import Path; Path('/app/.daemon/durable-drill/drop-redis').unlink()"
+
+# --- D: never automatically repeat a performed material effect -------------------------
+KEY_D=$(python3 -c 'import uuid; print(uuid.uuid4())')
+TASK_D=$(submit "$KEY_D" "drill D")
+[[ -n "$TASK_D" ]] || fail "D: no task id"
+effect_done=0
+for _ in $(seq 1 200); do
+  count=$(compose exec -T postgres psql -tA -U daemon -d daemon -c \
+    "SELECT count(*) FROM task_operations WHERE task_id = '$TASK_D' AND outcome = 'succeeded'")
+  if [[ "$count" == 1 ]]; then effect_done=1; break; fi
+  sleep 0.05
+done
+[[ "$effect_done" == 1 ]] || fail "D: synthetic effect did not commit its outcome"
+docker kill "$(compose ps -q worker)" >/dev/null
+proof expire "$TASK_D"
+compose start worker >>"$LOG" 2>&1
+wait_status "$TASK_D" needs_attention 120
+proof D "$TASK_D" | tee -a "$LOG"
+log "D: PASS (performed once; needs_attention preserves evidence, no automatic retry)"
 
 LEFT=$(find "$ROOT" -path "$ROOT/.venv" -prune -o -path "$ROOT/frontend/node_modules" -prune \
   -o -not -user "$(id -u)" -print 2>/dev/null | head -3)

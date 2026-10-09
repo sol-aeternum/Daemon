@@ -3,7 +3,7 @@
 The observer starts from the owner-scoped snapshot, then follows live deltas
 tagged ``(content_generation, delta_seq)``. It applies a delta only when it is
 the next one in the current generation, drops stale-generation frames,
-re-reads the snapshot on a gap, a newer generation or a quiet interval, and
+re-reads the snapshot on a gap, a newer generation or a fixed deadline, and
 always ends from the committed snapshot. A generation change is announced
 with a ``task`` event carrying ``reset: true`` and the replacement content.
 Disconnecting an observer never affects the task.
@@ -42,7 +42,7 @@ RETRYABLE_TERMINAL_CODES = frozenset(
 #: How often a long-lived observer re-checks that its caller is still authorised.
 REAUTH_S = 15.0
 
-#: How long the observer waits for a live message before re-reading the snapshot.
+#: Fixed catch-up cadence, independent of live traffic.
 POLL_S = 2.0
 
 _TERMINAL_MESSAGES = {
@@ -67,6 +67,7 @@ class _Observation:
         self.displayed = ""
         #: Highest persisted event already replayed to this client.
         self.event_seq = 0
+        self.finished_operations: dict[tuple[int, str], int] = {}
         self._counter = 0
 
     def frame(self, event: str, data: dict[str, Any], evt_id: str | None = None) -> str:
@@ -88,6 +89,7 @@ class _Observation:
             "task_id": str(snapshot.task_id),
             "status": snapshot.status.value,
             "content_generation": snapshot.content_generation,
+            "regenerated_after_interruption": snapshot.regenerated_after_interruption,
         }
         if reset:
             data["reset"] = True
@@ -110,17 +112,33 @@ class _Observation:
                 # the conversation shows the saved result.
                 self.needs_reload = True
                 return self._reload_frames()
-            if self.displayed:
+            if self.displayed or self.generation:
                 frames.append(self.task_frame(snapshot, reset=True))
             elif content:
-                frames.append(self.frame("token", {"text": content}))
+                frames.append(
+                    self.frame(
+                        "token",
+                        {
+                            "text": content,
+                            "content_generation": snapshot.content_generation,
+                        },
+                    )
+                )
             self.displayed = content
             self.generation = snapshot.content_generation
             self.delta_seq = snapshot.content_delta_seq
             return frames
         if content.startswith(self.displayed):
             if len(content) > len(self.displayed):
-                frames.append(self.frame("token", {"text": content[len(self.displayed) :]}))
+                frames.append(
+                    self.frame(
+                        "token",
+                        {
+                            "text": content[len(self.displayed) :],
+                            "content_generation": snapshot.content_generation,
+                        },
+                    )
+                )
                 self.displayed = content
                 self.delta_seq = snapshot.content_delta_seq
         elif self.displayed.startswith(content):
@@ -166,7 +184,11 @@ class _Observation:
             frames.append(
                 self.frame(
                     "final",
-                    {"text": snapshot.content, "finish_reason": "stop"},
+                    {
+                        "text": snapshot.content,
+                        "finish_reason": "stop",
+                        "content_generation": snapshot.content_generation,
+                    },
                     evt_id="evt_final",
                 )
             )
@@ -247,51 +269,69 @@ async def observe_task(
             yield frame
         # Tool progress the client missed while detached (#472): the current
         # generation's persisted events, before switching to live updates.
-        for frame in await _replayed_progress(store, user_id, task_id, view, snapshot):
+        async for frame in _drain_events(
+            store, user_id, task_id, view, snapshot, authorized=authorized
+        ):
             yield frame
-        view.event_seq = snapshot.event_seq
+        next_catch_up = loop.time() + poll_s
         while snapshot.status not in TERMINAL_STATUSES:
             if authorized is not None and loop.time() >= next_auth_check:
                 next_auth_check = loop.time() + REAUTH_S
                 if not await authorized():
                     return
-            message = await _next_message(pubsub, poll_s)
-            resync = message is None
+            message = await _next_message(pubsub, max(0, next_catch_up - loop.time()))
+            # A fixed deadline, not a quiet timeout: steady live traffic cannot
+            # starve recovery of a committed event whose publish was lost.
+            resync = message is None or loop.time() >= next_catch_up
             if message is not None:
                 kind = message.get("t")
                 generation = int(message.get("gen") or 0)
-                if generation < view.generation:
-                    continue  # stale attempt
-                if kind == "delta" and generation == view.generation:
+                if kind == "delta" and generation == view.generation and not resync:
                     seq = int(message.get("seq") or 0)
                     text = message.get("text")
                     if seq <= view.delta_seq:
-                        continue  # already included in the snapshot
+                        continue  # deadline still applies on the next iteration
                     if seq == view.delta_seq + 1 and isinstance(text, str):
                         view.delta_seq = seq
                         view.displayed += text
-                        yield view.frame("token", {"text": text})
+                        yield view.frame(
+                            "token",
+                            {
+                                "text": text,
+                                "content_generation": view.generation,
+                            },
+                        )
                         continue
                     resync = True  # gap
                 elif kind == "frame" and generation == view.generation:
                     event_seq = message.get("seq")
-                    if isinstance(event_seq, int) and event_seq <= view.event_seq:
-                        continue  # already replayed from the persisted events
-                    frame = message.get("frame")
-                    if isinstance(frame, str):
-                        yield frame
-                    continue
+                    if isinstance(event_seq, int):
+                        # Redis sequence is only a hint. Even an out-of-order
+                        # later frame must drain the DB gap, never advance it.
+                        resync = resync or event_seq > view.event_seq
+                    elif not resync:
+                        frame = _tag_live_frame(message.get("frame"), view.generation)
+                        if frame is not None:
+                            yield frame
                 else:
-                    resync = True  # newer generation or terminal
+                    resync = resync or generation > view.generation or kind == "terminal"
             if resync:
                 refreshed = await store.snapshot(user_id, task_id)
                 if refreshed is None:
                     return
                 snapshot = refreshed
+                previous_generation = view.generation
                 for frame in view.catch_up(snapshot):
                     yield frame
+                if previous_generation != view.generation:
+                    yield view.task_frame(snapshot)
                 if view.needs_reload:
                     return
+                async for frame in _drain_events(
+                    store, user_id, task_id, view, snapshot, authorized=authorized
+                ):
+                    yield frame
+                next_catch_up = loop.time() + poll_s
                 # The delta that revealed the gap or new generation may now be
                 # exactly the next one; apply it rather than lose it.
                 if (
@@ -303,52 +343,145 @@ async def observe_task(
                 ):
                     view.delta_seq += 1
                     view.displayed += message["text"]
-                    yield view.frame("token", {"text": message["text"]})
+                    yield view.frame(
+                        "token",
+                        {
+                            "text": message["text"],
+                            "content_generation": view.generation,
+                        },
+                    )
+        # Terminal snapshot captures the watermark; flush its whole event
+        # history before final/done, including operation evidence committed
+        # after an earlier terminal snapshot while the pages were draining.
+        while True:
+            async for frame in _drain_events(
+                store, user_id, task_id, view, snapshot, authorized=authorized
+            ):
+                yield frame
+            refreshed = await store.snapshot(user_id, task_id)
+            if refreshed is None:
+                return
+            snapshot = refreshed
+            if view.event_seq >= snapshot.event_seq:
+                break
         for frame in view.terminal(snapshot):
             yield frame
+    except _ObserverRevoked:
+        return
     finally:
         if pubsub is not None:
             await _close_pubsub(pubsub)
 
 
-#: How many recent persisted events a reattaching observer reads back.
+#: Maximum records per durable catch-up page (not a history truncation).
 REPLAY_EVENT_LIMIT = 500
 
 
-async def _replayed_progress(
+async def _drain_events(
     store: TaskStore,
     user_id: uuid.UUID,
     task_id: uuid.UUID,
     view: _Observation,
     snapshot: TaskSnapshot,
-) -> list[str]:
-    """Frames for the current generation's persisted tool progress.
+    *,
+    authorized: Callable[[], Awaitable[bool]] | None = None,
+) -> AsyncIterator[str]:
+    """Ordered, owner-scoped authority. Cursor advances only handled records."""
+    while view.event_seq < snapshot.event_seq:
+        if authorized is not None and not await authorized():
+            raise _ObserverRevoked
+        events = await store.events_since(
+            user_id, task_id, after_seq=view.event_seq, limit=REPLAY_EVENT_LIMIT
+        )
+        if not events:
+            # Deletion/revocation or a damaged history: never jump the cursor.
+            raise _ObserverRevoked
+        for event in events:
+            if event.seq > snapshot.event_seq:
+                break
+            if event.seq != view.event_seq + 1:
+                raise _ObserverRevoked
+            payload = event.payload
+            epoch = payload.get("epoch")
+            data: dict[str, Any] = {
+                "replayed": True,
+                "event_seq": event.seq,
+                "content_generation": snapshot.content_generation,
+                "lifecycle_kind": event.kind,
+            }
+            if isinstance(epoch, int) and not isinstance(epoch, bool):
+                data["lifecycle_epoch"] = epoch
+            operation_id = payload.get("operation_id")
+            if isinstance(operation_id, str):
+                data["operation_id"] = operation_id
+            projected = "task"
+            if event.kind in {"tool_call", "tool_result", "operation_finished"}:
+                if (
+                    not isinstance(epoch, int)
+                    or isinstance(epoch, bool)
+                    or epoch != snapshot.content_generation
+                ):
+                    # Explicitly handle old/unattributed progress without
+                    # mutating the current generation's tool indicators.
+                    view.event_seq = event.seq
+                    continue
+                name = str(payload.get("name") or payload.get("tool") or "tool")[:100]
+                key = (snapshot.content_generation, name)
+                if event.kind == "tool_result" and view.finished_operations.get(key, 0):
+                    view.finished_operations[key] -= 1
+                    if not view.finished_operations[key]:
+                        del view.finished_operations[key]
+                    view.event_seq = event.seq
+                    continue  # operation_finished already projected its result
+                data["name"] = name
+                projected = "tool_call" if event.kind == "tool_call" else "tool_result"
+                if projected == "tool_call":
+                    data["arguments"] = {}
+                else:
+                    outcome = payload.get("outcome")
+                    if not isinstance(outcome, str) or outcome not in {
+                        "succeeded",
+                        "failed",
+                        "unknown",
+                    }:
+                        outcome = "unknown"
+                    data["outcome"] = outcome
+                    summary: dict[str, Any] = {"outcome": outcome}
+                    if outcome != "unknown":
+                        summary["success"] = outcome == "succeeded"
+                    data["result"] = summary
+                    if event.kind == "operation_finished":
+                        view.finished_operations[key] = view.finished_operations.get(key, 0) + 1
+            else:
+                # Historical lifecycle metadata, not a status transition.
+                data.update(
+                    {
+                        "task_id": str(snapshot.task_id),
+                        "status": snapshot.status.value,
+                        "regenerated_after_interruption": snapshot.regenerated_after_interruption,
+                    }
+                )
+            yield view.frame(projected, data, evt_id=f"evt_{projected}_r{event.seq}")
+            view.event_seq = event.seq
 
-    Only the tool name is kept at rest, so a replayed call carries no
-    arguments and a replayed result no content; both are marked
-    ``replayed``.
-    """
-    events = await store.events_since(
-        user_id,
-        task_id,
-        after_seq=max(0, snapshot.event_seq - REPLAY_EVENT_LIMIT),
-        limit=REPLAY_EVENT_LIMIT,
-    )
-    frames: list[str] = []
-    for event in events:
-        if event.seq > snapshot.event_seq or event.kind not in {"tool_call", "tool_result"}:
-            continue
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        if payload.get("epoch") != snapshot.content_generation:
-            continue  # an earlier attempt's progress
-        name = str(payload.get("name") or "tool")
-        data: dict[str, Any] = {"name": name, "replayed": True}
-        if event.kind == "tool_call":
-            data["arguments"] = {}
-        else:
-            data["result"] = ""
-        frames.append(view.frame(event.kind, data, evt_id=f"evt_{event.kind}_r{event.seq}"))
-    return frames
+
+class _ObserverRevoked(Exception):
+    """Fail closed if authorization/history disappears during catch-up."""
+
+
+def _tag_live_frame(frame: Any, generation: int) -> str | None:
+    if not isinstance(frame, str):
+        return None
+    from orchestrator.tasks.runner import _parse_frame
+
+    event, envelope = _parse_frame(frame)
+    if event not in {"routing", "thinking", "metadata"}:
+        return None  # tool progress must have durable attribution
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return None
+    data["content_generation"] = generation
+    return sse(event, envelope)
 
 
 async def _close_pubsub(pubsub: Any) -> None:

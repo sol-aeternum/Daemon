@@ -17,6 +17,7 @@ import {
   restoreHeldSubmission,
 } from '../lib/chatDrafts';
 import {
+  MAX_PERSISTED_FILE_BYTES,
   setAttachmentStoreForTests,
   type AttachmentStore,
   type PersistedAttachment,
@@ -365,5 +366,127 @@ describe('held submissions (#476: the key lives on the draft)', () => {
     sendFrom('conv-a', 'key-1');
     act(() => auth.clearLocalAuthState());
     expect(heldSubmission('key-1')).toBeUndefined();
+  });
+});
+
+describe('held submissions under the persistence cap (#477)', () => {
+  const TEXT_KEY = 'daemon:chat-drafts:v1';
+  const bigFiles = () =>
+    [1, 2, 3, 4].map((i) => ({
+      id: `big-${i}`,
+      file: fileOfSize(`big-${i}.bin`, MAX_PERSISTED_FILE_BYTES),
+    }));
+
+  function fileOfSize(name: string, size: number): File {
+    const file = new File(['bytes'], name);
+    Object.defineProperty(file, 'size', { value: size });
+    return file;
+  }
+
+  it('free a released submission\u2019s capacity so a newer file is saved and readable after a reload', async () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    const big = bigFiles();
+    act(() => {
+      result.current.setInput('Big request');
+      result.current.setPendingAttachments(big);
+    });
+    act(() => result.current.holdSubmission('key-1', 'Big request', big));
+    act(() => {
+      result.current.setInput('');
+      result.current.setPendingAttachments([]);
+    });
+    await flush();
+    // Exactly four 25 MiB files fit the 100 MiB cap, and the readback
+    // still dispatches the complete submission (#485 completeness).
+    for (const { id } of big) expect(store.records.has(id)).toBe(true);
+    const saved = JSON.parse(sessionStorage.getItem(TEXT_KEY)!);
+    expect(saved.held).toEqual([
+      {
+        key: 'key-1',
+        conversationId: 'conv-a',
+        input: 'Big request',
+        attachmentIds: ['big-1', 'big-2', 'big-3', 'big-4'],
+        attachmentCount: 4,
+      },
+    ]);
+
+    // The cap is full now: a newer tiny draft file is skipped, never saved.
+    const fresh = renderHook(() => useChatDraft('conv-b'));
+    const tiny = [{ id: 'tiny', file: new File(['tiny payload'], 'tiny.txt') }];
+    act(() => {
+      fresh.result.current.setInput('Small follow-up');
+      fresh.result.current.setPendingAttachments(tiny);
+    });
+    await flush();
+    expect(store.records.has('tiny')).toBe(false);
+
+    // The outcome is known: the held submission is accepted and released.
+    act(() => acceptSubmission('key-1'));
+    expect(heldSubmission('key-1')).toBeUndefined();
+    await waitFor(() => expect([...store.records.keys()]).toEqual(['tiny']));
+    // The freed capacity was retried for the newer file in the same pass.
+    expect(getChatDraft('conv-b').pendingAttachments.map((a) => a.id)).toEqual([
+      'tiny',
+    ]);
+
+    // Simulated reload: the new file comes back from the store, readable.
+    cleanup();
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    const restored = renderHook(() => useChatDraft('conv-b'));
+    await waitFor(() =>
+      expect(
+        restored.result.current.pendingAttachments.map((a) => a.id),
+      ).toEqual(['tiny']),
+    );
+    const recovered = restored.result.current.pendingAttachments[0].file;
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(recovered);
+    });
+    expect(text).toBe('tiny payload');
+    expect(getChatDraft('conv-b').input).toBe('Small follow-up');
+    expect(heldSubmission('key-1')).toBeUndefined();
+  });
+
+  it('cannot replay a held submission that lost its one file to the cap (#485 completeness)', async () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    const big = bigFiles();
+    act(() => {
+      result.current.setInput('Big request');
+      result.current.setPendingAttachments(big);
+    });
+    act(() => result.current.holdSubmission('key-1', 'Big request', big));
+
+    // A second held submission loses the single file it was sent with.
+    const fresh = renderHook(() => useChatDraft('conv-b'));
+    const tiny = [{ id: 'tiny', file: new File(['tiny payload'], 'tiny.txt') }];
+    act(() => {
+      fresh.result.current.setInput('Follow up');
+      fresh.result.current.setPendingAttachments(tiny);
+    });
+    act(() => fresh.result.current.holdSubmission('key-2', 'Follow up', tiny));
+    await flush();
+    expect(store.records.has('tiny')).toBe(false);
+
+    // Reload before either key is resolved: the big files come back, the
+    // tiny one is simply gone.
+    cleanup();
+    await act(() => reloadChatDraftsForTests());
+    await act(() => heldSubmissionsReady());
+    expect(heldSubmission('key-1')?.pendingAttachments).toHaveLength(4);
+    expect(heldSubmission('key-2')?.attachmentCount).toBe(1);
+    expect(heldSubmission('key-2')?.pendingAttachments).toHaveLength(0);
+    expect(heldSubmissionComplete('key-2')).toBe(false);
+    expect(heldResendStatus('key-2', 'Follow up', [])).toBe('incomplete');
+
+    // Releasing the big submission frees space but cannot resurrect a file
+    // that was never saved; replaying would be a different request.
+    act(() => releaseSubmission('key-1'));
+    await flush();
+    expect(heldSubmission('key-1')).toBeUndefined();
+    expect(heldSubmissionComplete('key-2')).toBe(false);
+    expect(heldResendStatus('key-2', 'Follow up', [])).toBe('incomplete');
   });
 });

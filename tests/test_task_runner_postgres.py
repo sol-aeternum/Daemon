@@ -967,6 +967,8 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
     """#475 and review of #478: refreshes are keyed by task identity (no
     cross-host clock comparison) and survive into a regenerated attempt."""
     from orchestrator.tools.web_fetch import WebFetchTool
+    from orchestrator.services.web_snapshots import WebSnapshotStore
+    from orchestrator.services.fetch.models import EXTRACTION_VERSION_V1
 
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
@@ -977,8 +979,21 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
     runner._guard_tools(registry, env.tasks, runner.AttemptState(claim=first))
     guard = fetch.refresh_guard
     assert guard is not None
-    assert not await guard.refreshed("https://example.com/a", "article")
-    await guard.record("https://example.com/a", "article")
+    assert (
+        await guard.pinned("https://example.com/a", "article", EXTRACTION_VERSION_V1, True) is None
+    )
+    snapshots = WebSnapshotStore(env.pool, env.memory._enc, get_settings())
+    await snapshots.create(
+        env.alice,
+        accepted.conversation_id,
+        source_url="https://example.com/a",
+        content="page",
+        extract_mode="article",
+        extraction_version=EXTRACTION_VERSION_V1,
+        on_created=guard.publication_hook(
+            "https://example.com/a", "article", EXTRACTION_VERSION_V1, True
+        ),
+    )
 
     await expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
@@ -988,8 +1003,15 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
     later.register(refetch)
     runner._guard_tools(later, env.tasks, runner.AttemptState(claim=second))
     assert refetch.refresh_guard is not None
-    assert await refetch.refresh_guard.refreshed("https://example.com/a", "article")
-    assert not await refetch.refresh_guard.refreshed("https://example.com/a", "metadata")
+    assert await refetch.refresh_guard.pinned(
+        "https://example.com/a", "article", EXTRACTION_VERSION_V1, True
+    )
+    assert (
+        await refetch.refresh_guard.pinned(
+            "https://example.com/a", "metadata", EXTRACTION_VERSION_V1, True
+        )
+        is None
+    )
     # Only a digest is stored, never the URL.
     payloads = await env.pool.fetch(
         "SELECT payload_ciphertext FROM task_events WHERE kind = 'page_refreshed'"

@@ -71,15 +71,33 @@ export type ChatEvent = BaseEvent &
         type: 'tool_call';
         name: string;
         arguments: Record<string, any>;
+        event_seq?: number;
+        lifecycle_epoch?: number;
+        operation_id?: string;
         /** Re-sent from the task's saved progress on reattach (name only). */
         replayed?: boolean;
+        /**
+         * Additive durable-frame metadata (#477): content generation progress
+         * is tagged by the backend, so stale attempts can be rejected.
+         */
+        content_generation?: number;
       } & TraceMeta)
     | ({
         type: 'tool_result';
         name: string;
         result: any;
+        event_seq?: number;
+        lifecycle_epoch?: number;
+        operation_id?: string;
         /** Re-sent from the task's saved progress on reattach (no content). */
         replayed?: boolean;
+        /**
+         * Bounded outcome of the execution (#477), persisted by the backend
+         * with recorded evidence; legacy rows have no outcome. An absent or
+         * ``unknown`` outcome must never be rendered as success.
+         */
+        outcome?: 'succeeded' | 'failed' | 'unknown';
+        content_generation?: number;
       } & TraceMeta)
     | ({
         type: 'advisor_start';
@@ -133,8 +151,39 @@ export type ChatEvent = BaseEvent &
         models_used: string[];
       }
     | { type: 'council_error'; error: string }
-    | { type: 'task'; task_id: string; status?: string }
-    | { type: 'task_reset'; task_id?: string; content_generation?: number }
+    /**
+     * The durable task a streamed turn belongs to, with additive recovery
+     * metadata (#477): the durable event sequence, the content generation
+     * the status belongs to, lifecycle evidence and an explicit
+     * regeneration count. Historical lifecycle evidence must never change
+     * task status; only ``status`` (absent on legacy frames) did.
+     */
+    | {
+        type: 'task';
+        task_id: string;
+        status?: string;
+        event_seq?: number;
+        content_generation?: number;
+        lifecycle_kind?: string;
+        lifecycle_epoch?: number;
+        operation_id?: string;
+        regenerated_after_interruption?: number;
+      }
+    | {
+        type: 'task_reset';
+        task_id?: string;
+        content_generation?: number;
+        event_seq?: number;
+        lifecycle_kind?: string;
+        lifecycle_epoch?: number;
+        operation_id?: string;
+        /**
+         * The backend's explicit count of regenerated attempts (#477). A
+         * reset without a positive count is a same-generation correction or
+         * a deferred attempt, and must not read as regenerated.
+         */
+        regenerated_after_interruption?: number;
+      }
     | { type: 'request_bound' }
     // The backend refused the request before accepting it (4xx): no task
     // exists for its idempotency key.
