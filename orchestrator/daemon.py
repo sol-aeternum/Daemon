@@ -106,12 +106,12 @@ async def stream_with_keepalives(
                 break
             except Exception as exc:
                 # The wrapped iterator raised instead of yielding an endpoint-
-                # level error event. Log the traceback server-side for triage
+                # level error event. Log a content-free failure marker
                 # and re-raise as a sanitized user-visible error so FastAPI's
                 # exception handler returns a 500 with the generic error body
                 # (never the stack trace) instead of an apparently clean EOF
                 # that misleads clients into thinking the stream succeeded.
-                logger.exception("SSE upstream generator raised: %s", exc)
+                logger.error("SSE upstream generator raised")
                 raise RuntimeError("SSE upstream generator failed") from exc
 
             yield frame
@@ -409,13 +409,8 @@ async def stream_sse_chat(
                 metadata=metadata,
             )
             assistant_message_terminalized = updated is not None
-        except Exception as error:
-            logger.warning(
-                "Failed to terminalize assistant message %s as %s: %s",
-                assistant_message_id,
-                status,
-                error,
-            )
+        except Exception:
+            logger.warning("Failed to terminalize assistant message")
 
     # Track if memory_write (correction) occurred during this response
     memory_write_occurred = False
@@ -490,8 +485,8 @@ async def stream_sse_chat(
                         status="streaming",
                     )
                     assistant_message_id = inserted["id"]
-                except Exception as e:
-                    logger.warning("Failed to insert streaming assistant message: %s", e)
+                except Exception:
+                    logger.warning("Failed to insert streaming assistant message")
 
             if settings.mock_llm:
                 mock_response = "(mock) Mock response from Daemon"
@@ -637,8 +632,8 @@ async def stream_sse_chat(
                                         content="".join(final_text_parts),
                                     )
                                     _last_persist_s = current_time
-                                except Exception as e:
-                                    logger.warning("Failed to persist incremental content: %s", e)
+                                except Exception:
+                                    logger.warning("Failed to persist incremental content")
 
                     elif event_type == "thinking":
                         delta_reasoning = event.get("content")
@@ -782,10 +777,7 @@ async def stream_sse_chat(
                                     evt_id=f"evt_advisor_error_{uuid.uuid4().hex}",
                                 ),
                             )
-                        logger.warning(
-                            "Tool pipeline reported recoverable error: %s",
-                            error_message,
-                        )
+                        logger.warning("Tool pipeline reported recoverable error")
 
                         unresolved_tools = list(pending_tool_calls)
                         pending_tool_calls.clear()
@@ -952,15 +944,11 @@ async def stream_sse_chat(
             forced_terminal_status = "error"
 
             # Sanitized SSE error — never emit `str(e)` to the client
-            # (issue #79 round-1 finding). Server-side gets the full
-            # exception with the request id; the SSE error envelope
+            # (issue #79 round-1 finding). Logs get a content-free
+            # failure marker; the SSE error envelope
             # carries the stable token plus the correlation handle.
             terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
-            logger.exception(
-                "Streaming error (request_id=%s): %s",
-                request_id,
-                e,
-            )
+            logger.error("Streaming error")
 
             yield sse(
                 "error",
@@ -1089,8 +1077,8 @@ async def stream_sse_chat(
                             user_id=user_id,
                             correction_occurred=memory_write_occurred,
                         )
-                except Exception as trust_error:
-                    logger.debug(f"Trust signal application skipped: {trust_error}")
+                except Exception:
+                    logger.debug("Trust signal application skipped")
 
                 if persisted_status == "complete" and queue is not None:
                     extract_job_id = f"extract:{conversation_uuid}"
@@ -1100,8 +1088,8 @@ async def stream_sse_chat(
                         # future enqueues proceed once the worker has had a chance
                         # to mark the failure permanently logged.
                         await queue.delete(f"arq:result:{extract_job_id}")
-                    except Exception as clear_error:
-                        logger.debug("Could not clear stale extract result key: %s", clear_error)
+                    except Exception:
+                        logger.debug("Could not clear stale extract result key")
                     try:
                         enqueued = await queue.enqueue_job(
                             "extract_memories",
@@ -1110,8 +1098,8 @@ async def stream_sse_chat(
                             _job_id=extract_job_id,
                             _defer_by=timedelta(seconds=30),
                         )
-                    except Exception as extract_error:
-                        logger.warning("Failed to enqueue memory extraction: %s", extract_error)
+                    except Exception:
+                        logger.warning("Failed to enqueue memory extraction")
                     else:
                         if enqueued is None:
                             # Another extract job is already pending or running for
@@ -1132,10 +1120,8 @@ async def stream_sse_chat(
                                     _job_id=follow_up_id,
                                     _defer_by=timedelta(seconds=60),
                                 )
-                            except Exception as follow_up_error:
-                                logger.debug(
-                                    "Could not schedule extract follow-up: %s", follow_up_error
-                                )
+                            except Exception:
+                                logger.debug("Could not schedule extract follow-up")
 
                 tool_call_count = len(persisted_tool_calls)
                 if (
@@ -1155,10 +1141,10 @@ async def stream_sse_chat(
                             _job_id=debounce_key,
                             _defer_by=timedelta(seconds=30),
                         )
-                    except Exception as skill_eval_error:
-                        logger.warning("Failed to enqueue skill evaluation: %s", skill_eval_error)
-            except Exception as e:
-                logger.warning("Failed to persist final message: %s", e)
+                    except Exception:
+                        logger.warning("Failed to enqueue skill evaluation")
+            except Exception:
+                logger.warning("Failed to persist final message")
 
         # Terminal status event
         terminal_status = forced_terminal_status or "completed"
@@ -1178,7 +1164,7 @@ async def stream_sse_chat(
             terminal_reason = capacity.code
             raise capacity from None
         terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
-        logger.error("Unexpected error in stream_sse_chat: %s", e, exc_info=True)
+        logger.error("Unexpected error in stream_sse_chat")
         yield sse(
             "error",
             make_envelope("error", {"message": "Internal server error"}, evt_id="evt_error"),

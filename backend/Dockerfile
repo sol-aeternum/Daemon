@@ -34,6 +34,5 @@ COPY migrations ./migrations
 
 EXPOSE 8000
 
-# uvicorn resolves from /opt/venv/bin via PATH, preserving the Compose
-# `uvicorn ...` / `python ...` commands unchanged.
-CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The managed launcher configures content-safe output before serving traffic.
+CMD ["python", "-m", "orchestrator.runtime", "backend"]

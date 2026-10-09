@@ -136,22 +136,19 @@ class FetchService:
         # to be issued, so Jina/Archive fallbacks remain available when the
         # target host is temporarily unresolvable.
         if not self._is_supported_url(fetch_url):
-            logger.info("FetchService blocked unsupported URL %s", fetch_url)
+            # Requested URLs are never logged at any level.
+            logger.info("FetchService blocked unsupported URL")
             return None
 
         logger.info(
-            "FetchService starting fetch for %s (extract=%s, force_refresh=%s, use_cache=%s)",
-            fetch_url,
+            "FetchService starting fetch (extract=%s, force_refresh=%s, use_cache=%s)",
             mode,
             force_refresh,
             use_cache,
         )
 
         if self._is_blocked_domain(fetch_url):
-            logger.info(
-                "FetchService skipping fetch for %s: blocked domain policy matched",
-                fetch_url,
-            )
+            logger.info("FetchService skipping fetch: blocked domain policy matched")
             return None
 
         cached_result: FetchResult | None = None
@@ -159,33 +156,20 @@ class FetchService:
             # Full cache bypass: no reads and no writes. Snapshot creation
             # uses this so no plaintext page copy is stored and no entry of
             # unknown retrieval age can be served.
-            logger.info(
-                "FetchService cache fully bypassed for %s (use_cache=False)",
-                fetch_url,
-            )
+            logger.info("FetchService cache fully bypassed (use_cache=False)")
         elif force_refresh:
-            logger.info(
-                "FetchService skipping cache read for %s: force_refresh enabled",
-                fetch_url,
-            )
+            logger.info("FetchService skipping cache read: force_refresh enabled")
         else:
             cached_result = await self.cache.get(fetch_url, extract=mode)
 
         if cached_result is not None:
             if self._cached_content_is_valid(cached_result, mode):
-                logger.info(
-                    "FetchService cache hit for %s via %s",
-                    fetch_url,
-                    cached_result.strategy_used,
-                )
+                logger.info("FetchService cache hit")
                 return cached_result
 
-            logger.info(
-                "FetchService skipping cached result for %s: cached content failed validation",
-                fetch_url,
-            )
+            logger.info("FetchService skipping cached result: cached content failed validation")
         elif use_cache and not force_refresh:
-            logger.info("FetchService cache miss for %s", fetch_url)
+            logger.info("FetchService cache miss")
 
         # If the URL targets YouTube, short-circuit to the YouTube strategy.
         # Otherwise run the default direct -> Jina -> Archive.org chain. Live
@@ -196,8 +180,7 @@ class FetchService:
         strategies: Sequence[tuple[str, FetchStrategy | None]]
         if self._is_youtube_url(fetch_url):
             logger.info(
-                "FetchService detected YouTube URL for %s: skipping direct/jina/crawl4ai/archive chain",
-                fetch_url,
+                "FetchService detected a YouTube URL: skipping direct/jina/crawl4ai/archive chain"
             )
             strategies = (("youtube", self.youtube_strategy),)
         else:
@@ -210,39 +193,23 @@ class FetchService:
                 mode=mode,
                 strategies=strategies,
             )
-        except SsrfViolation as exc:
-            logger.info(
-                "FetchService stopped fallback chain for %s: unsafe redirect: %s",
-                fetch_url,
-                exc,
-            )
+        except SsrfViolation:
+            # Violation messages can embed the requested URL; the request
+            # has already been stopped and nothing content-bearing is logged.
+            logger.info("FetchService stopped fallback chain: unsafe redirect rejected")
             return None
         if result is None:
-            logger.info(
-                "FetchService exhausted strategies for %s without success",
-                fetch_url,
-            )
+            logger.info("FetchService exhausted strategies without success")
             return None
 
         if use_cache:
             cached = await self.cache.set(fetch_url, result, extract=mode)
             if cached:
-                logger.info(
-                    "FetchService cached result for %s via %s",
-                    fetch_url,
-                    result.strategy_used,
-                )
+                logger.info("FetchService cached result via %s", result.strategy_used)
             else:
-                logger.info(
-                    "FetchService skipped cache write for %s via %s",
-                    fetch_url,
-                    result.strategy_used,
-                )
+                logger.info("FetchService skipped cache write via %s", result.strategy_used)
         else:
-            logger.info(
-                "FetchService skipped cache write for %s (use_cache=False)",
-                fetch_url,
-            )
+            logger.info("FetchService skipped cache write (use_cache=False)")
 
         return result
 
@@ -336,16 +303,14 @@ class FetchService:
     ) -> FetchResult | None:
         if strategy is None:
             logger.info(
-                "FetchService skipping %s for %s: strategy not ready",
+                "FetchService skipping %s: strategy not ready",
                 strategy_name,
-                fetch_url,
             )
             return None
 
         logger.info(
-            "FetchService attempting %s for %s",
+            "FetchService attempting %s",
             strategy_name,
-            fetch_url,
         )
         started_at = time.perf_counter()
 
@@ -361,34 +326,29 @@ class FetchService:
         except Exception:
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
-                "FetchService %s failed for %s in %.2fms: exception raised",
+                "FetchService %s failed in %.2fms: exception raised",
                 strategy_name,
-                fetch_url,
                 elapsed_ms,
             )
             logger.warning(
-                "Unexpected exception from %s strategy for %s",
+                "Unexpected exception from %s strategy",
                 strategy_name,
-                fetch_url,
-                exc_info=True,
             )
             return None
 
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         if result is None:
             logger.info(
-                "FetchService %s failed for %s in %.2fms: no result",
+                "FetchService %s failed in %.2fms: no result",
                 strategy_name,
-                fetch_url,
                 elapsed_ms,
             )
             return None
 
         if not self.policy.content_is_valid(result.content):
             logger.info(
-                "FetchService %s failed for %s in %.2fms: content validation failed",
+                "FetchService %s failed in %.2fms: content validation failed",
                 strategy_name,
-                fetch_url,
                 elapsed_ms,
             )
             return None
@@ -412,18 +372,16 @@ class FetchService:
         extracted = self._apply_extraction(result, mode)
         if extracted is None:
             logger.info(
-                "FetchService %s failed for %s in %.2fms: extracted content validation failed",
+                "FetchService %s failed in %.2fms: extracted content validation failed",
                 strategy_name,
-                fetch_url,
                 elapsed_ms,
             )
             return None
 
         extracted.fetch_time_ms = elapsed_ms
         logger.info(
-            "FetchService %s succeeded for %s in %.2fms (%s chars)",
+            "FetchService %s succeeded in %.2fms (%s chars)",
             strategy_name,
-            fetch_url,
             elapsed_ms,
             extracted.content_length,
         )

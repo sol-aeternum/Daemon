@@ -1,13 +1,15 @@
 """Request ID middleware.
 
 Every HTTP request gets a stable identifier that is propagated to the
-response header and through structured logs. Inbound requests may supply
-their own ``X-Request-ID`` (e.g. an upstream proxy or load-test harness);
-otherwise we generate a fresh UUID4 prefixed with ``req_``.
+response header and persisted request metadata. Inbound requests may supply
+their own ``X-Request-ID`` (e.g. an upstream proxy or load-test harness), which
+is preserved separately. The primary ``req_`` identifier is always generated
+by the server.
 
 The identifier is also attached to the request state so route handlers
-and the global exception handler can include it in error responses and
-log lines without re-reading the header.
+and the global exception handler can include it in responses without re-reading
+the header. P0.3 managed log output omits request
+identifiers; caller-controlled inbound identifiers must never become log text.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 # harnesses so the inbound value is preserved without being the
 # primary correlation handle (round-1 Codex finding on PR #218).
 # When an inbound ``X-Request-ID`` is present, it is recorded under
-# this key in the structured log; the response always carries a
+# this key in request state; the response always carries a
 # server-generated correlation id.
 CLIENT_REQUEST_ID_HEADER = "X-Client-Request-ID"
 _STATE_REQUEST_ID = "request_id"
@@ -262,9 +264,8 @@ def get_client_request_id(request: Request) -> str | None:
     correlation id).
 
     Returns ``None`` if no inbound ``X-Request-ID`` was supplied (or it
-    sanitized to empty). Use this in structured log entries alongside
-    :func:`get_request_id` so the inbound value is preserved without
-    becoming the primary correlation handle.
+    sanitized to empty). It is preserved separately for protocol correlation,
+    never as the primary server handle or as managed log text.
     """
 
     state = request.scope.get("state") or {}

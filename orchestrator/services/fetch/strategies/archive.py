@@ -90,7 +90,7 @@ class ArchiveOrgStrategy:
                 closest: dict[str, object] = cast(dict[str, object], snapshots.get("closest", {}))
 
                 if not closest or not cast(bool, closest.get("available", False)):
-                    logger.debug(f"No archive snapshot available for {url}")
+                    logger.debug("No archive snapshot available")
                     return None
 
                 # Check snapshot timestamp (must be within 90 days)
@@ -110,19 +110,21 @@ class ArchiveOrgStrategy:
 
                         # Check if snapshot is within 90 days
                         if datetime.now(timezone.utc) - snapshot_time > timedelta(days=90):
-                            logger.debug(f"Archive snapshot too old for {url}")
+                            logger.debug("Archive snapshot too old")
                             return None
                     except (ValueError, IndexError):
-                        logger.warning(f"Invalid timestamp format for {url}: {timestamp_str}")
+                        # Timestamp strings come from the availability API
+                        # response and are never logged.
+                        logger.warning("Archive snapshot has an invalid timestamp format")
                         return None
                 else:
-                    logger.warning(f"Invalid timestamp for {url}: {timestamp_str}")
+                    logger.warning("Archive snapshot has an invalid timestamp")
                     return None
 
                 # Fetch archived HTML
                 archive_url: str = cast(str, closest.get("url", ""))
                 if not archive_url:
-                    logger.warning(f"No archive URL in response for {url}")
+                    logger.warning("No archive URL in availability response")
                     return None
 
                 # SSRF guard the second-hop URL before fetching. archive.org
@@ -149,12 +151,11 @@ class ArchiveOrgStrategy:
                 archive_url = _upgrade_legacy_wayback_url(archive_url)
                 try:
                     html_response = await pinned_get(archive_url, timeout=10.0)
-                except SsrfViolation as exc:
-                    logger.warning(
-                        "Archive snapshot URL %s violates SSRF policy: %s; refusing to fetch",
-                        archive_url,
-                        exc,
-                    )
+                except SsrfViolation:
+                    # The snapshot URL comes from the availability API
+                    # response and can be attacker-influenced; both it and
+                    # the violation message are never logged.
+                    logger.warning("Archive snapshot URL violates SSRF policy; refusing to fetch")
                     raise
 
                 if html_response is None:
@@ -166,13 +167,13 @@ class ArchiveOrgStrategy:
 
                 # Validate HTML content
                 if not self.policy.content_is_valid(html_content, content_type):
-                    logger.debug(f"Archived content validation failed for {url}")
+                    logger.debug("Archived content validation failed")
                     return None
 
                 # Convert HTML to markdown
                 markdown_content = html_to_markdown(html_content)
                 if not markdown_content:
-                    logger.warning(f"HTML to markdown conversion failed for {url}")
+                    logger.warning("Archive HTML to markdown conversion failed")
                     return None
 
                 return FetchResult(
@@ -188,11 +189,14 @@ class ArchiveOrgStrategy:
         except SsrfViolation:
             # SSRF violations must propagate so the strategy chain cannot
             # fall back to a strategy that bypasses policy. The inner
-            # ``raise`` already logged the violation with the URL; here
+            # ``raise`` already logged the event without the URL; here
             # we only re-raise after not also logging it as a generic
             # Archive.org fetch failure (which would confuse the
             # operator's audit trail).
             raise
-        except Exception as e:
-            logger.warning(f"Archive.org fetch failed for {url}: {e}")
+        except Exception:
+            # Availability/archive responses and transport errors can carry
+            # requested-URL and page-content fragments; none of that is
+            # logged at any level.
+            logger.warning("Archive.org fetch failed")
             return None

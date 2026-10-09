@@ -345,9 +345,9 @@ class DirectFetchStrategy:
                 # actually bound total wall time.
                 remaining = deadline_at - time.monotonic()
                 if remaining <= 0:
+                    # Requested URLs are never logged at any level.
                     logger.info(
-                        "Direct fetch abandoning %s: shared per-fetch deadline already exhausted",
-                        current_url,
+                        "Direct fetch abandoned: shared per-fetch deadline already exhausted"
                     )
                     return None
                 if _is_blocked_domain(current_url, self.policy.blocked_domains):
@@ -359,18 +359,18 @@ class DirectFetchStrategy:
                         allowed_ports=_FETCH_PORTS,
                         timeout=remaining,
                     )
-                except SsrfUnreachable as exc:
+                except SsrfUnreachable:
                     # Target unreachable (DNS timeout / gaierror / no
                     # results / bounded resolver exhaustion). The direct
                     # path could not connect, but fallbacks that contact
                     # r.jina.ai / archive.org instead of the target host
                     # may still succeed. Swallow and let the chain
-                    # continue.
+                    # continue. Exception text can carry the requested
+                    # host and is never logged.
                     logger.info(
-                        "Direct fetch unavailable for %s: %s; "
-                        "fallback strategies may still succeed",
-                        current_url,
-                        exc,
+                        "Direct fetch unavailable: resolver could not "
+                        "validate the target; fallback strategies may "
+                        "still succeed"
                     )
                     return None
                 except SsrfPolicyViolation:
@@ -384,9 +384,8 @@ class DirectFetchStrategy:
                     # No validated addresses is a target unavailability, not
                     # a safety violation — same treatment as DNS failure.
                     logger.info(
-                        "Direct fetch no validated addresses for %s; "
-                        "fallback strategies may still succeed",
-                        url,
+                        "Direct fetch had no validated addresses; "
+                        "fallback strategies may still succeed"
                     )
                     return None
                 # httpx requires ASCII header values; convert IDN hosts to IDNA
@@ -396,8 +395,10 @@ class DirectFetchStrategy:
                 try:
                     host_header = build_host_header(current_url)
                     sni_hostname = encode_idna_hostname(validated.host)
-                except (ValueError, UnicodeError) as exc:
-                    logger.warning(f"Direct fetch cannot encode hostname for {url}: {exc}")
+                except (ValueError, UnicodeError):
+                    # The failing hostname is part of the requested URL and
+                    # is never logged, nor is parser exception text.
+                    logger.warning("Direct fetch cannot encode hostname; skipping request")
                     return None
                 # Use one client per address in each hop. A pooled connection is
                 # keyed by the pinned-IP origin, so reusing it across hostnames
@@ -431,7 +432,7 @@ class DirectFetchStrategy:
 
             # Validate content before returning
             if not self.policy.content_is_valid(content, content_type):
-                logger.debug(f"Content validation failed for {url}")
+                logger.debug("Content validation failed")
                 return None
 
             return FetchResult(
@@ -453,8 +454,11 @@ class DirectFetchStrategy:
             raise
         except FetchContentError:
             raise
-        except Exception as e:
-            logger.warning(f"Direct fetch failed for {url}: {e}")
+        except Exception:
+            # Fetch/network exceptions can carry requested-URL fragments,
+            # response headers or page content, so neither their text nor a
+            # traceback is logged at any level.
+            logger.warning("Direct fetch failed")
             return None
 
     async def _request_with_address_fallback(
@@ -472,8 +476,8 @@ class DirectFetchStrategy:
 
         Returns the first successful response, or ``None`` if every address
         fails to produce a response. Network-level errors against an address
-        are logged at debug and the next address is tried; non-network errors
-        are propagated.
+        move the loop to the next address (no content-bearing details are
+        logged); non-network errors are propagated.
 
         The request is sent with ``stream=True``. Redirect responses are
         returned with their bodies never consumed (closed immediately, no
@@ -501,24 +505,21 @@ class DirectFetchStrategy:
         sharing one deadline across all hops so a multi-hop redirect chain
         cannot extend the per-fetch budget by ``addresses × hops``.
         """
-        last_error: Exception | None = None
         # Cap the address list so a hostile DNS response with thousands of
         # distinct addresses cannot exhaust the per-fetch deadline budget.
         capped_addresses = addresses[:_MAX_ADDRESS_ATTEMPTS]
         if len(capped_addresses) < len(addresses):
             logger.info(
-                "Direct fetch capped address list at %d of %d for %s",
+                "Direct fetch capped address list at %d of %d",
                 len(capped_addresses),
                 len(addresses),
-                current_url,
             )
 
         for address in capped_addresses:
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
                 logger.info(
-                    "Direct fetch abandoned %s after exhausting remaining %.2fs of shared per-fetch budget",
-                    current_url,
+                    "Direct fetch abandoned after exhausting remaining %.2fs of shared per-fetch budget",
                     _PER_FETCH_DEADLINE_SECONDS,
                 )
                 break
@@ -610,15 +611,8 @@ class DirectFetchStrategy:
                     # ``_read_bounded_body``'s finally clause.
                     body = await _read_bounded_body(response, deadline_at=deadline_at)
                     return _materialize_response(response, body)
-            except (httpx.RequestError, asyncio.TimeoutError) as exc:
-                last_error = exc
-                logger.debug("Direct fetch address %s for %s failed: %s", address, current_url, exc)
+            except (httpx.RequestError, asyncio.TimeoutError):
+                # Transport errors carry the pinned address, requested URL
+                # and response summary; none of that is logged.
                 continue
-        if last_error is not None:
-            logger.info(
-                "Direct fetch exhausted %d addresses for %s; last error: %s",
-                len(capped_addresses),
-                current_url,
-                last_error,
-            )
         return None

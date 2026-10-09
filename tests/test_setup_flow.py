@@ -203,7 +203,8 @@ class TestStartupNoDeviceLogsToken:
                 pass
             token_file = get_settings().daemon_setup_token_file
             token = open(token_file, encoding="utf-8").read().strip()
-            assert ">>> Daemon setup required" in caplog.text
+            assert "Daemon setup required" in caplog.text
+            assert token_file not in caplog.text
             assert token not in caplog.text
             assert re.fullmatch(r"[A-Za-z0-9_-]{43}", token)
             assert stat.S_IMODE(os.stat(token_file).st_mode) == 0o600
@@ -248,7 +249,7 @@ class TestStartupActiveDeviceSuppressesToken:
             caplog.clear()
             async with app.router.lifespan_context(app):
                 pass
-            assert ">>> Daemon setup required" not in caplog.text
+            assert "Daemon setup required" not in caplog.text
         finally:
             restore_init(original)
 
@@ -265,7 +266,12 @@ class TestStartupRecoveryWithStaleDevices:
             caplog.clear()
             async with app.router.lifespan_context(app):
                 pass
-            assert ">>> Daemon recovery:" in caplog.text
+            assert "Daemon recovery:" in caplog.text
+            token_file = get_settings().daemon_setup_token_file
+            token = open(token_file, encoding="utf-8").read().strip()
+            assert token_file not in caplog.text
+            assert token not in caplog.text
+            assert verify_token(token, mock_pool._system_state["auth.setup_token_hash"])
             assert mock_pool._active_count == 0
         finally:
             restore_init(original)

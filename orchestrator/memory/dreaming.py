@@ -487,13 +487,10 @@ async def run_dreaming(
                 families_processed += 1
             except Exception as error:
                 raise_if_embedding_accounting_error(error)
-                logger.warning(
-                    "Dream synthesis failed for user %s family %s: %s",
-                    user_id,
-                    family,
-                    error,
-                    exc_info=True,
-                )
+                # Account identifiers, family names and provider/store
+                # exception text are never logged; the family's outcome is
+                # still recorded via skipped_families and the dream-run row.
+                logger.warning("Dream synthesis failed for a family")
                 skipped_families.append(family)
                 family_errors.append(f"{family}: {error}")
 
@@ -523,7 +520,9 @@ async def run_dreaming(
         }
     except Exception as error:
         raise_if_embedding_accounting_error(error)
-        logger.warning("Dream run failed for user %s: %s", user_id, error, exc_info=True)
+        # Account identifiers and exception text/tracebacks are never
+        # logged; the failure row records error_message separately.
+        logger.warning("Dream run failed")
         try:
             dream_run = await active_store.log_dream_run(
                 user_id=user_id,

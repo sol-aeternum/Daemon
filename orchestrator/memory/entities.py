@@ -517,8 +517,10 @@ async def extract_candidates_spacy(
 
         return candidates
 
-    except Exception as e:
-        logger.warning(f"spaCy NER extraction failed: {e}")
+    except Exception:
+        # spaCy/parser failures can echo memory-content fragments in
+        # exception text; baseline-only extraction continues instead.
+        logger.warning("spaCy NER extraction failed")
         return []
 
 
@@ -559,8 +561,8 @@ async def extract_entity_candidates(
                 if cand.normalized_key not in seen_keys:
                     candidates.append(cand)
                     seen_keys.add(cand.normalized_key)
-        except Exception as e:
-            logger.warning(f"spaCy enrichment failed, continuing with baseline: {e}")
+        except Exception:
+            logger.warning("spaCy enrichment failed, continuing with baseline")
 
     return candidates
 
@@ -578,8 +580,10 @@ async def _compute_mention_embedding(mention: CandidateMention) -> list[float] |
         if mention.entity_type:
             text = f"{mention.entity_type}: {text}"
         return await embed_query(text)
-    except Exception as e:
-        logger.warning(f"Failed to embed mention '{mention.text}': {e}")
+    except Exception:
+        # Entity mention text is derived from memory content and is never
+        # logged; embedding failure simply yields no candidate embedding.
+        logger.warning("Failed to embed entity mention")
         return None
 
 
@@ -779,7 +783,9 @@ async def confirm_merge_llm(
         # Truncation is checked before any verdict parsing: a visible "YES"
         # fragment cut off by the output bound is not a confirmation.
         if not completeness.complete:
-            logger.warning("Entity merge confirmation did not complete: %s", completeness.reason)
+            # The decision reason is part of the returned verdict tuple
+            # (preserved below); it is not echoed into application logs.
+            logger.warning("Entity merge confirmation did not complete")
             return False, f"Error: {completeness.reason}"
 
         content = completeness.content
@@ -795,7 +801,10 @@ async def confirm_merge_llm(
             return False, content
 
     except Exception as e:
-        logger.warning(f"LLM confirmation failed: {e}")
+        # Provider/store exceptions can carry conversation-derived text;
+        # the failure text is returned in the resolution error tuple
+        # (preserved API behavior) but never logged.
+        logger.warning("LLM confirmation failed")
         return False, f"Error: {e}"
 
 

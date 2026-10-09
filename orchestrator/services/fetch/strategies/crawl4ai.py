@@ -58,24 +58,24 @@ class Crawl4AIStrategy:
                     # Extract markdown from response
                     result_list = data.get("result", [])
                     if not result_list:
-                        logger.warning(f"No result in Crawl4AI response for {url}")
+                        logger.warning("No result in Crawl4AI response")
                         return None
 
                     result_item = result_list[0]
                     markdown_content = result_item.get("markdown", "")
 
                     if not markdown_content:
-                        logger.warning(f"No markdown content in Crawl4AI response for {url}")
+                        logger.warning("No markdown content in Crawl4AI response")
                         return None
 
                     if isinstance(markdown_content, str) and not self.policy.content_is_valid(
                         markdown_content
                     ):
-                        logger.debug(f"Content validation failed for {url}")
+                        logger.debug("Content validation failed")
                         return None
 
                     if not isinstance(markdown_content, str):
-                        logger.warning(f"Invalid markdown content type for {url}")
+                        logger.warning("Invalid markdown content type in Crawl4AI response")
                         return None
 
                     return FetchResult(
@@ -88,12 +88,14 @@ class Crawl4AIStrategy:
                         content_length=len(markdown_content),
                     )
 
-            except httpx.ConnectError as e:
-                logger.warning(f"Crawl4AI connection refused for {url}: {e}")
+            except httpx.ConnectError:
+                logger.warning("Crawl4AI connection refused")
                 return None
-            except httpx.ConnectTimeout as e:
-                logger.warning(f"Crawl4AI connection timeout for {url}: {e}")
+            except httpx.ConnectTimeout:
+                logger.warning("Crawl4AI connection timeout")
                 return None
-            except Exception as e:
-                logger.warning(f"Crawl4AI fetch failed for {url}: {e}")
+            except Exception:
+                # Transport/provider errors carry the requested URL and the
+                # provider response; neither is logged at any level.
+                logger.warning("Crawl4AI fetch failed")
                 return None
