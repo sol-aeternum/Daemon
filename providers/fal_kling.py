@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 import fal_client
-from pydantic import BaseModel
+import httpx
+from pydantic import BaseModel, PrivateAttr
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,13 @@ class VideoJob(BaseModel):
     source_image_url: Optional[str] = None
     kling_model: str = "o3-pro"
     audio_enabled: bool = False
+
+    _client_reference: str | None = PrivateAttr(default=None)
+
+    @property
+    def client_reference(self) -> str | None:
+        """Local correlation only; not a provider idempotency or lookup key."""
+        return self._client_reference
 
 
 class VideoResult(BaseModel):
@@ -37,7 +46,9 @@ class VideoResult(BaseModel):
 class FalKlingError(Exception):
     """Base exception for Fal Kling API errors."""
 
-    pass
+    def __init__(self, message: str, *, client_reference: str | None = None) -> None:
+        super().__init__(message)
+        self.client_reference = client_reference
 
 
 class FalKlingClient:
@@ -99,6 +110,9 @@ class FalKlingClient:
         if kling_model not in ["o3-pro", "v3-pro"]:
             kling_model = "o3-pro"
 
+        # ACCOUNT_DELETION_DESIGN §6.2: identify the attempt before submitting.
+        # No documented provider field makes this reference an idempotency key.
+        client_reference = str(uuid4())
         try:
             endpoint = self._get_model_endpoint(kling_model, bool(source_image_url))
 
@@ -113,22 +127,52 @@ class FalKlingClient:
             if audio_enabled:
                 arguments["audio_enabled"] = True
 
-            result = await self._client.submit(
-                endpoint,
-                arguments=arguments,
-            )
+            # fal-client's submit wraps POST in _async_maybe_retry_request (up
+            # to ten attempts). Bypass that wrapper, not the polling SDK, and
+            # separately disable the provider's queue retries. Never resubmit
+            # an unknown-outcome non-idempotent request (§6.2; issue #488).
+            async with httpx.AsyncClient() as submit_client:
+                response = await submit_client.post(
+                    f"https://queue.fal.run/{endpoint}",
+                    headers={
+                        # Preserve the SDK's initialization credential for
+                        # both submit and poll, including wrapper overrides.
+                        "Authorization": f"Key {self._client.key}",
+                        "X-Fal-No-Retry": "1",
+                    },
+                    json=arguments,
+                    timeout=120.0,
+                )
+            if not response.is_success:
+                raise FalKlingError(
+                    f"Failed to submit video generation job: HTTP {response.status_code}",
+                    client_reference=client_reference,
+                )
+            data = response.json()
+            job_id = data["request_id"]
+            if not isinstance(job_id, str) or not job_id:
+                raise ValueError("Missing provider request id")
 
-            return VideoJob(
-                job_id=result.request_id,
+            job = VideoJob(
+                job_id=job_id,
                 prompt=prompt,
                 duration_seconds=duration_seconds,
                 source_image_url=source_image_url,
                 kling_model=kling_model,
                 audio_enabled=audio_enabled,
             )
+            job._client_reference = client_reference
+            return job
 
+        except FalKlingError:
+            raise
         except Exception as e:
-            raise FalKlingError(f"Failed to submit video generation job: {str(e)}")
+            # An error may follow provider acceptance. Preserve the reference
+            # without copying provider bodies, prompts or transport URLs.
+            raise FalKlingError(
+                "Failed to submit video generation job: outcome unconfirmed; not retried",
+                client_reference=client_reference,
+            ) from e
 
     async def poll_video_job(self, job: VideoJob) -> VideoResult:
         """Poll for video generation job status.
