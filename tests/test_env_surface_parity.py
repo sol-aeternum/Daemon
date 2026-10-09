@@ -227,8 +227,8 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
     ),
     "BACKUP_DIR": NonFieldConsumer(
         kind="script",
-        sources=("scripts/backup_db.py:14",),
-        reason="output directory of the standalone backup CLI (resolver default 'backups')",
+        sources=("scripts/backup_db.py:269",),
+        reason="publication/expiry/inventory directory of the standalone backup CLI (default 'backups')",
     ),
     "ENCRYPTION_KEY": NonFieldConsumer(
         kind="script",
