@@ -121,6 +121,32 @@ const CANCELLED_PARTIAL_NOTICE = 'Stopped before the answer was finished.';
 
 const REGENERATED_NOTICE = 'This answer was regenerated after an interruption.';
 
+/**
+ * The backend's explicit regeneration count this live stream disclosed on
+ * its task/reset frames (#477). A bare reset is not regeneration evidence:
+ * same-generation corrections and deferred attempts reset without a
+ * positive count, and historical lifecycle metadata must not imply one.
+ */
+function liveRegenerationCount(message: DaemonMessage): number {
+  let count = 0;
+  for (const part of message.parts) {
+    if (part.type !== 'data-event') continue;
+    const data = part.data as {
+      type?: string;
+      regenerated_after_interruption?: unknown;
+    };
+    if (
+      (data.type === 'task' || data.type === 'task_reset') &&
+      typeof data.regenerated_after_interruption === 'number' &&
+      Number.isInteger(data.regenerated_after_interruption) &&
+      data.regenerated_after_interruption > count
+    ) {
+      count = data.regenerated_after_interruption;
+    }
+  }
+  return count;
+}
+
 function withTaskNotice(
   role: string,
   content: string,
@@ -167,12 +193,18 @@ export function getDaemonMessageText(message: DaemonMessage): string {
     .filter((part) => part.type === 'text')
     .map((part) => part.text)
     .join('');
+  // Regeneration is disclosed from the backend's explicit count on the
+  // live frames (#477), like the persisted copy does from its metadata.
+  const liveText =
+    liveRegenerationCount(message) > 0 && text
+      ? `${text}\n\n${REGENERATED_NOTICE}`
+      : text;
   // A task cancelled elsewhere (another device) ends this live view: say so,
   // as the persisted copy will.
-  if (getDaemonTaskStatus(message) !== 'cancelled') return text;
+  if (getDaemonTaskStatus(message) !== 'cancelled') return liveText;
   // Cancelled before the first token: the persisted copy says "Stopped."
-  return text
-    ? `${text}\n\n${CANCELLED_PARTIAL_NOTICE}`
+  return liveText
+    ? `${liveText}\n\n${CANCELLED_PARTIAL_NOTICE}`
     : TASK_TERMINAL_NOTICES.cancelled;
 }
 

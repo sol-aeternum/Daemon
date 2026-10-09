@@ -9,6 +9,13 @@ import {
 export type LastTurn = {
   conversationId: string | null;
   attachments: unknown[];
+  /**
+   * The submission key the turn was sent under (#477): a reconnect or retry
+   * must re-send this exact turn by its key, never another conversation's
+   * newest unresolved submission. Absent for turns without one (suggestions,
+   * council configuration, request-bound retries).
+   */
+  submissionKey?: string;
 } | null;
 
 /**

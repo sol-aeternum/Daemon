@@ -14,8 +14,17 @@ import {
   normalizeDaemonMessages,
 } from '@/lib/chatMessages';
 
-/** Delays before re-trying a conversation that failed to load (the last repeats). */
+/** Bounded delays before retrying a transient conversation-load failure. */
 export const CONVERSATION_RETRY_DELAYS_MS = [1000, 3000, 10000, 30000];
+
+/**
+ * HTTP classifications for loading the open conversation (#477). ``403``
+ * and ``404`` are answers about this conversation (missing or forbidden):
+ * waiting cannot change them, so the retry loop stops with an actionable
+ * state. Anything else is transient and is retried, a bounded number of
+ * times.
+ */
+const PERMANENT_LOAD_STATUSES: ReadonlySet<number> = new Set([403, 404]);
 
 export interface Conversation {
   id: string;
@@ -490,12 +499,76 @@ export function useConversationHistory() {
     [apiFetch, getAuthHeaders],
   );
 
+  /**
+   * ``permanent``: the server answered for this conversation with ``403``
+   * or ``404`` (#477) — it will not become available by waiting. ``null``
+   * and transient failures are indistinguishable to callers that only need
+   * the conversation: both resolve to no conversation.
+   */
+  const fetchConversationLoad = useCallback(
+    async (
+      id: string,
+    ): Promise<{ conversation: Conversation | null; permanent: boolean }> => {
+      const response = await (async () => {
+        try {
+          return await apiFetch(`/conversations/${id}`, {
+            headers: await getAuthHeaders(),
+          });
+        } catch {
+          return undefined; // transport error: transient
+        }
+      })();
+      if (!response) return { conversation: null, permanent: false };
+      if (!response.ok) {
+        return {
+          conversation: null,
+          permanent: PERMANENT_LOAD_STATUSES.has(response.status),
+        };
+      }
+      try {
+        const data = await response.json();
+        return {
+          conversation: {
+            id: data.id,
+            title: data.title,
+            messages: normalizeDaemonMessages(data.messages),
+            selectedModel: data.metadata?.model || 'auto',
+            createdAt: data.created_at,
+            updatedAt: data.updated_at,
+            messageCount: data.message_count,
+            lastActivityAt: data.last_activity_at,
+            pinned: data.pinned,
+            title_locked: data.title_locked,
+            status: data.status,
+            metadata: data.metadata || {},
+            activeTask: toActiveTask(data.active_task),
+            latestTask: toActiveTask(data.latest_task),
+          },
+          permanent: false,
+        };
+      } catch {
+        return { conversation: null, permanent: false };
+      }
+    },
+    [apiFetch, getAuthHeaders],
+  );
+
   const [currentConversation, setCurrentConversation] =
     useState<Conversation | null>(null);
+  /**
+   * Why the open conversation has no server copy and is not loading anymore
+   * (#477): ``permanent`` for a ``403``/``404`` answer about it,
+   * ``exhausted`` when the bounded transient retries ran out. Rendered with
+   * the existing navigation affordances, never a new interface.
+   */
+  const [conversationLoadFailure, setConversationLoadFailure] = useState<
+    'permanent' | 'exhausted' | null
+  >(null);
 
   useEffect(() => {
     if (!currentId) {
       setCurrentConversation(null);
+      setConversationLoadFailure(null);
       return;
     }
 
@@ -503,23 +576,33 @@ export function useConversationHistory() {
     // open conversation with the one the user left.
     let stale = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
+    setConversationLoadFailure(null);
     // A failed load is retried: the open conversation must not stay unloaded
     // (its composer is held until its server state, and any task, is known).
     const fetchConversationDetails = async (attempt: number) => {
-      const conversation = await fetchConversationById(currentId);
+      const { conversation, permanent } =
+        await fetchConversationLoad(currentId);
       if (stale) return;
       if (conversation) {
         setCurrentConversation(conversation);
-      } else {
-        // Keep trying while the conversation is open (the last delay
-        // repeats), so it becomes usable as soon as the backend recovers.
-        retry = setTimeout(
-          () => void fetchConversationDetails(attempt + 1),
-          CONVERSATION_RETRY_DELAYS_MS[
-            Math.min(attempt, CONVERSATION_RETRY_DELAYS_MS.length - 1)
-          ],
-        );
+        return;
       }
+      if (permanent) {
+        // The server answered about this conversation: stopping, not
+        // looping, is the recovery. The page shows the actionable state.
+        setConversationLoadFailure('permanent');
+        return;
+      }
+      if (attempt >= CONVERSATION_RETRY_DELAYS_MS.length) {
+        // Transient problems only get the listed delays: retrying forever
+        // leaves a blocked composer with no explanation (#477).
+        setConversationLoadFailure('exhausted');
+        return;
+      }
+      retry = setTimeout(
+        () => void fetchConversationDetails(attempt + 1),
+        CONVERSATION_RETRY_DELAYS_MS[attempt],
+      );
     };
 
     void fetchConversationDetails(0);
@@ -527,7 +610,7 @@ export function useConversationHistory() {
       stale = true;
       if (retry) clearTimeout(retry);
     };
-  }, [currentId, fetchConversationById]);
+  }, [currentId, fetchConversationLoad]);
 
   const getCurrentConversation = useCallback(() => {
     return currentConversation;
@@ -658,6 +741,7 @@ export function useConversationHistory() {
     taskStatus,
     switchConversation,
     fetchConversationById,
+    conversationLoadFailure,
     searchQuery,
     setSearchQuery,
     conversationSearch,

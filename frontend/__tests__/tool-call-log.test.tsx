@@ -301,3 +301,80 @@ describe('ToolCallLog grouped activity', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
   });
 });
+
+describe('#477 truthful outcome rendering', () => {
+  it('marks an empty legacy replay neutral instead of green', () => {
+    const events: ChatEvent[] = [
+      {
+        type: 'tool_call',
+        name: 'web_search',
+        arguments: {},
+        tool_call_id: 'k1',
+      },
+      {
+        type: 'tool_result',
+        name: 'web_search',
+        result: '',
+        tool_call_id: 'k1',
+      },
+    ];
+    render(React.createElement(ToolCallLog, { events }));
+    const toggle = screen.getByRole('button', { name: /tool/i });
+    expect(toggle.textContent).toContain('not recorded');
+    fireEvent.click(toggle);
+    // The row carries the muted outcome and the unrecoverable output text.
+    expect(screen.getByText('not recorded')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'web_search' }));
+    expect(screen.getByText('Result not recorded.')).toBeTruthy();
+  });
+
+  it('keeps an explicitly unknown outcome from reading as success either', () => {
+    const events: ChatEvent[] = [
+      {
+        type: 'tool_call',
+        name: 'get_time',
+        arguments: {},
+        tool_call_id: 'k2',
+      },
+      {
+        type: 'tool_result',
+        name: 'get_time',
+        result: JSON.stringify({ recorded: true }),
+        tool_call_id: 'k2',
+        outcome: 'unknown',
+      },
+    ];
+    render(React.createElement(ToolCallLog, { events }));
+    fireEvent.click(screen.getByRole('button', { name: /tool/i }));
+    expect(screen.getByText('not recorded')).toBeTruthy();
+  });
+
+  it("lets the backend's failed outcome win over a parsed media path", () => {
+    const events: ChatEvent[] = [
+      {
+        type: 'tool_call',
+        name: 'spawn_agent',
+        arguments: { context: { mode: 'video', prompt: 'A film' } },
+        tool_call_id: 'v1',
+      },
+      {
+        type: 'tool_result',
+        name: 'spawn_agent',
+        result: JSON.stringify({
+          data: { video_path: '/generated-videos/clip.mp4' },
+          outcome: 'failed',
+        }),
+        tool_call_id: 'v1',
+        outcome: 'failed',
+      },
+    ];
+    render(React.createElement(ToolCallLog, { events }));
+    const toggle = screen.getByRole('button', { name: /tool/i });
+    expect(toggle.textContent).toContain('1 issue');
+    fireEvent.click(toggle);
+    // The recorded failed outcome is the truth; a stray video path must not
+    // turn a failed generation into a "Video created" celebration.
+    expect(screen.getByText('Video generation failed')).toBeTruthy();
+    expect(screen.queryByText('Video created')).toBeNull();
+  });
+});

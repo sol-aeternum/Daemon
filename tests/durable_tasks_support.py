@@ -130,6 +130,11 @@ class FakePubSub:
         self._redis.subscribers.append(self)
 
     async def get_message(self, ignore_subscribe_messages: bool = True, timeout: float = 0):
+        if timeout <= 0:
+            try:
+                return self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return None
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=timeout)
         except TimeoutError:

@@ -285,6 +285,59 @@ export async function POST(req: Request) {
       let streamFailed = false;
       let errorText = 'Backend stream ended unexpectedly.';
 
+      // Additive durable-frame recovery (#477): task frames carry the
+      // content generation they belong to. The highest generation seen is
+      // authoritative for live progress; envelopes tagged with an older one
+      // are late/progress frames of a replaced attempt (a delayed reset, a
+      // duplicate after a gap, a redelivery) and are dropped before they
+      // can mutate text or task state. Untagged legacy frames still pass.
+      let contentGeneration = 0;
+      const readGeneration = (value: unknown): number | undefined =>
+        typeof value === 'number' && Number.isInteger(value) && value >= 0
+          ? value
+          : undefined;
+      // Token frames carry the generation at the frame's top level or under
+      // ``data``; tool/task frames under ``data``.
+      const readFrameGeneration = (payload: any): number | undefined =>
+        readGeneration(payload?.data?.content_generation) ??
+        readGeneration(payload?.content_generation);
+      /** True (and advances the frontier) only for a current-generation frame. */
+      const acceptGeneration = (payload: any): boolean => {
+        const generation = readFrameGeneration(payload);
+        if (generation === undefined) return true;
+        if (generation < contentGeneration) return false;
+        if (generation > contentGeneration) contentGeneration = generation;
+        return true;
+      };
+      /** Only forward well-formed values; absence stays absent (legacy). */
+      const readFrameMeta = (
+        data: Record<string, unknown>,
+      ): Record<string, unknown> => {
+        const meta: Record<string, unknown> = {};
+        const eventSeq = readGeneration(data.event_seq);
+        if (eventSeq !== undefined) meta.event_seq = eventSeq;
+        const generation = readGeneration(data.content_generation);
+        if (generation !== undefined) meta.content_generation = generation;
+        if (typeof data.lifecycle_kind === 'string' && data.lifecycle_kind) {
+          meta.lifecycle_kind = data.lifecycle_kind;
+        }
+        if (
+          typeof data.lifecycle_epoch === 'number' &&
+          Number.isInteger(data.lifecycle_epoch) &&
+          data.lifecycle_epoch >= 0
+        ) {
+          meta.lifecycle_epoch = data.lifecycle_epoch;
+        }
+        if (typeof data.operation_id === 'string' && data.operation_id) {
+          meta.operation_id = data.operation_id;
+        }
+        const regenerated = readGeneration(data.regenerated_after_interruption);
+        if (regenerated !== undefined) {
+          meta.regenerated_after_interruption = regenerated;
+        }
+        return meta;
+      };
+
       const writeText = (delta: string) => {
         if (!textPartStarted) {
           textPartStarted = true;
@@ -305,7 +358,6 @@ export async function POST(req: Request) {
           streamFailed = true;
           return;
         }
-
         if (backendRes.status === 429) {
           const detail = await readCapacityDetailFromResponse(backendRes);
           // Refused before acceptance: no task exists for this key.
@@ -443,6 +495,9 @@ export async function POST(req: Request) {
               }
 
               if (eventType === 'task') {
+                // A frame from a replaced attempt must never publish its
+                // status, another reset or terminal state (#477).
+                if (!acceptGeneration(payload)) continue;
                 const task = payload?.data ?? {};
                 if (
                   typeof task.status === 'string' &&
@@ -460,14 +515,10 @@ export async function POST(req: Request) {
                   writeData([
                     {
                       type: 'task_reset',
-                      task_id:
-                        typeof task.task_id === 'string'
-                          ? task.task_id
-                          : undefined,
-                      content_generation:
-                        typeof task.content_generation === 'number'
-                          ? task.content_generation
-                          : undefined,
+                      ...(typeof task.task_id === 'string'
+                        ? { task_id: task.task_id }
+                        : {}),
+                      ...readFrameMeta(task),
                     },
                   ]);
                   if (typeof task.content === 'string' && task.content) {
@@ -483,16 +534,22 @@ export async function POST(req: Request) {
                 ) {
                   writeData([
                     {
+                      ...readFrameMeta(task),
                       type: 'task',
                       task_id: task.task_id,
                       status:
                         typeof task.status === 'string'
                           ? task.status
                           : undefined,
-                    },
+                    } as ChatEvent,
                   ]);
                 }
               } else if (eventType === 'token') {
+                // Text tagged from a replaced attempt is never shown (#477);
+                // untagged legacy tokens still pass.
+                if (readFrameGeneration(payload) !== undefined) {
+                  if (!acceptGeneration(payload)) continue;
+                }
                 const delta =
                   payload?.data?.text ??
                   payload?.data?.delta ??
@@ -549,6 +606,8 @@ export async function POST(req: Request) {
                   ]);
                 }
               } else if (eventType === 'tool_call') {
+                // Progress from a replaced attempt is dropped (#477).
+                if (!acceptGeneration(payload)) continue;
                 const data =
                   payload?.data && typeof payload.data === 'object'
                     ? payload.data
@@ -565,6 +624,7 @@ export async function POST(req: Request) {
                   },
                 ]);
               } else if (eventType === 'tool_result') {
+                if (!acceptGeneration(payload)) continue;
                 const data =
                   payload?.data && typeof payload.data === 'object'
                     ? payload.data

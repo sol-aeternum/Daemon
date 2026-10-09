@@ -11,6 +11,7 @@ import {
 } from '../lib/durableRecovery';
 import {
   finishedSubmissionKeys,
+  pendingSubmission,
   promotePendingSubmission,
   pendingTasksIn,
   recordSubmissionTask,
@@ -105,6 +106,7 @@ import { SkeletonBlock } from '../components/ui/Skeleton';
 import {
   ChatEvent,
   isChatEvent,
+  normalizeChatEvents,
   isCouncilEvent,
   isCouncilInterviewEvent,
   isCouncilProgressEvent,
@@ -125,6 +127,7 @@ import {
   TERMINAL_TASK_STATUSES,
 } from '../lib/chatMessages';
 import { buildMessageCitationSources } from '../lib/messageSources';
+import { isToolResultOutcome } from '../lib/toolActivity';
 
 type ReasoningMessage = DaemonMessage & {
   reasoning_text?: string;
@@ -144,6 +147,7 @@ type PersistedToolResult = {
   result?: unknown;
   id?: unknown;
   request_id?: unknown;
+  outcome?: unknown;
 };
 
 type PendingAttachment = {
@@ -227,6 +231,11 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
       name: getOptionalString(toolResult.name) || 'tool',
       result: toolResult.result,
     };
+    // Saved durable rows carry the same bounded evidence as live/replay. Old
+    // rows must not infer an effect's outcome from a raw error or success body.
+    event.outcome = isToolResultOutcome(toolResult.outcome)
+      ? toolResult.outcome
+      : 'unknown';
 
     const id = getOptionalString(toolResult.id);
     if (id) event.id = id;
@@ -410,6 +419,7 @@ function ChatContent() {
     setSearchQuery,
     conversationSearch,
     refreshConversations,
+    conversationLoadFailure,
   } = useConversationHistoryContext();
 
   const [activeModel, setActiveModel] = useState<string>('auto');
@@ -457,6 +467,17 @@ function ChatContent() {
     pending: boolean;
   } | null>(null);
   const chatRequestGenerationRef = useRef<number | null>(null);
+  // The useChat setter, kept here so callbacks declared before it (onFinish)
+  // can still rewrite the message list: a refused exchange is removed by its
+  // message identities, not by re-sending text (#477).
+  const setChatMessagesRef = useRef<
+    | ((
+        messages:
+          | DaemonMessage[]
+          | ((previous: DaemonMessage[]) => DaemonMessage[]),
+      ) => void)
+    | null
+  >(null);
   // Idempotency key of the submission currently (or most recently) in flight.
   const activeSubmissionKeyRef = useRef<string | null>(null);
   // Files of the latest submitted turn and the conversation they were sent
@@ -521,11 +542,30 @@ function ChatContent() {
   // Keys this page resent (a held draft or a retry): a rejection of such a
   // key is ambiguous, since the key may already belong to an accepted task.
   const resentKeysRef = useRef(new Set<string>());
-  // Refused submissions waiting for an empty composer to return to.
-  const rejectedWaitingRef = useRef(new Set<string>());
+  // Held submissions waiting for an empty composer, with their certainty kept.
+  const waitingRestoresRef = useRef(new Map<string, 'refused' | 'uncertain'>());
   const returnRejectedRef = useRef<((key: string) => Promise<void>) | null>(
     null,
   );
+  /**
+   * Remove exactly the exchange of a refused request (#477): its assistant
+   * reply (the refusal bridge response) and the user message immediately
+   * before it. Identities, not text; anything else — including messages of
+   * independent turns — stays.
+   */
+  const removeRefusedExchange = (assistantMessageId: string): void => {
+    setChatMessagesRef.current?.((previous) => {
+      const assistantIndex = previous.findIndex(
+        (message) => message.id === assistantMessageId,
+      );
+      if (assistantIndex < 0) return previous;
+      const drop = new Set<number>([assistantIndex]);
+      if (previous[assistantIndex - 1]?.role === 'user') {
+        drop.add(assistantIndex - 1);
+      }
+      return previous.filter((_, index) => !drop.has(index));
+    });
+  };
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -634,6 +674,11 @@ function ChatContent() {
       const rejection = getRequestRejection(message);
       if (rejection && activeSubmissionKeyRef.current) {
         const key = activeSubmissionKeyRef.current;
+        // A refused turn must not stay stranded in the thread: when its
+        // draft goes back to the composer (now, or once the composer is
+        // free), this request's user message and refusal reply are removed
+        // by their message identities (#477). Independent messages stay.
+        removeRefusedExchange(message.id);
         if (
           rejection.code === 'idempotency_conflict' ||
           resentKeysRef.current.has(key)
@@ -698,6 +743,7 @@ function ChatContent() {
       setConnectionStatus('disconnected');
     },
   });
+  setChatMessagesRef.current = setMessages;
 
   const isLoading = status === 'submitted' || status === 'streaming';
   // Leaving the conversation whose durable task this client is streaming
@@ -795,11 +841,26 @@ function ChatContent() {
     const conversationId = currentId || latestConversationIdRef.current || null;
     // Retrying an unresolved turn resends it under its own key (a replay if
     // the backend already accepted it); a settled turn regenerates anew.
-    const held = latestHeldSubmission(conversationId);
+    // The exact failed turn first (#477): its key is captured when it is
+    // sent, so a reconnect never picks another unresolved submission of
+    // this conversation (the newest held one) by mistake.
+    const lastTurn = lastTurnRef.current;
+    const turnKey =
+      lastTurn?.conversationId === conversationId
+        ? (lastTurn.submissionKey ?? null)
+        : null;
+    const turnUnresolved = turnKey
+      ? Boolean(pendingSubmission(turnKey) || heldSubmission(turnKey))
+      : false;
     const retryAttachments = attachmentsForRetry(
       lastTurnRef.current,
       conversationId,
     );
+    const held = turnKey
+      ? turnUnresolved
+        ? heldSubmission(turnKey)
+        : undefined
+      : latestHeldSubmission(conversationId);
     if (
       held &&
       (!heldSubmissionComplete(held.key) ||
@@ -814,13 +875,14 @@ function ChatContent() {
       void reconcileWithServerRef.current?.(held.key);
       return;
     }
-    if (held) resentKeysRef.current.add(held.key);
-    beginSend(held?.key ?? null);
+    const retryKey = held?.key ?? (turnUnresolved ? turnKey : null);
+    if (retryKey) resentKeysRef.current.add(retryKey);
+    beginSend(retryKey ?? null);
     void regenerate({
       body: {
         id: conversationId,
         model: activeModel,
-        ...(held ? { idempotency_key: held.key } : {}),
+        ...(retryKey ? { idempotency_key: retryKey } : {}),
         // Regenerating a turn re-sends its files; without them the backend
         // would see (and run) a different request. Another conversation's
         // files are never sent.
@@ -1049,7 +1111,13 @@ function ChatContent() {
     suggestionSubmissionRef.current = null;
     const conversationScope =
       currentId || latestConversationIdRef.current || null;
-    lastTurnRef.current = { conversationId: conversationScope, attachments };
+    // The exact failed turn's submission key travels with its files (#477):
+    // a reconnect retries this turn by key, never another held submission.
+    lastTurnRef.current = {
+      conversationId: conversationScope,
+      attachments,
+      submissionKey: key,
+    };
     // The key belongs to the submitted draft: resending the held draft
     // unchanged (after a lost response or a reload) reuses its key, so the
     // backend replays what it already accepted. Anything else is new.
@@ -1185,7 +1253,7 @@ function ChatContent() {
       if (restoreHeldSubmission(key)) {
         settleSubmission(key);
       } else if (heldSubmission(key)) {
-        rejectedWaitingRef.current.add(key);
+        waitingRestoresRef.current.set(key, 'refused');
         showError(
           'Your earlier message was not sent. It will return to the composer when the composer is empty.',
         );
@@ -1196,45 +1264,147 @@ function ChatContent() {
   }, [dropIncompleteHeld, reconcileWithServer, showError]);
   useEffect(() => {
     if (input || pendingAttachments.length > 0) return;
-    for (const key of rejectedWaitingRef.current) {
+    for (const [key, disposition] of waitingRestoresRef.current) {
       if (restoreHeldSubmission(key)) {
-        rejectedWaitingRef.current.delete(key);
-        settleSubmission(key);
+        waitingRestoresRef.current.delete(key);
+        // A by-key miss can precede a late acceptance. Only a confirmed
+        // refusal releases identity; uncertain drafts resend their held key.
+        if (disposition === 'refused') settleSubmission(key);
         break;
       }
     }
   }, [input, pendingAttachments]);
   // After a reload (or on a later visit), resolve submissions whose outcome
   // this browser never saw, by key. Entries younger than a minute may still
-  // be in flight in another tab and are left to it.
-  const reconciledOnLoadRef = useRef(false);
+  // be in flight in another tab and are left to it — then revisited once
+  // they reach that age (#477); failed lookups are retried a bounded number
+  // of times rather than settled. The revisit timer is dropped on unmount,
+  // navigation or a sign-in change.
   useEffect(() => {
-    if (reconciledOnLoadRef.current) return;
-    reconciledOnLoadRef.current = true;
-    void (async () => {
-      await heldSubmissionsReady();
-      const settledBefore = Date.now() - UNRESOLVED_MIN_AGE_MS;
-      for (const { key, entry } of unresolvedSubmissions().slice(0, 10)) {
-        if (entry.createdAt > settledBefore) continue;
-        const task = await taskForKey(key);
-        if (task === undefined) continue; // unknown: try again next time
-        if (task === null) {
-          // Never accepted. A held draft goes back to its composer (sending
-          // it reuses the key); without one there is nothing to resend.
-          if (dropIncompleteHeld(key)) continue;
-          if (!restoreHeldSubmission(key) && !heldSubmission(key)) {
-            settlePendingSubmission(key);
+    let disposed = false;
+    let revisitTimer: ReturnType<typeof setTimeout> | null = null;
+    const revisits = new Map<string, { dueAt: number; attempts: number }>();
+    const startGeneration = getAuthGeneration();
+    const startCurrentId = currentIdRef.current;
+    const stillCurrent = () =>
+      !disposed &&
+      getAuthGeneration() === startGeneration &&
+      currentIdRef.current === startCurrentId;
+    // Load-discovered acceptance of a new chat's submission opens its
+    // conversation only while the user is still on the Home that sent it:
+    // their own navigation (or a sign-in change) is never undone (#477).
+    const openedOnHome = startCurrentId === null;
+    /** One by-key resolution pass. ``'revisit'``: the answer is unknown. */
+    const resolveLoadedKey = async (
+      key: string,
+    ): Promise<'settled' | 'revisit'> => {
+      if (!stillCurrent()) return 'settled';
+      const originatedOnHome =
+        pendingSubmission(key)?.requestConversationId === null;
+      const task = await taskForKey(key);
+      if (!stillCurrent()) return 'settled';
+      if (task === undefined) return 'revisit'; // lookup failed: not an answer
+      if (task === null) {
+        // Never accepted. A held draft goes back to its composer (sending
+        // it reuses the key); with a newer draft in the way it is queued to
+        // return when the composer is empty again, and never overrides it.
+        if (dropIncompleteHeld(key)) return 'settled';
+        if (!restoreHeldSubmission(key)) {
+          if (heldSubmission(key)) {
+            waitingRestoresRef.current.set(key, 'uncertain');
+            showError(
+              'Your earlier message was not sent. It will return to the composer when the composer is empty.',
+            );
+            return 'settled';
           }
-        } else if (TERMINAL_TASK_STATUSES.has(task.status)) {
-          finishSubmission(key);
-        } else {
-          // Record (clearing the composer it was sent from) before promoting.
-          recordSubmission(key, task.id);
-          promoteSubmission(key, task.conversationId);
+          settlePendingSubmission(key);
+          return 'settled';
+        }
+        return 'settled';
+      }
+      // Terminal answers found on Home are discoverable too, not just work
+      // still running. Do not open an unrelated conversation's pending key.
+      if (openedOnHome && originatedOnHome) {
+        switchConversation(task.conversationId);
+      }
+      if (TERMINAL_TASK_STATUSES.has(task.status)) {
+        finishSubmission(key);
+        return 'settled';
+      }
+      // Record (clearing the composer it was sent from) before promoting.
+      recordSubmission(key, task.id);
+      promoteSubmission(key, task.conversationId);
+      return 'settled';
+    };
+    const armRevisit = () => {
+      if (!stillCurrent() || revisits.size === 0) return;
+      if (revisitTimer) clearTimeout(revisitTimer);
+      const dueAt = Math.min(
+        ...[...revisits.values()].map((entry) => entry.dueAt),
+      );
+      revisitTimer = setTimeout(
+        () => void runRevisit(),
+        Math.max(0, dueAt - Date.now()),
+      );
+    };
+    const runRevisit = async () => {
+      revisitTimer = null;
+      // Cancelled: the user navigated, or the sign-in changed. Keys stay
+      // pending; the next visit to the page resolves them.
+      if (!stillCurrent()) return;
+      const now = Date.now();
+      for (const [key, entry] of [...revisits]) {
+        if (!stillCurrent()) return;
+        if (entry.dueAt > now) continue;
+        revisits.delete(key);
+        if ((await resolveLoadedKey(key)) === 'revisit') {
+          // Failed lookups retry a bounded number of times, keeping the
+          // key: a missing answer is never settled (§17: honesty).
+          if (entry.attempts < 2) {
+            revisits.set(key, {
+              dueAt: Date.now() + 5000,
+              attempts: entry.attempts + 1,
+            });
+          }
         }
       }
+      armRevisit();
+    };
+    void (async () => {
+      await heldSubmissionsReady();
+      if (!stillCurrent()) return;
+      const now = Date.now();
+      const settledBefore = now - UNRESOLVED_MIN_AGE_MS;
+      for (const { key, entry } of unresolvedSubmissions().slice(0, 10)) {
+        if (!stillCurrent()) return;
+        if (entry.createdAt > settledBefore) {
+          revisits.set(key, {
+            dueAt: entry.createdAt + UNRESOLVED_MIN_AGE_MS,
+            attempts: 0,
+          });
+          continue;
+        }
+        if ((await resolveLoadedKey(key)) === 'revisit') {
+          revisits.set(key, {
+            dueAt: now + 5000,
+            attempts: 1,
+          });
+        }
+      }
+      armRevisit();
     })();
-  }, [dropIncompleteHeld, taskForKey]);
+    return () => {
+      disposed = true;
+      if (revisitTimer) clearTimeout(revisitTimer);
+    };
+  }, [
+    authGeneration,
+    currentId,
+    dropIncompleteHeld,
+    showError,
+    taskForKey,
+    switchConversation,
+  ]);
   useEffect(() => {
     stopInFlightRef.current = stopInFlight;
   }, [stopInFlight]);
@@ -1452,8 +1622,8 @@ function ChatContent() {
     return data.flatMap((entry) => (Array.isArray(entry) ? entry : [entry]));
   }, [data]);
 
-  const events: ChatEvent[] = flattenedData.filter((x): x is ChatEvent =>
-    isChatEvent(x),
+  const events: ChatEvent[] = normalizeChatEvents(
+    flattenedData.filter((x): x is ChatEvent => isChatEvent(x)),
   );
 
   // Update ref whenever events change
@@ -1607,7 +1777,7 @@ function ChatContent() {
   const latestMessage = messages.at(-1);
   const currentActivityEvents =
     latestMessage?.role === 'assistant'
-      ? getDaemonDataEvents([latestMessage])
+      ? normalizeChatEvents(getDaemonDataEvents([latestMessage]))
       : [];
 
   const currentMessagesMatch = messageScope === currentId;
@@ -1827,7 +1997,9 @@ function ChatContent() {
               aria-label="Conversation messages"
               className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
             >
-              {messages.length === 0 && isLoading ? (
+              {messages.length === 0 &&
+              isLoading &&
+              !conversationLoadFailure ? (
                 <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
                   {/* Assistant message skeleton - left aligned */}
                   <div className="flex flex-col items-start mb-6">
@@ -1878,6 +2050,26 @@ function ChatContent() {
                         className="bg-[var(--color-bg-secondary)]"
                       />
                     </div>
+                  </div>
+                </div>
+              ) : conversationLoadFailure ? (
+                <div className="h-full px-4 py-6">
+                  <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-3 px-4 text-center">
+                    <p
+                      role="status"
+                      className="text-sm text-[var(--color-text-secondary)]"
+                    >
+                      {conversationLoadFailure === 'permanent'
+                        ? 'This conversation is not available. It may have been deleted, or it belongs to another account.'
+                        : 'This conversation has not loaded. The service may be temporarily unavailable; try again later.'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleGoHome}
+                      className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+                    >
+                      Go to Home
+                    </button>
                   </div>
                 </div>
               ) : messages.length === 0 ? (

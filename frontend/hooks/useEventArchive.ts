@@ -1,7 +1,12 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ChatEvent, isChatEvent } from '../lib/events';
+import {
+  ChatEvent,
+  isChatEvent,
+  normalizeChatEvents,
+  materialOperationKey,
+} from '../lib/events';
 
 export type { ChatEvent };
 
@@ -71,13 +76,46 @@ export function useEventArchive({
     : [];
 
   // Extract and filter events from data
-  const events: ChatEvent[] = flattenedData.filter((x): x is ChatEvent =>
-    isChatEvent(x),
+  const events: ChatEvent[] = normalizeChatEvents(
+    flattenedData.filter((x): x is ChatEvent => isChatEvent(x)),
   );
 
   // Sync events to ref and track request_id
   useEffect(() => {
     eventsRef.current = events;
+
+    // A finish callback may archive before React has reflected the final data
+    // update. Enrich only already-archived scoped operations, never append a
+    // different task/generation or resurrect it across resetArchive. A new
+    // observer request can enrich the same operation after reconnect.
+    setArchivedEvents((previous) => {
+      let updated: typeof previous | undefined;
+      for (const [messageId, archive] of Object.entries(previous)) {
+        const updates = events.flatMap((event) => {
+          const key = materialOperationKey(event);
+          const saved =
+            key === undefined
+              ? undefined
+              : archive.events.find(
+                  (entry) => materialOperationKey(entry) === key,
+                );
+          return event.type === 'tool_result' &&
+            event.payload_state === 'full' &&
+            saved !== undefined
+            ? [{ ...event, request_id: saved.request_id }]
+            : [];
+        });
+        const enriched = normalizeChatEvents([...archive.events, ...updates]);
+        if (
+          enriched.length !== archive.events.length ||
+          enriched.some((event, index) => event !== archive.events[index])
+        ) {
+          updated ??= { ...previous };
+          updated[messageId] = { ...archive, events: enriched };
+        }
+      }
+      return updated ?? previous;
+    });
 
     // Find latest request_id
     let latestRequestId: string | null = null;

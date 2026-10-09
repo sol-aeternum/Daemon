@@ -5,6 +5,7 @@ import {
   buildToolActivitySummary,
   pairToolExecutions,
   canonicalUrlKey,
+  toolResultOutcome,
 } from '../lib/toolActivity';
 
 describe('tool activity event integrity', () => {
@@ -165,5 +166,141 @@ describe('source provenance and bounds', () => {
       },
     ];
     expect(buildMessageCitationSources(events)).toHaveLength(100);
+  });
+});
+
+describe('#477 bounded tool outcomes', () => {
+  const resultEvent = (
+    payload: unknown,
+    outcome?: 'succeeded' | 'failed' | 'unknown',
+  ): ChatEvent => ({
+    type: 'tool_result',
+    name: 'web_search',
+    result: payload,
+    ...(outcome ? { outcome } : {}),
+  });
+
+  it('reports running for absent results and the recorded bounded outcome when present', () => {
+    expect(toolResultOutcome(undefined)).toBe('running');
+    expect(toolResultOutcome(resultEvent('anything', 'succeeded'))).toBe(
+      'succeeded',
+    );
+    expect(toolResultOutcome(resultEvent('oops', 'failed'))).toBe('failed');
+    // An explicit unknown is honest despite a result body being present.
+    expect(toolResultOutcome(resultEvent('body', 'unknown'))).toBe('unknown');
+    // A payload-recorded outcome wins when the field is missing up top.
+    expect(
+      toolResultOutcome(resultEvent(JSON.stringify({ outcome: 'failed' }))),
+    ).toBe('failed');
+  });
+
+  it('stays truthful for legacy rows without an outcome field', () => {
+    // Recorded failure evidence reads as failed.
+    expect(toolResultOutcome(resultEvent({ error: 'denied' }))).toBe('failed');
+    expect(toolResultOutcome(resultEvent({ success: false, data: {} }))).toBe(
+      'failed',
+    );
+    // A replay that lost its recorded result never reads as success.
+    expect(toolResultOutcome(resultEvent(''))).toBe('unknown');
+    expect(toolResultOutcome(resultEvent('   '))).toBe('unknown');
+    expect(toolResultOutcome(resultEvent(null))).toBe('unknown');
+    // Anything with recorded content did succeed.
+    expect(toolResultOutcome(resultEvent('raw text'))).toBe('succeeded');
+    expect(toolResultOutcome(resultEvent({ ok: true }))).toBe('succeeded');
+    // A non tool_result event is unknown, not a success.
+    expect(
+      toolResultOutcome({ type: 'text', content: 'hi' } as ChatEvent),
+    ).toBe('unknown');
+  });
+
+  it('counts unknown legacy replays as neutral, never as successes or failures', () => {
+    const events: ChatEvent[] = [];
+    for (const [id, payload] of [
+      ['a', ''],
+      ['b', '   '],
+      ['c', JSON.stringify({ lost: true, outcome: 'unknown' })],
+    ] as const) {
+      events.push(
+        {
+          type: 'tool_call',
+          name: 'web_search',
+          arguments: {},
+          tool_call_id: id,
+        },
+        {
+          type: 'tool_result',
+          name: 'web_search',
+          result: payload,
+          tool_call_id: id,
+          ...(payload.includes('unknown')
+            ? { outcome: 'unknown' as const }
+            : {}),
+        },
+      );
+    }
+    const summary = buildToolActivitySummary(pairToolExecutions(events));
+    expect(summary).toMatchObject({
+      searchCount: 0,
+      pageCount: 0,
+      otherCount: 0,
+      runningCount: 0,
+      errorCount: 0,
+      unknownCount: 3,
+      segments: [],
+      accessibleSummary: '3 not recorded',
+    });
+  });
+
+  it('summarises mixed bounded outcomes with each part still visible', () => {
+    const events: ChatEvent[] = [
+      {
+        type: 'tool_call',
+        name: 'web_search',
+        arguments: {},
+        tool_call_id: 'ok',
+      },
+      {
+        type: 'tool_result',
+        name: 'web_search',
+        result: JSON.stringify({
+          results: [{ url: 'https://source.example/one' }],
+        }),
+        tool_call_id: 'ok',
+        outcome: 'succeeded',
+      },
+      {
+        type: 'tool_call',
+        name: 'web_fetch',
+        arguments: {},
+        tool_call_id: 'bad',
+      },
+      {
+        type: 'tool_result',
+        name: 'web_fetch',
+        result: 'lost',
+        tool_call_id: 'bad',
+        outcome: 'failed',
+      },
+      { type: 'tool_call', name: 'web_search', arguments: {} }, // still running
+      { type: 'tool_call', name: 'get_time', arguments: {}, tool_call_id: 'u' },
+      {
+        type: 'tool_result',
+        name: 'get_time',
+        result: '',
+        tool_call_id: 'u',
+        outcome: 'unknown',
+      },
+    ];
+    const summary = buildToolActivitySummary(pairToolExecutions(events));
+    expect(summary).toMatchObject({
+      searchCount: 1,
+      pageCount: 0,
+      otherCount: 0,
+      runningCount: 1,
+      errorCount: 1,
+      unknownCount: 1,
+      accessibleSummary:
+        'Searched 1 time, 1 in progress, 1 not recorded, 1 issue',
+    });
   });
 });

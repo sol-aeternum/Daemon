@@ -693,6 +693,17 @@ async def stream_sse_chat(
                             ),
                         )
                     elif event_type == "tool_result":
+                        operation_metadata = {
+                            key: event[key]
+                            for key in (
+                                "task_id",
+                                "operation_id",
+                                "lifecycle_epoch",
+                                "outcome",
+                                "payload_state",
+                            )
+                            if key in event
+                        }
                         tool_name = str(event.get("name") or "tool")
                         if tool_name in pending_tool_calls:
                             pending_tool_calls.remove(tool_name)
@@ -708,6 +719,7 @@ async def stream_sse_chat(
                             {
                                 "name": tool_name,
                                 "result": tool_result,
+                                **operation_metadata,
                             }
                         )
 
@@ -718,6 +730,7 @@ async def stream_sse_chat(
                                 {
                                     "name": tool_name,
                                     "result": tool_result,
+                                    **operation_metadata,
                                 },
                                 evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
                             ),

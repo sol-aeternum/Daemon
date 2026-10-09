@@ -129,6 +129,11 @@ def test_a_failed_teardown_fails_the_run_with_recovery_steps(drill) -> None:
     assert "teardown failed" in result.stdout
     assert "docker compose -p drill-under-test down -v" in result.stdout
     assert "ALL PASS" not in result.stdout
+    recovery = [line for line in result.stdout.splitlines() if line.startswith("recovery:")]
+    assert recovery and "--env-file" in recovery[0] and "--project-directory" in recovery[0]
+    retained = list(temp.glob("*/drill.env"))
+    assert len(retained) == 1
+    assert retained[0].stat().st_mode & 0o777 == 0o600
     # Only the project this run reserved was torn down, and it is released.
     assert any(" build " in f" {c} " for c in _compose_mutations(calls))
     downs = [c for c in _compose_mutations(calls) if " down " in f" {c} "]

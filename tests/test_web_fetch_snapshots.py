@@ -180,16 +180,25 @@ async def test_durable_refresh_counts_once_per_task(reader):
     """#475: a regenerated attempt reuses what an earlier attempt of the same
     task refreshed instead of fetching and snapshotting the page again."""
     tool, store, snapshot = reader
-    refreshed: set[tuple[str, str]] = set()
+    pinned: dict[tuple[str, str, str, bool], uuid.UUID] = {}
 
     class _Guard:
-        async def refreshed(self, url: str, mode: str) -> bool:
-            return (url, mode) in refreshed
+        async def pinned(self, url: str, mode: str, version: str, refresh: bool):
+            return pinned.get((url, mode, version, refresh))
 
-        async def record(self, url: str, mode: str) -> None:
-            refreshed.add((url, mode))
+        def publication_hook(self, url: str, mode: str, version: str, refresh: bool):
+            async def publish(_conn, snapshot_id):
+                pinned[(url, mode, version, refresh)] = snapshot_id
+
+            return publish
 
     tool.refresh_guard = _Guard()
+
+    async def create(*_args, **kwargs):
+        await kwargs["on_created"](None, snapshot.id)
+        return snapshot
+
+    store.create.side_effect = create
     tool._fetch_service = SimpleNamespace(
         fetch=AsyncMock(
             return_value=SimpleNamespace(
@@ -204,7 +213,7 @@ async def test_durable_refresh_counts_once_per_task(reader):
     # First refresh in this task: fetched as asked, and remembered.
     await tool.execute(url=snapshot.source_url, force_refresh=True)
     tool._fetch_service.fetch.assert_awaited_once()
-    assert refreshed == {(snapshot.source_url, "article")}
+    assert list(pinned.values()) == [snapshot.id]
     # A later attempt asking again reuses the snapshot.
     result = json.loads(await tool.execute(url=snapshot.source_url, force_refresh=True))
     assert result["snapshot_id"] == str(snapshot.id)
