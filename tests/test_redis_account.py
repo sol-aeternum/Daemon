@@ -74,7 +74,13 @@ def test_admin_bearer_key_reuse_is_rejected_with_fixed_diagnostic():
 
 @pytest.mark.parametrize(
     "admin_key",
-    [None, "", "fictional-clé", base64.urlsafe_b64encode(bytes(range(1, 33))).decode().rstrip("=")],
+    [
+        None,
+        "",
+        "fictional-clé",
+        "fictional-" + chr(0xDC80),
+        base64.urlsafe_b64encode(bytes(range(1, 33))).decode().rstrip("="),
+    ],
 )
 def test_absent_empty_or_distinct_admin_key_preserves_valid_ownership_key(admin_key):
     value = settings()

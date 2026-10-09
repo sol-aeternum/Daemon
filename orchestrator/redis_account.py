@@ -38,6 +38,9 @@ def validate_redis_account_key(
         or value == settings.daemon_internal_proxy_hmac_secret.strip()
         or (
             settings.daemon_admin_api_key is not None
+            # The canonical ownership text is ASCII; no other candidate can
+            # match it. Avoid encoding unrelated unencodable admin strings.
+            and settings.daemon_admin_api_key.isascii()
             and hmac.compare_digest(value.encode(), settings.daemon_admin_api_key.encode())
         )
         or any(
