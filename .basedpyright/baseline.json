@@ -586,16 +586,6 @@
                 }
             }
         ],
-        "./scripts/backup_db.py": [
-            {
-                "code": "reportDeprecated",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 31,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./test_preserve.py": [
             {
                 "code": "reportUnusedImport",
