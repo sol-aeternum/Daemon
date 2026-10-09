@@ -440,9 +440,7 @@ async def consolidate_cluster(
             import logging
 
             _logger = logging.getLogger(__name__)
-            _logger.debug(f"Synthesis response type: {type(response)}")
-            _logger.debug(f"Extracted text length: {len(synthesized_text)}")
-            _logger.debug(f"Extracted text preview: {synthesized_text[:100]}...")
+            _logger.debug("Extracted text length: %s", len(synthesized_text))
         except:  # noqa: E722
             pass
 
@@ -450,9 +448,8 @@ async def consolidate_cluster(
         if len(stripped) < 10:  # Require at least 10 chars
             import logging
 
-            logging.getLogger(__name__).warning(
-                f"Synthesized text too short or empty: '{stripped}'"
-            )
+            # Generated text is never echoed into logs at any level.
+            logging.getLogger(__name__).warning("Synthesized text too short or empty")
             return []
 
         # Check for encryption hallucinations - reject and log if found
@@ -463,8 +460,9 @@ async def consolidate_cluster(
         ):
             import logging
 
+            # The flagged generated text is never echoed into logs.
             logging.getLogger(__name__).warning(
-                f"Consolidation produced encryption-related output - rejecting: {stripped[:100]}"
+                "Consolidation produced encryption-related output - rejecting"
             )
             return []
 
@@ -526,9 +524,11 @@ async def consolidate_cluster(
 
         return created_memories
 
-    except Exception as e:
+    except Exception:
         import logging
 
+        # Store/provider exceptions can carry memory content in their text;
+        # the failure is logged without exception text or traceback.
         logger = logging.getLogger(__name__)
-        logger.warning(f"Cluster consolidation failed: {e}")
+        logger.warning("Cluster consolidation failed")
         return []

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Tuple
@@ -109,10 +108,7 @@ class OpenRouterImageProvider(ImageProvider):
                     pass  # Keep original text if JSON parsing fails
 
                 logger.error(
-                    f"[IMAGE DEBUG] OpenRouter API error: "
-                    f"Status={exc.response.status_code}, "
-                    f"Endpoint={endpoint}, "
-                    f"Error={error_detail}"
+                    "Image provider returned HTTP error status %s", exc.response.status_code
                 )
 
                 raise RuntimeError(
@@ -121,12 +117,10 @@ class OpenRouterImageProvider(ImageProvider):
                 ) from exc
             data = response.json()
 
-            logger.debug(f"[IMAGE DEBUG] Response status: {response.status_code}")
-            logger.debug(f"[IMAGE DEBUG] Response headers: {dict(response.headers)}")
-            logger.debug(f"[IMAGE DEBUG] Full response: {json.dumps(data, indent=2)}")
+            logger.debug("Image provider response status: %s", response.status_code)
 
             if data.get("error"):
-                logger.error(f"[IMAGE DEBUG] API error in response: {data.get('error')}")
+                logger.error("Image provider returned an error response")
                 raise RuntimeError(f"API error: {data.get('error')}")
 
             choices = data.get("choices") or []
@@ -137,8 +131,6 @@ class OpenRouterImageProvider(ImageProvider):
                 raise RuntimeError("No choices in response")
 
             message = (choices[0] or {}).get("message") or {}
-            logger.debug(f"[IMAGE DEBUG] Message keys: {list(message.keys())}")
-            logger.debug(f"[IMAGE DEBUG] Full message: {json.dumps(message, indent=2)}")
 
             images = message.get("images") or []
             logger.debug(f"[IMAGE DEBUG] Images array length: {len(images)}")
@@ -148,12 +140,9 @@ class OpenRouterImageProvider(ImageProvider):
 
             if images:
                 image_info = images[0] or {}
-                logger.debug(f"[IMAGE DEBUG] Image info keys: {list(image_info.keys())}")
-                logger.debug(f"[IMAGE DEBUG] Image info: {json.dumps(image_info, indent=2)}")
                 image_url = (image_info.get("image_url") or {}).get("url") or ""
             else:
                 content = message.get("content")
-                logger.debug(f"[IMAGE DEBUG] Content field type: {type(content)}")
 
                 if content and isinstance(content, str):
                     logger.debug(f"[IMAGE DEBUG] Content is string, length: {len(content)}")
@@ -181,9 +170,6 @@ class OpenRouterImageProvider(ImageProvider):
             if not image_url:
                 logger.warning(
                     "[IMAGE DEBUG] No images found in response (checked images array and content field)"
-                )
-                logger.warning(
-                    f"[IMAGE DEBUG] Full response structure: {json.dumps(data, indent=2)[:2000]}..."
                 )
                 raise RuntimeError(
                     "No images found in response - provider may have changed response format or model is unavailable"

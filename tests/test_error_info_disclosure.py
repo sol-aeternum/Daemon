@@ -244,7 +244,7 @@ async def test_unhandled_exception_returns_generic_message_no_leak() -> None:
 @pytest.mark.asyncio
 async def test_unhandled_exception_includes_request_id_in_body() -> None:
     """The request id is the correlation handle for support — it must be
-    present in the response body for the operator fetch logs."""
+    present in the response body; P0.3 omits it from managed diagnostics."""
 
     crash_app = _build_crash_app_with_handler()
 
@@ -271,10 +271,10 @@ async def test_unhandled_exception_includes_request_id_in_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unhandled_exception_logs_full_traceback(
+async def test_unhandled_exception_logs_only_content_free_marker(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The full traceback must be logged server-side for triage."""
+    """P0.3 deliberately replaces traceback/caller-id logging with a marker."""
 
     crash_app = _build_crash_app_with_handler()
 
@@ -290,11 +290,13 @@ async def test_unhandled_exception_logs_full_traceback(
     ) as client:
         response = await client.get("/boom", headers={REQUEST_ID_HEADER: "req_log_42"})
 
-    # The unique fingerprint must appear in the captured logs, with the
-    # request id present for correlation.
-    assert "traceback-fingerprint-abc123" in caplog.text
-    assert "req_log_42" in caplog.text
+    assert "Unhandled exception" in caplog.text
+    assert "traceback-fingerprint-abc123" not in caplog.text
+    assert "req_log_42" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
     assert response.status_code == 500
+    assert response.json()["request_id"] == response.headers[REQUEST_ID_HEADER]
+    assert response.headers["X-Client-Request-ID"] == "req_log_42"
 
 
 # ---------------------------------------------------------------------------
@@ -468,26 +470,24 @@ def test_outer_cors_middleware_is_wired() -> None:
     assert "class _OuterCORSMiddleware" in request_id_module
 
 
-def test_handled_error_logs_include_request_id() -> None:
-    """Round-1 finding: handled-error log entries (cookie policy and
-    OpenAI-compatible chat completion) omitted the request id so
-    support could not correlate the sanitized response with the
-    server-side traceback.
-    """
+def test_managed_chat_error_source_omits_request_id_and_traceback() -> None:
+    """P0.3 chat-source cleanup; untouched auth legacy logs are sink-redacted."""
 
     auth_source = (ROOT / "orchestrator" / "routes" / "auth_setup.py").read_text()
     main_source = (ROOT / "orchestrator" / "main.py").read_text()
 
     # All four cookie policy log entries carry request_id.
     assert auth_source.count("request_id=%s") >= 4
-    # The OpenAI-compatible chat completion log entry carries request_id.
+    # Caller-visible sanitized errors and correlation headers stay unchanged;
+    # the chat log marker must not reconstruct private exception/caller data.
     chat_match = re.search(
         r"OpenAI-compatible chat completion failed.*?raise HTTPException\(\s*status_code=500",
         main_source,
         flags=re.DOTALL,
     )
     assert chat_match is not None
-    assert "request_id=%s" in chat_match.group(0)
+    assert "request_id=%s" not in chat_match.group(0)
+    assert "exc_info" not in chat_match.group(0)
 
 
 def test_outer_cors_middleware_merges_vary_origin() -> None:

@@ -67,6 +67,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved continuity architecture (6 October 2026); slice 1 implemented behind `DURABLE_CHAT_ENABLED` (off); enabling is gated by #477 |
 | `docs/DURABLE_CHAT_CLOSEOUT.md` | N/A | Engineering | raw-log | #477 acceptance reconciliation and disposable restart proof; not deployment or enablement clearance |
 | `docs/ACCOUNT_DELETION_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved account deletion and reset protocol (8 October 2026, #469); not implemented; DDL/API reviewed per implementation PR |
+| `docs/CONTENT_SAFE_LOGGING.md` | N/A | Engineering/Operator | ungated-reference | P0.3 managed backend/worker logging boundary, supported launchers and explicit retention/deployment qualification limits; not deletion/reset implementation |
 | `docs/VISION_INTEGRATION_REPORT.md` | N/A | Engineering | raw-log | Integration changes, current gate evidence and blockers |
 | `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
 | `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |

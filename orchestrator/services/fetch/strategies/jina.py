@@ -67,23 +67,20 @@ class JinaReaderStrategy:
                 allowed_ports=_JINA_USER_URL_PORTS,
                 timeout=15.0,
             )
-        except SsrfUnreachable as exc:
+        except SsrfUnreachable:
             # A local resolver outage is target unavailability, not evidence
             # that the URL is unsafe. Static checks have already run before
             # the bounded resolver was entered, so retain the documented
             # Jina public-URL trust boundary approved for this fallback.
+            # The requested URL and resolver exception text are never logged.
             logger.info(
-                "Jina user URL %s could not be resolved locally: %s; "
-                "continuing under Jina public-URL policy",
-                url,
-                exc,
+                "Jina user URL could not be resolved locally; "
+                "continuing under Jina public-URL policy"
             )
-        except SsrfPolicyViolation as exc:
-            logger.warning(
-                "Jina user URL %s violates SSRF policy: %s; refusing to fetch",
-                url,
-                exc,
-            )
+        except SsrfPolicyViolation:
+            # Log without the requested URL or violation text; the raise
+            # below preserves the original bounded error for the caller.
+            logger.warning("Jina user URL violates SSRF policy; refusing to fetch")
             raise
 
         settings = get_settings()
@@ -112,14 +109,14 @@ class JinaReaderStrategy:
             if response is None:
                 return None
             if response.status_code >= 400:
-                logger.debug(f"Jina Reader returned {response.status_code} for {url}")
+                logger.debug("Jina Reader returned HTTP status %s", response.status_code)
                 return None
 
             content = response.text
             content_type: str = response.headers.get("content-type", "") or ""
 
             if not self.policy.content_is_valid(content, content_type):
-                logger.debug(f"Content validation failed for {url}")
+                logger.debug("Content validation failed")
                 return None
 
             return FetchResult(
@@ -132,15 +129,18 @@ class JinaReaderStrategy:
                 content_length=len(content),
             )
 
-        except SsrfViolation as exc:
+        except SsrfViolation:
             # SSRF violations must propagate so the strategy chain cannot
-            # fall back after the fixed Jina upstream fails policy.
+            # fall back after the fixed Jina upstream fails policy. The
+            # fixed origin is operator configuration; the violation message
+            # itself can embed URLs and is never logged.
             logger.error(
-                "Configured Jina upstream %s violates SSRF policy: %s; refusing to fetch",
+                "Configured Jina upstream %s violates SSRF policy; refusing to fetch",
                 _JINA_UPSTREAM_ORIGIN,
-                exc,
             )
             raise
-        except Exception as e:
-            logger.warning(f"Jina Reader fetch failed for {url}: {e}")
+        except Exception:
+            # Fetch exceptions carry the requested URL and upstream response
+            # summary; neither is logged at any level.
+            logger.warning("Jina Reader fetch failed")
             return None

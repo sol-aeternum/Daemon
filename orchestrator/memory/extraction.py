@@ -662,7 +662,9 @@ async def extract_facts_from_text(
     except (BenchmarkProviderError, BenchmarkSamplingError):
         raise
     except Exception:
-        logger.error("Extraction error", exc_info=True)
+        # Provider/store exceptions can carry conversation-derived text and
+        # are never logged, not even via traceback.
+        logger.error("Extraction error")
         return ExtractionOutcome(
             facts=[],
             raw_count=0,

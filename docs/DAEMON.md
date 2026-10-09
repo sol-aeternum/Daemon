@@ -11,7 +11,7 @@ governs: product identity, promises and priority order (direction, never impleme
 
 Tagline: **One Daemon. Every model. Your context.**
 
-Daemon brings together the AI tooling that should exist but is split up today:
+Daemon brings everyday assistance and autonomous follow-through into one system:
 
 - the everyday breadth of ChatGPT, Claude and Perplexity: chat, search, images, documents, scheduled tasks, reminders, email, calendar and other integrations, and general personal-assistant work;
 - the follow-through of autonomous agents in the OpenClaw/Hermes style: finishing tasks, writing and shipping code, working in the cloud or on your computer, and running on their own until the job is done.
@@ -24,11 +24,19 @@ This document says what Daemon is and why. How it's built is covered in the READ
 
 ## Why it exists
 
-1. **The labs split one assistant into several products.** Chat, "work" modes, coding agents, remote sessions and browser agents each have their own interface, context and limits. The user ends up doing the routing.
-2. **Models leapfrog every few months, and your context stays behind.** Months of work get locked inside one vendor's product, and moving it is painful. It has to be moved again when the lead changes hands. No lab has a reason to fix this, because lock-in is their business model.
-3. **No single model family is best at everything.** The best system uses the strongest qualified model for each role at any given time.
+1. **Unified assistants are an emerging product category.** Chat, research, coding and background work are converging in a single agent. Daemon must prove that accepted work completes reliably, or returns a truthful blocked state, across devices and interruptions.
+2. **Context should remain portable as models and products change.** Daemon's target is user-owned memory, conversations, files and task history that can be inspected, corrected, exported and imported without a model-specific migration.
+3. **Model choice needs enforceable authority and privacy.** Each role should use the strongest qualified model within the user's grants, budget and data policy, with route-specific evidence and fail-closed enforcement.
 
-Daemon fixes all three. There's one interface, the context stays with the user, and the models are replaceable parts chosen in Daemon's configuration.
+Daemon's differentiation is a hypothesis to test: portable context, externally enforced authority and privacy, and reliable completion in one conversational system. A unified interface or model choice alone is not evidence of an advantage. The four promises below remain the product tests.
+
+### Market evidence — 9 October 2026
+
+Google's [8 October Gemini at Work announcement](https://cloud.google.com/blog/products/ai-machine-learning/welcome-to-gemini-at-work-2026) describes a unified, persistent agent across surfaces, delegated subagents, coworker identities, reusable skills and model choice. It also describes project spend caps covering tokens and sandbox costs that pause work when reached.
+
+The [Gemini Enterprise product FAQ](https://cloud.google.com/gemini-enterprise), checked on 9 October, explicitly marks multi-step background delegation, mobile/desktop access and third-party model choice as early access. It says Gemini models are available today with others coming soon, while the announcement names Claude today. Treat this as an availability discrepancy to recheck, not proof of general availability.
+
+These are vendor claims, not independent verification of completion or recovery reliability. They establish competitive overlap; they do not establish that competitors lack portability or privacy, or that Daemon is first. Daemon's claims need its own reproducible evidence.
 
 ## The four promises
 
@@ -57,7 +65,7 @@ Every accepted request is durably saved and tracked **before** Daemon acknowledg
 The capabilities users see are built on five shared layers. The whole product depends on them, so they come first.
 
 1. **Task runtime.** Accepted requests are durable and tracked. Work continues after the app closes; it can be resumed, cancelled and budgeted, and it can spawn subagents (Stage 1; [DURABLE_REQUEST_DESIGN.md](DURABLE_REQUEST_DESIGN.md)).
-2. **Context layer.** Memory (bitemporal, source-linked, correctable), files, artifacts, conversations and projects. It doesn't depend on any model and supports import and export. This is the moat.
+2. **Context layer.** Memory (bitemporal, source-linked, correctable), files, artifacts, conversations and projects. It doesn't depend on any model and supports import and export. Its value as a differentiator must be demonstrated through portability, provenance and reliable reuse.
 3. **Model router.** Roles map to models in config, qualified by evaluations, retention class and price ceilings.
 4. **Authority layer.** Permissions, privacy routing, approvals and compute budgets are enforced outside the model. They make autonomy safe to hand over.
 5. **Execution environments.** A hosted sandbox by default, then integrations (email, calendar and similar), then connected devices. Each is scoped by the authority layer.

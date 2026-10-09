@@ -199,6 +199,14 @@ A task references conversation and workspace context without a memory or filesys
 
 The original working-tree assessment found missing download ownership checks (#312). Current main at PR preparation (`2bf65150`) already scopes generated downloads and writes to authenticated owner namespaces through `orchestrator/artifacts.py`; unowned root-level files are not served through those routes. Preserve that enforcement. A durable resource registry, task provenance, versioning and lifecycle remain separate work: age-based cleanup is not a user-approved workspace retention contract. Choice C is needed by slice 3, not slice 1.
 
+### Catalog requirements — 9 October 2026 planning clarification
+
+[#489](https://github.com/sol-aeternum/Daemon/issues/489) scopes a catalog of **every retained account-owned generation across all threads**, including multiple artifacts per job, generated files and media. Thread/message links provide provenance; they are not the inventory. Show the newest 20 artifacts initially, with bounded pagination and server-side search/filtering across the whole authorized catalog, including older threads and pages.
+
+Distinguish generation/job, artifact, immutable artifact version and repeated references to that version. Earlier messages must keep their pinned output version. Reopen/replay resolves authenticated saved versions without generating new work or repeating effects; provider URLs are not durable identities. Exact storage, metadata/index protection, workspace artifact retention, backfill and API contracts remain pending approval under choice C. Existing owner checks and fail-closed handling of unowned legacy files remain mandatory.
+
+[#487](https://github.com/sol-aeternum/Daemon/issues/487) remains the separate read-only status/files/chart pilot using synthetic fixtures and an authenticated artifact-reference adapter. It neither implements nor approves this catalog. The catalog must work independently of that renderer; no generation route is enabled by either issue.
+
 ### C1 — PostgreSQL ownership metadata with existing filesystem storage initially (recommended starting point)
 
 Extend the existing authenticated owner namespaces with opaque resource IDs and server-controlled storage keys; authorize using the approved metadata contract before returning bytes. Bind outputs to task/account and publish metadata/results atomically as far as the selected storage mechanism permits. Explicitly handle orphaned files/metadata and incomplete output writes. Preserve access restrictions and encryption/backup requirements; existing namespace enforcement is not a task/version/retention registry.

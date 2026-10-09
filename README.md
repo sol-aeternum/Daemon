@@ -130,7 +130,7 @@ These commands run a development/deployment instance. They are not the intended 
 
 ```bash
 # Local development (backend only, postgres/redis must be running)
-uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
+uv run python -m orchestrator.runtime backend
 
 # Docker (full stack, production server commands)
 cp .env.example .env    # Configure providers

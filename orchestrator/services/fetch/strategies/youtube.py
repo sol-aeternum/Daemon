@@ -95,7 +95,8 @@ class YouTubeTranscriptStrategy:
         """
         video_id = self._extract_video_id(url)
         if not video_id:
-            logger.debug(f"Could not extract video ID from URL: {url}")
+            # A requested URL (with possible query credentials) is never logged.
+            logger.debug("Could not extract video ID from the requested URL")
             return None
 
         try:
@@ -107,7 +108,7 @@ class YouTubeTranscriptStrategy:
             )
 
             if not transcript:
-                logger.debug(f"No transcript available for video ID: {video_id}")
+                logger.debug("No transcript available for video ID")
                 return None
 
             # Format transcript as markdown
@@ -123,8 +124,10 @@ class YouTubeTranscriptStrategy:
                 content_length=len(content),
             )
 
-        except Exception as e:
-            logger.warning(f"YouTube transcript fetch failed for {url}: {e}")
+        except Exception:
+            # Transcript API errors can echo the video ID/URL, and the
+            # transcript itself is provider content; neither is logged.
+            logger.warning("YouTube transcript fetch failed")
             return None
 
     def __del__(self) -> None:
