@@ -332,6 +332,14 @@ classified separately from material effects, including valid empty read results.
 Malformed or unrecognized evidence stays unknown; material errors remain
 conservative, and historical rows missing bounded evidence are not reclassified.
 
+The owner also approved preserving available full live tool arguments/results at
+their matching owner-scoped durable projection (sequence, generation, kind/name
+and outcome checked), without advancing across gaps or persisting extra content.
+Already-emitted summaries remain unchanged when payloads arrive late. Material
+operation summaries retain existing deduplication when the progress record cannot
+prove operation-ID correlation; guessing by tool name is not payload authority.
+Late enrichment or stronger correlation needs a separately approved contract.
+
 These are implementation approvals for the bounded closeout, not gate clearance,
 deployment or enablement authority. #469 account fence-and-drain and #486 legacy
 HTTP-cache privacy remain separate dependencies; #488 provider submissions,

@@ -171,3 +171,34 @@ concurrent selection and the real parent/task lock cycle. Saved/live/progress
 read outcomes and actual-page history counts are checked separately. Final-state
 gates, restart proof, independent review and exact-head CI must be recorded in the
 PR before declaring this follow-up complete; earlier green evidence is historical.
+
+### Connected-live payload follow-up
+
+A later direct #492 review found that sequenced live tool frames were replaced by
+content-free durable projections even for a connected client. The owner approved
+a bounded repair: preserve available live arguments/results only when their
+sequence, owner-scoped record, generation, event kind/name and outcome match. The
+durable cursor remains contiguous and authoritative; original live envelope
+identity and unvalidated state fields are not forwarded. No extra result content
+is persisted in task events.
+
+A bounded nonblocking ready-message batch is considered before projection, so a
+call, delta gap or terminal notification cannot consume an already-queued sibling
+result as a summary first. Other ready messages remain queued for ordinary
+processing; the batch uses the existing replay-page limit and never waits for
+future payloads or lets continuous traffic starve durable catch-up. Frames beyond
+that bounded batch can still fall back to summaries.
+
+Already-emitted summaries are not enriched by late payloads or duplicated. In
+particular, material `operation_finished` evidence can precede its tool result;
+the current progress record lacks an operation-ID correlation field, so it remains
+one bounded summary rather than guessing a payload association from a tool name.
+Full saved conversation history remains available. Late replacement or stronger
+material-payload correlation requires separate contract approval. This limitation
+is not a claim that all connected-client timing interleavings retain full payloads.
+
+Connected-observer regressions reproduced argument/result loss before repair;
+source metadata, media-shaped progress, gap ordering, duplicate/late delivery,
+owner/authorization refusal and attribution mismatch are checked separately.
+Final repaired-head gates and both automated and direct review completion remain
+required before merge; prior-head clearance does not resolve this finding.
