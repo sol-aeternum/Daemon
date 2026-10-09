@@ -338,11 +338,12 @@ async def test_real_shared_cache_ownership_survives_renewal_and_prunes_only_abse
     for cache in caches:
         assert await redis.sismember(cache.owner_index, key)
         assert await redis.ttl(cache.owner_index) == -1
-        assert await redis.eval(_PRUNE_INDEX, 2, cache.owner_index, key) == 0
+        assert await redis.eval(_PRUNE_INDEX, 2, cache.owner_index, cache.prune_cursor_key) == 0
     assert await redis.ttl(key) > 1
     await redis.delete(key)
     for cache in caches:
-        assert await redis.eval(_PRUNE_INDEX, 2, cache.owner_index, key) == 1
+        assert await redis.eval(_PRUNE_INDEX, 2, cache.owner_index, cache.prune_cursor_key) == 1
+        assert not await redis.exists(cache.prune_cursor_key)
 
 
 @pytest.mark.asyncio

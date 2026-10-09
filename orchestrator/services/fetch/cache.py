@@ -41,13 +41,35 @@ return 1
 """
 _PRUNE_INDEX = """
 local kind = redis.call('TYPE', KEYS[1]).ok
-if kind == 'none' then return 0 end
-if kind ~= 'set' then return 0 end
-local removed = 0
-for i = 2, #KEYS do
-  if redis.call('EXISTS', KEYS[i]) == 0 then
-    removed = removed + redis.call('SREM', KEYS[1], KEYS[i])
+if kind == 'none' then
+  redis.call('DEL', KEYS[2])
+  return 0
+end
+if kind ~= 'set' then return -1 end
+local cursor = '0'
+if redis.call('TYPE', KEYS[2]).ok == 'string' then
+  local stored = redis.call('GET', KEYS[2])
+  if string.len(stored) <= 20 and string.match(stored, '^%d+$') then
+    cursor = stored
   end
+end
+-- A malformed/out-of-range cursor resets maintenance, never ownership.
+local page = redis.pcall('SSCAN', KEYS[1], cursor, 'COUNT', 32)
+if page.err then
+  page = redis.call('SSCAN', KEYS[1], '0', 'COUNT', 32)
+end
+local removed = 0
+-- COUNT is a hint: consume the entire page, not only its first 32 members.
+-- Atomic pruning and cursor advancement prevent lost work/renewal races.
+for _, key in ipairs(page[2]) do
+  if redis.call('EXISTS', key) == 0 then
+    removed = removed + redis.call('SREM', KEYS[1], key)
+  end
+end
+if page[1] == '0' or redis.call('SCARD', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[2])
+else
+  redis.call('SET', KEYS[2], page[1])
 end
 return removed
 """
@@ -126,6 +148,7 @@ class FetchCache:
         # Ownership comes from the authenticated caller, never a URL/response.
         # Ownerless retained adapters cannot publish new unattributable content.
         self.owner_index = f"{account_prefix(user_id)}:fetch-index" if user_id else None
+        self.prune_cursor_key = f"{self.owner_index}:prune-cursor" if self.owner_index else None
 
     async def _ensure_connection(self) -> bool:
         """Ensure Redis connection is established."""
@@ -311,11 +334,12 @@ class FetchCache:
             # removes only references whose value is absent at the atomic check.
             # Pruning failure must not misreport an already-published value.
             try:
-                _, entries = await self.redis.sscan(self.owner_index, count=32)
-                if entries:
-                    await publisher.eval(
-                        _PRUNE_INDEX, 1 + len(entries[:32]), self.owner_index, *entries[:32]
-                    )
+                assert self.prune_cursor_key is not None
+                pruned = await publisher.eval(
+                    _PRUNE_INDEX, 2, self.owner_index, self.prune_cursor_key
+                )
+                if pruned < 0:
+                    logger.warning("Fetch ownership index pruning unavailable")
             except Exception:
                 logger.warning("Fetch ownership index pruning unavailable")
             logger.debug("Cached result stored with TTL %ss", cache_ttl)

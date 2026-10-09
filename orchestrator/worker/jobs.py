@@ -602,9 +602,7 @@ async def _extract_memories_once(
             entity_queue,
             "resolve_entities_job",
             user_id=owner,
-            job_id=(
-                f"resolve_entities_{_as_uuid(user_id)}_{_as_uuid(conversation_id)}_{memory_ids[-1]}"
-            ),
+            job_id=f"resolve_entities_{_as_uuid(conversation_id)}_{memory_ids[-1]}",
             args=(str(owner), json.dumps(memory_ids)),
         )
 

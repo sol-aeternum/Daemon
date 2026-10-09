@@ -25,6 +25,8 @@ replay and eviction are **not implemented** by this prerequisite.
 - Entity projection keeps the account owner as routing metadata and passes the
   existing worker's owner/memory-ID arguments positionally. Nonempty extraction
   and failed-chunk partial progress exercise the native enqueue payload contract.
+  Its job suffix uses conversation/memory control IDs, not a raw account UUID;
+  the opaque account prefix supplies owner separation and dedup scope.
 - The disposable durable-restart drill generates its own independent canonical
   ownership key, alongside its test-only cipher/auth keys. This is not automatic
   application key generation or live key provisioning; inherited credentials
@@ -54,6 +56,26 @@ atomically. Index metadata has no shorter TTL than a shared entry renewed by
 another account; bounded pruning removes a reference only when the value is
 absent at the atomic check. This uses the existing standalone Redis topology;
 ARQ and shared multi-key publication are not Redis Cluster qualification.
+
+Owner-approved durable maintenance uses `account:v1:{token}:fetch-index:prune-cursor`,
+a persistent decimal Redis scan cursor shared by all cache instances. Each
+successful publication attempts one atomic maintenance page: load progress,
+scan, check shared-value existence, prune absent references and publish the next
+cursor. Concurrent writers cannot overwrite newer progress or race a renewal
+between the existence check and removal. Every returned member is considered,
+including pages larger than the `COUNT 32` hint; an empty nonterminal page still
+advances. Work is limited to one scan page per attempt, **not** an exact member
+count or strict latency bound. No whole-index sweep occurs on a cache write.
+
+Progress contains no URL, content or raw owner identifier and has no expiry that
+could repeatedly reset an active scan. It is removed at cycle completion or when
+the index is empty/missing. Malformed, out-of-range or wrong-type cursor state
+restarts maintenance at zero without clearing ownership; a wrong-type index
+remains fail-closed. Optional maintenance failure does not negate an already
+successful atomic publication. Eventual coverage requires ongoing maintenance
+opportunities and sufficiently stable membership, not a scheduled retention or
+deletion-time completeness guarantee. This new private control key also belongs
+in future account discovery/purge; deletion/reset remains unimplemented.
 
 ## Explicit qualification limits
 

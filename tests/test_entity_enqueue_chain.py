@@ -111,6 +111,8 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
         key = job_key_prefix + identifiers[0].decode()
         payload = await queue.get(key)
     assert key.startswith(job_key_prefix + account_prefix(owner) + ":job:")
+    assert str(owner) not in key
+    assert key.endswith(f":job:resolve_entities_{conversation}_{memory_id}")
     decoded = deserialize_job(payload)
     assert decoded.function == "resolve_entities_job"
     assert decoded.args == (str(owner), json.dumps([str(memory_id)]))

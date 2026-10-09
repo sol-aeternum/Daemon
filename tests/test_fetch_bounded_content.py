@@ -748,9 +748,11 @@ async def test_cache_roundtrip_preserves_provenance() -> None:
     redis_get = cast(AsyncMock, cache.redis.get)
     store: dict[str, str] = {}
 
-    async def fake_publish(
-        script: str, count: int, key: str, index: str, data: str, ttl: int
-    ) -> int:
+    async def fake_publish(script: str, count: int, key: str, index: str, *args) -> int:
+        if key == cache.owner_index:
+            assert count == 2 and index == cache.prune_cursor_key and not args
+            return 0
+        data, ttl = args
         assert count == 2 and index == cache.owner_index and ttl == 3600
         store[key] = data
         return 1
@@ -776,7 +778,7 @@ async def test_cache_roundtrip_preserves_provenance() -> None:
     )
 
     assert await cache.set("https://example.com/Case", result) is True
-    set_call = redis_publish.await_args
+    set_call = redis_publish.await_args_list[0]
     assert set_call is not None
     key = set_call.args[2]
     assert key.startswith(f"{CACHE_NAMESPACE_V3}:")

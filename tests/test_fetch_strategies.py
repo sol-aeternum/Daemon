@@ -186,9 +186,9 @@ async def test_fetch_cache_preserves_unset_ttl(
 
     assert await fetch_cache.set(result.url, result) is True
 
-    fetch_cache.redis.eval.assert_awaited_once()
-    assert fetch_cache.redis.eval.await_args.args[-1] == 3600
-    assert fetch_cache.redis.eval.await_args.args[3] == fetch_cache.owner_index
+    assert fetch_cache.redis.eval.await_count == 2
+    assert fetch_cache.redis.eval.await_args_list[0].args[-1] == 3600
+    assert fetch_cache.redis.eval.await_args_list[0].args[3] == fetch_cache.owner_index
     fetch_cache.redis.set.assert_not_awaited()
 
 
@@ -214,9 +214,9 @@ async def test_fetch_cache_applies_explicit_ttl_setting(
 
     assert await fetch_cache.set(result.url, result) is True
 
-    fetch_cache.redis.eval.assert_awaited_once()
-    assert fetch_cache.redis.eval.await_args.args[-1] == 7200
-    assert fetch_cache.redis.eval.await_args.args[3] == fetch_cache.owner_index
+    assert fetch_cache.redis.eval.await_count == 2
+    assert fetch_cache.redis.eval.await_args_list[0].args[-1] == 7200
+    assert fetch_cache.redis.eval.await_args_list[0].args[3] == fetch_cache.owner_index
     fetch_cache.redis.set.assert_not_awaited()
 
 
