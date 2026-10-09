@@ -13,8 +13,9 @@ MIGRATION: add `DAEMON_REDIS_ACCOUNT_HASH_KEY` to **both** backend and worker
 launch configurations before any separately approved deployment. No existing
 key is renamed or removed. It is a dedicated, stable, unpadded base64url encoding
 of exactly 32 operator-generated random bytes, independent of authentication
-and encryption keys, including the internal proxy HMAC secret after its existing
-whitespace normalization (even when proxy trust is disabled). Encoding validation
+and encryption keys, including the configured admin bearer key (compared verbatim)
+and the internal proxy HMAC secret after its existing whitespace normalization
+(even when proxy trust is disabled). Encoding validation
 cannot certify randomness. Missing,
 empty, malformed, trivially weak or reused keys fail startup when Redis is
 configured; absence and empty have the same failure behavior. The worker's

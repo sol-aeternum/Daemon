@@ -64,12 +64,37 @@ def test_empty_or_distinct_proxy_hmac_key_does_not_reject_ownership_key(proxy_ke
     assert validate_redis_account_key(value) == bytes(range(32))
 
 
+def test_admin_bearer_key_reuse_is_rejected_with_fixed_diagnostic():
+    value = settings()
+    value.daemon_admin_api_key = TEST_KEY
+    with pytest.raises(RedisAccountKeyError) as caught:
+        validate_redis_account_key(value)
+    assert str(caught.value) == "DAEMON_REDIS_ACCOUNT_HASH_KEY requires a dedicated 32-byte key"
+
+
+@pytest.mark.parametrize(
+    "admin_key", [None, "", base64.urlsafe_b64encode(bytes(range(1, 33))).decode().rstrip("=")]
+)
+def test_absent_empty_or_distinct_admin_key_preserves_valid_ownership_key(admin_key):
+    value = settings()
+    value.daemon_admin_api_key = admin_key
+    assert validate_redis_account_key(value) == bytes(range(32))
+
+
 @pytest.mark.asyncio
-async def test_backend_proxy_reuse_fails_before_any_connection(monkeypatch):
+@pytest.mark.parametrize(
+    "secret_field", ["daemon_internal_proxy_hmac_secret", "daemon_admin_api_key"]
+)
+async def test_backend_auth_secret_reuse_fails_before_any_connection(monkeypatch, secret_field):
     from orchestrator import db
 
     value = settings()
-    value.daemon_internal_proxy_hmac_secret = " \t" + TEST_KEY + " \n"
+    secret = (
+        " \t" + TEST_KEY + " \n"
+        if secret_field == "daemon_internal_proxy_hmac_secret"
+        else TEST_KEY
+    )
+    setattr(value, secret_field, secret)
     postgres = AsyncMock(side_effect=AssertionError("must not connect"))
     redis = AsyncMock(side_effect=AssertionError("must not connect"))
     monkeypatch.setattr(db.asyncpg, "create_pool", postgres)
@@ -82,13 +107,23 @@ async def test_backend_proxy_reuse_fails_before_any_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_effective_redis_rejects_proxy_reuse_before_native_main(monkeypatch):
+@pytest.mark.parametrize(
+    "secret_field", ["daemon_internal_proxy_hmac_secret", "daemon_admin_api_key"]
+)
+async def test_worker_effective_redis_rejects_auth_reuse_before_native_main(
+    monkeypatch, secret_field
+):
     from arq.worker import Worker
     from orchestrator.worker.audit import AuditedWorker
 
     value = settings()
     value.redis_url = None  # ARQ's effective localhost fallback still requires independence.
-    value.daemon_internal_proxy_hmac_secret = " \t" + TEST_KEY + " \n"
+    secret = (
+        " \t" + TEST_KEY + " \n"
+        if secret_field == "daemon_internal_proxy_hmac_secret"
+        else TEST_KEY
+    )
+    setattr(value, secret_field, secret)
     native = AsyncMock(side_effect=AssertionError("native main must not connect"))
     monkeypatch.setattr(Worker, "main", native)
 
