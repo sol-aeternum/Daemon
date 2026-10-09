@@ -1,0 +1,225 @@
+# Durable chat reliability closeout — #477
+
+## Scope and release boundary
+
+This implements the approved slice-1 recovery contract (DEC04–DEC05,
+AC03/AC09) against main `988940c5`. It does not complete all Stage 1 slices or
+authorize deployment. `DURABLE_CHAT_ENABLED` remains default-off; the restart
+proof enables it only in a disposable, synthetic local Compose project.
+
+The owner approved atomic snapshot/task-marker publication and minimal additive
+recovery evidence on existing event types on 9 October 2026; see
+[DURABLE_REQUEST_DESIGN.md](DURABLE_REQUEST_DESIGN.md), §18. PostgreSQL remains
+task authority. Redis is delivery/dispatch only. Leases, cancellation, account
+budgets and conservative material-effect retry restrictions remain in force.
+
+## Acceptance reconciliation
+
+These are the #477 checklist and follow-up findings, not a claim that closing
+their original issues cleared the later regressions.
+
+| Item | Baseline / closeout status | Proof required |
+| --- | --- | --- |
+| #472 persisted progress | Original fix merged; Redis-gap, lifecycle and outcome follow-ups here | Ordered replay, pagination, duplicates, missed delivery, terminal flush |
+| #475 snapshot identity | Original refresh guard merged; split-commit crash window here | Shared commit then crash; same pinned snapshot, one fetch and row |
+| #476 attachments, key lifetime, content verifier | Already resolved by #479/#485; preserved | Held-file completeness, identity and migration order |
+| #474 authenticated PWA reads | Already resolved by #482/#484; no cache changes here | Existing privacy/cache regressions; #486 remains separate |
+| Pre-preparation cancellation | Already resolved; preserved | No preparation after cancel |
+| Busy-conflict acceptance race | Already resolved; preserved | Retry acceptance when prior task ends during conflict handling |
+| HTTP/tool outcomes and ambiguous effects | In this closeout | HTTP response shapes, timeout, `performed:false`, unknown legacy replay |
+| Interruption disclosure excluding admission deferrals | In this closeout | Only executed lost/retryable attempts count |
+| Revisit pending entries younger than 60 seconds | In this closeout | Scheduled lookup and auth/navigation cleanup |
+| Correct failed-turn reconnect key | In this closeout | Older failed turn versus newer held submission |
+| Accepted new chat discovered on Home | In this closeout | Open accepted conversation only while still Home |
+| Held restoration when composer frees | In this closeout | Occupied load-time composer, later empty, newer input preserved |
+| Remove rejected exchange before resend | In this closeout | Refused prompt/reply removed, unrelated messages retained |
+| Permanent lookup failures | In this closeout | 403/404 stops retries with actionable state; transient retries |
+| Live regeneration and stale generations | In this closeout | Real regeneration versus same-generation correction; late frames ignored |
+| Held attachment capacity after release | In this closeout | Full held-file budget, skipped new file, release then durable save |
+| #483 restart proof | Strengthened here | Persisted partial before kill, second authenticated client, settlements, stale fence, Redis gap, material no-repeat |
+| #469 account fence-and-drain | **Still blocked / separate** | Approved design is not completed implementation; #491 is media-submission safety only |
+| #486 legacy HTTP-cache privacy | **Still blocked / separate** | Real-browser pre-existing cache and account-change acceptance |
+| Deployment / enablement | **Not authorized** | Separate owner decisions after remaining gate dependencies |
+
+## Deterministic restart proof
+
+Run `scripts/durable_restart_drill.sh` from a checkout without `.env`.
+Project-name reservation, Docker-resource preflight, sanitized environment,
+project-volume isolation and verified teardown remain mandatory. No provider
+keys, real accounts or paid inference are used.
+
+The explicit `scripts/durable_restart_fixture.py worker` launcher is test-only;
+normal workers never import it. It refuses absent project permits, non-mock
+settings, external database URLs and provider credentials. It replaces provider
+transport and a synthetic notification effect, retaining real tool orchestration,
+PostgreSQL task persistence and compute reservation/settlement. No production
+pacing setting or new environment surface is added.
+
+- **A:** acceptance with no worker survives backend restart, finishes exactly
+  once, and same-key replay returns the original task.
+- **B:** the first provider emits a prefix then waits at an explicit gate.
+  The driver observes the durable prefix before SIGKILL, expires the stopped
+  worker's lease using SQL, and restarts it. A distinct authenticated device
+  sees the exact saved answer. Assertions check `lost,completed`, preserved
+  partial text, interruption metadata, two settled reservations, conservative
+  lost-hold settlement and refusal of stale writes/operations.
+- **C:** a second client reattaches after backend restart while Redis
+  publications are dropped. PostgreSQL replay recovers lifecycle/tool evidence
+  once, the truthful outcome and the exact saved result.
+- **D:** one synthetic material action is performed before the worker kill.
+  Recovery must end at `needs_attention`, preserving its outcome, with one
+  attempt and one effect. No automatic repeat is permitted.
+
+Pacing is not the kill condition: committed state plus explicit gates is.
+Disposable PostgreSQL regressions cover additional cursor/race interleavings.
+
+## Verification record
+
+Committed regression coverage:
+
+- `tests/test_task_reliability_snapshots.py`: crash after the shared commit,
+  pre-commit rollback, exact pinned identity, expired/missing/legacy pins,
+  lock-wait lease/cancellation/takeover/deletion checks, and old-lock negative
+  controls for the cancellation/publication deadlock.
+- `tests/test_task_reliability_outcomes.py` and
+  `tests/test_task_reliability_observe.py`: HTTP/timeout/no-effect evidence,
+  stale-worker operation completion, paginated ordered replay, Redis gaps and
+  duplicates, catch-up under continuous traffic, terminal-watermark flushing,
+  owner/revocation checks, generation replacement and admission deferrals.
+- Existing task runner/store/API regressions preserve pre-preparation
+  cancellation, busy-conflict acceptance retry and idempotent acceptance.
+- `frontend/__tests__/durable-page-integration.test.tsx`: failed-turn key,
+  Home discovery including terminal answers and late navigation, age revisits
+  and cleanup, occupied-composer restoration, rejected exchange removal/resend,
+  and actionable permanent lookup failure. Conversation-history regressions
+  exercise permanent 403/404 and capped transient lookup retries.
+- Durable stream/task and tool activity/log regressions exercise explicit
+  interruption counts, stale generations, same-generation corrections and
+  unknown/failed outcomes without success indicators.
+- Held-submission regressions prove that releasing a full 100 MiB held-file
+  budget persists the previously skipped new file, with payload readback after
+  reload. Existing #485 completeness, key-identity and migration tests remain.
+- Existing authenticated PWA/cache regressions remain unchanged; they do not
+  establish the separate real-browser legacy-cache acceptance in #486.
+
+Local verification on 9 October 2026: backend/aggregate blocking gates passed
+with 5,433 tests passed and 123 skipped (CI's task-database scope, plus the
+snapshot database). All frontend blocking gates passed, including 1,058 Vitest
+tests and the build. Three deterministic A–D Compose runs passed with verified
+disposal, including hostile inherited settings and the final Settings-boundary
+fixture checks. Fresh read-only backend and mixed-author frontend/drill reviews
+found no confirmed blocking defects.
+
+Non-blocking browser inventory reported 25 passed and 16 failed; existing #490
+tracks the inventory debt, including separately reproduced baseline navigation
+and memory-paging failures and inconsistent tool-log failures. The additional
+optional memory-import database tests reproduce the existing #465 failures on
+unchanged main and are not absorbed here. Full Bandit inventory remains tracked
+by #313; the high-severity gate passed. No baseline or gate was weakened.
+
+Exact-head CI, detailed commands and independent-review adjudication are recorded
+in the draft PR. Local verification is not deployment or enablement clearance.
+The original closeout authorized no merge or deployment. A later owner-authorized
+merge still requires green current-head checks and resolved review findings; it
+does not authorize deployment or enablement, and #477 must remain open.
+
+### Current-head review follow-up (#492)
+
+Codex found two P1 gaps in the initial closeout: saved tool results omitted the
+bounded live/replay outcome, and the queued restoration path released uncertain
+submission keys as if they were explicitly refused. The owner approved additive
+saved-result outcomes and conservative historical fallback on 9 October 2026.
+The durable completion sink now saves the same result classifier without
+mutating engine rows. Historical results missing valid bounded evidence remain
+unknown. Queued by-key misses retain their original identity through resend;
+explicitly refused drafts still resend as new submissions.
+
+Regression coverage includes sink non-mutation, PostgreSQL message-history/live/
+progress outcome agreement, actual page history hydration, and queued resend
+after reload with retained files in both existing and new conversations. Late
+acceptance and queued explicit-refusal behavior are checked separately. The
+initial green gates and no-confirmed-findings source reviews above are historical
+evidence, not clearance for these follow-up changes; exact-head checks and fresh
+review adjudication remain recorded in the draft PR.
+
+Local follow-up verification passed all 16 blocking gates: 5,441 backend tests
+passed with 123 skipped and 1,066 frontend tests passed. A further final-state
+A–D restart proof passed with verified disposal. Fresh read-only `review-go`
+found no blocking repair defects; the primary executed the checks. Browser
+inventory again reported 25 passed and 16 failed, with causality limitations
+still tracked by #490; audit and full Bandit inventory remain separate debt.
+
+#488 provider retries, #487 OpenUI and #489 artifact catalog remain separate.
+
+### Refreshed-head P2 review follow-up
+
+After integrating separately merged #491/#494, current-head Codex found two more
+correctness gaps: an existing snapshot returned without a task pin, and successful
+read-only tool payloads classified as uncertain material effects. The owner
+approved transactionally pinning reused snapshots and a shared tool-aware outcome
+classifier on 9 October 2026. Material-effect uncertainty and unknown historical
+evidence remain unchanged. No new schema, endpoint or event type is introduced.
+Unstructured reflection narrative and unrecognized/multiline memory text remain
+unknown when their existing return format supplies no checkable success evidence;
+this repair does not add a new producer envelope or infer success from arbitrary
+text. Recognized empty results and executor errors are classified explicitly.
+
+Regression-first checks reproduced both gaps before repair. New PostgreSQL cases
+cover retained-source reuse followed by newer content, recovery of the original
+identity, marker rollback, stale leases, cancellation/suspension, ownership,
+concurrent selection and the real parent/task lock cycle. Saved/live/progress
+read outcomes and actual-page history counts are checked separately. Final-state
+gates, restart proof, independent review and exact-head CI must be recorded in the
+PR before declaring this follow-up complete; earlier green evidence is historical.
+
+### Connected-live payload follow-up
+
+A later direct #492 review found that sequenced live tool frames were replaced by
+content-free durable projections even for a connected client. The owner approved
+a bounded repair: preserve available live arguments/results only when their
+sequence, owner-scoped record, generation, event kind/name and outcome match. The
+durable cursor remains contiguous and authoritative; original live envelope
+identity and unvalidated state fields are not forwarded. No extra result content
+is persisted in task events.
+
+A bounded nonblocking ready-message batch is considered before projection, so a
+call, delta gap or terminal notification cannot consume an already-queued sibling
+result as a summary first. Other ready messages remain queued for ordinary
+processing; the batch uses the existing replay-page limit and never waits for
+future payloads or lets continuous traffic starve durable catch-up. Frames beyond
+that bounded batch can still fall back to summaries.
+
+The original available-payload repair did not enrich already-emitted summaries. In
+particular, material `operation_finished` evidence can precede its tool result;
+that version's progress record lacked an operation-ID correlation field, so it kept
+one bounded summary rather than guessing a payload association from a tool name.
+Full saved conversation history remains available. That repair required separate
+approval for late replacement or stronger material-payload correlation. This limitation
+was not a claim that all connected-client timing interleavings retained full payloads.
+
+The owner subsequently approved identity **plus late enrichment** (9 October
+2026); see the exact additive contract in `DURABLE_REQUEST_DESIGN.md` §18. Material
+fence UUIDs now travel in explicit per-invocation metadata through executor,
+completion (including auto-spawn), daemon and runner into bounded durable
+progress. The observer authenticates owner/task/current epoch/operation/tool/
+outcome and exact progress before using a full body, including already-consumed
+progress while open. Available bodies project once; late bodies update the same
+operation. Shared frontend normalization covers live activity/rendering and
+archives, preserving full payloads without duplicate counts. Reconnect request IDs
+do not split a stable task/generation/
+operation identity; enriched archives retain their original request association.
+Legacy no-ID data cannot authenticate correlated content. Missing/omitted bodies and a crash before
+progress keep the bounded summary; no extra body persistence or post-done wait.
+
+`tests/test_task_material_correlation.py` uses a synthetic successful media tool
+through the real fence/executor/completion/daemon/runner sequence, not manual
+media progress alone. `frontend/__tests__/material-result-upsert.test.tsx` checks
+shared live/archive upserts, rendering and bridge metadata. These new regressions
+and their final-source gates/reviews must pass before claiming the direct media
+finding resolved; earlier backend/frontend/drill evidence is baseline only.
+
+Connected-observer regressions reproduced argument/result loss before repair;
+source metadata, media-shaped progress, gap ordering, duplicate/late delivery,
+owner/authorization refusal and attribution mismatch are checked separately.
+Final repaired-head gates and both automated and direct review completion remain
+required before merge; prior-head clearance does not resolve this finding.

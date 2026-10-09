@@ -4,8 +4,37 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 import json
 from typing import Any
+import uuid
 
 from orchestrator.tools.registry import ToolRegistry
+
+
+@dataclass(frozen=True)
+class OperationIdentity:
+    task_id: uuid.UUID
+    epoch: int
+    operation_id: uuid.UUID
+    tool_name: str
+    outcome: str
+
+
+@dataclass(frozen=True)
+class ToolExecution:
+    """One invocation's result and fence evidence, never shared mutable state."""
+
+    result: str
+    operation: OperationIdentity | None = None
+
+    def event_metadata(self, *, suppressed: bool = False) -> dict[str, Any]:
+        if self.operation is None:
+            return {}
+        return {
+            "task_id": str(self.operation.task_id),
+            "operation_id": str(self.operation.operation_id),
+            "lifecycle_epoch": self.operation.epoch,
+            "outcome": self.operation.outcome,
+            "payload_state": "summary" if suppressed else "full",
+        }
 
 
 @dataclass
@@ -57,21 +86,28 @@ class ToolExecutor:
         self._registry = registry
 
     async def execute(self, name: str, arguments: str | dict[str, Any]) -> str:
+        return (await self.execute_invocation(name, arguments)).result
+
+    async def execute_invocation(self, name: str, arguments: str | dict[str, Any]) -> ToolExecution:
+        from orchestrator.tasks.fence import FencedTool
+
         tool = self._registry.get(name)
         if not tool:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return ToolExecution(json.dumps({"error": f"Unknown tool: {name}"}))
 
         if isinstance(arguments, str):
             try:
                 args = json.loads(arguments)
             except json.JSONDecodeError:
-                return json.dumps({"error": f"Invalid JSON arguments: {arguments}"})
+                return ToolExecution(json.dumps({"error": f"Invalid JSON arguments: {arguments}"}))
         else:
             args = arguments
 
         try:
+            if isinstance(tool, FencedTool):
+                return await tool.execute_invocation(**args)
             result = await tool.execute(**args)
-            return result
+            return ToolExecution(result)
         except Exception as e:
             # Budget and settlement failures must stop the operation, not become
             # ordinary tool text that invites another paid attempt.
@@ -80,4 +116,4 @@ class ToolExecutor:
             refusal = compute_error(e)
             if refusal is not None:
                 raise refusal from None
-            return json.dumps({"error": f"Tool execution failed: {str(e)}"})
+            return ToolExecution(json.dumps({"error": f"Tool execution failed: {str(e)}"}))

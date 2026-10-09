@@ -139,6 +139,80 @@ async def test_duplicate_delivery_runs_once(env: Env, mock_llm: None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "result", "expected"),
+    [
+        ("notification_send", {"success": False, "error": "notification timed out"}, "unknown"),
+        ("notification_send", {"performed": False, "error": "not sent"}, "failed"),
+        ("notification_send", {"success": True}, "succeeded"),
+        ("web_search", {"query": "fixture", "results": [], "total_found": 0}, "succeeded"),
+        ("web_search", {"error": "search refused"}, "failed"),
+        ("web_fetch", {"sources": [], "total": 0, "next_offset": None}, "succeeded"),
+        (
+            "web_fetch",
+            {
+                "snapshot_id": "0f9a1b2c-1111-4111-8111-111111111111",
+                "url": "https://example.test/page",
+                "content": "retained page",
+                "content_length": 13,
+                "total_chars": 13,
+                "start_char": 0,
+                "end_char": 13,
+                "next_start_char": None,
+                "complete": True,
+                "has_more": False,
+            },
+            "succeeded",
+        ),
+        (
+            "web_fetch",
+            {
+                "snapshot_id": "0f9a1b2c-1111-4111-8111-111111111111",
+                "matches": [],
+                "next_start_char": None,
+            },
+            "succeeded",
+        ),
+        ("web_fetch", {"error": "snapshot_expired"}, "failed"),
+        ("web_fetch", {}, "unknown"),
+    ],
+)
+async def test_saved_tool_outcome_matches_live_and_progress_replay(
+    env: Env,
+    mock_llm: None,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    result: dict,
+    expected: str,
+):
+    async def scripted_tool_completion(**_kwargs: Any):
+        yield {"type": "tool_executing", "name": name, "arguments": {}}
+        yield {"type": "tool_result", "name": name, "result": json.dumps(result)}
+        yield {"type": "content_delta", "content": MOCK_TEXT}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", scripted_tool_completion)
+    accepted = await accept_task(env)
+    redis = FakeRedis()
+    assert await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)) == "completed"
+    history = await env.memory.get_recent_messages(accepted.conversation_id)
+    saved = next(m for m in history if m["role"] == "assistant")
+    assert saved["tool_results"] == [{"name": name, "result": result, "outcome": expected}]
+    frames = [
+        runner._parse_frame(message["frame"])
+        for _, message in redis.published
+        if message["t"] == "frame"
+    ]
+    live = [envelope["data"] for kind, envelope in frames if kind == "tool_result"]
+    assert [item["outcome"] for item in live] == [expected]
+    event = await env.pool.fetchrow(
+        "SELECT payload_ciphertext FROM task_events WHERE task_id = $1 AND kind = 'tool_result'",
+        accepted.task_id,
+    )
+    assert env.tasks._open(event["payload_ciphertext"])["outcome"] == expected
+
+
+@pytest.mark.asyncio
 async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
     env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
 ):
@@ -981,6 +1055,8 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
     """#475 and review of #478: refreshes are keyed by task identity (no
     cross-host clock comparison) and survive into a regenerated attempt."""
     from orchestrator.tools.web_fetch import WebFetchTool
+    from orchestrator.services.web_snapshots import WebSnapshotStore
+    from orchestrator.services.fetch.models import EXTRACTION_VERSION_V1
 
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
@@ -991,8 +1067,21 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
     runner._guard_tools(registry, env.tasks, runner.AttemptState(claim=first))
     guard = fetch.refresh_guard
     assert guard is not None
-    assert not await guard.refreshed("https://example.com/a", "article")
-    await guard.record("https://example.com/a", "article")
+    assert (
+        await guard.pinned("https://example.com/a", "article", EXTRACTION_VERSION_V1, True) is None
+    )
+    snapshots = WebSnapshotStore(env.pool, env.memory._enc, get_settings())
+    await snapshots.create(
+        env.alice,
+        accepted.conversation_id,
+        source_url="https://example.com/a",
+        content="page",
+        extract_mode="article",
+        extraction_version=EXTRACTION_VERSION_V1,
+        on_created=guard.publication_hook(
+            "https://example.com/a", "article", EXTRACTION_VERSION_V1, True
+        ),
+    )
 
     await expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
@@ -1002,8 +1091,15 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
     later.register(refetch)
     runner._guard_tools(later, env.tasks, runner.AttemptState(claim=second))
     assert refetch.refresh_guard is not None
-    assert await refetch.refresh_guard.refreshed("https://example.com/a", "article")
-    assert not await refetch.refresh_guard.refreshed("https://example.com/a", "metadata")
+    assert await refetch.refresh_guard.pinned(
+        "https://example.com/a", "article", EXTRACTION_VERSION_V1, True
+    )
+    assert (
+        await refetch.refresh_guard.pinned(
+            "https://example.com/a", "metadata", EXTRACTION_VERSION_V1, True
+        )
+        is None
+    )
     # Only a digest is stored, never the URL.
     payloads = await env.pool.fetch(
         "SELECT payload_ciphertext FROM task_events WHERE kind = 'page_refreshed'"

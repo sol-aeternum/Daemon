@@ -78,7 +78,8 @@ async def _disclose_regeneration(conn: Any, metadata: dict[str, Any], row: Any) 
     """
     earlier = await conn.fetchval(
         "SELECT count(*) FROM task_attempts "
-        "WHERE task_id = $1 AND epoch < $2 AND execution_started_at IS NOT NULL",
+        "WHERE task_id = $1 AND epoch < $2 AND execution_started_at IS NOT NULL "
+        "AND outcome IN ('lost', 'failed_retryable')",
         row["id"],
         int(row["lease_epoch"]),
     )
@@ -168,6 +169,7 @@ class TaskSnapshot:
     content: str
     event_seq: int
     cancel_requested: bool
+    regenerated_after_interruption: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,7 +530,10 @@ class TaskStore:
         """The task this account's key created, if any (no payload comparison)."""
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content
+            SELECT t.*, m.content AS result_content,
+                   (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
+                    AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
+                    AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
             FROM tasks t JOIN messages m ON m.id = t.result_message_id
             WHERE t.user_id = $1 AND t.idempotency_key = $2
             """,
@@ -815,7 +820,12 @@ class TaskStore:
                 tool_name,
                 self._seal(target) if target else None,
             )
-            await self._append_event(conn, task_id, "operation_started", {"tool": tool_name})
+            await self._append_event(
+                conn,
+                task_id,
+                "operation_started",
+                {"tool": tool_name, "epoch": epoch, "operation_id": str(operation_id)},
+            )
             return operation_id
 
     async def record_compute_scope(
@@ -926,6 +936,52 @@ class TaskStore:
                 keys.add(payload["key"])
         return keys
 
+    async def pinned_page(
+        self, claim: Claim, key: str, legacy_key: str | None = None, *, conn: Any = None
+    ) -> uuid.UUID | None:
+        """Exact task-bound snapshot; legacy identity-less markers fail closed."""
+        rows = await (conn if conn is not None else self._pool).fetch(
+            "SELECT e.payload_ciphertext FROM task_events e JOIN tasks t ON t.id = e.task_id "
+            "WHERE e.task_id = $1 AND t.user_id = $2 AND t.conversation_id = $3 "
+            "AND e.kind = 'page_refreshed' ORDER BY e.seq",
+            claim.task_id,
+            claim.user_id,
+            claim.conversation_id,
+        )
+        for row in rows:
+            payload = self._open(row["payload_ciphertext"])
+            if payload.get("key") == key:
+                if not payload.get("snapshot_id"):
+                    raise ExecutionRefused("snapshot_unavailable")
+                return uuid.UUID(payload["snapshot_id"])
+            if legacy_key is not None and payload.get("key") == legacy_key:
+                raise ExecutionRefused("snapshot_unavailable")
+        return None
+
+    async def pin_page(self, conn: Any, claim: Claim, key: str, snapshot_id: uuid.UUID) -> None:
+        """Same-connection snapshot publication, after account/conversation locks."""
+        row = await self._locked_for_epoch(conn, claim.task_id, claim.epoch)
+        if row is None:
+            raise LeaseLost("lease lost")
+        if row["user_id"] != claim.user_id or row["conversation_id"] != claim.conversation_id:
+            raise ExecutionRefused("snapshot_owner_mismatch")
+        if row["cancel_requested_at"] is not None:
+            raise ExecutionRefused("cancel_requested")
+        if await self._account_suspended(conn, claim.user_id):
+            raise ExecutionRefused("account_suspended")
+        if await self.pinned_page(claim, key, conn=conn) is not None:
+            raise ExecutionRefused("snapshot_already_pinned")
+        await self._append_event(
+            conn,
+            claim.task_id,
+            "page_refreshed",
+            {"key": key, "snapshot_id": str(snapshot_id), "epoch": claim.epoch},
+        )
+        # Encryption/event work must not carry a formerly valid lease past
+        # expiry. Cancellation cannot change while this task lock is held.
+        if not await conn.fetchval(f"SELECT {_LEASE_HELD} FROM tasks WHERE id = $1", claim.task_id):
+            raise LeaseLost("lease lost")
+
     async def finish_operation(self, operation_id: uuid.UUID, *, outcome: str) -> None:
         """Record what a material operation did.
 
@@ -934,12 +990,119 @@ class TaskStore:
         """
         if outcome not in {"succeeded", "failed", "unknown"}:
             raise ValueError(f"invalid operation outcome {outcome!r}")
-        await self._pool.execute(
-            "UPDATE task_operations SET outcome = $2, completed_at = now() "
-            "WHERE id = $1 AND outcome = 'started'",
-            operation_id,
-            outcome,
+        async with self._pool.acquire() as conn, conn.transaction():
+            task_id = await conn.fetchval(
+                "SELECT task_id FROM task_operations WHERE id = $1", operation_id
+            )
+            if task_id is None:
+                return
+            # Same order as begin_operation: task before operation. Intentionally
+            # no lease check: even stale workers may contribute truthful evidence.
+            if await self._locked(conn, task_id) is None:
+                return
+            row = await conn.fetchrow(
+                "UPDATE task_operations SET outcome = $2, completed_at = now() "
+                "WHERE id = $1 AND outcome = 'started' RETURNING epoch, tool_name",
+                operation_id,
+                outcome,
+            )
+            if row is not None:
+                await self._append_event(
+                    conn,
+                    task_id,
+                    "operation_finished",
+                    {
+                        "operation_id": str(operation_id),
+                        "tool": row["tool_name"],
+                        "epoch": row["epoch"],
+                        "outcome": outcome,
+                    },
+                )
+
+    async def operation_matches(
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        epoch: int,
+        operation_id: Any,
+        name: Any,
+        outcome: Any,
+    ) -> bool:
+        """Owner/current-generation operation evidence, not a live UUID assertion."""
+        if not all(isinstance(value, str) for value in (operation_id, name, outcome)):
+            return False
+        try:
+            identity = uuid.UUID(operation_id)
+        except ValueError:
+            return False
+        return bool(
+            await self._pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM task_operations o JOIN tasks t ON t.id = o.task_id "
+                "WHERE t.id = $1 AND t.user_id = $2 AND t.content_generation = $3 "
+                "AND o.id = $4 AND o.epoch = $3 AND o.tool_name = $5 AND o.outcome = $6 "
+                "AND o.completed_at IS NOT NULL AND NOT "
+                + _SUSPENDED.replace("tasks.", "t.")
+                + ")",
+                task_id,
+                user_id,
+                epoch,
+                identity,
+                name,
+                outcome,
+            )
         )
+
+    async def operation_progress(
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        epoch: int,
+        operation_id: str,
+        name: str,
+        outcome: str,
+        seq: int,
+        *,
+        after_seq: int,
+    ) -> TaskEvent | None:
+        """Exact owner-scoped durable progress proof, including consumed sequences."""
+        if not await self.operation_matches(user_id, task_id, epoch, operation_id, name, outcome):
+            return None
+        row = await self._pool.fetchrow(
+            "SELECT e.seq, e.kind, e.payload_ciphertext, e.created_at "
+            "FROM task_events e JOIN tasks t ON t.id = e.task_id "
+            "WHERE e.task_id = $1 AND t.user_id = $2 AND t.content_generation = $3 "
+            "AND e.seq = $4 AND e.kind = 'tool_result' AND NOT "
+            + _SUSPENDED.replace("tasks.", "t."),
+            task_id,
+            user_id,
+            epoch,
+            seq,
+        )
+        if row is None:
+            return None
+        # Available-before projection may look across a page boundary, never
+        # across a damaged durable gap between operation and result progress.
+        count = await self._pool.fetchval(
+            "SELECT count(*) FROM task_events WHERE task_id = $1 AND seq > $2 AND seq <= $3",
+            task_id,
+            after_seq,
+            seq,
+        )
+        if count != seq - after_seq:
+            return None
+        payload = self._open(row["payload_ciphertext"])
+        if any(
+            payload.get(key) != value
+            for key, value in (
+                ("operation_id", operation_id),
+                ("epoch", epoch),
+                ("name", name),
+                ("outcome", outcome),
+                ("payload_state", "full"),
+            )
+        ):
+            return None
+        return TaskEvent(seq=int(row["seq"]), kind=row["kind"], payload=payload)
 
     async def complete(
         self,
@@ -1272,7 +1435,10 @@ class TaskStore:
     async def snapshot(self, user_id: uuid.UUID, task_id: uuid.UUID) -> TaskSnapshot | None:
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content
+            SELECT t.*, m.content AS result_content,
+                   (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
+                    AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
+                    AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
             FROM tasks t JOIN messages m ON m.id = t.result_message_id
             WHERE t.id = $1 AND t.user_id = $2
             """,
@@ -1286,7 +1452,10 @@ class TaskStore:
     ) -> TaskSnapshot | None:
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content
+            SELECT t.*, m.content AS result_content,
+                   (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
+                    AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
+                    AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
             FROM tasks t JOIN messages m ON m.id = t.result_message_id
             WHERE t.conversation_id = $1 AND t.user_id = $2
               AND t.status IN ('queued', 'running')
@@ -1308,6 +1477,7 @@ class TaskStore:
             content_delta_seq=int(row["content_delta_seq"]),
             content=self._enc.decrypt(row["result_content"]),
             event_seq=int(row["event_seq"]),
+            regenerated_after_interruption=int(row["regeneration_count"]),
             cancel_requested=row["cancel_requested_at"] is not None
             and TaskStatus(row["status"]) in ACTIVE_STATUSES,
         )
@@ -1318,7 +1488,10 @@ class TaskStore:
         """The conversation's most recent task, active or finished."""
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content
+            SELECT t.*, m.content AS result_content,
+                   (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
+                    AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
+                    AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
             FROM tasks t JOIN messages m ON m.id = t.result_message_id
             WHERE t.conversation_id = $1 AND t.user_id = $2
             ORDER BY t.created_at DESC LIMIT 1

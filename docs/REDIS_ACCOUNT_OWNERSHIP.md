@@ -20,6 +20,13 @@ replay and eviction are **not implemented** by this prerequisite.
   indexes. Unchanged sources resume at their exact fragment; changed sources
   restart the message from its beginning. Processing is at-least-once:
   fragments may repeat, and earlier extracted facts are not automatically undone.
+- Entity projection keeps the account owner as routing metadata and passes the
+  existing worker's owner/memory-ID arguments positionally. Nonempty extraction
+  and failed-chunk partial progress exercise the native enqueue payload contract.
+- The disposable durable-restart drill generates its own independent canonical
+  ownership key, alongside its test-only cipher/auth keys. This is not automatic
+  application key generation or live key provisioning; inherited credentials
+  cannot override the drill-owned fixture under its sanitized Compose environment.
 - User jobs write **no ARQ result key**, including preexecution failures.
   Content-free account completion markers preserve the former dedup windows;
   marker publication/cleanup and enqueue checks are atomic. Failed extraction's

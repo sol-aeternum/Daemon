@@ -65,6 +65,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/MIDNIGHT_UI.md` | N/A | Engineering | raw-log | Owner-approved experimental UI/remediation scope and dated source/runtime acceptance limits; not deployment or model-routing authority |
 | `docs/CONTEXTUAL_HOME_IMPLEMENTATION.md` | N/A | Product/Engineering | ungated-reference | Approved conversation-only contextual home contract, dated implementation/review evidence and release limitations; runtime authority remains in code and gated checks |
 | `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved continuity architecture (6 October 2026); slice 1 implemented behind `DURABLE_CHAT_ENABLED` (off); enabling is gated by #477 |
+| `docs/DURABLE_CHAT_CLOSEOUT.md` | N/A | Engineering | raw-log | #477 acceptance reconciliation and disposable restart proof; not deployment or enablement clearance |
 | `docs/ACCOUNT_DELETION_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved account deletion and reset protocol (8 October 2026, #469); not implemented; DDL/API reviewed per implementation PR |
 | `docs/CONTENT_SAFE_LOGGING.md` | N/A | Engineering/Operator | ungated-reference | P0.3 managed backend/worker logging boundary, supported launchers and explicit retention/deployment qualification limits; not deletion/reset implementation |
 | `docs/VISION_INTEGRATION_REPORT.md` | N/A | Engineering | raw-log | Integration changes, current gate evidence and blockers |

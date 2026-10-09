@@ -27,7 +27,7 @@ from orchestrator.compute_runtime import (
     compute_error,
     current_scope,
 )
-from orchestrator.tasks.fence import guard_registry
+from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
 from orchestrator.tasks.store import Claim, ExecutionRefused, LeaseLost, TaskStore
@@ -135,6 +135,20 @@ class AttemptSink:
         try:
             if status == "complete":
                 message_fields = {key: value for key, value in fields.items() if value is not None}
+                tool_results = message_fields.get("tool_results")
+                if isinstance(tool_results, list):
+                    # The engine saves raw results before the runner annotates
+                    # live frames. History must carry that same bounded evidence,
+                    # without mutating the engine's accumulator or result bodies.
+                    saved = []
+                    for row in tool_results:
+                        if not isinstance(row, dict):
+                            saved.append(row)
+                            continue
+                        annotated = dict(row)
+                        await _progress_evidence(self._store, self._state, annotated)
+                        saved.append(annotated)
+                    message_fields["tool_results"] = saved
                 if metadata:
                     message_fields["metadata"] = metadata
                 self._state.result = await self._store.complete(
@@ -201,18 +215,31 @@ class _TaskRefreshGuard:
         self._store = store
         self._state = state
 
-    async def refreshed(self, url: str, mode: str) -> bool:
-        pages = await self._store.refreshed_pages(self._state.claim.task_id)
-        return _page_key(url, mode) in pages
+    @staticmethod
+    def _key(url: str, mode: str, version: str, refresh: bool) -> str:
+        return hashlib.sha256(f"{version}\n{mode}\n{refresh}\n{url}".encode()).hexdigest()
 
-    async def record(self, url: str, mode: str) -> None:
-        claim = self._state.claim
-        try:
-            await self._store.record_event(
-                claim.task_id, claim.epoch, "page_refreshed", {"key": _page_key(url, mode)}
-            )
-        except LeaseLost:
-            _fence_lost(self._state)
+    async def pinned(self, url: str, mode: str, version: str, refresh: bool) -> uuid.UUID | None:
+        return await self._store.pinned_page(
+            self._state.claim,
+            self._key(url, mode, version, refresh),
+            _page_key(url, mode) if refresh else None,
+        )
+
+    def publication_hook(self, url: str, mode: str, version: str, refresh: bool):
+        async def publish(conn: Any, snapshot_id: uuid.UUID) -> None:
+            try:
+                await self._store.pin_page(
+                    conn, self._state.claim, self._key(url, mode, version, refresh), snapshot_id
+                )
+            except LeaseLost:
+                _fence_lost(self._state)
+                raise
+            except ExecutionRefused as refused:
+                _operation_refused(self._state, refused.reason)
+                raise
+
+        return publish
 
 
 def _operation_refused(state: AttemptState, reason: str) -> None:
@@ -527,34 +554,83 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                         {"t": "delta", "gen": claim.epoch, "seq": state.delta_seq, "text": text},
                     )
             elif event in _PASSTHROUGH_FRAMES:
-                message: dict[str, Any] = {"t": "frame", "gen": claim.epoch, "frame": frame}
+                data = {**data, "content_generation": claim.epoch}
+                message: dict[str, Any] = {"t": "frame", "gen": claim.epoch}
                 if event in {"tool_call", "tool_result"}:
                     # Persisted first, so an observer that replays it on
                     # reattach can drop the live copy by sequence (#472).
-                    seq = await _record_progress(store, state, event, data.get("name"))
+                    seq = await _record_progress(store, state, event, data.get("name"), data)
                     if seq is not None:
                         message["seq"] = seq
+                        data["event_seq"] = seq
+                envelope["data"] = data
+                message["frame"] = f"event: {event}\ndata: {json.dumps(envelope)}\n\n"
                 await _publish(redis, state, message)
             elif event == "error":
                 state.requested_terminal = state.requested_terminal or "error"
 
 
 async def _record_progress(
-    store: TaskStore, state: AttemptState, event: str, name: Any
+    store: TaskStore,
+    state: AttemptState,
+    event: str,
+    name: Any,
+    data: dict[str, Any] | None = None,
 ) -> int | None:
     """Persist a tool progress event under the fence; returns its sequence."""
     try:
+        evidence = (
+            await _progress_evidence(store, state, data or {}) if event == "tool_result" else {}
+        )
         return await store.record_event(
             state.claim.task_id,
             state.claim.epoch,
             event,
-            {"name": name, "epoch": state.claim.epoch},
+            {
+                "name": str(name or "tool")[:100],
+                "epoch": state.claim.epoch,
+                **evidence,
+            },
         )
     except LeaseLost:
         # Fenced: stop now (the cancel lands at the next await), as the sink
         # and the effect fence do.
         _fence_lost(state)
         return None
+
+
+async def _progress_evidence(
+    store: TaskStore, state: AttemptState, data: dict[str, Any]
+) -> dict[str, Any]:
+    claim = state.claim
+    name = data.get("name")
+    outcome = outcome_of_tool_result(name, data.get("result"))
+    identity = data.get("operation_id")
+    valid = (
+        data.get("task_id") == str(claim.task_id)
+        and type(data.get("lifecycle_epoch")) is int
+        and data.get("lifecycle_epoch") == claim.epoch
+        and isinstance(data.get("payload_state"), str)
+        and data.get("payload_state") in {"summary", "full"}
+        and isinstance(data.get("outcome"), str)
+        and data.get("outcome") in {"succeeded", "failed", "unknown"}
+        and (data.get("payload_state") == "summary" or data.get("outcome") == outcome)
+        and await store.operation_matches(
+            claim.user_id, claim.task_id, claim.epoch, identity, name, data.get("outcome")
+        )
+    )
+    if valid:
+        evidence = {
+            "operation_id": identity,
+            "outcome": data["outcome"],
+            "payload_state": data["payload_state"],
+        }
+    else:
+        evidence = {"outcome": outcome}
+        for key in ("operation_id", "task_id", "lifecycle_epoch", "payload_state"):
+            data.pop(key, None)
+    data.update(evidence)
+    return evidence
 
 
 def _classify(exc: BaseException) -> tuple[RetryCause, str]:

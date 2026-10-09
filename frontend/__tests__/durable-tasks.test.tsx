@@ -642,3 +642,221 @@ describe('notices on partial failed answers', () => {
     }
   });
 });
+
+describe('generation frontier (#477)', () => {
+  it('discloses an explicit regeneration count from the live reset frame', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sse(
+          [
+            frame('task', {
+              task_id: 'task-1',
+              status: 'running',
+              content_generation: 2,
+            }),
+            frame('token', { text: 'The first attempt was long' }),
+            frame('task', {
+              task_id: 'task-1',
+              reset: true,
+              content_generation: 2,
+              regenerated_after_interruption: 1,
+              event_seq: 10,
+              content: 'Regenerated',
+            }),
+            frame('token', { text: '.', content_generation: 2 }),
+            frame('task', {
+              task_id: 'task-1',
+              status: 'completed',
+              content_generation: 2,
+            }),
+          ],
+          { 'X-Daemon-Task-Id': 'task-1' },
+        ),
+      ),
+    );
+    const response = await POST(chatRequest({ id: 'conv-1' }));
+    const chunks = await readUIMessageChunks(response);
+    expect(chunks.some((chunk) => chunk.type === 'finish')).toBe(true);
+    const message = assemble(chunks);
+    // Only an explicit positive count is regeneration evidence; the notice
+    // rides on the text written after the reset.
+    expect(getDaemonMessageText(message)).toBe(
+      'Regenerated.\n\nThis answer was regenerated after an interruption.',
+    );
+    // The reset marker itself is not attempt progress; it is on the raw
+    // stream (it stops currentParts, so it is not re-collected later).
+    expect(
+      chunks.some(
+        (chunk) =>
+          chunk.type === 'data-event' &&
+          (chunk.data as { type?: string }).type === 'task_reset',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not call a same-generation correction (count 0 or absent) a regeneration', async () => {
+    const stream = (resetMeta: Record<string, unknown>, content: string) =>
+      sse(
+        [
+          frame('token', { text: 'First', content_generation: 1 }),
+          frame('task', {
+            task_id: 'task-1',
+            reset: true,
+            content,
+            content_generation: 1,
+            ...resetMeta,
+          }),
+          frame('task', {
+            task_id: 'task-1',
+            status: 'completed',
+            content_generation: 1,
+          }),
+        ],
+        { 'X-Daemon-Task-Id': 'task-1' },
+      );
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          stream({ regenerated_after_interruption: 0 }, 'Corrected'),
+        ),
+    );
+    let message = assemble(
+      await readUIMessageChunks(await POST(chatRequest({ id: 'conv-1' }))),
+    );
+    expect(getDaemonMessageText(message)).toBe('Corrected');
+
+    // A bare reset (a deferred attempt or envelope switch) is not evidence.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(stream({}, 'Deferred')));
+    message = assemble(
+      await readUIMessageChunks(await POST(chatRequest({ id: 'conv-1' }))),
+    );
+    expect(getDaemonMessageText(message)).toBe('Deferred');
+  });
+
+  it('ignores stale-generation tokens, progress, terminal status and late resets', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sse(
+          [
+            frame('task', {
+              task_id: 'task-1',
+              status: 'running',
+              content_generation: 2,
+            }),
+            frame('token', { text: 'Current', content_generation: 2 }),
+            // Late/duplicate progress from the replaced attempt:
+            frame('token', { text: ' stale', content_generation: 1 }),
+            frame('tool_call', {
+              name: 'web_search',
+              arguments: {},
+              content_generation: 1,
+            }),
+            frame('task', {
+              task_id: 'task-1',
+              status: 'running',
+              content_generation: 1,
+            }),
+            // Even terminal state and a reset from the old generation:
+            frame('task', {
+              task_id: 'task-1',
+              status: 'completed',
+              content_generation: 1,
+            }),
+            frame('task', {
+              task_id: 'task-1',
+              reset: true,
+              content: 'Old attempt',
+              content_generation: 1,
+            }),
+            // Back on the current generation:
+            frame('token', { text: ' done', content_generation: 2 }),
+            // A malformed tag (not a non-negative integer) is an untagged frame.
+            frame('token', { text: ' legacy', content_generation: 1.5 }),
+            frame('task', {
+              task_id: 'task-1',
+              status: 'completed',
+              content_generation: 2,
+            }),
+          ],
+          { 'X-Daemon-Task-Id': 'task-1' },
+        ),
+      ),
+    );
+    const response = await POST(chatRequest({ id: 'conv-1' }));
+    const chunks = await readUIMessageChunks(response);
+    // Stale text never mutates the shown answer.
+    const message = assemble(chunks);
+    expect(getDaemonMessageText(message)).toBe('Current done legacy');
+    const dataEvents = getDaemonDataEvents([message]);
+    const types = dataEvents.map((event) => event.type);
+    expect(types).not.toContain('tool_call');
+    expect(types).not.toContain('task_reset');
+    const statuses = dataEvents
+      .filter((event) => event.type === 'task')
+      .map((event) => (event as { status?: string }).status);
+    // 'accepted' is this bridge's announcement; stale generations contributed
+    // nothing (running/completed are this bridge's current-generation frames).
+    expect(statuses).toEqual(['accepted', 'running', 'completed']);
+    // The only terminal settled the stream; there was no early finish.
+    expect(chunks.some((chunk) => chunk.type === 'finish')).toBe(true);
+    expect(chunks.some((chunk) => chunk.type === 'error')).toBe(false);
+  });
+
+  it('passes untagged legacy frames and forwards task-frame recovery metadata', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sse(
+          [
+            frame('task', { task_id: 'task-1', status: 'running' }),
+            frame('token', { text: 'Legacy' }),
+            frame('tool_result', {
+              name: 'web_fetch',
+              result: 'body',
+              tool_call_id: 'f1',
+              outcome: 'succeeded',
+            }),
+            frame('task', {
+              task_id: 'task-1',
+              status: 'completed',
+              event_seq: 12,
+              content_generation: 1,
+              lifecycle_kind: 'regenerate',
+              lifecycle_epoch: 3,
+              operation_id: 'op-9',
+            }),
+          ],
+          { 'X-Daemon-Task-Id': 'task-1' },
+        ),
+      ),
+    );
+    const message = assemble(
+      await readUIMessageChunks(await POST(chatRequest({ id: 'conv-1' }))),
+    );
+    expect(getDaemonMessageText(message)).toContain('Legacy');
+    const events = getDaemonDataEvents([message]);
+    const finalTask = events.find(
+      (event) =>
+        event.type === 'task' &&
+        (event as { status?: string }).status === 'completed',
+    );
+    expect(finalTask).toMatchObject({
+      event_seq: 12,
+      content_generation: 1,
+      lifecycle_kind: 'regenerate',
+      lifecycle_epoch: 3,
+      operation_id: 'op-9',
+    });
+    // The bounded outcome the backend recorded travels with the result.
+    const toolResult = events.find((event) => event.type === 'tool_result');
+    expect(toolResult).toMatchObject({
+      outcome: 'succeeded',
+      name: 'web_fetch',
+    });
+  });
+});

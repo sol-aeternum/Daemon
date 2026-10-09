@@ -555,6 +555,23 @@ class Settings(BaseSettings):
         )
 
     @staticmethod
+    def assert_durable_drill_isolated_environment() -> None:
+        """Test launcher safety: explicit exports, not Settings/dotenv defaults.
+
+        Keep raw environment inspection at the canonical Settings boundary,
+        including credentials unknown to the current model fields. This does
+        not select or enable the drill; its separate launcher checks the permit
+        before installing synthetic transport. No values are returned or logged.
+        """
+        if os.environ.get("MOCK_LLM") != "true" or os.environ.get("DURABLE_CHAT_ENABLED") != "true":
+            raise RuntimeError("drill requires explicitly selected disposable mock settings")
+        if os.environ.get("POSTGRES_HOST") != "postgres" or os.environ.get("DATABASE_URL"):
+            raise RuntimeError("drill refuses externally configured databases")
+        for key, value in os.environ.items():
+            if (key.endswith("API_KEY") or key in {"FAL_KEY", "TAVILY_API_KEY"}) and value:
+                raise RuntimeError("drill refuses provider credentials")
+
+    @staticmethod
     def explicit_evaluation_environment() -> dict[str, str]:
         """CLI safety evidence: only explicitly exported evaluation paths.
 

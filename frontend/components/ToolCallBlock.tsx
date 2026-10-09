@@ -23,6 +23,7 @@ import {
   pairToolExecutions,
   parseToolResultPayload,
   extractToolFailure,
+  toolResultOutcome,
   DEFAULT_PILL_PREVIEW_COUNT,
   type ToolSource,
 } from '../lib/toolActivity';
@@ -216,8 +217,15 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   }
 
   // 2. Result State
-  let errorMessage = extractToolFailure(parseToolResultPayload(result?.result));
-  let isError = Boolean(errorMessage);
+  // Truthful outcome (#477): only recorded evidence shows success. A
+  // backend ``failed`` outcome wins even when a media path parses; a
+  // ``unknown``/empty legacy replay is not a success either.
+  const executionOutcome = toolResultOutcome(result ?? undefined);
+  const failureMessage = extractToolFailure(
+    parseToolResultPayload(result?.result),
+  );
+  let isError = executionOutcome === 'failed';
+  let errorMessage = failureMessage;
   let audioPath: string | null = null;
   let videoPath: string | null = null;
   let videoDuration: number | null = null;
@@ -315,9 +323,12 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
         'Tool call failed. Continuing with best available information.';
     }
   }
+  // Derived media paths are success evidence only when the recorded
+  // outcome does not say otherwise (#477).
+  if (executionOutcome === 'failed') isError = true;
 
   // Image Result UI
-  if (videoPath) {
+  if (videoPath && executionOutcome === 'succeeded') {
     return (
       <div className="my-2 max-w-3xl">
         <div className="text-sm text-[var(--color-text-muted)] mb-2 font-medium flex items-center gap-2">
@@ -355,7 +366,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   }
 
   // Image Result UI
-  if (imagePath) {
+  if (imagePath && executionOutcome === 'succeeded') {
     const studioHref = `/studio?image=${encodeURIComponent(imagePath)}${
       prompt ? `&prompt=${encodeURIComponent(prompt)}` : ''
     }`;
@@ -488,7 +499,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   }
 
   // Audio Result UI
-  if (audioPath) {
+  if (audioPath && executionOutcome === 'succeeded') {
     return <AudioPlayerBlock audioPath={audioPath} prompt={prompt} />;
   }
 
@@ -521,7 +532,13 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
           ) : (
             <span
               aria-hidden
-              className={`w-2 h-2 rounded-full ${isError ? 'bg-[var(--color-status-warning)]' : 'bg-[var(--color-status-success)]'}`}
+              className={`w-2 h-2 rounded-full ${
+                isError
+                  ? 'bg-[var(--color-status-warning)]'
+                  : executionOutcome === 'unknown'
+                    ? 'bg-[var(--color-text-muted)]'
+                    : 'bg-[var(--color-status-success)]'
+              }`}
             ></span>
           )}
           <div className="flex min-w-0 flex-col">
@@ -531,6 +548,14 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               {result ? call.name : `Running ${call.name}...`}
             </span>
           </div>
+          {result && executionOutcome === 'unknown' && !isError && (
+            <span
+              aria-hidden
+              className="shrink-0 text-xs text-[var(--color-text-muted)]"
+            >
+              not recorded
+            </span>
+          )}
         </div>
         <ChevronRight
           aria-hidden
@@ -573,7 +598,9 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               }`}
             >
               {result
-                ? sanitizeProtectedArtifactPaths(resultText)
+                ? resultText.trim().length > 0
+                  ? sanitizeProtectedArtifactPaths(resultText)
+                  : 'Result not recorded.'
                 : 'Awaiting result…'}
             </pre>
           </>
@@ -603,6 +630,10 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
   const sources = buildMessageCitationSources(events);
   const labels = [...summary.segments];
   if (summary.runningCount) labels.push(`Working… (${summary.runningCount})`);
+  if (summary.unknownCount)
+    labels.push(
+      `${summary.unknownCount} result${summary.unknownCount === 1 ? '' : 's'} not recorded`,
+    );
   if (summary.errorCount)
     labels.push(
       `${summary.errorCount} issue${summary.errorCount === 1 ? '' : 's'}`,
@@ -626,7 +657,17 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
         ) : (
           <span
             aria-hidden
-            className={`shrink-0 w-2 h-2 rounded-full ${summary.errorCount ? 'bg-[var(--color-status-warning)]' : 'bg-[var(--color-status-success)]'}`}
+            className={`shrink-0 w-2 h-2 rounded-full ${
+              summary.errorCount
+                ? 'bg-[var(--color-status-warning)]'
+                : summary.unknownCount > 0 &&
+                    summary.searchCount +
+                      summary.pageCount +
+                      summary.otherCount ===
+                      0
+                  ? 'bg-[var(--color-text-muted)]'
+                  : 'bg-[var(--color-status-success)]'
+            }`}
           />
         )}
         <span className="min-w-0 break-words">

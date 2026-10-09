@@ -33,10 +33,69 @@ export interface ToolActivitySummary {
   otherCount: number;
   runningCount: number;
   errorCount: number;
+  /** Results with no success evidence (unknown/empty legacy replays). */
+  unknownCount: number;
   /** Visible segments joined with ' · ', e.g. "Searched 3 times · Read 2 pages". */
   segments: string[];
   /** Accessible name including counts so SR users get the full picture. */
   accessibleSummary: string;
+}
+
+/**
+ * Truthful outcome of a paired tool execution (#477). Absent results are
+ * running; a result is successful only when recorded evidence says so. The
+ * backend's bounded ``outcome`` field wins when present; legacy rows carry
+ * neither it nor their full result, and an empty legacy result is unknown,
+ * never a success.
+ */
+export type ToolResultOutcome = 'running' | 'succeeded' | 'failed' | 'unknown';
+
+const BOUNDED_OUTCOMES = ['succeeded', 'failed', 'unknown'] as const;
+
+function isBoundedOutcome(
+  value: unknown,
+): value is (typeof BOUNDED_OUTCOMES)[number] {
+  return value === 'succeeded' || value === 'failed' || value === 'unknown';
+}
+
+const rawResultText = (result: ChatEvent | undefined): string => {
+  if (!result || result.type !== 'tool_result') return '';
+  const raw = (result as { result?: unknown }).result;
+  return typeof raw === 'string' ? raw : '';
+};
+
+export function toolResultOutcome(
+  result: ChatEvent | undefined,
+): ToolResultOutcome {
+  if (!result) return 'running';
+  if (result.type !== 'tool_result') return 'unknown';
+  const top = (result as { outcome?: unknown }).outcome;
+  if (isBoundedOutcome(top)) return top;
+  const payload = parseToolResultPayload(
+    (result as { result?: unknown }).result,
+  );
+  if (payload && isBoundedOutcome(payload.outcome)) return payload.outcome;
+  if (payload?.performed === false) return 'failed';
+  if (typeof payload?.status === 'number' && Number.isInteger(payload.status)) {
+    return payload.status >= 200 && payload.status < 300
+      ? 'succeeded'
+      : 'unknown';
+  }
+  if (result.replayed) return 'unknown';
+  if (extractToolFailure(payload)) return 'failed';
+  // A replay that lost its recorded result (empty legacy payload) must not
+  // read as success; anything with recorded content did succeed.
+  if (payload && Object.keys(payload).length === 0) return 'unknown';
+  return rawResultText(result).trim().length > 0 || payload
+    ? 'succeeded'
+    : 'unknown';
+}
+
+/** Whether ``candidate`` is one of the backend's bounded tool outcomes. */
+export function isToolResultOutcome(
+  candidate: unknown,
+): candidate is (typeof BOUNDED_OUTCOMES)[number] {
+  return isBoundedOutcome(candidate);
 }
 
 export function classifyToolName(name: string): ToolActivityKind {
@@ -255,27 +314,21 @@ export function buildToolActivitySummary(
   let otherCount = 0;
   let runningCount = 0;
   let errorCount = 0;
+  let unknownCount = 0;
   const readPages = new Set<string>();
 
   for (const execution of executions) {
     const call = execution.call;
     if (call.type !== 'tool_call') continue;
 
-    let isError = false;
-    let isRunning = false;
-    if (!execution.result) {
-      isRunning = true;
-    } else if (execution.result.type === 'tool_result') {
-      const failure = extractToolFailure(
-        parseToolResultPayload(execution.result.result),
-      );
-      isError = Boolean(failure);
-    }
+    const outcome = toolResultOutcome(execution.result);
 
-    if (isRunning) {
+    if (outcome === 'running') {
       runningCount += 1;
-    } else if (isError) {
+    } else if (outcome === 'failed') {
       errorCount += 1;
+    } else if (outcome === 'unknown') {
+      unknownCount += 1;
     } else {
       const kind = classifyToolName(call.name);
       if (kind === 'search') searchCount += 1;
@@ -310,12 +363,14 @@ export function buildToolActivitySummary(
     otherCount,
     runningCount,
     errorCount,
+    unknownCount,
     ...summarizeActivity(
       searchCount,
       pageCount,
       otherCount,
       runningCount,
       errorCount,
+      unknownCount,
     ),
   };
 }
@@ -326,6 +381,7 @@ function summarizeActivity(
   otherCount: number,
   runningCount: number,
   errorCount: number,
+  unknownCount: number,
 ): Pick<ToolActivitySummary, 'segments' | 'accessibleSummary'> {
   const segments: string[] = [];
   if (searchCount === 1) segments.push('Searched 1 time');
@@ -338,6 +394,9 @@ function summarizeActivity(
   const accessibleParts = [...segments];
   if (runningCount > 0) {
     accessibleParts.push(`${runningCount} in progress`);
+  }
+  if (unknownCount > 0) {
+    accessibleParts.push(`${unknownCount} not recorded`);
   }
   if (errorCount > 0) {
     accessibleParts.push(`${errorCount} issue${errorCount === 1 ? '' : 's'}`);
