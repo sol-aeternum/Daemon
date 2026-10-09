@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import base64
 import sys
 from pathlib import Path
 
@@ -37,6 +38,11 @@ from tests.asyncio_stall_dump import (  # noqa: E402
 # boilerplate. Tests that need production semantics set
 # ``DAEMON_ENVIRONMENT=production`` themselves and supply an allowlist.
 os.environ.setdefault("DAEMON_ENVIRONMENT", "development")
+# Fictional, deterministic test key; runtime never generates a fallback.
+# Missing/invalid-key regressions explicitly override this test-only default.
+os.environ.setdefault(
+    "DAEMON_REDIS_ACCOUNT_HASH_KEY", base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
+)
 
 
 @pytest.fixture(autouse=True)
@@ -45,3 +51,12 @@ def _clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--p06-disposable-redis",
+        action="store_true",
+        default=False,
+        help="Use a task-owned disposable Redis on 127.0.0.1:56379/15 (never live Redis)",
+    )

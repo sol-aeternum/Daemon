@@ -585,7 +585,7 @@ async def test_sweep_recovers_accepted_work_after_queue_loss(env: Env):
     # Accepted, but the post-commit enqueue never happened (Redis down / flushed).
     accepted = await _accept(env)
     woken = await env.tasks.due_for_wakeup()
-    assert [task_id for task_id, _ in woken] == [accepted.task_id]
+    assert [(task_id, owner) for task_id, _, owner in woken] == [(accepted.task_id, env.alice)]
     # Recently woken tasks are not flooded with duplicate wake-ups.
     assert await env.tasks.due_for_wakeup() == []
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
@@ -602,15 +602,15 @@ async def test_sweep_finds_expired_leases_not_live_ones(env: Env):
         assert await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     await _expire_lease(env, dead.task_id)
     woken = await env.tasks.due_for_wakeup(rewake_after_s=0)
-    assert [task_id for task_id, _ in woken] == [dead.task_id]
+    assert [(task_id, owner) for task_id, _, owner in woken] == [(dead.task_id, env.alice)]
 
 
 @pytest.mark.asyncio
 async def test_wake_sequence_increases_per_wakeup(env: Env):
     accepted = await _accept(env)
     first = await env.tasks.mark_woken(accepted.task_id)
-    [(task_id, second)] = await env.tasks.due_for_wakeup(rewake_after_s=0)
-    assert task_id == accepted.task_id and second == first + 1
+    [(task_id, second, owner)] = await env.tasks.due_for_wakeup(rewake_after_s=0)
+    assert task_id == accepted.task_id and second == first + 1 and owner == env.alice
 
 
 # --------------------------------------------------------------------------- #
@@ -744,7 +744,7 @@ async def test_queued_task_with_pending_cancel_is_never_claimed(env: Env):
 async def test_requeued_task_is_rewoken_at_its_backoff_not_after_suppression(env: Env):
     """Codex review of #466: a just-consumed wake-up must not delay the retry."""
     accepted = await _accept(env)
-    assert await env.tasks.due_for_wakeup() == [(accepted.task_id, 1)]  # wake recorded
+    assert await env.tasks.due_for_wakeup() == [(accepted.task_id, 1, env.alice)]  # wake recorded
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.fail_attempt(
@@ -752,7 +752,7 @@ async def test_requeued_task_is_rewoken_at_its_backoff_not_after_suppression(env
     )
     await _make_due(env, accepted.task_id)
     woken = await env.tasks.due_for_wakeup()
-    assert [task_id for task_id, _ in woken] == [accepted.task_id]
+    assert [(task_id, owner) for task_id, _, owner in woken] == [(accepted.task_id, env.alice)]
 
 
 @pytest.mark.asyncio

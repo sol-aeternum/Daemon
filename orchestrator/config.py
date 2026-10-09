@@ -355,6 +355,8 @@ class Settings(BaseSettings):
     # ===== MEMORY LAYER =====
     database_url: str | None = None
     redis_url: str | None = None
+    # Stable across processes/restores; never reuse auth or encryption secrets.
+    daemon_redis_account_hash_key: str | None = None
     daemon_encryption_key: str | None = None
 
     # ===== DREAMING =====

@@ -195,6 +195,7 @@ async def enforce_rate_limit(
     limiter: RateLimiter,
     endpoint: str,
     policies: Sequence[PolicySpec],
+    owner_id: str | None = None,
 ) -> None:
     """Run one or more rate-limit checks and translate the result.
 
@@ -239,6 +240,7 @@ async def enforce_rate_limit(
                 scope_kind=scope_kind,
                 raw_value=raw_value,
                 policy=policy,
+                **({"owner_id": owner_id} if scope_kind in ("user_id", "session_id") else {}),
             )
         except RateLimitUnavailableError as exc:
             if fail_closed:

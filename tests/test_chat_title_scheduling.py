@@ -32,6 +32,8 @@ from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from orchestrator.services.identity.rate_limiter import RateLimiter
 from tests.qualified_compute import install_qualified_compute
+from tests.redis_jobs_support import install_fake_enqueue
+from orchestrator.redis_jobs import account_job_id
 
 
 class FakeTitleQueue:
@@ -76,6 +78,7 @@ async def client(monkeypatch):
         lambda request: RateLimiter(None, hmac_secret="test-title-scheduling-pepper"),
     )
     install_qualified_compute(monkeypatch)
+    install_fake_enqueue(monkeypatch, "orchestrator.main.enqueue_account_job")
 
     async def override_settings():
         return settings
@@ -209,9 +212,10 @@ async def test_precreated_unlocked_empty_draft_enqueues_title_once(client) -> No
     assert attempt["args"] == (
         "generate_title",
         str(conversation_id),
-        "Hello",
+        str(mock_store.insert_message.return_value["id"]),
     )
-    assert attempt["job_id"] == f"title:{conversation_id}"
+    assert attempt["job_id"] == account_job_id(owner, f"title:{conversation_id}")
+    assert "Hello" not in repr(attempt)
     assert attempt["defer_by"] == 0
 
     # The draft probe must not rely on the stale conversations.message_count
@@ -374,9 +378,10 @@ async def test_newly_created_chat_keeps_title_enqueue(client) -> None:
     assert attempts[0]["args"] == (
         "generate_title",
         str(new_conversation_id),
-        "Hello",
+        str(mock_store.insert_message.return_value["id"]),
     )
-    assert attempts[0]["job_id"] == f"title:{new_conversation_id}"
+    assert attempts[0]["job_id"] == account_job_id(owner, f"title:{new_conversation_id}")
+    assert "Hello" not in repr(attempts[0])
 
 
 @pytest.mark.asyncio

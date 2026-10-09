@@ -136,6 +136,14 @@ Retained beyond the account, and listed as such on the deletion screen:
 
 ## 8. Tests (deterministic, no paid inference)
 
+P0.6's source-only Redis prerequisite and its mapping to the Redis/job-crash,
+scheduled-dreaming audit and web-fetch scenarios below are documented in
+[REDIS_ACCOUNT_OWNERSHIP.md](REDIS_ACCOUNT_OWNERSHIP.md). Its account namespaces,
+identifier re-reads, result suppression and ownership indexes do **not** implement
+purge, draining, eviction, replay or migration 048's DB-audit ownership. Legacy
+Redis state and coordinated rollout remain separately approval-blocked; passing
+prerequisite tests does not pass the end-to-end deletion scenarios below.
+
 | Scenario | Expected |
 | --- | --- |
 | Deletion while a task is mid provider call | Heartbeat sees the suspension; execution stops within the stop grace; nothing is published; the task ends `failed`/`account_suspended`; purge waits for it. |

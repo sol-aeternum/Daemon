@@ -44,6 +44,7 @@ from orchestrator.speech.cache import audio_filename, cached_audio, run_cache_io
 from orchestrator.speech.contracts import SpeechError, SpeechRequest, canonical_voice
 from orchestrator.speech.service import get_speech_provider, synthesize as synthesize_speech
 from orchestrator.services.identity.rate_limiter import RateLimitUnavailableError
+from orchestrator.redis_jobs import enqueue_account_job
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
     PepperValidationError,
@@ -1926,7 +1927,11 @@ async def text_to_speech(
             raise SpeechError("speech_admission_unavailable")
         try:
             decision = await limiter.check(
-                "speech:tts", "user_id", str(auth.user_id), RateLimitPolicy(12, 60)
+                "speech:tts",
+                "user_id",
+                str(auth.user_id),
+                RateLimitPolicy(12, 60),
+                owner_id=str(auth.user_id),
             )
         except RateLimitUnavailableError as exc:
             raise SpeechError("speech_admission_unavailable") from exc
@@ -2119,6 +2124,7 @@ async def _enforce_chat_rate_limit(
             auth=auth,
             settings=settings,
         ),
+        owner_id=str(auth.user_id),
     )
 
 
@@ -2288,20 +2294,26 @@ async def _durable_chat(
         # Latency only: the dispatch sweep recovers a lost or failed wake-up.
         try:
             wake_seq = await store.mark_woken(accepted.task_id)
-            await app_state.redis.enqueue_job(
+            await enqueue_account_job(
+                app_state.redis,
                 "run_chat_task",
                 str(accepted.task_id),
-                _job_id=f"task:{accepted.task_id}:{wake_seq}",
+                user_id=auth.user_id,
+                job_id=f"task:{accepted.task_id}:{wake_seq}",
+                settings=settings,
             )
         except Exception:
             logger.warning("Task wake-up enqueue failed; the sweep will recover it")
         if needs_title:
             try:
-                await app_state.redis.enqueue_job(
+                await enqueue_account_job(
+                    app_state.redis,
                     "generate_title",
                     str(accepted.conversation_id),
-                    user_message,
-                    _job_id=f"title:{accepted.conversation_id}",
+                    str(accepted.user_message_id),
+                    user_id=auth.user_id,
+                    job_id=f"title:{accepted.conversation_id}",
+                    settings=settings,
                     _defer_by=0,
                 )
             except Exception:
@@ -2760,7 +2772,7 @@ async def chat(
 
             # Insert user message
             if conversation_uuid:
-                await store.insert_message(
+                inserted_user_message = await store.insert_message(
                     conversation_id=conversation_uuid,
                     user_id=user_id,
                     role="user",
@@ -2773,11 +2785,14 @@ async def chat(
                     not conversation_exists or existing_draft_needs_title
                 ):
                     try:
-                        await app_state.redis.enqueue_job(
+                        await enqueue_account_job(
+                            app_state.redis,
                             "generate_title",
                             str(conversation_uuid),
-                            user_message,
-                            _job_id=f"title:{conversation_uuid}",
+                            str(inserted_user_message["id"]),
+                            user_id=user_id,
+                            job_id=f"title:{conversation_uuid}",
+                            settings=settings,
                             _defer_by=0,
                         )
                     except Exception:

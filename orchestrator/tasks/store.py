@@ -596,7 +596,7 @@ class TaskStore:
 
     async def due_for_wakeup(
         self, *, limit: int = 50, rewake_after_s: float = 60.0
-    ) -> list[tuple[uuid.UUID, int]]:
+    ) -> list[tuple[uuid.UUID, int, uuid.UUID]]:
         """Find queued or expired-lease tasks that need a wake-up, and record it.
 
         A task woken within ``rewake_after_s`` is skipped so a queue backlog is
@@ -617,12 +617,12 @@ class TaskStore:
             )
             UPDATE tasks t SET wake_seq = t.wake_seq + 1, last_wake_at = now()
             FROM due WHERE t.id = due.id
-            RETURNING t.id, t.wake_seq
+            RETURNING t.id, t.wake_seq, t.user_id
             """,
             limit,
             rewake_after_s,
         )
-        return [(row["id"], int(row["wake_seq"])) for row in rows]
+        return [(row["id"], int(row["wake_seq"]), row["user_id"]) for row in rows]
 
     # ------------------------------------------------------------------ #
     # Worker lifecycle

@@ -630,6 +630,23 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def get_owned_message(
+        self, message_id: uuid.UUID, *, user_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        """Re-read one exact worker input, checking both ownership identities."""
+        row = await self._pool.fetchrow(
+            "SELECT * FROM messages WHERE id = $1 AND user_id = $2 AND conversation_id = $3",
+            message_id,
+            user_id,
+            conversation_id,
+        )
+        if row is None:
+            return None
+        message = dict(row)
+        message["content"] = self._enc.decrypt(message["content"])
+        self._decrypt_message_tool_traces(message)
+        return message
+
     async def get_messages_after_cursor(
         self,
         conversation_id: uuid.UUID,

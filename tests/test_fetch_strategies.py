@@ -102,9 +102,13 @@ def fetch_policy():
 
 @pytest.fixture
 def fetch_cache():
-    cache = FetchCache()
+    import uuid
+
+    cache = FetchCache(user_id=uuid.UUID(int=1))
     # Create an async mock for Redis
     mock_redis = AsyncMock()
+    mock_redis.eval.return_value = 1
+    mock_redis.sscan.return_value = (0, [])
     cache.redis = mock_redis
     cache._ensure_connection = AsyncMock(return_value=True)
     return cache
@@ -182,8 +186,10 @@ async def test_fetch_cache_preserves_unset_ttl(
 
     assert await fetch_cache.set(result.url, result) is True
 
-    fetch_cache.redis.set.assert_awaited_once()
-    assert fetch_cache.redis.set.await_args.kwargs["ex"] == 3600
+    fetch_cache.redis.eval.assert_awaited_once()
+    assert fetch_cache.redis.eval.await_args.args[-1] == 3600
+    assert fetch_cache.redis.eval.await_args.args[3] == fetch_cache.owner_index
+    fetch_cache.redis.set.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -208,8 +214,10 @@ async def test_fetch_cache_applies_explicit_ttl_setting(
 
     assert await fetch_cache.set(result.url, result) is True
 
-    fetch_cache.redis.set.assert_awaited_once()
-    assert fetch_cache.redis.set.await_args.kwargs["ex"] == 7200
+    fetch_cache.redis.eval.assert_awaited_once()
+    assert fetch_cache.redis.eval.await_args.args[-1] == 7200
+    assert fetch_cache.redis.eval.await_args.args[3] == fetch_cache.owner_index
+    fetch_cache.redis.set.assert_not_awaited()
 
 
 class TestDirectStrategy:

@@ -26,6 +26,13 @@ from orchestrator.worker.jobs import (
     SkillEvaluationJobResult,
     run_skill_evaluation_job,
 )
+from orchestrator.redis_jobs import account_job_id
+from tests.redis_jobs_support import install_fake_enqueue
+
+
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    install_fake_enqueue(monkeypatch, "orchestrator.daemon.enqueue_account_job")
 
 
 class TestPipelineHookIntegration:
@@ -123,7 +130,7 @@ class TestPipelineHookIntegration:
         assert call["args"][2] == str(conv_uuid)
         assert call["args"][3] == str(msg_uuid)
         assert call["args"][4] == 5
-        assert call["job_id"] == f"skill_eval:{conv_uuid}:{msg_uuid}"
+        assert call["job_id"] == account_job_id(user_uuid, f"skill_eval:{conv_uuid}:{msg_uuid}")
         assert call["defer_by"] == timedelta(seconds=30)
 
 

@@ -147,6 +147,7 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
         queue,
         "generate_summary_job",
         job_id=f"summary:{conversation_id}:100",
+        user_id=store.get_conversation.return_value["user_id"],
         defer_by=jobs.timedelta(seconds=1),
         args=(str(conversation_id), True),
     )

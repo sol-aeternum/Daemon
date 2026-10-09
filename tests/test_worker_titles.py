@@ -36,7 +36,7 @@ async def test_title_workers_do_not_generate_without_valid_editable_conversation
     conversation_id = uuid.uuid4()
 
     if job_name == "generate_title":
-        assert await jobs.generate_title(ctx, conversation_id, "hello") is None
+        assert await jobs.generate_title(ctx, conversation_id, uuid.uuid4()) is None
     else:
         result = await jobs.generate_conversation_title_job(ctx, conversation_id)
         expected = {
@@ -63,6 +63,8 @@ async def test_title_workers_report_only_persisted_titles(monkeypatch, job_name,
         return_value={"user_id": owner, "title": "New conversation", "title_locked": False}
     )
     store.get_messages = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
+    source_message_id = uuid.uuid4()
+    store.get_owned_message = AsyncMock(return_value={"role": "user", "content": "hello"})
     store.save_generated_conversation_title = AsyncMock(return_value=save_result)
     if save_result == "error":
         store.save_generated_conversation_title.side_effect = RuntimeError("save failed")
@@ -80,8 +82,11 @@ async def test_title_workers_report_only_persisted_titles(monkeypatch, job_name,
     monkeypatch.setattr(jobs, "account_compute", checked_scope)
     ctx = {"store": store, "db_pool": pool}
     if job_name == "generate_title":
-        result = await jobs.generate_title(ctx, conversation_id, "hello")
+        result = await jobs.generate_title(ctx, conversation_id, source_message_id)
         assert result == ("Generated title" if save_result is True else None)
+        store.get_owned_message.assert_awaited_once_with(
+            source_message_id, user_id=owner, conversation_id=conversation_id
+        )
     else:
         result = await jobs.generate_conversation_title_job(ctx, conversation_id)
         expected = (

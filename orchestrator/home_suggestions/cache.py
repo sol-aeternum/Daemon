@@ -12,6 +12,7 @@ from typing import Any
 
 from orchestrator.home_suggestions.contracts import CACHE_SECONDS, LEASE_SECONDS, canonical
 from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.redis_account import account_prefix
 
 SYNC = """
 local old = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '-1')
@@ -78,7 +79,7 @@ class SuggestionCache:
     def __init__(self, redis: Any, encryption: ContentEncryption, user_id: uuid.UUID) -> None:
         self.redis = redis
         self.encryption = encryption
-        self.prefix = f"home-suggestions:{{{user_id}}}"
+        self.prefix = f"{account_prefix(user_id)}:home-suggestions"
         self.keys = [
             f"{self.prefix}:{suffix}"
             for suffix in ("fence", "payload", "lease", "identity", "attempts")

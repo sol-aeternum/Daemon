@@ -257,7 +257,11 @@ async def stream_speech(
                 raise SpeechError("speech_admission_unavailable")
             try:
                 decision = await limiter.check(
-                    "speech:tts", "user_id", str(auth.user_id), RateLimitPolicy(12, 60)
+                    "speech:tts",
+                    "user_id",
+                    str(auth.user_id),
+                    RateLimitPolicy(12, 60),
+                    owner_id=str(auth.user_id),
                 )
             except RateLimitUnavailableError:
                 raise SpeechError("speech_admission_unavailable") from None

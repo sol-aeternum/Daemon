@@ -105,7 +105,8 @@ def setup(tmp_path: Path, monkeypatch):
         authorities.append(authority)
         return authority
 
-    async def check(*arguments):
+    async def check(*arguments, owner_id):
+        assert owner_id == str(owner["id"]) == arguments[2]
         admissions.append(arguments)
         return SimpleNamespace(allowed=True)
 

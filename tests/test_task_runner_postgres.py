@@ -35,6 +35,17 @@ from tests.durable_tasks_support import (
 env = durable_env_fixture()
 
 
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    from tests.redis_jobs_support import install_fake_enqueue
+
+    install_fake_enqueue(
+        monkeypatch,
+        "orchestrator.tasks.runner.enqueue_account_job",
+        "orchestrator.daemon.enqueue_account_job",
+    )
+
+
 MOCK_TEXT = "Scripted answer from a fake provider."
 #: Chunks the fake provider streams, joined they make MOCK_TEXT.
 CHUNKS = ["Scripted ", "answer ", "from ", "a ", "fake ", "provider."]
@@ -221,7 +232,10 @@ async def test_sweep_wakes_lost_work_with_unique_job_ids(env: Env):
     task_ids = {args[0] for _, args, _ in redis.enqueued}
     assert names == {"run_chat_task"}
     assert task_ids == {str(first.task_id), str(second.task_id)}
-    assert all(job_id.startswith("task:") for job_id in job_ids) and len(job_ids) == 2
+    from orchestrator.redis_account import account_prefix
+
+    assert all(job_id.startswith(account_prefix(env.alice) + ":job:task:") for job_id in job_ids)
+    assert len(job_ids) == 2
 
 
 # --------------------------------------------------------------------------- #

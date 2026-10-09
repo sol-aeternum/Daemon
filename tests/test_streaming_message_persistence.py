@@ -4,15 +4,23 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from tests.redis_jobs_support import install_fake_enqueue
+from orchestrator.redis_jobs import account_job_id
+
 
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.daemon import stream_sse_chat
+
+
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    install_fake_enqueue(monkeypatch, "orchestrator.daemon.enqueue_account_job")
 
 
 class FakeMemoryStore:
@@ -72,6 +80,7 @@ async def _collect_stream(
     queue: FakeDedupQueue | None = None,
     conversation_uuid: uuid.UUID | None = None,
     is_disconnected=None,
+    user_id: uuid.UUID | None = None,
 ) -> list[str]:
     async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         async for event in completion_events:
@@ -89,7 +98,7 @@ async def _collect_stream(
             conversation_id=f"conv_{effective_conversation_uuid.hex}",
             is_disconnected=is_disconnected or _not_disconnected,
             memory_store=store,
-            user_id=uuid.uuid4(),
+            user_id=user_id or uuid.uuid4(),
             conversation_uuid=effective_conversation_uuid,
             queue=queue,
         ):
@@ -264,6 +273,9 @@ async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> Non
 
     conversation_uuid = uuid.uuid4()
     queue = FakeDedupQueue()
+    owner = uuid.uuid4()
+    extraction_id = account_job_id(owner, f"extract:{conversation_uuid}")
+    followup_id = account_job_id(owner, f"extract:{conversation_uuid}:followup")
 
     for _ in range(5):
         await _collect_stream(
@@ -271,6 +283,7 @@ async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> Non
             successful_completion(),
             queue=queue,
             conversation_uuid=conversation_uuid,
+            user_id=owner,
         )
 
     extraction_attempts = [
@@ -278,36 +291,53 @@ async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> Non
         for attempt in queue.attempts
         if attempt["args"]
         and attempt["args"][0] == "extract_memories"
-        and attempt.get("job_id") == f"extract:{conversation_uuid}"
+        and attempt.get("job_id") == extraction_id
     ]
 
     assert len(extraction_attempts) == 5
-    assert {attempt["job_id"] for attempt in extraction_attempts} == {
-        f"extract:{conversation_uuid}"
-    }
+    assert {attempt["job_id"] for attempt in extraction_attempts} == {extraction_id}
     assert all(attempt["defer_by"] == timedelta(seconds=30) for attempt in extraction_attempts)
     # The first duplicate enqueue schedules a follow-up extraction so turns
     # that arrive during an in-flight run are not lost; subsequent duplicates
     # collapse into the same deterministic follow-up _job_id and arq drops them.
     assert queue.accepted_job_ids == {
-        f"extract:{conversation_uuid}",
-        f"extract:{conversation_uuid}:followup",
+        extraction_id,
+        followup_id,
     }
     followup_attempts = [
-        attempt
-        for attempt in queue.attempts
-        if attempt.get("job_id") == f"extract:{conversation_uuid}:followup"
+        attempt for attempt in queue.attempts if attempt.get("job_id") == followup_id
     ]
     assert len(followup_attempts) == 4
     assert all(attempt["defer_by"] == timedelta(seconds=60) for attempt in followup_attempts)
 
 
-def test_extract_memories_worker_registration_does_not_retain_result_key() -> None:
+def test_extract_memories_serializes_for_audit_but_has_no_success_completion() -> None:
     from orchestrator.worker.worker import worker
+    from arq.jobs import JobResult
+    from orchestrator.worker.audit import SERIALIZATION_ONLY_JOBS
 
     extract_function = worker.functions["extract_memories"]
 
-    assert extract_function.keep_result_s == 0
+    assert extract_function.keep_result_s == 3600  # In-memory audit bytes only.
+    assert "extract_memories" in SERIALIZATION_ONLY_JOBS
+    # The boundary's successful extraction policy has no Redis retention;
+    # terminal native lifecycle/result-key absence is covered by audit tests.
+    outcome = JobResult(
+        function="extract_memories",
+        args=(),
+        kwargs={},
+        job_try=1,
+        enqueue_time=datetime.now(timezone.utc),
+        score=None,
+        success=True,
+        result={},
+        start_time=datetime.now(timezone.utc),
+        finish_time=datetime.now(timezone.utc),
+        queue_name="arq:queue",
+        job_id="unused",
+    )
+    identifier = account_job_id(uuid.UUID(int=1), "extract:fixture")
+    assert worker._completion_marker(identifier, outcome, 3600, False) is None
 
 
 # --- Explicit disconnect / cancellation must never look like a success (#316) ---
