@@ -184,7 +184,6 @@ from orchestrator.request_id import (
     RequestIdMiddleware,
     _OuterCORSMiddleware,
     _OuterRequestIdMiddleware,
-    get_client_request_id,
     get_request_id,
 )
 
@@ -264,26 +263,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         _validate_startup_config(settings)
-    except UnsafeDatabaseCredentialError as exc:
-        logger.critical("Unsafe database credential configuration: %s", exc)
+    except UnsafeDatabaseCredentialError:
+        logger.critical("Unsafe database credential configuration")
         raise
-    except UnsafeProductionServerConfigError as exc:
-        logger.critical("Unsafe production server configuration: %s", exc)
+    except UnsafeProductionServerConfigError:
+        logger.critical("Unsafe production server configuration")
         raise
-    except PepperValidationError as exc:
-        logger.critical("Production pepper validation failed: %s", exc)
+    except PepperValidationError:
+        logger.critical("Production pepper validation failed")
         raise
-    except HostedIdentityConfigError as exc:
-        logger.critical("Hosted identity config validation failed: %s", exc)
+    except HostedIdentityConfigError:
+        logger.critical("Hosted identity config validation failed")
         raise
-    except InternalProxyConfigError as exc:
-        logger.critical("Internal proxy config validation failed: %s", exc)
+    except InternalProxyConfigError:
+        logger.critical("Internal proxy config validation failed")
         raise
-    except EncryptionInitError as exc:
-        logger.critical("Encryption config validation failed: %s", exc)
+    except EncryptionInitError:
+        logger.critical("Encryption config validation failed")
         raise
-    except HostSecurityConfigError as exc:
-        logger.critical("Host security config validation failed: %s", exc)
+    except HostSecurityConfigError:
+        logger.critical("Host security config validation failed")
         raise
 
     state = await init_app_state(settings)
@@ -302,7 +301,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 if backfilled:
                     logger.info("Backfilled content_hash for %s current memories", backfilled)
             except Exception:
-                logger.warning("Failed to backfill memory content hashes", exc_info=True)
+                logger.warning("Failed to backfill memory content hashes")
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
         # Monitored inference routes are admitted from the ZDR attestation snapshot,
@@ -321,7 +320,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if deleted > 0:
                 logger.info("Startup session cleanup deleted %d stale sessions", deleted)
         except Exception:
-            logger.warning("Startup session cleanup failed", exc_info=True)
+            logger.warning("Startup session cleanup failed")
 
         cleanup_task, cleanup_shutdown_event = await start_session_cleanup_task(
             state.db_pool,
@@ -356,7 +355,7 @@ async def _backfill_skill_projections(db_pool: asyncpg.Pool) -> None:
             len(results),
         )
     except Exception:
-        logger.warning("Skill projection backfill failed", exc_info=True)
+        logger.warning("Skill projection backfill failed")
 
 
 async def _sync_repo_skills(db_pool: asyncpg.Pool) -> None:
@@ -376,23 +375,15 @@ async def _sync_repo_skills(db_pool: asyncpg.Pool) -> None:
             result.total_errors,
         )
     except Exception:
-        logger.warning("Repo skill sync failed", exc_info=True)
+        logger.warning("Repo skill sync failed")
 
 
 def _publish_setup_token(settings: Settings, token: str, *, recovery: bool = False) -> None:
-    path = write_setup_token_file(settings.daemon_setup_token_file, token)
+    write_setup_token_file(settings.daemon_setup_token_file, token)
     if recovery:
-        logger.info(
-            ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup "
-            "and enter the setup token from %s",
-            path,
-        )
+        logger.info("Daemon recovery: all sessions expired; setup is required")
         return
-    logger.info(
-        ">>> Daemon setup required. Open http://<host>:<port>/setup "
-        "and enter the setup token from %s",
-        path,
-    )
+    logger.info("Daemon setup required")
 
 
 async def _check_first_boot_setup(state: AppState) -> None:
@@ -443,7 +434,7 @@ async def _check_first_boot_setup(state: AppState) -> None:
                 if plaintext is not None:
                     _publish_setup_token(settings, plaintext, recovery=True)
     except Exception:
-        logger.warning("First-boot setup check failed", exc_info=True)
+        logger.warning("First-boot setup check failed")
 
 
 _is_production = get_settings().daemon_environment.lower().strip() == "production"
@@ -501,7 +492,7 @@ def _sse_error_message(request_id: str | None) -> str:
 async def _generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Return a sanitized 500 response for any unhandled exception.
 
-    The full traceback is logged server-side with the request id; the
+    A content-free failure marker is logged server-side; the
     response body carries only the generic message and the request id,
     plus an X-Request-ID header. Route handlers that raise FastAPI's
     ``HTTPException`` are not affected — FastAPI's default handler still
@@ -511,13 +502,7 @@ async def _generic_exception_handler(request: Request, exc: Exception) -> JSONRe
     """
 
     request_id = get_request_id(request) or "-"
-    client_request_id = get_client_request_id(request)
-    logger.exception(
-        "Unhandled exception (request_id=%s, client_request_id=%s): %s",
-        request_id,
-        client_request_id or "-",
-        exc,
-    )
+    logger.error("Unhandled exception")
     return JSONResponse(
         status_code=500,
         content={"detail": _GENERIC_INTERNAL_ERROR, "request_id": request_id},
@@ -609,10 +594,7 @@ class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
 try:
     _allowed_hosts = get_settings().resolve_allowed_hosts()
 except HostSecurityConfigError as _host_exc:
-    logger.critical(
-        "Host security config invalid; startup will abort in lifespan: %s",
-        _host_exc,
-    )
+    logger.critical("Host security config invalid; startup will abort in lifespan")
     _allowed_hosts = ["*"]
 if _allowed_hosts == ["*"]:
     logger.warning(
@@ -1038,8 +1020,8 @@ def _admit_and_log_decision(
             request_id=request_id,
             endpoint=endpoint,
             auto=not explicit,
-            # A caller-supplied model string is logged only when it looks like a model
-            # id, so arbitrary text sent in the model field never reaches the log.
+            # This pattern is only an early shape check; routing_log additionally
+            # requires a trusted configuration identity before emitting it.
             explicit_model=(
                 decision.model
                 if explicit and _LOGGABLE_MODEL_ID.fullmatch(decision.model)
@@ -1264,7 +1246,7 @@ async def _persist_council_output(
             status="error" if failed else "complete",
         )
     except Exception:
-        logger.warning(log_message, exc_info=True)
+        logger.warning("Council event persistence failed")
 
 
 async def _stream_council_events(
@@ -1335,7 +1317,7 @@ async def health(request: Request) -> dict[str, Any]:
         state = get_app_state(request)
         base["services"] = await check_db_health(state)
     except Exception:
-        logger.warning("Health check failed", exc_info=True)
+        logger.warning("Health check failed")
         base["status"] = "degraded"
         base["error"] = "Health check unavailable"
     return base
@@ -1452,8 +1434,8 @@ async def openai_list_models(
                 )
             )
 
-    except Exception as e:
-        logger.warning(f"Failed to fetch OpenRouter models: {e}")
+    except Exception:
+        logger.warning("Failed to fetch OpenRouter models")
         # Public catalog availability is not an inference approval signal.
 
     return OpenAIModelList(data=models)
@@ -1608,13 +1590,13 @@ async def openai_chat_completions(
                 await timezone_store.get_user_settings(auth.user_id)
             )
     except Exception:
-        logger.warning("User timezone unavailable; using deployment default", exc_info=True)
+        logger.warning("User timezone unavailable; using deployment default")
     try:
         app_state = request.app.state.app_state
         db_pool = getattr(app_state, "db_pool", None)
         skills_block = await build_skill_index(db_pool=db_pool)
     except Exception:
-        logger.warning("Skills injection failed, continuing without skills", exc_info=True)
+        logger.warning("Skills injection failed, continuing without skills")
         skills_block = ""
     if skills_block and skills_block not in system_prompt:
         system_prompt = f"{system_prompt.rstrip()}\n\n{skills_block}"
@@ -1717,11 +1699,7 @@ async def openai_chat_completions(
                 request_id_local = get_request_id(request)
                 capacity = compute_error(e)
                 if capacity is None:
-                    logger.exception(
-                        "Streaming chat completion error (request_id=%s): %s",
-                        request_id_local,
-                        e,
-                    )
+                    logger.error("Streaming chat completion error")
 
                 error_chunk = OpenAIChatStreamChunk(
                     id=f"chatcmpl-{new_request_id()}",
@@ -1835,7 +1813,7 @@ async def openai_chat_completions(
                 raise HTTPException(
                     status_code=503, detail={"code": capacity.code, "message": capacity.message}
                 ) from exc
-            logger.exception("OpenAI-compatible chat completion failed (request_id=%s)", request_id)
+            logger.error("OpenAI-compatible chat completion failed")
             raise HTTPException(status_code=500, detail=_GENERIC_INTERNAL_ERROR) from exc
 
 
@@ -1987,9 +1965,7 @@ async def text_to_speech(
                 await asyncio.gather(task, return_exceptions=True)
         else:
             logger.info(
-                "speech_cache_hit provider=%s model=%s characters=%d",
-                provider.name,
-                provider.model,
+                "speech_cache_hit characters=%d",
                 len(speech.text),
             )
         return {
@@ -2302,7 +2278,7 @@ async def _durable_chat(
     except TaskNotFound as exc:
         raise HTTPException(status_code=404, detail="Conversation not found") from exc
     except Exception as exc:
-        logger.exception("Durable chat acceptance failed (request_id=%s)", request_id)
+        logger.error("Durable chat acceptance failed")
         raise HTTPException(
             status_code=503,
             detail={"code": "task_unavailable", "message": "Request could not be saved; retry"},
@@ -2328,8 +2304,8 @@ async def _durable_chat(
                     _job_id=f"title:{accepted.conversation_id}",
                     _defer_by=0,
                 )
-            except Exception as enqueue_error:
-                logger.warning("Failed to enqueue title generation: %s", enqueue_error)
+            except Exception:
+                logger.warning("Failed to enqueue title generation")
 
     return _observe_task_response(
         store, app_state, auth, accepted.task_id, request_id, settings, request
@@ -2436,7 +2412,7 @@ async def _refuse_if_task_active(
     except Exception:
         # The database is unreachable: no worker can be advancing a task
         # either, and request-bound chat keeps its own degradation path.
-        logger.warning("Active-task check failed; continuing", exc_info=True)
+        logger.warning("Active-task check failed; continuing")
         return
     if active is not None:
         raise HTTPException(
@@ -2498,7 +2474,7 @@ async def _durable_replay(
         # Fail closed: this key may belong to accepted durable work (which
         # the worker runs whatever the flag says), so running the request
         # again request-bound could repeat it. The client retries.
-        logger.warning("Task replay lookup failed (key present)", exc_info=True)
+        logger.warning("Task replay lookup failed (key present)")
         raise HTTPException(
             status_code=503,
             detail={
@@ -2770,11 +2746,8 @@ async def chat(
                 ):
                     try:
                         prior_message_count = await store.count_messages(conv_uuid)
-                    except Exception as draft_probe_error:
-                        logger.warning(
-                            "Skipping title scheduling, could not read draft state: %s",
-                            draft_probe_error,
-                        )
+                    except Exception:
+                        logger.warning("Skipping title scheduling, could not read draft state")
                     else:
                         existing_draft_needs_title = prior_message_count == 0
             else:
@@ -2807,8 +2780,8 @@ async def chat(
                             _job_id=f"title:{conversation_uuid}",
                             _defer_by=0,
                         )
-                    except Exception as enqueue_error:
-                        logger.warning("Failed to enqueue title generation: %s", enqueue_error)
+                    except Exception:
+                        logger.warning("Failed to enqueue title generation")
         except HTTPException:
             raise
         except Exception as e:
@@ -2817,7 +2790,7 @@ async def chat(
                     status_code=503, detail="Bound conversation could not be saved"
                 ) from e
             logger.warning(
-                "Conversation persistence failed, continuing without persistence: %s", e
+                "Conversation persistence failed, continuing without persistence"
             )  # Graceful degradation - continue without persistence
             # A refreshed client may have no history of its own. Preserve readable
             # prior turns, appending the unsaved question rather than replacing one.
@@ -2935,7 +2908,7 @@ async def chat(
         db_pool = getattr(app_state, "db_pool", None)
         skills_block = await build_skill_index(db_pool=db_pool)
     except Exception:
-        logger.warning("Skills injection failed, continuing without skills", exc_info=True)
+        logger.warning("Skills injection failed, continuing without skills")
         skills_block = ""
     if store and user_id and conversation_uuid:
         try:
@@ -2947,7 +2920,7 @@ async def chat(
             user_timezone = extract_timezone_name(user_settings)
             preferences_block = format_preferences_block(user_settings)
         except Exception:
-            logger.warning("Memory injection failed, using base prompt", exc_info=True)
+            logger.warning("Memory injection failed, using base prompt")
 
     if skills_block and skills_block not in assembled_system_prompt:
         assembled_system_prompt = f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
@@ -2969,7 +2942,7 @@ async def chat(
                 )
             except Exception as error:
                 raise_if_embedding_accounting_error(error)
-                logger.warning("Memory injection failed, using base prompt", exc_info=True)
+                logger.warning("Memory injection failed, using base prompt")
         if skills_block and skills_block not in prompt:
             prompt = f"{prompt.rstrip()}\n\n{skills_block}"
         return prompt
@@ -3095,20 +3068,12 @@ async def chat(
             model_for_events = selected_model or actual_model or model
             # Sanitize the SSE error payload — never emit `str(e)` to the
             # client (issue #79 round-1 finding). The request id is the
-            # correlation handle; the full exception is logged server-side.
+            # correlation handle; logs contain only a content-free failure marker.
             # Capacity errors carry their own sanitized code and message.
             if capacity is None:
-                logger.exception(
-                    "Native /chat streaming error (request_id=%s): %s",
-                    request_id,
-                    exc,
-                )
+                logger.error("Native /chat streaming error")
             else:
-                logger.info(
-                    "Native /chat capacity refusal (request_id=%s code=%s)",
-                    request_id,
-                    capacity.code,
-                )
+                logger.info("Native /chat capacity refusal")
             # Emit a minimal `final` + `error` + `done` sequence to keep the SSE contract stable.
             yield sse(
                 "final",

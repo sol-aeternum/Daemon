@@ -230,9 +230,10 @@ async def _user_matches_dream_schedule_hour(
     try:
         user_now = current_utc.astimezone(ZoneInfo(timezone_name))
     except Exception:
+        # Account identifiers and stored settings values are never logged,
+        # even when the value failed to parse.
         logger.warning(
-            "Invalid user timezone for dreaming schedule; falling back to server schedule",
-            extra={"user_id": str(user_id), "timezone": timezone_name},
+            "Invalid user timezone for dreaming schedule; falling back to server schedule"
         )
         return True
 
@@ -358,10 +359,9 @@ async def _extract_memories_once(
                 _as_uuid(conversation_id)
             )
         except Exception:
-            logger.warning(
-                "Failed to consume summary_continuation_pending for conversation %s",
-                conversation_id,
-            )
+            # Conversation resource identifiers are not logged (they can be
+            # reconstructed from job arguments/ARQ results instead).
+            logger.warning("Failed to consume summary_continuation_pending")
 
     if continuation_pending:
         queue = ctx.get("redis")
@@ -384,9 +384,7 @@ async def _extract_memories_once(
                 # the extraction job is retried rather than silently
                 # leaving the remaining summary backlog unscheduled.
                 logger.warning(
-                    "Failed to enqueue recovered summary continuation for "
-                    "conversation %s; raising arq Retry",
-                    conversation_id,
+                    "Failed to enqueue recovered summary continuation; raising arq Retry"
                 )
                 raise Retry(defer=5) from None
         # Whether the enqueue succeeded or not, the flag is already
@@ -607,11 +605,7 @@ async def _extract_memories_once(
         try:
             await enqueue_entity_resolution(new_memories)
         except Exception:
-            logger.warning(
-                "Failed to enqueue entity resolution job for user %s conversation %s",
-                user_id,
-                conversation_id,
-            )
+            logger.warning("Failed to enqueue entity resolution job")
 
     if extraction_success and summary_continuation_needed:
         try:
@@ -641,9 +635,7 @@ async def _extract_memories_once(
             # remaining summary backlog unscheduled (Codex P2 on PR
             # #165, ``worker/jobs.py:295``).
             logger.warning(
-                "Failed to enqueue summary continuation for conversation %s; "
-                "raising arq Retry to reschedule extraction",
-                conversation_id,
+                "Failed to enqueue summary continuation; raising arq Retry to reschedule extraction"
             )
             raise Retry(defer=5) from None
 
@@ -697,11 +689,7 @@ async def _extract_memories_once(
         except Retry:
             raise
         except Exception:
-            logger.warning(
-                "Failed to enqueue extraction continuation for conversation %s",
-                conversation_id,
-                exc_info=True,
-            )
+            logger.warning("Failed to enqueue extraction continuation")
             raise Retry(defer=5) from None
         if enqueued is None:
             raise Retry(defer=5)
@@ -737,17 +725,12 @@ async def extract_memories(
     except Retry:
         raise
     except TimeoutError:
-        logger.warning(
-            "Extraction reached its internal deadline for conversation %s; retrying",
-            conversation_id,
-        )
+        logger.warning("Extraction reached its internal deadline; retrying")
         raise Retry(defer=5) from None
     except Exception:
-        logger.warning(
-            "Recoverable extraction failure for conversation %s; retrying",
-            conversation_id,
-            exc_info=True,
-        )
+        # Store/provider failures can carry conversation-derived text and
+        # are never logged; the retry signal is preserved.
+        logger.warning("Recoverable extraction failure; retrying")
         raise Retry(defer=5) from None
 
 
@@ -789,7 +772,7 @@ async def generate_title(
     try:
         existing = await store_obj.get_conversation(conv_id)
     except Exception:
-        logger.warning("Failed to check title lock", exc_info=True)
+        logger.warning("Failed to check title lock")
         return None
     if not existing or bool(existing.get("title_locked")):
         return None
@@ -810,7 +793,7 @@ async def generate_title(
             conv_id, title=title, expected_title=expected_title
         )
     except Exception:
-        logger.warning("Failed to persist conversation title", exc_info=True)
+        logger.warning("Failed to persist conversation title")
         return None
     if not saved:
         return None
@@ -830,7 +813,7 @@ async def generate_conversation_title_job(
     try:
         conversation = await store_obj.get_conversation(conv_id)
     except Exception:
-        logger.warning("Failed to check title lock", exc_info=True)
+        logger.warning("Failed to check title lock")
         return {"status": "error", "reason": "read_failed"}
     if not conversation:
         return {"status": "not_found"}
@@ -871,7 +854,7 @@ async def generate_conversation_title_job(
             conv_id, title=title, expected_title=expected_title
         )
     except Exception:
-        logger.warning("Failed to persist conversation title", exc_info=True)
+        logger.warning("Failed to persist conversation title")
         return {"status": "error", "reason": "persist_failed"}
     if not saved:
         return {"status": "skipped", "reason": "title_changed_or_locked"}
@@ -1109,16 +1092,11 @@ def _cleanup_expired_artifacts(base_dir: Path, *, artifact_kind: str) -> dict[st
                 if mtime < cutoff:
                     artifact.unlink()
                     deleted += 1
-                    logger.info("Deleted old generated %s: %s", artifact_kind, artifact.name)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to process generated %s %s: %s",
-                    artifact_kind,
-                    artifact.name,
-                    exc,
-                )
-    except OSError as exc:
-        logger.warning("Failed to scan generated %s directory: %s", artifact_kind, exc)
+                    logger.info("Deleted old generated %s artifact", artifact_kind)
+            except Exception:
+                logger.warning("Failed to process generated %s artifact", artifact_kind)
+    except OSError:
+        logger.warning("Failed to scan generated %s directory", artifact_kind)
 
     return {"scanned": scanned, "deleted": deleted}
 
@@ -1245,7 +1223,7 @@ async def run_dreaming_job(
             else:
                 results["dream_runs_skipped"] += 1
         except Exception as error:
-            logger.warning("Dreaming job failed for user %s: %s", uid, error, exc_info=True)
+            logger.warning("Dreaming job failed")
             results["users_processed"] += 1
             results["dream_runs_failed"] += 1
             results["errors"].append(f"{uid}: {error}")
@@ -1356,7 +1334,7 @@ async def consolidate_memories(
     else:
         # Periodic job - find all users with eligible L1 memories
         user_ids = await store.list_users_with_eligible_l1_memories()
-        logger.info(f"Found {len(user_ids)} users with eligible memories for consolidation")
+        logger.info("Found %d users with eligible memories for consolidation", len(user_ids))
 
     # Process each user
     for uid in user_ids:
@@ -1367,11 +1345,11 @@ async def consolidate_memories(
             for cluster in clusters:
                 try:
                     if not isinstance(cluster, MemoryCluster):
-                        logger.warning(f"Invalid cluster type for user {uid}: {type(cluster)}")
+                        logger.warning("Invalid cluster type received during consolidation")
                         continue
 
                     if len(cluster) < 3:
-                        logger.debug(f"Cluster too small, skipping: {len(cluster)} members")
+                        logger.debug("Cluster too small, skipping: %d members", len(cluster))
                         continue
 
                     async with account_compute(
@@ -1389,31 +1367,38 @@ async def consolidate_memories(
                         results["memories_created"] += len(created)
                         results["memories_demoted"] += len(cluster.members)
                         logger.info(
-                            f"Consolidated cluster for user {uid}: "
-                            f"created {len(created)} summaries from {len(cluster.members)} sources"
+                            "Consolidated cluster: created %d summaries from %d sources",
+                            len(created),
+                            len(cluster.members),
                         )
                     else:
-                        logger.warning(
-                            f"Consolidation produced no memories for cluster in user {uid}"
-                        )
+                        logger.warning("Consolidation produced no memories for a cluster")
 
                 except Exception as e:
+                    # error_msg stays in the returned job result (kept for
+                    # the worker result contract); it is not duplicated into
+                    # application logs.
                     error_msg = f"Cluster consolidation failed for user {uid}: {e}"
-                    logger.warning(error_msg, exc_info=True)
+                    logger.warning("Cluster consolidation failed")
                     results["errors"].append(error_msg)
 
             results["users_processed"] += 1
 
         except Exception as e:
+            # error_msg stays in the returned job result only.
             error_msg = f"User consolidation failed for {uid}: {e}"
-            logger.warning(error_msg, exc_info=True)
+            logger.warning("User consolidation failed")
             results["errors"].append(error_msg)
 
     # Summary logging
     logger.info(
-        f"Consolidation complete: {results['clusters_processed']}/{results['clusters_found']} "
-        f"clusters processed, {results['memories_created']} memories created, "
-        f"{results['memories_demoted']} sources demoted, {len(results['errors'])} errors"
+        "Consolidation complete: %d/%d clusters processed, %d memories created, "
+        "%d sources demoted, %d errors",
+        results["clusters_processed"],
+        results["clusters_found"],
+        results["memories_created"],
+        results["memories_demoted"],
+        len(results["errors"]),
     )
 
     results["error_count"] = len(results["errors"])
@@ -1508,13 +1493,9 @@ async def run_skill_evaluation_job(
             error_count=0,
         )
     except Exception as e:
-        logger.warning(
-            "Skill evaluation job failed for user %s conversation %s: %s",
-            user_id,
-            conversation_id,
-            e,
-            exc_info=True,
-        )
+        # Account/conversation identifiers and exception text are never
+        # logged; ``reason``/``errors`` in the returned result keep them.
+        logger.warning("Skill evaluation job failed")
         return SkillEvaluationJobResult(
             status="error",
             classification="error",
@@ -1599,8 +1580,8 @@ async def resolve_entities_job(
                 content = memory.get("content", "")
                 slot = memory.get("memory_slot")
                 memory_contents.append((content, memory_uuid, slot))
-        except Exception as e:
-            logger.warning("Failed to fetch memory %s for entity resolution: %s", memory_uuid, e)
+        except Exception:
+            logger.warning("Failed to fetch memory for entity resolution")
             continue
 
     if not memory_contents:
@@ -1626,7 +1607,7 @@ async def resolve_entities_job(
         results["memories_processed"] = len(memory_contents)
 
     except Exception as e:
-        logger.warning("Entity resolution failed for user %s: %s", uid, e, exc_info=True)
+        logger.warning("Entity resolution failed")
         results["status"] = "error"
         results["errors"].append(f"entity_resolution_failed: {e}")
         results["error_count"] = len(results["errors"])
@@ -1729,8 +1710,9 @@ async def run_consolidation_nudge_job(
             results["actions"].extend(user_result["actions"])
             results["errors"].extend(user_result["errors"])
         except Exception as e:
+            # error_msg stays in the returned job result only.
             error_msg = f"User {uid} consolidation nudge failed: {e}"
-            logger.warning(error_msg, exc_info=True)
+            logger.warning("User consolidation nudge failed")
             results["errors"].append(error_msg)
 
     results["error_count"] = len(results["errors"])
@@ -2095,7 +2077,7 @@ async def _apply_delete_action(
                 reason=f"delete failed: {e}",
             )
         except Exception:
-            logger.warning("Failed to mark consolidation delete audit row failed", exc_info=True)
+            logger.warning("Failed to mark consolidation delete audit row failed")
         return {"deleted": False, "reason": str(e), "audit_id": audit_id}
 
 

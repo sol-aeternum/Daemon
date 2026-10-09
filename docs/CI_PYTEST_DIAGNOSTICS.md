@@ -70,6 +70,14 @@ fictional subprocesses. `tests/test_ci_workflow_gating.py` checks the blocking
 gate, nested CI bounds, upload ordering, retention and exact artifact allowlist.
 Synthetic failure-path results are not reproduction of the real CI stall.
 
+Fractional deadline coverage uses a controlled ABRT-resistant shell sleeper with
+the real GNU supervisor, pins unrounded deadline/grace arguments, and checks
+forced cleanup and artifact/privacy/core-file bounds. Separate real-pytest
+collection coverage still requires the synthetic module in the abort stack;
+the fractional case does not assume pytest starts collecting within 0.5 seconds
+([#496](https://github.com/sol-aeternum/Daemon/issues/496)). Production deadlines
+and runner behavior are unchanged.
+
 For the next real stalled run, retain the commit/run ID, last test ID, stack
 dump and whether the wait is in collection, setup, call, teardown or shutdown.
 Use that evidence to isolate the wait and test order dependence against unchanged

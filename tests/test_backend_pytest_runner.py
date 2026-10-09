@@ -8,7 +8,8 @@ the repository conftest or .env: each case dir carries its own minimal
 ``pytest.ini``, is passed to pytest explicitly, and runs with a stripped
 environment. Subprocess bounds make sure a defective runner can never hang
 the outer suite, and timed-out process groups are SIGKILLed before asserting.
-Contract tests substitute an offline uv shim while retaining real pytest.
+Most contract tests substitute an offline uv shim while retaining real pytest;
+fractional deadlines use a controlled sleeper to avoid pytest startup timing.
 """
 
 from __future__ import annotations
@@ -253,6 +254,41 @@ def _write_fake_uv(tmp: Path) -> Path:
         encoding="utf-8",
     )
     script_path.chmod(0o755)
+    return bin_dir
+
+
+def _write_fractional_deadline_tools(tmp: Path) -> Path:
+    """Record decimal forwarding and stall without paying pytest startup cost.
+
+    The real GNU timeout still supervises the production pipeline. Its uv
+    substitute ignores ABRT and records its own pid before execing a sleeper,
+    so the test also verifies that kill-after removes the timed process.
+    Python abort/collection stacks remain covered by the real-uv tests below.
+    """
+
+    bin_dir = tmp / "fakebin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/usr/bin/env bash\n"
+        "trap '' ABRT\n"
+        f'printf "%s\\n" "$$" > "${PID_MARKER_VAR}"\n'
+        "exec sleep 60\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    real_timeout = shutil.which("timeout")
+    assert real_timeout is not None, "GNU timeout is required"
+    timeout = bin_dir / "timeout"
+    timeout.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ $1 != --version ]]; then\n"
+        '  printf "%s\\n" "$@" > "$RUNNER_TIMEOUT_ARGV"\n'
+        "fi\n"
+        f'exec {shlex.quote(real_timeout)} "$@"\n',
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
     return bin_dir
 
 
@@ -633,9 +669,13 @@ def test_contract_pins_flags_and_inline_env(tmp_path: Path) -> None:
 
 
 def test_fractional_deadlines_enforced_offline(tmp_path: Path) -> None:
-    case_dir = _write_case(tmp_path, "stall-case", _COLLECTION_STALL_SUITE)
-    bin_dir = _write_fake_uv(tmp_path)
+    bin_dir = _write_fractional_deadline_tools(tmp_path)
     artifacts = tmp_path / "artifact"
+    pid_marker = tmp_path / "sleeper_pid.txt"
+    timeout_argv = tmp_path / "timeout_argv.txt"
+    env = _synthetic_env(tmp_path, fake_uv_dir=bin_dir)
+    env[PID_MARKER_VAR] = str(pid_marker)
+    env["RUNNER_TIMEOUT_ARGV"] = str(timeout_argv)
     started = time.monotonic()
     proc = _run_runner(
         [
@@ -647,24 +687,30 @@ def test_fractional_deadlines_enforced_offline(tmp_path: Path) -> None:
             "10",
             "--artifact-dir",
             str(artifacts),
-            "--",
-            str(case_dir),
-            *_CACHE_OFF,
         ],
         cwd=tmp_path,
-        env=_synthetic_env(tmp_path, fake_uv_dir=bin_dir),
+        env=env,
         bound_seconds=30,
     )
     elapsed = time.monotonic() - started
     assert proc.returncode == 137
     assert elapsed < 15
+    # Pin what reaches the real supervisor, not just the wrapper's status text:
+    # integer rounding or an omitted kill-after must fail this contract.
+    assert timeout_argv.read_text(encoding="utf-8").splitlines()[:6] == [
+        "--signal=ABRT",
+        "--kill-after=0.5",
+        "--",
+        "0.5",
+        "bash",
+        "-c",
+    ]
+    assert pid_marker.exists(), "timed sleeper never recorded its pid"
+    _await_pid_death(int(pid_marker.read_text(encoding="utf-8").strip()), deadline_seconds=5)
     _assert_exact_artifacts(artifacts, {LOG_NAME})
     _assert_log_contains(
         artifacts / LOG_NAME,
         "starting pytest (suite-timeout=0.5s kill-after=0.5s faulthandler-timeout=10s",
-        "Fatal Python error: Aborted",
-        "most recent call first",
-        "test_synthetic.py",
         f"{STATUS_TAG} pytest process finished (combined exit status 137)",
         "JUnit XML was not written",
     )

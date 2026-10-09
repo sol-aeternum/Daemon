@@ -42,6 +42,7 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DURABLE_CHAT_ENABLED=${DURABLE_CHAT_ENABLED:-false}
       - DAEMON_COMMERCIAL_CONFIG=${DAEMON_COMMERCIAL_CONFIG:-}
       - DAEMON_INFERENCE_POLICY=${DAEMON_INFERENCE_POLICY:-}
@@ -108,7 +109,7 @@ services:
     volumes:
       - .:/app
       - daemon_benchmark_artifacts:/var/lib/daemon/benchmark-artifacts
-    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000
+    command: python -m orchestrator.runtime backend
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,6 +141,7 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DURABLE_CHAT_ENABLED=${DURABLE_CHAT_ENABLED:-false}
       - DAEMON_COMMERCIAL_CONFIG=${DAEMON_COMMERCIAL_CONFIG:-}
       - DAEMON_INFERENCE_POLICY=${DAEMON_INFERENCE_POLICY:-}
@@ -196,7 +198,7 @@ services:
       - WEB_SNAPSHOT_MAX_CHUNK_CHARS=${WEB_SNAPSHOT_MAX_CHUNK_CHARS:-12000}
     volumes:
       - .:/app
-    command: python -m orchestrator.worker.worker
+    command: python -m orchestrator.runtime worker
     depends_on:
       postgres:
         condition: service_healthy

@@ -7,6 +7,25 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Managed runtime logging — 9 October 2026 (P0.3)
+
+MIGRATION: existing `LOG_LEVEL` is activated for the managed backend and worker
+launchers and injected into **both** services instead of remaining dotenv-only.
+No production key is renamed or removed. Operators may keep or set `LOG_LEVEL`
+to `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; no other keys need adding,
+changing or dropping. Missing, empty and unsupported values use `INFO`. Compose
+uses `INFO` for absent or empty host inputs; an explicitly injected empty value
+outside Compose also resolves to `INFO` at the managed sink. Absence and empty
+therefore do not differ. A Compose-injected value takes precedence over a mounted
+dotenv value; consult the actual launch configuration before deployment.
+
+The setting changes diagnostic volume only, never content-safety rules; fixed
+startup/shutdown/failure events remain available regardless of verbosity. Direct
+legacy launch commands and other services are not covered. This is repository
+source wiring only: no live environment, logging configuration or deployment was
+changed. See [CONTENT_SAFE_LOGGING.md](CONTENT_SAFE_LOGGING.md) for output and
+retention qualification limits.
+
 ### Dedicated embedding route selector — 5 October 2026
 
 `EMBEDDING_ROUTE_ID` is a new optional shared-runtime selector, declared once in

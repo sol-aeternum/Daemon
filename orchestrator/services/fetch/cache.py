@@ -112,8 +112,11 @@ class FetchCache:
                 self.redis = await arq_create_pool(RedisSettings.from_dsn(self.redis_url))
                 logger.debug("Redis connection established for fetch cache")
                 return True
-            except Exception as e:
-                logger.warning(f"Failed to connect to Redis for fetch cache: {e}", exc_info=True)
+            except Exception:
+                # Transport failures can echo connection parameters (the DSN
+                # carries credentials), so neither the exception text nor a
+                # traceback belongs in application logs at any level.
+                logger.warning("Failed to connect to Redis for fetch cache")
                 return False
 
     def _serialize_result(self, result: FetchResult) -> str:
@@ -151,7 +154,8 @@ class FetchCache:
                 or fetch_time_ms is None
                 or content_length is None
             ):
-                logger.warning(f"Missing required fields in cached result for {url}")
+                # ``url`` is a requested URL and never logged.
+                logger.warning("Missing required fields in cached result")
                 return None
 
             # Convert fields with proper type handling
@@ -197,8 +201,11 @@ class FetchCache:
                     else EXTRACTION_VERSION_V1
                 ),
             )
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
-            logger.warning(f"Failed to deserialize cached result for {url}: {e}")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            # Deserialization failures of a stored payload can carry page
+            # content and requested-URL fragments inside ValueError text,
+            # so neither that text nor the URL is logged.
+            logger.warning("Failed to deserialize cached result")
             return None
 
     async def get(self, url: str, extract: str = _DEFAULT_MODE) -> FetchResult | None:
@@ -214,15 +221,17 @@ class FetchCache:
 
             data: str | None = await self.redis.get(key)
             if data is None:
-                logger.debug(f"Cache miss for {key}")
+                # Cache keys embed the normalized requested URL and are
+                # never logged at any level.
+                logger.debug("Fetch cache miss")
                 return None
 
             result = self._deserialize_result(data, url)
             if result is not None:
-                logger.debug(f"Cache hit for {key}")
+                logger.debug("Fetch cache hit")
             return result
-        except Exception as e:
-            logger.warning(f"Error retrieving from fetch cache: {e}", exc_info=True)
+        except Exception:
+            logger.warning("Error retrieving from fetch cache")
             return None
 
     async def set(
@@ -255,8 +264,10 @@ class FetchCache:
             assert self.redis is not None
 
             await self.redis.set(key, data, ex=cache_ttl)
-            logger.debug(f"Cached result for {key} with TTL {cache_ttl}s")
+            logger.debug("Cached result stored with TTL %ss", cache_ttl)
             return True
-        except Exception as e:
-            logger.warning(f"Error storing in fetch cache: {e}", exc_info=True)
+        except Exception:
+            # Redis client errors can echo the key (which embeds the
+            # requested URL); the exception text is never logged.
+            logger.warning("Error storing in fetch cache")
             return False

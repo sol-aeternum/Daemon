@@ -46,7 +46,9 @@ class _Collector(logging.Handler):
 
 
 @pytest.fixture
-def collected() -> Iterator[_Collector]:
+def collected(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Collector]:
+    monkeypatch.setattr(routing_log, "_dynamic_vocabulary", {})
+    routing_log.initialize_vocabulary()
     collector = _Collector()
     logger = logging.getLogger(routing_log.LOGGER_NAME)
     logger.addHandler(collector)
@@ -71,7 +73,7 @@ def test_unknown_events_and_fields_are_rejected() -> None:
         routing_log.build_record("candidates", {"exclusions": {"budget": "many"}})
 
 
-def test_values_are_bounded_scalars() -> None:
+def test_values_require_semantic_vocabulary_not_truncated_arbitrary_strings() -> None:
     record = routing_log.build_record(
         "candidates",
         {
@@ -80,9 +82,77 @@ def test_values_are_bounded_scalars() -> None:
             "exclusions": {"budget": 2},
         },
     )
-    assert len(record["route_ids"]) == routing_log.MAX_LIST_LENGTH  # type: ignore[arg-type]
-    assert len(record["profile"]) == routing_log.MAX_STRING_LENGTH  # type: ignore[arg-type]
+    assert record["route_ids"] == []
+    assert record["profile"] == "unrecognized"
     assert record["exclusions"] == {"budget": 2}
+
+
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), -1, True, 1.5, "123", 10**19])
+def test_counts_reject_nonfinite_fractional_and_wrong_typed_values(number: object) -> None:
+    with pytest.raises(routing_log.RoutingLogError):
+        routing_log.build_record("scope_close", {"attempts": number})
+
+
+def test_known_runtime_outcomes_remain_reconstructable() -> None:
+    assert routing_log.build_record("settlement", {"status": "released"})["status"] == "released"
+    assert (
+        routing_log.build_record(
+            "decision", {"endpoint": "chat:daemon", "admission": "budget_exceeded"}
+        )["admission"]
+        == "budget_exceeded"
+    )
+    assert (
+        routing_log.build_record("scope_close", {"exit": "error:budget_exceeded"})["exit"]
+        == "error:budget_exceeded"
+    )
+
+
+def test_every_builtin_limit_code_remains_reconstructable() -> None:
+    from orchestrator.entitlements import errors
+
+    classes = [
+        value
+        for value in vars(errors).values()
+        if isinstance(value, type) and issubclass(value, errors.LimitExceeded)
+    ]
+    assert len(classes) >= 8
+    for cls in classes:
+        code = cls.code
+        assert routing_log.build_record("decision", {"admission": code})["admission"] == code
+        assert (
+            routing_log.build_record("scope_close", {"exit": f"error:{code}"})["exit"]
+            == f"error:{code}"
+        )
+
+
+def test_snapshot_validation_never_loads_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orchestrator import model_routing
+    from orchestrator.entitlements import policy
+
+    monkeypatch.setattr(routing_log, "_dynamic_vocabulary", {})
+    assert (
+        routing_log.build_record("candidates", {"profile": "routine", "route_ids": [SECRET_TEXT]})[
+            "profile"
+        ]
+        == "unrecognized"
+    )
+    routing_log.initialize_vocabulary()
+    model = next(iter(routing_log._dynamic_vocabulary["model"]))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("sink loaded configuration")
+
+    monkeypatch.setattr(model_routing, "load_model_routing", forbidden)
+    monkeypatch.setattr(policy, "load_inference_policy", forbidden)
+    record = routing_log.build_record("attempt", {"model": model})
+    assert record["model"] == model
+    assert routing_log.build_record("candidates", {"profile": "routine"})["profile"] == "routine"
+    from orchestrator import safe_logging
+
+    assert safe_logging.validated_payload({"kind": "routing", "fields": record})["model"] == model
+    with pytest.raises(AssertionError, match="sink loaded configuration"):
+        routing_log.initialize_vocabulary()
+    assert routing_log.build_record("attempt", {"model": model})["model"] == "unrecognized"
 
 
 def test_emit_never_raises_and_drops_invalid_records(collected: _Collector) -> None:
@@ -122,6 +192,12 @@ async def test_preoutput_fallback_turn_can_be_reconstructed(
         routing=accepted_pair(DEEPSEEK, FLASH),
         provider=AsyncMock(side_effect=send),
     ) as (service, _, scope):
+        from orchestrator.entitlements import policy
+
+        # Snapshot the same server-owned fixture configuration before work,
+        # just as the supported launcher does for deployed configuration.
+        monkeypatch.setattr(policy, "load_inference_policy", runtime.load_inference_policy)
+        routing_log.initialize_vocabulary()
         holds = _reservations(2)
         service.reserve = AsyncMock(side_effect=holds)
         service.reconcile_expired_reservations = AsyncMock(return_value=0)
@@ -165,7 +241,7 @@ async def test_preoutput_fallback_turn_can_be_reconstructed(
     assert records[6]["outcome"] == "completed"
     close = records[-1]
     assert close["exit"] == "normal"
-    assert close["request_id"] == "req_test"
+    assert "request_id" not in close  # Generic scope arguments do not prove server provenance.
     assert close["attempts"] == 2
     assert close["completions"] == 1
     joined = "\n".join(collected.lines)
@@ -335,7 +411,7 @@ async def test_ingress_decision_records_signals_without_content(
     assert decision["complexity_signals"] == ["compare", "trade-offs"]
     assert decision["research_signals"] == []
     assert decision["admission"] == "admitted"
-    assert isinstance(decision["request_id"], str) and decision["request_id"]
+    assert "request_id" not in decision
     assert len(decision["classifier_version"]) == 12
     assert SECRET_TEXT not in "\n".join(collected.lines)
 
@@ -354,7 +430,7 @@ async def test_ingress_decision_records_explicit_selection_and_refusal(
     assert response.status_code == 503
     decision = next(r for r in collected.records() if r["event"] == "decision")
     assert decision["auto"] is False
-    assert decision["explicit_model"] == "openrouter/test/not-approved"
+    assert decision["explicit_model"] == "unrecognized"
     assert decision["profile"] == "routine"
     assert decision["complexity_signals"] == []
     assert decision["admission"] == "route_unavailable"
