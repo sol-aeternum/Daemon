@@ -191,13 +191,21 @@ class WebFetchTool(Tool):
                 version = EXTRACTION_VERSION_V1
                 guard = self.refresh_guard
                 pinned = await guard.pinned(url, mode, version, refresh) if guard else None
-                snapshot = (
-                    await store.get(user, conversation, pinned)
-                    if pinned is not None
-                    else None
-                    if refresh
-                    else await store.find_latest(user, conversation, url, mode, version)
-                )
+                if pinned is not None:
+                    snapshot = await store.get(user, conversation, pinned)
+                elif refresh:
+                    snapshot = None
+                elif guard is None:
+                    snapshot = await store.find_latest(user, conversation, url, mode, version)
+                else:
+                    snapshot = await store.find_latest(
+                        user,
+                        conversation,
+                        url,
+                        mode,
+                        version,
+                        on_selected=guard.publication_hook(url, mode, version, refresh),
+                    )
                 if snapshot is None:
                     if self._created >= store.settings.web_snapshot_max_new_per_turn:
                         return self._error("snapshot_turn_limit")

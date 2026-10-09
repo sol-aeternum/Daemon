@@ -119,7 +119,9 @@ by #313; the high-severity gate passed. No baseline or gate was weakened.
 
 Exact-head CI, detailed commands and independent-review adjudication are recorded
 in the draft PR. Local verification is not deployment or enablement clearance.
-No merge or deployment is part of this task; #477 must remain open.
+The original closeout authorized no merge or deployment. A later owner-authorized
+merge still requires green current-head checks and resolved review findings; it
+does not authorize deployment or enablement, and #477 must remain open.
 
 ### Current-head review follow-up (#492)
 
@@ -148,3 +150,24 @@ inventory again reported 25 passed and 16 failed, with causality limitations
 still tracked by #490; audit and full Bandit inventory remain separate debt.
 
 #488 provider retries, #487 OpenUI and #489 artifact catalog remain separate.
+
+### Refreshed-head P2 review follow-up
+
+After integrating separately merged #491/#494, current-head Codex found two more
+correctness gaps: an existing snapshot returned without a task pin, and successful
+read-only tool payloads classified as uncertain material effects. The owner
+approved transactionally pinning reused snapshots and a shared tool-aware outcome
+classifier on 9 October 2026. Material-effect uncertainty and unknown historical
+evidence remain unchanged. No new schema, endpoint or event type is introduced.
+Unstructured reflection narrative and unrecognized/multiline memory text remain
+unknown when their existing return format supplies no checkable success evidence;
+this repair does not add a new producer envelope or infer success from arbitrary
+text. Recognized empty results and executor errors are classified explicitly.
+
+Regression-first checks reproduced both gaps before repair. New PostgreSQL cases
+cover retained-source reuse followed by newer content, recovery of the original
+identity, marker rollback, stale leases, cancellation/suspension, ownership,
+concurrent selection and the real parent/task lock cycle. Saved/live/progress
+read outcomes and actual-page history counts are checked separately. Final-state
+gates, restart proof, independent review and exact-head CI must be recorded in the
+PR before declaring this follow-up complete; earlier green evidence is historical.

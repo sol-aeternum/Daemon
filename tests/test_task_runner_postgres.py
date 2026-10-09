@@ -129,19 +129,54 @@ async def test_duplicate_delivery_runs_once(env: Env, mock_llm: None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("result", "expected"),
+    ("name", "result", "expected"),
     [
-        ({"success": False, "error": "notification timed out"}, "unknown"),
-        ({"performed": False, "error": "not sent"}, "failed"),
-        ({"success": True}, "succeeded"),
+        ("notification_send", {"success": False, "error": "notification timed out"}, "unknown"),
+        ("notification_send", {"performed": False, "error": "not sent"}, "failed"),
+        ("notification_send", {"success": True}, "succeeded"),
+        ("web_search", {"query": "fixture", "results": [], "total_found": 0}, "succeeded"),
+        ("web_search", {"error": "search refused"}, "failed"),
+        ("web_fetch", {"sources": [], "total": 0, "next_offset": None}, "succeeded"),
+        (
+            "web_fetch",
+            {
+                "snapshot_id": "0f9a1b2c-1111-4111-8111-111111111111",
+                "url": "https://example.test/page",
+                "content": "retained page",
+                "content_length": 13,
+                "total_chars": 13,
+                "start_char": 0,
+                "end_char": 13,
+                "next_start_char": None,
+                "complete": True,
+                "has_more": False,
+            },
+            "succeeded",
+        ),
+        (
+            "web_fetch",
+            {
+                "snapshot_id": "0f9a1b2c-1111-4111-8111-111111111111",
+                "matches": [],
+                "next_start_char": None,
+            },
+            "succeeded",
+        ),
+        ("web_fetch", {"error": "snapshot_expired"}, "failed"),
+        ("web_fetch", {}, "unknown"),
     ],
 )
 async def test_saved_tool_outcome_matches_live_and_progress_replay(
-    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, result: dict, expected: str
+    env: Env,
+    mock_llm: None,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    result: dict,
+    expected: str,
 ):
     async def scripted_tool_completion(**_kwargs: Any):
-        yield {"type": "tool_executing", "name": "notification_send", "arguments": {}}
-        yield {"type": "tool_result", "name": "notification_send", "result": json.dumps(result)}
+        yield {"type": "tool_executing", "name": name, "arguments": {}}
+        yield {"type": "tool_result", "name": name, "result": json.dumps(result)}
         yield {"type": "content_delta", "content": MOCK_TEXT}
         yield {"type": "done", "finish_reason": "stop"}
 
@@ -151,9 +186,7 @@ async def test_saved_tool_outcome_matches_live_and_progress_replay(
     assert await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)) == "completed"
     history = await env.memory.get_recent_messages(accepted.conversation_id)
     saved = next(m for m in history if m["role"] == "assistant")
-    assert saved["tool_results"] == [
-        {"name": "notification_send", "result": result, "outcome": expected}
-    ]
+    assert saved["tool_results"] == [{"name": name, "result": result, "outcome": expected}]
     frames = [
         runner._parse_frame(message["frame"])
         for _, message in redis.published

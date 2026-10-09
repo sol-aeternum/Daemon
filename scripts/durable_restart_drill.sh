@@ -423,9 +423,9 @@ for block in open(sys.argv[1]).read().split('\n\n'):
 assert any(f.get('type') == 'final' and f['data'].get('text') == '(drill) committed answer C' for f in frames), 'committed result not recovered'
 progress = [f for f in frames if f.get('type') in ('tool_call', 'tool_result')]
 assert len(progress) == 2, 'tool progress missing or duplicated after Redis gap'
-# calculate's legacy result has no explicit success flag; its bounded
-# recorded outcome is conservatively unknown, never fabricated success.
-assert progress[-1]['data'].get('outcome') == 'unknown', 'truthful persisted tool outcome missing'
+# calculate's recognized read-only result is successful without a success flag.
+# Material uncertainty remains conservative; replay preserves this exact evidence.
+assert progress[-1]['data'].get('outcome') == 'succeeded', 'truthful persisted tool outcome missing'
 seqs = [f['data']['event_seq'] for f in frames if 'event_seq' in f.get('data', {}) and (f['data'].get('lifecycle_kind') or f.get('type') in ('tool_call', 'tool_result'))]
 assert seqs and seqs == sorted(set(seqs)), 'durable cursor order/deduplication failed'
 assert any(f['data'].get('lifecycle_kind') == 'attempt_started' for f in frames), 'lifecycle evidence missing'

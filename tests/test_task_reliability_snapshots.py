@@ -61,6 +61,127 @@ async def _counts(env):
     )
 
 
+async def _seed_snapshot(env, accepted, snapshots, content="already retained"):
+    return await snapshots.create(
+        env.alice,
+        accepted.conversation_id,
+        source_url=URL,
+        content=content,
+        extract_mode="article",
+        extraction_version=EXTRACTION_VERSION_V1,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer", ["other_writer", "same_attempt_refresh"])
+async def test_reused_snapshot_is_pinned_before_newer_content_and_recovery(env: Env, newer):
+    accepted = await accept_task(env)
+    first = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
+    assert first is not None
+    tool, snapshots, fetcher = _reader(env, accepted, first)
+    original = await _seed_snapshot(env, accepted, snapshots)
+    assert json.loads(await tool.execute(url=URL))["snapshot_id"] == str(original.id)
+    assert await _counts(env) == (1, 1)
+    if newer == "other_writer":
+        await _seed_snapshot(env, accepted, snapshots, "newer source")
+    else:
+        refreshed = json.loads(await tool.execute(url=URL, force_refresh=True))
+        assert refreshed["snapshot_id"] != str(original.id)
+    await expire_lease(env, accepted.task_id)
+    second = await env.tasks.claim(accepted.task_id, worker_id="second", lease_s=LEASE_S)
+    assert second is not None
+    retry, _, retry_fetcher = _reader(env, accepted, second)
+    recovered = json.loads(await retry.execute(url=URL))
+    assert recovered["snapshot_id"] == str(original.id)
+    assert recovered["content"] == original.content
+    retry_fetcher.fetch.assert_not_awaited()
+    assert fetcher.fetch.await_count == (1 if newer == "same_attempt_refresh" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["rollback", "expire_during_marker"])
+async def test_reuse_marker_failure_returns_no_content_and_preserves_snapshot(
+    env: Env, monkeypatch, failure
+):
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
+    tool, snapshots, fetcher = _reader(env, accepted, claim)
+    await _seed_snapshot(env, accepted, snapshots)
+    append = env.tasks._append_event
+
+    async def fail_marker(conn, task_id, kind, payload=None):
+        seq = await append(conn, task_id, kind, payload)
+        if kind == "page_refreshed":
+            if failure == "rollback":
+                raise RuntimeError("marker commit failed")
+            await conn.execute(
+                "UPDATE tasks SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+                task_id,
+            )
+        return seq
+
+    monkeypatch.setattr(env.tasks, "_append_event", fail_marker)
+    assert "error" in json.loads(await tool.execute(url=URL))
+    assert await _counts(env) == (1, 0)
+    fetcher.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["expire", "cancel", "takeover", "suspend", "delete"])
+async def test_reuse_rechecks_fence_after_account_lock_wait(env: Env, monkeypatch, refusal):
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
+    tool, snapshots, fetcher = _reader(env, accepted, claim)
+    await _seed_snapshot(env, accepted, snapshots)
+    waiting = asyncio.Event()
+    lock_account = snapshots._lock_account
+
+    async def observed_lock(conn, user):
+        waiting.set()
+        await lock_account(conn, user)
+
+    monkeypatch.setattr(snapshots, "_lock_account", observed_lock)
+    async with env.pool.acquire() as blocker, blocker.transaction():
+        await blocker.execute("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", env.alice)
+        read = asyncio.create_task(tool.execute(url=URL))
+        wait = asyncio.create_task(waiting.wait())
+        try:
+            # Old unfenced reuse finishes without entering the lock at all.
+            done, _ = await asyncio.wait(
+                [read, wait],
+                timeout=5,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            assert wait in done and waiting.is_set(), "reused snapshot bypassed its task fence"
+            if refusal in {"expire", "takeover"}:
+                await expire_lease(env, accepted.task_id)
+                if refusal == "takeover":
+                    assert await env.tasks.claim(
+                        accepted.task_id, worker_id="next", lease_s=LEASE_S
+                    )
+            elif refusal == "cancel":
+                await asyncio.wait_for(env.tasks.request_cancel(env.alice, accepted.task_id), 5)
+            elif refusal == "suspend":
+                await blocker.execute(
+                    "INSERT INTO entitlement_accounts (user_id, status) VALUES ($1, 'suspended') "
+                    "ON CONFLICT (user_id) DO UPDATE SET status = 'suspended'",
+                    env.alice,
+                )
+            else:
+                await blocker.execute(
+                    "DELETE FROM conversations WHERE id = $1", accepted.conversation_id
+                )
+        finally:
+            wait.cancel()
+            await asyncio.gather(wait, return_exceptions=True)
+            if not waiting.is_set():
+                read.cancel()
+                await asyncio.gather(read, return_exceptions=True)
+    assert "error" in json.loads(await asyncio.wait_for(read, 5))
+    assert await _counts(env) == (0 if refusal == "delete" else 1, 0)
+    fetcher.fetch.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refresh", [False, True])
 async def test_crash_after_shared_commit_reuses_exact_snapshot(env: Env, monkeypatch, refresh):
@@ -115,11 +236,14 @@ async def test_failure_before_commit_rolls_back_both_records(env: Env, monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["expired", "missing"])
-async def test_pinned_unavailable_never_refetches_or_uses_newer_row(env: Env, failure):
+@pytest.mark.parametrize("refresh", [False, True])
+async def test_pinned_unavailable_never_refetches_or_uses_newer_row(env: Env, failure, refresh):
     accepted = await accept_task(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
     tool, snapshots, fetcher = _reader(env, accepted, claim)
-    pinned = json.loads(await tool.execute(url=URL, force_refresh=True))["snapshot_id"]
+    if not refresh:
+        await _seed_snapshot(env, accepted, snapshots)
+    pinned = json.loads(await tool.execute(url=URL, force_refresh=refresh))["snapshot_id"]
     await snapshots.create(
         env.alice,
         accepted.conversation_id,
@@ -137,9 +261,9 @@ async def test_pinned_unavailable_never_refetches_or_uses_newer_row(env: Env, fa
         )
     else:
         await env.pool.execute("DELETE FROM web_snapshots WHERE id = $1::text::uuid", pinned)
-    result = json.loads(await tool.execute(url=URL, force_refresh=True))
+    result = json.loads(await tool.execute(url=URL, force_refresh=refresh))
     assert result == {"error": "snapshot_expired"}
-    assert fetcher.fetch.await_count == 1
+    assert fetcher.fetch.await_count == int(refresh)
 
 
 @pytest.mark.asyncio
@@ -177,7 +301,10 @@ async def test_publication_rechecks_after_waiting_for_locks(env: Env, monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exclusive_parent", [None, "account", "conversation"])
-async def test_cancel_snapshot_fk_lock_interleaving(env: Env, monkeypatch, exclusive_parent):
+@pytest.mark.parametrize("publication_kind", ["create", "reuse"])
+async def test_cancel_snapshot_fk_lock_interleaving(
+    env: Env, monkeypatch, exclusive_parent, publication_kind
+):
     """Both old parent locks create a real cycle, not just a blocked test driver.
 
     Cancellation holds task; publication holds parents; cancellation's second
@@ -189,6 +316,8 @@ async def test_cancel_snapshot_fk_lock_interleaving(env: Env, monkeypatch, exclu
     claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
     assert claim is not None
     _, snapshots, _ = _reader(env, accepted, claim)
+    if publication_kind == "reuse":
+        await _seed_snapshot(env, accepted, snapshots)
     cancel_locked = asyncio.Event()
     parents_locked = asyncio.Event()
     append = env.tasks._append_event
@@ -225,8 +354,8 @@ async def test_cancel_snapshot_fk_lock_interleaving(env: Env, monkeypatch, exclu
     publication = None
     try:
         await asyncio.wait_for(cancel_locked.wait(), 5)
-        publication = asyncio.create_task(
-            snapshots.create(
+        if publication_kind == "create":
+            operation = snapshots.create(
                 env.alice,
                 accepted.conversation_id,
                 source_url=URL,
@@ -235,7 +364,16 @@ async def test_cancel_snapshot_fk_lock_interleaving(env: Env, monkeypatch, exclu
                 extraction_version=EXTRACTION_VERSION_V1,
                 on_created=publish,
             )
-        )
+        else:
+            operation = snapshots.find_latest(
+                env.alice,
+                accepted.conversation_id,
+                URL,
+                "article",
+                EXTRACTION_VERSION_V1,
+                on_selected=publish,
+            )
+        publication = asyncio.create_task(operation)
         results = await asyncio.wait_for(
             asyncio.gather(cancel, publication, return_exceptions=True), 8
         )
@@ -245,7 +383,7 @@ async def test_cancel_snapshot_fk_lock_interleaving(env: Env, monkeypatch, exclu
             assert not isinstance(results[0], BaseException)
             assert isinstance(results[1], ExecutionRefused)
             assert results[1].reason == "cancel_requested"
-            assert await _counts(env) == (0, 0)
+            assert await _counts(env) == (int(publication_kind == "reuse"), 0)
     finally:
         tasks = [cancel] + ([publication] if publication is not None else [])
         for task in tasks:
@@ -279,6 +417,45 @@ async def test_quota_and_claim_owner_mismatch_rollback_provenance(env: Env, mism
     )
     assert "error" in json.loads(await tool.execute(url=URL, force_refresh=True))
     assert await _counts(env) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reuse_never_returns_an_unpinned_identity(env: Env):
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
+    first, snapshots, first_fetch = _reader(env, accepted, claim)
+    second, _, second_fetch = _reader(env, accepted, claim)
+    original = await _seed_snapshot(env, accepted, snapshots)
+    results = await asyncio.gather(first.execute(url=URL), second.execute(url=URL))
+    parsed = [json.loads(result) for result in results]
+    assert any(result.get("snapshot_id") == str(original.id) for result in parsed)
+    assert all(
+        result.get("snapshot_id") == str(original.id) or "error" in result for result in parsed
+    )
+    assert await _counts(env) == (1, 1)
+    first_fetch.fetch.assert_not_awaited()
+    second_fetch.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["owner", "conversation"])
+async def test_reuse_rejects_forged_claim_without_recording_marker(env: Env, mismatch):
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
+    assert claim is not None
+    tool, snapshots, fetcher = _reader(env, accepted, claim)
+    await _seed_snapshot(env, accepted, snapshots)
+    tool.refresh_guard = runner._TaskRefreshGuard(
+        env.tasks,
+        runner.AttemptState(
+            claim=replace(claim, user_id=env.bob)
+            if mismatch == "owner"
+            else replace(claim, conversation_id=uuid.uuid4())
+        ),
+    )
+    assert "error" in json.loads(await tool.execute(url=URL))
+    assert await _counts(env) == (1, 0)
+    fetcher.fetch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

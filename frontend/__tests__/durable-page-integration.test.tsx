@@ -486,6 +486,65 @@ describe('#477 submission reliability closeout', () => {
     },
   );
 
+  it.each([
+    [
+      'web_search',
+      { query: 'fixture', results: [], total_found: 0 },
+      'succeeded',
+      'Searched 1 time',
+    ],
+    [
+      'web_fetch',
+      {
+        snapshot_id: '0f9a1b2c-1111-4111-8111-111111111111',
+        url: 'https://example.test/page',
+        content: 'retained page',
+        content_length: 13,
+        total_chars: 13,
+        start_char: 0,
+        end_char: 13,
+        next_start_char: null,
+        complete: true,
+        has_more: false,
+      },
+      'succeeded',
+      'Read 1 page',
+    ],
+    ['web_search', { error: 'search refused' }, 'failed', '1 issue'],
+    [
+      'web_search',
+      { query: 'fixture', results: [], total_found: 0 },
+      undefined,
+      'not recorded',
+    ],
+  ])(
+    'hydrates recorded read-tool outcome for %s without reclassifying legacy history',
+    async (name, result, outcome, label) => {
+      const conversation = runningConversation(false);
+      state.conversation = {
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.role === 'assistant'
+            ? {
+                ...message,
+                tool_calls: [{ name, arguments: {} }],
+                tool_results: [{ name, result, outcome }],
+              }
+            : message,
+        ),
+      };
+      render(<ChatPage />);
+      const activity = await screen.findByRole('button', {
+        name: new RegExp(`Tool activity:.*${String(label)}`),
+      });
+      expect(activity).toBeTruthy();
+      if (outcome === 'succeeded')
+        expect(activity.getAttribute('aria-label')).not.toContain(
+          'not recorded',
+        );
+    },
+  );
+
   it('reconnects the failed turn key rather than a newer held submission', async () => {
     render(<ChatPage />);
     fireEvent.change(await screen.findByLabelText('Composer'), {

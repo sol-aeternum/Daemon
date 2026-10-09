@@ -27,7 +27,7 @@ from orchestrator.compute_runtime import (
     compute_error,
     current_scope,
 )
-from orchestrator.tasks.fence import _outcome_of, guard_registry
+from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
 from orchestrator.tasks.store import Claim, ExecutionRefused, LeaseLost, TaskStore
@@ -140,7 +140,10 @@ class AttemptSink:
                     # live frames. History must carry that same bounded evidence,
                     # without mutating the engine's accumulator or result bodies.
                     message_fields["tool_results"] = [
-                        {**row, "outcome": _outcome_of(row.get("result"))}
+                        {
+                            **row,
+                            "outcome": outcome_of_tool_result(row.get("name"), row.get("result")),
+                        }
                         if isinstance(row, dict)
                         else row
                         for row in tool_results
@@ -560,7 +563,9 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                         message["seq"] = seq
                         data["event_seq"] = seq
                     if event == "tool_result":
-                        data["outcome"] = _outcome_of(data.get("result"))
+                        data["outcome"] = outcome_of_tool_result(
+                            data.get("name"), data.get("result")
+                        )
                 envelope["data"] = data
                 message["frame"] = f"event: {event}\ndata: {json.dumps(envelope)}\n\n"
                 await _publish(redis, state, message)
@@ -585,7 +590,7 @@ async def _record_progress(
                 "name": str(name or "tool")[:100],
                 "epoch": state.claim.epoch,
                 **(
-                    {"outcome": _outcome_of((data or {}).get("result"))}
+                    {"outcome": outcome_of_tool_result(name, (data or {}).get("result"))}
                     if event == "tool_result"
                     else {}
                 ),

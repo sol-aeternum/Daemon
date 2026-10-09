@@ -304,6 +304,11 @@ fetched again. This requires no new database columns. A crash before the shared
 commit may repeat the uncommitted read; a crash after it must reuse the committed
 snapshot without another fetch or insertion.
 
+The owner approved the #492 P2 follow-up: selecting an already-retained snapshot
+for a task also commits its exact-ID marker before returning content, under the
+same ownership, lease, cancellation and suspension checks and lock order. A
+competing selection cannot return an identity other than the committed pin.
+
 The owner also approved minimal backward-compatible fields on existing task/tool
 frames: durable event sequence, content generation, historical lifecycle kind and
 epoch, bounded `succeeded` / `failed` / `unknown` operation outcome, and an explicit
@@ -320,6 +325,12 @@ field. Historical rows without a valid saved outcome display `unknown`; raw
 error or success payloads cannot reconstruct proof of an effect. A missing
 by-key lookup retains the original submission key even when its draft must wait
 behind newer composer input; only an explicit refusal releases that identity.
+
+The P2 follow-up also approves one tool-aware classifier for saved, live and
+durable-progress outcomes. Recognized read-only success/error payloads are
+classified separately from material effects, including valid empty read results.
+Malformed or unrecognized evidence stays unknown; material errors remain
+conservative, and historical rows missing bounded evidence are not reclassified.
 
 These are implementation approvals for the bounded closeout, not gate clearance,
 deployment or enablement authority. #469 account fence-and-drain and #486 legacy

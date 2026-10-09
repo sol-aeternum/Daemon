@@ -890,6 +890,7 @@ class WebSnapshotStore:
         extraction_version: str,
         *,
         now: datetime | None = None,
+        on_selected: Callable[[Connection, uuid.UUID], Awaitable[None]] | None = None,
     ) -> WebSnapshot | None:
         """Return the newest retained version of one source identity, or None.
 
@@ -902,16 +903,19 @@ class WebSnapshotStore:
         Matching is by keyed fingerprint, but the query is still constrained by
         owner and conversation, and expired rows are excluded, so a fingerprint
         can never widen access.
+
+        A trusted durable-task hook pins a reused row before returning it. Its
+        selection and marker share the account → conversation → task transaction
+        order used by creation. The selected row remains locked against removal
+        until the hook commits; failure returns no content and no marker.
         """
-        resolved_now = _as_aware_utc(now if now is not None else _utc_now())
         identity = self.identity_fingerprint(
             user_id,
             source_url=source_url,
             extract_mode=extract_mode,
             extraction_version=extraction_version,
         )
-        row = await self._pool.fetchrow(
-            f"""
+        query = f"""
             SELECT {self._FULL_COLUMNS}
             FROM web_snapshots
             WHERE user_id = $1
@@ -920,15 +924,29 @@ class WebSnapshotStore:
               AND expires_at > $4
             ORDER BY retrieved_at DESC, id ASC
             LIMIT 1
-            """,
-            user_id,
-            conversation_id,
-            identity,
-            resolved_now,
-        )
-        if row is None:
-            return None
-        return self._snapshot_from_row(row)
+            """
+
+        async def select(reader: Connection | asyncpg.Pool) -> WebSnapshot | None:
+            # Evaluate expiry after any parent-lock wait, not before it.
+            resolved_now = _as_aware_utc(now if now is not None else _utc_now())
+            row = await reader.fetchrow(
+                query + (" FOR SHARE" if on_selected is not None else ""),
+                user_id,
+                conversation_id,
+                identity,
+                resolved_now,
+            )
+            return self._snapshot_from_row(row) if row is not None else None
+
+        if on_selected is None:
+            return await select(self._pool)
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._lock_account(conn, user_id)
+            await self._lock_owned_conversation(conn, user_id, conversation_id)
+            snapshot = await select(conn)
+            if snapshot is not None:
+                await on_selected(conn, snapshot.id)
+            return snapshot
 
     async def list(
         self,
