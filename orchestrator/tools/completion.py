@@ -675,6 +675,7 @@ async def completion_with_tools(
             )
 
             for tool_index, tc in enumerate(tool_calls):
+                invocation_metadata: dict[str, Any] = {}
                 func_name = tc["function"]["name"]
                 func_args = tc["function"]["arguments"]
                 remaining_placeholders = placeholders[tool_index + 1 :]
@@ -730,12 +731,15 @@ async def completion_with_tools(
                     if callable(set_allowance):
                         set_allowance(fits_result)
                     try:
-                        result = await executor.execute(func_name, func_args)
+                        invocation = await executor.execute_invocation(func_name, func_args)
+                        result = invocation.result
+                        invocation_metadata = invocation.event_metadata()
                     finally:
                         if callable(set_allowance):
                             set_allowance(None)
                     if not fits_result(result):
                         result = OMITTED_RESULT
+                        invocation_metadata = invocation.event_metadata(suppressed=True)
                         context_exhausted = True
                     elif func_name == "web_fetch":
                         try:
@@ -772,6 +776,7 @@ async def completion_with_tools(
                     "type": "tool_result",
                     "name": func_name,
                     "result": result,
+                    **invocation_metadata,
                     "id": str(uuid.uuid4()),
                 }
 
@@ -831,11 +836,13 @@ async def completion_with_tools(
                     "id": str(uuid.uuid4()),
                 }
 
-                result = await executor.execute("spawn_agent", func_args)
+                invocation = await executor.execute_invocation("spawn_agent", func_args)
+                result = invocation.result
                 yield {
                     "type": "tool_result",
                     "name": "spawn_agent",
                     "result": result,
+                    **invocation.event_metadata(),
                     "id": str(uuid.uuid4()),
                 }
 

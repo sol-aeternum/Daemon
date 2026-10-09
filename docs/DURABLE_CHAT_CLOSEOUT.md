@@ -189,13 +189,34 @@ processing; the batch uses the existing replay-page limit and never waits for
 future payloads or lets continuous traffic starve durable catch-up. Frames beyond
 that bounded batch can still fall back to summaries.
 
-Already-emitted summaries are not enriched by late payloads or duplicated. In
+The original available-payload repair did not enrich already-emitted summaries. In
 particular, material `operation_finished` evidence can precede its tool result;
-the current progress record lacks an operation-ID correlation field, so it remains
+that version's progress record lacked an operation-ID correlation field, so it kept
 one bounded summary rather than guessing a payload association from a tool name.
-Full saved conversation history remains available. Late replacement or stronger
-material-payload correlation requires separate contract approval. This limitation
-is not a claim that all connected-client timing interleavings retain full payloads.
+Full saved conversation history remains available. That repair required separate
+approval for late replacement or stronger material-payload correlation. This limitation
+was not a claim that all connected-client timing interleavings retained full payloads.
+
+The owner subsequently approved identity **plus late enrichment** (9 October
+2026); see the exact additive contract in `DURABLE_REQUEST_DESIGN.md` §18. Material
+fence UUIDs now travel in explicit per-invocation metadata through executor,
+completion (including auto-spawn), daemon and runner into bounded durable
+progress. The observer authenticates owner/task/current epoch/operation/tool/
+outcome and exact progress before using a full body, including already-consumed
+progress while open. Available bodies project once; late bodies update the same
+operation. Shared frontend normalization covers live activity/rendering and
+archives, preserving full payloads without duplicate counts. Reconnect request IDs
+do not split a stable task/generation/
+operation identity; enriched archives retain their original request association.
+Legacy no-ID data cannot authenticate correlated content. Missing/omitted bodies and a crash before
+progress keep the bounded summary; no extra body persistence or post-done wait.
+
+`tests/test_task_material_correlation.py` uses a synthetic successful media tool
+through the real fence/executor/completion/daemon/runner sequence, not manual
+media progress alone. `frontend/__tests__/material-result-upsert.test.tsx` checks
+shared live/archive upserts, rendering and bridge metadata. These new regressions
+and their final-source gates/reviews must pass before claiming the direct media
+finding resolved; earlier backend/frontend/drill evidence is baseline only.
 
 Connected-observer regressions reproduced argument/result loss before repair;
 source metadata, media-shaped progress, gap ordering, duplicate/late delivery,

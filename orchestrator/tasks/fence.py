@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 from orchestrator.tasks.store import EffectRefused, LeaseLost, TaskStore
+from orchestrator.tools.executor import OperationIdentity, ToolExecution
 from orchestrator.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
@@ -465,6 +466,9 @@ class FencedTool(Tool):
         return self._inner.to_openai_schema()
 
     async def execute(self, **kwargs: Any) -> str:
+        return (await self.execute_invocation(**kwargs)).result
+
+    async def execute_invocation(self, **kwargs: Any) -> ToolExecution:
         try:
             operation_id = await self._store.begin_operation(
                 self._task_id,
@@ -478,32 +482,39 @@ class FencedTool(Tool):
             # and the attempt stops now rather than at its next heartbeat.
             if self._on_lease_lost is not None:
                 self._on_lease_lost()
-            return json.dumps(
-                {
-                    "success": False,
-                    "performed": False,
-                    "error": "Not performed: this task attempt was superseded.",
-                }
+            return ToolExecution(
+                json.dumps(
+                    {
+                        "success": False,
+                        "performed": False,
+                        "error": "Not performed: this task attempt was superseded.",
+                    }
+                )
             )
         except EffectRefused as refused:
             # Cancelled, suspended or out of lease time: the effect is not
             # attempted, and a cancel or suspension stops the attempt now.
             if self._on_refused is not None:
                 self._on_refused(refused.reason)
-            return json.dumps(
-                {
-                    "success": False,
-                    "performed": False,
-                    "error": "Not performed: this task can no longer act.",
-                }
+            return ToolExecution(
+                json.dumps(
+                    {
+                        "success": False,
+                        "performed": False,
+                        "error": "Not performed: this task can no longer act.",
+                    }
+                )
             )
         try:
             result = await self._inner.execute(**kwargs)
         except BaseException:
             await self._finish(operation_id, "unknown")
             raise
-        await self._finish(operation_id, _outcome_of(result))
-        return result
+        outcome = _outcome_of(result)
+        await self._finish(operation_id, outcome)
+        return ToolExecution(
+            result, OperationIdentity(self._task_id, self._epoch, operation_id, self.name, outcome)
+        )
 
     async def _finish(self, operation_id: uuid.UUID, outcome: str) -> None:
         try:

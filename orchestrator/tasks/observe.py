@@ -70,6 +70,7 @@ class _Observation:
         #: Highest persisted event already replayed to this client.
         self.event_seq = 0
         self.finished_operations: dict[tuple[int, str], int] = {}
+        self.operations: dict[tuple[int, str], dict[str, Any]] = {}
         self._counter = 0
 
     def frame(self, event: str, data: dict[str, Any], evt_id: str | None = None) -> str:
@@ -324,7 +325,7 @@ async def observe_task(
                         # Redis sequence is only a hint. Even an out-of-order
                         # later frame must drain the DB gap, never advance it.
                         # Its payload can enrich only the matching DB projection.
-                        resync = resync or event_seq > view.event_seq
+                        resync = resync or event_seq > view.event_seq or _has_operation(message)
                     elif not resync:
                         frame = _tag_live_frame(message.get("frame"), view.generation)
                         if frame is not None:
@@ -464,6 +465,19 @@ async def _drain_events(
                     continue
                 name = str(payload.get("name") or payload.get("tool") or "tool")[:100]
                 key = (snapshot.content_generation, name)
+                if event.kind == "tool_result" and isinstance(operation_id, str):
+                    # Only operation_finished creates this UI identity. Progress
+                    # cannot invent one, even with a plausible UUID/name.
+                    prior = view.operations.get((snapshot.content_generation, operation_id))
+                    if (
+                        prior is not None
+                        and prior["name"] == name
+                        and prior["outcome"] == payload.get("outcome")
+                        and view.finished_operations.get(key, 0)
+                    ):
+                        view.finished_operations[key] -= 1
+                    view.event_seq = event.seq
+                    continue
                 if event.kind == "tool_result" and view.finished_operations.get(key, 0):
                     view.finished_operations[key] -= 1
                     if not view.finished_operations[key]:
@@ -488,6 +502,8 @@ async def _drain_events(
                         summary["success"] = outcome == "succeeded"
                     data["result"] = summary
                     if event.kind == "operation_finished":
+                        data["task_id"] = str(task_id)
+                        data["payload_state"] = "summary"
                         view.finished_operations[key] = view.finished_operations.get(key, 0) + 1
                 live = _live_tool_payload(live_message, event, snapshot, view)
                 if live is None:
@@ -498,6 +514,15 @@ async def _drain_events(
                 if live is not None:
                     data.update(live)
                     data["replayed"] = False
+                if event.kind == "operation_finished" and isinstance(operation_id, str):
+                    for candidate in (live_message, *ready_messages):
+                        full = await _operation_payload(
+                            store, user_id, task_id, candidate, data, snapshot, view
+                        )
+                        if full is not None:
+                            data.update(full)
+                            break
+                    view.operations[(snapshot.content_generation, operation_id)] = data
             else:
                 # Historical lifecycle metadata, not a status transition.
                 data.update(
@@ -509,10 +534,104 @@ async def _drain_events(
                 )
             yield view.frame(projected, data, evt_id=f"evt_{projected}_r{event.seq}")
             view.event_seq = event.seq
+    # Already-consumed progress may deliver its body after the summary. This
+    # does not move the cursor, subscribe after done, or wait for future bodies.
+    for candidate in (live_message, *ready_messages):
+        if candidate is None or not _has_operation(candidate):
+            continue
+        if authorized is not None and not await authorized():
+            raise _ObserverRevoked
+        from orchestrator.tasks.runner import _parse_frame
+
+        _, envelope = _parse_frame(candidate["frame"])
+        operation_id = envelope["data"]["operation_id"]
+        prior = view.operations.get((snapshot.content_generation, operation_id))
+        if prior is None or prior.get("payload_state") == "full":
+            continue
+        full = await _operation_payload(store, user_id, task_id, candidate, prior, snapshot, view)
+        if full is not None:
+            enriched = {**prior, **full}
+            view.operations[(snapshot.content_generation, operation_id)] = enriched
+            yield view.frame(
+                "tool_result", enriched, evt_id=f"evt_tool_result_r{prior['event_seq']}"
+            )
 
 
 class _ObserverRevoked(Exception):
     """Fail closed if authorization/history disappears during catch-up."""
+
+
+def _has_operation(message: dict[str, Any] | None) -> bool:
+    if not isinstance(message, dict) or not isinstance(message.get("frame"), str):
+        return False
+    from orchestrator.tasks.runner import _parse_frame
+
+    kind, envelope = _parse_frame(message["frame"])
+    data = envelope.get("data")
+    return (
+        kind == "tool_result"
+        and isinstance(data, dict)
+        and isinstance(data.get("operation_id"), str)
+    )
+
+
+async def _operation_payload(
+    store: TaskStore,
+    user_id: uuid.UUID,
+    task_id: uuid.UUID,
+    message: dict[str, Any] | None,
+    prior: dict[str, Any],
+    snapshot: TaskSnapshot,
+    view: _Observation,
+) -> dict[str, Any] | None:
+    if not _has_operation(message) or message is None or message.get("t") != "frame":
+        return None
+    seq = message.get("seq")
+    if type(seq) is not int or seq > snapshot.event_seq or seq <= prior["event_seq"]:
+        return None
+    if type(message.get("gen")) is not int or message["gen"] != snapshot.content_generation:
+        return None
+    from orchestrator.tasks.runner import _parse_frame
+
+    _, envelope = _parse_frame(message["frame"])
+    data = envelope["data"]
+    if (
+        envelope.get("type") != "tool_result"
+        or envelope.get("conversation_id") != view.conversation_id
+    ):
+        return None
+    for key, expected in (
+        ("task_id", str(task_id)),
+        ("operation_id", prior["operation_id"]),
+        ("name", prior["name"]),
+        ("outcome", prior["outcome"]),
+        ("payload_state", "full"),
+        ("event_seq", seq),
+        ("content_generation", snapshot.content_generation),
+        ("lifecycle_epoch", snapshot.content_generation),
+    ):
+        if data.get(key) != expected or (
+            isinstance(expected, int) and type(data.get(key)) is not int
+        ):
+            return None
+    if (
+        "result" not in data
+        or outcome_of_tool_result(data["name"], data["result"]) != prior["outcome"]
+    ):
+        return None
+    proof = await store.operation_progress(
+        user_id,
+        task_id,
+        snapshot.content_generation,
+        prior["operation_id"],
+        prior["name"],
+        prior["outcome"],
+        seq,
+        after_seq=prior["event_seq"],
+    )
+    if proof is None:
+        return None
+    return {"result": data["result"], "payload_state": "full", "replayed": False}
 
 
 def _live_tool_payload(
@@ -525,9 +644,9 @@ def _live_tool_payload(
 
     The owner-scoped contiguous DB drain has already validated the record. A
     full live frame can supply only that record's arguments or result, not its
-    envelope or authoritative fields. Late content cannot replace an emitted
-    summary; material operation summaries cannot be correlated to progress by
-    an operation ID in the current contract, so their existing dedup stays.
+    envelope or authoritative fields. Legacy no-ID late content cannot replace
+    an emitted summary; proven material identities use _operation_payload and
+    its separate owner/operation/progress checks, never this name-only path.
     """
     if message is None or message.get("t") != "frame":
         return None

@@ -335,10 +335,28 @@ conservative, and historical rows missing bounded evidence are not reclassified.
 The owner also approved preserving available full live tool arguments/results at
 their matching owner-scoped durable projection (sequence, generation, kind/name
 and outcome checked), without advancing across gaps or persisting extra content.
-Already-emitted summaries remain unchanged when payloads arrive late. Material
-operation summaries retain existing deduplication when the progress record cannot
-prove operation-ID correlation; guessing by tool name is not payload authority.
-Late enrichment or stronger correlation needs a separately approved contract.
+Legacy no-ID summaries remain unchanged when payloads arrive late. Material
+operation summaries retain conservative deduplication when the progress record
+cannot prove operation-ID correlation; guessing by tool name is not payload authority.
+
+The owner subsequently approved operation identity **and late enrichment** for
+the material/media repair (9 October 2026). The fence-created UUID travels through
+an explicit per-invocation executor return value into existing durable progress;
+no shared last-result state, name queue or result-body identity is trusted.
+Existing `tool_result` frames add optional `task_id` and `payload_state`
+(`summary` / `full`) alongside operation UUID and generation/epoch/outcome.
+An available full result replaces its operation summary at projection. While the
+observer remains open, a late full result may enrich that same operation only
+after owner, current task/generation, UUID, tool, outcome and exact durable progress
+are verified. Contiguous paging and the snapshot watermark remain authoritative.
+Live and archived frontend consumers normalize updates in place per
+task/generation/operation: one result/activity, never full-to-summary. Observer
+request IDs are transport routing, not operation identity: a reconnect can enrich
+the same operation; archives retain their original request association.
+Missing payloads and crash-after-effect-before-progress retain one bounded summary;
+no effect is repeated. No post-done subscription/waiting, new event type, database
+column or durable-event result body is introduced. Reconnect does not promise
+replay of an ephemeral body; existing saved conversation history is unchanged.
 
 These are implementation approvals for the bounded closeout, not gate clearance,
 deployment or enablement authority. #469 account fence-and-drain and #486 legacy

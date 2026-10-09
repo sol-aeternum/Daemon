@@ -86,6 +86,9 @@ export type ChatEvent = BaseEvent &
         type: 'tool_result';
         name: string;
         result: any;
+        /** Proven material-operation updates upsert within this task/generation. */
+        task_id?: string;
+        payload_state?: 'summary' | 'full';
         event_seq?: number;
         lifecycle_epoch?: number;
         operation_id?: string;
@@ -231,6 +234,85 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     'request_rejected',
   ];
   return typeof event.type === 'string' && validTypes.includes(event.type);
+}
+
+export function materialOperationKey(event: ChatEvent): string | undefined {
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (
+    event.type !== 'tool_result' ||
+    !event.task_id ||
+    !event.operation_id ||
+    !uuid.test(event.operation_id) ||
+    !Number.isInteger(event.content_generation) ||
+    (event.content_generation ?? -1) < 0 ||
+    (event.payload_state !== 'summary' && event.payload_state !== 'full')
+  )
+    return undefined;
+  return JSON.stringify([
+    event.task_id,
+    event.content_generation,
+    event.operation_id,
+  ]);
+}
+
+/** Shared projection for live rendering, activity, sources and event archives.
+ * Legacy no-ID results remain separate. Only backend-proven operation updates
+ * coalesce; observer request IDs may change on reconnect, operation identity
+ * does not. Task/generation boundaries never share an update slot.
+ */
+export function normalizeChatEvents(events: ChatEvent[]): ChatEvent[] {
+  const scope = (taskId: string) => taskId;
+  const generations = new Map<string, number>();
+  for (const event of events) {
+    if (
+      (event.type === 'task' ||
+        event.type === 'task_reset' ||
+        event.type === 'tool_result') &&
+      typeof event.task_id === 'string' &&
+      event.task_id &&
+      Number.isInteger(event.content_generation) &&
+      (event.content_generation ?? -1) >= 0
+    ) {
+      const key = scope(event.task_id);
+      generations.set(
+        key,
+        Math.max(generations.get(key) ?? 0, event.content_generation!),
+      );
+    }
+  }
+  const projected: ChatEvent[] = [];
+  const positions = new Map<string, number>();
+  for (const event of events) {
+    const key = materialOperationKey(event);
+    if (event.type !== 'tool_result' || !event.task_id || key === undefined) {
+      projected.push(event);
+      continue;
+    }
+    const keyScope = scope(event.task_id);
+    if (event.content_generation !== generations.get(keyScope)) continue;
+    const index = positions.get(key);
+    if (index === undefined) {
+      positions.set(key, projected.length);
+      projected.push(event);
+      continue;
+    }
+    const previous = projected[index];
+    if (
+      previous.type !== 'tool_result' ||
+      previous.name !== event.name ||
+      previous.outcome !== event.outcome
+    )
+      continue;
+    const selected = previous.payload_state === 'full' ? previous : event;
+    // Keep full content, but route the single live projection to the latest
+    // observer request. Archives preserve their original routing separately.
+    projected[index] =
+      selected.request_id === event.request_id
+        ? selected
+        : { ...selected, request_id: event.request_id };
+  }
+  return projected;
 }
 
 export function isToolCallEvent(event: ChatEvent): event is ChatEvent & {

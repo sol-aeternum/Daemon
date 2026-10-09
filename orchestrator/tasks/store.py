@@ -1019,6 +1019,91 @@ class TaskStore:
                     },
                 )
 
+    async def operation_matches(
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        epoch: int,
+        operation_id: Any,
+        name: Any,
+        outcome: Any,
+    ) -> bool:
+        """Owner/current-generation operation evidence, not a live UUID assertion."""
+        if not all(isinstance(value, str) for value in (operation_id, name, outcome)):
+            return False
+        try:
+            identity = uuid.UUID(operation_id)
+        except ValueError:
+            return False
+        return bool(
+            await self._pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM task_operations o JOIN tasks t ON t.id = o.task_id "
+                "WHERE t.id = $1 AND t.user_id = $2 AND t.content_generation = $3 "
+                "AND o.id = $4 AND o.epoch = $3 AND o.tool_name = $5 AND o.outcome = $6 "
+                "AND o.completed_at IS NOT NULL AND NOT "
+                + _SUSPENDED.replace("tasks.", "t.")
+                + ")",
+                task_id,
+                user_id,
+                epoch,
+                identity,
+                name,
+                outcome,
+            )
+        )
+
+    async def operation_progress(
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        epoch: int,
+        operation_id: str,
+        name: str,
+        outcome: str,
+        seq: int,
+        *,
+        after_seq: int,
+    ) -> TaskEvent | None:
+        """Exact owner-scoped durable progress proof, including consumed sequences."""
+        if not await self.operation_matches(user_id, task_id, epoch, operation_id, name, outcome):
+            return None
+        row = await self._pool.fetchrow(
+            "SELECT e.seq, e.kind, e.payload_ciphertext, e.created_at "
+            "FROM task_events e JOIN tasks t ON t.id = e.task_id "
+            "WHERE e.task_id = $1 AND t.user_id = $2 AND t.content_generation = $3 "
+            "AND e.seq = $4 AND e.kind = 'tool_result' AND NOT "
+            + _SUSPENDED.replace("tasks.", "t."),
+            task_id,
+            user_id,
+            epoch,
+            seq,
+        )
+        if row is None:
+            return None
+        # Available-before projection may look across a page boundary, never
+        # across a damaged durable gap between operation and result progress.
+        count = await self._pool.fetchval(
+            "SELECT count(*) FROM task_events WHERE task_id = $1 AND seq > $2 AND seq <= $3",
+            task_id,
+            after_seq,
+            seq,
+        )
+        if count != seq - after_seq:
+            return None
+        payload = self._open(row["payload_ciphertext"])
+        if any(
+            payload.get(key) != value
+            for key, value in (
+                ("operation_id", operation_id),
+                ("epoch", epoch),
+                ("name", name),
+                ("outcome", outcome),
+                ("payload_state", "full"),
+            )
+        ):
+            return None
+        return TaskEvent(seq=int(row["seq"]), kind=row["kind"], payload=payload)
+
     async def complete(
         self,
         task_id: uuid.UUID,

@@ -139,15 +139,15 @@ class AttemptSink:
                     # The engine saves raw results before the runner annotates
                     # live frames. History must carry that same bounded evidence,
                     # without mutating the engine's accumulator or result bodies.
-                    message_fields["tool_results"] = [
-                        {
-                            **row,
-                            "outcome": outcome_of_tool_result(row.get("name"), row.get("result")),
-                        }
-                        if isinstance(row, dict)
-                        else row
-                        for row in tool_results
-                    ]
+                    saved = []
+                    for row in tool_results:
+                        if not isinstance(row, dict):
+                            saved.append(row)
+                            continue
+                        annotated = dict(row)
+                        await _progress_evidence(self._store, self._state, annotated)
+                        saved.append(annotated)
+                    message_fields["tool_results"] = saved
                 if metadata:
                     message_fields["metadata"] = metadata
                 self._state.result = await self._store.complete(
@@ -562,10 +562,6 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                     if seq is not None:
                         message["seq"] = seq
                         data["event_seq"] = seq
-                    if event == "tool_result":
-                        data["outcome"] = outcome_of_tool_result(
-                            data.get("name"), data.get("result")
-                        )
                 envelope["data"] = data
                 message["frame"] = f"event: {event}\ndata: {json.dumps(envelope)}\n\n"
                 await _publish(redis, state, message)
@@ -582,6 +578,9 @@ async def _record_progress(
 ) -> int | None:
     """Persist a tool progress event under the fence; returns its sequence."""
     try:
+        evidence = (
+            await _progress_evidence(store, state, data or {}) if event == "tool_result" else {}
+        )
         return await store.record_event(
             state.claim.task_id,
             state.claim.epoch,
@@ -589,11 +588,7 @@ async def _record_progress(
             {
                 "name": str(name or "tool")[:100],
                 "epoch": state.claim.epoch,
-                **(
-                    {"outcome": outcome_of_tool_result(name, (data or {}).get("result"))}
-                    if event == "tool_result"
-                    else {}
-                ),
+                **evidence,
             },
         )
     except LeaseLost:
@@ -601,6 +596,40 @@ async def _record_progress(
         # and the effect fence do.
         _fence_lost(state)
         return None
+
+
+async def _progress_evidence(
+    store: TaskStore, state: AttemptState, data: dict[str, Any]
+) -> dict[str, Any]:
+    claim = state.claim
+    name = data.get("name")
+    outcome = outcome_of_tool_result(name, data.get("result"))
+    identity = data.get("operation_id")
+    valid = (
+        data.get("task_id") == str(claim.task_id)
+        and type(data.get("lifecycle_epoch")) is int
+        and data.get("lifecycle_epoch") == claim.epoch
+        and isinstance(data.get("payload_state"), str)
+        and data.get("payload_state") in {"summary", "full"}
+        and isinstance(data.get("outcome"), str)
+        and data.get("outcome") in {"succeeded", "failed", "unknown"}
+        and (data.get("payload_state") == "summary" or data.get("outcome") == outcome)
+        and await store.operation_matches(
+            claim.user_id, claim.task_id, claim.epoch, identity, name, data.get("outcome")
+        )
+    )
+    if valid:
+        evidence = {
+            "operation_id": identity,
+            "outcome": data["outcome"],
+            "payload_state": data["payload_state"],
+        }
+    else:
+        evidence = {"outcome": outcome}
+        for key in ("operation_id", "task_id", "lifecycle_epoch", "payload_state"):
+            data.pop(key, None)
+    data.update(evidence)
+    return evidence
 
 
 def _classify(exc: BaseException) -> tuple[RetryCause, str]:

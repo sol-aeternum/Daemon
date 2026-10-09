@@ -106,6 +106,7 @@ import { SkeletonBlock } from '../components/ui/Skeleton';
 import {
   ChatEvent,
   isChatEvent,
+  normalizeChatEvents,
   isCouncilEvent,
   isCouncilInterviewEvent,
   isCouncilProgressEvent,
@@ -1621,8 +1622,8 @@ function ChatContent() {
     return data.flatMap((entry) => (Array.isArray(entry) ? entry : [entry]));
   }, [data]);
 
-  const events: ChatEvent[] = flattenedData.filter((x): x is ChatEvent =>
-    isChatEvent(x),
+  const events: ChatEvent[] = normalizeChatEvents(
+    flattenedData.filter((x): x is ChatEvent => isChatEvent(x)),
   );
 
   // Update ref whenever events change
@@ -1776,7 +1777,7 @@ function ChatContent() {
   const latestMessage = messages.at(-1);
   const currentActivityEvents =
     latestMessage?.role === 'assistant'
-      ? getDaemonDataEvents([latestMessage])
+      ? normalizeChatEvents(getDaemonDataEvents([latestMessage]))
       : [];
 
   const currentMessagesMatch = messageScope === currentId;
