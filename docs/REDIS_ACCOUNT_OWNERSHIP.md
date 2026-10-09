@@ -9,7 +9,8 @@ replay and eviction are **not implemented** by this prerequisite.
 
 - A dedicated stable `DAEMON_REDIS_ACCOUNT_HASH_KEY` derives a versioned,
   domain-separated full-length HMAC-SHA256 account token. No auth/encryption
-  secret reuse or automatic key generation. See [environment migration](ENV_SURFACE_MIGRATION.md).
+  secret reuse (including the configured internal proxy HMAC secret) or automatic
+  key generation. See [environment migration](ENV_SURFACE_MIGRATION.md).
 - Owner-scoped keys use `account:v1:{token}`; home-suggestion Lua keys retain
   their common hash slot. Native ARQ key families retain their own prefixes,
   with the account namespace at the start of each job ID. Shared queue/abort

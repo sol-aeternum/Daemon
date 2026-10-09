@@ -35,6 +35,7 @@ def validate_redis_account_key(
         len(decoded) != 32
         or base64.urlsafe_b64encode(decoded).decode().rstrip("=") != value
         or len(set(decoded)) == 1
+        or value == settings.daemon_internal_proxy_hmac_secret.strip()
         or any(
             value == other.rstrip("=")
             for other in (settings.daemon_auth_pepper, settings.daemon_encryption_key)

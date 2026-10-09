@@ -44,6 +44,64 @@ def test_canonical_encoding_and_no_secret_reuse() -> None:
         validate_redis_account_key(settings(TEST_KEY[:-1] + "9"))
 
 
+@pytest.mark.parametrize("trust_proxy", [False, True])
+@pytest.mark.parametrize("surrounding", ["", " \t\n"])
+def test_proxy_hmac_reuse_rejected_after_consumer_normalization(trust_proxy, surrounding):
+    value = settings()
+    value.daemon_trust_proxy_forwarded_client_ip = trust_proxy
+    value.daemon_internal_proxy_hmac_secret = surrounding + TEST_KEY + surrounding
+    with pytest.raises(RedisAccountKeyError) as caught:
+        validate_redis_account_key(value)
+    assert str(caught.value) == "DAEMON_REDIS_ACCOUNT_HASH_KEY requires a dedicated 32-byte key"
+
+
+@pytest.mark.parametrize(
+    "proxy_key", ["", base64.urlsafe_b64encode(bytes(range(1, 33))).decode().rstrip("=")]
+)
+def test_empty_or_distinct_proxy_hmac_key_does_not_reject_ownership_key(proxy_key):
+    value = settings()
+    value.daemon_internal_proxy_hmac_secret = proxy_key
+    assert validate_redis_account_key(value) == bytes(range(32))
+
+
+@pytest.mark.asyncio
+async def test_backend_proxy_reuse_fails_before_any_connection(monkeypatch):
+    from orchestrator import db
+
+    value = settings()
+    value.daemon_internal_proxy_hmac_secret = " \t" + TEST_KEY + " \n"
+    postgres = AsyncMock(side_effect=AssertionError("must not connect"))
+    redis = AsyncMock(side_effect=AssertionError("must not connect"))
+    monkeypatch.setattr(db.asyncpg, "create_pool", postgres)
+    monkeypatch.setattr(db, "arq_create_pool", redis)
+    with pytest.raises(RedisAccountKeyError) as caught:
+        await db.init_app_state(value)
+    assert str(caught.value) == "DAEMON_REDIS_ACCOUNT_HASH_KEY requires a dedicated 32-byte key"
+    postgres.assert_not_awaited()
+    redis.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_worker_effective_redis_rejects_proxy_reuse_before_native_main(monkeypatch):
+    from arq.worker import Worker
+    from orchestrator.worker.audit import AuditedWorker
+
+    value = settings()
+    value.redis_url = None  # ARQ's effective localhost fallback still requires independence.
+    value.daemon_internal_proxy_hmac_secret = " \t" + TEST_KEY + " \n"
+    native = AsyncMock(side_effect=AssertionError("native main must not connect"))
+    monkeypatch.setattr(Worker, "main", native)
+
+    async def unused_job(ctx):
+        raise AssertionError("no job may execute")
+
+    worker = AuditedWorker(functions=[unused_job], ctx={"settings": value}, handle_signals=False)
+    with pytest.raises(RedisAccountKeyError) as caught:
+        await worker.main()
+    assert str(caught.value) == "DAEMON_REDIS_ACCOUNT_HASH_KEY requires a dedicated 32-byte key"
+    native.assert_not_awaited()
+
+
 def test_stable_owner_and_separate_domains() -> None:
     owner = uuid.UUID("00000000-0000-4000-8000-000000000001")
     a = account_prefix(owner, settings())
