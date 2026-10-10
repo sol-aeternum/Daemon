@@ -7,6 +7,30 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Account-owned Redis namespaces — 9 October 2026 (P0.6)
+
+MIGRATION: add `DAEMON_REDIS_ACCOUNT_HASH_KEY` to **both** backend and worker
+launch configurations before any separately approved deployment. No existing
+key is renamed or removed. It is a dedicated, stable, unpadded base64url encoding
+of exactly 32 operator-generated random bytes, independent of authentication
+and encryption keys, including the configured admin bearer key (compared verbatim)
+and the internal proxy HMAC secret after its existing whitespace normalization
+(even when proxy trust is disabled). Encoding validation
+cannot certify randomness. Missing,
+empty, malformed, trivially weak or reused keys fail startup when Redis is
+configured; absence and empty have the same failure behavior. The worker's
+existing localhost Redis fallback also requires the key. Without backend Redis,
+an absent/empty key is optional, but an explicitly invalid key is rejected.
+
+There is no automatic secret generation, database/process fallback, rotation,
+legacy-state migration or production activation. Preserve this key across
+restarts and database restores: changing it loses discovery of old namespaces.
+Old queued jobs, admission counters and persistent home-suggestion fences need
+a separately approved coordinated transition; a rolling mixed-version deploy
+or blind deletion is not qualified. This source change does not provision a
+live key, change credentials, enable flags or authorize deployment. See
+[REDIS_ACCOUNT_OWNERSHIP.md](REDIS_ACCOUNT_OWNERSHIP.md).
+
 ### Managed runtime logging — 9 October 2026 (P0.3)
 
 MIGRATION: existing `LOG_LEVEL` is activated for the managed backend and worker

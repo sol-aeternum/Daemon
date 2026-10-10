@@ -26,6 +26,9 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from tests.redis_jobs_support import install_fake_enqueue
+
+
 from arq import Retry
 
 from orchestrator.compute_runtime import current_scope
@@ -40,6 +43,11 @@ from orchestrator.worker.jobs import (
     extract_memories,
 )
 from tests.qualified_compute import install_qualified_compute
+
+
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    install_fake_enqueue(monkeypatch, "orchestrator.worker.jobs.enqueue_account_job")
 
 
 def _worker_context(
@@ -516,7 +524,7 @@ async def test_full_oldest_batch_enqueues_extraction_continuation(
                 "role": "user",
                 "content": f"message {index}",
                 "created_at": timestamp,
-                "id": f"{index:04d}",
+                "id": str(uuid.UUID(int=index + 1)),
             }
             for index in range(250)
         ]
@@ -714,13 +722,10 @@ async def test_bool_confidence_is_still_rejected_as_malformed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_message_continuation_key_is_stable_across_ciphertext(
+async def test_oversized_message_reference_key_is_stable_and_versioned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The continuation key embedded in the encrypted envelope must be derived
-    from the plaintext fragment's ``_extraction_continuation_key`` so the next
-    job enqueues under the same job id regardless of the randomized Fernet
-    ciphertext (Codex P2 on PR #238, ``worker/jobs.py:466-473``)."""
+    """Same source/fragment has stable identity, without randomized ciphertext."""
 
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -733,21 +738,13 @@ async def test_oversized_message_continuation_key_is_stable_across_ciphertext(
                 "user",
                 "x" * 80_000,
                 created_at=datetime.now(timezone.utc),
-                id="oversized",
+                id=str(uuid.UUID(int=1)),
             )
         ]
     )
     store.encrypt_extraction_continuation = Mock(return_value="ciphertext-token")
     queue = SimpleNamespace(enqueue_job=AsyncMock())
     ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
-
-    captured_keys: list[str] = []
-
-    def _capture(_value: str) -> str:
-        captured_keys.append(_value)
-        return "ciphertext-token"
-
-    store.encrypt_extraction_continuation = Mock(side_effect=_capture)
 
     with (
         patch(
@@ -765,12 +762,13 @@ async def test_oversized_message_continuation_key_is_stable_across_ciphertext(
 
     assert enqueue_mock.await_args is not None
     envelope = json.loads(enqueue_mock.await_args.kwargs["args"][2])
-    assert envelope["_encrypted_extraction_continuation"] == "ciphertext-token"
-    # The plaintext-derived continuation key survives the encryption
-    # round-trip; this is the value the next job uses to deduplicate.
-    # The fixture's 80_000-character message spans multiple fragments; the
-    # continuation payload begins with fragment index 1.
-    assert envelope["_continuation_key"] == "oversized:1"
+    first = envelope["_extraction_refs"][0]
+    assert first["fragment_index"] == 1
+    assert first["message_id"] == str(uuid.UUID(int=1))
+    assert envelope["_continuation_key"] == (f"{first['message_id']}:1:{first['source_version']}")
+    assert set(first) == {"message_id", "source_version", "fragment_index"}
+    store.encrypt_extraction_continuation.assert_not_called()
+    assert enqueue_mock.await_args.kwargs["job_id"].endswith(envelope["_continuation_key"])
 
 
 @pytest.mark.asyncio
@@ -785,7 +783,7 @@ async def test_extract_memories_caps_chunks_and_enqueues_continuation(
             "user",
             f"message-{index}-" + ("x" * 2_000),
             created_at=base + timedelta(seconds=index),
-            id=str(index),
+            id=str(uuid.UUID(int=index + 1)),
         )
         for index in range(20)
     ]
@@ -818,11 +816,14 @@ async def test_extract_memories_caps_chunks_and_enqueues_continuation(
     assert enqueue_mock.await_args.args[1] == "extract_memories"
     continuation_args = enqueue_mock.await_args.kwargs["args"]
     assert len(continuation_args) == 3
-    assert len(json.loads(continuation_args[2])) == 19
+    refs = json.loads(continuation_args[2])["_extraction_refs"]
+    assert len(refs) == 19
+    assert all(set(ref) == {"message_id", "source_version", "fragment_index"} for ref in refs)
+    assert "message-" not in continuation_args[2]
 
 
 @pytest.mark.asyncio
-async def test_database_continuation_is_encrypted_before_enqueue(
+async def test_database_continuation_uses_identifiers_not_encrypted_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     user_id = uuid.uuid4()
@@ -836,7 +837,7 @@ async def test_database_continuation_is_encrypted_before_enqueue(
                 "user",
                 "secret-plaintext-" + ("x" * 20_000),
                 created_at=datetime.now(timezone.utc),
-                id="oversized",
+                id=str(uuid.UUID(int=1)),
             )
         ]
     )
@@ -861,15 +862,11 @@ async def test_database_continuation_is_encrypted_before_enqueue(
     assert enqueue_mock.await_args is not None
     continuation_arg = enqueue_mock.await_args.kwargs["args"][2]
     continuation_envelope = json.loads(continuation_arg)
-    assert continuation_envelope["_encrypted_extraction_continuation"] == "ciphertext-token"
-    # The continuation key is derived from plaintext fragment metadata so
-    # the next job can recover a stable key regardless of randomized Fernet
-    # ciphertext (Codex P2 on PR #238, ``worker/jobs.py:466-473``). The
-    # oversized message in this fixture spans multiple fragments; the
-    # continuation payload begins with fragment index 1.
-    assert continuation_envelope["_continuation_key"] == "oversized:1"
+    assert "_encrypted_extraction_continuation" not in continuation_envelope
+    assert continuation_envelope["_extraction_refs"][0]["fragment_index"] == 1
+    assert continuation_envelope["_extraction_refs"][0]["message_id"] == str(uuid.UUID(int=1))
     assert "secret-plaintext" not in continuation_arg
-    store.encrypt_extraction_continuation.assert_called_once()
+    store.encrypt_extraction_continuation.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -885,7 +882,7 @@ async def test_oversized_message_continuation_resumes_at_fragment(
         "user",
         "x" * 80_000,
         created_at=datetime.now(timezone.utc),
-        id="oversized",
+        id=str(uuid.UUID(int=1)),
     )
 
     with (
@@ -911,8 +908,16 @@ async def test_oversized_message_continuation_resumes_at_fragment(
     assert enqueue_mock.await_args is not None
     continuation = json.loads(enqueue_mock.await_args.kwargs["args"][2])
     assert continuation
-    assert continuation[0]["_extraction_cursor_checkpoint"] is False
-    assert len(continuation[0]["content"]) < len(message["content"])
+    reference = continuation["_extraction_refs"][0]
+    assert reference["fragment_index"] == 1
+    assert "content" not in reference
+    store.get_owned_message = AsyncMock(return_value=message)
+    from orchestrator.worker.jobs import _read_extraction_references
+
+    resumed = await _read_extraction_references(store, user_id, conversation_id, continuation)
+    assert resumed[0]["_extraction_cursor_checkpoint"] is False
+    assert len(resumed[0]["content"]) < len(message["content"])
+    assert resumed[-1]["_extraction_cursor_checkpoint"] is True
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,7 @@ from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from tests.qualified_compute import install_qualified_compute
 from tests.test_home_suggestions import rig, produce
+from tests.redis_jobs_support import install_fake_enqueue
 
 # Reuse the fictional service fixture, not an external Redis/model integration.
 __all__ = ["rig"]
@@ -29,6 +30,7 @@ async def chat_client(rig, monkeypatch):
 
     service, store, redis, _, _ = rig
     install_qualified_compute(monkeypatch)
+    install_fake_enqueue(monkeypatch, "orchestrator.home_suggestions.service.enqueue_account_job")
     settings = get_settings()
     state = AppState(settings=settings)
     state.db_pool = object()  # type: ignore[assignment]

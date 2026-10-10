@@ -187,6 +187,8 @@ class RateLimiter:
         endpoint: str,
         scope_kind: str,
         raw_value: str,
+        *,
+        owner_id: str | None = None,
     ) -> str:
         """Construct the namespaced Redis key for a given scope value.
 
@@ -199,7 +201,14 @@ class RateLimiter:
         if scope_kind not in ("ip", "email", "user_id", "session_id"):
             raise ValueError("scope_kind must be 'ip', 'email', 'user_id', or 'session_id'")
         scope_hash = hash_key_material(self._hmac_secret, raw_value)
-        return f"{self._namespace}:{endpoint}:{scope_kind}:{scope_hash}"
+        key = f"{self._namespace}:{endpoint}:{scope_kind}:{scope_hash}"
+        if scope_kind in ("user_id", "session_id"):
+            from orchestrator.redis_account import account_prefix
+
+            if not owner_id or (scope_kind == "user_id" and raw_value != owner_id):
+                raise ValueError("Account-scoped rate limiting requires its authenticated owner")
+            return f"{account_prefix(owner_id)}:{key}"
+        return key
 
     async def check(
         self,
@@ -207,6 +216,8 @@ class RateLimiter:
         scope_kind: str,
         raw_value: str,
         policy: RateLimitPolicy,
+        *,
+        owner_id: str | None = None,
     ) -> RateLimitDecision:
         """Atomically increment the counter and return the decision.
 
@@ -221,7 +232,7 @@ class RateLimiter:
         if not self.is_redis_available or self._script is None:
             raise RateLimitUnavailableError("Rate limiter is not wired to a Redis client")
 
-        key = self.build_key(endpoint, scope_kind, raw_value)
+        key = self.build_key(endpoint, scope_kind, raw_value, owner_id=owner_id)
         window_ms = int(policy.window_seconds * 1000)
 
         try:

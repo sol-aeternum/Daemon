@@ -12,6 +12,11 @@ import uuid
 from typing import Any, cast
 
 from orchestrator.config import ProviderConfig, Settings
+from orchestrator.redis_jobs import (
+    account_job_id,
+    clear_account_job_completion,
+    enqueue_account_job,
+)
 from orchestrator.compute_runtime import compute_error
 from orchestrator.compute_runtime import selected_budget_fitted as active_budget_fitted
 from orchestrator.compute_runtime import selected_effort as active_compute_effort
@@ -1094,21 +1099,25 @@ async def stream_sse_chat(
                     logger.debug("Trust signal application skipped")
 
                 if persisted_status == "complete" and queue is not None:
-                    extract_job_id = f"extract:{conversation_uuid}"
+                    extract_suffix = f"extract:{conversation_uuid}"
+                    extract_job_id = account_job_id(user_id, extract_suffix, settings=settings)
                     try:
-                        # arq records failed results under Worker-level keep_result_s
-                        # (default 3600s); clearing any stale result key here lets
+                        # Failed extraction completion markers preserve the old
+                        # dedup window; clearing the marker here lets
                         # future enqueues proceed once the worker has had a chance
                         # to mark the failure permanently logged.
-                        await queue.delete(f"arq:result:{extract_job_id}")
+                        await clear_account_job_completion(queue, extract_job_id)
                     except Exception:
                         logger.debug("Could not clear stale extract result key")
                     try:
-                        enqueued = await queue.enqueue_job(
+                        enqueued = await enqueue_account_job(
+                            queue,
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),
-                            _job_id=extract_job_id,
+                            user_id=user_id,
+                            job_id=extract_suffix,
+                            settings=settings,
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception:
@@ -1124,13 +1133,16 @@ async def stream_sse_chat(
                             # follow-up _job_id so rapid-fire duplicate enqueues while
                             # the original is still in-flight collapse into one
                             # trailing extraction instead of one per duplicate turn.
-                            follow_up_id = f"{extract_job_id}:followup"
+                            follow_up_id = f"{extract_suffix}:followup"
                             try:
-                                await queue.enqueue_job(
+                                await enqueue_account_job(
+                                    queue,
                                     "extract_memories",
                                     str(user_id),
                                     str(conversation_uuid),
-                                    _job_id=follow_up_id,
+                                    user_id=user_id,
+                                    job_id=follow_up_id,
+                                    settings=settings,
                                     _defer_by=timedelta(seconds=60),
                                 )
                             except Exception:
@@ -1145,13 +1157,16 @@ async def stream_sse_chat(
                 ):
                     try:
                         debounce_key = f"skill_eval:{conversation_uuid}:{assistant_message_id}"
-                        await queue.enqueue_job(
+                        await enqueue_account_job(
+                            queue,
                             "run_skill_evaluation_job",
                             str(user_id),
                             str(conversation_uuid),
                             str(assistant_message_id),
                             tool_call_count,
-                            _job_id=debounce_key,
+                            user_id=user_id,
+                            job_id=debounce_key,
+                            settings=settings,
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception:

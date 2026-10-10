@@ -7,11 +7,12 @@ from orchestrator.compute_runtime import ComputeUnavailable, account_compute, gu
 import asyncio
 import json
 import logging
+import re
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast, NotRequired, TypedDict
+from typing import Any, cast, NotRequired, TypedDict, Protocol
 from zoneinfo import ZoneInfo
 
 from arq import Retry
@@ -20,6 +21,8 @@ from arq.jobs import Job
 
 from orchestrator.artifacts import is_artifact_owner_namespace
 from orchestrator.config import Settings
+from orchestrator.redis_account import account_prefix, source_version
+from orchestrator.redis_jobs import enqueue_account_job
 from orchestrator.timezones import extract_timezone_name as _extract_timezone_name
 from orchestrator.memory.dreaming import run_dreaming
 from orchestrator.memory.entities import (
@@ -191,19 +194,87 @@ def _coerce_message_timestamp(value: object) -> datetime | None:
     return None
 
 
+def _extraction_source_version(message: Mapping[str, Any]) -> str:
+    # Only source fields, never the continuation's bookkeeping. Tool traces
+    # participate because they determine whether a memory-write artifact is skipped.
+    source = {
+        name: message.get(name)
+        for name in ("id", "created_at", "role", "content", "tool_calls", "tool_results")
+    }
+    return source_version(json.dumps(source, sort_keys=True, default=str).encode())
+
+
+class ExtractionSourceStore(Protocol):
+    async def get_owned_message(
+        self, message_id: uuid.UUID, *, user_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> dict[str, Any] | None: ...
+
+
+async def _read_extraction_references(
+    store: ExtractionSourceStore,
+    owner: uuid.UUID,
+    conversation_id: uuid.UUID,
+    envelope: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    references = envelope.get("_extraction_refs")
+    if not isinstance(references, list) or not 1 <= len(references) <= 250:
+        raise ValueError("Invalid extraction references")
+    raw: list[dict[str, Any]] = []
+    seen: set[uuid.UUID] = set()
+    for reference in references:
+        if not isinstance(reference, dict) or set(reference) != {
+            "message_id",
+            "source_version",
+            "fragment_index",
+        }:
+            raise ValueError("Invalid extraction reference")
+        message_id = _as_uuid(reference["message_id"])
+        index = reference["fragment_index"]
+        version = reference["source_version"]
+        if message_id in seen or type(index) is not int or index < 0:
+            raise ValueError("Invalid extraction fragment")
+        if not isinstance(version, str) or re.fullmatch(r"[0-9a-f]{64}", version) is None:
+            raise ValueError("Invalid extraction source version")
+        seen.add(message_id)
+        message = await store.get_owned_message(
+            message_id, user_id=owner, conversation_id=conversation_id
+        )
+        if message is None:
+            # Never fabricate a source or checkpoint later messages over a gap.
+            raise Retry(defer=5)
+        current_version = _extraction_source_version(message)
+        if current_version != version:
+            index = 0  # Owner-approved at-least-once restart on changed source.
+        parsed = _parse_message(message)
+        if parsed is None:
+            raise Retry(defer=5)
+        message["_source_version"] = current_version
+        fragments = _chunk_messages_for_extraction([parsed], [message])
+        if index >= len(fragments):
+            raise ValueError("Invalid extraction fragment index")
+        for fragment in fragments[index:]:
+            raw.extend(dict(row) for row in fragment["raw_messages"])
+    if raw:
+        raw[0]["_resume_database_extraction"] = True
+    return raw
+
+
 async def enqueue_with_debounce(
     queue: ArqRedis,
     job_name: str,
     job_id: str,
+    user_id: str | uuid.UUID,
     defer_by: timedelta | None = None,
     args: Sequence[object] = (),
     kwargs: Mapping[str, object] | None = None,
 ) -> Job | None:
     delay = defer_by or timedelta(seconds=30)
-    return await queue.enqueue_job(
+    return await enqueue_account_job(
+        queue,
         job_name,
         *args,
-        _job_id=job_id,
+        user_id=user_id,
+        job_id=job_id,
         _defer_by=delay,
         **dict(kwargs or {}),
     )
@@ -370,6 +441,7 @@ async def _extract_memories_once(
                 await enqueue_with_debounce(
                     queue,
                     "generate_summary_job",
+                    user_id=owner,
                     job_id=(
                         f"summary_continuation_recovery:{_as_uuid(conversation_id)}:"
                         f"{int(datetime.now(timezone.utc).timestamp())}"
@@ -393,6 +465,7 @@ async def _extract_memories_once(
     batch_limit = 250
     raw_messages: list[dict[str, Any]]
     needs_extraction_continuation = False
+    reference_input = False
     if messages_json is None:
         cursor_at, cursor_message_id = await store_obj.get_last_extraction_cursor(
             _as_uuid(conversation_id)
@@ -413,13 +486,26 @@ async def _extract_memories_once(
             )
         except (TypeError, json.JSONDecodeError):
             envelope = None
-        if isinstance(envelope, Mapping) and isinstance(
+        if isinstance(envelope, Mapping) and "_extraction_refs" in envelope:
+            raw_messages = await _read_extraction_references(
+                store_obj, owner, _as_uuid(conversation_id), envelope
+            )
+            reference_input = True
+        elif isinstance(envelope, Mapping) and isinstance(
             envelope.get("_encrypted_extraction_continuation"), str
         ):
             decoded_messages_json = store_obj.decrypt_extraction_continuation(
                 str(envelope["_encrypted_extraction_continuation"])
             )
-        raw_messages = _parse_raw_messages(decoded_messages_json)
+            raw_messages = _parse_raw_messages(decoded_messages_json)
+        else:
+            # Read-only legacy/direct-call compatibility. New enqueue payloads
+            # below always use checked source references, never these bytes.
+            raw_messages = _parse_raw_messages(decoded_messages_json)
+
+    for raw_message in raw_messages:
+        if "_source_version" not in raw_message:
+            raw_message["_source_version"] = _extraction_source_version(raw_message)
 
     aligned_pairs: list[tuple[ConversationMessage, dict[str, Any], int]] = []
     for index, raw_message in enumerate(raw_messages):
@@ -428,7 +514,7 @@ async def _extract_memories_once(
         parsed_message = _parse_message(raw_message)
         if parsed_message is not None:
             aligned_pairs.append((parsed_message, raw_message, index))
-    if not aligned_pairs and messages_json is not None:
+    if not aligned_pairs and messages_json is not None and not reference_input:
         return {"status": "skipped", "reason": "no_messages"}
 
     def message_order_key(
@@ -473,31 +559,31 @@ async def _extract_memories_once(
             first_remaining = dict(remaining_raw[0])
             first_remaining["_resume_database_extraction"] = True
             remaining_raw[0] = first_remaining
-        # Derive the continuation key from plaintext metadata before encryption
-        # so the next job can recover a stable key regardless of randomized
-        # Fernet ciphertext (Codex P2 on PR #238, ``worker/jobs.py:466-473``).
-        # The key is the first fragment's ``_extraction_continuation_key``;
-        # fall back to ``last_processed_message_id`` then ``"unknown"``.
-        continuation_key = "unknown"
-        if remaining_raw:
-            raw_first_key = remaining_raw[0].get("_extraction_continuation_key")
-            if isinstance(raw_first_key, str) and raw_first_key:
-                continuation_key = raw_first_key
-            else:
-                first_id = remaining_raw[0].get("id")
-                if first_id is not None:
-                    continuation_key = str(first_id)
-        continuation_messages_json = json.dumps(remaining_raw, default=str)
-        if messages_json is None or resume_database_after_payload:
-            encrypted_payload = store_obj.encrypt_extraction_continuation(
-                continuation_messages_json
-            )
-            continuation_messages_json = json.dumps(
+        references: list[dict[str, Any]] = []
+        referenced_ids: set[str] = set()
+        for remaining in remaining_raw:
+            message_id = str(_as_uuid(remaining["id"]))
+            if message_id in referenced_ids:
+                continue
+            referenced_ids.add(message_id)
+            fragment_key = str(remaining.get("_extraction_continuation_key") or "")
+            fragment_index = int(fragment_key.rsplit(":", 1)[1]) if fragment_key else 0
+            references.append(
                 {
-                    "_encrypted_extraction_continuation": encrypted_payload,
-                    "_continuation_key": continuation_key,
+                    "message_id": message_id,
+                    "source_version": remaining["_source_version"],
+                    "fragment_index": fragment_index,
                 }
             )
+        first = references[0]
+        # Include the source generation: a changed-message restart must not
+        # enqueue its continuation under the still-running old generation's ID.
+        continuation_key = (
+            f"{first['message_id']}:{first['fragment_index']}:{first['source_version']}"
+        )
+        continuation_messages_json = json.dumps(
+            {"_extraction_refs": references, "_continuation_key": continuation_key}
+        )
 
     new_memories: list[dict[str, Any]] = []
     summary_continuation_needed = False
@@ -515,14 +601,9 @@ async def _extract_memories_once(
         await enqueue_with_debounce(
             entity_queue,
             "resolve_entities_job",
-            job_id=(
-                f"resolve_entities_{_as_uuid(user_id)}_{_as_uuid(conversation_id)}_{memory_ids[-1]}"
-            ),
-            args=(),
-            kwargs={
-                "user_id": str(_as_uuid(user_id)),
-                "memory_ids_json": json.dumps(memory_ids),
-            },
+            user_id=owner,
+            job_id=f"resolve_entities_{_as_uuid(conversation_id)}_{memory_ids[-1]}",
+            args=(str(owner), json.dumps(memory_ids)),
         )
 
     for chunk_index, chunk in enumerate(chunks_to_process):
@@ -575,7 +656,7 @@ async def _extract_memories_once(
     # inputs, but they must not pin pagination forever. Advance across a
     # trailing skipped suffix only after every selected chunk in this page
     # has completed successfully.
-    if messages_json is None and raw_messages and chunk_count == len(chunks):
+    if (messages_json is None or reference_input) and raw_messages and chunk_count == len(chunks):
         page_last = raw_messages[-1]
         page_last_id_raw = page_last.get("id")
         page_last_id = str(page_last_id_raw) if page_last_id_raw is not None else None
@@ -614,6 +695,7 @@ async def _extract_memories_once(
                 await enqueue_with_debounce(
                     queue,
                     "generate_summary_job",
+                    user_id=owner,
                     job_id=(
                         f"summary_continuation:{_as_uuid(conversation_id)}:"
                         f"{int(datetime.now(timezone.utc).timestamp())}"
@@ -645,11 +727,10 @@ async def _extract_memories_once(
             raise Retry(defer=5)
         try:
             continuation_key = last_processed_message_id
-            if continuation_key is None and continuation_messages_json is not None:
-                # Prefer the plaintext key embedded in the encrypted envelope
-                # (Codex P2 on PR #238, ``worker/jobs.py:466-473``); fall back
-                # to inspecting the plaintext payload if the envelope does
-                # not carry it (older enqueued continuations).
+            if continuation_messages_json is not None:
+                # The new reference envelope carries its version-qualified
+                # control identity. Older inputs remain read-only compatible;
+                # no new continuation queues their snapshots or ciphertext.
                 envelope_for_key: object = None
                 try:
                     envelope_for_key = (
@@ -682,6 +763,7 @@ async def _extract_memories_once(
             enqueued = await enqueue_with_debounce(
                 queue,
                 "extract_memories",
+                user_id=owner,
                 job_id=(f"extract_continuation:{_as_uuid(conversation_id)}:{continuation_key}"),
                 defer_by=timedelta(seconds=1),
                 args=continuation_args,
@@ -757,13 +839,8 @@ async def generate_home_suggestions(
 async def generate_title(
     ctx: WorkerContext,
     conversation_id: str | uuid.UUID,
-    user_message_text: str,
+    user_message_id: str | uuid.UUID,
 ) -> str | None:
-    if not user_message_text:
-        return None
-
-    messages = [{"role": "user", "content": user_message_text}]
-
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return None
@@ -779,6 +856,12 @@ async def generate_title(
     expected_title = existing.get("title")
 
     owner = await _conversation_owner(ctx, conv_id)
+    source = await store_obj.get_owned_message(
+        _as_uuid(user_message_id), user_id=owner, conversation_id=conv_id
+    )
+    if not source or source.get("role") != "user" or not source.get("content"):
+        return None
+    messages = [{"role": "user", "content": source["content"]}]
     async with account_compute(
         ctx.get("db_pool"),
         owner,
@@ -989,6 +1072,7 @@ async def generate_summary_job(
             follow_up = await enqueue_with_debounce(
                 cast(ArqRedis, queue),
                 "generate_summary_job",
+                user_id=owner,
                 job_id=f"summary:{conv_id}:{summarized_message_count}",
                 defer_by=timedelta(seconds=1),
                 args=(str(conv_id), True),
@@ -1638,7 +1722,7 @@ class ConsolidationNudgeResults(TypedDict):
 
 
 def _build_consolidation_nudge_debounce_key(user_id: str | uuid.UUID) -> str:
-    return f"consolidation_nudge:{user_id}"
+    return f"{account_prefix(user_id)}:consolidation_nudge"
 
 
 async def run_consolidation_nudge_job(

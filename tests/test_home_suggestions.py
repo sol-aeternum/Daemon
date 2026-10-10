@@ -15,6 +15,9 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.redis_jobs_support import install_fake_enqueue
+
+
 from cryptography.fernet import Fernet
 
 from orchestrator.home_suggestions import cache as scripts
@@ -28,6 +31,11 @@ from orchestrator.home_suggestions.contracts import (
 )
 from orchestrator.home_suggestions.service import HomeSuggestions
 from orchestrator.memory.encryption import ContentEncryption
+
+
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    install_fake_enqueue(monkeypatch, "orchestrator.home_suggestions.service.enqueue_account_job")
 
 
 class ScriptRedis:

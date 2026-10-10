@@ -133,10 +133,10 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Build cron jobs based on settings
-# All cron jobs register keep_result=3600 so the AuditedWorker can capture
-# raised failures via the standard finish_job result_data path. arq's
-# cron() default of keep_result=0 drops the result_data before the audit
-# path sees it, making critical-job failures invisible.
+# Positive keep_result is an in-memory serialization policy for terminal audit
+# evidence. AuditedWorker independently enforces persistence: account results
+# are never stored and explicitly classified shared results are counts-only.
+# arq's cron() default keep_result=0 discards bytes before that boundary.
 cron_jobs: list[Any] = []
 if _worker_settings.consolidation_enabled:
     interval = _worker_settings.consolidation_interval_days
@@ -211,13 +211,16 @@ logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:
 
 worker = AuditedWorker(
     functions=[
-        func(generate_home_suggestions, max_tries=1, keep_result=0),
+        # Originally zero-retention jobs still have no post-success dedup.
+        # Serialize terminal outcomes for audit; the finalizer preserves the
+        # original persistence policy explicitly, not by reading this value.
+        func(generate_home_suggestions, max_tries=1, keep_result=3600),
         # PostgreSQL owns task retries; arq only wakes. Each provider call
         # keeps the compute layer's own whole-call deadline, so reservation
         # recovery never settles a live call; this bounds the whole attempt.
-        func(run_chat_task, max_tries=1, keep_result=0, timeout=ATTEMPT_TIMEOUT_S),
+        func(run_chat_task, max_tries=1, keep_result=3600, timeout=ATTEMPT_TIMEOUT_S),
         func(sweep_tasks, max_tries=1),
-        func(extract_memories, max_tries=_worker_settings.retry_attempts, keep_result=0),
+        func(extract_memories, max_tries=_worker_settings.retry_attempts, keep_result=3600),
         func(generate_title, max_tries=_worker_settings.retry_attempts),
         func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),

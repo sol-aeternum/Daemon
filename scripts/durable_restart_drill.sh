@@ -173,6 +173,7 @@ values = {
     "POSTGRES_DB": "daemon",
     "POSTGRES_PASSWORD": secrets.token_urlsafe(24),
     "DAEMON_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
+    "DAEMON_REDIS_ACCOUNT_HASH_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("="),
     "DAEMON_AUTH_PEPPER": secrets.token_urlsafe(48),
     "DAEMON_ENVIRONMENT": "development",
     "DAEMON_DEPLOYMENT_MODE": "self_hosted",

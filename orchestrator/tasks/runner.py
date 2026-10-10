@@ -31,6 +31,7 @@ from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
 from orchestrator.tasks.store import Claim, ExecutionRefused, LeaseLost, TaskStore
+from orchestrator.redis_jobs import enqueue_account_job
 
 logger = logging.getLogger(__name__)
 
@@ -768,10 +769,14 @@ async def sweep_tasks(ctx: dict[str, Any]) -> int:
     if store is None or redis is None:
         return 0
     woken = 0
-    for task_id, wake_seq in await store.due_for_wakeup():
+    for task_id, wake_seq, user_id in await store.due_for_wakeup():
         try:
-            await redis.enqueue_job(
-                "run_chat_task", str(task_id), _job_id=f"task:{task_id}:{wake_seq}"
+            await enqueue_account_job(
+                redis,
+                "run_chat_task",
+                str(task_id),
+                user_id=user_id,
+                job_id=f"task:{task_id}:{wake_seq}",
             )
             woken += 1
         except Exception:

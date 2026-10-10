@@ -37,6 +37,7 @@ from tests.durable_tasks_support import (
     expire_lease,
 )
 from tests.qualified_compute import install_qualified_compute
+from tests.redis_jobs_support import install_fake_enqueue
 
 env = durable_env_fixture()
 
@@ -88,6 +89,11 @@ class Api:
 
 @pytest_asyncio.fixture
 async def api(env: Env, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Api]:
+    install_fake_enqueue(
+        monkeypatch,
+        "orchestrator.main.enqueue_account_job",
+        "orchestrator.daemon.enqueue_account_job",
+    )
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("MOCK_LLM", "false")
     monkeypatch.setenv("DURABLE_CHAT_ENABLED", "true")

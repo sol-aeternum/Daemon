@@ -19,6 +19,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.redis_jobs_support import install_fake_enqueue
+
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -29,6 +32,11 @@ from orchestrator.auth import AuthenticatedDevice
 from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.routes import memories as memories_router
 from orchestrator.memory.store import MemoryContentConflictError
+
+
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    install_fake_enqueue(monkeypatch, "orchestrator.redis_jobs.enqueue_account_job")
 
 
 @pytest_asyncio.fixture
@@ -94,6 +102,7 @@ async def auth_client(monkeypatch):
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     """Create a mock AppState with optional memory store."""
     app_state = MagicMock(spec=AppState)
+    app_state.settings = get_settings()
     app_state.memory_store = mock_store
     app_state.redis = None
     return app_state
@@ -817,6 +826,7 @@ async def test_post_memories_dream_device_no_user_id_enqueues_own(client, monkey
         app.state.app_state.redis = mock_redis
         app.state.app_state.memory_store = None
         app.state.app_state.video_credits_dal = None
+        app.state.app_state.settings = get_settings()
 
         response = await client.post(
             "/memories/dream",
@@ -874,6 +884,7 @@ async def test_post_memories_dream_device_different_user_forbidden(client, monke
         app.state.app_state.redis = mock_redis
         app.state.app_state.memory_store = None
         app.state.app_state.video_credits_dal = None
+        app.state.app_state.settings = get_settings()
 
         response = await client.post(
             "/memories/dream",
@@ -927,6 +938,7 @@ async def test_post_memories_dream_device_own_user_id_succeeds(client, monkeypat
         app.state.app_state.redis = mock_redis
         app.state.app_state.memory_store = None
         app.state.app_state.video_credits_dal = None
+        app.state.app_state.settings = get_settings()
 
         response = await client.post(
             "/memories/dream",

@@ -198,7 +198,8 @@ async def test_api_compatible_and_account_independent(tmp_path: Path, monkeypatc
 
     calls = []
 
-    async def check(endpoint, scope, raw, policy):
+    async def check(endpoint, scope, raw, policy, *, owner_id):
+        assert owner_id == str(current["owner"]) == raw
         calls.append((endpoint, scope))
         return SimpleNamespace(allowed=True)
 
@@ -281,7 +282,8 @@ async def test_rate_admission_fails_closed_after_redis_connection_loss(monkeypat
             user_id=uuid.uuid4(), device_id=uuid.uuid4(), session_id=uuid.uuid4()
         )
 
-    async def check(*args):
+    async def check(*args, owner_id):
+        assert owner_id == args[2]
         raise RateLimitUnavailableError()
 
     monkeypatch.setattr(

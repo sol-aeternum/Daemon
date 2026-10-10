@@ -10,7 +10,7 @@ Covers the approved conversation-scoped chunked-web-reading prerequisites
 * readable article extraction via the existing trafilatura helper — no raw
   HTML fallback, no silent raw HTML as transcript, bounded metadata mode;
 * #358 URL identity: scheme/host normalized, path/query case and order and
-  meaningful trailing slash preserved, in a new v2 cache namespace that
+  meaningful trailing slash preserved, in a keyed v3 cache namespace that
   binds extraction mode/version and never touches legacy entries;
 * ``use_cache=False`` bypasses both cache reads and writes;
 * provenance: source URL and final logical redirect URL (not the pinned IP).
@@ -22,6 +22,7 @@ import asyncio
 import gzip
 import json
 import time
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -33,7 +34,7 @@ import pytest
 from orchestrator.config import Settings
 from orchestrator.services.fetch import bounds as bounds_module
 from orchestrator.services.fetch.cache import (
-    CACHE_NAMESPACE_V2,
+    CACHE_NAMESPACE_V3,
     FetchCache,
     normalize_url,
     result_cache_key,
@@ -66,8 +67,10 @@ def fetch_policy() -> FetchPolicy:
 
 def _mock_cache() -> FetchCache:
     """FetchCache with a mocked Redis transport (real get/set methods)."""
-    cache = FetchCache()
+    cache = FetchCache(user_id=uuid.UUID(int=1))
     cache.redis = AsyncMock()
+    cache.redis.eval.return_value = 1
+    cache.redis.sscan.return_value = (0, [])
     cache._ensure_connection = AsyncMock(return_value=True)
     return cache
 
@@ -727,9 +730,11 @@ def test_cache_namespace_binds_mode_and_version() -> None:
     article = result_cache_key("https://example.com/A")
     metadata = result_cache_key("https://example.com/A", "metadata")
 
-    assert article.startswith(f"{CACHE_NAMESPACE_V2}:article:{EXTRACTION_VERSION_V1}:")
-    assert metadata.startswith(f"{CACHE_NAMESPACE_V2}:metadata:{EXTRACTION_VERSION_V1}:")
+    assert article.startswith(f"{CACHE_NAMESPACE_V3}:")
+    assert metadata.startswith(f"{CACHE_NAMESPACE_V3}:")
     assert article != metadata
+    assert article != result_cache_key("https://example.com/A", "article", "future-version")
+    assert "https://" not in article
     # Legacy lossy keys are neither produced nor served.
     assert not article.startswith("fetch:result:")
     assert normalize_url("https://example.com/A") == normalize_url("https://example.com/A")
@@ -739,18 +744,23 @@ def test_cache_namespace_binds_mode_and_version() -> None:
 async def test_cache_roundtrip_preserves_provenance() -> None:
     cache = _mock_cache()
     assert cache.redis is not None
-    redis_set = cast(AsyncMock, cache.redis.set)
+    redis_publish = cast(AsyncMock, cache.redis.eval)
     redis_get = cast(AsyncMock, cache.redis.get)
     store: dict[str, str] = {}
 
-    async def fake_set(key: str, data: str, *args: Any, **kwargs: Any) -> bool:
+    async def fake_publish(script: str, count: int, key: str, index: str, *args) -> int:
+        if key == cache.owner_index:
+            assert count == 2 and index == cache.prune_cursor_key and not args
+            return 0
+        data, ttl = args
+        assert count == 2 and index == cache.owner_index and ttl == 3600
         store[key] = data
-        return True
+        return 1
 
     async def fake_get(key: str, *args: Any, **kwargs: Any) -> str | None:
         return store.get(key)
 
-    redis_set.side_effect = fake_set
+    redis_publish.side_effect = fake_publish
     redis_get.side_effect = fake_get
 
     result = FetchResult(
@@ -768,11 +778,12 @@ async def test_cache_roundtrip_preserves_provenance() -> None:
     )
 
     assert await cache.set("https://example.com/Case", result) is True
-    set_call = redis_set.await_args
+    set_call = redis_publish.await_args_list[0]
     assert set_call is not None
-    key = set_call.args[0]
-    assert key.startswith(f"{CACHE_NAMESPACE_V2}:article:{EXTRACTION_VERSION_V1}:")
-    assert "https://example.com/Case" in key  # case preserved in the identity
+    key = set_call.args[2]
+    assert key.startswith(f"{CACHE_NAMESPACE_V3}:")
+    assert "https://" not in key
+    assert key != result_cache_key("https://example.com/case")  # case preserved in keyed identity
 
     hit = await cache.get("https://example.com/Case")
     assert hit is not None
@@ -798,7 +809,7 @@ async def test_cache_never_serves_or_deletes_legacy_entries() -> None:
     get_call = redis_get.await_args
     assert get_call is not None
     requested_key = get_call.args[0]
-    assert requested_key.startswith(f"{CACHE_NAMESPACE_V2}:")
+    assert requested_key.startswith(f"{CACHE_NAMESPACE_V3}:")
     redis_delete.assert_not_called()
 
 

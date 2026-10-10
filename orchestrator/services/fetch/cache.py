@@ -4,10 +4,13 @@ import asyncio
 import json
 import logging
 import urllib.parse
+import uuid
+from typing import Protocol, cast
 
 from arq.connections import ArqRedis
 
 from orchestrator.config import get_settings
+from orchestrator.redis_account import account_prefix, fetch_identity
 from orchestrator.services.fetch.models import (
     EXTRACTION_VERSION_V1,
     FetchResult,
@@ -23,7 +26,59 @@ DEFAULT_TTL_SECONDS = 3600
 # cannot silently alias to another mode's content. Legacy
 # ``fetch:result:*`` data is intentionally left in place (it decays via
 # TTL); this namespace simply never reads or deletes it.
-CACHE_NAMESPACE_V2 = "fetch:v2"
+CACHE_NAMESPACE_V2 = "fetch:v2"  # Legacy namespace: never read or migrated here.
+CACHE_NAMESPACE_V3 = "fetch:v3"
+
+# Supported Redis topology is the existing standalone ARQ deployment. This
+# shared value and owner index are deliberately one atomic publication, not
+# separate best-effort writes. Reject corrupt index types before writing content.
+_PUBLISH_OWNED = """
+local kind = redis.call('TYPE', KEYS[2]).ok
+if kind ~= 'none' and kind ~= 'set' then return 0 end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+redis.call('SADD', KEYS[2], KEYS[1])
+return 1
+"""
+_PRUNE_INDEX = """
+local kind = redis.call('TYPE', KEYS[1]).ok
+if kind == 'none' then
+  redis.call('DEL', KEYS[2])
+  return 0
+end
+if kind ~= 'set' then return -1 end
+local cursor = '0'
+if redis.call('TYPE', KEYS[2]).ok == 'string' then
+  local stored = redis.call('GET', KEYS[2])
+  if string.len(stored) <= 20 and string.match(stored, '^%d+$') then
+    cursor = stored
+  end
+end
+-- A malformed/out-of-range cursor resets maintenance, never ownership.
+local page = redis.pcall('SSCAN', KEYS[1], cursor, 'COUNT', 32)
+if page.err then
+  page = redis.call('SSCAN', KEYS[1], '0', 'COUNT', 32)
+end
+local removed = 0
+-- COUNT is a hint: consume the entire page, not only its first 32 members.
+-- Atomic pruning and cursor advancement prevent lost work/renewal races.
+for _, key in ipairs(page[2]) do
+  if redis.call('EXISTS', key) == 0 then
+    removed = removed + redis.call('SREM', KEYS[1], key)
+  end
+end
+if page[1] == '0' or redis.call('SCARD', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[2])
+else
+  redis.call('SET', KEYS[2], page[1])
+end
+return removed
+"""
+
+
+class OwnedCachePublisher(Protocol):
+    async def eval(self, script: str, numkeys: int, *args: str | bytes | int) -> int: ...
+
+
 _DEFAULT_MODE = "article"
 
 
@@ -68,7 +123,8 @@ def result_cache_key(
 ) -> str:
     """Versioned cache key: namespace + extraction mode + version + identity."""
     mode = (extract or _DEFAULT_MODE).strip().lower() or _DEFAULT_MODE
-    return f"{CACHE_NAMESPACE_V2}:{mode}:{extraction_version}:{normalize_url(url)}"
+    identity = json.dumps([mode, extraction_version, normalize_url(url)], ensure_ascii=True)
+    return f"{CACHE_NAMESPACE_V3}:{fetch_identity(identity.encode())}"
 
 
 def encode_idna_hostname(host: str) -> str:
@@ -84,11 +140,15 @@ def encode_idna_hostname(host: str) -> str:
 class FetchCache:
     """Redis cache for FetchResult objects."""
 
-    def __init__(self, redis_url: str | None = None):
+    def __init__(self, redis_url: str | None = None, *, user_id: uuid.UUID | None = None):
         """Initialize cache with Redis connection."""
         self.redis_url: str | None = redis_url or get_settings().redis_url
         self.redis: ArqRedis | None = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
+        # Ownership comes from the authenticated caller, never a URL/response.
+        # Ownerless retained adapters cannot publish new unattributable content.
+        self.owner_index = f"{account_prefix(user_id)}:fetch-index" if user_id else None
+        self.prune_cursor_key = f"{self.owner_index}:prune-cursor" if self.owner_index else None
 
     async def _ensure_connection(self) -> bool:
         """Ensure Redis connection is established."""
@@ -210,7 +270,7 @@ class FetchCache:
 
     async def get(self, url: str, extract: str = _DEFAULT_MODE) -> FetchResult | None:
         """Retrieve FetchResult from cache by URL and extraction mode."""
-        if not await self._ensure_connection():
+        if self.owner_index is None or not await self._ensure_connection():
             return None
 
         try:
@@ -242,7 +302,7 @@ class FetchCache:
         extract: str = _DEFAULT_MODE,
     ) -> bool:
         """Store FetchResult in cache."""
-        if not await self._ensure_connection():
+        if self.owner_index is None or not await self._ensure_connection():
             return False
 
         if result.cached:
@@ -263,7 +323,25 @@ class FetchCache:
             # Type narrowing - _ensure_connection guarantees redis is not None here
             assert self.redis is not None
 
-            await self.redis.set(key, data, ex=cache_ttl)
+            publisher = cast(OwnedCachePublisher, self.redis)
+            published = await publisher.eval(
+                _PUBLISH_OWNED, 2, key, self.owner_index, data, cache_ttl
+            )
+            if not published:
+                return False
+            # Persistent ownership metadata has no shorter TTL than a shared
+            # value renewed by another account. Bounded opportunistic pruning
+            # removes only references whose value is absent at the atomic check.
+            # Pruning failure must not misreport an already-published value.
+            try:
+                assert self.prune_cursor_key is not None
+                pruned = await publisher.eval(
+                    _PRUNE_INDEX, 2, self.owner_index, self.prune_cursor_key
+                )
+                if pruned < 0:
+                    logger.warning("Fetch ownership index pruning unavailable")
+            except Exception:
+                logger.warning("Fetch ownership index pruning unavailable")
             logger.debug("Cached result stored with TTL %ss", cache_ttl)
             return True
         except Exception:

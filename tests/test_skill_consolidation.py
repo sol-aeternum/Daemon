@@ -9,6 +9,7 @@ import pytest
 
 from orchestrator.config import Settings
 from orchestrator.memory.store import MemoryStore
+from orchestrator.redis_account import account_prefix
 from tests.qualified_compute import install_qualified_compute
 from orchestrator.worker.jobs import (
     ConsolidationNudgeAction,
@@ -24,7 +25,8 @@ class TestConsolidationNudgeDebounceKey:
     def test_format(self) -> None:
         user_id = uuid.uuid4()
         key = _build_consolidation_nudge_debounce_key(user_id)
-        assert key == f"consolidation_nudge:{user_id}"
+        assert key == f"{account_prefix(user_id)}:consolidation_nudge"
+        assert str(user_id) not in key
 
     def test_stable(self) -> None:
         user_id = uuid.uuid4()

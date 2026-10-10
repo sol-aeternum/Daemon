@@ -3,15 +3,27 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import traceback
 import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from arq.jobs import JobResult, deserialize_result
+from arq.constants import (
+    abort_jobs_ss,
+    default_queue_name,
+    in_progress_key_prefix,
+    job_key_prefix,
+    result_key_prefix,
+    retry_key_prefix,
+)
+from arq.jobs import Deserializer, JobResult, Serializer, deserialize_result, serialize_result
+from arq.utils import to_ms, to_unix_ms
 from arq.worker import Worker
 
-from orchestrator.config import Settings
+from orchestrator.config import Settings, get_settings
+from orchestrator.redis_account import validate_redis_account_key
+from orchestrator.redis_jobs import completion_key
 from orchestrator.services.identity.mail_sender import (
     MailMessage,
     MailSenderConfigError,
@@ -37,6 +49,132 @@ CRITICAL_WORKER_JOBS = frozenset(
 
 _MAX_ARGUMENT_STRING_LENGTH = 512
 _AUDIT_TIMEOUT_S = 5.0
+
+# These are the ORIGINAL persistence/dedup policies, not the positive ARQ
+# keep_result values now used solely to obtain terminal audit bytes in memory.
+SERIALIZATION_ONLY_JOBS = frozenset(
+    {"run_chat_task", "generate_home_suggestions", "extract_memories"}
+)
+_FAILED_EXTRACTION_COMPLETION_S = 3600
+
+# Shared classification requires a known producer ID, function and argument
+# shape. A counts-shaped result alone must never qualify an account job.
+_SHARED_COUNTS: dict[str, frozenset[str]] = {
+    "consolidate_memories": frozenset(
+        {
+            "clusters_found",
+            "clusters_processed",
+            "memories_created",
+            "memories_demoted",
+            "users_processed",
+            "error_count",
+        }
+    ),
+    "run_dreaming_job": frozenset(
+        {
+            "users_processed",
+            "dream_runs_completed",
+            "dream_runs_skipped",
+            "dream_runs_failed",
+            "observations_created",
+            "error_count",
+        }
+    ),
+    "run_scheduled_dreaming_job": frozenset(
+        {
+            "users_processed",
+            "dream_runs_completed",
+            "dream_runs_skipped",
+            "dream_runs_failed",
+            "observations_created",
+            "error_count",
+        }
+    ),
+    "run_consolidation_nudge_job": frozenset(
+        {"skills_reviewed", "duplicates_found", "duplicates_merged", "stale_flagged", "error_count"}
+    ),
+    "garbage_collect": frozenset({"scanned", "deleted"}),
+    "cleanup_web_snapshots": frozenset({"deleted"}),
+    "cleanup_generated_files": frozenset({"scanned", "deleted"}),
+    "cleanup_generated_images": frozenset({"scanned", "deleted"}),
+    "reconcile_settlement_receipts": frozenset(
+        {"examined", "reconciled", "refunded_microusd", "pending", "unavailable", "errors"}
+    ),
+    "sweep_tasks": frozenset(),  # One scalar count, rather than a dict.
+}
+_SHARED_MANUAL_IDS = {
+    "consolidate_memories": re.compile(r"consolidate:all:[0-9a-f]{8}", re.ASCII),
+    "run_dreaming_job": re.compile(r"dream:all:[0-9a-f]{8}", re.ASCII),
+}
+_SHARED_CRON_FUNCTIONS = frozenset(_SHARED_COUNTS) - {"run_dreaming_job"}
+
+
+def _shared_result_data(
+    job_id: str,
+    result: JobResult | None,
+    queue_name: str,
+    serializer: Serializer | None,
+) -> bytes | None:
+    """Rebuild the ENTIRE envelope; never forward args, errors or unknown fields."""
+    if result is None or result.job_id != job_id:
+        return None
+    if result.queue_name != queue_name or queue_name != default_queue_name:
+        return None
+    function = result.function
+    if not isinstance(function, str):
+        return None
+    name = function.removeprefix("cron:")
+    fields = _SHARED_COUNTS.get(name)
+    if fields is None:
+        return None
+    if function.startswith("cron:"):
+        if name not in _SHARED_CRON_FUNCTIONS:
+            return None
+        if re.fullmatch(re.escape(function) + r":[0-9]{13}", job_id, re.ASCII) is None:
+            return None
+        if result.args or result.kwargs:
+            return None
+    else:
+        producer_pattern = _SHARED_MANUAL_IDS.get(function)
+        if producer_pattern is None or producer_pattern.fullmatch(job_id) is None:
+            return None
+        if result.args not in ((), (None,)) or result.kwargs not in ({}, {"user_id": None}):
+            return None
+    if type(result.success) is not bool or type(result.job_try) is not int:
+        return None
+    if result.success:
+        if name == "sweep_tasks":
+            if type(result.result) is not int or result.result < 0:
+                return None
+            counts = result.result
+        else:
+            if not isinstance(result.result, dict):
+                return None
+            counts = {}
+            for key in fields:
+                if key in result.result:
+                    value = result.result[key]
+                    if type(value) is not int or value < 0:
+                        return None
+                    counts[key] = value
+    else:
+        # Failures retain only the protocol success flag, never exception text.
+        counts = 0 if name == "sweep_tasks" else {}
+    return serialize_result(
+        function=function,
+        args=(),
+        kwargs={},
+        job_try=result.job_try,
+        enqueue_time_ms=to_unix_ms(result.enqueue_time),
+        success=result.success,
+        result=counts,
+        start_ms=to_unix_ms(result.start_time),
+        finished_ms=to_unix_ms(result.finish_time),
+        ref=function,
+        queue_name=default_queue_name,
+        job_id=job_id,
+        serializer=serializer,
+    )
 
 
 class JobFailurePool(Protocol):
@@ -254,12 +392,14 @@ async def alert_critical_worker_job_failure(ctx: WorkerContext, failure: WorkerJ
     await sender.send(message)
 
 
-async def audit_worker_job_result(ctx: WorkerContext, result_data: bytes | None) -> None:
+async def audit_worker_job_result(
+    ctx: WorkerContext, result_data: bytes | None, *, deserializer: Deserializer | None = None
+) -> None:
     if result_data is None:
         return
 
     try:
-        job_result = deserialize_result(result_data)
+        job_result = deserialize_result(result_data, deserializer=deserializer)
         failure = worker_job_failure_from_result(job_result)
     except Exception:
         logger.warning("worker_job_failure result decode failed", exc_info=True)
@@ -308,6 +448,62 @@ async def _alert_failure_with_timeout(ctx: WorkerContext, failure: WorkerJobFail
 
 
 class AuditedWorker(Worker):
+    async def main(self) -> None:
+        # Native main() connects before on_startup. A worker always has an
+        # effective Redis configuration, including ARQ's localhost fallback.
+        settings = self.ctx.get("settings")
+        validate_redis_account_key(
+            settings if isinstance(settings, Settings) else get_settings(), redis_configured=True
+        )
+        await super().main()
+
+    def _decode_terminal_result(self, job_id: str, result_data: bytes | None) -> JobResult | None:
+        if result_data is None:
+            return None
+        try:
+            result = deserialize_result(result_data, deserializer=self.job_deserializer)
+        except Exception:
+            # Persistence fails closed; the audit path still sees the original
+            # bytes and retains its existing decode-failure handling.
+            return None
+        if (
+            result.job_id != job_id
+            or result.queue_name != self.queue_name
+            or not isinstance(result.function, str)
+            or type(result.success) is not bool
+        ):
+            return None
+        return result
+
+    def _completion_marker(
+        self,
+        job_id: str,
+        result: JobResult | None,
+        timeout_s: float | None,
+        forever: bool,
+        *,
+        preexecution_failure: bool = False,
+    ) -> tuple[str, int | None] | None:
+        try:
+            key = completion_key(job_id)
+        except ValueError:
+            return None  # Shared/legacy/malformed IDs never get account state.
+        function = result.function if result is not None else None
+        if function == "extract_memories" and result is not None and not result.success:
+            # Explicit approved exception: producers clear this content-free
+            # marker when restarting a terminally failed extraction.
+            return key, _FAILED_EXTRACTION_COMPLETION_S * 1000
+        if not preexecution_failure and function in SERIALIZATION_ONLY_JOBS:
+            return None
+        # ARQ's preexecution failures used worker-wide retention, even for
+        # functions originally registered keep_result=0. Unknown function or
+        # decode/expiry failures preserve that lifetime without result bytes.
+        if forever or timeout_s is None:
+            return key, None
+        if timeout_s > 0:
+            return key, to_ms(timeout_s)
+        return None
+
     async def finish_job(
         self,
         job_id: str,
@@ -318,33 +514,85 @@ class AuditedWorker(Worker):
         incr_score: int | None,
         keep_in_progress: float | None,
     ) -> None:
-        # Finalize Redis state FIRST so a slow audit/alert path cannot keep
-        # the worker slot tied up or block retry/cleanup. Audit work runs
-        # afterwards under a short timeout so a hang in mail/DB cannot wedge
-        # the worker indefinitely.
-        await super().finish_job(
-            job_id,
-            finish,
-            result_data,
-            result_timeout_s,
-            keep_result_forever,
-            incr_score,
-            keep_in_progress,
+        # Adapt only locked ARQ's small finalizer, not run_job. The marker and
+        # all native terminal cleanup MUST share one MULTI/EXEC. Original
+        # result bytes remain local for audit AFTER successful Redis cleanup.
+        result = self._decode_terminal_result(job_id, result_data) if finish else None
+        stored_result = (
+            _shared_result_data(job_id, result, self.queue_name, self.job_serializer)
+            if finish
+            else None
         )
+        marker = (
+            self._completion_marker(job_id, result, result_timeout_s, keep_result_forever)
+            if finish
+            else None
+        )
+        async with self.pool.pipeline(transaction=True) as tr:
+            delete_keys = []
+            in_progress_key = in_progress_key_prefix + job_id
+            if keep_in_progress is None:
+                delete_keys.append(in_progress_key)
+            else:
+                tr.pexpire(in_progress_key, to_ms(keep_in_progress))
+            if finish:
+                if stored_result:
+                    expire = None if keep_result_forever else result_timeout_s
+                    tr.set(result_key_prefix + job_id, stored_result, px=to_ms(expire))
+                if marker is not None:
+                    key, ttl_ms = marker
+                    tr.set(key, b"1", px=ttl_ms)
+                delete_keys.extend([retry_key_prefix + job_id, job_key_prefix + job_id])
+                tr.zrem(abort_jobs_ss, job_id)
+                tr.zrem(self.queue_name, job_id)
+            elif incr_score:
+                tr.zincrby(self.queue_name, incr_score, job_id)
+            if delete_keys:
+                tr.delete(*delete_keys)
+            await tr.execute()
         if finish:
-            await _run_audit_with_timeout(cast(WorkerContext, self.ctx), result_data)
+            await _run_audit_with_timeout(
+                cast(WorkerContext, self.ctx), result_data, deserializer=self.job_deserializer
+            )
 
     async def finish_failed_job(self, job_id: str, result_data: bytes | None) -> None:
-        await super().finish_failed_job(job_id, result_data)
-        await _run_audit_with_timeout(cast(WorkerContext, self.ctx), result_data)
+        result = self._decode_terminal_result(job_id, result_data)
+        stored_result = _shared_result_data(job_id, result, self.queue_name, self.job_serializer)
+        marker = self._completion_marker(
+            job_id,
+            result,
+            self.keep_result_s,
+            self.keep_result_forever,
+            preexecution_failure=True,
+        )
+        async with self.pool.pipeline(transaction=True) as tr:
+            tr.delete(
+                retry_key_prefix + job_id,
+                in_progress_key_prefix + job_id,
+                job_key_prefix + job_id,
+            )
+            tr.zrem(abort_jobs_ss, job_id)
+            tr.zrem(self.queue_name, job_id)
+            if stored_result is not None and (self.keep_result_forever or self.keep_result_s > 0):
+                expire = None if self.keep_result_forever else self.keep_result_s
+                tr.set(result_key_prefix + job_id, stored_result, px=to_ms(expire))
+            if marker is not None:
+                key, ttl_ms = marker
+                tr.set(key, b"1", px=ttl_ms)
+            await tr.execute()
+        await _run_audit_with_timeout(
+            cast(WorkerContext, self.ctx), result_data, deserializer=self.job_deserializer
+        )
 
 
-async def _run_audit_with_timeout(ctx: WorkerContext, result_data: bytes | None) -> None:
+async def _run_audit_with_timeout(
+    ctx: WorkerContext, result_data: bytes | None, *, deserializer: Deserializer | None = None
+) -> None:
     import asyncio
 
     try:
         await asyncio.wait_for(
-            audit_worker_job_result(ctx, result_data),
+            audit_worker_job_result(ctx, result_data, deserializer=deserializer),
             timeout=_AUDIT_TIMEOUT_S,
         )
     except asyncio.TimeoutError:

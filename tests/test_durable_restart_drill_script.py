@@ -9,7 +9,9 @@ established, and that a failed teardown fails the run.
 
 from __future__ import annotations
 
+import base64
 import os
+import re
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
@@ -139,3 +141,45 @@ def test_a_failed_teardown_fails_the_run_with_recovery_steps(drill) -> None:
     downs = [c for c in _compose_mutations(calls) if " down " in f" {c} "]
     assert downs and all("-p drill-under-test " in c for c in downs)
     assert not (temp / "drill-under-test.drill-lock").exists()
+
+
+@pytest.mark.parametrize("hostile", [False, True])
+def test_generated_ownership_key_is_canonical_independent_and_not_inherited(drill, hostile):
+    run, temp = drill
+    inherited = (
+        {
+            "DAEMON_REDIS_ACCOUNT_HASH_KEY": "HOSTILE_HASH_KEY",
+            "DAEMON_ENCRYPTION_KEY": "HOSTILE_CIPHER_KEY",
+            "DAEMON_AUTH_PEPPER": "HOSTILE_AUTH_KEY",
+            "OPENROUTER_API_KEY": "HOSTILE_PROVIDER_KEY",
+            "MOCK_LLM": "false",
+            "DATABASE_URL": "postgresql://hostile.invalid/db",
+        }
+        if hostile
+        else {}
+    )
+    # Retain the generated fixture via the existing teardown-failure harness;
+    # the Docker stub never starts a container or reaches a provider.
+    result, _ = run(STUB_DOWN="fail", **inherited)
+    assert result.returncode == 1
+    files = list(temp.glob("*/drill.env"))
+    assert len(files) == 1 and files[0].stat().st_mode & 0o777 == 0o600
+    values = dict(line.split("=", 1) for line in files[0].read_text().splitlines())
+    key = values["DAEMON_REDIS_ACCOUNT_HASH_KEY"]
+    # Keep assertions boolean-only: pytest must not display secret values.
+    assert bool(re.fullmatch(r"[A-Za-z0-9_-]{43}", key))
+    raw = base64.urlsafe_b64decode(key + "=")
+    assert len(raw) == 32
+    assert bool(base64.urlsafe_b64encode(raw).decode().rstrip("=") == key)
+    assert bool(raw != base64.urlsafe_b64decode(values["DAEMON_ENCRYPTION_KEY"]))
+    assert bool(key != values["DAEMON_AUTH_PEPPER"])
+    assert bool(values["MOCK_LLM"] == "true")
+    assert "DATABASE_URL" not in values
+    assert all(
+        not value for name, value in values.items() if name.endswith("API_KEY") or name == "FAL_KEY"
+    )
+    assert all("HOSTILE_" not in value for value in values.values())
+    assert all(
+        value not in result.stdout + result.stderr
+        for value in (key, values["DAEMON_ENCRYPTION_KEY"], values["DAEMON_AUTH_PEPPER"])
+    )

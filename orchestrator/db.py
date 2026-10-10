@@ -9,6 +9,7 @@ from fastapi import Request
 
 from orchestrator.config import Settings
 from orchestrator.database_url import resolve_database_url
+from orchestrator.redis_account import validate_redis_account_key
 from db.video_credits import VideoCreditsDAL
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
@@ -28,6 +29,8 @@ class AppState:
 
 
 async def init_app_state(settings: Settings) -> AppState:
+    # Configuration failure must not be swallowed as optional Redis degradation.
+    validate_redis_account_key(settings)
     state = AppState(settings=settings)
     database_url = resolve_database_url(settings.database_url)
 

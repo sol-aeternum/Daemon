@@ -547,6 +547,7 @@ def _title_store() -> Any:
         return_value={"user_id": TEST_OWNER, "title_locked": False, "summary": None}
     )
     store.get_messages = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
+    store.get_owned_message = AsyncMock(return_value={"role": "user", "content": "hello"})
     store.save_generated_conversation_title = AsyncMock(return_value=True)
     store.count_messages = AsyncMock(return_value=50)
     return store
@@ -576,7 +577,7 @@ async def test_title_jobs_open_background_scoped_accounts(
     with patch.object(
         jobs, "generate_conversation_title", new=AsyncMock(return_value="A Title")
     ) as title:
-        await jobs.generate_title(ctx, uuid.uuid4(), "hello")
+        await jobs.generate_title(ctx, uuid.uuid4(), uuid.uuid4())
         await jobs.generate_conversation_title_job(ctx, uuid.uuid4())
 
     assert [entry["profile"] for entry in recorded] == ["background", "background"]

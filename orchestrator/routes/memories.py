@@ -614,10 +614,15 @@ async def consolidate_memories_endpoint(
 
     try:
         # Enqueue the consolidation job
-        job = await app_state.redis.enqueue_job(
+        from orchestrator.redis_jobs import enqueue_account_job
+
+        job = await enqueue_account_job(
+            app_state.redis,
             "consolidate_memories",
             str(target_user_id),
-            _job_id=f"consolidate:{target_user_id or 'all'}:{uuid.uuid4().hex[:8]}",
+            user_id=target_user_id,
+            job_id=f"consolidate:{uuid.uuid4().hex[:8]}",
+            settings=app_state.settings,
         )
 
         # Handle None return from enqueue_job
@@ -672,11 +677,21 @@ async def dream_memories_endpoint(
         target_user_id = device.user_id
 
     try:
-        job = await app_state.redis.enqueue_job(
-            "run_dreaming_job",
-            str(target_user_id) if target_user_id else None,
-            _job_id=f"dream:{target_user_id or 'all'}:{uuid.uuid4().hex[:8]}",
-        )
+        if target_user_id is None:
+            job = await app_state.redis.enqueue_job(
+                "run_dreaming_job", None, _job_id=f"dream:all:{uuid.uuid4().hex[:8]}"
+            )
+        else:
+            from orchestrator.redis_jobs import enqueue_account_job
+
+            job = await enqueue_account_job(
+                app_state.redis,
+                "run_dreaming_job",
+                str(target_user_id),
+                user_id=target_user_id,
+                job_id=f"dream:{uuid.uuid4().hex[:8]}",
+                settings=app_state.settings,
+            )
         if job is None:
             raise HTTPException(
                 status_code=500,

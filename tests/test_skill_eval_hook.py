@@ -12,6 +12,13 @@ from orchestrator.skill_evaluator import (
     build_skill_evaluation_debounce_key,
 )
 from orchestrator.worker.jobs import run_skill_evaluation_job
+from orchestrator.redis_jobs import account_job_id
+from tests.redis_jobs_support import install_fake_enqueue
+
+
+@pytest.fixture(autouse=True)
+def _producer_queue_seam(monkeypatch):
+    install_fake_enqueue(monkeypatch, "orchestrator.daemon.enqueue_account_job")
 
 
 @pytest.mark.asyncio
@@ -217,7 +224,7 @@ class TestDaemonHookEnqueueLogic:
         assert args[2] == str(conv_uuid)
         assert args[3] == str(msg_uuid)
         assert args[4] == 5
-        assert job_id == f"skill_eval:{conv_uuid}:{msg_uuid}"
+        assert job_id == account_job_id(user_uuid, f"skill_eval:{conv_uuid}:{msg_uuid}")
         assert kwargs.get("_defer_by") == timedelta(seconds=30)
 
     @pytest.mark.asyncio
