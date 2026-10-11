@@ -58,7 +58,9 @@ Tool versions live in `pyproject.toml`, `frontend/package.json`, and the lockfil
 - `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` runs every gate above except `npm run test:browser`, which CI runs as a separate non-blocking step. Blocking gates fail the script; the full Bandit inventory is reported only.
 - `scripts/pr_create.sh -- <gh pr create args>` replaces `gh pr create`: it refuses to open a PR until `local_ci.sh` exits 0. `--dry-run` shows the plan without running anything.
 - `main` is protected by the `Main Protection` ruleset. Required checks: `Backend gates`, `Frontend gates`, `Feature matrix gate`, `Pre-commit and secret scanning`.
-- **Merge only after review, not just green CI.** Wait for the Codex review on the current head SHA (and any `[agent]` source review), and resolve its findings first. A requested-but-missing review means the PR is waiting, not mergeable.
+- **Merge only after review, not just green CI.** Require one completed Codex code review on the current head SHA, reconcile any `[agent]` source-review findings, and resolve review findings (including security findings) first. A requested-but-missing code review means the PR is waiting, not mergeable. Human final review is still required.
+- Do not issue paired code/security review requests by default or duplicate a pending/completed request for an unchanged head, except a justified retry after a verified failure.
+- Separate Security Review is blocking only when explicitly required by repository policy or the owner. Its absence or an older summary alone does not create a new merge gate.
 - Never merge around a failed required check. If a check is stale, missing, or misconfigured, fix the workflow/ruleset or record the blocker.
 
 ## Conventions
