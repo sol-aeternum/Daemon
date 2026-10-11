@@ -281,6 +281,44 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
 # Frontend env names that are read by source but are intentionally *not*
 # documented in ``.env.example``, with the source that still reads them.
 FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
+    "HOME": NonFieldConsumer(
+        kind="frontend-source",
+        sources=(
+            "frontend/e2e/cache-fixture-server.mjs:25",
+            "frontend/e2e/p02-cookie-coordination.spec.ts:295",
+            "frontend/e2e/renderer-crash.ts:222",
+        ),
+        reason=(
+            "owner-approved P0.2 test-only clean child-process environment: preserves the "
+            "host home for installed test tooling; not an application deployment knob. "
+            "Only these exact launch sites are covered"
+        ),
+    ),
+    "PATH": NonFieldConsumer(
+        kind="frontend-source",
+        sources=(
+            "frontend/e2e/cache-fixture-server.mjs:24",
+            "frontend/e2e/p02-cookie-coordination.spec.ts:295",
+            "frontend/e2e/renderer-crash.ts:221",
+        ),
+        reason=(
+            "owner-approved P0.2 test-only clean child-process environment: preserves the "
+            "host executable search path; not an application deployment knob. "
+            "Only these exact launch sites are covered"
+        ),
+    ),
+    "UV_PROJECT_ENVIRONMENT": NonFieldConsumer(
+        kind="frontend-source",
+        sources=(
+            "frontend/e2e/cache-fixture-server.mjs:37",
+            "frontend/e2e/renderer-crash.ts:215",
+        ),
+        reason=(
+            "owner-approved P0.2 test-only selection of the locked Python environment "
+            "for the fixture API and pidfd guard, defaulting to .uv-venv; not application "
+            "configuration. Only these exact interpreter-selection sites are covered"
+        ),
+    ),
     "DEBUG": NonFieldConsumer(
         kind="frontend-source",
         sources=("frontend/scripts/authenticated-browser.mjs:986",),
@@ -1935,6 +1973,25 @@ def test_diagnostic_named_exceptions_do_not_cover_other_sites(name: str) -> None
     )
 
 
+@pytest.mark.parametrize("name", ["HOME", "PATH", "UV_PROJECT_ENVIRONMENT"])
+@pytest.mark.parametrize(
+    "new_site",
+    [
+        "frontend/app/unreviewed.ts:1",
+        "frontend/e2e/cache-fixture-server.mjs:999",
+        "frontend/e2e/renderer-crash.ts:999",
+    ],
+)
+def test_p02_harness_env_exceptions_do_not_cover_new_sites(name: str, new_site: str) -> None:
+    surface = real_surface()
+    assert name not in surface.example.names
+    assert name not in FRONTEND_FRAMEWORK_ENV
+    names = dict(surface.frontend.names)
+    names[name] = (*names[name], new_site)
+    probe = replace(surface, frontend=replace(surface.frontend, names=names))
+    assert any(name in item and new_site in item for item in frontend_coverage_violations(probe))
+
+
 def test_diagnostic_mapping_exception_is_exact_and_cannot_cover_new_accesses() -> None:
     surface = real_surface()
     key = "frontend/scripts/authenticated-browser.mjs:799"
@@ -1981,12 +2038,18 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
     )
     assert set(FRONTEND_FRAMEWORK_ENV) == {"NODE_ENV", "CI", "TURBOPACK"}
     assert set(FRONTEND_SOURCE_EXCEPTIONS) == {
+        "HOME",
+        "PATH",
+        "UV_PROJECT_ENVIRONMENT",
         "NEXT_PUBLIC_API_BASE_URL",
         "DEBUG",
         "PWDEBUG",
         "NODE_OPTIONS",
     }
     assert set(inventory.names) == {
+        "HOME",
+        "PATH",
+        "UV_PROJECT_ENVIRONMENT",
         "NEXT_PUBLIC_API_URL",
         "DAEMON_INTERNAL_API_URL",
         "DAEMON_TRUSTED_PROXY_IPS",
