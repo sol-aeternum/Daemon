@@ -90,11 +90,13 @@ outstanding work and admission/revocation state; old persistent fences do not
 disappear merely by waiting for a payload TTL. Key rotation is unqualified.
 
 Per-user failure ownership and aggregate DB audit redaction remain separately
-approval-blocked; P0.5's migration 048 covers identity only, not worker failure
+approval-blocked; P0.5's migration 045 covers identity only, not worker failure
 ownership ([IDENTITY_RETENTION.md](IDENTITY_RETENTION.md)). P0.6 does not make those
 ownerless DB/mail records deletable and does not implement a deletion fence.
-No migration 045–050, credential setup, deployment, retention execution, journal
-or account purge is authorized. Feature-matrix deletion/reset rows stay
+This P0.6 prerequisite authorizes no additional migration design or live
+migration, credential setup, deployment, retention execution, journal or account
+purge; P0.5's separately approved 045 source contract remains identity-only.
+Feature-matrix deletion/reset rows stay
 `Not started`.
 
 ## Design §8 acceptance mapping

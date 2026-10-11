@@ -8,7 +8,7 @@ sweep, deployment, credential change or flag enablement is authorized here.
 
 ## Migration contract and privacy
 
-[`048_identity_retention_provenance.sql`](../migrations/048_identity_retention_provenance.sql)
+[`045_identity_retention_provenance.sql`](../migrations/045_identity_retention_provenance.sql)
 adds internal `account_email_ownership` intervals: opaque id, owning user,
 normalized address, start/end timestamps and `migration_baseline`/`identity_write`
 source. A user and an address each have at most one open interval. Intervals are
@@ -17,6 +17,11 @@ row/unique-email constraint and AFTER trigger serialize changes and avoid orphan
 history from losing `ON CONFLICT DO NOTHING` inserts. Boundary time is captured
 after locking and clamped to previous start/latest address release if the clock
 moves backwards. A zero-length interval claims no temporal span.
+
+The owner approved renumbering the originally proposed 048 file to 045 after
+the existing migration-continuity gate rejected absent 045–047. The SQL contract
+is unchanged; no migration was applied live and no placeholder files or relaxed
+numbering gate were introduced.
 
 Normalized addresses are **plaintext PII**, matching the existing identity
 schema, not encrypted message/memory content. The table denies PUBLIC access and

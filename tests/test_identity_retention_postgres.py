@@ -97,7 +97,7 @@ async def test_observation_baseline_and_legacy_unknowns_are_repeat_safe() -> Non
             await conn.execute(f"CREATE EXTENSION IF NOT EXISTS {ext} WITH SCHEMA public")
         await conn.execute(f"CREATE SCHEMA {schema}")
         await conn.execute(f"SET search_path TO {schema},public")
-        migration = MIGRATIONS / "048_identity_retention_provenance.sql"
+        migration = MIGRATIONS / "045_identity_retention_provenance.sql"
         for path in sorted(MIGRATIONS.glob("*.sql")):
             if path != migration:
                 async with conn.transaction():
