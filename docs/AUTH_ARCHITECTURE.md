@@ -245,6 +245,30 @@ without expired-token refresh or changing another owner's shared pending record.
 Web Locks, randomUUID and usable shared storage are required; unsupported clients
 fail closed but retain local-only exit. Cookie writers never use keepalive.
 
+The owner-approved #509 frontend repair adds a tab-local, nonsecret
+`sessionStorage` marker, `daemon:local-signout=1`. Every token/header exposure and
+automatic refresh checks it; any present value (including corruption) or read
+failure fences restoration. Local exit verifies persistence before navigation,
+but cancels owned work and clears local credentials/drafts/submissions even when
+persistence fails. A visible reload-risk warning and persistence Retry then keep
+the current page in place. If storage never accepted the marker, a user-forced
+reload followed by storage recovery cannot be guaranteed to remain signed out.
+Independent tabs are unaffected; browser-cloned tabs inherit the marker. Only a
+current, validated explicit identity result, still owned by its public action and
+with stable coordination plus cache acknowledgements, can remove it with verified
+read-back. Failed removal remains fenced and retryable; peer/refresh notices,
+failed credentials, cancellation and supersession cannot retire it.
+
+Startup that began with no token, bound epoch or shared record may retry a queued
+epoch race exactly once against a newly observed stable epoch, using a fresh
+native lock request and the original transaction deadline. Eligibility and local
+lifetime/fence checks remain live under the lock. Bound credentials and pending,
+uncertain or signed-out records cannot rebase. A second epoch change, lost
+eligibility or exhausted deadline keeps protected content closed and the original
+protected URL available with explicit sign-in/local-exit recovery. Authoritative
+session-expired routing is unchanged. This source-only repair is not release,
+deployment or production-cookie qualification.
+
 The lock remains held until the owned browser fetch **and body** terminate after
 abort, even if its caller has timed out. This does not require or promise backend
 rollback or propagation of browser abort through the Next proxy. A native browser

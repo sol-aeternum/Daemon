@@ -136,6 +136,10 @@ vi.mock('../lib/auth', () => ({
   })),
   logoutCurrentSession: mockLogoutCurrentSession,
   clearAuthState: mockClearAuthState,
+  signOutLocally: vi.fn(() => {
+    mockClearAuthState();
+    return { success: true, generation: 0 };
+  }),
   clearLocalAuthState: mockClearLocalAuthState,
   getAccessToken: vi.fn(() => null),
   hasValidAccessToken: vi.fn(() => false),

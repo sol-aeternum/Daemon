@@ -26,7 +26,6 @@ import {
   type BrowserCacheClearStatus,
 } from '@/lib/browserCache';
 import {
-  clearAuthState,
   getAccessToken,
   getAuthGeneration,
   getAuthHeader,
@@ -36,6 +35,7 @@ import {
   listenForAuthEvents,
   logoutCurrentSession,
   refreshAccessToken,
+  signOutLocally,
   setAccessToken,
   subscribeAuthGeneration,
   type RefreshResult,
@@ -82,6 +82,7 @@ interface CacheGateProps {
   onRetry: () => void;
   onSignOut: () => void;
   sessionProblem?: boolean;
+  onSignIn?: () => void;
 }
 
 /**
@@ -97,6 +98,7 @@ function AuthCacheGate({
   onRetry,
   onSignOut,
   sessionProblem = false,
+  onSignIn,
 }: CacheGateProps) {
   const failed = status === 'failed';
   return (
@@ -122,6 +124,11 @@ function AuthCacheGate({
         <p className="text-xs text-[var(--color-text-muted)]">{error}</p>
       ) : null}
       <div className="flex items-center gap-2">
+        {onSignIn ? (
+          <button type="button" onClick={onSignIn}>
+            Sign in
+          </button>
+        ) : null}
         {failed ? (
           <button
             type="button"
@@ -185,6 +192,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     number | null
   >(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [exitPersistenceError, setExitPersistenceError] = useState<
+    string | null
+  >(null);
   const [accessToken, setAccessTokenState] = useState<string | null>(null);
   const [mode, setMode] = useState<AuthConfig['mode'] | 'unknown' | 'error'>(
     () => {
@@ -282,6 +292,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       updateAuthState();
 
       if (refresh.success) return;
+      if (refresh.preserveProtectedUrl) return;
 
       const result = await fetchAuthConfig();
       if (!mounted || generation !== getAuthGeneration()) return;
@@ -354,11 +365,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const signOutFromGate = useCallback(() => {
     cancelDeviceAction();
     void logoutCurrentSession({ allowRefresh: false });
-    clearAuthState();
+    const persisted = signOutLocally();
+    setExitPersistenceError(persisted.error ?? null);
     void startBrowserCacheClearAttempt({ reason: 'sign-out' });
     updateAuthState();
     const target = resolveLandingTarget(mode === 'error' ? 'unknown' : mode);
-    if (typeof window !== 'undefined') {
+    if (persisted.success && typeof window !== 'undefined') {
       window.location.href = target;
     }
   }, [updateAuthState, mode, cancelDeviceAction]);
@@ -392,13 +404,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
           ? isAuthResultCurrent(result)
           : generation === getAuthGeneration()
       ) {
-        clearAuthState();
+        const persisted = signOutLocally();
+        setExitPersistenceError(persisted.error ?? null);
         updateAuthState();
         setSigningOutGeneration(null);
         const target = resolveLandingTarget(
           mode === 'error' ? 'unknown' : mode,
         );
-        if (typeof window !== 'undefined') {
+        if (persisted.success && typeof window !== 'undefined') {
           window.location.href = target;
         }
       }
@@ -419,7 +432,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // current auth lifetime's cache-clear acknowledgement (or the qualified
   // gate's failure UI with Retry and local Sign out).
   let gatedChildren = children;
-  if (
+  if (exitPersistenceError) {
+    gatedChildren = (
+      <AuthCacheGate
+        status="failed"
+        error={exitPersistenceError}
+        onRetry={signOutFromGate}
+        onSignOut={signOutFromGate}
+        sessionProblem
+      />
+    );
+  } else if (
     signingOutGeneration !== null &&
     signingOutGeneration === getAuthGeneration()
   ) {
@@ -449,7 +472,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
         onSignOut={signOutFromGate}
       />
     );
-  } else if (coordinationProblem && !publicPath) {
+  } else if (
+    coordinationProblem &&
+    (!publicPath || coordinationProblem.startsWith('Validated sign-in'))
+  ) {
     gatedChildren = (
       <AuthCacheGate
         status={
@@ -459,9 +485,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
         }
         error={coordinationProblem}
         onRetry={() => {
-          void refreshAuth();
+          if (coordinationProblem.startsWith('Validated sign-in'))
+            retryCacheClear();
+          else void refreshAuth();
         }}
         onSignOut={signOutFromGate}
+        onSignIn={() => {
+          window.location.href = resolveLandingTarget(mode);
+        }}
         sessionProblem
       />
     );
@@ -480,7 +511,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const preserveCredentialOwner =
     publicPath &&
     credentialOwnerPath === pathname &&
-    signingOutGeneration === null;
+    signingOutGeneration === null &&
+    !exitPersistenceError;
   const protectedReady =
     cacheState.status === 'ready' && !coordinationProblem && !privacyGated;
 

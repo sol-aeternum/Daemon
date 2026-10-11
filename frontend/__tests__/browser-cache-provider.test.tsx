@@ -165,6 +165,9 @@ function deferredResponse(): DeferredResponse {
 }
 
 beforeEach(() => {
+  // Each case starts in an independent tab; local-exit persistence is exercised
+  // across documents by the dedicated native-browser regressions.
+  sessionStorage.clear();
   delete process.env.NEXT_PUBLIC_API_URL;
   clearResponder = () => ok204NoStore();
   clearRequests = 0;

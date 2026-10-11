@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useEffect } from 'react';
 import {
   act,
   cleanup,
@@ -9,12 +10,14 @@ import {
   within,
 } from '@testing-library/react';
 import { AuthCookieTestLocks } from './helpers/authCookieLocks';
+import { createAuthTestStorage } from './helpers/authCookieEnvironment';
 import {
   AUTH_COORDINATION_KEY,
   readAuthCoordination,
 } from '../lib/authCookieCoordinator';
 import {
   clearLocalAuthState,
+  LOCAL_SIGNOUT_KEY,
   getAccessToken,
   getAuthHeader,
   getRefreshPromise,
@@ -118,6 +121,7 @@ function setPath(path: string) {
   });
 }
 beforeEach(() => {
+  vi.stubGlobal('sessionStorage', createAuthTestStorage());
   navigation.push.mockReset();
   setPath('/auth');
   vi.stubEnv('NEXT_PUBLIC_API_URL', '');
@@ -278,6 +282,93 @@ async function confirmRevoke() {
 }
 
 describe('real nested action owners across privacy gates', () => {
+  it('authoritative refresh expiration still routes an ordinary protected startup to sign-in without retrying', async () => {
+    setPath('/settings/deep-link');
+    setAccessToken('fictional-a', Date.now() - 1000, 'fictional-a');
+    refreshResponse = async () => new Response(null, { status: 401 });
+    render(
+      <AuthProvider>
+        <ProtectedRoute />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(window.location.href).toBe('/auth'));
+    expect(calls.filter(({ url }) => url.endsWith('/refresh'))).toHaveLength(1);
+    expect(getAccessToken()).toBeNull();
+    expect(getAuthHeader()).toBeNull();
+    expect(readAuthCoordination()?.status).toBe('signed-out');
+    expect(sessionStorage.getItem(LOCAL_SIGNOUT_KEY)).toBeNull();
+  });
+  it('failed exit persistence cancels a real owned DELETE immediately, keeps the URL, and navigates only after verified retry', async () => {
+    setPath('/settings/devices');
+    setAccessToken('fictional-a', Date.now() + 1800_000, 'fictional-a');
+    render(
+      <AuthProvider>
+        <ProtectedRoute />
+      </AuthProvider>,
+    );
+    const deleted = deferred<Response>();
+    deleteResponse = () => deleted.promise;
+    await confirmRevoke();
+    await act(flush);
+    const call = calls.find(({ url }) => url.endsWith('/devices/other'))!;
+    const nativeSetItem = sessionStorage.setItem;
+    const blocked = vi
+      .spyOn(sessionStorage, 'setItem')
+      .mockImplementation((key, value) => {
+        if (key === LOCAL_SIGNOUT_KEY)
+          throw new Error('fictional session storage failure');
+        nativeSetItem(key, value);
+      });
+    fireEvent.click(screen.getByTestId('auth-cache-gate-signout'));
+    await act(flush);
+    expect(call.init!.signal!.aborted).toBe(true);
+    expect(getAccessToken()).toBeNull();
+    expect(getAuthHeader()).toBeNull();
+    expect(screen.queryByTestId('protected-view')).toBeNull();
+    expect(window.location.href).toBe('http://localhost:3000/settings/devices');
+    expect(screen.getByText(/Reloading may restore this session/)).toBeTruthy();
+    blocked.mockRestore();
+    fireEvent.click(screen.getByTestId('auth-cache-gate-retry'));
+    await act(flush);
+    expect(sessionStorage.getItem(LOCAL_SIGNOUT_KEY)).toBe('1');
+    expect(window.location.href).toBe('/auth');
+    deleted.resolve(ack());
+  });
+
+  it('verified sign-in waits through failed fence removal and explicit retry without resubmitting credentials', async () => {
+    sessionStorage.setItem(LOCAL_SIGNOUT_KEY, 'corrupt');
+    render(
+      <AuthProvider>
+        <PublicRoute />
+      </AuthProvider>,
+    );
+    await screen.findByText('Welcome to Daemon');
+    const nativeRemove = sessionStorage.removeItem;
+    const blocked = vi
+      .spyOn(sessionStorage, 'removeItem')
+      .mockImplementation((key) => {
+        if (key === LOCAL_SIGNOUT_KEY)
+          throw new Error('fictional removal failure');
+        nativeRemove(key);
+      });
+    await emailSubmit();
+    await act(flush);
+    expect(navigation.push).not.toHaveBeenCalled();
+    expect(getAuthHeader()).toBeNull();
+    expect(sessionStorage.getItem(LOCAL_SIGNOUT_KEY)).toBe('corrupt');
+    expect(screen.getByText(/Validated sign-in is waiting/)).toBeTruthy();
+    blocked.mockRestore();
+    fireEvent.click(screen.getByTestId('auth-cache-gate-retry'));
+    await act(flush);
+    await waitFor(() =>
+      expect(navigation.push).toHaveBeenCalledExactlyOnceWith('/'),
+    );
+    expect(sessionStorage.getItem(LOCAL_SIGNOUT_KEY)).toBeNull();
+    expect(getAuthHeader()).toBe('Bearer fictional-b');
+    expect(
+      calls.filter(({ url }) => url.endsWith('/email/complete')),
+    ).toHaveLength(1);
+  });
   it('email supersession retires Google busy feedback without cancelling email', async () => {
     render(
       <AuthProvider>
@@ -726,6 +817,67 @@ describe('real nested action owners across privacy gates', () => {
       calls.filter(({ url }) => url.endsWith('/devices/other')),
     ).toHaveLength(1);
   });
+
+  it.each([false, true])(
+    'normal provider logout cancels a held DELETE (current=%s) without late success navigation',
+    async (current) => {
+      setPath('/settings/devices');
+      currentDevice = current;
+      setAccessToken('fictional-a', Date.now() + 1800_000, 'fictional-a');
+      let logout: (() => Promise<void>) | undefined;
+      function CaptureLogout() {
+        const auth = useAuth();
+        useEffect(() => {
+          logout = auth.logout;
+        }, [auth.logout]);
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <CaptureLogout />
+          <ProtectedRoute />
+        </AuthProvider>,
+      );
+      const deleted = deferred<Response>();
+      deleteResponse = () => deleted.promise;
+      await confirmRevoke();
+      await act(flush);
+      const call = calls.find(({ url }) => url.endsWith('/devices/other'))!;
+      expect(call).toBeDefined();
+      expect(call.init!.signal!.aborted).toBe(false);
+      expect(screen.queryByTestId('protected-view')).toBeNull();
+      // AccountWidget is already unmounted by this gate. Calling its captured
+      // context method deliberately tests the stronger ordering anyway; this
+      // does not simulate a possible click on an absent logout button.
+      expect(logout).toBeDefined();
+      await act(async () => {
+        const completion = logout!();
+        // The coordinator's transport signal is cancelled synchronously even
+        // though the outer device owner's controller is a different object.
+        expect(call.init!.signal!.aborted).toBe(true);
+        await completion;
+        await flush();
+      });
+      expect(window.location.href).toBe('/auth');
+      expect(getAccessToken()).toBeNull();
+      // Aborting a dispatched cookie writer leaves uncertainty. Local logout
+      // completes, but this is not confirmation of server-side revocation.
+      expect(calls.some(({ url }) => url.endsWith('/auth/logout'))).toBe(false);
+      expect(readAuthCoordination()).toEqual({
+        version: 1,
+        epoch: 'fictional-a',
+        status: 'uncertain',
+      });
+      await act(async () => {
+        deleted.resolve(new Response(null, { status: 204 }));
+        await flush();
+      });
+      expect(window.location.replace).not.toHaveBeenCalled();
+      expect(navigation.push).not.toHaveBeenCalled();
+      expect(screen.queryByText('No active sessions found')).toBeNull();
+      expect(screen.queryByTestId('protected-view')).toBeNull();
+    },
+  );
 
   it('an uncertain DELETE keeps protected DOM absent and is not automatically repeated by cache retry', async () => {
     setPath('/settings/devices');

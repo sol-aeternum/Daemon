@@ -3,6 +3,8 @@
 import { discardAllPersistedDrafts } from './draftPersistence';
 import { clearPendingSubmissions } from './pendingSubmission';
 import {
+  AUTH_TRANSACTION_MS,
+  AuthEpochChangedError,
   assertAuthCoordinationAvailable,
   cancelAuthCookieOperations,
   readAuthCoordination,
@@ -27,6 +29,8 @@ export interface RefreshResult {
   error?: string;
   // Tab-local completion fence for navigation/cleanup after an awaited result.
   generation?: number;
+  // Recovery from a local fence/epoch race must not discard a protected deep link.
+  preserveProtectedUrl?: boolean;
 }
 
 export interface LogoutResult {
@@ -49,6 +53,97 @@ let _accessToken: string | null = null;
 let _expiresAt: number = 0;
 let _authEpoch: string | null = null;
 let _localSignedOut = false;
+export const LOCAL_SIGNOUT_KEY = 'daemon:local-signout';
+const persistenceWarning =
+  'Local sign-out could not be saved. Reloading may restore this session. Retry saving before leaving this page.';
+let _requiresIdentityFence = false;
+let _fenceRemovalFailed = false;
+let _startupRaceProblem = false;
+let _identityFenceOwner: {
+  result: RefreshResult;
+  epoch: string;
+  signal?: AbortSignal;
+} | null = null;
+
+function _localFenceProblem(): string | null {
+  if (_fenceRemovalFailed)
+    return 'Sign-in is validated, but local sign-out could not be removed. Retry to finish sign-in.';
+  try {
+    if (sessionStorage.getItem(LOCAL_SIGNOUT_KEY) !== null)
+      return 'This tab is signed out locally. Sign in explicitly to continue.';
+  } catch {
+    _requiresIdentityFence = true;
+    return 'Local sign-out storage cannot be read. Protected content stays unavailable.';
+  }
+  return _requiresIdentityFence
+    ? 'This tab is signed out locally. Sign in explicitly to continue.'
+    : null;
+}
+
+// Local cleanup is unconditional, including when persistence fails. The caller
+// may navigate ONLY after this synchronous write/read-back succeeds.
+export function signOutLocally(): LogoutResult {
+  _requiresIdentityFence = true;
+  _fenceRemovalFailed = false;
+  let saved = false;
+  try {
+    sessionStorage.setItem(LOCAL_SIGNOUT_KEY, '1');
+    saved = sessionStorage.getItem(LOCAL_SIGNOUT_KEY) === '1';
+  } catch {
+    // Storage recovery after a forced reload cannot recreate an unwritten fence.
+  }
+  // A verified persisted marker itself closes every exposure path. Retain an
+  // in-memory fence only for the unwritten case (and unverified removal below).
+  _requiresIdentityFence = !saved;
+  clearAuthState();
+  return {
+    success: saved,
+    error: saved ? undefined : persistenceWarning,
+    generation: _authGeneration,
+  };
+}
+
+// Called by the still-current public credential owner AFTER cache readiness.
+// A refresh, peer notice or manually installed token has no retirement proof.
+export function completeIdentityReadiness(
+  result: RefreshResult,
+  signal: AbortSignal,
+): boolean {
+  if (!result.success || signal.aborted || !isAuthResultCurrent(result))
+    return false;
+  if (getBrowserCacheState().status !== 'ready') return false;
+  const fenced = _localFenceProblem();
+  if (!fenced) return _sharedTokenReady();
+  const owner = _identityFenceOwner;
+  if (
+    !owner ||
+    owner.result !== result ||
+    owner.signal?.aborted ||
+    _authEpoch !== owner.epoch ||
+    !_rawTokenValid()
+  )
+    return false;
+  try {
+    const record = readAuthCoordination();
+    assertAuthCoordinationAvailable();
+    if (record?.status !== 'stable' || record.epoch !== owner.epoch)
+      return false;
+    _requiresIdentityFence = true;
+    sessionStorage.removeItem(LOCAL_SIGNOUT_KEY);
+    if (sessionStorage.getItem(LOCAL_SIGNOUT_KEY) !== null) {
+      _fenceRemovalFailed = true;
+      return false;
+    }
+  } catch {
+    _fenceRemovalFailed = true;
+    return false;
+  }
+  _requiresIdentityFence = false;
+  _fenceRemovalFailed = false;
+  _identityFenceOwner = null;
+  _notifyAuthGeneration();
+  return true;
+}
 let _coordinationListenerInstalled = false;
 // Nonsecret, tab-local sign-in lifetime. Token rotation is not a new sign-in.
 let _authGeneration = 0;
@@ -105,6 +200,7 @@ function _installIdentityToken(
   expiresAtMs: number,
   epoch: string,
 ): void {
+  _startupRaceProblem = false;
   // New sign-in: invalidate the browser-cache barrier synchronously BEFORE
   // any auth notification, so no auth listener can see the prior lifetime's
   // cleared-cache readiness and no stale protected request sneaks out.
@@ -130,6 +226,7 @@ export function clearLocalAuthState(): void {
 }
 
 function _clearOwnedLocalAuthState(): void {
+  _identityFenceOwner = null;
   // Sign-out/401: discard the barrier readiness so the next initialization
   // or protected consumer re-clears against the new (empty) lifetime.
   invalidateBrowserCache();
@@ -157,6 +254,7 @@ function _rawTokenValid(): boolean {
 }
 
 function _sharedTokenReady(): boolean {
+  if (_localFenceProblem() || _startupRaceProblem) return false;
   try {
     assertAuthCoordinationAvailable();
     const record = readAuthCoordination();
@@ -197,6 +295,14 @@ export function isAuthResultCurrent(result: RefreshResult): boolean {
 }
 
 export function getSessionCoordinationProblem(): string | null {
+  const fence = _localFenceProblem();
+  if (fence)
+    return _identityFenceOwner &&
+      isAuthResultCurrent(_identityFenceOwner.result)
+      ? 'Validated sign-in is waiting for local sign-out removal. Retry to finish sign-in.'
+      : fence;
+  if (_startupRaceProblem)
+    return 'Session startup changed. Sign in explicitly, or sign out locally.';
   try {
     assertAuthCoordinationAvailable();
     const record = readAuthCoordination();
@@ -340,6 +446,14 @@ export async function refreshAccessToken(
   _installCoordinationListener();
   if (options.signal?.aborted)
     return { success: false, error: 'Authentication changed' };
+  const fence = _localFenceProblem();
+  if (fence || _startupRaceProblem)
+    return {
+      success: false,
+      error: fence ?? getSessionCoordinationProblem()!,
+      generation: _authGeneration,
+      preserveProtectedUrl: true,
+    };
   if (hasValidAccessToken()) {
     return { success: true, generation: _authGeneration };
   }
@@ -351,41 +465,87 @@ export async function refreshAccessToken(
     };
   if (!_refreshPromise) {
     const mutation = _authMutation;
+    const startupGeneration = _authGeneration;
     const work = (async (): Promise<RefreshResult> => {
+      const deadline = Date.now() + AUTH_TRANSACTION_MS;
+      let unbound = false;
+      let epochRace = false;
+      let capturedEpoch: string | null | undefined;
       try {
-        const epoch = _authEpoch ?? readAuthCoordination()?.epoch ?? null;
-        return await runAuthCookieTransaction(
-          'refresh',
-          {
-            epoch,
-            isCurrent: () => mutation === _authMutation,
-          },
-          async (tx) => {
-            const result: RefreshResult = await _refreshWithinTransaction(tx);
-            tx.finish(
-              result.success
-                ? 'stable'
-                : result.error === 'Session expired'
-                  ? 'signed-out'
-                  : 'uncertain',
-              () => {
-                if (result.success) {
-                  _broadcastAuthEvent('refreshed');
-                } else if (result.error === 'Session expired') {
-                  _clearOwnedLocalAuthState();
-                  _broadcastAuthEvent('cleared');
-                }
-                result.generation = _authGeneration;
-              },
-            );
-            return result;
-          },
-        );
+        const prior = readAuthCoordination();
+        unbound = !_accessToken && !_authEpoch && !prior && !_localSignedOut;
+        const epoch = _authEpoch ?? prior?.epoch ?? null;
+        capturedEpoch = epoch;
+        const current = () =>
+          mutation === _authMutation &&
+          (!unbound || startupGeneration === _authGeneration) &&
+          !_localFenceProblem() &&
+          !_localSignedOut;
+        const run = (expectedEpoch: string | null) =>
+          runAuthCookieTransaction(
+            'refresh',
+            {
+              epoch: expectedEpoch,
+              deadline,
+              isCurrent: current,
+            },
+            async (tx) => {
+              const result: RefreshResult = await _refreshWithinTransaction(tx);
+              tx.finish(
+                result.success
+                  ? 'stable'
+                  : result.error === 'Session expired'
+                    ? 'signed-out'
+                    : 'uncertain',
+                () => {
+                  if (result.success) {
+                    _broadcastAuthEvent('refreshed');
+                  } else if (result.error === 'Session expired') {
+                    _clearOwnedLocalAuthState();
+                    _broadcastAuthEvent('cleared');
+                  }
+                  result.generation = _authGeneration;
+                },
+              );
+              return result;
+            },
+          );
+        try {
+          return await run(epoch);
+        } catch (error) {
+          if (!(error instanceof AuthEpochChangedError)) throw error;
+          epochRace = true;
+          if (
+            !unbound ||
+            !error.stableEpoch ||
+            !current() ||
+            _accessToken ||
+            _authEpoch ||
+            Date.now() >= deadline
+          )
+            throw error;
+          // Exactly one new lock request. Its enqueue and lock-time epoch checks
+          // reject a second change; the original finite budget is never renewed.
+          return await run(error.stableEpoch);
+        }
       } catch (error) {
+        if (capturedEpoch !== undefined) {
+          try {
+            epochRace ||=
+              (readAuthCoordination()?.epoch ?? null) !== capturedEpoch;
+          } catch {
+            // Unreadable metadata supplies no stable epoch or retry authority.
+          }
+        }
+        if ((epochRace || unbound) && mutation === _authMutation) {
+          _startupRaceProblem = true;
+          _notifyAuthGeneration();
+        }
         return {
           success: false,
           error: error instanceof Error ? error.message : 'Refresh failed',
           generation: mutation === _authMutation ? _authGeneration : undefined,
+          preserveProtectedUrl: epochRace || unbound,
         };
       }
     })();
@@ -413,6 +573,7 @@ export async function refreshAccessToken(
 async function _refreshWithinTransaction(
   tx: CookieTransaction,
 ): Promise<RefreshResult> {
+  if (_localFenceProblem()) throw new Error('This tab is signed out locally');
   const response = await tx.request('/api/v1/auth/refresh', { method: 'POST' });
   tx.assertCurrent();
   if (response.ok) {
@@ -759,6 +920,7 @@ async function _completeIdentity(
   clearPendingSubmissions();
   _authGeneration += 1;
   _authMutation += 1;
+  _identityFenceOwner = null;
   _installCoordinationListener();
   _notifyAuthGeneration();
   let mutation = _authMutation;
@@ -811,6 +973,8 @@ async function _completeIdentity(
           tx.finish('stable', (committedEpoch) => {
             _installIdentityToken(data.access_token, expiresAt, committedEpoch);
             result.generation = _authGeneration;
+            _identityFenceOwner = { result, epoch: committedEpoch, signal };
+            _notifyAuthGeneration();
           });
         } else {
           result.error =

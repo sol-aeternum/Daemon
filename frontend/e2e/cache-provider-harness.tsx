@@ -6,6 +6,7 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from '../components/AuthProvider';
+import { usePublicCredentialOwner } from '../components/AuthActionOwners';
 import {
   clearLocalAuthState,
   completeEmailSignIn,
@@ -30,6 +31,24 @@ const OWNER_CODES = {
   'sign-in as A': 'fictional-owner-a',
   'sign-in as B': 'fictional-owner-b',
 } as const;
+
+// The public owner uses the production readiness/retirement hook. Fictional
+// credentials alone replace AuthLanding's provider-specific identity UI.
+function CredentialProbe() {
+  const waitForReadiness = usePublicCredentialOwner();
+  const [outcome, setOutcome] = useState('idle');
+  useEffect(() => {
+    const controller = new AbortController();
+    window.__p02!.ownedSignIn = async (owner) => {
+      const result = await window.__p02!.signIn(owner);
+      if (result.success && (await waitForReadiness(result, controller.signal)))
+        setOutcome('ready');
+      return result;
+    };
+    return () => controller.abort();
+  }, [waitForReadiness]);
+  return <output data-testid="credential-readiness">{outcome}</output>;
+}
 
 function ProtectedProbe() {
   const { isAuthenticated, accessToken } = useAuth();
@@ -138,6 +157,7 @@ function FixtureControls() {
 interface WindowP02 {
   ready: boolean;
   signIn: (owner: 'a' | 'b') => ReturnType<typeof completeEmailSignIn>;
+  ownedSignIn?: (owner: 'a' | 'b') => ReturnType<typeof completeEmailSignIn>;
   reject: () => ReturnType<typeof completeEmailSignIn>;
   refresh: () => ReturnType<typeof refreshAccessToken>;
   logout: () => ReturnType<typeof logoutCurrentSession>;
@@ -211,6 +231,9 @@ function FixtureRoot() {
   return (
     <>
       <AuthProvider>
+        {new URLSearchParams(location.search).has('credential-owner') ? (
+          <CredentialProbe />
+        ) : null}
         <ProtectedProbe />
       </AuthProvider>
       <FixtureControls />

@@ -143,8 +143,9 @@ const server = http.createServer(async (request, response) => {
     });
     response.end(output.outputFiles[0].text);
   } else if (
-    url.pathname === '/auth' &&
-    url.searchParams.has('cache-fixture')
+    (url.pathname === '/auth' && url.searchParams.has('cache-fixture')) ||
+    url.pathname === '/setup' ||
+    url.pathname.startsWith('/settings/p02-')
   ) {
     response.writeHead(200, {
       'Content-Type': 'text/html',

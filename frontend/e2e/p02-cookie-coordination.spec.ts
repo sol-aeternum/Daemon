@@ -381,3 +381,504 @@ for (const termination of ['close', 'crash'] as const) {
     }
   });
 }
+
+const SIGNOUT_MARKER = 'daemon:local-signout';
+async function freshProtected(page: Page, name: string) {
+  await page.goto(`/settings/p02-${name}?settled-auth-config`);
+  await expect
+    .poll(() => page.evaluate(() => window.__p02?.ready === true))
+    .toBe(true);
+}
+const refreshAttempts = async (request: APIRequestContext) =>
+  ((await upstream(request)).events as string[][]).filter(
+    (event) =>
+      event[0] === 'refresh' &&
+      ['attempt-started', 'unplanned-arrival', 'dropping-connection'].includes(
+        event[2],
+      ),
+  ).length;
+
+test('persistent local exit fences actual navigation/reload and clones, not independent tabs; only owned acknowledged sign-in retires it', async ({
+  page,
+  context,
+  request,
+}) => {
+  await open(page, true);
+  await signIn(page, request, 'a');
+  await plan(request, { refresh: ['refresh-success'] });
+  expect((await request.post(`${API}/__fixture/fail/1`)).status()).toBe(204);
+  await freshProtected(page, 'exit');
+  await expect.poll(async () => (await state(page)).cacheStatus).toBe('failed');
+  await expect.poll(async () => (await state(page)).refreshPending).toBe(false);
+  await page.getByTestId('auth-cache-gate-signout').click();
+  await page.waitForURL('/setup');
+  await expect
+    .poll(() => page.evaluate(() => window.__p02?.ready === true))
+    .toBe(true);
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBe('1');
+  expect(
+    (await context.cookies()).find((cookie) => cookie.name === 'daemon_refresh')
+      ?.value,
+  ).toBe('fictional-refresh-a');
+  const before = await refreshAttempts(request);
+  expect((await request.post(`${API}/__fixture/fail/0`)).status()).toBe(204);
+  await freshProtected(page, 'exit-later');
+  await expect.poll(async () => (await state(page)).cacheStatus).toBe('ready');
+  expect(await state(page)).toMatchObject({
+    token: null,
+    header: null,
+    valid: false,
+  });
+  await expect(page.getByTestId('protected-cache-probe')).toHaveCount(0);
+  await page.reload();
+  await expect
+    .poll(() => page.evaluate(() => window.__p02?.ready === true))
+    .toBe(true);
+  await expect.poll(async () => (await state(page)).cacheStatus).toBe('ready');
+  expect(await refreshAttempts(request)).toBe(before);
+  expect(new URL(page.url()).pathname).toBe('/settings/p02-exit-later');
+
+  const popup = page.waitForEvent('popup');
+  await page.evaluate(() =>
+    window.open('/settings/p02-clone?settled-auth-config', '_blank'),
+  );
+  const clone = await popup;
+  await expect
+    .poll(() => clone.evaluate(() => window.__p02?.ready === true))
+    .toBe(true);
+  expect(
+    await clone.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBe('1');
+  expect((await state(clone)).header).toBeNull();
+  await expect(clone.getByTestId('protected-cache-probe')).toHaveCount(0);
+  expect(await refreshAttempts(request)).toBe(before);
+
+  const peer = await context.newPage();
+  await plan(request, { refresh: ['refresh-success'] });
+  await freshProtected(peer, 'independent');
+  await expect
+    .poll(async () => (await state(peer)).header)
+    .toBe('Bearer fictional-rotated-a');
+  expect(
+    await peer.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBeNull();
+  await open(peer, true);
+  await signIn(peer, request, 'b');
+  for (const fenced of [page, clone]) {
+    expect(
+      await fenced.evaluate(() =>
+        sessionStorage.getItem('daemon:local-signout'),
+      ),
+    ).toBe('1');
+    expect((await state(fenced)).header).toBeNull();
+  }
+
+  await page.goto('/auth?cache-fixture&settled-auth-config&credential-owner');
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__p02?.ownedSignIn))
+    .toBe('function');
+  await plan(request, { 'email-complete': ['success'] });
+  expect(
+    (await page.evaluate(() => window.__p02!.ownedSignIn!('b'))).success,
+  ).toBe(true);
+  await expect(page.getByTestId('credential-readiness')).toHaveText('ready');
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBeNull();
+  await plan(request, { refresh: ['refresh-success'] });
+  await freshProtected(page, 'explicit-return');
+  await expect
+    .poll(async () => (await state(page)).header)
+    .toBe('Bearer fictional-rotated-b');
+  expect(
+    await clone.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBe('1');
+  await clone.close();
+  await peer.close();
+});
+
+test('native sessionStorage persistence failure withholds exit navigation until verified retry, despite immediate cleanup', async ({
+  page,
+  request,
+}) => {
+  await page.addInitScript(() => {
+    Reflect.set(window, '__blockExitWrite', true);
+    const native = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (
+        this === sessionStorage &&
+        key === 'daemon:local-signout' &&
+        Reflect.get(window, '__blockExitWrite')
+      )
+        throw new Error('fictional tab persistence failure');
+      native.call(this, key, value);
+    };
+  });
+  await open(page, true);
+  await signIn(page, request, 'a');
+  await page.evaluate(() =>
+    history.replaceState(null, '', '/settings/p02-write-failure'),
+  );
+  expect((await request.post(`${API}/__fixture/fail/1`)).status()).toBe(204);
+  await page.evaluate(() => window.__p02!.clearCache()); // ready lifetime: explicitly invalidate via sign-in next
+  await plan(request, { 'email-complete': ['success'] });
+  expect((await page.evaluate(() => window.__p02!.signIn('a'))).success).toBe(
+    true,
+  );
+  await expect.poll(async () => (await state(page)).cacheStatus).toBe('failed');
+  await page.getByTestId('auth-cache-gate-signout').click();
+  await expect(
+    page.getByText(/Reloading may restore this session/),
+  ).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/settings/p02-write-failure');
+  expect(await state(page)).toMatchObject({ token: null, header: null });
+  await expect(page.getByTestId('protected-cache-probe')).toHaveCount(0);
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBeNull();
+  await page.evaluate(() => Reflect.set(window, '__blockExitWrite', false));
+  await page.getByTestId('auth-cache-gate-retry').click();
+  await page.waitForURL('/setup');
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBe('1');
+});
+
+test('corrupt marker and native read failure block fresh-document restoration; failed verified removal is retryable through the public owner', async ({
+  page,
+  context,
+  request,
+}) => {
+  await context.addCookies([
+    {
+      name: 'daemon_refresh',
+      value: 'fictional-refresh-a',
+      url: 'http://127.0.0.1:3142',
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+  await page.addInitScript(() => {
+    sessionStorage.setItem('daemon:local-signout', 'corrupt');
+    Reflect.set(window, '__blockFenceRead', true);
+    Reflect.set(window, '__blockFenceRemoval', true);
+    const read = Storage.prototype.getItem;
+    const remove = Storage.prototype.removeItem;
+    Storage.prototype.getItem = function (key) {
+      if (
+        this === sessionStorage &&
+        key === 'daemon:local-signout' &&
+        Reflect.get(window, '__blockFenceRead')
+      )
+        throw new Error('fictional tab read failure');
+      return read.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (
+        this === sessionStorage &&
+        key === 'daemon:local-signout' &&
+        Reflect.get(window, '__blockFenceRemoval')
+      )
+        throw new Error('fictional tab removal failure');
+      remove.call(this, key);
+    };
+  });
+  await freshProtected(page, 'read-failure');
+  await expect.poll(async () => (await state(page)).cacheStatus).toBe('ready');
+  expect(await state(page)).toMatchObject({ token: null, header: null });
+  expect(await refreshAttempts(request)).toBe(0);
+  await expect(page.getByTestId('protected-cache-probe')).toHaveCount(0);
+  await page.goto('/auth?cache-fixture&settled-auth-config&credential-owner');
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__p02?.ownedSignIn))
+    .toBe('function');
+  await page.evaluate(() => Reflect.set(window, '__blockFenceRead', false));
+  await plan(request, { 'email-complete': ['success'] });
+  const owned = page.evaluate(() => window.__p02!.ownedSignIn!('b'));
+  await expect(page.getByText(/Validated sign-in is waiting/)).toBeVisible();
+  expect((await state(page)).header).toBeNull();
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBe('corrupt');
+  await page.evaluate(() => Reflect.set(window, '__blockFenceRemoval', false));
+  await page.getByTestId('auth-cache-gate-retry').click();
+  expect((await owned).success).toBe(true);
+  expect((await state(page)).header).toBe('Bearer fictional-owner-b');
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('daemon:local-signout')),
+  ).toBeNull();
+  expect(await refreshAttempts(request)).toBe(0);
+});
+
+async function holdCookieLock(page: Page) {
+  await page.goto('/__fixture/seed');
+  await page.evaluate(() => {
+    Reflect.set(window, '__held', false);
+    void navigator.locks.request('daemon-auth-cookie', async () => {
+      Reflect.set(window, '__held', true);
+      await new Promise<void>((resolve) =>
+        Reflect.set(window, '__releaseLock', resolve),
+      );
+    });
+  });
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, '__held')))
+    .toBe(true);
+}
+const pendingLocks = (page: Page) =>
+  page.evaluate(
+    async () =>
+      (await navigator.locks.query()).pending?.filter(
+        (lock) => lock.name === 'daemon-auth-cookie',
+      ).length,
+  );
+const stableRecord = (epoch: string) =>
+  JSON.stringify({ version: 1, epoch, status: 'stable' });
+
+test('two genuinely unbound native fresh documents get serialized cookie refreshes and preserve both protected deep links', async ({
+  page,
+  context,
+  request,
+}) => {
+  await context.addInitScript(() => {
+    const native = window.fetch;
+    Reflect.set(window, '__cacheAcknowledgements', []);
+    window.fetch = async (input, init) => {
+      const response = await native(input, init);
+      if (typeof input === 'string' && input.endsWith('/auth/cache/clear'))
+        Reflect.get(window, '__cacheAcknowledgements').push({
+          url: input,
+          status: response.status,
+          cacheControl: response.headers.get('cache-control'),
+        });
+      return response;
+    };
+  });
+  await context.addCookies([
+    {
+      name: 'daemon_refresh',
+      value: 'fictional-refresh-a',
+      url: 'http://127.0.0.1:3142',
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+  await holdCookieLock(page);
+  expect(
+    await page.evaluate(() => localStorage.getItem('daemon:auth-coordination')),
+  ).toBeNull();
+  await plan(request, { refresh: ['refresh-success', 'refresh-success'] });
+  const tabs = [await context.newPage(), await context.newPage()];
+  await Promise.all(
+    tabs.map((tab, index) => freshProtected(tab, `unbound-${index}`)),
+  );
+  await expect.poll(() => pendingLocks(page)).toBe(2);
+  await page.evaluate(() => Reflect.get(window, '__releaseLock')());
+  for (const [index, tab] of tabs.entries()) {
+    await expect
+      .poll(async () => (await state(tab)).header)
+      .toBe('Bearer fictional-rotated-a');
+    expect(new URL(tab.url()).pathname).toBe(`/settings/p02-unbound-${index}`);
+    await expect(tab.getByTestId('protected-cache-probe')).toBeVisible();
+    expect((await state(tab)).cacheStatus).toBe('ready');
+    const acknowledgements = await tab.evaluate(() =>
+      Reflect.get(window, '__cacheAcknowledgements'),
+    );
+    for (const url of [
+      '/api/v1/auth/cache/clear',
+      `${API}/daemon/v1/auth/cache/clear`,
+    ]) {
+      expect(acknowledgements).toContainEqual({
+        url,
+        status: 204,
+        cacheControl: 'no-store',
+      });
+    }
+  }
+  expect(await refreshAttempts(request)).toBe(2);
+  // Both successful refresh bodies terminate in writer order, not overlapping.
+  const events = ((await upstream(request)).events as string[][]).filter(
+    (event) => event[0] === 'refresh',
+  );
+  const starts = events.flatMap((event, index) =>
+    event[2] === 'attempt-started' ? [index] : [],
+  );
+  expect(
+    events
+      .slice(starts[0] + 1, starts[1])
+      .some((event) => event[2] === 'step-body'),
+  ).toBe(true);
+  for (const tab of tabs) await tab.close();
+});
+
+for (const status of ['signed-out', 'uncertain', 'pending'] as const) {
+  test(`unbound queued startup never adopts ${status} replacement or loses its deep link`, async ({
+    page,
+    context,
+    request,
+  }) => {
+    await holdCookieLock(page);
+    const tab = await context.newPage();
+    await freshProtected(tab, `ineligible-${status}`);
+    await expect.poll(() => pendingLocks(page)).toBe(1);
+    await page.evaluate((status) => {
+      localStorage.setItem(
+        'daemon:auth-coordination',
+        JSON.stringify({
+          version: 1,
+          epoch: 'fictional-peer',
+          status,
+          ...(status === 'pending'
+            ? { attempt: 'fictional-abandoned', kind: 'refresh' }
+            : {}),
+        }),
+      );
+      Reflect.get(window, '__releaseLock')();
+    }, status);
+    await expect
+      .poll(async () => (await state(tab)).refreshPending)
+      .toBe(false);
+    expect((await state(tab)).header).toBeNull();
+    expect(await refreshAttempts(request)).toBe(0);
+    expect((await tab.evaluate(() => window.__p02!.refresh())).success).toBe(
+      false,
+    );
+    expect(await refreshAttempts(request)).toBe(0);
+    expect(new URL(tab.url()).pathname).toBe(
+      `/settings/p02-ineligible-${status}`,
+    );
+    await expect(
+      tab.getByRole('button', { name: 'Sign in', exact: true }),
+    ).toBeVisible();
+    await expect(tab.getByTestId('protected-cache-probe')).toHaveCount(0);
+    await tab.close();
+  });
+}
+
+test('a second stable epoch change exhausts the one unbound retry under a fresh native lock and preserves explicit recovery', async ({
+  page,
+  context,
+  request,
+}) => {
+  await holdCookieLock(page);
+  const tab = await context.newPage();
+  await freshProtected(tab, 'second-epoch');
+  await expect.poll(() => pendingLocks(page)).toBe(1);
+  // A separate queued native holder allows inspection of the genuine second
+  // request before changing its epoch. No module/generation reset or fake lock.
+  await page.evaluate((record) => {
+    localStorage.setItem('daemon:auth-coordination', record);
+    Reflect.set(window, '__heldAgain', false);
+    void navigator.locks.request('daemon-auth-cookie', async () => {
+      Reflect.set(window, '__heldAgain', true);
+      await new Promise<void>((resolve) =>
+        Reflect.set(window, '__releaseAgain', resolve),
+      );
+    });
+    Reflect.get(window, '__releaseLock')();
+  }, stableRecord('fictional-first'));
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, '__heldAgain')))
+    .toBe(true);
+  await expect.poll(() => pendingLocks(page)).toBe(1);
+  await page.evaluate((record) => {
+    localStorage.setItem('daemon:auth-coordination', record);
+    Reflect.get(window, '__releaseAgain')();
+  }, stableRecord('fictional-second'));
+  await expect.poll(async () => (await state(tab)).refreshPending).toBe(false);
+  expect(await refreshAttempts(request)).toBe(0);
+  expect(new URL(tab.url()).pathname).toBe('/settings/p02-second-epoch');
+  expect((await state(tab)).header).toBeNull();
+  await expect(
+    tab.getByRole('button', { name: 'Sign in', exact: true }),
+  ).toBeVisible();
+  expect(await pendingLocks(page)).toBe(0);
+  await plan(request, { 'email-complete': ['reject'] });
+  expect((await tab.evaluate(() => window.__p02!.reject())).success).toBe(
+    false,
+  );
+  expect(await tab.evaluate(() => window.__p02!.refresh())).toMatchObject({
+    success: false,
+    preserveProtectedUrl: true,
+  });
+  expect(await refreshAttempts(request)).toBe(0);
+  await tab.close();
+});
+
+test('the fresh native retry expires at the ORIGINAL startup deadline while queued behind another holder', async ({
+  page,
+  context,
+  request,
+}) => {
+  await holdCookieLock(page);
+  const tab = await context.newPage();
+  await freshProtected(tab, 'original-deadline');
+  await expect.poll(() => pendingLocks(page)).toBe(1);
+  const queuedAt = Date.now();
+  const completion = tab.evaluate(() => window.__p02!.refresh());
+  // Consume most of the first owner's real budget before its epoch race. A
+  // renewed +10s retry would visibly overrun the ORIGINAL deadline below.
+  await page.evaluate(
+    () => new Promise<void>((resolve) => setTimeout(resolve, 6000)),
+  );
+  await page.evaluate((record) => {
+    localStorage.setItem('daemon:auth-coordination', record);
+    Reflect.set(window, '__heldAgain', false);
+    void navigator.locks.request('daemon-auth-cookie', async () => {
+      Reflect.set(window, '__heldAgain', true);
+      await new Promise<void>((resolve) =>
+        Reflect.set(window, '__releaseAgain', resolve),
+      );
+    });
+    Reflect.get(window, '__releaseLock')();
+  }, stableRecord('fictional-first'));
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, '__heldAgain')))
+    .toBe(true);
+  await expect.poll(() => pendingLocks(page)).toBe(1);
+  expect(await completion).toMatchObject({
+    success: false,
+    error: 'Session operation timed out',
+    preserveProtectedUrl: true,
+  });
+  expect(Date.now() - queuedAt).toBeLessThan(11_000);
+  expect(await pendingLocks(page)).toBe(0);
+  expect(await refreshAttempts(request)).toBe(0);
+  expect(new URL(tab.url()).pathname).toBe('/settings/p02-original-deadline');
+  expect((await state(tab)).header).toBeNull();
+  await expect(
+    tab.getByRole('button', { name: 'Sign in', exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => Reflect.get(window, '__releaseAgain')());
+  await tab.close();
+});
+
+test('explicit credential supersession cancels genuinely unbound queued startup before it can adopt a peer epoch', async ({
+  page,
+  context,
+  request,
+}) => {
+  await holdCookieLock(page);
+  const tab = await context.newPage();
+  await freshProtected(tab, 'supersession');
+  await expect.poll(() => pendingLocks(page)).toBe(1);
+  const startup = tab.evaluate(() => window.__p02!.refresh());
+  const identity = tab.evaluate(() => window.__p02!.signIn('b'));
+  expect(await startup).toMatchObject({
+    success: false,
+    error: 'Authentication changed',
+  });
+  await expect.poll(() => pendingLocks(page)).toBe(1); // credentials only, no surviving startup owner
+  await page.evaluate((record) => {
+    localStorage.setItem('daemon:auth-coordination', record);
+    Reflect.get(window, '__releaseLock')();
+  }, stableRecord('fictional-peer'));
+  expect((await identity).success).toBe(false); // explicit credentials cannot silently rebase either
+  expect(await refreshAttempts(request)).toBe(0);
+  expect((await upstream(request)).events).toEqual([]);
+  expect(new URL(tab.url()).pathname).toBe('/settings/p02-supersession');
+  expect((await state(tab)).header).toBeNull();
+  await tab.close();
+});

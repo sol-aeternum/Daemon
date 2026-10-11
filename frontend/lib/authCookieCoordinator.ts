@@ -58,6 +58,13 @@ export class AuthCoordinationError extends Error {
   }
 }
 
+// Evidence captured while holding the native lock, not permission to rebase.
+export class AuthEpochChangedError extends AuthCoordinationError {
+  constructor(readonly stableEpoch: string | null) {
+    super('Authentication changed');
+  }
+}
+
 const unavailable = () =>
   new AuthCoordinationError(
     'Safe session coordination is unavailable. Use a supported browser or sign out locally.',
@@ -246,7 +253,10 @@ export async function runAuthCookieTransaction<T>(
         }
         if (previous?.status === 'uncertain' && previous.attempt)
           throw uncertain();
-        if ((previous?.epoch ?? null) !== options.epoch) throw changed();
+        if ((previous?.epoch ?? null) !== options.epoch)
+          throw new AuthEpochChangedError(
+            previous?.status === 'stable' ? previous.epoch : null,
+          );
         if (
           !options.replaceIdentity &&
           previous &&

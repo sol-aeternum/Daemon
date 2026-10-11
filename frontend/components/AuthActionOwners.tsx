@@ -9,8 +9,8 @@ import {
   useState,
 } from 'react';
 import {
+  completeIdentityReadiness,
   getAuthGeneration,
-  getSessionCoordinationProblem,
   isAuthResultCurrent,
   revokeDevice,
   subscribeAuthGeneration,
@@ -51,7 +51,7 @@ export function usePublicCredentialOwner() {
           if (signal.aborted || !isAuthResultCurrent(result)) finish(false);
           else if (
             getBrowserCacheState().status === 'ready' &&
-            !getSessionCoordinationProblem()
+            completeIdentityReadiness(result, signal)
           )
             finish(true);
           // A failed cache attempt stays pending here. Only explicit gate Retry

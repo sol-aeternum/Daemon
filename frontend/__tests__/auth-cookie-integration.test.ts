@@ -696,6 +696,30 @@ describe('verified rejected identity preserves the prior session, never creates 
 });
 
 describe('shared epoch and fail-closed exposure', () => {
+  it.each(['stable', 'signed-out', 'uncertain', 'pending'] as const)(
+    'an expired bound token queued behind %s replacement never receives an unbound retry',
+    async (status) => {
+      locks.held = true;
+      const refresh = auth.refreshAccessToken();
+      storage.set(
+        AUTH_COORDINATION_KEY,
+        JSON.stringify({
+          version: 1,
+          epoch: 'fictional-peer',
+          status,
+          ...(status === 'pending'
+            ? { attempt: 'fictional-writer', kind: 'refresh' }
+            : {}),
+        }),
+      );
+      locks.held = false;
+      locks.drain();
+      expect((await refresh).success).toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(locks.request).toHaveBeenCalledTimes(1);
+      expect(auth.getAuthHeader()).toBeNull();
+    },
+  );
   it('manual token installation cannot silently rebase an old token onto a different shared epoch', () => {
     storage.set(
       AUTH_COORDINATION_KEY,
