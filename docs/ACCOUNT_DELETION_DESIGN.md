@@ -1,6 +1,6 @@
 # Account deletion — fence and drain
 
-Drafted 8 October 2026 against main `06e6f6a3` for #469 (decision 12 in [DURABLE_REQUEST_DESIGN.md](DURABLE_REQUEST_DESIGN.md) §12). **Status: design APPROVED by the product owner on 8 October 2026 (decisions in §9). Not implemented.** No endpoint, migration or job described here exists yet. As with the durable-request design, the exact DDL, endpoint payloads and UI copy are reviewed in the implementation PRs, and implementation, migrations and API changes each need owner approval.
+Drafted 8 October 2026 against main `06e6f6a3` for #469 (decision 12 in [DURABLE_REQUEST_DESIGN.md](DURABLE_REQUEST_DESIGN.md) §12). **Status: design APPROVED by the product owner on 8 October 2026 (decisions in §9). Not implemented.** No deletion/reset endpoint, migration or job described in this protocol exists yet; prerequisite implementations are qualified separately in §8. As with the durable-request design, the exact DDL, endpoint payloads and UI copy are reviewed in the implementation PRs, and implementation, migrations and API changes each need owner approval.
 
 Read [DAEMON.md](DAEMON.md) for identity and [GLOSSARY.md](GLOSSARY.md) for terms. This design settles account deletion's retention, backup and cascading-deletion questions (listed as *Remaining decisions* in [DAEMON_VISION_DECISIONS.md](DAEMON_VISION_DECISIONS.md)); retention for other purposes remains open there.
 
@@ -143,6 +143,33 @@ identifier re-reads, result suppression and ownership indexes do **not** impleme
 purge, draining, eviction, replay or migration 048's DB-audit ownership. Legacy
 Redis state and coordinated rollout remain separately approval-blocked; passing
 prerequisite tests does not pass the end-to-end deletion scenarios below.
+
+### P0.2 prerequisite acceptance mapping (#486)
+
+P0.2 implements the cache-only endpoint and participating-client cookie ordering,
+not deletion/reset. `frontend/playwright.cache.config.ts` runs the dedicated
+blocking browser suite serially. The §8 HTTP-cache scenario below maps to its
+first two cache tests; the remaining cases qualify the cache barrier and cookie
+delivery prerequisites needed to keep account changes fail-closed.
+
+| Prerequisite | Executable evidence | Boundary |
+| --- | --- | --- |
+| Upgrade plus A → B with genuinely pre-existing HTTP cache at app and distinct API origins | `frontend/e2e/browser-cache.spec.ts`: server-hit counters prove A cache hits; new no-store alone still serves A; app clear leaves API A; direct API clear yields B at both; production module repeats both-origin clearing | Uncontrolled requests, installed Chromium, loopback same-site HTTP; not Cache Storage insertion or disabled cache |
+| Initialization/sign-in protected-content barrier, deduplicated cleanup and explicit retry | Same spec: production module/provider, failed startup and sign-in B, concurrent callers, same-origin proxy-only path | Endpoint acknowledgement is not a universal erasure oracle |
+| Missing no-store, redirect, timeout, insecure non-loopback URL and foreign-origin refusal | Same spec: actual endpoint/proxy transport and production barrier failure paths | Existing origin policy unchanged; no protected read on failure |
+| Cache-only scope | Same spec: cookies/local/session storage and existing noncontrolling worker registration retained; `tests/test_browser_cache_clear.py` validates empty request/204, trusted-origin checks and no session/database/cookie mutation | Does not authorize clearing credentials, browser storage or registrations |
+| Two-tab pending privacy, audited rejection preserving A, validated B success fencing A | `frontend/e2e/p02-cookie-coordination.spec.ts`: delayed headers/body, stable epoch/token assertions and protected-header gates | Exact audited identity rejections only, not refresh/logout/DELETE or uncertain state |
+| Timely local exit, held A upstream cannot overwrite B across login/expiry/refresh; dropped upstream retry is disclosed | Same spec: held upstream receipt checks, B cookie/refresh assertions and one actual Next proxy retry | Browser terminal abort does not prove upstream rollback or exactly-once forwarding |
+| Required locks/storage, native AbortSignals and no keepalive | Same spec: unsupported capability cases and actual cookie-writer request capture; coordinator/environment/integration unit suites cover malformed/lost metadata and abort-ignoring transport | No lease fallback; unqualified transport stays blocked |
+| Frozen holder retains lock; close and actual native crash leave abandoned uncertainty | Same spec: separate close/crash cases, +8s queued logout, surviving peer, no token/header, rejected B attempt and upstream receipts; `tests/test_p02_renderer_guard.py` covers bounded pidfd-helper refusal paths without real signals | Linux crash helper is test-only, targets its owned browser; lock release never proves cookie certainty |
+| Same-tab refresh keeps drafts and File identity while provider still gates readiness | `frontend/__tests__/midnight-drafts.test.tsx`, `draft-reload-persistence.test.tsx`, `midnight-auth-generation.test.ts`, provider and draft-integration regressions | Readiness subscription is separate from actual lifetime changes (#501); no module reset hides leakage |
+| Protected-media work and object URLs cannot outlive their auth lifetime | `frontend/__tests__/authenticated-image-auth-lifetime.test.tsx`: abort/revocation, late headers/response/body, same-lifetime and external URL checks | Owner-approved clear-until-remount/URL-change behavior (#504); no automatic B fetch or claim of a reproduced prior full-app leak |
+
+This mapping does not qualify production HTTPS/proxies, other engines, native
+clients, legacy deployed tabs or clients that never reconnect. It does not pass
+the service-worker, content-generation, deletion fence/drain/purge, restore or
+journal scenarios below. Full integrated gates and release reviews are still
+required before the separate P0.2 PR is ready; no deployment is approved.
 
 | Scenario | Expected |
 | --- | --- |

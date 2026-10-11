@@ -10,6 +10,9 @@ import {
   completeEmailSignIn,
   startGoogleSignIn,
   completeGoogleSignIn,
+  getAuthGeneration,
+  isAuthResultCurrent,
+  type RefreshResult,
 } from '../lib/auth';
 import type { AuthConfig } from '../lib/auth-config';
 import {
@@ -254,6 +257,9 @@ export default function AuthLanding({
   const keepSignedInRef = useRef(false);
   const googleButtonHostRef = useRef<HTMLDivElement>(null);
   const googleGenerationRef = useRef(0);
+  const mountedRef = useRef(false);
+  const actionRef = useRef(0);
+  const actionControllerRef = useRef<AbortController | null>(null);
   const inviteToken =
     searchParams.get('invite_token')?.trim() ||
     searchParams.get('invite')?.trim() ||
@@ -270,11 +276,36 @@ export default function AuthLanding({
   }, [router]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      actionRef.current += 1;
+      actionControllerRef.current?.abort();
+    };
+  }, []);
+
+  function beginCredentialAction() {
+    actionControllerRef.current?.abort();
+    const controller = new AbortController();
+    actionControllerRef.current = controller;
+    const action = ++actionRef.current;
+    return {
+      controller,
+      current: () => mountedRef.current && action === actionRef.current,
+    };
+  }
+
+  useEffect(() => {
     let cancelled = false;
 
     async function checkAuth() {
       const result = await refreshAccessToken().catch(() => null);
-      if (!cancelled && result?.success) {
+      if (
+        !cancelled &&
+        result &&
+        isAuthResultCurrent(result) &&
+        result.success
+      ) {
         routerPushRef.current('/');
         return;
       }
@@ -364,6 +395,7 @@ export default function AuthLanding({
           }
 
           completionStarted = true;
+          const authGeneration = getAuthGeneration();
           googleButtonHostRef.current?.replaceChildren();
           setGoogleStatus('completing');
           void withTimeout(
@@ -380,7 +412,11 @@ export default function AuthLanding({
             () => completionController.abort(),
           )
             .then((result) => {
-              if (cancelled || generation !== googleGenerationRef.current) {
+              if (
+                cancelled ||
+                generation !== googleGenerationRef.current ||
+                !isAuthResultCurrent(result)
+              ) {
                 return;
               }
               if (result.success) {
@@ -388,10 +424,14 @@ export default function AuthLanding({
                 return;
               }
               setGoogleStatus('error');
-              setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+              setGoogleError(result.error || GOOGLE_UNAVAILABLE_MESSAGE);
             })
             .catch(() => {
-              if (cancelled || generation !== googleGenerationRef.current) {
+              if (
+                cancelled ||
+                generation !== googleGenerationRef.current ||
+                authGeneration !== getAuthGeneration()
+              ) {
                 return;
               }
               setGoogleStatus('error');
@@ -473,11 +513,12 @@ export default function AuthLanding({
   ]);
 
   async function handleGoogleRetry() {
-    // A timed-out completion may still have set the refresh cookie
-    // server-side. Resume that session instead of asking the user to sign in
-    // again.
+    const action = beginCredentialAction();
+    // Only a stable cookie lifetime can resume. An uncertain completion must
+    // obtain new explicit credentials; it cannot silently trust cookie outcome.
     const result = await refreshAccessToken().catch(() => null);
-    if (result?.success) {
+    if (!action.current()) return;
+    if (result && isAuthResultCurrent(result) && result.success) {
       routerPushRef.current('/');
       return;
     }
@@ -501,22 +542,28 @@ export default function AuthLanding({
     }
 
     setIsSubmitting(true);
+    const action = beginCredentialAction();
+    let result: RefreshResult | undefined;
     try {
-      const result = await completeSetup(
+      result = await completeSetup(
         token,
         displayName.trim() || undefined,
+        action.controller.signal,
       );
+      if (!action.current() || !isAuthResultCurrent(result)) return;
       if (result.success) {
         routerPushRef.current('/');
       } else {
         setSetupError(result.error || 'Setup failed. Please try again.');
       }
     } catch {
+      if (!action.current()) return;
       setSetupError(
         'Network error. Please check your connection and try again.',
       );
     } finally {
-      setIsSubmitting(false);
+      if (action.current() && (!result || isAuthResultCurrent(result)))
+        setIsSubmitting(false);
     }
   }
 
@@ -555,8 +602,15 @@ export default function AuthLanding({
     }
 
     setIsEnrolling(true);
+    const action = beginCredentialAction();
+    let result: RefreshResult | undefined;
     try {
-      const result = await completeEnrollment(pendingId, code);
+      result = await completeEnrollment(
+        pendingId,
+        code,
+        action.controller.signal,
+      );
+      if (!action.current() || !isAuthResultCurrent(result)) return;
       if (result.success) {
         routerPushRef.current('/');
       } else {
@@ -565,11 +619,13 @@ export default function AuthLanding({
         );
       }
     } catch {
+      if (!action.current()) return;
       setEnrollmentError(
         'Network error. Please check your connection and try again.',
       );
     } finally {
-      setIsEnrolling(false);
+      if (action.current() && (!result || isAuthResultCurrent(result)))
+        setIsEnrolling(false);
     }
   }
 
@@ -612,24 +668,30 @@ export default function AuthLanding({
     }
 
     setIsEmailCompleting(true);
+    const action = beginCredentialAction();
+    let result: RefreshResult | undefined;
     try {
-      const result = await completeEmailSignIn(
+      result = await completeEmailSignIn(
         emailChallengeId,
         trimmedCode,
         keepSignedInRef.current ? 'private' : 'temporary',
         inviteToken,
+        action.controller.signal,
       );
+      if (!action.current() || !isAuthResultCurrent(result)) return;
       if (result.success) {
         routerPushRef.current('/');
       } else {
         setEmailError(result.error || 'Sign-in failed. Please try again.');
       }
     } catch {
+      if (!action.current()) return;
       setEmailError(
         'Network error. Please check your connection and try again.',
       );
     } finally {
-      setIsEmailCompleting(false);
+      if (action.current() && (!result || isAuthResultCurrent(result)))
+        setIsEmailCompleting(false);
     }
   }
 

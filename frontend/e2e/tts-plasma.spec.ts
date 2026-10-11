@@ -97,6 +97,15 @@ test.beforeEach(async ({ context }) => {
       return route.fulfill({ status: 204, headers });
     }
     const json = (value: unknown) => route.fulfill({ json: value, headers });
+    if (p === '/api/v1/auth/cache/clear')
+      return route.fulfill({
+        status: 204,
+        headers: {
+          ...headers,
+          'Cache-Control': 'no-store',
+          'Clear-Site-Data': '"cache"',
+        },
+      });
     if (p.endsWith('/auth/config'))
       return json({
         mode: 'self_hosted',

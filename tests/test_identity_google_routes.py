@@ -572,6 +572,8 @@ class TestGoogleCompleteRoute:
         assert isinstance(data["expires_at"], int)
         # ID token must never appear in the response body.
         assert "id-token-from-google" not in response.text
+        assert response.headers["clear-site-data"] == '"cache"'
+        assert response.headers["cache-control"] == "no-store"
         cookie_header = response.headers.get("set-cookie", "")
         assert "__Host-daemon_refresh=refresh-token" in cookie_header
         assert "HttpOnly" in cookie_header
@@ -924,6 +926,7 @@ class TestGoogleCompleteRoute:
         assert response.status_code == 401, response.text
         assert response.json() == {"detail": "google_sign_in_failed"}
         assert pool.nonce_store[0]["consumed_at"] is not None
+        assert response.headers.get_list("set-cookie") == []
         assert all("INSERT INTO sessions" not in call[0] for call in pool.calls)
 
     @pytest.mark.asyncio
@@ -959,6 +962,7 @@ class TestGoogleCompleteRoute:
         assert response.status_code == 401, response.text
         assert response.json() == {"detail": "google_sign_in_failed"}
         assert pool.nonce_store[0]["consumed_at"] is None
+        assert response.headers.get_list("set-cookie") == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -999,6 +1003,7 @@ class TestGoogleCompleteRoute:
 
         assert response.status_code == 401, response.text
         assert response.json() == {"detail": "google_sign_in_failed"}
+        assert response.headers.get_list("set-cookie") == []
 
     @pytest.mark.asyncio
     async def test_native_returns_refresh_json_and_no_cookie(self, route_client, monkeypatch):
@@ -1042,6 +1047,7 @@ class TestGoogleCompleteRoute:
         assert data["access_token"] == "access-token"
         assert data["refresh_token"] == "refresh-token"
         assert response.headers.get("set-cookie") is None
+        assert "clear-site-data" not in response.headers
         assert "id-token" not in response.text
 
     @pytest.mark.asyncio

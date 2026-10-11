@@ -2,6 +2,20 @@
 
 import { discardAllPersistedDrafts } from './draftPersistence';
 import { clearPendingSubmissions } from './pendingSubmission';
+import {
+  assertAuthCoordinationAvailable,
+  cancelAuthCookieOperations,
+  readAuthCoordination,
+  runAuthCookieTransaction,
+  subscribeAuthCoordination,
+  type CookieOperationKind,
+  type CookieTransaction,
+} from './authCookieCoordinator';
+import {
+  ensureBrowserCacheCleared,
+  getBrowserCacheState,
+  invalidateBrowserCache,
+} from './browserCache';
 
 export interface AuthTokens {
   accessToken: string;
@@ -11,11 +25,14 @@ export interface AuthTokens {
 export interface RefreshResult {
   success: boolean;
   error?: string;
+  // Tab-local completion fence for navigation/cleanup after an awaited result.
+  generation?: number;
 }
 
 export interface LogoutResult {
   success: boolean;
   error?: string;
+  generation?: number;
 }
 
 interface BackendAuthDevice {
@@ -30,6 +47,9 @@ interface BackendAuthDevice {
 
 let _accessToken: string | null = null;
 let _expiresAt: number = 0;
+let _authEpoch: string | null = null;
+let _localSignedOut = false;
+let _coordinationListenerInstalled = false;
 // Nonsecret, tab-local sign-in lifetime. Token rotation is not a new sign-in.
 let _authGeneration = 0;
 // Local login/logout changes cancel queued refreshes. A remote refreshed notice
@@ -43,6 +63,7 @@ export function getAuthGeneration(): number {
 }
 
 export function subscribeAuthGeneration(listener: () => void): () => void {
+  _installCoordinationListener();
   _generationListeners.add(listener);
   if (!_generationAuthListenerInstalled) {
     _generationAuthListenerInstalled = true;
@@ -57,10 +78,37 @@ function _notifyAuthGeneration(): void {
 }
 
 export function getAccessToken(): string | null {
-  return _accessToken;
+  return _sharedTokenReady() ? _accessToken : null;
 }
 
-export function setAccessToken(token: string, expiresAtMs: number): void {
+export function setAccessToken(
+  token: string,
+  expiresAtMs: number,
+  expectedEpoch?: string,
+): void {
+  // External/manual installation cannot create shared readiness outside the
+  // writer lock. Production credential helpers use the owned commit below.
+  cancelAuthCookieOperations();
+  const record = readAuthCoordination();
+  if (
+    !record ||
+    record.status !== 'stable' ||
+    record.epoch !== (expectedEpoch ?? _authEpoch ?? record.epoch)
+  ) {
+    throw new Error('Safe session coordination is unavailable');
+  }
+  _installIdentityToken(token, expiresAtMs, record.epoch);
+}
+
+function _installIdentityToken(
+  token: string,
+  expiresAtMs: number,
+  epoch: string,
+): void {
+  // New sign-in: invalidate the browser-cache barrier synchronously BEFORE
+  // any auth notification, so no auth listener can see the prior lifetime's
+  // cleared-cache readiness and no stale protected request sneaks out.
+  invalidateBrowserCache();
   discardAllPersistedDrafts();
   // Sign-in: another account's unresolved submission keys must not be
   // reused or promoted. Token rotation never comes through here.
@@ -69,16 +117,29 @@ export function setAccessToken(token: string, expiresAtMs: number): void {
   _authMutation += 1;
   _accessToken = token;
   _expiresAt = expiresAtMs;
+  _authEpoch = epoch;
+  _localSignedOut = false;
+  _installCoordinationListener();
   _notifyAuthGeneration();
 }
 
 export function clearLocalAuthState(): void {
+  cancelAuthCookieOperations();
+  _refreshPromise = null;
+  _clearOwnedLocalAuthState();
+}
+
+function _clearOwnedLocalAuthState(): void {
+  // Sign-out/401: discard the barrier readiness so the next initialization
+  // or protected consumer re-clears against the new (empty) lifetime.
+  invalidateBrowserCache();
   discardAllPersistedDrafts();
   clearPendingSubmissions();
   _authGeneration += 1;
   _authMutation += 1;
   _accessToken = null;
   _expiresAt = 0;
+  _localSignedOut = true;
   _notifyAuthGeneration();
 }
 
@@ -88,12 +149,83 @@ export function clearAuthState(): void {
 }
 
 export function hasValidAccessToken(): boolean {
-  if (!_accessToken) return false;
-  return Date.now() < _expiresAt - 30_000;
+  return _rawTokenValid() && _sharedTokenReady();
+}
+
+function _rawTokenValid(): boolean {
+  return !!_accessToken && Date.now() < _expiresAt - 30_000;
+}
+
+function _sharedTokenReady(): boolean {
+  try {
+    assertAuthCoordinationAvailable();
+    const record = readAuthCoordination();
+    return (
+      !!_authEpoch && record?.epoch === _authEpoch && record.status === 'stable'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function _installCoordinationListener(): void {
+  if (_coordinationListenerInstalled) return;
+  _coordinationListenerInstalled = true;
+  subscribeAuthCoordination(() => {
+    if (!_accessToken) {
+      return;
+    }
+    let changed = false;
+    try {
+      const record = readAuthCoordination();
+      changed = record?.epoch !== _authEpoch || record.status === 'signed-out';
+    } catch {
+      changed = true;
+    }
+    if (changed) {
+      clearLocalAuthState();
+    }
+    // Same-epoch readiness is not a new sign-in lifetime. The provider observes
+    // coordination directly; generation consumers must retain drafts and work.
+  });
+}
+
+export function isAuthResultCurrent(result: RefreshResult): boolean {
+  return (
+    result.generation !== undefined && result.generation === _authGeneration
+  );
+}
+
+export function getSessionCoordinationProblem(): string | null {
+  try {
+    assertAuthCoordinationAvailable();
+    const record = readAuthCoordination();
+    if (record?.status === 'signed-out' || _localSignedOut)
+      return 'No active session. Sign in again, or sign out locally.';
+    if (record?.status === 'pending') return 'Finishing session coordination.';
+    if (record?.status === 'uncertain')
+      return 'The previous session operation is unconfirmed. Sign in again, or sign out locally.';
+    if (_accessToken && !_sharedTokenReady())
+      return 'Authentication changed. Sign in again, or sign out locally.';
+    return null;
+  } catch (error) {
+    return error instanceof Error
+      ? error.message
+      : 'Safe session coordination is unavailable';
+  }
 }
 
 export function getAuthHeader(): string | null {
   if (!hasValidAccessToken()) return null;
+  // The barrier is synchronous: a sync consumer cannot be handed a Bearer
+  // header for the current auth lifetime before that lifetime's cache clear
+  // has been acknowledged by the module. invalidateBrowserCache() clears the
+  // module's ready state on every auth-lifetime change, so 'ready' can never
+  // refer to a prior lifetime, and drift fails closed here (no header) rather
+  // than passing stale readiness.
+  if (getBrowserCacheState().status !== 'ready') {
+    return null;
+  }
   return `Bearer ${_accessToken}`;
 }
 
@@ -108,6 +240,7 @@ type AuthEventType = 'refresh-needed' | 'cleared' | 'refreshed';
 interface AuthEvent {
   type: AuthEventType;
   tabId: string;
+  epoch: string | null;
 }
 
 let _tabId: string | null = null;
@@ -134,157 +267,9 @@ export function _getChannel(): BroadcastChannel | null {
 function _broadcastAuthEvent(type: AuthEventType): void {
   const channel = _getChannel();
   if (!channel) return;
-  const event: AuthEvent = { type, tabId: _getTabId() };
+  const event: AuthEvent = { type, tabId: _getTabId(), epoch: _authEpoch };
   try {
     channel.postMessage(event);
-  } catch {
-    return;
-  }
-}
-
-const _LOCK_KEY = 'daemon:refresh-lock';
-const _LOCK_LEASE_MS = 15_000;
-const _LOCK_SETTLE_MIN_MS = 25;
-const _LOCK_SETTLE_JITTER_MS = 25;
-const _LOCK_POLL_INTERVAL_MS = 100;
-const _LOCK_WAIT_TIMEOUT_MS = 30_000;
-
-interface LockState {
-  ownerTabId: string;
-  nonce: string;
-  expiresAt: number;
-}
-
-function _getLockState(): LockState | null {
-  if (typeof localStorage === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(_LOCK_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as LockState;
-    if (
-      typeof parsed.ownerTabId !== 'string' ||
-      typeof parsed.nonce !== 'string' ||
-      typeof parsed.expiresAt !== 'number'
-    ) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function _sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function _lockMatches(state: LockState | null, lock: LockState): boolean {
-  return state?.ownerTabId === lock.ownerTabId && state.nonce === lock.nonce;
-}
-
-async function _tryAcquireLocalStorageLock(): Promise<LockState | null> {
-  const myTabId = _getTabId();
-  const existing = _getLockState();
-  if (existing && existing.expiresAt > Date.now()) {
-    return null;
-  }
-
-  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const lock: LockState = {
-    ownerTabId: myTabId,
-    nonce,
-    expiresAt: Date.now() + _LOCK_LEASE_MS,
-  };
-
-  try {
-    localStorage.setItem(_LOCK_KEY, JSON.stringify(lock));
-  } catch {
-    return null;
-  }
-
-  await _sleep(
-    _LOCK_SETTLE_MIN_MS + Math.floor(Math.random() * _LOCK_SETTLE_JITTER_MS),
-  );
-
-  const state = _getLockState();
-  if (!_lockMatches(state, lock)) {
-    return null;
-  }
-  return lock;
-}
-
-async function _waitForRefreshCompletion(): Promise<RefreshResult | null> {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + _LOCK_WAIT_TIMEOUT_MS;
-    let timerId: ReturnType<typeof setTimeout> | null = null;
-    let done = false;
-    let sawRefreshedEvent = false;
-
-    const cleanup = () => {
-      if (timerId !== null) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
-      done = true;
-      unsubscribe();
-    };
-
-    const resolveOnce = (value: RefreshResult | null) => {
-      if (done) return;
-      cleanup();
-      resolve(value);
-    };
-
-    const handler = (type: AuthEventType, _tabId: string) => {
-      if (type === 'refreshed') {
-        sawRefreshedEvent = true;
-        try {
-          localStorage.removeItem(_LOCK_KEY);
-        } catch {}
-        if (!hasValidAccessToken()) {
-          resolveOnce(null);
-        }
-        return;
-      }
-      if (type === 'cleared') {
-        resolveOnce({ success: false, error: 'Session expired' });
-        return;
-      }
-    };
-
-    const poll = () => {
-      if (done) return;
-      const state = _getLockState();
-      if (hasValidAccessToken()) {
-        resolveOnce({ success: true });
-        return;
-      }
-      if (!state || Date.now() > state.expiresAt) {
-        if (sawRefreshedEvent) {
-          resolveOnce(null);
-          return;
-        }
-        resolveOnce(null);
-        return;
-      }
-      if (Date.now() >= deadline) {
-        resolveOnce(null);
-        return;
-      }
-      timerId = setTimeout(poll, _LOCK_POLL_INTERVAL_MS);
-    };
-
-    const unsubscribe = listenForAuthEvents(handler);
-    poll();
-  });
-}
-
-async function _releaseLocalStorageLock(lock: LockState): Promise<void> {
-  try {
-    const state = _getLockState();
-    if (_lockMatches(state, lock)) {
-      localStorage.removeItem(_LOCK_KEY);
-    }
   } catch {
     return;
   }
@@ -309,6 +294,10 @@ export function listenForAuthEvents(
 
     const type = event.type as AuthEventType;
     const tabId = event.tabId;
+    // Old/unscoped notices cannot clear or resume a newer identity. Shared
+    // metadata is checked independently; the notice never grants readiness.
+    if (event.epoch !== _authEpoch) return;
+    if (!['cleared', 'refreshed', 'refresh-needed'].includes(type)) return;
 
     if (!_handledAuthEvents.has(e)) {
       _handledAuthEvents.add(e);
@@ -318,6 +307,10 @@ export function listenForAuthEvents(
         // A secret-free broadcast cannot prove which account owns the cookie.
         // Discard drafts conservatively, without clearing the local token.
         _authGeneration += 1;
+        // Conservative revalidation: a remote token change is treated like a
+        // lifetime change for the browser-cache barrier (the completed
+        // barrier is only kept across ordinary same-tab rotations).
+        invalidateBrowserCache();
         _notifyAuthGeneration();
       }
     }
@@ -341,190 +334,263 @@ async function _fetchAuthProxy(
   });
 }
 
-export async function refreshAccessToken(): Promise<RefreshResult> {
+export async function refreshAccessToken(
+  options: { signal?: AbortSignal } = {},
+): Promise<RefreshResult> {
+  _installCoordinationListener();
+  if (options.signal?.aborted)
+    return { success: false, error: 'Authentication changed' };
   if (hasValidAccessToken()) {
-    return { success: true };
+    return { success: true, generation: _authGeneration };
   }
-  const authMutation = _authMutation;
-
-  if (typeof navigator !== 'undefined' && navigator.locks) {
-    try {
-      let result: RefreshResult | null = null;
-      await navigator.locks.request('daemon-refresh', async () => {
-        if (authMutation !== _authMutation) {
-          result = _supersededRefreshResult();
-          return;
-        }
-        if (hasValidAccessToken()) {
-          result = { success: true };
-          return;
-        }
-        if (_refreshPromise) {
-          result = await _refreshPromise;
-          return;
-        }
-        _refreshPromise = doRefresh(_authGeneration);
-        try {
-          result = await _refreshPromise;
-        } finally {
-          _refreshPromise = null;
-        }
-      });
-      if (result) return result;
-      if (authMutation !== _authMutation) return _supersededRefreshResult();
-      return { success: hasValidAccessToken() };
-    } catch {
-      if (authMutation !== _authMutation) return _supersededRefreshResult();
-    }
-  }
-
-  if (_refreshPromise) {
-    return _refreshPromise;
-  }
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (authMutation !== _authMutation) return _supersededRefreshResult();
-    if (_refreshPromise) {
-      return _refreshPromise;
-    }
-    const acquired = await _tryAcquireLocalStorageLock();
-    if (!acquired) {
-      const waited = await _waitForRefreshCompletion();
-      if (authMutation !== _authMutation) return _supersededRefreshResult();
-      if (waited) return waited;
-      if (_refreshPromise) return _refreshPromise;
-      if (hasValidAccessToken()) return { success: true };
-      continue;
-    }
-
-    try {
-      if (authMutation !== _authMutation) return _supersededRefreshResult();
-      if (hasValidAccessToken()) {
-        return { success: true };
+  if (_localSignedOut)
+    return {
+      success: false,
+      error: 'No active session',
+      generation: _authGeneration,
+    };
+  if (!_refreshPromise) {
+    const mutation = _authMutation;
+    const work = (async (): Promise<RefreshResult> => {
+      try {
+        const epoch = _authEpoch ?? readAuthCoordination()?.epoch ?? null;
+        return await runAuthCookieTransaction(
+          'refresh',
+          {
+            epoch,
+            isCurrent: () => mutation === _authMutation,
+          },
+          async (tx) => {
+            const result: RefreshResult = await _refreshWithinTransaction(tx);
+            tx.finish(
+              result.success
+                ? 'stable'
+                : result.error === 'Session expired'
+                  ? 'signed-out'
+                  : 'uncertain',
+              () => {
+                if (result.success) {
+                  _broadcastAuthEvent('refreshed');
+                } else if (result.error === 'Session expired') {
+                  _clearOwnedLocalAuthState();
+                  _broadcastAuthEvent('cleared');
+                }
+                result.generation = _authGeneration;
+              },
+            );
+            return result;
+          },
+        );
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Refresh failed',
+          generation: mutation === _authMutation ? _authGeneration : undefined,
+        };
       }
-      _refreshPromise = doRefresh(_authGeneration);
-      return await _refreshPromise;
-    } finally {
-      _refreshPromise = null;
-      await _releaseLocalStorageLock(acquired);
-    }
+    })();
+    _refreshPromise = work;
+    void work.finally(() => {
+      if (_refreshPromise === work) _refreshPromise = null;
+    });
   }
-
-  return { success: false, error: 'Refresh coordination timed out' };
+  // Waiter cancellation detaches ONLY this caller; it cannot abort the owner or
+  // clear the same-lifetime single-flight pointer underneath remaining waiters.
+  const work = _refreshPromise;
+  if (!options.signal) return work;
+  const signal = options.signal;
+  return new Promise((resolve) => {
+    const cancelled = () =>
+      resolve({ success: false, error: 'Authentication changed' });
+    signal.addEventListener('abort', cancelled, { once: true });
+    if (signal.aborted) cancelled();
+    void work
+      .then(resolve)
+      .finally(() => signal.removeEventListener('abort', cancelled));
+  });
 }
 
-function _supersededRefreshResult(): RefreshResult {
-  const valid = hasValidAccessToken();
+async function _refreshWithinTransaction(
+  tx: CookieTransaction,
+): Promise<RefreshResult> {
+  const response = await tx.request('/api/v1/auth/refresh', { method: 'POST' });
+  tx.assertCurrent();
+  if (response.ok) {
+    const data = await response.json().catch(() => null);
+    tx.assertCurrent();
+    if (
+      !data ||
+      typeof data.access_token !== 'string' ||
+      !data.access_token ||
+      (data.expires_in !== undefined &&
+        (typeof data.expires_in !== 'number' ||
+          !Number.isFinite(data.expires_in) ||
+          data.expires_in <= 0))
+    ) {
+      return { success: false, error: 'Invalid refresh response' };
+    }
+    // Intermediate token is private while pending. Finalization controls public
+    // exposure; no nested coordinator is needed for refresh+revoke.
+    _accessToken = data.access_token;
+    _expiresAt = Date.now() + (data.expires_in ?? 1800) * 1000;
+    _authEpoch = tx.epoch;
+    return { success: true };
+  }
   return {
-    success: valid,
-    ...(!valid ? { error: 'Authentication changed' } : {}),
+    success: false,
+    error:
+      response.status === 401
+        ? 'Session expired'
+        : `Refresh failed: ${response.status}`,
   };
 }
 
-async function doRefresh(generation: number): Promise<RefreshResult> {
-  if (generation !== _authGeneration) return _supersededRefreshResult();
-  if (hasValidAccessToken()) {
-    return { success: true };
-  }
-
-  let response: Response;
-  try {
-    response = await _fetchAuthProxy('/refresh', {
-      method: 'POST',
-      credentials: 'include',
-    });
-  } catch (error) {
-    if (generation !== _authGeneration) return _supersededRefreshResult();
-    throw error;
-  }
-
-  if (generation !== _authGeneration) return _supersededRefreshResult();
-
-  if (response.ok) {
-    try {
-      const data = await response.json();
-      const accessToken = data.access_token as string;
-      const expiresIn = (data.expires_in as number) || 1800;
-      const expiresAtMs = Date.now() + expiresIn * 1000;
-      if (!_installRefreshedToken(accessToken, expiresAtMs, generation)) {
-        return _supersededRefreshResult();
-      }
-      _broadcastAuthEvent('refreshed');
-      return { success: true };
-    } catch {
-      if (generation !== _authGeneration) return _supersededRefreshResult();
-      return { success: false, error: 'Invalid refresh response' };
-    }
-  }
-
-  if (response.status === 401) {
-    clearAuthState();
-    return { success: false, error: 'Session expired' };
-  }
-
-  return { success: false, error: `Refresh failed: ${response.status}` };
-}
-
-function _installRefreshedToken(
-  token: string,
-  expiresAtMs: number,
-  generation: number,
-): boolean {
-  if (generation !== _authGeneration) return false;
-  _accessToken = token;
-  _expiresAt = expiresAtMs;
-  return true;
-}
-
 export async function refreshIfNeeded(): Promise<string | null> {
-  if (hasValidAccessToken()) {
-    return _accessToken;
+  const generation = _authGeneration;
+  if (!hasValidAccessToken()) await refreshAccessToken();
+  if (generation !== _authGeneration || !hasValidAccessToken()) return null;
+  try {
+    await ensureBrowserCacheCleared();
+  } catch {
+    return null;
   }
-  const result = await refreshAccessToken();
-  return result.success ? _accessToken : null;
+  return generation === _authGeneration && getAuthHeader()
+    ? _accessToken
+    : null;
 }
 
 export async function ensureAuthHeader(): Promise<string | null> {
+  const generation = _authGeneration;
   const header = getAuthHeader();
-  if (header) return header;
-  await refreshIfNeeded();
-  return getAuthHeader();
+  if (!header && hasValidAccessToken()) {
+    // A valid token exists but the sync read is withheld by the barrier:
+    // wait for the current auth lifetime's cache-clear acknowledgement
+    // before returning anything, and stay fail-closed on its failure.
+    try {
+      await ensureBrowserCacheCleared();
+    } catch {
+      return null;
+    }
+    return generation === _authGeneration ? getAuthHeader() : null;
+  }
+  if (!header) {
+    const token = await refreshIfNeeded();
+    return token && generation === _authGeneration ? getAuthHeader() : null;
+  }
+  // getAuthHeader() only returns under an acknowledged barrier, so a
+  // non-null result is already barrier-consistent for this auth lifetime.
+  return header;
 }
 
-export async function logoutCurrentSession(): Promise<LogoutResult> {
+export async function logoutCurrentSession(
+  options: { allowRefresh?: boolean } = {},
+): Promise<LogoutResult> {
+  _installCoordinationListener();
+  const mutation = _authMutation;
+  const generation = _authGeneration;
+  const deadline = Date.now() + 10_000;
+  const controller = new AbortController();
+  const needsRefresh = !_rawTokenValid();
+  if (needsRefresh && options.allowRefresh === false)
+    return { success: false, error: 'No active session', generation };
+  const refreshDeadline = deadline - 2_000;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  if (needsRefresh)
+    refreshTimer = setTimeout(
+      () =>
+        controller.abort(
+          new Error('Session refresh cutoff reached; revocation unconfirmed'),
+        ),
+      Math.max(0, refreshDeadline - Date.now()),
+    );
   try {
-    const authHeader = await ensureAuthHeader();
-    if (!authHeader) {
-      return { success: false, error: 'No active session' };
-    }
-
-    const response = await _fetchAuthProxy('/logout', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { Authorization: authHeader },
-    });
-
-    if (response.status === 204) {
-      return { success: true };
-    }
-
-    if (response.status === 401) {
-      return { success: false, error: 'Session expired' };
-    }
-
-    const errorData = await response.json().catch(() => ({}));
-    return {
-      success: false,
-      error:
-        (errorData as { error?: string; detail?: string }).error ||
-        (errorData as { error?: string; detail?: string }).detail ||
-        `Logout failed: ${response.status}`,
-    };
+    // Terminal sign-out owns its whole refresh+revoke transaction, never a
+    // refresh singleton or nested Web Lock. Supersede this tab's older work.
+    cancelAuthCookieOperations();
+    _refreshPromise = null;
+    if (_localSignedOut)
+      return { success: false, error: 'No active session', generation };
+    const epoch = _authEpoch ?? readAuthCoordination()?.epoch ?? null;
+    return await runAuthCookieTransaction(
+      'logout',
+      {
+        epoch,
+        deadline,
+        signal: controller.signal,
+        isCurrent: () => mutation === _authMutation,
+      },
+      async (tx) => {
+        if (needsRefresh) {
+          if (Date.now() >= refreshDeadline)
+            throw new Error(
+              'Session refresh cutoff reached; revocation unconfirmed',
+            );
+          const refreshed = await _refreshWithinTransaction(tx);
+          tx.assertCurrent();
+          if (Date.now() >= refreshDeadline)
+            throw new Error(
+              'Session refresh cutoff reached; revocation unconfirmed',
+            );
+          if (!refreshed.success) {
+            tx.finish(
+              refreshed.error === 'Session expired'
+                ? 'signed-out'
+                : 'uncertain',
+              () => {
+                if (refreshed.error === 'Session expired') {
+                  _clearOwnedLocalAuthState();
+                  _broadcastAuthEvent('cleared');
+                }
+                refreshed.generation = _authGeneration;
+              },
+            );
+            return refreshed;
+          }
+          clearTimeout(refreshTimer);
+        }
+        if (!_rawTokenValid() || _authEpoch !== tx.epoch)
+          throw new Error('No active session');
+        const response = await tx.request('/api/v1/auth/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${_accessToken}` },
+        });
+        tx.assertCurrent();
+        const result: LogoutResult =
+          response.status === 204
+            ? { success: true }
+            : {
+                success: false,
+                error:
+                  response.status === 401
+                    ? 'Session expired'
+                    : `Logout failed: ${response.status}`,
+              };
+        tx.finish(
+          response.status === 204 || response.status === 401
+            ? 'signed-out'
+            : 'uncertain',
+          () => {
+            _clearOwnedLocalAuthState();
+            _broadcastAuthEvent('cleared');
+            result.generation = _authGeneration;
+          },
+        );
+        return result;
+      },
+    );
   } catch (err) {
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Logout failed',
+      error:
+        controller.signal.aborted && needsRefresh
+          ? 'Session refresh cutoff reached; revocation unconfirmed'
+          : err instanceof Error
+            ? err.message
+            : 'Logout failed',
+      generation: mutation === _authMutation ? generation : undefined,
     };
+  } finally {
+    clearTimeout(refreshTimer);
   }
 }
 
@@ -612,54 +678,22 @@ export async function completeGoogleSignIn(
   devicePersistence: 'private' | 'temporary',
   inviteToken?: string,
   signal?: AbortSignal,
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const response = await _fetchAuthProxy('/google/complete', {
-      method: 'POST',
-      signal,
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        challenge_id: challengeId,
-        nonce,
-        id_token: idToken,
-        client_kind: 'web',
-        device_persistence: devicePersistence,
-        ...(inviteToken?.trim() ? { invite_token: inviteToken.trim() } : {}),
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      signal?.throwIfAborted();
-      const accessToken = data.access_token as string;
-      const expiresAt = data.expires_at as number;
-      const expiresAtMs = expiresAt * 1000;
-      setAccessToken(accessToken, expiresAtMs);
-      return { success: true };
-    }
-
-    if (response.status === 401) {
-      return {
-        success: false,
-        error: 'Google sign-in failed. Please try again.',
-      };
-    }
-
-    const errorData = await response.json().catch(() => ({}));
-    return {
-      success: false,
-      error:
-        (errorData as { error?: string; detail?: string }).error ||
-        (errorData as { error?: string; detail?: string }).detail ||
-        `Google sign-in failed: ${response.status}`,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Google sign-in failed',
-    };
-  }
+): Promise<RefreshResult> {
+  return _completeIdentity(
+    'sign-in',
+    '/google/complete',
+    {
+      challenge_id: challengeId,
+      nonce,
+      id_token: idToken,
+      client_kind: 'web',
+      device_persistence: devicePersistence,
+      ...(inviteToken?.trim() ? { invite_token: inviteToken.trim() } : {}),
+    },
+    'Google sign-in',
+    { 401: 'Google sign-in failed. Please try again.' },
+    signal,
+  );
 }
 
 export async function completeEmailSignIn(
@@ -667,96 +701,178 @@ export async function completeEmailSignIn(
   code: string,
   devicePersistence: 'private' | 'temporary',
   inviteToken?: string,
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const response = await _fetchAuthProxy('/email/complete', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        challenge_id: challengeId,
-        code,
-        client_kind: 'web',
-        device_persistence: devicePersistence,
-        ...(inviteToken?.trim() ? { invite_token: inviteToken.trim() } : {}),
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const accessToken = data.access_token as string;
-      const expiresAt = data.expires_at as number;
-      const expiresAtMs = expiresAt * 1000;
-      setAccessToken(accessToken, expiresAtMs);
-      return { success: true };
-    }
-
-    if (response.status === 401) {
-      return {
-        success: false,
-        error: 'Invalid or expired code. Please try again.',
-      };
-    }
-
-    const errorData = await response.json().catch(() => ({}));
-    return {
-      success: false,
-      error:
-        (errorData as { error?: string }).error ||
-        `Email sign-in failed: ${response.status}`,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Email sign-in failed',
-    };
-  }
+  signal?: AbortSignal,
+): Promise<RefreshResult> {
+  return _completeIdentity(
+    'sign-in',
+    '/email/complete',
+    {
+      challenge_id: challengeId,
+      code,
+      client_kind: 'web',
+      device_persistence: devicePersistence,
+      ...(inviteToken?.trim() ? { invite_token: inviteToken.trim() } : {}),
+    },
+    'Email sign-in',
+    { 401: 'Invalid or expired code. Please try again.' },
+    signal,
+  );
 }
 
 export async function completeSetup(
   setupToken: string,
   displayName?: string,
-): Promise<{ success: boolean; error?: string }> {
+  signal?: AbortSignal,
+): Promise<RefreshResult> {
+  return _completeIdentity(
+    'setup',
+    '/setup',
+    {
+      setup_token: setupToken,
+      ...(displayName ? { device_name: displayName } : {}),
+    },
+    'Setup',
+    { 401: 'Invalid setup token', 409: 'Setup already completed' },
+    signal,
+  );
+}
+
+async function _completeIdentity(
+  kind: CookieOperationKind,
+  path: string,
+  body: Record<string, unknown>,
+  label: string,
+  errors: Record<number, string>,
+  signal?: AbortSignal,
+): Promise<RefreshResult> {
+  // Explicit credentials may recover a terminated uncertain attempt, but never
+  // detach a live transport or adopt another writer's epoch while queued.
+  if (signal?.aborted)
+    return { success: false, error: 'Authentication changed' };
+  // Fence the new intent and cancel older owned work, but retain matching A
+  // privately. The shared pending status and new cache generation close exposure;
+  // only validated B success replaces the token/epoch. Never snapshot/reinstall A.
+  cancelAuthCookieOperations();
+  _refreshPromise = null;
+  invalidateBrowserCache();
+  discardAllPersistedDrafts();
+  clearPendingSubmissions();
+  _authGeneration += 1;
+  _authMutation += 1;
+  _installCoordinationListener();
+  _notifyAuthGeneration();
+  let mutation = _authMutation;
   try {
-    const response = await _fetchAuthProxy('/setup', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        setup_token: setupToken,
-        ...(displayName ? { device_name: displayName } : {}),
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const accessToken = data.access_token as string;
-      const expiresIn = (data.expires_in as number) || 1800;
-      const expiresAtMs = Date.now() + expiresIn * 1000;
-      setAccessToken(accessToken, expiresAtMs);
-      return { success: true };
+    const prior = readAuthCoordination();
+    // Explicit credentials may recover a lost/different record, but cannot
+    // preserve or rebind the stale token. Clear it before creating the new owner.
+    if (
+      _accessToken &&
+      (!prior || prior.epoch !== _authEpoch || prior.status === 'signed-out')
+    ) {
+      _clearOwnedLocalAuthState();
+      mutation = _authMutation;
     }
-
-    if (response.status === 401) {
-      return { success: false, error: 'Invalid setup token' };
-    }
-
-    if (response.status === 409) {
-      return { success: false, error: 'Setup already completed' };
-    }
-
-    const errorData = await response.json().catch(() => ({}));
+    const epoch = prior?.epoch ?? null;
+    return await runAuthCookieTransaction(
+      kind,
+      {
+        epoch,
+        replaceIdentity: true,
+        signal,
+        isCurrent: () => mutation === _authMutation,
+      },
+      async (tx) => {
+        const response = await tx.request(`/api/v1/auth${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json().catch(() => ({}));
+        tx.assertCurrent();
+        const result: RefreshResult = { success: response.ok };
+        if (response.ok) {
+          const expiresAt =
+            kind === 'sign-in'
+              ? data.expires_at * 1000
+              : Date.now() + (data.expires_in ?? 1800) * 1000;
+          if (
+            typeof data.access_token !== 'string' ||
+            !data.access_token ||
+            !Number.isFinite(expiresAt) ||
+            expiresAt <= Date.now() ||
+            (kind === 'sign-in' && typeof data.expires_at !== 'number') ||
+            (kind !== 'sign-in' &&
+              data.expires_in !== undefined &&
+              typeof data.expires_in !== 'number')
+          ) {
+            throw new Error(`Invalid ${label.toLowerCase()} response`);
+          }
+          tx.finish('stable', (committedEpoch) => {
+            _installIdentityToken(data.access_token, expiresAt, committedEpoch);
+            result.generation = _authGeneration;
+          });
+        } else {
+          result.error =
+            errors[response.status] ||
+            data.error ||
+            data.detail ||
+            `${label} failed: ${response.status}`;
+          const commit = () => {
+            result.generation = _authGeneration;
+          };
+          if (_verifiedIdentityRejection(path, response.status, data)) {
+            tx.rejectIdentity(commit);
+          } else {
+            tx.finish('uncertain', commit);
+          }
+        }
+        return result;
+      },
+    );
+  } catch (error) {
     return {
       success: false,
-      error:
-        (errorData as { error?: string }).error ||
-        `Setup failed: ${response.status}`,
+      error: error instanceof Error ? error.message : `${label} failed`,
+      generation: mutation === _authMutation ? _authGeneration : undefined,
     };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Setup failed',
-    };
+  }
+}
+
+function _verifiedIdentityRejection(
+  path: string,
+  status: number,
+  data: unknown,
+): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const detail = (data as { detail?: unknown }).detail;
+  if (typeof detail !== 'string') return false;
+  // Audited no-cookie rejection contracts only. In particular refresh 401,
+  // generic 4xx/5xx, malformed bodies and unknown details are NOT proof.
+  switch (path) {
+    case '/email/complete':
+      return status === 401 && detail === 'code_invalid_or_expired';
+    case '/google/complete':
+      return status === 401 && detail === 'google_sign_in_failed';
+    case '/setup':
+      return (
+        (status === 401 && detail === 'Invalid setup token') ||
+        (status === 409 && detail === 'setup_already_complete')
+      );
+    case '/enroll/complete':
+      return (
+        (status === 401 &&
+          ['Invalid enrollment session', 'Invalid enrollment code'].includes(
+            detail,
+          )) ||
+        (status === 410 &&
+          [
+            'Enrollment session already consumed',
+            'Enrollment session expired',
+          ].includes(detail))
+      );
+    default:
+      return false;
   }
 }
 
@@ -769,6 +885,7 @@ export async function startEnrollment(): Promise<{
 }> {
   try {
     const authHeader = await ensureAuthHeader();
+    if (!authHeader) return { success: false, error: 'No active session' };
     const headers = new Headers();
     if (authHeader) {
       headers.set('Authorization', authHeader);
@@ -808,53 +925,28 @@ export async function startEnrollment(): Promise<{
 export async function completeEnrollment(
   pendingId: string,
   code: string,
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const response = await _fetchAuthProxy('/enroll/complete', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pending_id: pendingId,
-        code,
-        client_kind: 'web',
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const accessToken = data.access_token as string;
-      const expiresIn = (data.expires_in as number) || 1800;
-      const expiresAtMs = Date.now() + expiresIn * 1000;
-      setAccessToken(accessToken, expiresAtMs);
-      return { success: true };
-    }
-
-    if (response.status === 401) {
-      return { success: false, error: 'Invalid enrollment code' };
-    }
-
-    if (response.status === 410) {
-      return { success: false, error: 'Enrollment expired or already used' };
-    }
-
-    const errorData = await response.json().catch(() => ({}));
-    return {
-      success: false,
-      error:
-        (errorData as { error?: string }).error ||
-        `Enrollment failed: ${response.status}`,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Enrollment failed',
-    };
-  }
+  signal?: AbortSignal,
+): Promise<RefreshResult> {
+  return _completeIdentity(
+    'enrollment',
+    '/enroll/complete',
+    {
+      pending_id: pendingId,
+      code,
+      client_kind: 'web',
+    },
+    'Enrollment',
+    {
+      401: 'Invalid enrollment code',
+      410: 'Enrollment expired or already used',
+    },
+    signal,
+  );
 }
 
 export async function listDevices(): Promise<{
   success: boolean;
+  generation?: number;
   devices?: Array<{
     id: string;
     device_name: string;
@@ -866,8 +958,11 @@ export async function listDevices(): Promise<{
   }>;
   error?: string;
 }> {
+  const generation = _authGeneration;
   try {
     const authHeader = await ensureAuthHeader();
+    if (!authHeader || generation !== _authGeneration)
+      return { success: false, error: 'Authentication changed' };
     const headers = new Headers();
     if (authHeader) {
       headers.set('Authorization', authHeader);
@@ -881,11 +976,14 @@ export async function listDevices(): Promise<{
 
     if (response.ok) {
       const data = await response.json();
+      if (generation !== _authGeneration || !getAuthHeader())
+        return { success: false, error: 'Authentication changed' };
       const rawDevices: BackendAuthDevice[] = Array.isArray(data.devices)
         ? (data.devices as BackendAuthDevice[])
         : [];
       return {
         success: true,
+        generation,
         devices: rawDevices.map((device: BackendAuthDevice) => ({
           id: String(device.id),
           device_name: String(device.display_name ?? ''),
@@ -916,42 +1014,86 @@ export async function listDevices(): Promise<{
   }
 }
 
-export async function revokeDevice(deviceId: string): Promise<{
-  success: boolean;
-  error?: string;
-}> {
+export async function revokeDevice(
+  deviceId: string,
+  options: { current?: boolean; signal?: AbortSignal } = {},
+): Promise<RefreshResult> {
+  _installCoordinationListener();
+  const mutation = _authMutation;
   try {
-    const authHeader = await ensureAuthHeader();
-    const headers = new Headers();
-    if (authHeader) {
-      headers.set('Authorization', authHeader);
-    }
-
-    const response = await _fetchAuthProxy(`/devices/${deviceId}`, {
-      method: 'DELETE',
-      credentials: 'include',
-      headers,
-    });
-
-    if (response.status === 204) {
-      return { success: true };
-    }
-
-    if (response.status === 404) {
-      return { success: false, error: 'Device not found' };
-    }
-
-    const errorData = await response.json().catch(() => ({}));
-    return {
-      success: false,
-      error:
-        (errorData as { error?: string }).error ||
-        `Failed to revoke device: ${response.status}`,
-    };
+    if (_localSignedOut) return { success: false, error: 'No active session' };
+    const epoch = _authEpoch ?? readAuthCoordination()?.epoch ?? null;
+    return await runAuthCookieTransaction(
+      'revoke-device',
+      {
+        epoch,
+        signal: options.signal,
+        isCurrent: () => mutation === _authMutation,
+      },
+      async (tx) => {
+        if (!_rawTokenValid()) {
+          const refreshed = await _refreshWithinTransaction(tx);
+          if (!refreshed.success) {
+            tx.finish(
+              refreshed.error === 'Session expired'
+                ? 'signed-out'
+                : 'uncertain',
+              () => {
+                if (refreshed.error === 'Session expired') {
+                  _clearOwnedLocalAuthState();
+                  _broadcastAuthEvent('cleared');
+                }
+                refreshed.generation = _authGeneration;
+              },
+            );
+            return refreshed;
+          }
+        }
+        tx.assertCurrent();
+        if (_authEpoch !== tx.epoch) throw new Error('Authentication changed');
+        const response = await tx.request(
+          `/api/v1/auth/devices/${encodeURIComponent(deviceId)}`,
+          {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${_accessToken}` },
+          },
+        );
+        tx.assertCurrent();
+        const result: RefreshResult =
+          response.status === 204
+            ? { success: true }
+            : {
+                success: false,
+                error:
+                  response.status === 404
+                    ? 'Device not found'
+                    : `Failed to revoke device: ${response.status}`,
+              };
+        const signedOut =
+          response.status === 401 ||
+          (result.success && options.current === true);
+        tx.finish(
+          signedOut
+            ? 'signed-out'
+            : result.success || response.status === 404
+              ? 'stable'
+              : 'uncertain',
+          () => {
+            if (signedOut) {
+              _clearOwnedLocalAuthState();
+              _broadcastAuthEvent('cleared');
+            }
+            result.generation = _authGeneration;
+          },
+        );
+        return result;
+      },
+    );
   } catch (err) {
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to revoke device',
+      generation: mutation === _authMutation ? _authGeneration : undefined,
     };
   }
 }
@@ -964,6 +1106,7 @@ export async function attemptPageLoadRefresh(options?: {
   }
 
   const result = await refreshAccessToken();
+  if (!isAuthResultCurrent(result)) return false;
   if (!result.success && result.error === 'Session expired') {
     if (
       (options?.redirectOnExpiredSession ?? true) &&

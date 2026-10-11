@@ -101,6 +101,10 @@ export function useStt(options: UseSttOptions = {}) {
         await refreshIfNeeded();
         authHeader = getAuthHeader();
       }
+      if (!authHeader)
+        throw new Error(
+          'Authentication or browser cache readiness unavailable',
+        );
       const tokenResponse = await fetch('/api/audio/scribe-token', {
         headers: authHeader ? { Authorization: authHeader } : {},
       });

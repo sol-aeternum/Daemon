@@ -1,11 +1,31 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+// These isolated hook tests exercise suggestion/auth-lifetime behavior without
+// mounting AuthProvider. Model its completed, qualified cache barrier explicitly;
+// real pending/failure/account-switch barriers are tested in browser-cache-*.
+// Keep all suggestion requests, bearer assertions and generation races unchanged.
+vi.mock('../lib/browserCache', () => ({
+  invalidateBrowserCache: vi.fn(),
+  ensureBrowserCacheCleared: vi.fn(async () => {}),
+  getBrowserCacheState: vi.fn(() => ({
+    status: 'ready',
+    generation: 1,
+    error: null,
+  })),
+}));
+
 import { useHomeSuggestions } from '@/hooks/useHomeSuggestions';
 import {
   clearLocalAuthState,
   getAuthGeneration,
   setAccessToken,
 } from '@/lib/auth';
+import {
+  FIXTURE_AUTH_EPOCH,
+  createAuthTestStorage,
+  installAuthCookieTestEnvironment,
+} from './helpers/authCookieEnvironment';
 
 const FUTURE = new Date(Date.now() + 3600_000).toISOString();
 
@@ -20,7 +40,9 @@ const WIRE_ROW = {
 const fetchMock = vi.fn<typeof globalThis.fetch>();
 
 function signIn(token: string) {
-  setAccessToken(token, Date.now() + 600_000);
+  // Manual fixture tokens bind the real shared coordinator metadata through
+  // the legitimate expected-epoch third argument; no shared-record writes.
+  setAccessToken(token, Date.now() + 600_000, FIXTURE_AUTH_EPOCH);
 }
 
 const listUrl = (url: string) => url.endsWith('/home-suggestions');
@@ -31,6 +53,11 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 20 });
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
+  // Real auth/coordinator modules need usable nonsecret shared metadata and a
+  // qualified navigator (FIFO Web Locks fixture) before manual token binding.
+  const storage = createAuthTestStorage();
+  vi.stubGlobal('localStorage', storage);
+  installAuthCookieTestEnvironment(storage);
   clearLocalAuthState();
 });
 

@@ -1,4 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as auth from '../lib/auth';
+import { AUTH_COORDINATION_KEY } from '../lib/authCookieCoordinator';
+import { AuthCookieTestLocks } from './helpers/authCookieLocks';
+
+let locks: AuthCookieTestLocks;
+let items: Map<string, string>;
+const subscriptions: Array<() => void> = [];
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+};
+const identity = () =>
+  new Response(
+    JSON.stringify({
+      access_token: 'new',
+      expires_at: (Date.now() + 120_000) / 1000,
+    }),
+  );
 
 class AuthChannel extends EventTarget {
   static instance: AuthChannel;
@@ -9,7 +26,9 @@ class AuthChannel extends EventTarget {
   }
   receive(type: string) {
     this.dispatchEvent(
-      new MessageEvent('message', { data: { type, tabId: 'another-tab' } }),
+      new MessageEvent('message', {
+        data: { type, tabId: 'another-tab', epoch: 'fictional-generation-a' },
+      }),
     );
   }
 }
@@ -25,18 +44,94 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
-  vi.resetModules();
   vi.stubGlobal('BroadcastChannel', AuthChannel);
-  vi.stubGlobal('navigator', {
-    locks: { request: async (_name: string, run: () => unknown) => run() },
+  auth.clearLocalAuthState();
+  locks = new AuthCookieTestLocks();
+  vi.stubGlobal('navigator', { locks });
+  items = new Map([
+    [
+      AUTH_COORDINATION_KEY,
+      JSON.stringify({
+        version: 1,
+        epoch: 'fictional-generation-a',
+        status: 'stable',
+      }),
+    ],
+  ]);
+  vi.stubGlobal('localStorage', {
+    get length() {
+      return items.size;
+    },
+    key: (index: number) => [...items.keys()][index] ?? null,
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      items.set(key, value);
+    },
+    removeItem: (key: string) => {
+      items.delete(key);
+    },
   });
+  auth.setAccessToken(
+    'initial',
+    Date.now() + 120_000,
+    'fictional-generation-a',
+  );
+  auth._getChannel();
+  AuthChannel.instance.postMessage.mockClear();
 });
 afterEach(() => {
+  for (const stop of subscriptions.splice(0)) stop();
+  auth.clearLocalAuthState();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe('tab-local auth generation', () => {
+  it('keeps readiness-only notifications separate from lifetime invalidation', () => {
+    const generation = auth.getAuthGeneration();
+    const changed = vi.fn();
+    subscriptions.push(auth.subscribeAuthGeneration(changed));
+    for (const status of ['pending', 'uncertain', 'stable']) {
+      items.set(
+        AUTH_COORDINATION_KEY,
+        JSON.stringify({
+          version: 1,
+          epoch: 'fictional-generation-a',
+          status,
+          ...(status === 'stable'
+            ? {}
+            : { attempt: 'fictional-refresh', kind: 'refresh' }),
+        }),
+      );
+      window.dispatchEvent(
+        new StorageEvent('storage', { key: AUTH_COORDINATION_KEY }),
+      );
+      expect(auth.getAuthGeneration()).toBe(generation);
+      expect(auth.getAccessToken()).toBe(
+        status === 'stable' ? 'initial' : null,
+      );
+      expect(auth.getSessionCoordinationProblem() === null).toBe(
+        status === 'stable',
+      );
+    }
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('does not create new lifetimes from tokenless lifecycle notifications', () => {
+    auth.clearLocalAuthState();
+    const generation = auth.getAuthGeneration();
+    const changed = vi.fn();
+    subscriptions.push(auth.subscribeAuthGeneration(changed));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: AUTH_COORDINATION_KEY }),
+    );
+    expect(auth.getAuthGeneration()).toBe(generation);
+    expect(changed).not.toHaveBeenCalled();
+    expect(auth.getSessionCoordinationProblem()).toContain('No active session');
+  });
+
   it.each(['email', 'google', 'setup', 'enrollment'] as const)(
     '%s completion starts a new lifetime',
     async (kind) => {
@@ -67,13 +162,15 @@ describe('tab-local auth generation', () => {
               ? await auth.completeSetup('setup')
               : await auth.completeEnrollment('pending', 'code');
       expect(result.success).toBe(true);
-      expect(auth.getAuthGeneration()).toBe(generation + 1);
+      // Intent fences old UI; committed B starts the new authenticated lifetime.
+      expect(auth.getAuthGeneration()).toBe(generation + 2);
     },
   );
 
   it('invalidates synchronously on direct token installations and local clears', async () => {
     const auth = await import('../lib/auth');
     const seen: Array<[number, string | null]> = [];
+    const generation = auth.getAuthGeneration();
     const unsubscribe = auth.subscribeAuthGeneration(() => {
       seen.push([auth.getAuthGeneration(), auth.getAccessToken()]);
     });
@@ -82,15 +179,15 @@ describe('tab-local auth generation', () => {
     auth.setAccessToken('replacement', Date.now() + 120_000);
     auth.clearLocalAuthState();
     expect(seen).toEqual([
-      [1, 'first'],
-      [2, 'first'],
-      [3, 'replacement'],
-      [4, null],
+      [generation + 1, 'first'],
+      [generation + 2, 'first'],
+      [generation + 3, 'replacement'],
+      [generation + 4, null],
     ]);
     unsubscribe();
     auth.clearAuthState();
     expect(seen).toHaveLength(4);
-    expect(auth.getAuthGeneration()).toBe(5);
+    expect(auth.getAuthGeneration()).toBe(generation + 5);
   });
 
   it('preserves the generation on same-tab cookie refresh', async () => {
@@ -98,7 +195,7 @@ describe('tab-local auth generation', () => {
     auth.setAccessToken('expired', 0);
     const generation = auth.getAuthGeneration();
     const changed = vi.fn();
-    auth.subscribeAuthGeneration(changed);
+    subscriptions.push(auth.subscribeAuthGeneration(changed));
     vi.stubGlobal(
       'fetch',
       vi
@@ -109,9 +206,13 @@ describe('tab-local auth generation', () => {
           ),
         ),
     );
-    expect(await auth.refreshAccessToken()).toEqual({ success: true });
+    expect(await auth.refreshAccessToken()).toEqual({
+      success: true,
+      generation,
+    });
     expect(auth.getAccessToken()).toBe('rotated');
     expect(auth.getAuthGeneration()).toBe(generation);
+    // Readiness notifications are separate from destructive lifetime changes.
     expect(changed).not.toHaveBeenCalled();
     expect(AuthChannel.instance.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'refreshed' }),
@@ -123,21 +224,25 @@ describe('tab-local auth generation', () => {
     async (intervention) => {
       const auth = await import('../lib/auth');
       auth.setAccessToken('old', 0);
-      auth.subscribeAuthGeneration(() => {});
+      subscriptions.push(auth.subscribeAuthGeneration(() => {}));
       const response = deferred<Response>();
       vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise));
-      const pending = auth.refreshAccessToken();
-      if (intervention === 'login')
-        auth.setAccessToken('new', Date.now() + 120_000);
-      else auth.clearAuthState();
       const generation = auth.getAuthGeneration();
+      const pending = auth.refreshAccessToken();
+      vi.mocked(fetch).mockResolvedValueOnce(identity());
+      const login =
+        intervention === 'login' ? auth.completeSetup('fictional-setup') : null;
+      if (!login) auth.clearAuthState();
       response.resolve(new Response(JSON.stringify({ access_token: 'stale' })));
       const result = await pending;
-      expect(result.success).toBe(intervention === 'login');
+      if (login) expect((await login).success).toBe(true);
+      await flush();
+      expect(result.success).toBe(false);
+      expect(auth.isAuthResultCurrent(result)).toBe(false);
       expect(auth.getAccessToken()).toBe(
         intervention === 'login' ? 'new' : null,
       );
-      expect(auth.getAuthGeneration()).toBe(generation);
+      expect(auth.getAuthGeneration()).toBe(generation + (login ? 2 : 1));
       expect(
         AuthChannel.instance.postMessage.mock.calls.some(
           ([event]) => event.type === 'refreshed',
@@ -151,22 +256,25 @@ describe('tab-local auth generation', () => {
     async (intervention) => {
       const auth = await import('../lib/auth');
       auth.setAccessToken('old', 0);
-      auth.subscribeAuthGeneration(() => {});
+      subscriptions.push(auth.subscribeAuthGeneration(() => {}));
       const response = deferred<Response>();
       vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise));
-      const pending = auth.refreshAccessToken();
-      if (intervention === 'login')
-        auth.setAccessToken('new', Date.now() + 120_000);
-      else auth.clearAuthState();
       const generation = auth.getAuthGeneration();
+      const pending = auth.refreshAccessToken();
+      vi.mocked(fetch).mockResolvedValueOnce(identity());
+      const login =
+        intervention === 'login' ? auth.completeSetup('fictional-setup') : null;
+      if (!login) auth.clearAuthState();
       const broadcasts = AuthChannel.instance.postMessage.mock.calls.length;
       response.resolve(new Response(null, { status: 401 }));
       const result = await pending;
+      if (login) expect((await login).success).toBe(true);
+      await flush();
       expect(result.error).not.toBe('Session expired');
       expect(auth.getAccessToken()).toBe(
         intervention === 'login' ? 'new' : null,
       );
-      expect(auth.getAuthGeneration()).toBe(generation);
+      expect(auth.getAuthGeneration()).toBe(generation + (login ? 2 : 1));
       expect(AuthChannel.instance.postMessage.mock.calls).toHaveLength(
         broadcasts,
       );
@@ -176,13 +284,14 @@ describe('tab-local auth generation', () => {
   it('checks again after asynchronous response JSON parsing', async () => {
     const auth = await import('../lib/auth');
     auth.setAccessToken('old', 0);
-    const body = deferred<{ access_token: string }>();
+    const body = deferred<ArrayBuffer>();
     const parsing = deferred<void>();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => {
+        status: 200,
+        headers: new Headers(),
+        arrayBuffer: () => {
           parsing.resolve();
           return body.promise;
         },
@@ -190,33 +299,30 @@ describe('tab-local auth generation', () => {
     );
     const pending = auth.refreshAccessToken();
     await parsing.promise;
-    auth.setAccessToken('new', Date.now() + 120_000);
-    body.resolve({ access_token: 'stale' });
-    expect(await pending).toEqual({ success: true });
+    vi.mocked(fetch).mockResolvedValueOnce(identity());
+    const login = auth.completeSetup('fictional-setup');
+    body.resolve(
+      new TextEncoder().encode(
+        JSON.stringify({ access_token: 'stale', expires_in: 1800 }),
+      ).buffer,
+    );
+    expect((await pending).success).toBe(false);
+    expect((await login).success).toBe(true);
     expect(auth.getAccessToken()).toBe('new');
   });
 
   it('does not start a refresh queued behind a Web Lock after logout', async () => {
-    const queued = deferred<() => unknown>();
-    const release = deferred<void>();
-    vi.stubGlobal('navigator', {
-      locks: {
-        request: async (_name: string, run: () => unknown) => {
-          queued.resolve(run);
-          await release.promise;
-          return run();
-        },
-      },
-    });
+    locks.held = true;
     const auth = await import('../lib/auth');
     auth.setAccessToken('old', 0);
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const pending = auth.refreshAccessToken();
-    await queued.promise;
+    expect(locks.queue).toHaveLength(1);
     auth.clearAuthState();
-    release.resolve();
-    expect(await pending).toEqual({
+    locks.held = false;
+    locks.drain();
+    expect(await pending).toMatchObject({
       success: false,
       error: 'Authentication changed',
     });
@@ -233,7 +339,7 @@ describe('tab-local auth generation', () => {
     const pending = auth.refreshAccessToken();
     auth.clearLocalAuthState();
     response.reject(new Error('network'));
-    expect(await pending).toEqual({
+    expect(await pending).toMatchObject({
       success: false,
       error: 'Authentication changed',
     });
@@ -244,10 +350,14 @@ describe('tab-local auth generation', () => {
     const auth = await import('../lib/auth');
     auth.setAccessToken('local', Date.now() + 120_000);
     const changed = vi.fn();
-    auth.subscribeAuthGeneration(changed);
+    subscriptions.push(auth.subscribeAuthGeneration(changed));
     const observed: number[] = [];
-    auth.listenForAuthEvents(() => observed.push(auth.getAuthGeneration()));
-    auth.listenForAuthEvents(() => observed.push(auth.getAuthGeneration()));
+    subscriptions.push(
+      auth.listenForAuthEvents(() => observed.push(auth.getAuthGeneration())),
+    );
+    subscriptions.push(
+      auth.listenForAuthEvents(() => observed.push(auth.getAuthGeneration())),
+    );
     const generation = auth.getAuthGeneration();
     AuthChannel.instance.receive('refreshed');
     expect(auth.getAuthGeneration()).toBe(generation + 1);
@@ -260,17 +370,6 @@ describe('tab-local auth generation', () => {
   });
 
   it('clears pending submission keys on sign-in and sign-out, never on a remote token refresh', async () => {
-    const items = new Map<string, string>();
-    vi.stubGlobal('localStorage', {
-      get length() {
-        return items.size;
-      },
-      key: (index: number) => [...items.keys()][index] ?? null,
-      getItem: (key: string) => items.get(key) ?? null,
-      setItem: (key: string, value: string) => void items.set(key, value),
-      removeItem: (key: string) => void items.delete(key),
-      clear: () => items.clear(),
-    });
     const auth = await import('../lib/auth');
     const pendingSubmissions = await import('../lib/pendingSubmission');
     const meta = {
@@ -294,7 +393,8 @@ describe('tab-local auth generation', () => {
   it('a current refresh 401 still clears auth and broadcasts the established event', async () => {
     const auth = await import('../lib/auth');
     auth.setAccessToken('old', 0);
-    auth.subscribeAuthGeneration(() => {});
+    subscriptions.push(auth.subscribeAuthGeneration(() => {}));
+    const generation = auth.getAuthGeneration();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(new Response(null, { status: 401 })),
@@ -302,8 +402,9 @@ describe('tab-local auth generation', () => {
     expect(await auth.refreshAccessToken()).toEqual({
       success: false,
       error: 'Session expired',
+      generation: generation + 1,
     });
-    expect(auth.getAuthGeneration()).toBe(2);
+    expect(auth.getAuthGeneration()).toBe(generation + 1);
     expect(auth.getAccessToken()).toBeNull();
     expect(AuthChannel.instance.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'cleared' }),

@@ -353,6 +353,7 @@ class TestWebRefreshRotatesCookie:
                     )
 
                     assert response.status_code == 200, response.text
+                    assert "clear-site-data" not in response.headers
                     data = response.json()
                     assert "access_token" in data
                     assert "refresh_token" not in data
@@ -432,6 +433,8 @@ class TestLogoutCurrentSession:
                         )
 
                         assert logout_response.status_code == 204
+                        assert logout_response.headers["clear-site-data"] == '"cache"'
+                        assert logout_response.headers["cache-control"] == "no-store"
                         cookie_header = logout_response.headers.get("set-cookie", "")
                         assert "__Host-daemon_refresh" in cookie_header
                         assert "Max-Age=0" in cookie_header or "max-age=0" in cookie_header

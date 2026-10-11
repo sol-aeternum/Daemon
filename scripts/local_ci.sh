@@ -70,6 +70,7 @@ frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
 frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
 frontend|test-run|blocking|npm --prefix frontend run test:run
+frontend|http-cache-browser|blocking|(cd frontend && npx playwright test --config playwright.cache.config.ts)
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py
 aggregate|pre-commit|blocking|uv run pre-commit run --all-files

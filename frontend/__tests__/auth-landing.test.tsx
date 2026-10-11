@@ -17,6 +17,10 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('../lib/auth', () => ({
+  // This file tests caller behavior at the auth seam; real generation matching
+  // and transaction results are exercised by auth-cookie-integration.test.ts.
+  getAuthGeneration: vi.fn(() => 0),
+  isAuthResultCurrent: vi.fn(() => true),
   refreshAccessToken: vi.fn(() => Promise.resolve({ success: false })),
   completeSetup: vi.fn(() => Promise.resolve({ success: true })),
   completeEnrollment: vi.fn(() => Promise.resolve({ success: true })),
@@ -47,6 +51,8 @@ import {
   refreshAccessToken,
   startEmailSignIn,
   startGoogleSignIn,
+  getAuthGeneration,
+  isAuthResultCurrent,
 } from '../lib/auth';
 import AuthLanding from '../components/AuthLanding';
 
@@ -123,6 +129,8 @@ beforeEach(() => {
   delete (window as Window & { google?: unknown }).google;
   capturedGoogleCallback = null;
   vi.clearAllMocks();
+  vi.mocked(getAuthGeneration).mockReturnValue(0);
+  vi.mocked(isAuthResultCurrent).mockReturnValue(true);
   vi.mocked(refreshAccessToken).mockResolvedValue({ success: false });
   vi.mocked(startGoogleSignIn).mockResolvedValue({
     success: true,
@@ -511,6 +519,7 @@ describe('AuthLanding — optional hosted email flow', () => {
         '123456',
         'temporary',
         undefined,
+        expect.any(AbortSignal),
       );
     });
     expect(mockPush).toHaveBeenCalledWith('/');
@@ -551,6 +560,7 @@ describe('AuthLanding — optional hosted email flow', () => {
         '123456',
         'temporary',
         'invite-secret',
+        expect.any(AbortSignal),
       );
     });
   });
@@ -688,6 +698,7 @@ describe('AuthLanding — keep me signed in and provider availability', () => {
         '123456',
         'private',
         undefined,
+        expect.any(AbortSignal),
       );
     });
   });
@@ -836,6 +847,7 @@ describe('AuthLanding — self-hosted setup and pairing', () => {
       expect(mockedCompleteSetup).toHaveBeenCalledWith(
         'setup-secret',
         undefined,
+        expect.any(AbortSignal),
       );
     });
 
@@ -846,7 +858,141 @@ describe('AuthLanding — self-hosted setup and pairing', () => {
       screen.getByRole('button', { name: /complete enrollment/i }),
     );
     await waitFor(() => {
-      expect(mockedCompleteEnrollment).toHaveBeenCalledWith('pending', 'code');
+      expect(mockedCompleteEnrollment).toHaveBeenCalledWith(
+        'pending',
+        'code',
+        expect.any(AbortSignal),
+      );
     });
+  });
+
+  it.each(['setup', 'enrollment'] as const)(
+    'late %s completion cannot navigate a newer lifetime',
+    async (kind) => {
+      let finish!: (value: { success: boolean; generation: number }) => void;
+      const result = new Promise<{ success: boolean; generation: number }>(
+        (resolve) => {
+          finish = resolve;
+        },
+      );
+      const helper =
+        kind === 'setup' ? mockedCompleteSetup : mockedCompleteEnrollment;
+      helper.mockReturnValueOnce(result);
+      render(<AuthLanding mode="self-hosted" />);
+      await waitForLoadingToFinish();
+      if (kind === 'setup') {
+        fireEvent.change(screen.getByLabelText(/setup token/i), {
+          target: { value: 'fictional-setup' },
+        });
+        fireEvent.click(
+          screen.getByRole('button', { name: /complete setup/i }),
+        );
+      } else {
+        fireEvent.change(screen.getByPlaceholderText(/paste daemon-enroll/i), {
+          target: { value: 'daemon-enroll://fictional-pending#000000' },
+        });
+        fireEvent.click(
+          screen.getByRole('button', { name: /complete enrollment/i }),
+        );
+      }
+      await waitFor(() => expect(helper).toHaveBeenCalledTimes(1));
+      vi.mocked(isAuthResultCurrent).mockReturnValue(false);
+      await act(async () => {
+        finish({ success: true, generation: 0 });
+      });
+      expect(mockPush).not.toHaveBeenCalled();
+    },
+  );
+
+  it('late email completion does not navigate or overwrite a newer session error', async () => {
+    let finish!: (value: {
+      success: boolean;
+      error: string;
+      generation: number;
+    }) => void;
+    mockedCompleteEmail.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+          google: { enabled: false, clientId: '' },
+        })}
+      />,
+    );
+    await waitForLoadingToFinish();
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'fictional@example.invalid' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /send verification code/i }),
+    );
+    await screen.findByLabelText(/verification code/i);
+    fireEvent.change(screen.getByLabelText(/verification code/i), {
+      target: { value: '000000' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /verify and sign in/i }),
+    );
+    await waitFor(() => expect(mockedCompleteEmail).toHaveBeenCalledTimes(1));
+    vi.mocked(isAuthResultCurrent).mockReturnValue(false);
+    await act(async () => {
+      finish({
+        success: false,
+        error: 'fictional-late-a-error',
+        generation: 0,
+      });
+    });
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(screen.queryByText('fictional-late-a-error')).toBeNull();
+  });
+
+  it('late Google completion cannot navigate after its auth lifetime changes', async () => {
+    installGoogleMock();
+    let finish!: (value: { success: boolean; generation: number }) => void;
+    mockedCompleteGoogle.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+    await waitFor(() => expect(capturedGoogleCallback).not.toBeNull());
+    act(() => {
+      capturedGoogleCallback!({ credential: 'fictional-proof' });
+    });
+    await waitFor(() => expect(mockedCompleteGoogle).toHaveBeenCalledTimes(1));
+    vi.mocked(isAuthResultCurrent).mockReturnValue(false);
+    await act(async () => {
+      finish({ success: true, generation: 0 });
+    });
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('unmount cancels the pending setup owner and fences its late navigation', async () => {
+    let finish!: (value: { success: boolean }) => void;
+    mockedCompleteSetup.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const mounted = render(<AuthLanding mode="self-hosted" />);
+    await waitForLoadingToFinish();
+    fireEvent.change(screen.getByLabelText(/setup token/i), {
+      target: { value: 'fictional-setup' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /complete setup/i }));
+    await waitFor(() => expect(mockedCompleteSetup).toHaveBeenCalledTimes(1));
+    const signal = mockedCompleteSetup.mock.calls[0][2]!;
+    mounted.unmount();
+    expect(signal.aborted).toBe(true);
+    await act(async () => {
+      finish({ success: true });
+    });
+    expect(mockPush).not.toHaveBeenCalled();
   });
 });

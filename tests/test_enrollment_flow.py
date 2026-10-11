@@ -392,6 +392,7 @@ class TestEnrollHappyPath:
                     assert complete_data["token_type"] == "Bearer"
                     assert "refresh_token" not in complete_data
 
+                    assert complete_response.headers["clear-site-data"] == '"cache"'
                     cookie_header = complete_response.headers.get("set-cookie", "")
                     assert "__Host-daemon_refresh" in cookie_header
                     assert "HttpOnly" in cookie_header
@@ -716,6 +717,7 @@ class TestEnrollHappyPath:
 
                     cookie_header = complete_response.headers.get("set-cookie", "")
                     assert "__Host-daemon_refresh" not in cookie_header
+                    assert "clear-site-data" not in complete_response.headers
 
                     conn = mock_pool._connections[-1]
                     assert conn._session_insert_args is not None
@@ -838,7 +840,8 @@ class TestEnrollHappyPath:
 
 class TestWrongAttemptsAndReplay:
     @pytest.mark.asyncio
-    async def test_wrong_attempts_and_replay(self, setup_env, monkeypatch):
+    @pytest.mark.parametrize("client_kind", ["web", "native"])
+    async def test_wrong_attempts_and_replay(self, setup_env, monkeypatch, client_kind):
         mock_pool = MockPool(active_device_count=1)
         original = make_mock_init(mock_pool)
         try:
@@ -898,55 +901,87 @@ class TestWrongAttemptsAndReplay:
                         json={
                             "pending_id": pending_id,
                             "code": "0000-0000",
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert wrong_response_1.status_code == 401
+                    assert wrong_response_1.json() == {"detail": "Invalid enrollment code"}
+                    assert wrong_response_1.headers.get_list("set-cookie") == []
 
                     wrong_response_2 = await client.post(
                         "/v1/auth/enroll/complete",
                         json={
                             "pending_id": pending_id,
                             "code": "1111-1111",
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert wrong_response_2.status_code == 401
+                    assert wrong_response_2.json() == {"detail": "Invalid enrollment code"}
+                    assert wrong_response_2.headers.get_list("set-cookie") == []
 
                     wrong_response_3 = await client.post(
                         "/v1/auth/enroll/complete",
                         json={
                             "pending_id": pending_id,
                             "code": "2222-2222",
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert wrong_response_3.status_code == 410
+                    assert wrong_response_3.json() == {"detail": "Enrollment session expired"}
+                    assert wrong_response_3.headers.get_list("set-cookie") == []
 
                     replay_response = await client.post(
                         "/v1/auth/enroll/complete",
                         json={
                             "pending_id": pending_id,
                             "code": code,
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert replay_response.status_code == 410
+                    assert replay_response.json() == {"detail": "Enrollment session expired"}
+                    assert replay_response.headers.get_list("set-cookie") == []
 
                     unknown_pending_response = await client.post(
                         "/v1/auth/enroll/complete",
                         json={
                             "pending_id": str(uuid.uuid4()),
                             "code": "0000-0000",
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert unknown_pending_response.status_code == 401
+                    assert unknown_pending_response.json() == {
+                        "detail": "Invalid enrollment session"
+                    }
+                    assert unknown_pending_response.headers.get_list("set-cookie") == []
 
                 auth_module._verify_access_token = original_verify
         finally:
@@ -1038,7 +1073,8 @@ class TestWrongAttemptsAndReplay:
 
 class TestExpiredAndConsumed:
     @pytest.mark.asyncio
-    async def test_expired_pending_returns_410(self, setup_env, monkeypatch):
+    @pytest.mark.parametrize("client_kind", ["web", "native"])
+    async def test_expired_pending_returns_410(self, setup_env, monkeypatch, client_kind):
         mock_pool = MockPool(active_device_count=1)
         original = make_mock_init(mock_pool)
         try:
@@ -1098,18 +1134,25 @@ class TestExpiredAndConsumed:
                         json={
                             "pending_id": pending_id,
                             "code": code,
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert expired_response.status_code == 410
+                    assert expired_response.json() == {"detail": "Enrollment session expired"}
+                    assert expired_response.headers.get_list("set-cookie") == []
 
                 auth_module._verify_access_token = original_verify
         finally:
             restore_init(original)
 
     @pytest.mark.asyncio
-    async def test_consumed_pending_returns_410(self, setup_env, monkeypatch):
+    @pytest.mark.parametrize("client_kind", ["web", "native"])
+    async def test_consumed_pending_returns_410(self, setup_env, monkeypatch, client_kind):
         mock_pool = MockPool(active_device_count=1)
         original = make_mock_init(mock_pool)
         try:
@@ -1169,11 +1212,19 @@ class TestExpiredAndConsumed:
                         json={
                             "pending_id": pending_id,
                             "code": code,
-                            "client_kind": "native",
+                            "client_kind": client_kind,
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
                         },
                     )
 
                     assert consumed_response.status_code == 410
+                    assert consumed_response.json() == {
+                        "detail": "Enrollment session already consumed"
+                    }
+                    assert consumed_response.headers.get_list("set-cookie") == []
 
                 auth_module._verify_access_token = original_verify
         finally:

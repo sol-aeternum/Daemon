@@ -183,6 +183,10 @@ vi.mock('react-resizable-panels', () => ({
 }));
 
 import ChatPage from '../app/page';
+import {
+  FIXTURE_AUTH_EPOCH,
+  installAuthCookieTestEnvironment,
+} from './helpers/authCookieEnvironment';
 
 function runningConversation(active: boolean) {
   return {
@@ -232,8 +236,13 @@ const testStorage: Storage = {
 beforeEach(() => {
   vi.stubGlobal('localStorage', testStorage);
   vi.resetAllMocks();
+  // Real auth/coordinator modules need usable nonsecret shared metadata and a
+  // qualified navigator (FIFO Web Locks fixture) before manual token binding;
+  // the environment is installed after resetAllMocks so its FIFO locks fixture
+  // keeps its implementation.
+  installAuthCookieTestEnvironment(testStorage);
   auth.clearLocalAuthState();
-  auth.setAccessToken('fixture', Date.now() + 120_000);
+  auth.setAccessToken('fixture', Date.now() + 120_000, FIXTURE_AUTH_EPOCH);
   state.currentId = 'conv-1';
   state.conversationLoadFailure = null;
   state.conversation = runningConversation(true);

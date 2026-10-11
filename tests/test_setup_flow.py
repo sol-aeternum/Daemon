@@ -307,6 +307,7 @@ class TestSetupHappyPath:
                     assert "access_token" in data
                     assert data["token_type"] == "Bearer"
                     assert "refresh_token" not in data
+                    assert response.headers["clear-site-data"] == '"cache"'
                     cookie_header = response.headers.get("set-cookie", "")
                     assert "__Host-daemon_refresh" in cookie_header
                     assert "HttpOnly" in cookie_header
@@ -395,6 +396,8 @@ class TestSetupWrongToken:
 
                     assert response.status_code == 401
                     assert "auth.setup_token_hash" in mock_pool._system_state
+                    assert response.json() == {"detail": "Invalid setup token"}
+                    assert response.headers.get_list("set-cookie") == []
                     assert mock_pool._lock_acquired is True
         finally:
             restore_init(original)
@@ -423,6 +426,7 @@ class TestSetupAlreadyComplete:
 
                     assert response.status_code == 409
                     assert response.json()["detail"] == "setup_already_complete"
+                    assert response.headers.get_list("set-cookie") == []
         finally:
             restore_init(original)
 
@@ -448,6 +452,7 @@ class TestSetupNoTokenWhenDeactivated:
 
                     assert response.status_code == 409
                     assert response.json()["detail"] == "setup_already_complete"
+                    assert response.headers.get_list("set-cookie") == []
         finally:
             restore_init(original)
 

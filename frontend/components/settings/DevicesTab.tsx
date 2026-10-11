@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   SkeletonLine,
   SkeletonBlock,
@@ -18,7 +18,13 @@ import {
   RefreshCw,
   AlertTriangle,
 } from 'lucide-react';
-import { listDevices, revokeDevice, clearAuthState } from '@/lib/auth';
+import {
+  listDevices,
+  revokeDevice,
+  getAuthGeneration,
+  isAuthResultCurrent,
+  type RefreshResult,
+} from '@/lib/auth';
 import { formatRelativeTime } from '@/lib/format';
 import EnrollmentModal from '@/components/settings/EnrollmentModal';
 
@@ -79,12 +85,23 @@ export default function DevicesTab() {
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [confirmDevice, setConfirmDevice] = useState<Device | null>(null);
   const [showEnrollment, setShowEnrollment] = useState(false);
+  const mountedRef = useRef(false);
+  const loadRef = useRef(0);
+  const revokeRef = useRef(0);
+  const revokeControllerRef = useRef<AbortController | null>(null);
 
   const fetchDevices = useCallback(async () => {
+    const generation = getAuthGeneration();
+    const load = ++loadRef.current;
+    const current = () =>
+      mountedRef.current &&
+      load === loadRef.current &&
+      generation === getAuthGeneration();
     setLoadStatus('loading');
     setErrorMessage('');
     try {
       const result = await listDevices();
+      if (!current()) return;
       if (result.success && result.devices) {
         setDevices(result.devices.filter((d) => !d.revoked));
         setLoadStatus('success');
@@ -93,6 +110,7 @@ export default function DevicesTab() {
         setLoadStatus('error');
       }
     } catch (err) {
+      if (!current()) return;
       setErrorMessage(
         err instanceof Error ? err.message : 'Failed to load devices',
       );
@@ -101,16 +119,38 @@ export default function DevicesTab() {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     fetchDevices();
+    return () => {
+      mountedRef.current = false;
+      loadRef.current += 1;
+      revokeRef.current += 1;
+      revokeControllerRef.current?.abort();
+    };
   }, [fetchDevices]);
 
   const handleRevoke = async (device: Device) => {
+    revokeControllerRef.current?.abort();
+    const controller = new AbortController();
+    revokeControllerRef.current = controller;
+    const operation = ++revokeRef.current;
+    const generation = getAuthGeneration();
+    let result: RefreshResult | undefined;
+    const current = () =>
+      mountedRef.current &&
+      operation === revokeRef.current &&
+      (result
+        ? isAuthResultCurrent(result)
+        : generation === getAuthGeneration());
     setRevokingId(device.id);
     try {
-      const result = await revokeDevice(device.id);
+      result = await revokeDevice(device.id, {
+        current: device.current,
+        signal: controller.signal,
+      });
+      if (!current()) return;
       if (result.success) {
         if (device.current) {
-          clearAuthState();
           if (typeof window !== 'undefined') {
             window.location.replace('/setup');
           }
@@ -121,12 +161,15 @@ export default function DevicesTab() {
         setErrorMessage(result.error || 'Failed to revoke device');
       }
     } catch (err) {
+      if (!current()) return;
       setErrorMessage(
         err instanceof Error ? err.message : 'Failed to revoke device',
       );
     } finally {
-      setRevokingId(null);
-      setConfirmDevice(null);
+      if (current()) {
+        setRevokingId(null);
+        setConfirmDevice(null);
+      }
     }
   };
 
