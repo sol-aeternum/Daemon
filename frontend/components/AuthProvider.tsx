@@ -79,7 +79,7 @@ function resolveLandingTarget(
 interface CacheGateProps {
   status: BrowserCacheClearStatus;
   error: string | null;
-  onRetry: () => void;
+  onRetry?: () => void;
   onSignOut: () => void;
   sessionProblem?: boolean;
   onSignIn?: () => void;
@@ -129,7 +129,7 @@ function AuthCacheGate({
             Sign in
           </button>
         ) : null}
-        {failed ? (
+        {failed && onRetry ? (
           <button
             type="button"
             data-testid="auth-cache-gate-retry"
@@ -484,11 +484,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
             : 'failed'
         }
         error={coordinationProblem}
-        onRetry={() => {
-          if (coordinationProblem.startsWith('Validated sign-in'))
-            retryCacheClear();
-          else void refreshAuth();
-        }}
+        onRetry={
+          coordinationProblem.startsWith('Session startup changed.')
+            ? undefined
+            : () => {
+                if (coordinationProblem.startsWith('Validated sign-in'))
+                  retryCacheClear();
+                else void refreshAuth();
+              }
+        }
         onSignOut={signOutFromGate}
         onSignIn={() => {
           window.location.href = resolveLandingTarget(mode);

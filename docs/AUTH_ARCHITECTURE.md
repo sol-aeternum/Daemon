@@ -265,8 +265,13 @@ native lock request and the original transaction deadline. Eligibility and local
 lifetime/fence checks remain live under the lock. Bound credentials and pending,
 uncertain or signed-out records cannot rebase. A second epoch change, lost
 eligibility or exhausted deadline keeps protected content closed and the original
-protected URL available with explicit sign-in/local-exit recovery. Authoritative
-session-expired routing is unchanged. This source-only repair is not release,
+protected URL available with explicit sign-in/local-exit recovery, not a Retry
+control that could not retire the latched startup fence. Authoritative
+session-expired routing is unchanged. The owner also approved preserving the URL
+and requiring explicit recovery after a thrown network/body/lock/deadline error
+during genuinely unbound startup, even without a peer epoch race. This adds no
+retry or fence reset; ordinary returned HTTP errors retain their existing routing.
+This source-only repair is not release,
 deployment or production-cookie qualification.
 
 The lock remains held until the owned browser fetch **and body** terminate after
