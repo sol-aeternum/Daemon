@@ -95,6 +95,9 @@ _SHARED_COUNTS: dict[str, frozenset[str]] = {
     ),
     "garbage_collect": frozenset({"scanned", "deleted"}),
     "cleanup_web_snapshots": frozenset({"deleted"}),
+    "cleanup_identity_records": frozenset(
+        {"identity_audit_log", "email_challenges", "google_nonce_challenges", "signup_invites"}
+    ),
     "cleanup_generated_files": frozenset({"scanned", "deleted"}),
     "cleanup_generated_images": frozenset({"scanned", "deleted"}),
     "reconcile_settlement_receipts": frozenset(

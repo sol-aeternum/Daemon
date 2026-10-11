@@ -109,6 +109,12 @@ from orchestrator.services.identity import (
 from orchestrator.services.identity.session_issuance import (
     _compute_refresh_ttl_seconds,
 )
+from orchestrator.services.identity.provenance import (
+    attribute_email_challenge,
+    attribute_google_nonce,
+    lock_consumed_email_challenge,
+    lock_consumed_google_nonce,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -740,7 +746,8 @@ async def email_complete_endpoint(
             body.invite_token,
             pepper=pepper,
         )
-        account_service = AccountService(cast(SupportsIdentityQueries, conn))
+        identity_conn = cast(SupportsIdentityQueries, conn)
+        account_service = AccountService(identity_conn)
 
         try:
             consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
@@ -756,13 +763,19 @@ async def email_complete_endpoint(
 
         async with conn.transaction():
             try:
+                # Proof burning remains committed above. This lock protects the
+                # exact consumed row from retention until claim/session commit.
+                await lock_consumed_email_challenge(identity_conn, consumed_challenge)
                 claim_result = await account_service.claim_email_identity_in_transaction(
                     normalized_email=consumed_challenge.normalized_email,
                     email_verified_at=consumed_challenge.consumed_at or datetime.now(timezone.utc),
                     signup_mode=settings.daemon_signup_mode,
                     invite_token_verifier_hash=invite_token_verifier_hash,
                 )
-            except (InviteOnlyRejection, SignupDisabled):
+                await attribute_email_challenge(
+                    identity_conn, consumed_challenge, claim_result.user.id
+                )
+            except (EmailChallengeInvalid, InviteOnlyRejection, SignupDisabled):
                 raise _email_complete_failure()
 
             await _enforce_device_creation_limits(conn, claim_result.user.id)
@@ -1194,7 +1207,8 @@ async def google_complete_endpoint(
             body.invite_token,
             pepper=pepper,
         )
-        account_service = AccountService(cast(SupportsIdentityQueries, conn))
+        identity_conn = cast(SupportsIdentityQueries, conn)
+        account_service = AccountService(identity_conn)
 
         try:
             consumed_nonce = await verifier_service.consume_nonce(
@@ -1223,6 +1237,7 @@ async def google_complete_endpoint(
 
         async with conn.transaction():
             try:
+                await lock_consumed_google_nonce(identity_conn, consumed_nonce)
                 claim_result = await account_service.claim_google_identity_in_transaction(
                     google_sub=verified.provider_subject,
                     normalized_email=verified.normalized_email,
@@ -1230,7 +1245,9 @@ async def google_complete_endpoint(
                     signup_mode=settings.daemon_signup_mode,
                     invite_token_verifier_hash=invite_token_verifier_hash,
                 )
+                await attribute_google_nonce(identity_conn, consumed_nonce, claim_result.user.id)
             except (
+                GoogleNonceInvalid,
                 EmailNotVerified,
                 InviteOnlyRejection,
                 ProviderCollision,

@@ -35,6 +35,12 @@ Hosted identity retains refresh rotation and the backend enrollment capabilities
 
 ## Identity Model
 
+P0.5's source-only [identity retention/provenance contract](IDENTITY_RETENTION.md)
+adds durable account/email intervals independently of 90-day audit expiry, actual
+claimed-account references on consumed proofs, and bounded seven-day terminal
+record cleanup. It does not implement account deletion/reset or change #508's
+auth/cache contract; migration application and deployment remain separate.
+
 ### Google identity
 
 - The durable Google identity is the Google `sub` claim. Store it as the provider subject

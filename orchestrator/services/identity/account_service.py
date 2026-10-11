@@ -337,10 +337,12 @@ class AccountService:
         self._conn = conn
 
     # ------------------------------------------------------------------
-    # Lookups (read-only)
+    # Lookups (claim-time locking is opt-in)
     # ------------------------------------------------------------------
 
-    async def find_user_by_normalized_email(self, normalized_email: str) -> UserRow | None:
+    async def find_user_by_normalized_email(
+        self, normalized_email: str, *, for_update: bool = False
+    ) -> UserRow | None:
         """Look up a user by their current normalized email.
 
         Returns None if the user does not exist or the email is NULL
@@ -348,6 +350,10 @@ class AccountService:
         email is impossible because of the partial unique index
         `idx_users_normalized_email_unique` in migration 032, so at
         most one row can match.
+
+        Claims use ``for_update=True`` in their transaction: after a
+        concurrent email change, PostgreSQL rechecks the email predicate
+        on the locked version rather than issuing for a stale user.
         """
         row = await self._conn.fetchrow(
             """
@@ -356,20 +362,26 @@ class AccountService:
                    email_verified_at
             FROM users
             WHERE normalized_email = $1
-            """,
+            """
+            + (" FOR UPDATE" if for_update else ""),
             normalized_email,
         )
         if row is None:
             return None
         return _user_row_from_record(row)
 
-    async def find_user_by_provider(self, provider: str, provider_subject: str) -> UserRow | None:
+    async def find_user_by_provider(
+        self, provider: str, provider_subject: str, *, for_update: bool = False
+    ) -> UserRow | None:
         """Look up a user linked to a given provider identity.
 
         The `(provider, provider_subject)` lookup is unique by the
         index `idx_identity_providers_provider_subject`; at most one
         Daemon user can match. Returns the user row, not the link
         row, because callers usually want the user identity.
+
+        Claims lock the current user (``FOR UPDATE OF u``); collision
+        inspection leaves unrelated accounts unlocked.
         """
         row = await self._conn.fetchrow(
             """
@@ -381,7 +393,8 @@ class AccountService:
               ON ip.user_id = u.id
             WHERE ip.provider = $1
               AND ip.provider_subject = $2
-            """,
+            """
+            + (" FOR UPDATE OF u" if for_update else ""),
             provider,
             provider_subject,
         )
@@ -931,7 +944,7 @@ class AccountService:
                 "an unverified claim is an internal bug)"
             )
 
-        existing = await self.find_user_by_normalized_email(normalized_email)
+        existing = await self.find_user_by_normalized_email(normalized_email, for_update=True)
         if existing is not None:
             return await self._ensure_account_for_existing_user(
                 existing,
@@ -1034,7 +1047,7 @@ class AccountService:
             )
 
         # 1. Already linked?
-        by_provider = await self.find_user_by_provider("google", google_sub)
+        by_provider = await self.find_user_by_provider("google", google_sub, for_update=True)
         if by_provider is not None:
             if by_provider.normalized_email != normalized_email:
                 by_new_email = await self.find_user_by_normalized_email(normalized_email)
@@ -1061,7 +1074,7 @@ class AccountService:
             )
 
         # 2. Existing user with the same email? Try to link.
-        by_email = await self.find_user_by_normalized_email(normalized_email)
+        by_email = await self.find_user_by_normalized_email(normalized_email, for_update=True)
         if by_email is not None:
             if not by_email.is_email_verified:
                 raise EmailNotVerified(
@@ -1213,7 +1226,7 @@ class AccountService:
             email_verified_at,
         )
         if row is None:
-            existing = await self.find_user_by_normalized_email(normalized_email)
+            existing = await self.find_user_by_normalized_email(normalized_email, for_update=True)
             if existing is None:
                 raise AccountServiceError(
                     "create_user INSERT conflicted but no user was found on follow-up lookup"

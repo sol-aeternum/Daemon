@@ -30,6 +30,7 @@ from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
     cleanup_generated_files,
     cleanup_generated_images,
+    cleanup_identity_records,
     consolidate_memories,
     extract_memories,
     garbage_collect,
@@ -182,6 +183,7 @@ cron_jobs.extend(
         # expired leases (docs/DURABLE_REQUEST_DESIGN.md §3).
         cron(sweep_tasks, second={0, 15, 30, 45}, keep_result=3600),
         cron(cleanup_web_snapshots, hour=3, minute=45, keep_result=3600),
+        cron(cleanup_identity_records, minute=20, keep_result=3600),
         cron(
             reconcile_settlement_receipts,
             minute={0, 10, 20, 30, 40, 50},
@@ -226,6 +228,7 @@ worker = AuditedWorker(
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
         func(cleanup_web_snapshots, max_tries=_worker_settings.retry_attempts),
+        func(cleanup_identity_records, max_tries=1, timeout=30),
         func(reconcile_settlement_receipts, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
