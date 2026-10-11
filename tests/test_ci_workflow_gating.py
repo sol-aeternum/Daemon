@@ -196,7 +196,7 @@ def test_backend_pytest_diagnostics_have_bounded_execution_and_narrow_upload() -
     assert steps.index(pytest_step) < steps.index(upload)
     assert upload["if"] == "always()"
     assert upload["timeout-minutes"] == 3
-    assert upload["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert upload["uses"] == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
     assert upload["with"]["path"].splitlines() == [
         "pytest-diagnostics/pytest.log",
         "pytest-diagnostics/pytest-results.xml",
