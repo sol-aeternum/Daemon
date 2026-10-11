@@ -1,17 +1,36 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
-import { useChatDraft } from '../hooks/useChatDraft';
-import * as auth from '../lib/auth';
 import {
-  getChatDraft,
-  openChatDraft,
-  setChatDraftInput,
-} from '../lib/chatDrafts';
+  FIXTURE_AUTH_EPOCH,
+  createAuthTestStorage,
+  installAuthCookieTestEnvironment,
+} from './helpers/authCookieEnvironment';
 
-beforeEach(() => {
+// Install the qualified environment before the first import. Later imports
+// reuse the cached auth/draft stack, including its live channel subscriptions;
+// real auth generation changes isolate tests without module/lifetime resets.
+let auth!: typeof import('../lib/auth');
+let useChatDraft!: typeof import('../hooks/useChatDraft').useChatDraft;
+let getChatDraft!: typeof import('../lib/chatDrafts').getChatDraft;
+let openChatDraft!: typeof import('../lib/chatDrafts').openChatDraft;
+let setChatDraftInput!: typeof import('../lib/chatDrafts').setChatDraftInput;
+
+beforeEach(async () => {
+  // The real generation subscription must find a channel present at import
+  // time, so qualified navigator + broadcast + nonsecret shared metadata are
+  // installed before any module in the stack loads.
+  const storage = createAuthTestStorage();
+  vi.stubGlobal('localStorage', storage);
+  installAuthCookieTestEnvironment(storage, { broadcastChannel: true });
+  const drafts = await import('../lib/chatDrafts');
+  getChatDraft = drafts.getChatDraft;
+  openChatDraft = drafts.openChatDraft;
+  setChatDraftInput = drafts.setChatDraftInput;
+  useChatDraft = (await import('../hooks/useChatDraft')).useChatDraft;
+  auth = await import('../lib/auth');
   auth.clearLocalAuthState();
-  auth.setAccessToken('test-account', Date.now() + 120_000);
+  auth.setAccessToken('test-account', Date.now() + 120_000, FIXTURE_AUTH_EPOCH);
 });
 afterEach(() => {
   cleanup();
@@ -58,9 +77,8 @@ describe('conversation drafts in tab memory', () => {
 
   it('same-tab token refresh retains text, attachment arrays and File references', async () => {
     auth.setAccessToken('expired', 0);
-    vi.stubGlobal('navigator', {
-      locks: { request: async (_name: string, run: () => unknown) => run() },
-    });
+    // Cookie writes run under the environment's FIFO Web Locks fixture; the
+    // refresh proves rotation without disturbing tab-local draft identity.
     vi.stubGlobal(
       'fetch',
       vi
@@ -76,9 +94,11 @@ describe('conversation drafts in tab memory', () => {
       hook.result.current.setPendingAttachments([{ id: 'x', file }]);
     });
     const attachments = hook.result.current.pendingAttachments;
+    const generation = auth.getAuthGeneration();
     await act(async () => {
       expect((await auth.refreshAccessToken()).success).toBe(true);
     });
+    expect(auth.getAuthGeneration()).toBe(generation);
     expect(hook.result.current.input).toBe('unfinished');
     expect(hook.result.current.pendingAttachments).toBe(attachments);
     expect(hook.result.current.pendingAttachments[0].file).toBe(file);
@@ -95,8 +115,13 @@ describe('conversation drafts in tab memory', () => {
       const unsubscribe = auth.listenForAuthEvents(() => {});
       const handler = spy.mock.calls[0][1] as (event: MessageEvent) => void;
       act(() => {
+        // Scoped remote notices identify the account lifetime by epoch; a
+        // message without the active epoch must not be trusted. This same-tab
+        // dispatch models the other tab's delivery.
         handler(
-          new MessageEvent('message', { data: { type, tabId: 'other-tab' } }),
+          new MessageEvent('message', {
+            data: { type, tabId: 'other-tab', epoch: FIXTURE_AUTH_EPOCH },
+          }),
         );
         expect(getChatDraft('chat').input).toBe('');
         oldSetter('late old-account response');

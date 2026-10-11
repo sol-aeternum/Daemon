@@ -1,7 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ensureAuthHeader } from '@/lib/auth';
+import {
+  ensureAuthHeader,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
 
 const PROTECTED_PREFIXES = [
   '/generated-images/',
@@ -75,15 +79,39 @@ export function useAuthenticatedImageUrl(
     }
 
     let revoked = false;
-    let controller: AbortController | null = null;
+    const generation = getAuthGeneration();
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    const isCurrent = () => !revoked && generation === getAuthGeneration();
+    const revoke = () => {
+      revoked = true;
+      controller.abort();
+      if (objectUrl !== null) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
+      }
+    };
+    const unsubscribe = subscribeAuthGeneration(() => {
+      if (generation === getAuthGeneration()) return;
+      revoke();
+      setDisplayUrl(null);
+      setLoading(false);
+      setError(false);
+      // A retained URL does not authorize a new account's request. Stay empty
+      // until a URL change or remount starts a new lifetime-qualified effect.
+    });
     setLoading(true);
     setError(false);
     setDisplayUrl(null);
 
     async function loadBlob() {
-      controller = new AbortController();
       try {
         const authHeader = await ensureAuthHeader();
+        if (!isCurrent()) return;
+        if (!authHeader)
+          throw new Error(
+            'Authentication or browser cache readiness unavailable',
+          );
         const headers: HeadersInit = {};
         if (authHeader) headers['Authorization'] = authHeader;
 
@@ -91,14 +119,15 @@ export function useAuthenticatedImageUrl(
           headers,
           signal: controller.signal,
         });
+        if (!isCurrent()) return;
         if (!res.ok) throw new Error(`fetch ${res.status}`);
         const blob = await res.blob();
-        if (revoked) return;
-        const objectUrl = URL.createObjectURL(blob);
+        if (!isCurrent()) return;
+        objectUrl = URL.createObjectURL(blob);
         setDisplayUrl(objectUrl);
         setLoading(false);
       } catch {
-        if (!revoked) {
+        if (isCurrent()) {
           setError(true);
           setLoading(false);
         }
@@ -108,12 +137,8 @@ export function useAuthenticatedImageUrl(
     loadBlob();
 
     return () => {
-      revoked = true;
-      controller?.abort();
-      setDisplayUrl((current) => {
-        if (current) URL.revokeObjectURL(current);
-        return null;
-      });
+      unsubscribe();
+      revoke();
     };
   }, [rawUrl]);
 

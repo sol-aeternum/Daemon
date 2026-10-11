@@ -82,19 +82,75 @@ const mockRefresh = vi.hoisted(() => vi.fn(async () => false));
 const mockClearAuthState = vi.hoisted(() => vi.fn());
 const mockClearLocalAuthState = vi.hoisted(() => vi.fn());
 const mockLogoutCurrentSession = vi.hoisted(() =>
-  vi.fn(async () => ({ success: true })),
+  vi.fn(async () => ({ success: true, generation: 0 })),
 );
+
+// Explicit default SUCCESSFUL cache mock: every existing test in this file
+// mounts under an already-acknowledged cache-clear barrier so their protected
+// flows behave exactly as before P0.2. Gate-specific tests override the
+// mutable snapshot object; these mocks only cover the module's state seam,
+// never any cached network payload.
+const mockBrowserCache = vi.hoisted(() => ({
+  state: {
+    status: 'ready' as 'idle' | 'pending' | 'ready' | 'failed',
+    generation: 1,
+    error: null as string | null,
+  },
+  attempts: [] as Array<{ reason: string }>,
+  resets: 0,
+}));
+
+vi.mock('../lib/browserCache', () => ({
+  ensureBrowserCacheCleared: vi.fn(async () => {
+    if (mockBrowserCache.state.status !== 'ready') {
+      throw new Error('browser cache clear failed');
+    }
+  }),
+  startBrowserCacheClearAttempt: vi.fn(
+    async ({ reason }: { reason: string }) => {
+      mockBrowserCache.attempts.push({ reason });
+      return {
+        reason,
+        generation: mockBrowserCache.state.generation,
+        endpointAcknowledged: true,
+        targets: [],
+        error: null,
+      };
+    },
+  ),
+  invalidateBrowserCache: vi.fn(() => {
+    mockBrowserCache.resets += 1;
+    mockBrowserCache.state.generation += 1;
+    mockBrowserCache.state.status = 'idle';
+    mockBrowserCache.state.error = null;
+  }),
+  getBrowserCacheState: vi.fn(() => mockBrowserCache.state),
+  subscribeBrowserCacheState: vi.fn(() => () => {}),
+}));
 
 vi.mock('../lib/auth', () => ({
   attemptPageLoadRefresh: mockRefresh,
-  refreshAccessToken: vi.fn(async () => ({ success: false })),
+  refreshAccessToken: vi.fn(async () => ({
+    success: await mockRefresh(),
+    generation: 0,
+  })),
   logoutCurrentSession: mockLogoutCurrentSession,
   clearAuthState: mockClearAuthState,
+  signOutLocally: vi.fn(() => {
+    mockClearAuthState();
+    return { success: true, generation: 0 };
+  }),
   clearLocalAuthState: mockClearLocalAuthState,
   getAccessToken: vi.fn(() => null),
   hasValidAccessToken: vi.fn(() => false),
   getAuthHeader: vi.fn(() => null),
   listenForAuthEvents: vi.fn(() => () => {}),
+  subscribeAuthGeneration: vi.fn(() => () => {}),
+  getAuthGeneration: vi.fn(() => 0),
+  getSessionCoordinationProblem: vi.fn(() => null),
+  isAuthResultCurrent: vi.fn(
+    (result: { generation?: number }) => result.generation === 0,
+  ),
   setAccessToken: vi.fn(),
 }));
 
@@ -115,6 +171,13 @@ afterEach(() => {
   mockClearAuthState.mockClear();
   mockClearLocalAuthState.mockClear();
   mockLogoutCurrentSession.mockClear();
+  mockBrowserCache.state = {
+    status: 'ready',
+    generation: 1,
+    error: null,
+  };
+  mockBrowserCache.attempts.length = 0;
+  mockBrowserCache.resets = 0;
   delete (window as { location?: unknown }).location;
 });
 
@@ -295,9 +358,8 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
-    expect(mockRefresh).toHaveBeenCalledWith({
-      redirectOnExpiredSession: false,
-    });
+    // Provider owns mode-aware navigation; refreshAccessToken never redirects.
+    expect(mockRefresh).toHaveBeenCalledWith();
     await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
@@ -443,9 +505,12 @@ describe('AuthProvider mode-aware redirects', () => {
     expect(hrefSetter).toHaveBeenCalledWith('/setup');
   });
 
-  it('logout() waits for backend revoke before clearing state and redirecting', async () => {
+  it('logout() holds local cleanup until bounded revoke completes', async () => {
     const { hrefSetter } = setupHrefSpy();
-    let resolveLogout: (value: { success: boolean }) => void = () => {};
+    let resolveLogout: (value: {
+      success: boolean;
+      generation: number;
+    }) => void = () => {};
     mockLogoutCurrentSession.mockReturnValueOnce(
       new Promise((resolve) => {
         resolveLogout = resolve;
@@ -484,7 +549,7 @@ describe('AuthProvider mode-aware redirects', () => {
     expect(mockClearAuthState).not.toHaveBeenCalled();
     expect(hrefSetter).not.toHaveBeenCalled();
 
-    resolveLogout({ success: true });
+    resolveLogout({ success: true, generation: 0 });
     await logoutPromise;
 
     expect(mockClearAuthState).toHaveBeenCalled();

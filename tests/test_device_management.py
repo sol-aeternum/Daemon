@@ -948,6 +948,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                     cookie_header = response.headers.get("set-cookie", "")
                     assert "__Host-daemon_refresh" in cookie_header
                     assert "Max-Age=0" in cookie_header
+                    assert response.headers["clear-site-data"] == '"cache"'
 
                 auth_module._verify_access_token = original_verify
         finally:

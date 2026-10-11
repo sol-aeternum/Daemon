@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { usePublicCredentialOwner } from './AuthActionOwners';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   refreshAccessToken,
@@ -10,6 +11,9 @@ import {
   completeEmailSignIn,
   startGoogleSignIn,
   completeGoogleSignIn,
+  getAuthGeneration,
+  isAuthResultCurrent,
+  type RefreshResult,
 } from '../lib/auth';
 import type { AuthConfig } from '../lib/auth-config';
 import {
@@ -220,6 +224,7 @@ export default function AuthLanding({
   runtimeConfigLoading = false,
 }: AuthLandingProps) {
   const router = useRouter();
+  const waitForReadiness = usePublicCredentialOwner();
   const routerPushRef = useRef(router.push);
   const searchParams = useSearchParams();
   const [isChecking, setIsChecking] = useState(true);
@@ -254,6 +259,9 @@ export default function AuthLanding({
   const keepSignedInRef = useRef(false);
   const googleButtonHostRef = useRef<HTMLDivElement>(null);
   const googleGenerationRef = useRef(0);
+  const mountedRef = useRef(false);
+  const actionRef = useRef(0);
+  const actionControllerRef = useRef<AbortController | null>(null);
   const inviteToken =
     searchParams.get('invite_token')?.trim() ||
     searchParams.get('invite')?.trim() ||
@@ -270,12 +278,62 @@ export default function AuthLanding({
   }, [router]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      actionRef.current += 1;
+      actionControllerRef.current?.abort();
+    };
+  }, []);
+
+  function beginCredentialAction() {
+    actionControllerRef.current?.abort();
+    // Retire the previous intent's busy UI before the new owner sets its flag.
+    // Its eventual finally remains fenced and cannot clear the replacement.
+    setIsSubmitting(false);
+    setIsEnrolling(false);
+    setIsEmailCompleting(false);
+    setGoogleStatus((status) => (status === 'completing' ? 'error' : status));
+    const controller = new AbortController();
+    actionControllerRef.current = controller;
+    const action = ++actionRef.current;
+    const pathname =
+      typeof window !== 'undefined' ? window.location?.pathname : undefined;
+    return {
+      controller,
+      current: () =>
+        mountedRef.current &&
+        action === actionRef.current &&
+        (typeof window === 'undefined' ||
+          window.location?.pathname === pathname),
+    };
+  }
+
+  useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const pathname =
+      typeof window !== 'undefined' ? window.location?.pathname : undefined;
 
     async function checkAuth() {
-      const result = await refreshAccessToken().catch(() => null);
-      if (!cancelled && result?.success) {
-        routerPushRef.current('/');
+      const result = await refreshAccessToken({
+        signal: controller.signal,
+      }).catch(() => null);
+      if (
+        !cancelled &&
+        result &&
+        isAuthResultCurrent(result) &&
+        result.success
+      ) {
+        if (await waitForReadiness(result, controller.signal)) {
+          if (
+            !cancelled &&
+            isAuthResultCurrent(result) &&
+            (typeof window === 'undefined' ||
+              window.location?.pathname === pathname)
+          )
+            routerPushRef.current('/');
+        }
         return;
       }
       if (!cancelled) {
@@ -287,8 +345,9 @@ export default function AuthLanding({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, []);
+  }, [waitForReadiness]);
 
   useEffect(() => {
     if (!isHosted || !googleClientId || isChecking || runtimeConfigLoading) {
@@ -305,7 +364,7 @@ export default function AuthLanding({
     let completionStarted = false;
     let loadedGoogle: GoogleIdentityServices | null = null;
     let challengeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-    const completionController = new AbortController();
+    let completionController = new AbortController();
 
     setGoogleStatus('loading');
     setGoogleError(null);
@@ -364,34 +423,59 @@ export default function AuthLanding({
           }
 
           completionStarted = true;
+          const action = beginCredentialAction();
+          completionController = action.controller;
           googleButtonHostRef.current?.replaceChildren();
           setGoogleStatus('completing');
+          const completion = completeGoogleSignIn(
+            challengeId,
+            nonce,
+            credential,
+            keepSignedInRef.current ? 'private' : 'temporary',
+            inviteToken,
+            completionController.signal,
+          );
+          // Starting this intent advances the lifetime synchronously. Capture
+          // its lifetime, not the one it just superseded.
+          const authGeneration = getAuthGeneration();
           void withTimeout(
-            completeGoogleSignIn(
-              challengeId,
-              nonce,
-              credential,
-              keepSignedInRef.current ? 'private' : 'temporary',
-              inviteToken,
-              completionController.signal,
-            ),
+            completion,
             GOOGLE_COMPLETION_TIMEOUT_MS,
             'Google sign-in completion timed out.',
             () => completionController.abort(),
           )
-            .then((result) => {
-              if (cancelled || generation !== googleGenerationRef.current) {
+            .then(async (result) => {
+              if (
+                cancelled ||
+                !action.current() ||
+                generation !== googleGenerationRef.current ||
+                !isAuthResultCurrent(result)
+              ) {
                 return;
               }
               if (result.success) {
-                routerPushRef.current('/');
+                if (
+                  await waitForReadiness(result, completionController.signal)
+                ) {
+                  if (
+                    !cancelled &&
+                    action.current() &&
+                    isAuthResultCurrent(result)
+                  )
+                    routerPushRef.current('/');
+                }
                 return;
               }
               setGoogleStatus('error');
-              setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+              setGoogleError(result.error || GOOGLE_UNAVAILABLE_MESSAGE);
             })
             .catch(() => {
-              if (cancelled || generation !== googleGenerationRef.current) {
+              if (
+                cancelled ||
+                !action.current() ||
+                generation !== googleGenerationRef.current ||
+                authGeneration !== getAuthGeneration()
+              ) {
                 return;
               }
               setGoogleStatus('error');
@@ -470,15 +554,20 @@ export default function AuthLanding({
     isChecking,
     isHosted,
     runtimeConfigLoading,
+    waitForReadiness,
   ]);
 
   async function handleGoogleRetry() {
-    // A timed-out completion may still have set the refresh cookie
-    // server-side. Resume that session instead of asking the user to sign in
-    // again.
+    const action = beginCredentialAction();
+    // Only a stable cookie lifetime can resume. An uncertain completion must
+    // obtain new explicit credentials; it cannot silently trust cookie outcome.
     const result = await refreshAccessToken().catch(() => null);
-    if (result?.success) {
-      routerPushRef.current('/');
+    if (!action.current()) return;
+    if (result && isAuthResultCurrent(result) && result.success) {
+      if (await waitForReadiness(result, action.controller.signal)) {
+        if (action.current() && isAuthResultCurrent(result))
+          routerPushRef.current('/');
+      }
       return;
     }
     setGoogleError(null);
@@ -500,23 +589,32 @@ export default function AuthLanding({
       return;
     }
 
+    const action = beginCredentialAction();
     setIsSubmitting(true);
+    let result: RefreshResult | undefined;
     try {
-      const result = await completeSetup(
+      result = await completeSetup(
         token,
         displayName.trim() || undefined,
+        action.controller.signal,
       );
+      if (!action.current() || !isAuthResultCurrent(result)) return;
       if (result.success) {
-        routerPushRef.current('/');
+        if (await waitForReadiness(result, action.controller.signal)) {
+          if (action.current() && isAuthResultCurrent(result))
+            routerPushRef.current('/');
+        }
       } else {
         setSetupError(result.error || 'Setup failed. Please try again.');
       }
     } catch {
+      if (!action.current()) return;
       setSetupError(
         'Network error. Please check your connection and try again.',
       );
     } finally {
-      setIsSubmitting(false);
+      if (action.current() && (!result || isAuthResultCurrent(result)))
+        setIsSubmitting(false);
     }
   }
 
@@ -554,22 +652,34 @@ export default function AuthLanding({
       return;
     }
 
+    const action = beginCredentialAction();
     setIsEnrolling(true);
+    let result: RefreshResult | undefined;
     try {
-      const result = await completeEnrollment(pendingId, code);
+      result = await completeEnrollment(
+        pendingId,
+        code,
+        action.controller.signal,
+      );
+      if (!action.current() || !isAuthResultCurrent(result)) return;
       if (result.success) {
-        routerPushRef.current('/');
+        if (await waitForReadiness(result, action.controller.signal)) {
+          if (action.current() && isAuthResultCurrent(result))
+            routerPushRef.current('/');
+        }
       } else {
         setEnrollmentError(
           result.error || 'Enrollment failed. Please try again.',
         );
       }
     } catch {
+      if (!action.current()) return;
       setEnrollmentError(
         'Network error. Please check your connection and try again.',
       );
     } finally {
-      setIsEnrolling(false);
+      if (action.current() && (!result || isAuthResultCurrent(result)))
+        setIsEnrolling(false);
     }
   }
 
@@ -611,25 +721,34 @@ export default function AuthLanding({
       return;
     }
 
+    const action = beginCredentialAction();
     setIsEmailCompleting(true);
+    let result: RefreshResult | undefined;
     try {
-      const result = await completeEmailSignIn(
+      result = await completeEmailSignIn(
         emailChallengeId,
         trimmedCode,
         keepSignedInRef.current ? 'private' : 'temporary',
         inviteToken,
+        action.controller.signal,
       );
+      if (!action.current() || !isAuthResultCurrent(result)) return;
       if (result.success) {
-        routerPushRef.current('/');
+        if (await waitForReadiness(result, action.controller.signal)) {
+          if (action.current() && isAuthResultCurrent(result))
+            routerPushRef.current('/');
+        }
       } else {
         setEmailError(result.error || 'Sign-in failed. Please try again.');
       }
     } catch {
+      if (!action.current()) return;
       setEmailError(
         'Network error. Please check your connection and try again.',
       );
     } finally {
-      setIsEmailCompleting(false);
+      if (action.current() && (!result || isAuthResultCurrent(result)))
+        setIsEmailCompleting(false);
     }
   }
 

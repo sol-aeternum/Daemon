@@ -136,6 +136,21 @@ jobs:
       - name: Install Chromium for browser regressions
         run: npx playwright install --with-deps chromium
 
+      - name: Set up uv for HTTP-cache isolation fixture
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked cache fixture backend
+        working-directory: .
+        env:
+          UV_PROJECT_ENVIRONMENT: .uv-venv
+        run: uv sync --locked
+
+      - name: Browser HTTP-cache isolation regression
+        run: npx playwright test --config playwright.cache.config.ts
+
       - name: Browser regression inventory
         continue-on-error: true
         run: npm run test:browser

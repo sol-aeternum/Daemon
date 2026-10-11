@@ -67,7 +67,9 @@ Protected API routes never authenticate with refresh cookies. Refresh cookies ar
 Every refresh rotates to a new refresh token and atomically consumes the old session. Presenting an already-consumed refresh token is reuse and revokes the owning device plus all sessions.
 
 ### Decision 21 — There is no refresh grace window
-No leeway/grace window accepts a consumed refresh token. The frontend must serialize refresh attempts across tabs with Web Locks where available and BroadcastChannel coordination fallback without transmitting tokens.
+No leeway/grace window accepts a consumed refresh token. The owner-approved P0.2 source implementation serializes all cookie writers across participating tabs with one Web Lock and validated nonsecret shared metadata; BroadcastChannel carries epoch-scoped advisory notices only, never tokens or lock authority. Web Locks and usable shared storage are required, with no lease fallback (see below for qualification limits).
+
+Coordination readiness and sign-in lifetime notifications are separate. The auth provider observes both, closing protected exposure while an operation is pending or uncertain. Same-tab refresh readiness changes do not invalidate drafts or pending work; actual lifetime changes and scoped remote refresh notices still invalidate generation-bound state (`frontend/lib/auth.ts`, `frontend/components/AuthProvider.tsx`).
 
 ### Decision 22 — Native clients use the refresh-body path
 Native enrollment and refresh use `client_kind='native'`, return replacement refresh tokens in JSON bodies, and set no cookies. Cookie plus body refresh token mixed mode is rejected with 400 before rotation.
@@ -157,6 +159,157 @@ CREATE INDEX idx_pending_enrollments_expires_at ON pending_enrollments(expires_a
 FastAPI owns cookie issuance, replacement, and clearing. Next.js proxies are transport shims: they forward browser cookies and CSRF-relevant headers (`Origin`, `Referer`, `Sec-Fetch-Site`, `Host`, `X-Forwarded-*`) to FastAPI, then pass through each `Set-Cookie` response header separately.
 
 Web responses return JSON access tokens only. Web refresh tokens are only in `__Host-daemon_refresh`; refresh cookies are never accepted as protected-route auth.
+
+### Browser HTTP-cache isolation (P0.2, #486)
+
+The owner approved `Clear-Site-Data: "cache"` on successful web sign-in and
+sign-out responses, and the cache-only `POST /v1/auth/cache/clear` API. That
+endpoint takes an empty body and returns an empty `204` with the cache directive
+and `Cache-Control: no-store`. It requires a trusted browser-origin signal under
+the existing origin policy, but no active session; it issues no tokens, mutates
+no account/database state and sets or deletes no cookies. Untrusted origins,
+nonempty bodies and unsupported methods do not receive cache-clearing headers.
+Routine refresh and native sign-in completion are not browser account changes.
+
+The directive only clears the **response URL's origin**. Receipt from the app's
+auth proxy cannot clear a distinct API origin: the browser must contact both
+the app proxy and the configured API base directly, retaining any API path
+prefix. The qualified Chromium processes the directive but hides it from page
+JavaScript. The client checks the trusted endpoint's `204` and readable
+`Cache-Control: no-store`, not a claimed runtime erasure acknowledgement; wire
+headers and actual stale-cache erasure are separately tested. Existing allowed
+origins and the cross-site guard remain unchanged. No arbitrary
+media/provider origin is contacted with account credentials to perform cleanup.
+
+Browser initialization and local sign-in/account changes wait for cache cleanup
+before protected content is exposed; failed cleanup is retryable. Local sign-out
+still removes local auth state when cleanup or backend revocation fails. Cookie,
+storage and service-worker registrations are not targeted by this directive.
+Secure-context/browser support and permitted cross-origin transport are required:
+an HTTP `204` or a unit test of header presence alone is not proof that a browser
+erased its HTTP cache. Unsupported clients, unreachable origins, offline profiles
+and external provider caches cannot be declared erased. Qualification uses real
+pre-existing HTTP-cache entries and requests uncontrolled by a service worker;
+see [ACCOUNT_DELETION_DESIGN.md](ACCOUNT_DELETION_DESIGN.md) §6.4 and §8. This
+source-only prerequisite is not account deletion/reset or deployment approval.
+
+P0.2 maps to the “Browser HTTP cache after an upgrade and an account switch”
+row in the deletion design's §8, not to its deletion/reset or Cache Storage
+acceptance rows. `frontend/e2e/browser-cache.spec.ts` first proves genuine fresh
+HTTP-cache hits with fictional A bytes and a server-hit counter, then changes
+the server to B with no-store and demonstrates that this alone leaves A cached.
+It distinguishes app-origin clearing from separate API-origin clearing and
+exercises the production client module/provider with no worker controller.
+The isolated fixture mounts the production auth middleware/router without
+starting its persistence/provider lifespan, and uses the actual Next auth proxy.
+`playwright.cache.config.ts` is a blocking local/CI gate; it does not use
+`page.route`, Cache Storage insertion or browser cache disabling.
+
+This is a browser/endpoint transport qualification, not permission to delete
+existing cookies, local/session storage or service-worker registrations. The
+source-only test evidence is for the installed Playwright Chromium on loopback
+same-site origins. Production HTTPS/proxy configuration and other browser
+engines require separate qualification; a client that does not reconnect or an
+external provider origin remains outside Daemon's cleanup reach. Native token
+flows and ordinary refresh are not promoted by this prerequisite.
+
+### Cookie delivery ordering (P0.2, source-only integration)
+
+`frontend/lib/authCookieCoordinator.ts` owns the same-origin `daemon-auth-cookie`
+Web Lock across email/Google/setup/enrollment completion, refresh (including
+error cookie clearing), logout and every device DELETE. Refresh plus logout or
+device DELETE is one transaction, never a nested lock. The versioned
+`daemon:auth-coordination` localStorage record contains only opaque epoch/attempt
+values and operation/status enums, never credentials or account/device IDs.
+Cookie rotation preserves the epoch; identity replacement and confirmed sign-out
+change it. Token/header exposure requires matching stable metadata independently
+of notification delivery, plus the lifetime-scoped cache acknowledgement.
+
+An identity attempt retains the prior epoch and matching token privately while
+pending; only validated success publishes a replacement epoch. The audited exact
+endpoint/status/JSON-detail rejection pairs in `auth.ts::_verifiedIdentityRejection`
+preserve an existing prior session under the lock, without restoring an old cache
+readiness snapshot. They never promote missing, signed-out or uncertain state into
+readiness, undo local-only exit, or promise that challenges/nonces were unconsumed.
+Unknown/malformed responses, invalid success bodies, timeout/network/body failures
+and lost ownership stay uncertain. This identity-only rule does not apply to
+refresh, logout or device DELETE; refresh failure can itself clear cookies.
+
+Transactions default to ten seconds from enqueue. Same-lifetime refresh callers
+join; cancelling a waiter does not cancel its owner. Normal sign-out hides
+protected children immediately; lock acquisition and any expired-token refresh
+must finish before eight seconds, reserving the remaining overall ten-second
+budget for revocation. Slow/failing revocation is unconfirmed, not success. An
+explicit local-only escape cancels owned work and clears local state immediately
+without expired-token refresh or changing another owner's shared pending record.
+Web Locks, randomUUID and usable shared storage are required; unsupported clients
+fail closed but retain local-only exit. Cookie writers never use keepalive.
+
+The owner-approved #509 frontend repair adds a tab-local, nonsecret
+`sessionStorage` marker, `daemon:local-signout=1`. Every token/header exposure and
+automatic refresh checks it; any present value (including corruption) or read
+failure fences restoration. Local exit verifies persistence before navigation,
+but cancels owned work and clears local credentials/drafts/submissions even when
+persistence fails. A visible reload-risk warning and persistence Retry then keep
+the current page in place. If storage never accepted the marker, a user-forced
+reload followed by storage recovery cannot be guaranteed to remain signed out.
+Independent tabs are unaffected; browser-cloned tabs inherit the marker. Only a
+current, validated explicit identity result, still owned by its public action and
+with stable coordination plus cache acknowledgements, can remove it with verified
+read-back. Failed removal remains fenced and retryable; peer/refresh notices,
+failed credentials, cancellation and supersession cannot retire it.
+
+Startup that began with no token, bound epoch or shared record may retry a queued
+epoch race exactly once against a newly observed stable epoch, using a fresh
+native lock request and the original transaction deadline. Eligibility and local
+lifetime/fence checks remain live under the lock. Bound credentials and pending,
+uncertain or signed-out records cannot rebase. A second epoch change, lost
+eligibility or exhausted deadline keeps protected content closed and the original
+protected URL available with explicit sign-in/local-exit recovery, not a Retry
+control that could not retire the latched startup fence. Authoritative
+session-expired routing is unchanged. The owner also approved preserving the URL
+and requiring explicit recovery after a thrown network/body/lock/deadline error
+during genuinely unbound startup, even without a peer epoch race. This adds no
+retry or fence reset; ordinary returned HTTP errors retain their existing routing.
+This source-only repair is not release,
+deployment or production-cookie qualification.
+
+The lock remains held until the owned browser fetch **and body** terminate after
+abort, even if its caller has timed out. This does not require or promise backend
+rollback or propagation of browser abort through the Next proxy. A native browser
+transport's terminal cancellation can permit later explicit credentials; an
+abort-ignoring/unqualified transport stays blocked. An abandoned pending record
+is quarantined as uncertain, not recovered merely because the lock became free.
+Malformed/unavailable/lost metadata also fences previously bound tokens.
+
+The dedicated browser suite exercises the integrated production modules/provider
+and actual Next proxy with fictional identity/refresh/logout upstreams. Its
+frozen-holder crash case launches a separate test-owned browser, binds Linux
+pidfds before tracing identifies distinct holder/peer renderers, and signals only
+the retained holder handle after ownership and live-peer revalidation. It requires
+the native Playwright crash event and surviving-peer fail-closed assertions;
+graceful close is a separate case, not a substitute for a crash. The test-only
+helper's refusal paths are covered in `tests/test_p02_renderer_guard.py`.
+
+Release review and production-browser qualification remain separate gates.
+Old deployed tabs, bypass callers, extensions and other origins/partitions do
+not participate. Neither the loopback browser suite nor its synthetic upstream
+qualifies production HTTPS,
+other engines, real database rotation, exactly-once proxy forwarding or universal
+upstream cancellation. See the prerequisite acceptance mapping in deletion
+design §8; no automatic recovery from abandoned uncertainty is promised.
+No deployment, cookie/backend API change or deletion/reset implementation is
+claimed by this coordinator integration.
+
+Protected-media object URLs are also scoped to their auth lifetime. The image/
+audio URL hook cancels pending work, suppresses stale header/response/body
+completion and revokes its published object URL when that lifetime changes.
+The owner-approved behavior keeps an unchanged mounted URL empty until remount
+or URL change; it does not automatically fetch the old URL under a new account.
+Same-lifetime notifications and public/external URLs retain their existing behavior
+(`frontend/hooks/useAuthenticatedImageUrl.ts`, #504). Provider gating remains a
+separate protection; hook-level regression evidence does not establish a prior
+full-application leak.
 
 ## CSRF and Origin Model
 

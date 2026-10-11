@@ -45,6 +45,15 @@ const conversation = {
 };
 
 async function mockApi(page: Page) {
+  await page.route('**/api/v1/auth/cache/clear', (route) =>
+    route.fulfill({
+      status: 204,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Clear-Site-Data': '"cache"',
+      },
+    }),
+  );
   await page.route('**/api/v1/auth/config', (route) =>
     route.fulfill({
       json: {

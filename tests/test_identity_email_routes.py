@@ -657,6 +657,8 @@ class TestEmailCompleteRoute:
         assert data["access_token"] == "access-token"
         assert "refresh_token" not in data
         assert isinstance(data["expires_at"], int)
+        assert response.headers["clear-site-data"] == '"cache"'
+        assert response.headers["cache-control"] == "no-store"
         cookie_header = response.headers.get("set-cookie", "")
         assert "__Host-daemon_refresh=refresh-token" in cookie_header
         assert "HttpOnly" in cookie_header
@@ -996,6 +998,7 @@ class TestEmailCompleteRoute:
         assert data["access_token"] == "access-token"
         assert data["refresh_token"] == "refresh-token"
         assert response.headers.get("set-cookie") is None
+        assert "clear-site-data" not in response.headers
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1120,6 +1123,7 @@ class TestEmailCompleteRoute:
         assert response.status_code == 401
         assert response.json() == {"detail": "code_invalid_or_expired"}
         assert attempts["remaining"] == 1
+        assert response.headers.get_list("set-cookie") == []
 
     @pytest.mark.asyncio
     async def test_complete_rejects_native_when_refresh_cookie_present(self, route_client):

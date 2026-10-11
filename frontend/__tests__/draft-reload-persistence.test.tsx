@@ -1,15 +1,24 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useChatDraft } from '../hooks/useChatDraft';
-import * as auth from '../lib/auth';
-import { getChatDraft, reloadChatDraftsForTests } from '../lib/chatDrafts';
-import {
-  ATTACHMENT_TTL_MS,
-  MAX_PERSISTED_FILE_BYTES,
-  setAttachmentStoreForTests,
-  type AttachmentStore,
-  type PersistedAttachment,
+import type {
+  AttachmentStore,
+  PersistedAttachment,
 } from '../lib/draftPersistence';
+import {
+  FIXTURE_AUTH_EPOCH,
+  installAuthCookieTestEnvironment,
+} from './helpers/authCookieEnvironment';
+
+// Install the qualified environment before the first import. Later imports
+// reuse the cached auth/draft stack and its live channel subscriptions; real
+// auth generations, not module resets, isolate successive sign-in lifetimes.
+let auth!: typeof import('../lib/auth');
+let useChatDraft!: typeof import('../hooks/useChatDraft').useChatDraft;
+let getChatDraft!: typeof import('../lib/chatDrafts').getChatDraft;
+let reloadChatDraftsForTests!: typeof import('../lib/chatDrafts').reloadChatDraftsForTests;
+let ATTACHMENT_TTL_MS!: number;
+let MAX_PERSISTED_FILE_BYTES!: number;
+let setAttachmentStoreForTests!: (store?: AttachmentStore) => void;
 
 const TEXT_KEY = 'daemon:chat-drafts:v1';
 const EPOCH_KEY = 'daemon:chat-drafts:auth-epoch';
@@ -72,13 +81,30 @@ async function reload() {
   await flush();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   installStorage('sessionStorage');
-  installStorage('localStorage');
+  // The draft-facing storage stays in place (this file tests reload
+  // persistence against it); only the nonsecret shared coordination metadata
+  // is seeded into it so manual tokens bind real coordinator metadata.
+  const localStorageFixture = installStorage('localStorage');
+  installAuthCookieTestEnvironment(localStorageFixture, {
+    // The auth module needs a channel to deliver cross-tab scoped notices.
+    broadcastChannel: true,
+  });
+  // These imports retain cached modules across setup cycles and reload drills.
+  const drafts = await import('../lib/chatDrafts');
+  getChatDraft = drafts.getChatDraft;
+  reloadChatDraftsForTests = drafts.reloadChatDraftsForTests;
+  const persistence = await import('../lib/draftPersistence');
+  ATTACHMENT_TTL_MS = persistence.ATTACHMENT_TTL_MS;
+  MAX_PERSISTED_FILE_BYTES = persistence.MAX_PERSISTED_FILE_BYTES;
+  setAttachmentStoreForTests = persistence.setAttachmentStoreForTests;
+  useChatDraft = (await import('../hooks/useChatDraft')).useChatDraft;
+  auth = await import('../lib/auth');
   store = new MemoryAttachmentStore();
   setAttachmentStoreForTests(store);
   auth.clearLocalAuthState();
-  auth.setAccessToken('test-account', Date.now() + 120_000);
+  auth.setAccessToken('test-account', Date.now() + 120_000, FIXTURE_AUTH_EPOCH);
 });
 
 afterEach(() => {
@@ -86,6 +112,7 @@ afterEach(() => {
   setAttachmentStoreForTests(undefined);
   vi.restoreAllMocks();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('chat drafts survive a reload of the same tab', () => {
@@ -314,8 +341,15 @@ describe('a reload never restores another sign-in’s draft', () => {
 
   it('another tab’s token refresh still clears this tab’s draft and its saved copy', async () => {
     await saveDraft();
+    // The auth module already owns a same-name channel through its listener;
+    // this post reaches every same-name channel except the sender, matching
+    // the native cross-tab model. Scoped notices carry the active epoch.
     const other = new BroadcastChannel('daemon-auth');
-    other.postMessage({ type: 'refreshed', tabId: 'other-tab' });
+    other.postMessage({
+      type: 'refreshed',
+      tabId: 'other-tab',
+      epoch: FIXTURE_AUTH_EPOCH,
+    });
     await waitFor(() => expect(getChatDraft('chat').input).toBe(''));
     other.close();
     await flush();
@@ -334,12 +368,14 @@ describe('a reload never restores another sign-in’s draft', () => {
         },
       ),
     );
-    auth.setAccessToken('expired', 0);
+    act(() => auth.setAccessToken('expired', 0));
     const hook = renderHook(() => useChatDraft('chat'));
     act(() => hook.result.current.setInput('private draft'));
+    const generation = auth.getAuthGeneration();
     await act(async () => {
-      await auth.refreshAccessToken();
+      expect((await auth.refreshAccessToken()).success).toBe(true);
     });
+    expect(auth.getAuthGeneration()).toBe(generation);
     await reload();
     expect(getChatDraft('chat').input).toBe('private draft');
   });

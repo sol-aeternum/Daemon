@@ -25,6 +25,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from orchestrator.redis_jobs import account_job_id
 from orchestrator.tasks import observe as observe_module
 from orchestrator.tasks import runner
 from orchestrator.tasks.observe import observe_task
@@ -93,6 +94,7 @@ async def api(env: Env, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Api]:
         monkeypatch,
         "orchestrator.main.enqueue_account_job",
         "orchestrator.daemon.enqueue_account_job",
+        "orchestrator.tasks.runner.enqueue_account_job",
     )
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("MOCK_LLM", "false")
@@ -249,6 +251,27 @@ async def test_chat_is_accepted_durably_and_streams_the_committed_answer(api: Ap
     assert _displayed(events) == ANSWER
     snapshot = await api.env.tasks.snapshot(api.env.alice, task_id)
     assert snapshot is not None and snapshot.content == ANSWER
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sweep_recovers_lost_wakeup_with_owner_qualified_job_id(api: Api):
+    accepted = await _submit(api, key="lost-wakeup")
+    task_id = uuid.UUID(accepted["id"])
+    # Deliberately lose the notification, regardless of which side of enqueue
+    # the client's disconnect happened on. The task row remains authoritative.
+    api.redis.enqueued.clear()
+    await api.env.pool.execute(
+        "UPDATE tasks SET last_wake_at = now() - interval '61 seconds' WHERE id = $1",
+        task_id,
+    )
+    assert await runner.sweep_tasks({"task_store": api.env.tasks, "redis": api.redis}) == 1
+    assert len(api.redis.enqueued) == 1
+    function, args, kwargs = api.redis.enqueued[0]
+    wake_seq = await api.env.pool.fetchval("SELECT wake_seq FROM tasks WHERE id = $1", task_id)
+    assert function == "run_chat_task"
+    assert args == (str(task_id),)
+    assert kwargs["_job_id"] == account_job_id(api.env.alice, f"task:{task_id}:{wake_seq}")
+    assert await api.run_worker() == ["completed"]
 
 
 @pytest.mark.asyncio

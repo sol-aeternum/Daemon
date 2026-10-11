@@ -93,6 +93,8 @@ function send(
 ): Promise<Response> {
   const headers = new Headers(init?.headers);
   const authHeader = getAuthHeader();
-  if (authHeader) headers.set('Authorization', authHeader);
+  if (!authHeader)
+    throw new Error('Authentication or browser cache readiness unavailable');
+  headers.set('Authorization', authHeader);
   return fetch(requestInput, { ...init, headers, body: JSON.stringify(body) });
 }

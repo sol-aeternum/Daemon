@@ -138,6 +138,41 @@ def _get_client_request_id_safe(request: Request) -> str:
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
+
+def _clear_browser_cache_headers(response: Response) -> None:
+    """Cache only: never clear cookies, storage or service-worker registrations."""
+    response.headers["Clear-Site-Data"] = '"cache"'
+    response.headers["Cache-Control"] = "no-store"
+
+
+@router.post("/cache/clear", status_code=204)
+async def clear_browser_cache_endpoint(request: Request, response: Response) -> None:
+    """Let a trusted browser clear this origin's cache, even without a session.
+
+    Browser receipt is required: a server-side proxy fetch clears no API-origin
+    browser cache. This endpoint has no account, cookie or database mutation.
+    """
+    settings = get_settings()
+    origin_check = check_csrf_origin(
+        request_origin=request.headers.get("Origin"),
+        sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
+        referer=request.headers.get("Referer"),
+        allowed_origins=[
+            origin.strip()
+            for origin in settings.daemon_allowed_origins.split(",")
+            if origin.strip()
+        ],
+        public_origin=settings.daemon_public_origin,
+        # Require a trustworthy browser-origin signal even when no cookie exists.
+        has_cookie=True,
+    )
+    if not origin_check.allowed:
+        raise HTTPException(status_code=403, detail="Cache clearing origin rejected")
+    if await request.body():
+        raise HTTPException(status_code=400, detail="Cache clearing requires an empty body")
+    _clear_browser_cache_headers(response)
+
+
 SINGLETON_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 ACCESS_TOKEN_TTL_MINUTES = 30
 REFRESH_TOKEN_TTL_DAYS = 90
@@ -794,6 +829,7 @@ async def email_complete_endpoint(
             )
         for header_name, header_value in cookie_headers.items():
             response.headers[header_name] = header_value
+        _clear_browser_cache_headers(response)
         return EmailCompleteResponse(
             access_token=issued_session.access_token,
             expires_at=int(issued_session.access_expires_at.timestamp()),
@@ -1268,6 +1304,7 @@ async def google_complete_endpoint(
             )
         for header_name, header_value in cookie_headers.items():
             response.headers[header_name] = header_value
+        _clear_browser_cache_headers(response)
         return GoogleCompleteResponse(
             access_token=issued_session.access_token,
             expires_at=int(issued_session.access_expires_at.timestamp()),
@@ -1408,6 +1445,7 @@ async def setup_endpoint(
     for header_name, header_value in cookie_headers.items():
         response.headers[header_name] = header_value
 
+    _clear_browser_cache_headers(response)
     return SetupResponse(access_token=access_token)
 
 
@@ -1771,6 +1809,7 @@ async def enroll_complete_endpoint(
         )
         for header_name, header_value in cookie_headers.items():
             response.headers[header_name] = header_value
+        _clear_browser_cache_headers(response)
         return EnrollCompleteResponse(access_token=access_token)
 
     return EnrollCompleteResponse(
@@ -2215,6 +2254,7 @@ async def logout_endpoint(
     for header_name, header_value in cookie_headers.items():
         response.headers[header_name] = header_value
 
+    _clear_browser_cache_headers(response)
     return None
 
 
@@ -2370,4 +2410,6 @@ async def revoke_device_endpoint(
         for header_name, header_value in cookie_headers.items():
             response.headers[header_name] = header_value
 
+    if is_current_device:
+        _clear_browser_cache_headers(response)
     return None

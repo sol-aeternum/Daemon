@@ -164,7 +164,7 @@ export function useConversationHistory() {
     if (header) return { Authorization: header };
     const token = await refreshIfNeeded();
     if (token) return { Authorization: `Bearer ${token}` };
-    return {};
+    throw new Error('Authentication or browser cache readiness unavailable');
   }, []);
 
   const apiCandidates = useCallback(

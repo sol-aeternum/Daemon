@@ -8,13 +8,26 @@ import {
 } from '@testing-library/react';
 
 const mockListDevices = vi.fn();
+
+// Tab-local generation mirror owned by the fixture. Current-device revocation
+// is helper-owned in the real coordinator: the owned terminal transaction
+// performs the signed-out cleanup (local clear + broadcast) and commits the
+// new generation; the component only observes the committed generation via
+// the result fence. The component must not call clearAuthState itself, so
+// the fixture asserts the helper side effect instead.
+const session = vi.hoisted(() => ({
+  generation: 1,
+  signedOutCommits: 0,
+}));
+
 const mockRevokeDevice = vi.fn();
-const mockClearAuthState = vi.fn();
 
 vi.mock('@/lib/auth', () => ({
   listDevices: (...args: unknown[]) => mockListDevices(...args),
   revokeDevice: (...args: unknown[]) => mockRevokeDevice(...args),
-  clearAuthState: () => mockClearAuthState(),
+  getAuthGeneration: () => session.generation,
+  isAuthResultCurrent: (result: { generation?: number }) =>
+    result.generation === session.generation,
 }));
 
 vi.mock('@/lib/format', () => ({
@@ -32,9 +45,20 @@ vi.mock('@/components/settings/EnrollmentModal', () => ({
 import DevicesTab from '@/components/settings/DevicesTab';
 
 beforeEach(() => {
+  session.generation = 1;
+  session.signedOutCommits = 0;
   vi.clearAllMocks();
   mockListDevices.mockResolvedValue({ success: true, devices: [] });
 });
+
+/** Owned current-device termination: helper cleanup commits before resolve. */
+function commitOwnedCurrentDeviceSignOut() {
+  mockRevokeDevice.mockImplementation(async () => {
+    session.generation += 1;
+    session.signedOutCommits += 1;
+    return { success: true, generation: session.generation };
+  });
+}
 
 function mockWindowLocation() {
   const replace = vi.fn();
@@ -52,6 +76,42 @@ function getConfirmRevokeButton() {
 }
 
 describe('DevicesTab', () => {
+  it('keeps pending confirmation feedback when retrying a failed revoke', async () => {
+    mockListDevices.mockResolvedValue({
+      success: true,
+      devices: [
+        {
+          id: 'retry-device',
+          device_name: 'Retry device',
+          client_kind: 'web',
+          current: false,
+          revoked: false,
+          created_at: '2026-06-01T10:00:00Z',
+          last_seen_at: null,
+        },
+      ],
+    });
+    mockRevokeDevice.mockResolvedValueOnce({
+      success: false,
+      error: 'Revoke rejected',
+      generation: 1,
+    });
+    render(<DevicesTab />);
+    await screen.findByText('Retry device');
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+    fireEvent.click(getConfirmRevokeButton());
+    await screen.findByText('Revoke rejected');
+    mockRevokeDevice.mockImplementationOnce(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+    fireEvent.click(getConfirmRevokeButton());
+    expect(screen.getByText('Revoke device?')).toBeTruthy();
+    expect(
+      screen
+        .getByRole('button', { name: /revoking/i })
+        .hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
   it('shows loading skeletons while fetching', async () => {
     mockListDevices.mockImplementation(() => new Promise(() => {}));
     render(<DevicesTab />);
@@ -219,7 +279,7 @@ describe('DevicesTab', () => {
     ).toBeTruthy();
   });
 
-  it('revoking current device clears auth and redirects to /setup', async () => {
+  it('revoking current device commits helper-owned sign-out cleanup and redirects to /setup', async () => {
     const { replace, locationSpy } = mockWindowLocation();
 
     const devices = [
@@ -234,7 +294,7 @@ describe('DevicesTab', () => {
       },
     ];
     mockListDevices.mockResolvedValue({ success: true, devices });
-    mockRevokeDevice.mockResolvedValue({ success: true });
+    commitOwnedCurrentDeviceSignOut();
     render(<DevicesTab />);
 
     await waitFor(() => {
@@ -253,15 +313,23 @@ describe('DevicesTab', () => {
     });
 
     await waitFor(() => {
-      expect(mockRevokeDevice).toHaveBeenCalledWith('dev-current');
+      expect(mockRevokeDevice).toHaveBeenCalledWith('dev-current', {
+        current: true,
+        signal: expect.any(AbortSignal),
+      });
     });
-    expect(mockClearAuthState).toHaveBeenCalled();
-    expect(replace).toHaveBeenCalledWith('/setup');
+    // The committed helper performed the signed-out cleanup as part of its
+    // terminal setAccessToken-era contract; the component must not clear auth
+    // separately beyond observing the committed generation.
+    expect(session.signedOutCommits).toBe(1);
+    await waitFor(() => {
+      expect(replace).toHaveBeenCalledWith('/setup');
+    });
 
     locationSpy.mockRestore();
   });
 
-  it('revoking other device removes it from the list', async () => {
+  it('revoking other device removes it from the list without a local sign-out', async () => {
     const devices = [
       {
         id: 'dev-other',
@@ -274,7 +342,10 @@ describe('DevicesTab', () => {
       },
     ];
     mockListDevices.mockResolvedValue({ success: true, devices });
-    mockRevokeDevice.mockResolvedValue({ success: true });
+    mockRevokeDevice.mockResolvedValue({
+      success: true,
+      generation: session.generation,
+    });
     render(<DevicesTab />);
 
     await waitFor(() => {
@@ -293,9 +364,14 @@ describe('DevicesTab', () => {
     });
 
     await waitFor(() => {
-      expect(mockRevokeDevice).toHaveBeenCalledWith('dev-other');
+      expect(mockRevokeDevice).toHaveBeenCalledWith('dev-other', {
+        current: false,
+        signal: expect.any(AbortSignal),
+      });
     });
-    expect(mockClearAuthState).not.toHaveBeenCalled();
+    // Revoking a session that is not this browser must never commit a local
+    // sign-out cleanup.
+    expect(session.signedOutCommits).toBe(0);
 
     await waitFor(() => {
       expect(screen.queryByText('Other Device')).toBeNull();
@@ -318,6 +394,7 @@ describe('DevicesTab', () => {
     mockRevokeDevice.mockResolvedValue({
       success: false,
       error: 'Server error',
+      generation: session.generation,
     });
     render(<DevicesTab />);
 
@@ -337,7 +414,10 @@ describe('DevicesTab', () => {
     });
 
     await waitFor(() => {
-      expect(mockRevokeDevice).toHaveBeenCalledWith('dev-fail');
+      expect(mockRevokeDevice).toHaveBeenCalledWith('dev-fail', {
+        current: false,
+        signal: expect.any(AbortSignal),
+      });
     });
 
     await waitFor(() => {
