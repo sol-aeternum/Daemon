@@ -1,11 +1,18 @@
 'use client';
 
 import { subscribeAuthCoordination } from '@/lib/authCookieCoordinator';
+import { usePathname } from 'next/navigation';
+import {
+  DeviceActionOwnerContext,
+  PublicCredentialOwnerContext,
+  useOwnedDeviceAction,
+} from './AuthActionOwners';
 import {
   createContext,
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -153,6 +160,27 @@ function subscribeAuthState(listener: () => void): () => void {
 }
 
 export function AuthProvider({ children }: AuthProviderProps) {
+  const pathname =
+    usePathname() ??
+    (typeof window !== 'undefined' ? (window.location?.pathname ?? '') : '');
+  const publicPath = PUBLIC_AUTH_PATHS.has(pathname);
+  const [credentialOwnerPath, setCredentialOwnerPath] = useState<string | null>(
+    null,
+  );
+  const registerCredentialOwner = useCallback(() => {
+    if (!PUBLIC_AUTH_PATHS.has(pathname)) return () => {};
+    setCredentialOwnerPath(pathname);
+    return () => setCredentialOwnerPath(null);
+  }, [pathname]);
+  const deviceAction = useOwnedDeviceAction(pathname);
+  const cancelDeviceAction = deviceAction.cancel;
+  const previousPath = useRef(pathname);
+  useEffect(() => {
+    if (previousPath.current !== pathname) {
+      previousPath.current = pathname;
+      cancelDeviceAction();
+    }
+  }, [pathname, cancelDeviceAction]);
   const [signingOutGeneration, setSigningOutGeneration] = useState<
     number | null
   >(null);
@@ -324,6 +352,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // clearAuthState() also prevents any in-flight attempt completion from
   // releasing the newer auth lifetime.
   const signOutFromGate = useCallback(() => {
+    cancelDeviceAction();
     void logoutCurrentSession({ allowRefresh: false });
     clearAuthState();
     void startBrowserCacheClearAttempt({ reason: 'sign-out' });
@@ -332,7 +361,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (typeof window !== 'undefined') {
       window.location.href = target;
     }
-  }, [updateAuthState, mode]);
+  }, [updateAuthState, mode, cancelDeviceAction]);
 
   const refreshAuth = useCallback(async () => {
     const result = await refreshAccessToken();
@@ -420,11 +449,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         onSignOut={signOutFromGate}
       />
     );
-  } else if (
-    coordinationProblem &&
-    (typeof window === 'undefined' ||
-      !PUBLIC_AUTH_PATHS.has(window.location.pathname))
-  ) {
+  } else if (coordinationProblem && !publicPath) {
     gatedChildren = (
       <AuthCacheGate
         status={
@@ -442,18 +467,42 @@ export function AuthProvider({ children }: AuthProviderProps) {
     );
   }
 
+  const privacyGated = gatedChildren !== children;
+  const releaseDeviceView = useCallback(() => {
+    // A route/tab exit with no privacy gate still cancels. Temporary cache or
+    // coordination replacement must not abort the action which closed it.
+    if (
+      getBrowserCacheState().status === 'ready' &&
+      !getSessionCoordinationProblem()
+    )
+      cancelDeviceAction();
+  }, [cancelDeviceAction]);
+  const preserveCredentialOwner =
+    publicPath &&
+    credentialOwnerPath === pathname &&
+    signingOutGeneration === null;
+  const protectedReady =
+    cacheState.status === 'ready' && !coordinationProblem && !privacyGated;
+
   return (
     <AuthContext.Provider
       value={{
-        isAuthenticated,
-        accessToken,
-        authHeader,
+        isAuthenticated: protectedReady && isAuthenticated,
+        accessToken: protectedReady ? accessToken : null,
+        authHeader: protectedReady ? authHeader : null,
         refreshAuth,
         logout,
         setAccessToken: setToken,
       }}
     >
-      {gatedChildren}
+      <PublicCredentialOwnerContext.Provider value={registerCredentialOwner}>
+        <DeviceActionOwnerContext.Provider
+          value={{ ...deviceAction, releaseView: releaseDeviceView }}
+        >
+          {preserveCredentialOwner ? children : gatedChildren}
+          {preserveCredentialOwner && privacyGated ? gatedChildren : null}
+        </DeviceActionOwnerContext.Provider>
+      </PublicCredentialOwnerContext.Provider>
     </AuthContext.Provider>
   );
 }

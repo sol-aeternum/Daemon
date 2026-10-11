@@ -284,7 +284,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "HOME": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:25",
+            "frontend/e2e/cache-fixture-server.mjs:26",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:222",
         ),
@@ -297,7 +297,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "PATH": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:24",
+            "frontend/e2e/cache-fixture-server.mjs:25",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:221",
         ),
@@ -310,7 +310,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "UV_PROJECT_ENVIRONMENT": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:37",
+            "frontend/e2e/cache-fixture-server.mjs:38",
             "frontend/e2e/renderer-crash.ts:215",
         ),
         reason=(

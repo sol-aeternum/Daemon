@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useDeviceActionOwner } from '@/components/AuthActionOwners';
 import {
   SkeletonLine,
   SkeletonBlock,
@@ -20,10 +21,8 @@ import {
 } from 'lucide-react';
 import {
   listDevices,
-  revokeDevice,
   getAuthGeneration,
   isAuthResultCurrent,
-  type RefreshResult,
 } from '@/lib/auth';
 import { formatRelativeTime } from '@/lib/format';
 import EnrollmentModal from '@/components/settings/EnrollmentModal';
@@ -82,95 +81,75 @@ export default function DevicesTab() {
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
   const [errorMessage, setErrorMessage] = useState('');
 
-  const [revokingId, setRevokingId] = useState<string | null>(null);
-  const [confirmDevice, setConfirmDevice] = useState<Device | null>(null);
+  const deviceAction = useDeviceActionOwner();
+  const revokingId = deviceAction.pendingId;
+  const outcome =
+    deviceAction.outcome && isAuthResultCurrent(deviceAction.outcome.result)
+      ? deviceAction.outcome
+      : null;
+  const visibleDevices =
+    deviceAction.generation === getAuthGeneration()
+      ? devices.filter((device) => !deviceAction.revokedIds.includes(device.id))
+      : devices;
+  const [confirmation, setConfirmation] = useState<{
+    device: Device;
+    outcome: typeof outcome;
+  } | null>(null);
+  const confirmDevice =
+    confirmation &&
+    (confirmation.outcome === outcome || revokingId === confirmation.device.id)
+      ? confirmation.device
+      : null;
+  function setConfirmDevice(device: Device | null) {
+    setConfirmation(device ? { device, outcome } : null);
+  }
+  const releaseView = deviceAction.releaseView;
   const [showEnrollment, setShowEnrollment] = useState(false);
   const mountedRef = useRef(false);
   const loadRef = useRef(0);
-  const revokeRef = useRef(0);
-  const revokeControllerRef = useRef<AbortController | null>(null);
 
-  const fetchDevices = useCallback(async () => {
+  const fetchDevices = useCallback(() => {
     const generation = getAuthGeneration();
     const load = ++loadRef.current;
     const current = () =>
       mountedRef.current &&
       load === loadRef.current &&
       generation === getAuthGeneration();
-    setLoadStatus('loading');
-    setErrorMessage('');
-    try {
-      const result = await listDevices();
-      if (!current()) return;
-      if (result.success && result.devices) {
-        setDevices(result.devices.filter((d) => !d.revoked));
-        setLoadStatus('success');
-      } else {
-        setErrorMessage(result.error || 'Failed to load devices');
+    // Capture ownership synchronously; only transport and publication defer.
+    // A queued initial load must never adopt a newer auth lifetime.
+    return Promise.resolve()
+      .then(() => listDevices())
+      .then((result) => {
+        if (!current()) return;
+        if (result.success && result.devices) {
+          setDevices(result.devices.filter((d) => !d.revoked));
+          setLoadStatus('success');
+        } else {
+          setErrorMessage(result.error || 'Failed to load devices');
+          setLoadStatus('error');
+        }
+      })
+      .catch((err: unknown) => {
+        if (!current()) return;
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to load devices',
+        );
         setLoadStatus('error');
-      }
-    } catch (err) {
-      if (!current()) return;
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Failed to load devices',
-      );
-      setLoadStatus('error');
-    }
+      });
   }, []);
 
   useEffect(() => {
     mountedRef.current = true;
-    fetchDevices();
+    void fetchDevices();
     return () => {
       mountedRef.current = false;
       loadRef.current += 1;
-      revokeRef.current += 1;
-      revokeControllerRef.current?.abort();
+      releaseView();
     };
-  }, [fetchDevices]);
+  }, [fetchDevices, releaseView]);
 
   const handleRevoke = async (device: Device) => {
-    revokeControllerRef.current?.abort();
-    const controller = new AbortController();
-    revokeControllerRef.current = controller;
-    const operation = ++revokeRef.current;
-    const generation = getAuthGeneration();
-    let result: RefreshResult | undefined;
-    const current = () =>
-      mountedRef.current &&
-      operation === revokeRef.current &&
-      (result
-        ? isAuthResultCurrent(result)
-        : generation === getAuthGeneration());
-    setRevokingId(device.id);
-    try {
-      result = await revokeDevice(device.id, {
-        current: device.current,
-        signal: controller.signal,
-      });
-      if (!current()) return;
-      if (result.success) {
-        if (device.current) {
-          if (typeof window !== 'undefined') {
-            window.location.replace('/setup');
-          }
-          return;
-        }
-        setDevices((prev) => prev.filter((d) => d.id !== device.id));
-      } else {
-        setErrorMessage(result.error || 'Failed to revoke device');
-      }
-    } catch (err) {
-      if (!current()) return;
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Failed to revoke device',
-      );
-    } finally {
-      if (current()) {
-        setRevokingId(null);
-        setConfirmDevice(null);
-      }
-    }
+    await deviceAction.revoke(device);
   };
 
   if (loadStatus === 'loading' && devices.length === 0) {
@@ -227,7 +206,11 @@ export default function DevicesTab() {
           </div>
           <button
             type="button"
-            onClick={fetchDevices}
+            onClick={() => {
+              setLoadStatus('loading');
+              setErrorMessage('');
+              void fetchDevices();
+            }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-bg-tertiary rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-border-focus/50"
           >
             <RefreshCw className="w-4 h-4" />
@@ -237,7 +220,7 @@ export default function DevicesTab() {
       )}
 
       <div className="space-y-4">
-        {devices.length === 0 && loadStatus === 'success' ? (
+        {visibleDevices.length === 0 && loadStatus === 'success' ? (
           <div className="text-center py-12 rounded-lg border border-border-primary bg-bg-secondary">
             <Smartphone className="w-8 h-8 text-text-muted mx-auto mb-3" />
             <p className="text-sm text-text-muted">No active sessions found</p>
@@ -246,7 +229,7 @@ export default function DevicesTab() {
             </p>
           </div>
         ) : (
-          devices.map((device) => {
+          visibleDevices.map((device) => {
             const DeviceIcon = getDeviceIcon(device.client_kind);
             return (
               <div
@@ -316,6 +299,12 @@ export default function DevicesTab() {
           })
         )}
       </div>
+
+      {outcome && !outcome.result.success ? (
+        <p role="alert" className="mt-4 text-sm text-status-error">
+          {outcome.result.error || 'Failed to revoke device'}
+        </p>
+      ) : null}
 
       <div className="mt-8 pt-6 border-t border-border-primary">
         <button

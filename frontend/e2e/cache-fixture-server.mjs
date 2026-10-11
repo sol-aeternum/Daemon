@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { build } from 'esbuild';
 import path from 'node:path';
+import { cacheFixtureURLs } from './cache-fixture-url.mjs';
 
 const appOrigin = 'http://127.0.0.1:3142';
 const nextOrigin = 'http://127.0.0.1:3141';
@@ -65,7 +66,15 @@ const next = spawn(
 );
 const state = { upgraded: false, hits: 0 };
 const server = http.createServer(async (request, response) => {
-  const url = new URL(request.url, appOrigin);
+  let url;
+  let upstreamUrl;
+  try {
+    ({ url, upstream: upstreamUrl } = cacheFixtureURLs(request.url));
+  } catch {
+    response.writeHead(400, { 'Cache-Control': 'no-store' });
+    response.end('Invalid fixture request target');
+    return;
+  }
   if (url.pathname === '/__fixture/status') {
     response.writeHead(200, {
       'Content-Type': 'application/json',
@@ -122,6 +131,9 @@ const server = http.createServer(async (request, response) => {
     const output = await build({
       ...clientBuildOptions,
       entryPoints: ['e2e/cache-provider-harness.tsx'],
+      alias: {
+        'next/navigation': path.resolve('e2e/cache-fixture-navigation.ts'),
+      },
       tsconfig: 'tsconfig.json',
       jsx: 'automatic',
     });
@@ -151,20 +163,15 @@ const server = http.createServer(async (request, response) => {
     );
   } else {
     try {
-      const upstream = await fetch(
-        `${nextOrigin}${url.pathname}${url.search}`,
-        {
-          method: request.method,
-          headers: { ...request.headers, host: '127.0.0.1:3141' },
-          body: ['GET', 'HEAD'].includes(request.method)
-            ? undefined
-            : Readable.toWeb(request),
-          ...(['GET', 'HEAD'].includes(request.method)
-            ? {}
-            : { duplex: 'half' }),
-          redirect: 'manual',
-        },
-      );
+      const upstream = await fetch(upstreamUrl, {
+        method: request.method,
+        headers: { ...request.headers, host: '127.0.0.1:3141' },
+        body: ['GET', 'HEAD'].includes(request.method)
+          ? undefined
+          : Readable.toWeb(request),
+        ...(['GET', 'HEAD'].includes(request.method) ? {} : { duplex: 'half' }),
+        redirect: 'manual',
+      });
       const headers = Object.fromEntries(upstream.headers);
       for (const key of [
         'content-encoding',

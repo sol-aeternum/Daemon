@@ -1,10 +1,53 @@
 import { expect, test, type Page } from '@playwright/test';
+import { createServer, request as httpRequest } from 'node:http';
 
 const API = 'http://127.0.0.1:3143';
 const artifacts = [
   '/generated-files/fictional-account-output.txt',
   `${API}/daemon/generated-files/fictional-account-output.txt`,
 ];
+
+test('fixture rejects an opaque request target before forwarding', async () => {
+  let unintendedRequests = 0;
+  const trap = createServer((_request, response) => {
+    unintendedRequests += 1;
+    response.end('Unintended test-owned destination');
+  });
+  await new Promise<void>((resolve, reject) => {
+    trap.once('error', reject);
+    trap.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const address = trap.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Missing test-owned loopback listener');
+    // The pre-fix string concatenation interprets this pathname as userinfo
+    // plus authority. Even on regression, its only target is our local trap.
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(
+        {
+          hostname: '127.0.0.1',
+          port: 3142,
+          path: `x:@127.0.0.1:${address.port}/`,
+          signal: AbortSignal.timeout(5000),
+        },
+        (response) => {
+          response.on('error', reject);
+          response.resume();
+          response.on('end', () => resolve(response.statusCode));
+        },
+      );
+      request.on('error', reject);
+      request.end();
+    });
+    expect(status).toBe(400);
+    expect(unintendedRequests).toBe(0);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      trap.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
 
 async function readArtifacts(page: Page, owner: 'a' | 'b' = 'a') {
   return page.evaluate(

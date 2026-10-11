@@ -76,6 +76,42 @@ function getConfirmRevokeButton() {
 }
 
 describe('DevicesTab', () => {
+  it('keeps pending confirmation feedback when retrying a failed revoke', async () => {
+    mockListDevices.mockResolvedValue({
+      success: true,
+      devices: [
+        {
+          id: 'retry-device',
+          device_name: 'Retry device',
+          client_kind: 'web',
+          current: false,
+          revoked: false,
+          created_at: '2026-06-01T10:00:00Z',
+          last_seen_at: null,
+        },
+      ],
+    });
+    mockRevokeDevice.mockResolvedValueOnce({
+      success: false,
+      error: 'Revoke rejected',
+      generation: 1,
+    });
+    render(<DevicesTab />);
+    await screen.findByText('Retry device');
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+    fireEvent.click(getConfirmRevokeButton());
+    await screen.findByText('Revoke rejected');
+    mockRevokeDevice.mockImplementationOnce(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+    fireEvent.click(getConfirmRevokeButton());
+    expect(screen.getByText('Revoke device?')).toBeTruthy();
+    expect(
+      screen
+        .getByRole('button', { name: /revoking/i })
+        .hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
   it('shows loading skeletons while fetching', async () => {
     mockListDevices.mockImplementation(() => new Promise(() => {}));
     render(<DevicesTab />);

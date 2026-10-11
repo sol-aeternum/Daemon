@@ -151,12 +151,23 @@ not deletion/reset. `frontend/playwright.cache.config.ts` runs the dedicated
 blocking browser suite serially. The §8 HTTP-cache scenario below maps to its
 first two cache tests; the remaining cases qualify the cache barrier and cookie
 delivery prerequisites needed to keep account changes fail-closed.
+Frontend-only local gates install the fixture's Python dependencies with
+`uv sync --locked` before launching the browser suite; setup failure is blocking.
+The native-crash acceptance requires Linux pidfds and fails closed on unsupported
+hosts rather than silently skipping the case.
+The bare esbuild provider fixture supplies only Next's pathname primitive from
+the actual browser URL/history (`cache-fixture-navigation.ts`); provider, auth,
+cache and coordination modules remain production code. Adapter regressions cover
+history/popstate, subscription cleanup and preservation of other history owners.
+This is not qualification of the native Next router context.
 
 | Prerequisite | Executable evidence | Boundary |
 | --- | --- | --- |
 | Upgrade plus A → B with genuinely pre-existing HTTP cache at app and distinct API origins | `frontend/e2e/browser-cache.spec.ts`: server-hit counters prove A cache hits; new no-store alone still serves A; app clear leaves API A; direct API clear yields B at both; production module repeats both-origin clearing | Uncontrolled requests, installed Chromium, loopback same-site HTTP; not Cache Storage insertion or disabled cache |
 | Initialization/sign-in protected-content barrier, deduplicated cleanup and explicit retry | Same spec: production module/provider, failed startup and sign-in B, concurrent callers, same-origin proxy-only path | Endpoint acknowledgement is not a universal erasure oracle |
 | Missing no-store, redirect, timeout, insecure non-loopback URL and foreign-origin refusal | Same spec: actual endpoint/proxy transport and production barrier failure paths | Existing origin policy unchanged; no protected read on failure |
+| Test proxy cannot reinterpret an opaque request target as an upstream authority | Same spec: raw HTTP opaque target is rejected with 400 before any request reaches a test-owned loopback trap; `frontend/__tests__/cache-fixture-url.test.ts` covers invalid schemes and fixed-origin path/query construction | Fixture-only URL repair (#383); no external request, destination expansion or CodeQL suppression |
+| Real credential/device actions survive their own privacy gate without retaining protected DOM | `frontend/__tests__/auth-ui-action-ownership.test.tsx`: real nested provider/forms/devices, held cache/completion/DELETE, expired refresh before DELETE, explicit retry, genuine exits and credential supersession; `DevicesTab.test.tsx` covers pending confirmation after rejected revoke | #509 source repair; current-result navigation waits for cache acknowledgement. Google timeout callback checks error ownership, not elapsed-time policy. Focused tests and source review do not replace integrated gates or exact-head PR review |
 | Cache-only scope | Same spec: cookies/local/session storage and existing noncontrolling worker registration retained; `tests/test_browser_cache_clear.py` validates empty request/204, trusted-origin checks and no session/database/cookie mutation | Does not authorize clearing credentials, browser storage or registrations |
 | Two-tab pending privacy, audited rejection preserving A, validated B success fencing A | `frontend/e2e/p02-cookie-coordination.spec.ts`: delayed headers/body, stable epoch/token assertions and protected-header gates | Exact audited identity rejections only, not refresh/logout/DELETE or uncertain state |
 | Timely local exit, held A upstream cannot overwrite B across login/expiry/refresh; dropped upstream retry is disclosed | Same spec: held upstream receipt checks, B cookie/refresh assertions and one actual Next proxy retry | Browser terminal abort does not prove upstream rollback or exactly-once forwarding |
