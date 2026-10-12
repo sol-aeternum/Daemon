@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import gc
 import multiprocessing
 import threading
+import time
 from uuid import uuid4
 
 import pytest
@@ -158,10 +160,20 @@ def _callable_failure_in_owned_loop(scenario, failure, passed):
     context = contextvars.ContextVar("journal_io_callable_failure", default="unset")
 
     async def run():
+        unretrieved: list[str] = []
+
+        def report(_loop, ctx):
+            # Only a failure nobody ever retrieved; asyncio's own shield report
+            # of a failure under a cancelled waiter is expected.
+            if "never retrieved" in ctx.get("message", ""):
+                unretrieved.append(ctx["message"])
+
+        asyncio.get_running_loop().set_exception_handler(report)
         context.set("caller")
+        error: BaseException | None = None
         if failure == "cancelled":
-            error: BaseException = asyncio.CancelledError("raised by the callable")
-        else:
+            error = asyncio.CancelledError("raised by the callable")
+        elif failure == "os":
             error = OSError("fictional I/O failure")
         started, release, finished = threading.Event(), threading.Event(), threading.Event()
 
@@ -170,14 +182,24 @@ def _callable_failure_in_owned_loop(scenario, failure, passed):
             context.set("thread")
             started.set()
             try:
-                if scenario == "caller_cancels":
+                if scenario != "callable":
                     assert release.wait(5)
-                raise error
+                if error is not None:
+                    raise error
+                return "result"
             finally:
                 finished.set()
 
         waiter = asyncio.create_task(barrier._io(work))
-        if scenario == "caller_cancels":
+        if scenario == "cancel_after_done":
+            assert await asyncio.to_thread(started.wait, 5)
+            release.set()
+            # Block the loop until the call has ended and its result is
+            # posted, so the cancellation lands on a finished future.
+            assert finished.wait(5)
+            time.sleep(0.1)
+            waiter.cancel()
+        elif scenario == "caller_cancels":
             assert await asyncio.to_thread(started.wait, 5)
             for _ in range(2):
                 waiter.cancel()
@@ -189,9 +211,9 @@ def _callable_failure_in_owned_loop(scenario, failure, passed):
         except BaseException as raised:
             caught = raised
         else:
-            raise AssertionError("the callable's failure became a result")
+            raise AssertionError("the caller's cancellation or the call's failure was lost")
         assert finished.is_set(), "cancellation abandoned live I/O"
-        if scenario == "caller_cancels":
+        if scenario != "callable":
             # The caller's cancellation wins over whatever the call raised.
             assert isinstance(caught, asyncio.CancelledError) and caught is not error
         else:
@@ -199,6 +221,9 @@ def _callable_failure_in_owned_loop(scenario, failure, passed):
             # of the waiter, and propagated as the call's own exception.
             assert caught is error
         assert context.get() == "caller"
+        del waiter, caught
+        gc.collect()
+        assert not unretrieved, unretrieved
         passed.set()
 
     asyncio.run(run())
@@ -206,7 +231,15 @@ def _callable_failure_in_owned_loop(scenario, failure, passed):
 
 @pytest.mark.parametrize(
     ("scenario", "failure"),
-    [("callable", "cancelled"), ("caller_cancels", "cancelled"), ("caller_cancels", "os")],
+    [
+        ("callable", "cancelled"),
+        ("caller_cancels", "cancelled"),
+        ("caller_cancels", "os"),
+        # The caller's cancellation lands after the call already ended.
+        ("cancel_after_done", "cancelled"),
+        ("cancel_after_done", "os"),
+        ("cancel_after_done", "none"),
+    ],
 )
 def test_cancelled_error_raised_by_the_callable_ends_the_wait(scenario, failure):
     """#516: a finished call that raised CancelledError must not be mistaken

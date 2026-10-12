@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import contextvars
+import gc
 import io
 import multiprocessing
 import os
 import threading
+import time
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -773,25 +776,50 @@ async def test_all_task_shutdown_cancellation_does_not_spin(directory):
 def _scan_failure_in_owned_loop(scenario, failure, passed):
     """Owned process: the journal's synchronous verify ends with ``failure`` (#516)."""
 
+    context = contextvars.ContextVar("account_control_scan_failure", default="unset")
+
     async def run():
+        unretrieved: list[str] = []
+
+        def report(_loop, ctx):
+            # Only a failure nobody ever retrieved; asyncio's own shield report
+            # of a failure under a cancelled waiter is expected.
+            if "never retrieved" in ctx.get("message", ""):
+                unretrieved.append(ctx["message"])
+
+        asyncio.get_running_loop().set_exception_handler(report)
+        context.set("caller")
+        error: BaseException | None = None
         if failure == "cancelled":
-            error: BaseException = asyncio.CancelledError("raised by verify")
-        else:
+            error = asyncio.CancelledError("raised by verify")
+        elif failure == "os":
             error = OSError("fictional I/O failure")
         started, release, finished = threading.Event(), threading.Event(), threading.Event()
 
         class FailingJournal:
             def verify(self):
+                assert context.get() == "caller"
+                context.set("thread")
                 started.set()
                 try:
-                    if scenario == "caller_cancels":
+                    if scenario != "callable":
                         assert release.wait(5)
-                    raise error
+                    if error is not None:
+                        raise error
+                    return "view"
                 finally:
                     finished.set()
 
         waiter = asyncio.create_task(store._scan(cast(Journal, FailingJournal())))
-        if scenario == "caller_cancels":
+        if scenario == "cancel_after_done":
+            assert await asyncio.to_thread(started.wait, 5)
+            release.set()
+            # Block the loop until the verification has ended and its result is
+            # posted, so the cancellation lands on a finished future.
+            assert finished.wait(5)
+            time.sleep(0.1)
+            waiter.cancel()
+        elif scenario == "caller_cancels":
             assert await asyncio.to_thread(started.wait, 5)
             for _ in range(2):
                 waiter.cancel()
@@ -803,12 +831,16 @@ def _scan_failure_in_owned_loop(scenario, failure, passed):
         except BaseException as raised:
             caught = raised
         else:
-            raise AssertionError("verify's failure became a view")
+            raise AssertionError("the caller's cancellation or verify's failure was lost")
         assert finished.is_set(), "cancellation abandoned live verification"
-        if scenario == "caller_cancels":
+        if scenario != "callable":
             assert isinstance(caught, asyncio.CancelledError) and caught is not error
         else:
             assert caught is error
+        assert context.get() == "caller"
+        del waiter, caught
+        gc.collect()
+        assert not unretrieved, unretrieved
         passed.set()
 
     asyncio.run(run())
@@ -816,7 +848,14 @@ def _scan_failure_in_owned_loop(scenario, failure, passed):
 
 @pytest.mark.parametrize(
     ("scenario", "failure"),
-    [("callable", "cancelled"), ("caller_cancels", "cancelled"), ("caller_cancels", "os")],
+    [
+        ("callable", "cancelled"),
+        ("caller_cancels", "cancelled"),
+        ("caller_cancels", "os"),
+        ("cancel_after_done", "cancelled"),
+        ("cancel_after_done", "os"),
+        ("cancel_after_done", "none"),
+    ],
 )
 def test_cancelled_error_raised_by_verify_ends_the_scan(scenario, failure):
     """#516: as for the barrier helper, verify's own CancelledError is the
