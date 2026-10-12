@@ -22,6 +22,11 @@ does not certify account deletion, and #477 remains the enablement gate.
 No journal pruning, log rewrite, applied-marker expiry or backup-marker extraction
 is added. `BACKUP_RETENTION.md` still forbids pruning.
 
+The subsequent source-only [J1b account-control persistence](ACCOUNT_CONTROL_PERSISTENCE.md)
+adds uncalled request/cause/generation storage, not a production phase applier.
+Persisted request facts still have no applied marker and continue blocking startup;
+they do not establish cancellation, session/writer guards or S1 namespace retirement.
+
 ## Startup and configuration compatibility
 
 **PostgreSQL is now mandatory at both backend and worker startup, even with both

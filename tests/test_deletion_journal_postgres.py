@@ -194,6 +194,10 @@ async def test_marker_mismatch_never_skips_effect(env: Env, directory, column):
 
 @pytest.mark.asyncio
 async def test_whole_pre_j1_schema_distinct_from_partial_schema(env: Env):
+    # The shared disposable fixture applies every migration. Remove the J1b
+    # dependents first to simulate an actual whole pre-J1 schema, not a broken FK.
+    await env.pool.execute("DROP TABLE account_deletions,account_suspension_causes")
+    await env.pool.execute("ALTER TABLE entitlement_accounts DROP COLUMN content_generation")
     await env.pool.execute("DROP TABLE deletion_journal_applied,deletion_journal_binding")
     await require_recovery_barrier(env.pool, cast(Any, Settings)(_env_file=None))
     await env.pool.execute(
