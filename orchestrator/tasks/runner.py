@@ -325,7 +325,8 @@ async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.T
     execution stops at the deadline even while a renewal is still pending
     (§5: no writes or provider work after the lease could have passed on).
     The one exception is this attempt's own completion commit, which makes no
-    provider call and is fenced in the database: a stop then waits for it.
+    provider call and is fenced in the database: a stop then waits for it, so
+    a commit stalled in the database is bounded by ATTEMPT_TIMEOUT_S instead.
     """
     claim = state.claim
     loop = asyncio.get_running_loop()

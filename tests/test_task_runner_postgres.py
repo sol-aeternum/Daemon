@@ -1115,7 +1115,8 @@ class _HeldCompletion:
     returns, so a heartbeat or interrupt can be made to land
     deterministically while the commit has landed but the worker has not yet
     recorded its result. (The engine's exit path may call ``complete`` again
-    to terminalize the row; that call runs unheld.)
+    to terminalize the row; that call runs unheld, after one suspension as a
+    real pool acquire has.) ``calls`` records how every call ended.
     """
 
     def __init__(self, env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1124,6 +1125,7 @@ class _HeldCompletion:
         self.cancel_seen = asyncio.Event()
         self.interrupt_ran = asyncio.Event()
         self.committed: list[TaskStatus] = []
+        self.calls: list[str] = []
         self.before: Any = None
         self.after: Any = None
         complete = self.real_complete = env.tasks.complete
@@ -1132,9 +1134,16 @@ class _HeldCompletion:
 
         async def held_complete(*args: Any, **kwargs: Any) -> TaskStatus:
             before, after, self.before, self.after = self.before, self.after, None, None
-            if before is not None:
-                await before()
-            status = await complete(*args, **kwargs)
+            try:
+                if before is not None:
+                    await before()
+                else:
+                    await asyncio.sleep(0)
+                status = await complete(*args, **kwargs)
+            except BaseException as error:
+                self.calls.append(type(error).__name__)
+                raise
+            self.calls.append(status.value)
             self.committed.append(status)
             if after is not None:
                 await after()
@@ -1321,18 +1330,33 @@ async def test_genuine_lease_loss_during_completion_still_fences(
 
 
 @pytest.mark.asyncio
-async def test_a_failed_completion_after_lease_loss_still_stops_the_attempt(
-    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("stop", "outcome", "attempt"),
+    [("fenced", "fenced", "running"), ("interrupted", "cancelled", "cancelled")],
+)
+async def test_a_stop_deferred_by_a_failed_completion_is_applied_at_once(
+    env: Env,
+    mock_llm: None,
+    monkeypatch: pytest.MonkeyPatch,
+    stop: str,
+    outcome: str,
+    attempt: str,
 ):
-    """#518 negative path: if the in-flight completion does not commit (here
-    it fails outright after the heartbeat saw the lease gone), the lease loss
-    still fences the attempt."""
+    """#518 negative path: a stop that waited for the completion (a lost lease,
+    or a cancel's grace interrupt) is applied the moment the completion fails
+    without committing, so the engine's follow-up terminalizing call is
+    cancelled rather than run on."""
+    monkeypatch.setattr(runner, "STOP_GRACE_S", 0.05)
     race = _HeldCompletion(env, monkeypatch)
     accepted = await accept_task(env)
 
     async def before() -> None:
-        await expire_lease(env, accepted.task_id)
-        await race.until_lease_lost()
+        if stop == "fenced":
+            await expire_lease(env, accepted.task_id)
+            await race.until_lease_lost()
+        else:
+            await env.tasks.request_cancel(env.alice, accepted.task_id)
+            await asyncio.wait_for(race.interrupt_ran.wait(), 5)
         raise ConnectionError("database unavailable")
 
     race.before = before
@@ -1341,10 +1365,44 @@ async def test_a_failed_completion_after_lease_loss_still_stops_the_attempt(
         runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
     )
 
-    assert result == "fenced"
+    assert race.calls == ["ConnectionError", "CancelledError"]
+    assert result == outcome
     assert race.committed == []
     assert "extract_memories" not in _enqueued(redis)
-    assert await _attempt_outcomes(env, accepted.task_id) == ["running"]
+    assert await _attempt_outcomes(env, accepted.task_id) == [attempt]
+
+
+@pytest.mark.asyncio
+async def test_a_local_lease_deadline_reached_during_the_own_commit_waits_for_it(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """#518: renewals stop confirming and the local lease estimate runs out
+    while this attempt's commit is in flight. The database lease is still
+    held, so the commit lands and is the outcome, not ``fenced``."""
+    race = _HeldCompletion(env, monkeypatch)
+    # A 2 s local estimate; the database lease stays LEASE_S.
+    monkeypatch.setattr(runner, "LEASE_SAFETY_S", runner.LEASE_S - 2.0)
+
+    async def unconfirmed(*_args: Any, **_kwargs: Any) -> Any:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(env.tasks, "heartbeat", unconfirmed)
+    accepted = await accept_task(env)
+
+    async def before() -> None:
+        while not any("could not be renewed" in r.getMessage() for r in caplog.records):
+            await asyncio.sleep(0.01)
+
+    race.before = before
+    redis = FakeRedis()
+    result = await asyncio.wait_for(
+        runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
+    )
+
+    assert result == "completed"
+    assert race.calls == ["completed"]
+    assert await _attempt_outcomes(env, accepted.task_id) == ["completed"]
+    assert "extract_memories" in _enqueued(redis)
 
 
 @pytest.mark.asyncio
