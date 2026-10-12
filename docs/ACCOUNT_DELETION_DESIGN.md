@@ -123,6 +123,12 @@ records the source substrate and explicitly approved mandatory-DB startup change
 actual deletion/reset remain unimplemented. No deletion/reset implementation, deployment or live
 action is approved by this slice.
 
+[J1b account-control persistence](ACCOUNT_CONTROL_PERSISTENCE.md) subsequently adds
+only owner-approved source request/cause/generation records and uncalled transaction
+primitives (migration 047). Those facts do **not** constitute a completed request
+fence: no request marker, runtime producer or startup readiness release exists.
+Cancellation, session/writer guards and S1 namespace retirement remain unimplemented.
+
 ## 7. Record of the deletion
 
 After `completed`, only the `account_deletions` row and its `deletion_journal_applied` markers remain: an opaque deletion id, the phase timestamps and counts (tasks cancelled, operations reported, files removed), and the sequence numbers of the journal entries applied. The markers are kept (in the database, so in every backup taken after them) until their journal entries and every backup that could depend on them have expired, so a backup taken after a reset or purge always shows those entries as applied and replay never repeats them. It holds no email, name, content or device data, with one temporary exception: for a deletion whose report is emailed (an operator deletion, §9 decision 6), the destination address is kept encrypted until delivery is confirmed or the operator resolves a failure, then deleted. It exists so a restore can re-apply the deletion and so support can confirm a deletion happened.
