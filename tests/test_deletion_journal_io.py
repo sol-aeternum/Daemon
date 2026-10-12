@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import gc
 import multiprocessing
 import threading
+import time
 from uuid import uuid4
 
 import pytest
@@ -146,6 +148,113 @@ def test_all_task_shutdown_cancellation_waits_for_real_journal_cleanup(tmp_path,
         assert cleaned.is_set(), "journal descriptors were not closed"
     finally:
         release.set()
+        if child.is_alive():
+            child.terminate()
+            child.join(5)
+        assert not child.is_alive(), "owned regression subprocess did not stop"
+        child.close()
+
+
+def _callable_failure_in_owned_loop(scenario, failure, passed):
+    """Owned process: the synchronous callable ends with ``failure`` (#516)."""
+    context = contextvars.ContextVar("journal_io_callable_failure", default="unset")
+
+    async def run():
+        unretrieved: list[str] = []
+
+        def report(_loop, ctx):
+            # Only a failure nobody ever retrieved; asyncio's own shield report
+            # of a failure under a cancelled waiter is expected.
+            if "never retrieved" in ctx.get("message", ""):
+                unretrieved.append(ctx["message"])
+
+        asyncio.get_running_loop().set_exception_handler(report)
+        context.set("caller")
+        error: BaseException | None = None
+        if failure == "cancelled":
+            error = asyncio.CancelledError("raised by the callable")
+        elif failure == "os":
+            error = OSError("fictional I/O failure")
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def work():
+            assert context.get() == "caller"
+            context.set("thread")
+            started.set()
+            try:
+                if scenario != "callable":
+                    assert release.wait(5)
+                if error is not None:
+                    raise error
+                return "result"
+            finally:
+                finished.set()
+
+        waiter = asyncio.create_task(barrier._io(work))
+        if scenario == "cancel_after_done":
+            assert await asyncio.to_thread(started.wait, 5)
+            release.set()
+            # Block the loop until the call has ended and its result is
+            # posted, so the cancellation lands on a finished future.
+            assert finished.wait(5)
+            time.sleep(0.1)
+            waiter.cancel()
+        elif scenario == "caller_cancels":
+            assert await asyncio.to_thread(started.wait, 5)
+            for _ in range(2):
+                waiter.cancel()
+                await asyncio.sleep(0)
+            assert not waiter.done() and not finished.is_set()
+            release.set()
+        try:
+            await waiter
+        except BaseException as raised:
+            caught = raised
+        else:
+            raise AssertionError("the caller's cancellation or the call's failure was lost")
+        assert finished.is_set(), "cancellation abandoned live I/O"
+        if scenario != "callable":
+            # The caller's cancellation wins over whatever the call raised.
+            assert isinstance(caught, asyncio.CancelledError) and caught is not error
+        else:
+            # Raised by the call itself: a terminal outcome, not cancellation
+            # of the waiter, and propagated as the call's own exception.
+            assert caught is error
+        assert context.get() == "caller"
+        del waiter, caught
+        gc.collect()
+        assert not unretrieved, unretrieved
+        passed.set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("scenario", "failure"),
+    [
+        ("callable", "cancelled"),
+        ("caller_cancels", "cancelled"),
+        ("caller_cancels", "os"),
+        # The caller's cancellation lands after the call already ended.
+        ("cancel_after_done", "cancelled"),
+        ("cancel_after_done", "os"),
+        ("cancel_after_done", "none"),
+    ],
+)
+def test_cancelled_error_raised_by_the_callable_ends_the_wait(scenario, failure):
+    """#516: a finished call that raised CancelledError must not be mistaken
+    for caller cancellation and re-awaited forever on a spinning loop."""
+    context = multiprocessing.get_context("spawn")
+    passed = context.Event()
+    child = context.Process(
+        target=_callable_failure_in_owned_loop, args=(scenario, failure, passed)
+    )
+    child.start()
+    try:
+        child.join(10)
+        assert not child.is_alive(), "the helper spun on a finished call"
+        assert child.exitcode == 0 and passed.is_set()
+    finally:
         if child.is_alive():
             child.terminate()
             child.join(5)
