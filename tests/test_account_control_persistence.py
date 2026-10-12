@@ -770,6 +770,73 @@ async def test_all_task_shutdown_cancellation_does_not_spin(directory):
             await asyncio.to_thread(child.join, 5)
 
 
+def _scan_failure_in_owned_loop(scenario, failure, passed):
+    """Owned process: the journal's synchronous verify ends with ``failure`` (#516)."""
+
+    async def run():
+        if failure == "cancelled":
+            error: BaseException = asyncio.CancelledError("raised by verify")
+        else:
+            error = OSError("fictional I/O failure")
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        class FailingJournal:
+            def verify(self):
+                started.set()
+                try:
+                    if scenario == "caller_cancels":
+                        assert release.wait(5)
+                    raise error
+                finally:
+                    finished.set()
+
+        waiter = asyncio.create_task(store._scan(cast(Journal, FailingJournal())))
+        if scenario == "caller_cancels":
+            assert await asyncio.to_thread(started.wait, 5)
+            for _ in range(2):
+                waiter.cancel()
+                await asyncio.sleep(0)
+            assert not waiter.done() and not finished.is_set()
+            release.set()
+        try:
+            await waiter
+        except BaseException as raised:
+            caught = raised
+        else:
+            raise AssertionError("verify's failure became a view")
+        assert finished.is_set(), "cancellation abandoned live verification"
+        if scenario == "caller_cancels":
+            assert isinstance(caught, asyncio.CancelledError) and caught is not error
+        else:
+            assert caught is error
+        passed.set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("scenario", "failure"),
+    [("callable", "cancelled"), ("caller_cancels", "cancelled"), ("caller_cancels", "os")],
+)
+def test_cancelled_error_raised_by_verify_ends_the_scan(scenario, failure):
+    """#516: as for the barrier helper, verify's own CancelledError is the
+    scan's outcome, never caller cancellation awaited again forever."""
+    context = multiprocessing.get_context("spawn")
+    passed = context.Event()
+    child = context.Process(target=_scan_failure_in_owned_loop, args=(scenario, failure, passed))
+    child.start()
+    try:
+        child.join(10)
+        assert not child.is_alive(), "the scan spun on a finished verification"
+        assert child.exitcode == 0 and passed.is_set()
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(5)
+        assert not child.is_alive(), "owned regression subprocess did not stop"
+        child.close()
+
+
 @pytest.mark.asyncio
 async def test_recorded_suspension_into_active_older_snapshot_is_facts_only(env, directory):
     await prepare(env, directory)

@@ -57,6 +57,12 @@ async def _io(call: Callable[[], T]) -> T:
             result = await asyncio.shield(future)
             break
         except asyncio.CancelledError:
+            if future.done():
+                # The call itself raised CancelledError: its thread is done,
+                # and re-awaiting would re-raise at once, forever (#516).
+                if cancelled:
+                    raise asyncio.CancelledError from None
+                raise
             cancelled = True
         except BaseException:
             if cancelled:

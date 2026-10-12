@@ -151,3 +151,79 @@ def test_all_task_shutdown_cancellation_waits_for_real_journal_cleanup(tmp_path,
             child.join(5)
         assert not child.is_alive(), "owned regression subprocess did not stop"
         child.close()
+
+
+def _callable_failure_in_owned_loop(scenario, failure, passed):
+    """Owned process: the synchronous callable ends with ``failure`` (#516)."""
+    context = contextvars.ContextVar("journal_io_callable_failure", default="unset")
+
+    async def run():
+        context.set("caller")
+        if failure == "cancelled":
+            error: BaseException = asyncio.CancelledError("raised by the callable")
+        else:
+            error = OSError("fictional I/O failure")
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def work():
+            assert context.get() == "caller"
+            context.set("thread")
+            started.set()
+            try:
+                if scenario == "caller_cancels":
+                    assert release.wait(5)
+                raise error
+            finally:
+                finished.set()
+
+        waiter = asyncio.create_task(barrier._io(work))
+        if scenario == "caller_cancels":
+            assert await asyncio.to_thread(started.wait, 5)
+            for _ in range(2):
+                waiter.cancel()
+                await asyncio.sleep(0)
+            assert not waiter.done() and not finished.is_set()
+            release.set()
+        try:
+            await waiter
+        except BaseException as raised:
+            caught = raised
+        else:
+            raise AssertionError("the callable's failure became a result")
+        assert finished.is_set(), "cancellation abandoned live I/O"
+        if scenario == "caller_cancels":
+            # The caller's cancellation wins over whatever the call raised.
+            assert isinstance(caught, asyncio.CancelledError) and caught is not error
+        else:
+            # Raised by the call itself: a terminal outcome, not cancellation
+            # of the waiter, and propagated as the call's own exception.
+            assert caught is error
+        assert context.get() == "caller"
+        passed.set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("scenario", "failure"),
+    [("callable", "cancelled"), ("caller_cancels", "cancelled"), ("caller_cancels", "os")],
+)
+def test_cancelled_error_raised_by_the_callable_ends_the_wait(scenario, failure):
+    """#516: a finished call that raised CancelledError must not be mistaken
+    for caller cancellation and re-awaited forever on a spinning loop."""
+    context = multiprocessing.get_context("spawn")
+    passed = context.Event()
+    child = context.Process(
+        target=_callable_failure_in_owned_loop, args=(scenario, failure, passed)
+    )
+    child.start()
+    try:
+        child.join(10)
+        assert not child.is_alive(), "the helper spun on a finished call"
+        assert child.exitcode == 0 and passed.is_set()
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(5)
+        assert not child.is_alive(), "owned regression subprocess did not stop"
+        child.close()
