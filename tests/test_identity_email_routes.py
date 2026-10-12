@@ -57,6 +57,16 @@ class RouteMockConn:
             "SELECT token_verifier_hash FROM signup_invites WHERE normalized_email = $1"
         ):
             return self._pool.invite_hash_by_email.get(args[0])
+        # Provenance contract (P0.5): the consumed challenge row is locked and
+        # attributed inside the existing claim transaction. The mock mirrors
+        # the relevant SQL semantics (claimed_user_id is single-shot; a row
+        # marked absent rejects both the lock and the attribution).
+        if q.startswith("SELECT id FROM email_challenges WHERE id = $1") and q.endswith(
+            "FOR UPDATE"
+        ):
+            return self._pool.lock_email_proof(args)
+        if q.startswith("UPDATE email_challenges SET claimed_user_id"):
+            return self._pool.attribute_email_proof(args)
         return None
 
     async def execute(self, query: str, *args):
@@ -65,11 +75,15 @@ class RouteMockConn:
     @asynccontextmanager
     async def transaction(self):
         snapshot = list(self._pool.claim_markers)
+        proof_snapshot = {k: dict(v) for k, v in self._pool.email_proofs.items()}
         self._pool.transaction_depth += 1
         try:
             yield self
         except Exception:
             self._pool.claim_markers = snapshot
+            # A rolled-back claim transaction must also un-attribute the
+            # proof row: matches the DB-level rollback of claimed_user_id.
+            self._pool.email_proofs = proof_snapshot
             raise
         finally:
             self._pool.transaction_depth -= 1
@@ -84,6 +98,75 @@ class RouteMockPool:
         self.active_invite_by_email: dict[str, dict[str, object]] = {}
         self.transaction_depth = 0
         self.claim_markers: list[str] = []
+        # Consumed-proof bookkeeping behind the P0.5 provenance contract.
+        # challenge_lookup entries double as consumed rows unless an
+        # explicitly-seeded email_proofs entry overrides them (negative tests).
+        self.email_proofs: dict[uuid.UUID, dict[str, object]] = {}
+        self.proof_calls: list[str] = []
+        self.fail_attribute = False
+
+    def mark_email_proof_claimed(
+        self,
+        challenge_id: uuid.UUID,
+        *,
+        normalized_email: str = "user@example.com",
+        consumed_at: datetime | None = None,
+    ) -> None:
+        """Seed the row as already attributed by a previous/concurrent claim."""
+
+        self.email_proofs[challenge_id] = {
+            "normalized_email": normalized_email,
+            "consumed_at": consumed_at or datetime.now(timezone.utc),
+            "claimed_user_id": uuid.uuid4(),
+        }
+
+    def force_email_proof_mismatch(
+        self,
+        challenge_id: uuid.UUID,
+        *,
+        normalized_email: str = "mutated@example.com",
+    ) -> None:
+        """Seed the row with an address that no longer matches the proof."""
+
+        self.email_proofs[challenge_id] = {
+            "normalized_email": normalized_email,
+            "consumed_at": datetime.now(timezone.utc),
+            "claimed_user_id": None,
+        }
+
+    def _email_proof_row(self, challenge_id: uuid.UUID) -> dict[str, object] | None:
+        seeded = self.email_proofs.get(challenge_id)
+        if seeded is not None:
+            return dict(seeded)
+        base = self.challenge_lookup.get(challenge_id)
+        if base is None:
+            return None
+        return {"normalized_email": base["normalized_email"], "claimed_user_id": None}
+
+    def lock_email_proof(self, args: tuple[object, ...]):
+        challenge_id = args[0]
+        assert isinstance(challenge_id, uuid.UUID)
+        row = self._email_proof_row(challenge_id)
+        if row is None:
+            return None
+        if row["claimed_user_id"] is not None:
+            return None
+        if row.get("normalized_email") is not None and row["normalized_email"] != args[2]:
+            return None
+        self.proof_calls.append("lock_email")
+        return challenge_id
+
+    def attribute_email_proof(self, args: tuple[object, ...]):
+        challenge_id = args[0]
+        assert isinstance(challenge_id, uuid.UUID)
+        row = self._email_proof_row(challenge_id)
+        if row is None or row["claimed_user_id"] is not None or self.fail_attribute:
+            return None
+        if row.get("normalized_email") is not None and row["normalized_email"] != args[2]:
+            return None
+        self.email_proofs.setdefault(challenge_id, {})["claimed_user_id"] = args[3]
+        self.proof_calls.append("attribute_email")
+        return challenge_id
 
     async def fetchval(self, query: str, *args):
         return 0
@@ -1079,6 +1162,173 @@ class TestEmailCompleteRoute:
         assert response.json() == {"detail": "code_invalid_or_expired"}
         assert "refresh-token" not in response.text
         assert response.headers.get("set-cookie") is None
+
+    @pytest.mark.asyncio
+    async def test_lock_and_attribute_run_around_the_claim(self, route_client, monkeypatch) -> None:
+        """P0.5 contract: lock the consumed proof, then claim, then attribute,
+        in that order inside the same claim transaction."""
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+
+        async def fake_consume(_self, request):
+            pool.claim_markers.append("email-challenge-consumed")
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            pool.proof_calls.append("claim_email")
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            return _issued_session(client_kind="web", refresh_max_age_seconds=600)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={"Origin": "https://app.daemon.ai", "Sec-Fetch-Site": "same-origin"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert pool.proof_calls == ["lock_email", "claim_email", "attribute_email"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "poison",
+        [
+            "absent_row",
+            "already_claimed",
+            "mutated_address",
+            "attribute_conflict",
+        ],
+    )
+    async def test_email_complete_fails_closed_on_unclaimable_consumed_proof(
+        self, route_client, monkeypatch, poison
+    ):
+        """A consumed proof that no longer matches the claim-time state must
+        fail the whole completion generically: no session, generic 401, and
+        the claim/attribution markers remain rolled back while the burned
+        proof conservative state stays consumed-but-unclaimed."""
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        claimed_marker: list[dict[str, object]] = []
+
+        if poison == "absent_row":
+            # The retention sweeper removed the row between burn and claim.
+            pool.challenge_lookup.pop(challenge_id)
+        elif poison == "already_claimed":
+            pool.mark_email_proof_claimed(challenge_id)
+        elif poison == "mutated_address":
+            pool.force_email_proof_mismatch(challenge_id)
+        else:
+            pool.fail_attribute = True
+
+        async def fake_consume(_self, request):
+            pool.claim_markers.append("email-challenge-consumed")
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            if poison != "attribute_conflict":
+                raise AssertionError("claim must not run on an unclaimable proof")
+            result = _claim_result()
+            claimed_marker.append(
+                {"user_id": result.user.id, "normalized_email": result.user.normalized_email}
+            )
+            return result
+
+        async def fake_issue(_conn, _request):
+            raise AssertionError("no session may be issued on an unclaimable proof")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        async def fail_schedule(
+            _background_tasks: object, _settings: object, _notification: object
+        ) -> None:
+            raise AssertionError("no device notification on an unclaimable proof")
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fail_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={"Origin": "https://app.daemon.ai", "Sec-Fetch-Site": "same-origin"},
+        )
+
+        assert response.status_code == 401, response.text
+        assert response.json() == {"detail": "code_invalid_or_expired"}
+        assert response.headers.get("set-cookie") is None
+        # The burn is intentional and irreversible: a failed claim never
+        # un-consumes the challenge, it only leaves claimed_user_id NULL.
+        assert pool.claim_markers == ["email-challenge-consumed"]
+        if poison == "attribute_conflict":
+            assert len(claimed_marker) == 1
+            assert "lock_email" in pool.proof_calls
+            assert "attribute_email" not in pool.proof_calls
+        else:
+            assert not claimed_marker
 
     @pytest.mark.asyncio
     async def test_wrong_code_persists_failed_attempt_decrement(self, route_client, monkeypatch):

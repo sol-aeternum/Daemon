@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, cast, NotRequired, TypedDict, Protocol
 from zoneinfo import ZoneInfo
 
+import asyncpg
 from arq import Retry
 from arq.connections import ArqRedis
 from arq.jobs import Job
@@ -1110,6 +1111,19 @@ async def cleanup_web_snapshots(ctx: WorkerContext) -> dict[str, int]:
         if count < 1000:
             break
     return {"deleted": deleted}
+
+
+async def cleanup_identity_records(ctx: WorkerContext) -> dict[str, int]:
+    from orchestrator.services.identity.retention import sweep_identity_records
+
+    pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
+    if pool is None:
+        raise RuntimeError("identity retention database unavailable")
+    # Include pool acquisition in the bound; missing DB/timeouts are failures,
+    # not evidence that retention was enforced. No content or IDs in results.
+    async with asyncio.timeout(30):
+        async with pool.acquire() as conn:
+            return await sweep_identity_records(conn)
 
 
 async def reconcile_settlement_receipts(ctx: WorkerContext) -> dict[str, int]:

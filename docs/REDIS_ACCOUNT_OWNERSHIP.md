@@ -89,11 +89,14 @@ Before a separately approved deployment, a coordinated transition must preserve
 outstanding work and admission/revocation state; old persistent fences do not
 disappear merely by waiting for a payload TTL. Key rotation is unqualified.
 
-Per-user failure ownership and aggregate DB audit redaction remain blocked on
-separately approved migration 048. This prerequisite does not make those
+Per-user failure ownership and aggregate DB audit redaction remain separately
+approval-blocked; P0.5's migration 045 covers identity only, not worker failure
+ownership ([IDENTITY_RETENTION.md](IDENTITY_RETENTION.md)). P0.6 does not make those
 ownerless DB/mail records deletable and does not implement a deletion fence.
-No migration 045–050, credential setup, deployment, retention execution, journal
-or account purge is authorized. Feature-matrix deletion/reset rows stay
+This P0.6 prerequisite authorizes no additional migration design or live
+migration, credential setup, deployment, retention execution, journal or account
+purge; P0.5's separately approved 045 source contract remains identity-only.
+Feature-matrix deletion/reset rows stay
 `Not started`.
 
 ## Design §8 acceptance mapping
@@ -102,7 +105,7 @@ or account purge is authorized. Feature-matrix deletion/reset rows stay
 |---|---|---|
 | Drained job resumes after Redis eviction | User result suppression on every terminal/preexecution path | Writer registry, termination proof, manifest and repeated eviction |
 | Job crash after key collection | Account discovery independent of restored DB rows; identifiers-only new payloads | Durable manifest and restart-safe purge |
-| Scheduled dreaming failed for several users | Shared Redis counts-only; original DB/mail audit evidence retained | Migration 048 ownership and per-user purge/redaction |
+| Scheduled dreaming failed for several users | Shared Redis counts-only; original DB/mail audit evidence retained | Separate DB failure-ownership migration and per-user purge/redaction |
 | Web fetch shortly before reset | Atomic shared-cache ownership index with opaque key names | Reset/purge index eviction and fencing |
 
 The PR must supply executable positive and negative evidence on its final head,

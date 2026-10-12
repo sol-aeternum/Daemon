@@ -113,6 +113,35 @@ class GoogleRouteMockConn:
             "SELECT token_verifier_hash FROM signup_invites WHERE normalized_email = $1"
         ):
             return self._pool.invite_hash_by_email.get(args[0])
+        # P0.5 provenance contract: lock/attribute the consumed nonce inside
+        # the claim transaction; claimed_user_id is single-shot.
+        if q.startswith("SELECT id FROM google_nonce_challenges WHERE id = $1") and q.endswith(
+            "FOR UPDATE"
+        ):
+            row = self._pool._nonce_row(args[0])
+            if (
+                row is None
+                or args[0] in self._pool.absent_proofs
+                or row["claimed_user_id"] is not None
+            ):
+                return None
+            if row.get("user_id_proposed") is not None or args[3] is not None:
+                if row.get("user_id_proposed") != args[3]:
+                    return None
+            self._pool.proof_calls.append("lock_nonce")
+            return args[0]
+        if q.startswith("UPDATE google_nonce_challenges SET claimed_user_id"):
+            row = self._pool._nonce_row(args[0])
+            if (
+                row is None
+                or args[0] in self._pool.absent_proofs
+                or row["claimed_user_id"] is not None
+                or self._pool.fail_attribute
+            ):
+                return None
+            row["claimed_user_id"] = args[3]
+            self._pool.proof_calls.append("attribute_nonce")
+            return args[0]
         return None
 
     async def execute(self, query: str, *args):
@@ -122,12 +151,19 @@ class GoogleRouteMockConn:
     @asynccontextmanager
     async def transaction(self):
         snapshot = list(self._pool.claim_markers)
+        claim_snapshot = {row["id"]: row["claimed_user_id"] for row in self._pool.nonce_store}
         self._pool.transaction_depth += 1
         self._pool.transaction_stack.append(True)
         try:
             yield self
         except Exception:
             self._pool.claim_markers = snapshot
+            # A rolled-back claim transaction must also un-attribute any
+            # consumed nonce it touched, matching DB-level rollback of
+            # claimed_user_id (the burn/consumed_at itself stays committed).
+            for row in self._pool.nonce_store:
+                if row["id"] in claim_snapshot:
+                    row["claimed_user_id"] = claim_snapshot[row["id"]]
             raise
         finally:
             self._pool.transaction_stack.pop()
@@ -152,6 +188,7 @@ class GoogleRouteMockConn:
             "created_at": now,
             "ip_hash": ip_hash,
             "user_agent_hash": user_agent_hash,
+            "claimed_user_id": None,
         }
         self._pool.nonce_store.append(row)
         return _Record(
@@ -215,6 +252,18 @@ class GoogleRouteMockPool:
         self.transaction_stack: list[bool] = []
         self.transaction_depth = 0
         self.claim_markers: list[str] = []
+        # Consumed-proof tracking behind the P0.5 provenance contract.
+        self.proof_calls: list[str] = []
+        self.fail_attribute = False
+        #: Proof IDs that must behave as missing rows at lock/attribute time
+        #: (e.g. removed by retention between burn and claim).
+        self.absent_proofs: set[Any] = set()
+
+    def _nonce_row(self, challenge_id: Any) -> dict[str, Any] | None:
+        for row in self.nonce_store:
+            if row["id"] == challenge_id:
+                return row
+        return None
 
     async def fetchval(self, query: str, *args):
         return 0
@@ -492,6 +541,22 @@ def _install_stub_verifier(
     return stub
 
 
+def _register_consumed_nonce(pool: GoogleRouteMockPool, record: Any) -> None:
+    """Expose a fabricated consumed nonce result to the P0.5 provenance
+    lock/attribute path of the mock connection (animatable claims only)."""
+    pool.nonce_store.append(
+        {
+            "id": record["id"],
+            "nonce_verifier_hash": record["nonce_verifier_hash"],
+            "user_id_proposed": record["user_id_proposed"],
+            "expires_at": record["expires_at"],
+            "consumed_at": record["consumed_at"],
+            "created_at": record["created_at"],
+            "claimed_user_id": None,
+        }
+    )
+
+
 def _seed_nonce(pool: GoogleRouteMockPool, plaintext_nonce: str) -> uuid.UUID:
     """Insert a pre-existing nonce row for the consume path to find."""
     from orchestrator.config import get_settings
@@ -510,6 +575,7 @@ def _seed_nonce(pool: GoogleRouteMockPool, plaintext_nonce: str) -> uuid.UUID:
         "expires_at": now + timedelta(minutes=10),
         "consumed_at": None,
         "created_at": now,
+        "claimed_user_id": None,
     }
     pool.nonce_store.append(row)
     return challenge_id
@@ -599,6 +665,188 @@ class TestGoogleCompleteRoute:
             "ip",
             "ip",
         ]  # Two ip policies: pre-claim (#129 L1070) and post-claim (L1076)
+
+    @pytest.mark.asyncio
+    async def test_lock_and_attribute_run_around_the_nonce_claim(self, route_client, monkeypatch):
+        """P0.5 contract: the consumed nonce is locked before the account
+        claim and attributed after it, inside the existing claim transaction
+        (the burn itself stays committed outside the transaction)."""
+        client, pool = route_client
+        plaintext = "plaintext-nonce-order"
+        challenge_id = _seed_nonce(pool, plaintext)
+
+        _install_stub_verifier(monkeypatch, claims=_good_claims(nonce=plaintext))
+
+        async def fake_consume(_self, _request):
+            assert pool.transaction_depth == 0
+            row = pool.nonce_store[0]
+            row["consumed_at"] = datetime.now(timezone.utc)
+            pool.claim_markers.append("google-nonce-consumed")
+            from orchestrator.services.identity import GoogleNonceRow
+
+            return GoogleNonceRow(
+                id=row["id"],
+                nonce_verifier_hash=row["nonce_verifier_hash"],
+                user_id_proposed=row["user_id_proposed"],
+                expires_at=row["expires_at"],
+                consumed_at=row["consumed_at"],
+                created_at=row["created_at"],
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            assert pool.transaction_depth == 1
+            pool.proof_calls.append("claim_nonce")
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            assert pool.transaction_depth == 1
+            return _issued_session(client_kind="web", refresh_max_age_seconds=600)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "nonce": plaintext,
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={"Origin": "https://app.daemon.ai", "Sec-Fetch-Site": "same-origin"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert pool.proof_calls == ["lock_nonce", "claim_nonce", "attribute_nonce"]
+        # The burn marker survives (it predates the transaction); attribution
+        # state remains owned by the single committed claim.
+        assert pool.claim_markers == ["google-nonce-consumed"]
+        assert pool.nonce_store[0]["claimed_user_id"] is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "poison",
+        ["absent_row", "already_claimed", "attribute_conflict"],
+    )
+    async def test_google_complete_fails_closed_on_unclaimable_consumed_nonce(
+        self, route_client, monkeypatch, poison
+    ):
+        """A consumed nonce that no longer matches the claim-time state must
+        fail the whole completion generically: no session, generic 401, and
+        no attribution while the burn itself stays committed."""
+        client, pool = route_client
+        plaintext = "plaintext-nonce-unclaimable"
+        challenge_id = _seed_nonce(pool, plaintext)
+        claimed_marker: list[dict[str, object]] = []
+        seeded_claimed_user_id: uuid.UUID | None = None
+
+        if poison == "absent_row":
+            # The retention sweeper removed the row between burn and claim.
+            pool.absent_proofs = {challenge_id}
+        elif poison == "already_claimed":
+            # A concurrent/earlier successful claim already owns this proof.
+            seeded_claimed_user_id = uuid.uuid4()
+            pool.nonce_store[0]["claimed_user_id"] = seeded_claimed_user_id
+        else:
+            pool.fail_attribute = True
+
+        _install_stub_verifier(monkeypatch, claims=_good_claims(nonce=plaintext))
+
+        async def fake_consume(_self, _request):
+            assert pool.transaction_depth == 0
+            row = pool.nonce_store[0]
+            row["consumed_at"] = datetime.now(timezone.utc)
+            pool.claim_markers.append("google-nonce-consumed")
+            from orchestrator.services.identity import GoogleNonceRow
+
+            return GoogleNonceRow(
+                id=row["id"],
+                nonce_verifier_hash=row["nonce_verifier_hash"],
+                user_id_proposed=row["user_id_proposed"],
+                expires_at=row["expires_at"],
+                consumed_at=row["consumed_at"],
+                created_at=row["created_at"],
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            if poison != "attribute_conflict":
+                raise AssertionError("claim must not run on an unclaimable proof")
+            pool.proof_calls.append("claim_nonce")
+            result = _claim_result()
+            claimed_marker.append({"user_id": result.user.id})
+            return result
+
+        async def fake_issue(_conn, _request):
+            raise AssertionError("no session may be issued on an unclaimable proof")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        async def fail_schedule(
+            _background_tasks: object, _settings: object, _notification: object
+        ) -> None:
+            raise AssertionError("no device notification on an unclaimable proof")
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fail_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "nonce": plaintext,
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={"Origin": "https://app.daemon.ai", "Sec-Fetch-Site": "same-origin"},
+        )
+
+        assert response.status_code == 401, response.text
+        assert response.json() == {"detail": "google_sign_in_failed"}
+        assert response.headers.get("set-cookie") is None
+        # The verify/burn side effects are intentional and irreversible;
+        # the failed claim only leaves the proof unattributed.
+        assert pool.claim_markers == ["google-nonce-consumed"]
+        if seeded_claimed_user_id is None:
+            assert pool.nonce_store[0]["claimed_user_id"] is None
+        else:
+            # The seeded claim survives; no second attribution happened.
+            assert pool.nonce_store[0]["claimed_user_id"] == seeded_claimed_user_id
+        if poison == "attribute_conflict":
+            assert len(claimed_marker) == 1
+            assert "lock_nonce" in pool.proof_calls
+            assert "attribute_nonce" not in pool.proof_calls
+        else:
+            assert not claimed_marker
+            assert "claim_nonce" not in pool.proof_calls
 
     @pytest.mark.asyncio
     async def test_web_temporary_uses_session_cookie(self, route_client, monkeypatch):
@@ -1488,7 +1736,7 @@ class TestGoogleCompleteNewDeviceNotification:
         captured_notifications: list = []
 
         async def fake_consume(_self, _request):
-            return _Record(
+            record = _Record(
                 {
                     "id": uuid.uuid4(),
                     "nonce_verifier_hash": "verifier",
@@ -1498,6 +1746,8 @@ class TestGoogleCompleteNewDeviceNotification:
                     "created_at": datetime.now(timezone.utc),
                 }
             )
+            _register_consumed_nonce(_pool, record)
+            return record
 
         async def fake_verify(_self, _request):
             return VerifiedGoogleIdentity(
@@ -1705,7 +1955,7 @@ class TestGoogleCompleteNewDeviceNotification:
         captured_notifications: list = []
 
         async def fake_consume(_self, _request):
-            return _Record(
+            record = _Record(
                 {
                     "id": uuid.uuid4(),
                     "nonce_verifier_hash": "verifier",
@@ -1715,6 +1965,8 @@ class TestGoogleCompleteNewDeviceNotification:
                     "created_at": datetime.now(timezone.utc),
                 }
             )
+            _register_consumed_nonce(_pool, record)
+            return record
 
         async def fake_verify(_self, _request):
             return VerifiedGoogleIdentity(
@@ -1782,7 +2034,7 @@ class TestGoogleCompleteNewDeviceNotification:
         schedule_calls: list = []
 
         async def fake_consume(_self, _request):
-            return _Record(
+            record = _Record(
                 {
                     "id": uuid.uuid4(),
                     "nonce_verifier_hash": "verifier",
@@ -1792,6 +2044,8 @@ class TestGoogleCompleteNewDeviceNotification:
                     "created_at": datetime.now(timezone.utc),
                 }
             )
+            _register_consumed_nonce(_pool, record)
+            return record
 
         async def fake_verify(_self, _request):
             return VerifiedGoogleIdentity(
