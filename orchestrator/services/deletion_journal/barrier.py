@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
@@ -47,11 +48,13 @@ async def _io(call: Callable[[], T]) -> T:
     asyncio cancellation does not terminate threads, so wait for lock release
     rather than close/reuse descriptors while the thread still writes.
     """
-    task = asyncio.create_task(asyncio.to_thread(call))
+    # Retain the executor future, not a child task that all-task shutdown can
+    # cancel independently while its filesystem thread is still running.
+    future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, call)
     cancelled = False
     while True:
         try:
-            result = await asyncio.shield(task)
+            result = await asyncio.shield(future)
             break
         except asyncio.CancelledError:
             cancelled = True
