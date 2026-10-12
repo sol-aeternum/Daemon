@@ -25,6 +25,11 @@ from orchestrator.memory.encryption import (
 from orchestrator.memory.store import MemoryStore
 from orchestrator.tasks.runner import ATTEMPT_TIMEOUT_S, run_chat_task, sweep_tasks
 from orchestrator.tasks.store import TaskStore
+from orchestrator.services.deletion_journal.barrier import (
+    configured_journal,
+    require_recovery_barrier,
+)
+from orchestrator.services.deletion_journal.errors import JournalError
 
 from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
@@ -93,26 +98,40 @@ async def on_startup(ctx: WorkerContext) -> None:
     ctx["task_store"] = None
 
     validate_database_credentials(app_settings)
+    configured_journal(app_settings)
 
     if not app_settings.database_url:
-        logger.info("DATABASE_URL not configured; worker memory jobs degraded")
-        return
+        raise JournalError("database_required")
 
-    db_pool = await asyncpg.create_pool(
-        dsn=app_settings.database_url,
-        min_size=2,
-        max_size=10,
-    )
+    try:
+        db_pool = await asyncpg.create_pool(
+            dsn=app_settings.database_url,
+            min_size=2,
+            max_size=10,
+        )
+    except Exception:
+        raise JournalError("database_required") from None
+    try:
+        await require_recovery_barrier(db_pool, app_settings)
+    except BaseException:
+        await db_pool.close()
+        raise
     ctx["db_pool"] = db_pool
-    await initialize_development_pepper(app_settings, db_pool)
-    ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
-    ctx["task_store"] = TaskStore(db_pool, ctx["encryption"], ctx["store"])
-    logger.info("Worker DB pool created")
-    # Background inference admits monitored routes from the attestation snapshot;
-    # the worker also runs its own ZDR checks so it enforces revocations itself.
-    from orchestrator.entitlements import attestation
+    try:
+        await initialize_development_pepper(app_settings, db_pool)
+        ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
+        ctx["task_store"] = TaskStore(db_pool, ctx["encryption"], ctx["store"])
+        logger.info("Worker DB pool created")
+        # No background startup until the journal evidence gate has passed.
+        from orchestrator.entitlements import attestation
 
-    await attestation.start(db_pool)
+        await attestation.start(db_pool)
+    except BaseException:
+        await db_pool.close()
+        ctx.pop("db_pool", None)
+        ctx["store"] = None
+        ctx["task_store"] = None
+        raise
 
 
 async def on_shutdown(ctx: WorkerContext) -> None:

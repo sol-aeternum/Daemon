@@ -7,6 +7,23 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### J1a journal startup substrate — 12 October 2026
+
+MIGRATION: PostgreSQL is mandatory at backend/worker startup even when journal
+settings are empty (explicit owner decision). No degraded DB-less startup remains.
+For a separately approved journal activation, add `DAEMON_DELETION_JOURNAL_DIR`
+and `DAEMON_DELETION_JOURNAL_ID` to both services; no existing key is renamed or
+removed. Both unset/empty has the same meaning: require positive absence of DB
+binding/markers. One missing/empty with the other set fails; neither can be cleared
+on an activated deployment. A pre-binding DB restore cannot substitute for the
+unchanged external journal configuration. No automatic volume or live provisioning.
+The startup guard consumes both settings. See [DELETION_JOURNAL.md](DELETION_JOURNAL.md).
+
+The source migration is 046; configured mode requires both journal tables and the
+correct independently provisioned store. Missing DB/schema or pending replay fails
+closed; there is no production applier/pruning. This describes source compatibility,
+not deployment instructions or permission to execute migration/provisioning.
+
 ### Account-owned Redis namespaces — 9 October 2026 (P0.6)
 
 MIGRATION: add `DAEMON_REDIS_ACCOUNT_HASH_KEY` to **both** backend and worker

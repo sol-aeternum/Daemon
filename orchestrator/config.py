@@ -354,6 +354,9 @@ class Settings(BaseSettings):
 
     # ===== MEMORY LAYER =====
     database_url: str | None = None
+    # J1a startup evidence gate. Both empty requires an accessible unbound DB.
+    daemon_deletion_journal_dir: str | None = None
+    daemon_deletion_journal_id: str | None = None
     redis_url: str | None = None
     # Stable across processes/restores; never reuse auth or encryption secrets.
     daemon_redis_account_hash_key: str | None = None
