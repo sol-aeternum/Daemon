@@ -283,9 +283,10 @@ async def test_backend_pool_uses_postgres_env_derived_database_url(
         daemon_environment="development",
     )
 
-    state = await db_module.init_app_state(settings)
+    from orchestrator.services.deletion_journal.errors import JournalError
 
-    assert state.db_pool is None
+    with pytest.raises(JournalError, match="database_required"):
+        await db_module.init_app_state(settings)
     assert captured["dsn"] == "postgresql://daemon:unique%40secret@postgres:5432/daemon"
 
 
@@ -312,7 +313,9 @@ async def test_worker_pool_uses_postgres_env_derived_database_url(
     monkeypatch.setattr(worker_module, "get_settings", lambda: settings)
     monkeypatch.setattr(worker_module.asyncpg, "create_pool", fail_after_capture)
 
-    with pytest.raises(OSError, match="expected test stop"):
+    from orchestrator.services.deletion_journal.errors import JournalError
+
+    with pytest.raises(JournalError, match="database_required"):
         await worker_module.on_startup({})
 
     assert settings.database_url == "postgresql://daemon:unique%40secret@postgres:5432/daemon"

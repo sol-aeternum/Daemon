@@ -13,6 +13,11 @@ from orchestrator.redis_account import validate_redis_account_key
 from db.video_credits import VideoCreditsDAL
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.services.deletion_journal.barrier import (
+    configured_journal,
+    require_recovery_barrier,
+)
+from orchestrator.services.deletion_journal.errors import JournalError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,7 @@ class AppState:
 async def init_app_state(settings: Settings) -> AppState:
     # Configuration failure must not be swallowed as optional Redis degradation.
     validate_redis_account_key(settings)
+    configured_journal(settings)
     state = AppState(settings=settings)
     database_url = resolve_database_url(settings.database_url)
 
@@ -48,14 +54,26 @@ async def init_app_state(settings: Settings) -> AppState:
             )
             logger.info("PostgreSQL pool created")
         except Exception:
-            logger.warning("Failed to connect to PostgreSQL — running without DB", exc_info=True)
+            raise JournalError("database_required") from None
     else:
-        logger.info("DATABASE_URL not set — running without DB")
+        raise JournalError("database_required")
 
-    if state.db_pool is not None:
-        encryption = ContentEncryption(settings.daemon_encryption_key)
-        state.memory_store = MemoryStore(state.db_pool, encryption)
-        state.video_credits_dal = VideoCreditsDAL(state.db_pool)
+    try:
+        await require_recovery_barrier(state.db_pool, settings)
+    except BaseException:
+        if state.db_pool is not None:
+            await state.db_pool.close()
+        raise
+
+    try:
+        if state.db_pool is not None:
+            encryption = ContentEncryption(settings.daemon_encryption_key)
+            state.memory_store = MemoryStore(state.db_pool, encryption)
+            state.video_credits_dal = VideoCreditsDAL(state.db_pool)
+    except BaseException:
+        if state.db_pool is not None:
+            await state.db_pool.close()
+        raise
 
     if settings.redis_url:
         try:
