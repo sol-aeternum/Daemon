@@ -99,6 +99,9 @@ investigation. This is a source interface description, not a live execution requ
   Requests require their exact `(deletion|reset, operation_id)` cause; missing or
   mismatched causes fail before append and also fail full-log replay, including
   correctly hashed frames (`test_deletion_journal_request_fence.py`).
+  Zero-grace deletion requests require a recorded `legal` or `abuse` reason;
+  ordinary requests may omit it. Constructor/append and correctly hashed replay
+  regressions cover this invariant (`test_deletion_journal_no_grace.py`).
   Actual database cause-set completeness remains the future trusted producer's
   obligation under account locks: structural validation cannot certify unseen DB
   facts. No runtime producer or generic fallback is introduced by this slice.

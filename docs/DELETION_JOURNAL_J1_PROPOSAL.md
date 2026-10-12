@@ -66,7 +66,7 @@ J1a's exact proposed event-field allowlist (in addition to the common envelope):
 
 | Event | Fields |
 | --- | --- |
-| `requested`, `reset_requested` | Prior status enum; prior suspension-reason code; complete effective cause set as sorted `(cause_code, opaque_cause_id)` pairs; positive fence generation; original drain/revocation/billing deadlines; `no_grace` and optional legal/abuse reason code for deletion only. |
+| `requested`, `reset_requested` | Prior status enum; prior suspension-reason code; complete effective cause set as sorted `(cause_code, opaque_cause_id)` pairs; positive fence generation; original drain/revocation/billing deadlines; `no_grace` and legal/abuse reason code for deletion only (reason required when `no_grace` is true, optional otherwise). |
 | `grace_started` | Exact grace-start timestamp and grace deadline, seven days apart. |
 | `reset_report_ready` | Exact report-ready timestamp and acknowledgement deadline, seven days apart. |
 | `reset_acknowledged` | Original acknowledgement timestamp. |

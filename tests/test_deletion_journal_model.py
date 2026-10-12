@@ -402,7 +402,7 @@ class TestCommandDigest:
                 "requested",
                 _request_fields(prior_status="suspended", prior_reason="reset"),
             ),
-            _cmd("requested", _request_fields(no_grace=True)),
+            _cmd("requested", _request_fields(no_grace=True, reason="legal")),
             _cmd("requested", _request_fields(reason="legal")),
             _cmd(
                 "requested",
@@ -1606,7 +1606,10 @@ class TestJournalStateTerminalCauses:
         _raises_code(INVALID, lambda: state.accept(bad))
 
     def test_reset_rejects_deletion_only_zero_grace(self) -> None:
-        _raises_code(INVALID, lambda: _cmd("reset_requested", _request_fields(no_grace=True)))
+        _raises_code(
+            INVALID,
+            lambda: _cmd("reset_requested", _request_fields(no_grace=True, reason="legal")),
+        )
 
     def test_terminal_cannot_invent_a_cause(self) -> None:
         state = JournalState()

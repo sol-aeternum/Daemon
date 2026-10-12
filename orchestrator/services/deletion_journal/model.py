@@ -205,6 +205,8 @@ class RequestFields:
             not isinstance(self.reason, str) or self.reason not in _REQUEST_REASONS
         ):
             _invalid()
+        if self.no_grace and self.reason is None:
+            _invalid()  # zero-grace deletion must preserve its legal/abuse reason
 
 
 @dataclass(frozen=True, slots=True)
