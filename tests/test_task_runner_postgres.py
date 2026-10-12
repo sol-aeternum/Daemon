@@ -1105,3 +1105,268 @@ async def test_web_fetch_refreshes_are_remembered_per_task_across_attempts(env: 
         "SELECT payload_ciphertext FROM task_events WHERE kind = 'page_refreshed'"
     )
     assert payloads and all("example.com" not in str(p) for p in payloads)
+
+
+class _HeldCompletion:
+    """Drive this attempt's completion through the #518 scheduling window.
+
+    The real ``complete`` runs against PostgreSQL; ``before`` and ``after``
+    run once, just before the attempt's first call and right after it
+    returns, so a heartbeat or interrupt can be made to land
+    deterministically while the commit has landed but the worker has not yet
+    recorded its result. (The engine's exit path may call ``complete`` again
+    to terminalize the row; that call runs unheld.)
+    """
+
+    def __init__(self, env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.env = env
+        self.lease_lost = asyncio.Event()
+        self.cancel_seen = asyncio.Event()
+        self.interrupt_ran = asyncio.Event()
+        self.committed: list[TaskStatus] = []
+        self.before: Any = None
+        self.after: Any = None
+        complete = self.real_complete = env.tasks.complete
+        heartbeat = env.tasks.heartbeat
+        interrupt = runner._interrupt
+
+        async def held_complete(*args: Any, **kwargs: Any) -> TaskStatus:
+            before, after, self.before, self.after = self.before, self.after, None, None
+            if before is not None:
+                await before()
+            status = await complete(*args, **kwargs)
+            self.committed.append(status)
+            if after is not None:
+                await after()
+            return status
+
+        async def observed_heartbeat(*args: Any, **kwargs: Any) -> Any:
+            try:
+                beat = await heartbeat(*args, **kwargs)
+            except runner.LeaseLost:
+                self.lease_lost.set()
+                raise
+            if beat.cancel_requested:
+                self.cancel_seen.set()
+            return beat
+
+        def observed_interrupt(*args: Any) -> None:
+            interrupt(*args)
+            self.interrupt_ran.set()
+
+        monkeypatch.setattr(env.tasks, "complete", held_complete)
+        monkeypatch.setattr(env.tasks, "heartbeat", observed_heartbeat)
+        monkeypatch.setattr(runner, "_interrupt", observed_interrupt)
+        monkeypatch.setattr(runner, "HEARTBEAT_S", 0.05)
+
+    async def until_lease_lost(self) -> None:
+        await asyncio.wait_for(self.lease_lost.wait(), 5)
+
+
+async def _attempt_outcomes(env: Env, task_id: uuid.UUID) -> list[str]:
+    rows = await env.pool.fetch(
+        "SELECT outcome FROM task_attempts WHERE task_id = $1 ORDER BY epoch", task_id
+    )
+    return [row["outcome"] for row in rows]
+
+
+def _enqueued(redis: FakeRedis) -> list[str]:
+    return [name for name, _args, _kwargs in redis.enqueued]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("won", "outcome", "attempt"),
+    [
+        (None, "completed", "completed"),
+        ("cancel", "cancelled", "cancelled"),
+        ("suspension", "failed", "failed_terminal"),
+    ],
+)
+async def test_lease_loss_seen_after_the_attempts_own_commit_keeps_its_outcome(
+    env: Env,
+    mock_llm: None,
+    monkeypatch: pytest.MonkeyPatch,
+    won: str | None,
+    outcome: str,
+    attempt: str,
+):
+    """#518: a heartbeat that finds the lease ended by this attempt's own
+    completion commit, before the worker records the result, must not fence
+    it. The committed status (cancel and suspension precedence included) is
+    the outcome, and success-only follow-ups run exactly when it completed."""
+    race = _HeldCompletion(env, monkeypatch)
+    accepted = await accept_task(env)
+
+    async def before() -> None:
+        if won == "cancel":
+            await env.tasks.request_cancel(env.alice, accepted.task_id)
+        elif won == "suspension":
+            await env.pool.execute(
+                "INSERT INTO entitlement_accounts (user_id, status) VALUES ($1, 'suspended') "
+                "ON CONFLICT (user_id) DO UPDATE SET status = 'suspended'",
+                env.alice,
+            )
+
+    race.before = before
+    race.after = race.until_lease_lost
+    redis = FakeRedis()
+    result = await asyncio.wait_for(
+        runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
+    )
+
+    assert race.lease_lost.is_set() and [s.value for s in race.committed] == [outcome]
+    assert result == outcome
+    assert await _status(env, accepted.task_id) == outcome
+    assert await _attempt_outcomes(env, accepted.task_id) == [attempt]
+    assert ("extract_memories" in _enqueued(redis)) is (outcome == "completed")
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None
+    # A suspended account's result is never published.
+    assert (snapshot.content == MOCK_TEXT) is (won != "suspension")
+    assert redis.published[-1][1] == {"t": "terminal", "gen": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_stop_interrupt_due_after_the_attempts_own_commit_keeps_its_outcome(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """#518: the cancel grace interrupt firing after this attempt committed
+    ``cancelled`` (but before it recorded that) must not turn the outcome
+    into ``fenced``; the committed cancel stands."""
+    monkeypatch.setattr(runner, "STOP_GRACE_S", 0.05)
+    race = _HeldCompletion(env, monkeypatch)
+    accepted = await accept_task(env)
+    interrupt, heartbeat = runner._interrupt, env.tasks.heartbeat
+    loop = asyncio.get_running_loop()
+
+    def interrupt_after_commit(*args: Any) -> None:
+        # Only the interrupt may land in the window: never before the commit.
+        if not race.committed:
+            loop.call_later(0.01, interrupt_after_commit, *args)
+            return
+        interrupt(*args)
+
+    async def no_beat_until_interrupted(*args: Any, **kwargs: Any) -> Any:
+        # Keep the heartbeat's lease-loss path out of this window.
+        if race.cancel_seen.is_set():
+            await race.interrupt_ran.wait()
+        return await heartbeat(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_interrupt", interrupt_after_commit)
+    monkeypatch.setattr(env.tasks, "heartbeat", no_beat_until_interrupted)
+
+    async def before() -> None:
+        await env.tasks.request_cancel(env.alice, accepted.task_id)
+        await asyncio.wait_for(race.cancel_seen.wait(), 5)
+
+    async def after() -> None:
+        await asyncio.wait_for(race.interrupt_ran.wait(), 5)
+
+    race.before, race.after = before, after
+    redis = FakeRedis()
+    result = await asyncio.wait_for(
+        runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
+    )
+
+    assert race.interrupt_ran.is_set() and race.committed == [TaskStatus.CANCELLED]
+    assert result == "cancelled"
+    assert await _attempt_outcomes(env, accepted.task_id) == ["cancelled"]
+    assert "extract_memories" not in _enqueued(redis)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_to", ["expiry", "another_attempt"])
+async def test_genuine_lease_loss_during_completion_still_fences(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, lost_to: str
+):
+    """#518 negative path: a lease that really ended before this attempt's
+    commit fences the attempt, even while its completion is in flight, and
+    another attempt's completion is never reported as this attempt's."""
+    race = _HeldCompletion(env, monkeypatch)
+    accepted = await accept_task(env)
+    completing, lost = asyncio.Event(), asyncio.Event()
+
+    async def before() -> None:
+        completing.set()
+        await lost.wait()
+
+    race.before = before
+    redis = FakeRedis()
+    job = asyncio.create_task(runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)))
+    await asyncio.wait_for(completing.wait(), 10)
+    # The stale worker paused past its lease, just before its commit.
+    await expire_lease(env, accepted.task_id)
+    if lost_to == "another_attempt":
+        takeover = await env.tasks.claim(accepted.task_id, worker_id="other", lease_s=LEASE_S)
+        assert takeover is not None and takeover.epoch == 2
+        await race.real_complete(accepted.task_id, takeover.epoch, content="from attempt 2")
+    await race.until_lease_lost()
+    lost.set()
+    result = await asyncio.wait_for(job, 10)
+
+    assert result == "fenced"
+    assert race.committed == []  # this attempt committed nothing
+    assert "extract_memories" not in _enqueued(redis)
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None
+    if lost_to == "another_attempt":
+        assert await _attempt_outcomes(env, accepted.task_id) == ["lost", "completed"]
+        assert snapshot.status is TaskStatus.COMPLETED
+        assert snapshot.content == "from attempt 2"
+    else:
+        # Nothing was committed by the stale attempt; recovery owns the task.
+        assert await _attempt_outcomes(env, accepted.task_id) == ["running"]
+        assert snapshot.status is TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_a_failed_completion_after_lease_loss_still_stops_the_attempt(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """#518 negative path: if the in-flight completion does not commit (here
+    it fails outright after the heartbeat saw the lease gone), the lease loss
+    still fences the attempt."""
+    race = _HeldCompletion(env, monkeypatch)
+    accepted = await accept_task(env)
+
+    async def before() -> None:
+        await expire_lease(env, accepted.task_id)
+        await race.until_lease_lost()
+        raise ConnectionError("database unavailable")
+
+    race.before = before
+    redis = FakeRedis()
+    result = await asyncio.wait_for(
+        runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
+    )
+
+    assert result == "fenced"
+    assert race.committed == []
+    assert "extract_memories" not in _enqueued(redis)
+    assert await _attempt_outcomes(env, accepted.task_id) == ["running"]
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_during_completion_still_propagates(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch
+):
+    """#518 negative path: deferring the attempt's own stop while it commits
+    never swallows a worker shutdown."""
+    race = _HeldCompletion(env, monkeypatch)
+    accepted = await accept_task(env)
+    held = asyncio.Event()
+
+    async def after() -> None:
+        held.set()
+        await asyncio.Event().wait()  # until the worker shuts down
+
+    race.after = after
+    job = asyncio.create_task(runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)))
+    await asyncio.wait_for(held.wait(), 10)
+    await race.until_lease_lost()
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(job, 5)
+    assert race.committed == [TaskStatus.COMPLETED]
+    assert await _status(env, accepted.task_id) == "completed"

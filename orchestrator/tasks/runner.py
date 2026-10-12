@@ -98,6 +98,14 @@ class AttemptState:
     #: The attempt was counted and may have reached a provider.
     executing: bool = False
     result: TaskStatus | None = None
+    #: This attempt's own completion commit is in flight. It rechecks the
+    #: lease, a cancel and a suspension under the task lock, so the attempt's
+    #: own stops wait for it rather than cancel over a commit that may already
+    #: have landed (#518).
+    completing: bool = False
+    #: A stop that arrived while completing (``"fenced"`` or
+    #: ``"interrupted"``): applied if the commit does not land, moot if it does.
+    deferred_stop: str | None = None
     requested_terminal: str | None = None
     error: BaseException | None = None
     publish_failures: int = 0
@@ -151,12 +159,7 @@ class AttemptSink:
                     message_fields["tool_results"] = saved
                 if metadata:
                     message_fields["metadata"] = metadata
-                self._state.result = await self._store.complete(
-                    claim.task_id,
-                    claim.epoch,
-                    content=content or "",
-                    message_fields=message_fields,
-                )
+                self._state.result = await self._complete(content or "", message_fields)
                 # The status actually committed: a cancel or suspension may
                 # have won, and the engine then skips success-only work.
                 return {**self._row(), "status": _COMMITTED_MESSAGE_STATUS[self._state.result]}
@@ -175,14 +178,53 @@ class AttemptSink:
             self._state.fenced = True
             return None
 
+    async def _complete(self, content: str, message_fields: dict[str, Any]) -> TaskStatus:
+        """Commit the result; the attempt's own stops wait until it settles.
+
+        A heartbeat can find the lease ended by this very commit before its
+        status reaches the attempt (#518). The engine is parked here, making
+        no provider call, and the commit itself refuses a lost lease, so a
+        stop that arrives meanwhile is applied only if nothing committed.
+        """
+        state = self._state
+        state.completing = True
+        try:
+            status = await self._store.complete(
+                state.claim.task_id,
+                state.claim.epoch,
+                content=content,
+                message_fields=message_fields,
+            )
+        except BaseException:
+            state.completing = False
+            _apply_deferred_stop(state)
+            raise
+        state.completing = False
+        state.deferred_stop = None
+        return status
+
 
 def _interrupt(state: AttemptState, execution: asyncio.Task[Any]) -> None:
     # The engine stops at its next frame once ``stopping`` is set; a provider
     # call that produces no frame is interrupted here instead.
     if execution.done() or state.result is not None or state.fenced:
         return
+    if state.completing:
+        state.deferred_stop = state.deferred_stop or "interrupted"
+        return
     state.interrupted = True
     execution.cancel()
+
+
+def _apply_deferred_stop(state: AttemptState) -> None:
+    # The completion did not commit: honour the stop that waited for it.
+    stop, state.deferred_stop = state.deferred_stop, None
+    if stop is None or state.execution is None:
+        return
+    if stop == "fenced":
+        _stop_fenced(state, state.execution)
+    else:
+        _interrupt(state, state.execution)
 
 
 def _guard_tools(registry: Any, store: TaskStore, state: AttemptState) -> None:
@@ -264,7 +306,12 @@ def _fence_lost(state: AttemptState) -> None:
 
 def _stop_fenced(state: AttemptState, execution: asyncio.Task[Any]) -> None:
     # Another attempt may own the task: abort the provider stream now rather
-    # than at the next event, to bound duplicate spend.
+    # than at the next event, to bound duplicate spend. While this attempt's
+    # own commit is in flight there is no stream to abort, and that commit
+    # decides whether the lease was still ours.
+    if state.completing:
+        state.deferred_stop = "fenced"
+        return
     state.fenced = True
     execution.cancel()
 
@@ -277,6 +324,8 @@ async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.T
     margin. Every sleep and every renewal is bounded by the remaining time, so
     execution stops at the deadline even while a renewal is still pending
     (§5: no writes or provider work after the lease could have passed on).
+    The one exception is this attempt's own completion commit, which makes no
+    provider call and is fenced in the database: a stop then waits for it.
     """
     claim = state.claim
     loop = asyncio.get_running_loop()
