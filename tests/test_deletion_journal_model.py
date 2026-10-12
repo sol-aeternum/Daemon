@@ -82,7 +82,7 @@ def _request_fields(**overrides: Any) -> RequestFields:
     params: dict[str, Any] = {
         "prior_status": "active",
         "prior_reason": None,
-        "causes": (),
+        "causes": (Cause("deletion", UUID("0b000000-0000-0000-0000-0000000000bb")),),
         "generation": 5,
         "drain_deadline": T0 + DAY,
         "revocation_deadline": T0 + 2 * DAY,
@@ -226,7 +226,7 @@ def _open_grace_deletion(
     generation: int = 5,
     decision: datetime = T0,
     no_grace: bool = False,
-    causes: tuple[Cause, ...] = (),
+    causes: tuple[Cause, ...] | None = None,
     prior_status: str = "active",
     prior_reason: str | None = None,
     reason: str | None = None,
@@ -239,7 +239,7 @@ def _open_grace_deletion(
             _request_fields(
                 prior_status=prior_status,
                 prior_reason=prior_reason,
-                causes=causes,
+                causes=causes if causes is not None else _causes(("deletion", op)),
                 generation=generation,
                 no_grace=no_grace,
                 reason=reason,
@@ -491,7 +491,7 @@ class TestNormalization:
             state,
             _cmd(
                 "requested",
-                _request_fields(generation=5),
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
                 operation_id=op,
                 decision_at=old,
             ),
@@ -996,7 +996,14 @@ class TestJournalStateReplayAccepted:
         state = JournalState()
         op = uuid4()
         state_before = state.entries
-        first = _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        first = _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         assert state.entries is state_before
         first_digest = hashlib.sha256(
             first.seq.to_bytes(8, "big") + ZERO + first.command_digest
@@ -1103,7 +1110,14 @@ class TestJournalStateChainAndCas:
     def test_wrong_previous_link_rejected(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         grace_entry = _raw_entry(state, _del_ready_grace(op))
         tampered = self._forged(
             grace_entry,
@@ -1114,7 +1128,14 @@ class TestJournalStateChainAndCas:
     def test_duplicate_event_id_rejected(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         grace_entry = _raw_entry(state, _del_ready_grace(op))
         replayed = self._forged(grace_entry, event_id=state.entries[0].event_id)
         _raises_code(INVALID, lambda: state.accept(replayed))
@@ -1129,28 +1150,56 @@ class TestJournalStateChainAndCas:
     def test_stale_account_predecessor_conflict(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         entry = _raw_entry(state, _del_ready_grace(op), account_prev=99)
         _raises_code(CONFLICT, lambda: state.accept(entry))
 
     def test_stale_operation_predecessor_conflict(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         entry = _raw_entry(state, _del_ready_grace(op), operation_prev=8)
         _raises_code(CONFLICT, lambda: state.accept(entry))
 
     def test_missing_predecessor_conflict(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         entry = _raw_entry(state, _del_ready_grace(op), operation_prev=None)
         _raises_code(CONFLICT, lambda: state.accept(entry))
 
     def test_must_advance_account_head_even_with_matching_op(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         # operation head matches op (1), but stale account head of None is refused
         entry = _raw_entry(
             state,
@@ -1163,7 +1212,14 @@ class TestJournalStateChainAndCas:
     def test_operation_rebound_to_other_account_conflict(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         entry = _raw_entry(
             state,
             _cmd(
@@ -1185,14 +1241,18 @@ class TestJournalStateDeletionGrammar:
         first_op = uuid4()
         _push(
             state,
-            _cmd("requested", _request_fields(generation=5), operation_id=first_op),
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", first_op))),
+                operation_id=first_op,
+            ),
         )
         second_op = uuid4()
         entry = _raw_entry(
             state,
             _cmd(
                 "requested",
-                _request_fields(generation=6),
+                _request_fields(generation=6, causes=_causes(("deletion", second_op))),
                 operation_id=second_op,
                 decision_at=T0 + DAY,
             ),
@@ -1202,7 +1262,14 @@ class TestJournalStateDeletionGrammar:
     def test_normal_purge_requires_grace_started(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         early_purge = _raw_entry(
             state,
             _cmd("purged", _terminal_fields(generation=5), operation_id=op, decision_at=T1),
@@ -1212,7 +1279,14 @@ class TestJournalStateDeletionGrammar:
     def test_restore_before_grace_started_rejected(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         early_restore = _raw_entry(
             state,
             _cmd("restored", _terminal_fields(generation=6), operation_id=op, decision_at=T2),
@@ -1360,7 +1434,14 @@ class TestJournalStateResetGrammar:
     def test_event_families_never_mix(self) -> None:
         state = JournalState()
         op = uuid4()
-        _push(state, _cmd("requested", _request_fields(generation=5), operation_id=op))
+        _push(
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
+        )
         cross = _raw_entry(
             state,
             _cmd("reset_report_ready", _ready_fields(), operation_id=op, decision_at=T1),
@@ -1378,7 +1459,7 @@ class TestJournalStatePurgedAccount:
             state,
             _cmd(
                 "requested",
-                _request_fields(generation=6),
+                _request_fields(generation=6, causes=_causes(("deletion", second_op))),
                 operation_id=second_op,
                 decision_at=T3 + DAY,
             ),
@@ -1398,7 +1479,12 @@ class TestJournalStatePurgedAccount:
         _open_grace_deletion(state, op, generation=5)
         _close_restored(state, op, generation=6)
         reused = _raw_entry(
-            state, _cmd("requested", _request_fields(generation=7), operation_id=op)
+            state,
+            _cmd(
+                "requested",
+                _request_fields(generation=7, causes=_causes(("deletion", op))),
+                operation_id=op,
+            ),
         )
         _raises_code(INVALID, lambda: state.accept(reused))
 
@@ -1413,7 +1499,7 @@ class TestJournalStateGenerationFencing:
             state,
             _cmd(
                 "requested",
-                _request_fields(generation=6),
+                _request_fields(generation=6, causes=_causes(("deletion", second_op))),
                 operation_id=second_op,
                 decision_at=T2 + DAY,
             ),
@@ -1424,7 +1510,7 @@ class TestJournalStateGenerationFencing:
             state,
             _cmd(
                 "requested",
-                _request_fields(generation=7),
+                _request_fields(generation=7, causes=_causes(("deletion", higher_op))),
                 operation_id=higher_op,
                 decision_at=T2 + DAY,
             ),
@@ -1479,6 +1565,25 @@ class TestJournalStateGenerationFencing:
 
 
 class TestJournalStateTerminalCauses:
+    @pytest.mark.parametrize("event", ["requested", "reset_requested"])
+    @pytest.mark.parametrize("mismatch", ["missing", "wrong_kind", "wrong_id", "unrelated_only"])
+    def test_request_requires_its_exact_operation_cause(self, event: str, mismatch: str) -> None:
+        state = JournalState()
+        op = uuid4()
+        own_code = "deletion" if event == "requested" else "reset"
+        causes = {
+            "missing": (),
+            "wrong_kind": _causes(("reset" if own_code == "deletion" else "deletion", op)),
+            "wrong_id": _causes((own_code, uuid4())),
+            "unrelated_only": _causes(("abuse", OTHER_CAUSE)),
+        }[mismatch]
+        command = _cmd(event, _request_fields(causes=causes), operation_id=op)
+        _raises_code(INVALID, lambda: state.accept(_raw_entry(state, command)))
+        assert state.entries == []
+        valid = _cmd(event, _request_fields(causes=_causes((own_code, op))), operation_id=op)
+        _push(state, valid)
+        assert len(state.entries) == 1
+
     @pytest.mark.parametrize("event", ["restored", "reset_cancelled", "reset_purged"])
     def test_closing_operation_cannot_erase_unrelated_suspension(self, event: str) -> None:
         state = JournalState()

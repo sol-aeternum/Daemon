@@ -781,6 +781,14 @@ class JournalState:
                 _invalid()  # at most one open deletion/reset per account
             if fields.generation <= account.max_generation:
                 _invalid()  # fence generation strictly above account max
+            own_code = _OWN_CAUSE_CODE[event_type]
+            if not any(
+                cause.code == own_code and cause.id == command.operation_id
+                for cause in fields.causes
+            ):
+                # The complete effective set must include this operation's
+                # suspension fence. Cause UUID uniqueness already proves once.
+                _invalid()
             return
 
         if op_state is None:

@@ -96,6 +96,12 @@ investigation. This is a source interface description, not a live execution requ
 
 - `test_deletion_journal_model.py`: controlled-time closed grammar, immutable
   deadlines/generations, both-head conflicts, duplicate/changed identities.
+  Requests require their exact `(deletion|reset, operation_id)` cause; missing or
+  mismatched causes fail before append and also fail full-log replay, including
+  correctly hashed frames (`test_deletion_journal_request_fence.py`).
+  Actual database cause-set completeness remains the future trusted producer's
+  obligation under account locks: structural validation cannot certify unseen DB
+  facts. No runtime producer or generic fallback is introduced by this slice.
 - `test_deletion_journal_store.py`: real POSIX files and separate processes;
   partial-frame/HEAD publication crashes, same/different-account contention,
   restore/purge and reset acknowledgement/cancel races, short writes/fsync
