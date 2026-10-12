@@ -58,7 +58,7 @@ def test_missing_zero_grace_reason_refuses_constructor_and_append(tmp_path):
             ordinary.operation_id,
             "purged",
             ordinary.decision_at,
-            TerminalFields((), 1),
+            TerminalFields(ordinary.fields.causes, 1),
         )
         with pytest.raises(JournalError, match="^invalid_entry$"):
             journal.append(purge, uuid4(), 1, 1)
@@ -79,7 +79,7 @@ def test_zero_grace_reason_append_purge_and_hashed_replay(tmp_path, reason):
             command.operation_id,
             "purged",
             command.decision_at,
-            TerminalFields((), 1),
+            TerminalFields(ordinary.fields.causes, 1),
         )
         journal.append(purge, uuid4(), 1, 1)
     with Journal(path, identity) as journal:

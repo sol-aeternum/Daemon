@@ -277,14 +277,17 @@ def _close_purged(
     op: UUID,
     generation: int,
     *,
-    causes: tuple[Cause, ...] = (),
+    causes: tuple[Cause, ...] | None = None,
     decision: datetime = T3,
 ) -> None:
     _push(
         state,
         _cmd(
             "purged",
-            _terminal_fields(generation=generation, causes=causes),
+            _terminal_fields(
+                generation=generation,
+                causes=causes if causes is not None else _causes(("deletion", op)),
+            ),
             operation_id=op,
             decision_at=decision,
         ),
@@ -1078,7 +1081,7 @@ class TestJournalStateReplayAccepted:
             state,
             _cmd(
                 "purged",
-                _terminal_fields(generation=5),
+                _terminal_fields(generation=5, causes=_causes(("deletion", op))),
                 operation_id=op,
                 decision_at=WINDOW_END,
             ),
@@ -1330,7 +1333,12 @@ class TestJournalStateDeletionGrammar:
         _open_grace_deletion(state, op)
         early = _raw_entry(
             state,
-            _cmd("purged", _terminal_fields(generation=5), operation_id=op, decision_at=T2),
+            _cmd(
+                "purged",
+                _terminal_fields(generation=5, causes=_causes(("deletion", op))),
+                operation_id=op,
+                decision_at=T2,
+            ),
         )
         _raises_code(INVALID, lambda: state.accept(early))
         fresh = JournalState()
@@ -1339,7 +1347,10 @@ class TestJournalStateDeletionGrammar:
         _push(
             fresh,
             _cmd(
-                "purged", _terminal_fields(generation=5), operation_id=op2, decision_at=WINDOW_END
+                "purged",
+                _terminal_fields(generation=5, causes=_causes(("deletion", op2))),
+                operation_id=op2,
+                decision_at=WINDOW_END,
             ),
         )
 
@@ -1697,7 +1708,7 @@ class TestJournalStateTerminalCauses:
             ),
         )
 
-    def test_purged_may_keep_own_cause(self) -> None:
+    def test_purged_keeps_complete_request_cause_set(self) -> None:
         state = JournalState()
         op = uuid4()
         _open_grace_deletion(

@@ -77,6 +77,11 @@ the original decision timestamp under locks, not a caller-supplied timestamp;
 only the trusted transaction control path supplies that value. Operational
 phase/effect proof is still the future concrete handler's responsibility.
 
+**Owner clarification on 12 October 2026:** with suspension-change events absent
+from J1a, deletion `purged` preserves the request's complete cause set, including
+its own deletion cause, as durable evidence. Restore/cancel/reset-purge removes
+only its own operation cause. This is structural validation, not purge enablement.
+
 **Append order**, under an exclusive `.journal.lock`:
 
 1. Validate metadata, HEAD and entire chain; derive account/operation heads and

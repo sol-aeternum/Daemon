@@ -20,6 +20,7 @@ from orchestrator.services.deletion_journal.model import (
     AckFields,
     Command,
     ReadyFields,
+    RequestFields,
     TerminalFields,
 )
 from orchestrator.services.deletion_journal.store import Journal, initialize
@@ -318,8 +319,13 @@ def test_real_process_restore_purge_race_has_one_terminal_intent(directory):
         deadline - timedelta(microseconds=1),
         TerminalFields((), 2),
     )
+    assert isinstance(original.fields, RequestFields)
     purge = Command(
-        original.account_id, original.operation_id, "purged", deadline, TerminalFields((), 1)
+        original.account_id,
+        original.operation_id,
+        "purged",
+        deadline,
+        TerminalFields(original.fields.causes, 1),
     )
     context = multiprocessing.get_context("spawn")
     ready, output = context.Event(), context.Queue()

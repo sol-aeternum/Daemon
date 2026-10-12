@@ -969,10 +969,14 @@ def _validate_terminal_causes(
     Terminal causes cannot invent causes. For a transition that closes an
     operation without destroying the record (restore/cancel/reset-purge) the
     operation's own cause — reliably identified as the request-kind cause code
-    bound to this operation id — must not survive the transition.
+    bound to this operation id — must not survive the transition. Deletion purge
+    retains the entire recorded set, including its own cause, as durable evidence.
     """
     request_pairs = {(cause.code, str(cause.id)) for cause in op_state.request_causes}
     own_code = _OWN_CAUSE_CODE[op_state.request_event]
+    if event_type == _PURGED:
+        if {(cause.code, str(cause.id)) for cause in terminal.causes} != request_pairs:
+            _invalid()  # no suspension-change events can remove recorded evidence
     if event_type in (_RESTORED, _RESET_CANCELLED, _RESET_PURGED):
         expected = request_pairs - {(own_code, str(operation_id))}
         if {(cause.code, str(cause.id)) for cause in terminal.causes} != expected:

@@ -102,6 +102,10 @@ investigation. This is a source interface description, not a live execution requ
   Zero-grace deletion requests require a recorded `legal` or `abuse` reason;
   ordinary requests may omit it. Constructor/append and correctly hashed replay
   regressions cover this invariant (`test_deletion_journal_no_grace.py`).
+  Deletion purge preserves the request's entire cause set, including its own
+  deletion cause; only restore/cancel/reset-purge removes its operation's cause.
+  Append/replay regressions cover normal and zero-grace purge and omission of
+  individual or all causes (`test_deletion_journal_purge_causes.py`).
   Actual database cause-set completeness remains the future trusted producer's
   obligation under account locks: structural validation cannot certify unseen DB
   facts. No runtime producer or generic fallback is introduced by this slice.
