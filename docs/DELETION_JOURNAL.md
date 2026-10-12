@@ -125,6 +125,10 @@ investigation. This is a source interface description, not a live execution requ
   and timeout cleanup. Earlier reset markers are not collapsed by a later restore.
 - `test_deletion_journal_startup.py`: actual backend/worker initializer failure
   paths, no degraded DB fallback, no post-barrier side effects, cancellation.
+- `test_deletion_journal_io.py`: generic results/exceptions and copied context;
+  owned-process all-task shutdown cancellation during real POSIX verification,
+  including corruption. Cancellation waits for the retained executor future,
+  then propagates before the caller can close descriptors; cleanup exits naturally.
 
 The PostgreSQL projection applier exists only in tests. Its replay/marker evidence
 does not prove cancellation, content cutoff, suspension restoration or real purge.
