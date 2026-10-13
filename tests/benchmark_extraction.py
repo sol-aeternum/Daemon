@@ -453,7 +453,9 @@ async def invoke_benchmark_extraction(
 
     Direct benchmark writes remain unfenced. Never pass raw scenario snapshots
     to the production queue or manufacture account currency to admit them.
+    Provider work retains real account admission, qualified routes and budgets.
     """
+    from orchestrator.compute_runtime import account_compute
     from orchestrator.memory.extraction import messages_to_extraction_text, process_extraction
     from orchestrator.memory.titles import ConversationMessage
     from orchestrator.worker.jobs import _chunk_messages_for_extraction
@@ -463,14 +465,22 @@ async def invoke_benchmark_extraction(
     ]
     chunks = _chunk_messages_for_extraction(parsed, messages_json)
     for index, chunk in enumerate(chunks):
-        success, _, _ = await process_extraction(
-            store,
+        async with account_compute(
+            store._pool,
             _uuid.UUID(user_id),
-            _uuid.UUID(conversation_id),
-            messages_to_extraction_text(chunk["messages"]),
-            chunk_index=index,
-            cursor_checkpoint=chunk["advances_cursor"],
-        )
+            operation="agent",
+            auto_route=True,
+            background=True,
+            profile="background",
+        ):
+            success, _, _ = await process_extraction(
+                store,
+                _uuid.UUID(user_id),
+                _uuid.UUID(conversation_id),
+                messages_to_extraction_text(chunk["messages"]),
+                chunk_index=index,
+                cursor_checkpoint=chunk["advances_cursor"],
+            )
         if not success:
             return {"status": "failed", "processed_chunks": index}
     return {"status": "ok", "processed_chunks": len(chunks)}

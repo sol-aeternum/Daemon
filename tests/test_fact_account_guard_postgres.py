@@ -1011,3 +1011,81 @@ async def test_offline_benchmark_helper_runs_real_extraction_without_queued_snap
         "status": "skipped",
         "reason": "invalid_source",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", [None, "suspended", "route"])
+async def test_offline_benchmark_actual_extractor_uses_real_qualified_account_compute(
+    env, monkeypatch, denial
+):
+    import litellm
+    from orchestrator import compute_runtime
+    from orchestrator.entitlements.service import EntitlementService
+    from tests.benchmark_extraction import invoke_benchmark_extraction
+    from tests.qualified_compute import install_qualified_compute
+    from tests.test_compute_runtime import install_routing, routing_document
+
+    monkeypatch.setenv("DAEMON_AUTH_PEPPER", "synthetic-benchmark-admission-pepper")
+    model = "openrouter/test/explicit-model"
+    install_qualified_compute(monkeypatch, models=(model,))
+    install_routing(monkeypatch, routing_document([model]))
+    # Actual account admission, reservation, settlement, extractor and guarded
+    # completion. Only approved route evidence and external transport are synthetic.
+    monkeypatch.setattr(compute_runtime, "EntitlementService", EntitlementService)
+    monkeypatch.setattr(extraction, "BENCHMARK_MODE", True)
+    monkeypatch.setattr(extraction, "BENCHMARK_EXTRACTION_MODEL", model)
+    if denial == "route":
+        policy = compute_runtime.load_inference_policy()
+        assert isinstance(policy.routes, dict)  # This fixture's explicitly synthetic route map.
+        policy.routes.clear()
+    conv = (await env.memory.create_conversation(env.alice, title="Offline admission"))["id"]
+    if denial == "suspended":
+        await env.pool.execute(
+            "INSERT INTO entitlement_accounts(user_id,status) VALUES($1,'suspended')", env.alice
+        )
+
+    async def transport(**kwargs):
+        scope = compute_runtime.current_scope()
+        assert scope.user_id == env.alice and scope.background and scope.profile == "background"
+        assert scope.auto_route and kwargs["model"] == model
+        assert kwargs["extra_body"]["provider"]["zdr"] is True
+        assert kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
+        # No account/source locks are held while an external call runs.
+        async with env.pool.acquire() as conn, conn.transaction():
+            await conn.fetchrow(
+                "SELECT user_id FROM entitlement_accounts WHERE user_id=$1 FOR UPDATE NOWAIT",
+                env.alice,
+            )
+        return {
+            "choices": [{"finish_reason": "stop", "message": {"content": '{"facts":[]}'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "model": model,
+        }
+
+    outbound = AsyncMock(side_effect=transport)
+    monkeypatch.setattr(litellm, "acompletion", outbound)
+    payload = [{"role": "user", "content": "Fictional short turn"}]
+    if denial:
+        with pytest.raises(extraction.BenchmarkProviderError) as refused:
+            await invoke_benchmark_extraction(env.memory, str(env.alice), str(conv), payload)
+        cause = refused.value.__cause__
+        assert isinstance(cause, compute_runtime.ComputeUnavailable)
+        assert cause.code == (
+            "capability_unavailable" if denial == "suspended" else "route_unavailable"
+        )
+        outbound.assert_not_awaited()
+        assert await counts(env) == (0, 0)
+    else:
+        assert (await invoke_benchmark_extraction(env.memory, str(env.alice), str(conv), payload))[
+            "status"
+        ] == "ok"
+        outbound.assert_awaited_once()
+        reservations = await env.pool.fetch(
+            "SELECT * FROM entitlement_reservations WHERE user_id=$1", env.alice
+        )
+        assert len(reservations) == 1
+        assert reservations[0]["scope_id"] is not None and reservations[0]["background"]
+        assert reservations[0]["status"] == "settled" and reservations[0]["actual_microusd"] == 0
+        assert await counts(env) == (0, 1)
+    with pytest.raises(compute_runtime.ComputeUnavailable):
+        compute_runtime.current_scope()  # Scope cannot leak out of the offline operation.
