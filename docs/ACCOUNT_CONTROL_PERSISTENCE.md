@@ -116,3 +116,64 @@ purge, billing/provider outcomes or complete restore readiness. No public endpoi
 UI, live migration/provisioning, artifact implementation, pruning, deployment,
 flag enablement or dependency change. Repository gates and independent final-source
 review govern qualification; source existence alone is not release clearance.
+
+## J1c-1a — uncalled content-writer prerequisite
+
+Owner-approved bounded source slice, 13 October 2026:
+[`guard.py`](../orchestrator/services/account_control/guard.py) adds immutable
+account-generation capture and a caller-owned transactional `FOR SHARE` scope.
+**No runtime writer calls it.** This is not an account fence, request applier,
+applied-marker writer or readiness change; #477 remains open. Migration 047,
+schema/API/env/dependencies and the settled S1/J1 decisions are unchanged.
+
+Capture before reading/deriving inputs or provider work; never refresh an old
+generation to cure refusal. The captured UUID/generation is an internal value,
+not authentication, row-ownership proof or write authority. Acquire the guard on
+the same caller connection **before** content/task/identity locks and retain the
+transaction through the content commit. Only READ COMMITTED is supported: acquire
+the account row, check active status/exact generation, then check open operations
+and causes in a **separate post-lock statement**. This avoids a pre-wait snapshot
+missing subordinate-only commits. Stronger snapshot isolation refuses rather
+than assuming an entitlement-row serialization failure detects those changes.
+
+Missing accounts, schema/read failures, suspension (including unknown legacy
+cause provenance), active-with-causes, open operations and stale generations deny
+permission. The helper never provisions, activates, allocates generations,
+commits/rolls back caller data, upgrades to UPDATE or offers a privileged bypass.
+Control/settlement/late-evidence writers need separately approved narrow APIs.
+State-changing control writers must first lock the same account `FOR UPDATE`
+(existing J1b account-control ordering); a subordinate FK lock alone is not enough
+to serialize cause/operation changes against this cooperating-writer guard.
+
+The scope checks connection, captured account/generation, outer transaction and
+live lifetime. Savepoint rollback can release its locks without ending the outer
+transaction: callers **must revalidate before subsequent writes**, reacquiring
+SHARE and checking state. A Python context cannot intercept arbitrary raw SQL;
+this is a cooperating-caller contract, not a sandbox. Scope exit invalidates the
+API authority but does not release the transaction lock or commit caller writes.
+On refusal/cancellation the caller owns transaction rollback.
+
+[`test_account_write_guard.py`](../tests/test_account_write_guard.py) exercises
+real disposable PostgreSQL lock ordering, post-wait cause visibility, stale
+generation, snapshot-isolation refusal, scope/savepoint lifetime, cancellation,
+owned writer death and real POSIX append/failed-commit/retry composition. Startup
+without applied markers still refuses in the real backend/worker composition
+tests above. These tests require an owned `TASKS_TEST_DATABASE_URL`; skipped
+PostgreSQL cases do not qualify the prerequisite.
+
+The explicit writer/table catalogue in
+[`account_writer_catalogue.py`](../tests/account_writer_catalogue.py) and its
+fixture/tests is bounded source-change detection, **not complete runtime
+enforcement**. Content/control/shared-unowned/deferred classifications record
+historical FK dependencies, semantic ownership notes and uncovered paths, not
+authorization from FK reachability alone. Unsupported table renames and
+quoted/schema-qualified declarations fail closed and require explicit scanner/
+manifest review. Classification itself fences nothing. Later
+runtime generation propagation, account-first lock conversions, ownership fixes,
+restricted sessions, non-DB/Redis/SSE publication and durable S1 retirement are
+still dependencies. No guard test or classified deferred writer permits an
+applied marker or releases the fail-closed startup barrier.
+
+An append committed to the journal but not yet projected into PostgreSQL is not
+observable to this DB-only kernel. The startup barrier still refuses that case;
+runtime production/applier integration cannot be inferred from this prerequisite.

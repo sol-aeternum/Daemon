@@ -1,0 +1,5059 @@
+{
+  "schema": "journal+account_writer_catalogue/v1",
+  "purpose": "J1c-1a explicit table/writer classification prerequisite. All sites uncovered; source change detection is not runtime fencing.",
+  "limits": {
+    "scanner": "Unquoted forward CREATE/ALTER reference dependencies plus AST SQL execute/executemany/fetch/fetchrow/fetchval, filesystem and store/publication candidates; no runtime imports. Unsupported CREATE/REFERENCES grammar fails.",
+    "ownership": "Every FK parent retained, including added ALTER references and cycles. These are conservative historical dependency paths, not policy ownership. Account-control account_id and other non-FK ownership still require source-backed semantics.",
+    "dynamic_sql": "Unresolved/augmented/mixed-binding SQL arguments and interpolated strings are deferred candidates. Named-literal fingerprints include all resolved values; repeated identical calls have distinct occurrence identities.",
+    "indirect_effects": "No universal call-graph, receiver, trigger, SQL-function, SQL-data or provider-network-effect proof. Custom wrappers/aliases, nonliteral open modes via wrappers and effects outside listed roots/patterns need manual review; AST absence proves nothing.",
+    "status": "All entries are uncovered. False positives (events/contextvars/route-like methods) remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
+  },
+  "tables": {
+    "account_deletions": {
+      "category": "control",
+      "owner_source": "migrations/047_account_control_persistence.sql",
+      "ownership_path": "root:deletion_journal_binding <- account_deletions",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "account_email_ownership": {
+      "category": "control",
+      "owner_source": "migrations/045_identity_retention_provenance.sql",
+      "ownership_path": "root:users <- account_email_ownership",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "account_suspension_causes": {
+      "category": "control",
+      "owner_source": "migrations/047_account_control_persistence.sql",
+      "ownership_path": "root:users <- entitlement_accounts <- account_suspension_causes",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "conversations": {
+      "category": "content",
+      "owner_source": "migrations/003_create_conversations.sql",
+      "ownership_path": "root:users <- conversations",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "council_sessions": {
+      "category": "content",
+      "owner_source": "migrations/020_create_council_sessions.sql",
+      "ownership_path": "root:users <- conversations <- council_sessions",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "deletion_journal_applied": {
+      "category": "control",
+      "owner_source": "migrations/046_deletion_journal_markers.sql",
+      "ownership_path": "root:deletion_journal_binding <- deletion_journal_applied",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "deletion_journal_binding": {
+      "category": "control",
+      "owner_source": "migrations/046_deletion_journal_markers.sql",
+      "ownership_path": "root:deletion_journal_binding",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "devices": {
+      "category": "control",
+      "owner_source": "migrations/031_auth_device_model.sql",
+      "ownership_path": "root:users <- devices | root:users <- tenants <- devices",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "dream_log": {
+      "category": "content",
+      "owner_source": "migrations/027_create_dream_log.sql",
+      "ownership_path": "root:users <- dream_log",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "email_challenges": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- account_email_ownership <- email_challenges | root:users <- email_challenges",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "entities": {
+      "category": "content",
+      "owner_source": "migrations/026_create_entities.sql",
+      "ownership_path": "<cycle:memories> <- memories <- entities | root:users <- conversations <- memories <- entities | root:users <- entities | root:users <- memories <- entities",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "entitlement_accounts": {
+      "category": "control",
+      "owner_source": "migrations/039_entitlements_commercial.sql",
+      "ownership_path": "root:users <- entitlement_accounts",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "entitlement_limit_encounters": {
+      "category": "control",
+      "owner_source": "migrations/039_entitlements_commercial.sql",
+      "ownership_path": "root:users <- entitlement_limit_encounters",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "entitlement_reservations": {
+      "category": "control",
+      "owner_source": "migrations/039_entitlements_commercial.sql",
+      "ownership_path": "root:users <- entitlement_reservations",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "entitlement_subscription_events": {
+      "category": "control",
+      "owner_source": "migrations/039_entitlements_commercial.sql",
+      "ownership_path": "root:users <- entitlement_subscription_events",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "entitlement_usage_periods": {
+      "category": "control",
+      "owner_source": "migrations/039_entitlements_commercial.sql",
+      "ownership_path": "root:users <- entitlement_usage_periods",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "google_nonce_challenges": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- google_nonce_challenges",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "identity_audit_log": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- account_email_ownership <- identity_audit_log | root:users <- identity_audit_log | root:users <- tenants <- identity_audit_log",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "identity_providers": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- identity_providers",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "inference_route_attestations": {
+      "category": "shared_unowned",
+      "owner_source": "migrations/043_inference_route_attestations.sql",
+      "ownership_path": "root:inference_route_attestations",
+      "rationale": "Shared deployment state or unowned global skill store; no per-account write authority established. Uncovered."
+    },
+    "job_failures": {
+      "category": "deferred",
+      "owner_source": "migrations/037_worker_job_failures.sql",
+      "ownership_path": "root:job_failures",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "memories": {
+      "category": "content",
+      "owner_source": "migrations/005_create_memories.sql",
+      "ownership_path": "<cycle:memories> <- memories | root:users <- conversations <- memories | root:users <- memories",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "memory_extraction_log": {
+      "category": "content",
+      "owner_source": "migrations/006_create_extraction_log.sql",
+      "ownership_path": "root:users <- conversations <- memory_extraction_log | root:users <- memory_extraction_log",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "messages": {
+      "category": "content",
+      "owner_source": "migrations/004_create_messages.sql",
+      "ownership_path": "root:users <- conversations <- messages | root:users <- messages",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "pending_enrollments": {
+      "category": "control",
+      "owner_source": "migrations/031_auth_device_model.sql",
+      "ownership_path": "root:users <- devices <- pending_enrollments | root:users <- pending_enrollments | root:users <- tenants <- devices <- pending_enrollments",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "refresh_rotation_grace": {
+      "category": "control",
+      "owner_source": "migrations/035_refresh_rotation_grace.sql",
+      "ownership_path": "root:users <- devices <- sessions <- refresh_rotation_grace | root:users <- sessions <- refresh_rotation_grace | root:users <- tenants <- devices <- sessions <- refresh_rotation_grace | root:users <- tenants <- sessions <- refresh_rotation_grace",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "retrieval_log": {
+      "category": "content",
+      "owner_source": "migrations/025_create_retrieval_log.sql",
+      "ownership_path": "root:users <- conversations <- retrieval_log | root:users <- retrieval_log",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "sessions": {
+      "category": "control",
+      "owner_source": "migrations/031_auth_device_model.sql",
+      "ownership_path": "root:users <- devices <- sessions | root:users <- sessions | root:users <- tenants <- devices <- sessions | root:users <- tenants <- sessions",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "signup_invites": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- account_email_ownership <- signup_invites | root:users <- signup_invites",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "skill_consolidation_log": {
+      "category": "deferred",
+      "owner_source": "migrations/029_skill_consolidation_nudge.sql",
+      "ownership_path": "root:users <- skill_consolidation_log",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "skill_nudge_user_state": {
+      "category": "deferred",
+      "owner_source": "migrations/029_skill_consolidation_nudge.sql",
+      "ownership_path": "root:users <- skill_nudge_user_state",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "skill_projections": {
+      "category": "shared_unowned",
+      "owner_source": "migrations/028_skill_projection.sql",
+      "ownership_path": "root:skill_projections",
+      "rationale": "Shared deployment state or unowned global skill store; no per-account write authority established. Uncovered."
+    },
+    "system_state": {
+      "category": "shared_unowned",
+      "owner_source": "migrations/033_auth_runtime_state.sql",
+      "ownership_path": "root:system_state",
+      "rationale": "Shared deployment state or unowned global skill store; no per-account write authority established. Uncovered."
+    },
+    "task_attempts": {
+      "category": "deferred",
+      "owner_source": "migrations/044_durable_tasks.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks <- task_attempts | root:users <- conversations <- tasks <- task_attempts | root:users <- messages <- tasks <- task_attempts | root:users <- tasks <- task_attempts",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "task_events": {
+      "category": "deferred",
+      "owner_source": "migrations/044_durable_tasks.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks <- task_events | root:users <- conversations <- tasks <- task_events | root:users <- messages <- tasks <- task_events | root:users <- tasks <- task_events",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "task_operations": {
+      "category": "deferred",
+      "owner_source": "migrations/044_durable_tasks.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks <- task_operations | root:users <- conversations <- tasks <- task_operations | root:users <- messages <- tasks <- task_operations | root:users <- tasks <- task_operations",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "tasks": {
+      "category": "deferred",
+      "owner_source": "migrations/044_durable_tasks.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks | root:users <- conversations <- tasks | root:users <- messages <- tasks | root:users <- tasks",
+      "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
+    },
+    "tenant_memberships": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- tenant_memberships | root:users <- tenants <- tenant_memberships",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "tenants": {
+      "category": "control",
+      "owner_source": "migrations/032_hosted_identity_claim.sql",
+      "ownership_path": "root:users <- tenants",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "users": {
+      "category": "control",
+      "owner_source": "migrations/002_create_users.sql",
+      "ownership_path": "root:users",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "video_credit_balances": {
+      "category": "control",
+      "owner_source": "migrations/017_video_credits.sql",
+      "ownership_path": "root:users <- video_credit_balances",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "video_credit_transactions": {
+      "category": "control",
+      "owner_source": "migrations/017_video_credits.sql",
+      "ownership_path": "root:users <- video_credit_transactions",
+      "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "web_snapshots": {
+      "category": "content",
+      "owner_source": "migrations/041_web_snapshots.sql",
+      "ownership_path": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    }
+  },
+  "fk_edges": {
+    "account_deletions": [
+      "deletion_journal_binding"
+    ],
+    "account_email_ownership": [
+      "users"
+    ],
+    "account_suspension_causes": [
+      "entitlement_accounts"
+    ],
+    "conversations": [
+      "users"
+    ],
+    "council_sessions": [
+      "conversations"
+    ],
+    "deletion_journal_applied": [
+      "deletion_journal_binding"
+    ],
+    "devices": [
+      "tenants",
+      "users"
+    ],
+    "dream_log": [
+      "users"
+    ],
+    "email_challenges": [
+      "account_email_ownership",
+      "users"
+    ],
+    "entities": [
+      "memories",
+      "users"
+    ],
+    "entitlement_accounts": [
+      "users"
+    ],
+    "entitlement_limit_encounters": [
+      "users"
+    ],
+    "entitlement_reservations": [
+      "users"
+    ],
+    "entitlement_subscription_events": [
+      "users"
+    ],
+    "entitlement_usage_periods": [
+      "users"
+    ],
+    "google_nonce_challenges": [
+      "users"
+    ],
+    "identity_audit_log": [
+      "account_email_ownership",
+      "tenants",
+      "users"
+    ],
+    "identity_providers": [
+      "users"
+    ],
+    "memories": [
+      "conversations",
+      "memories",
+      "users"
+    ],
+    "memory_extraction_log": [
+      "conversations",
+      "users"
+    ],
+    "messages": [
+      "conversations",
+      "users"
+    ],
+    "pending_enrollments": [
+      "devices",
+      "users"
+    ],
+    "refresh_rotation_grace": [
+      "sessions"
+    ],
+    "retrieval_log": [
+      "conversations",
+      "users"
+    ],
+    "sessions": [
+      "devices",
+      "tenants",
+      "users"
+    ],
+    "signup_invites": [
+      "account_email_ownership",
+      "users"
+    ],
+    "skill_consolidation_log": [
+      "users"
+    ],
+    "skill_nudge_user_state": [
+      "users"
+    ],
+    "task_attempts": [
+      "tasks"
+    ],
+    "task_events": [
+      "tasks"
+    ],
+    "task_operations": [
+      "tasks"
+    ],
+    "tasks": [
+      "conversations",
+      "messages",
+      "users"
+    ],
+    "tenant_memberships": [
+      "tenants",
+      "users"
+    ],
+    "tenants": [
+      "users"
+    ],
+    "video_credit_balances": [
+      "users"
+    ],
+    "video_credit_transactions": [
+      "users"
+    ],
+    "web_snapshots": [
+      "conversations",
+      "users"
+    ]
+  },
+  "ownership_paths": {
+    "account_deletions": "root:deletion_journal_binding <- account_deletions",
+    "account_email_ownership": "root:users <- account_email_ownership",
+    "account_suspension_causes": "root:users <- entitlement_accounts <- account_suspension_causes",
+    "conversations": "root:users <- conversations",
+    "council_sessions": "root:users <- conversations <- council_sessions",
+    "deletion_journal_applied": "root:deletion_journal_binding <- deletion_journal_applied",
+    "deletion_journal_binding": "root:deletion_journal_binding",
+    "devices": "root:users <- devices | root:users <- tenants <- devices",
+    "dream_log": "root:users <- dream_log",
+    "email_challenges": "root:users <- account_email_ownership <- email_challenges | root:users <- email_challenges",
+    "entities": "<cycle:memories> <- memories <- entities | root:users <- conversations <- memories <- entities | root:users <- entities | root:users <- memories <- entities",
+    "entitlement_accounts": "root:users <- entitlement_accounts",
+    "entitlement_limit_encounters": "root:users <- entitlement_limit_encounters",
+    "entitlement_reservations": "root:users <- entitlement_reservations",
+    "entitlement_subscription_events": "root:users <- entitlement_subscription_events",
+    "entitlement_usage_periods": "root:users <- entitlement_usage_periods",
+    "google_nonce_challenges": "root:users <- google_nonce_challenges",
+    "identity_audit_log": "root:users <- account_email_ownership <- identity_audit_log | root:users <- identity_audit_log | root:users <- tenants <- identity_audit_log",
+    "identity_providers": "root:users <- identity_providers",
+    "inference_route_attestations": "root:inference_route_attestations",
+    "job_failures": "root:job_failures",
+    "memories": "<cycle:memories> <- memories | root:users <- conversations <- memories | root:users <- memories",
+    "memory_extraction_log": "root:users <- conversations <- memory_extraction_log | root:users <- memory_extraction_log",
+    "messages": "root:users <- conversations <- messages | root:users <- messages",
+    "pending_enrollments": "root:users <- devices <- pending_enrollments | root:users <- pending_enrollments | root:users <- tenants <- devices <- pending_enrollments",
+    "refresh_rotation_grace": "root:users <- devices <- sessions <- refresh_rotation_grace | root:users <- sessions <- refresh_rotation_grace | root:users <- tenants <- devices <- sessions <- refresh_rotation_grace | root:users <- tenants <- sessions <- refresh_rotation_grace",
+    "retrieval_log": "root:users <- conversations <- retrieval_log | root:users <- retrieval_log",
+    "sessions": "root:users <- devices <- sessions | root:users <- sessions | root:users <- tenants <- devices <- sessions | root:users <- tenants <- sessions",
+    "signup_invites": "root:users <- account_email_ownership <- signup_invites | root:users <- signup_invites",
+    "skill_consolidation_log": "root:users <- skill_consolidation_log",
+    "skill_nudge_user_state": "root:users <- skill_nudge_user_state",
+    "skill_projections": "root:skill_projections",
+    "system_state": "root:system_state",
+    "task_attempts": "root:users <- conversations <- messages <- tasks <- task_attempts | root:users <- conversations <- tasks <- task_attempts | root:users <- messages <- tasks <- task_attempts | root:users <- tasks <- task_attempts",
+    "task_events": "root:users <- conversations <- messages <- tasks <- task_events | root:users <- conversations <- tasks <- task_events | root:users <- messages <- tasks <- task_events | root:users <- tasks <- task_events",
+    "task_operations": "root:users <- conversations <- messages <- tasks <- task_operations | root:users <- conversations <- tasks <- task_operations | root:users <- messages <- tasks <- task_operations | root:users <- tasks <- task_operations",
+    "tasks": "root:users <- conversations <- messages <- tasks | root:users <- conversations <- tasks | root:users <- messages <- tasks | root:users <- tasks",
+    "tenant_memberships": "root:users <- tenant_memberships | root:users <- tenants <- tenant_memberships",
+    "tenants": "root:users <- tenants",
+    "users": "root:users",
+    "video_credit_balances": "root:users <- video_credit_balances",
+    "video_credit_transactions": "root:users <- video_credit_transactions",
+    "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots"
+  },
+  "writer_sites": [
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "user_artifact_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "73f0c3dd33fc1835",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "user_artifact_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "d71fa6942d85f8cc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "write_owned_artifact",
+      "kind": "filesystem_write",
+      "fingerprint": "0ce124a075be18ae",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "write_owned_artifact",
+      "kind": "filesystem_write",
+      "fingerprint": "5f759929e351d8ba",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "write_owned_artifact",
+      "kind": "filesystem_write",
+      "fingerprint": "aa57aaa1adce9ec7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "write_owned_artifact",
+      "kind": "filesystem_write",
+      "fingerprint": "af17a397bcbb180c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.artifacts",
+      "qualname": "write_owned_artifact",
+      "kind": "filesystem_write",
+      "fingerprint": "fa40378cdfe3ced3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.auth",
+      "qualname": "_verify_access_token",
+      "kind": "sql_inline",
+      "fingerprint": "b26dd5bddb76617e",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.auth_runtime_state",
+      "qualname": "create_setup_token_if_absent",
+      "kind": "sql_inline",
+      "fingerprint": "e9ce4d58e2ae97fc",
+      "tables": [
+        "system_state"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.auth_runtime_state",
+      "qualname": "delete_runtime_value",
+      "kind": "sql_inline",
+      "fingerprint": "68779fc07cb95773",
+      "tables": [
+        "system_state"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.auth_runtime_state",
+      "qualname": "set_runtime_value",
+      "kind": "sql_inline",
+      "fingerprint": "5c4a8b520a93bdc0",
+      "tables": [
+        "system_state"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.auth_tokens",
+      "qualname": "normalize_enrollment_code",
+      "kind": "filesystem_write",
+      "fingerprint": "10ac7e02a260715a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.auth_tokens",
+      "qualname": "normalize_enrollment_code",
+      "kind": "filesystem_write",
+      "fingerprint": "e96c399cd503a03c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.catalog",
+      "qualname": "get_catalog",
+      "kind": "filesystem_write",
+      "fingerprint": "04c7ff72f8aedd66",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.catalog",
+      "qualname": "get_model_name",
+      "kind": "filesystem_write",
+      "fingerprint": "879af89dfa64ecea",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.compute_runtime",
+      "qualname": "account_compute",
+      "kind": "store_write",
+      "fingerprint": "64b4e48998562a00",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.consolidation_nudge_prompts",
+      "qualname": "_format_memories_for_prompt",
+      "kind": "filesystem_write",
+      "fingerprint": "09022316ae484dce",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.consolidation_nudge_prompts",
+      "qualname": "_format_skills_for_prompt",
+      "kind": "filesystem_write",
+      "fingerprint": "9ef17ff78a6ec394",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.council.config",
+      "qualname": "load_roster_with_metadata",
+      "kind": "filesystem_write",
+      "fingerprint": "493aa4bfa95041f2",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.council.sse",
+      "qualname": "_build_interview_roster",
+      "kind": "filesystem_write",
+      "fingerprint": "cc4115cbac128090",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.council.sse",
+      "qualname": "make_envelope",
+      "kind": "filesystem_write",
+      "fingerprint": "37840610d39498bb",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.council.sse",
+      "qualname": "stream_council",
+      "kind": "filesystem_write",
+      "fingerprint": "ffd65b4ae7fa5a6e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.council.tools",
+      "qualname": "_run_tool_executor",
+      "kind": "sql_unresolvable",
+      "fingerprint": "67b4b026f83b48d0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.daemon",
+      "qualname": "now_rfc3339",
+      "kind": "filesystem_write",
+      "fingerprint": "ed50995d167b9455",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.daemon",
+      "qualname": "stream_sse_chat",
+      "kind": "filesystem_write",
+      "fingerprint": "23104ae7b520c1a8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.attestation",
+      "qualname": "record",
+      "kind": "sql_named",
+      "fingerprint": "be98a43c11873e36",
+      "tables": [
+        "inference_route_attestations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.policy",
+      "qualname": "_parse_timestamp",
+      "kind": "filesystem_write",
+      "fingerprint": "66782e503a23f8c5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.service",
+      "qualname": "EntitlementService._finish",
+      "kind": "sql_inline",
+      "fingerprint": "0f4cc9cc3dc81ddd",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.ensure_account",
+      "kind": "sql_dynamic",
+      "fingerprint": "eb08e994a731d518",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.ensure_period",
+      "kind": "sql_inline",
+      "fingerprint": "92b86691efbb1ea1",
+      "tables": [
+        "entitlement_usage_periods"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.get_account",
+      "kind": "sql_dynamic",
+      "fingerprint": "5ba09aef68438021",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.get_reservation",
+      "kind": "sql_dynamic",
+      "fingerprint": "34f10b29261af9f1",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.hold",
+      "kind": "sql_named",
+      "fingerprint": "0e6a7bb5655047ac",
+      "tables": [
+        "entitlement_usage_periods"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.hold_trial",
+      "kind": "sql_named",
+      "fingerprint": "f016c3cdbf2e23f8",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.insert_encounter",
+      "kind": "sql_inline",
+      "fingerprint": "ad59cf8995eb92f5",
+      "tables": [
+        "entitlement_limit_encounters"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.insert_event",
+      "kind": "sql_inline",
+      "fingerprint": "882f6ca8ffd8a1fd",
+      "tables": [
+        "entitlement_subscription_events"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.insert_reservation",
+      "kind": "sql_dynamic",
+      "fingerprint": "00e602106510be52",
+      "tables": [
+        "entitlement_reservations"
+      ],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.lock_account",
+      "kind": "sql_dynamic",
+      "fingerprint": "d35168c0d5e45920",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.mark_reservation",
+      "kind": "sql_dynamic",
+      "fingerprint": "12f8f37f8c7668ec",
+      "tables": [
+        "entitlement_reservations"
+      ],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.refund_period_spend",
+      "kind": "sql_inline",
+      "fingerprint": "73a68e46898aa3bf",
+      "tables": [
+        "entitlement_usage_periods"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.refund_trial_consumption",
+      "kind": "sql_inline",
+      "fingerprint": "ca9636454e33c59c",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.set_plan",
+      "kind": "sql_dynamic",
+      "fingerprint": "a8cbbd6718225c80",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.set_status",
+      "kind": "sql_inline",
+      "fingerprint": "14d2b4ab6095232e",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.settle_period",
+      "kind": "sql_named",
+      "fingerprint": "18bd287a05167b9c",
+      "tables": [
+        "entitlement_usage_periods"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.settle_trial",
+      "kind": "sql_named",
+      "fingerprint": "440ecf30b422912d",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.store",
+      "qualname": "EntitlementStore.update_reservation_receipt",
+      "kind": "sql_inline",
+      "fingerprint": "230c99fc2b832ba3",
+      "tables": [
+        "entitlement_reservations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "LongMemEvalChunkRunner.run",
+      "kind": "filesystem_write",
+      "fingerprint": "2c09bc06bb1ed4f0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "LongMemEvalChunkRunner.run",
+      "kind": "filesystem_write",
+      "fingerprint": "eb09c1150081f536",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "build_score_payload",
+      "kind": "filesystem_write",
+      "fingerprint": "7fbe40f60530b9c8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "1d0747b120dd9656",
+      "tables": [
+        "memory_extraction_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "21573c186c87cc5f",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "35692b3f05acd69f",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "8c556c4c51e48665",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "cb5667dcf46c272e",
+      "tables": [
+        "dream_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "d73780d790debb6e",
+      "tables": [
+        "retrieval_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "cleanup_benchmark_state",
+      "kind": "sql_inline",
+      "fingerprint": "ffa14df674284fad",
+      "tables": [
+        "entities"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "delete_benchmark_user",
+      "kind": "sql_inline",
+      "fingerprint": "f7953135889abb82",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "ensure_benchmark_user",
+      "kind": "sql_inline",
+      "fingerprint": "5203e80c4f841ad4",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "insert_chunk_memories",
+      "kind": "sql_inline",
+      "fingerprint": "86a011f26579b125",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.eval.chunk_harness",
+      "qualname": "load_dataset",
+      "kind": "filesystem_write",
+      "fingerprint": "c57bde27679e2429",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "build_machine_readable_summary",
+      "kind": "filesystem_write",
+      "fingerprint": "7fbe40f60530b9c8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "run_diagnostics",
+      "kind": "filesystem_write",
+      "fingerprint": "492812bdb771fde0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "run_diagnostics",
+      "kind": "filesystem_write",
+      "fingerprint": "4f4a71ee046cd507",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "run_diagnostics",
+      "kind": "filesystem_write",
+      "fingerprint": "61ff21a8e2bd1294",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "run_diagnostics",
+      "kind": "filesystem_write",
+      "fingerprint": "734b2e67db51bf2b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "run_diagnostics",
+      "kind": "filesystem_write",
+      "fingerprint": "b465166c9a177fbd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.diagnostics",
+      "qualname": "run_diagnostics",
+      "kind": "filesystem_write",
+      "fingerprint": "d82fee2cbb4f6d9c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "_reset_checkpoint_file",
+      "kind": "filesystem_write",
+      "fingerprint": "88e0afdf6faa13bf",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "_scan_delete_redis_keys",
+      "kind": "store_write",
+      "fingerprint": "a2a100f7ae4a8daf",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "load_dataset",
+      "kind": "filesystem_write",
+      "fingerprint": "c57bde27679e2429",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "read_json",
+      "kind": "filesystem_write",
+      "fingerprint": "c54c689704c2059e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "reset_canonical_benchmark",
+      "kind": "sql_unresolvable",
+      "fingerprint": "e003a1c0a5261828",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "utc_now_iso",
+      "kind": "filesystem_write",
+      "fingerprint": "7fbe40f60530b9c8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "write_json",
+      "kind": "filesystem_write",
+      "fingerprint": "22bda90261a1b31b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "write_json",
+      "kind": "filesystem_write",
+      "fingerprint": "2efabb88bfd0d42c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "write_json",
+      "kind": "filesystem_write",
+      "fingerprint": "923504abdfba55b0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.home_suggestions.contracts",
+      "qualname": "render_context",
+      "kind": "filesystem_write",
+      "fingerprint": "acbddb99d6477d86",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.home_suggestions.contracts",
+      "qualname": "render_context",
+      "kind": "filesystem_write",
+      "fingerprint": "ec05816642732f27",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.home_suggestions.service",
+      "qualname": "HomeSuggestions.generate",
+      "kind": "store_write",
+      "fingerprint": "52af5e47235d1aa0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "<module>",
+      "kind": "filesystem_write",
+      "fingerprint": "4f0569d42599b391",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "_check_first_boot_setup",
+      "kind": "sql_inline",
+      "fingerprint": "565998e610c7e73e",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "_check_first_boot_setup",
+      "kind": "sql_inline",
+      "fingerprint": "8d9c96a5dc978851",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "_durable_chat",
+      "kind": "filesystem_write",
+      "fingerprint": "48637c0d6167574f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "_durable_replay",
+      "kind": "filesystem_write",
+      "fingerprint": "48637c0d6167574f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "_refuse_if_task_active",
+      "kind": "filesystem_write",
+      "fingerprint": "48637c0d6167574f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "chat",
+      "kind": "filesystem_write",
+      "fingerprint": "d7374a1643c8d125",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.main",
+      "qualname": "lifespan",
+      "kind": "store_write",
+      "fingerprint": "f01ee6adc2099abd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.consolidation",
+      "qualname": "consolidate_cluster",
+      "kind": "sql_inline",
+      "fingerprint": "376c512541f9a1c4",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.dedup",
+      "qualname": "_as_datetime_or_none",
+      "kind": "filesystem_write",
+      "fingerprint": "237c731376375320",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.dedup",
+      "qualname": "_deduplicate_facts_benchmark",
+      "kind": "sql_inline",
+      "fingerprint": "66672df64d7971a9",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.dreaming",
+      "qualname": "_coerce_datetime",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.embedding",
+      "qualname": "_format_status_timestamp",
+      "kind": "filesystem_write",
+      "fingerprint": "272feae71dbbe1f5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.encryption",
+      "qualname": "_record_shared_encryption_failure",
+      "kind": "store_write",
+      "fingerprint": "fd9b6806d0fd4bf1",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_coerce_reference_datetime",
+      "kind": "filesystem_write",
+      "fingerprint": "978305cc241885c0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_days_since_accessed",
+      "kind": "filesystem_write",
+      "fingerprint": "1d2fbedefe03bea7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_detect_temporal_query_window",
+      "kind": "filesystem_write",
+      "fingerprint": "05cdeb63e9e8c275",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_detect_temporal_query_window",
+      "kind": "filesystem_write",
+      "fingerprint": "900f64d037cca59f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_overlaps_temporal_window",
+      "kind": "filesystem_write",
+      "fingerprint": "2c9e93d283caa15b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_overlaps_temporal_window",
+      "kind": "filesystem_write",
+      "fingerprint": "67bfdc5e7b5d7bf2",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.retrieval",
+      "qualname": "_overlaps_temporal_window",
+      "kind": "filesystem_write",
+      "fingerprint": "c677939613d8745b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore._insert_memory_with_outcome._insert",
+      "kind": "sql_inline",
+      "fingerprint": "3cbc4c73b239b8e6",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.backfill_memory_content_hashes",
+      "kind": "sql_inline",
+      "fingerprint": "dc03d6871710ba69",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.backfill_memory_content_hashes",
+      "kind": "sql_inline",
+      "fingerprint": "f2b79771aec8a722",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.bind_home_suggestion",
+      "kind": "sql_inline",
+      "fingerprint": "1e5301f0300508cb",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.bind_home_suggestion",
+      "kind": "sql_inline",
+      "fingerprint": "cf4b5657f1fa44d5",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.bulk_touch_memories",
+      "kind": "sql_inline",
+      "fingerprint": "abab4c3efcf8839b",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.close_memory",
+      "kind": "sql_named",
+      "fingerprint": "0fc9f6b3716a5186",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.consume_summary_continuation_pending",
+      "kind": "sql_inline",
+      "fingerprint": "478b8749729f576b",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.count_listed_memories",
+      "kind": "sql_dynamic",
+      "fingerprint": "504d7370d0820f9f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.create_conversation",
+      "kind": "sql_inline",
+      "fingerprint": "1bde1cd9ede99b4c",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_all_memories",
+      "kind": "sql_inline",
+      "fingerprint": "5e83dda7673b1b33",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_all_memories",
+      "kind": "sql_inline",
+      "fingerprint": "7928671ada6042cf",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_conversation",
+      "kind": "sql_inline",
+      "fingerprint": "77ff4890950e5bd9",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_memories_by_source",
+      "kind": "sql_inline",
+      "fingerprint": "7f95cba4b7f60218",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_memory",
+      "kind": "sql_inline",
+      "fingerprint": "1a422dfe14332931",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_memory",
+      "kind": "sql_inline",
+      "fingerprint": "216560129904f3a5",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_memory",
+      "kind": "sql_inline",
+      "fingerprint": "aafd6a45ffb1ef03",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_memory",
+      "kind": "sql_inline",
+      "fingerprint": "f637bbc72eae1a32",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.get_conversation",
+      "kind": "sql_dynamic",
+      "fingerprint": "4aa13f43a8d72b90",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.import_memories",
+      "kind": "sql_inline",
+      "fingerprint": "26523012c60fdfdb",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.insert_entity",
+      "kind": "sql_inline",
+      "fingerprint": "e0fdcfcab0fe5694",
+      "tables": [
+        "entities"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.insert_message",
+      "kind": "sql_inline",
+      "fingerprint": "6c6e73b7b42cc0f5",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.link_entity_to_memory",
+      "kind": "sql_inline",
+      "fingerprint": "d80b0fe01e14db85",
+      "tables": [
+        "entities"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.list_conversations",
+      "kind": "sql_dynamic",
+      "fingerprint": "330d938aafaca6cc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.list_conversations",
+      "kind": "sql_dynamic",
+      "fingerprint": "3984b5ac4d754608",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.list_memories",
+      "kind": "sql_unresolvable",
+      "fingerprint": "416412d91c00bdda",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.log_consolidation_nudge_action",
+      "kind": "sql_inline",
+      "fingerprint": "14dbc02b04c3a866",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.log_dream_run",
+      "kind": "sql_inline",
+      "fingerprint": "2a62c17a9934767f",
+      "tables": [
+        "dream_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.log_extraction",
+      "kind": "sql_inline",
+      "fingerprint": "5d87e013fe115c7c",
+      "tables": [
+        "memory_extraction_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.log_retrieval",
+      "kind": "sql_inline",
+      "fingerprint": "71b30ffdfa96ad07",
+      "tables": [
+        "retrieval_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.merge_autonomous_skills",
+      "kind": "sql_inline",
+      "fingerprint": "0cb082b9dcb4f124",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.merge_autonomous_skills",
+      "kind": "sql_inline",
+      "fingerprint": "1aa9416f963d1fdc",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.merge_user_preferences",
+      "kind": "sql_inline",
+      "fingerprint": "d550ed2fd19f84ba",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.record_consolidation_nudge_run",
+      "kind": "sql_inline",
+      "fingerprint": "01f4b56f9537db7e",
+      "tables": [
+        "skill_nudge_user_state"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.run_garbage_collect",
+      "kind": "sql_inline",
+      "fingerprint": "e7bd7dd01727e95f",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.save_generated_conversation_title",
+      "kind": "sql_inline",
+      "fingerprint": "7ab239dae88fd4cd",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.supersede_memory",
+      "kind": "sql_inline",
+      "fingerprint": "51051090e59c64d5",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.supersede_memory._insert",
+      "kind": "sql_inline",
+      "fingerprint": "15c3c3cbb430d1c6",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.touch_memory",
+      "kind": "sql_inline",
+      "fingerprint": "7370ab13ca318dd8",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_consolidation_nudge_action_status",
+      "kind": "sql_inline",
+      "fingerprint": "d83ebc0ec003699d",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_conversation",
+      "kind": "sql_inline",
+      "fingerprint": "90cef3c63b730fc4",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_conversation_summary",
+      "kind": "sql_inline",
+      "fingerprint": "08de8512d0e9ea95",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_dream_run",
+      "kind": "sql_inline",
+      "fingerprint": "d7ee324b300324e7",
+      "tables": [
+        "dream_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_entity_aliases",
+      "kind": "sql_inline",
+      "fingerprint": "d4344e3b93937eb2",
+      "tables": [
+        "entities"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_content",
+      "kind": "sql_inline",
+      "fingerprint": "ed1413cf731b2204",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_embedding",
+      "kind": "sql_inline",
+      "fingerprint": "4421bc955b72b7da",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_metadata",
+      "kind": "sql_inline",
+      "fingerprint": "6bb14b46a86391e9",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_status",
+      "kind": "sql_inline",
+      "fingerprint": "0da793ecead83cf4",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_status",
+      "kind": "sql_inline",
+      "fingerprint": "9d62c01ea9992410",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_tier",
+      "kind": "sql_inline",
+      "fingerprint": "81be6dc809693140",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_message",
+      "kind": "sql_inline",
+      "fingerprint": "cdb9c92891cd3e96",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_user_settings",
+      "kind": "sql_inline",
+      "fingerprint": "9542294d7cf4fbef",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.tools",
+      "qualname": "_release_attempt_reservation",
+      "kind": "filesystem_write",
+      "fingerprint": "4e0f3a073eb7f18e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust",
+      "qualname": "boost_trust",
+      "kind": "sql_named",
+      "fingerprint": "f7052d85e4523cd6",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust",
+      "qualname": "penalize_trust",
+      "kind": "sql_named",
+      "fingerprint": "b9c88b9fc9f8b60e",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust",
+      "qualname": "record_retrieval",
+      "kind": "sql_named",
+      "fingerprint": "4fd5a56ab21c4fa4",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust_signals",
+      "qualname": "apply_implicit_positive_signal",
+      "kind": "sql_inline",
+      "fingerprint": "068d786b184389f6",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust_signals",
+      "qualname": "apply_implicit_positive_signal",
+      "kind": "sql_inline",
+      "fingerprint": "9af5870d1e7f234e",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust_signals",
+      "qualname": "record_retrieved_memories",
+      "kind": "sql_inline",
+      "fingerprint": "84d5210525dca606",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.model_routing",
+      "qualname": "routing_context",
+      "kind": "store_write",
+      "fingerprint": "8e7762768160591c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.redis_jobs",
+      "qualname": "clear_account_job_completion",
+      "kind": "store_write",
+      "fingerprint": "eac6b51c3dbd903f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.redis_jobs",
+      "qualname": "enqueue_account_job",
+      "kind": "sql_unresolvable",
+      "fingerprint": "91ad97a9ef06fe04",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "_create_first_device_and_session",
+      "kind": "sql_inline",
+      "fingerprint": "0ce5e7cabb133d3f",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "_create_first_device_and_session",
+      "kind": "sql_inline",
+      "fingerprint": "22e77e26868ffcbb",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "_find_or_create_singleton_user",
+      "kind": "sql_inline",
+      "fingerprint": "91c1fb9d1e1182c7",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "_record_device_creation_audit",
+      "kind": "sql_inline",
+      "fingerprint": "1eac9677b8cded4a",
+      "tables": [
+        "identity_audit_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "enroll_complete_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "215281ab90802e7f",
+      "tables": [
+        "pending_enrollments"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "enroll_complete_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "53c38f1e9827d157",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "enroll_complete_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "c92a756a1b9bc8c5",
+      "tables": [
+        "pending_enrollments"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "enroll_complete_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "ee75e19b90069330",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "enroll_complete_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "feb45862f9e4736d",
+      "tables": [
+        "pending_enrollments"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "enroll_start_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "16e982bde7d07045",
+      "tables": [
+        "pending_enrollments"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "logout_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "30296f015bd24b70",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "26d685968f8ffeca",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "3c53fcdbbbe25210",
+      "tables": [
+        "refresh_rotation_grace"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "875821a79f0dbc34",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "8ae284559565abad",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "a1314946c4e73233",
+      "tables": [
+        "refresh_rotation_grace"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "bd678ffea6c1d61b",
+      "tables": [
+        "refresh_rotation_grace"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "refresh_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "bda435b39aed7a23",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "revoke_device_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "12ce8c08e29a7e49",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.auth_setup",
+      "qualname": "revoke_device_endpoint",
+      "kind": "sql_inline",
+      "fingerprint": "7780587ff3f5f50f",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.routes.memories",
+      "qualname": "dream_memories_endpoint",
+      "kind": "store_write",
+      "fingerprint": "d3c02f420dd5b09f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.routes.users",
+      "qualname": "list_presets",
+      "kind": "filesystem_write",
+      "fingerprint": "e55862cc76ebce8a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.routes.web_snapshots",
+      "qualname": "delete_web_snapshot",
+      "kind": "store_write",
+      "fingerprint": "5d7388d146e9adc8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.runtime",
+      "qualname": "initialization",
+      "kind": "filesystem_write",
+      "fingerprint": "26a4ff68c8beb9fe",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.safe_logging",
+      "qualname": "SafeHandler.emit",
+      "kind": "filesystem_write",
+      "fingerprint": "512e85be91f515fd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.safe_logging",
+      "qualname": "SafeHandler.emit",
+      "kind": "filesystem_write",
+      "fingerprint": "c201f7731d04a8cd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.safe_logging",
+      "qualname": "SafeHandler.handleError",
+      "kind": "filesystem_write",
+      "fingerprint": "0ae321eb258a67c4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.safe_logging",
+      "qualname": "SafeHandler.handleError",
+      "kind": "filesystem_write",
+      "fingerprint": "c201f7731d04a8cd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.account_control.store",
+      "qualname": "LockedAccount._insert_cause",
+      "kind": "sql_inline",
+      "fingerprint": "697845bbfa064f7b",
+      "tables": [
+        "account_suspension_causes"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.account_control.store",
+      "qualname": "LockedAccount._remove_cause_exact",
+      "kind": "sql_inline",
+      "fingerprint": "7aeb32b09a5911a7",
+      "tables": [
+        "account_suspension_causes"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.account_control.store",
+      "qualname": "record_request_facts",
+      "kind": "sql_dynamic",
+      "fingerprint": "4df0ec831524a601",
+      "tables": [
+        "account_deletions"
+      ],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.account_control.store",
+      "qualname": "record_request_facts",
+      "kind": "sql_dynamic",
+      "fingerprint": "a2befbea767b3206",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.account_control.store",
+      "qualname": "record_request_facts",
+      "kind": "sql_inline",
+      "fingerprint": "7d30f374084155ba",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.barrier",
+      "qualname": "_barrier",
+      "kind": "sql_inline",
+      "fingerprint": "309201081af3dbf3",
+      "tables": [
+        "deletion_journal_binding"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal.__init__",
+      "kind": "filesystem_write",
+      "fingerprint": "8470d5c368f4c105",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._names",
+      "kind": "filesystem_write",
+      "fingerprint": "609c9eb12e76bd85",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._open",
+      "kind": "filesystem_write",
+      "fingerprint": "7b7b5bbb54ce10dd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._publish_head",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._publish_head",
+      "kind": "filesystem_write",
+      "fingerprint": "9e12639fd51c0914",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._publish_head",
+      "kind": "filesystem_write",
+      "fingerprint": "b0ad57c88cc81c24",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._publish_head",
+      "kind": "filesystem_write",
+      "fingerprint": "c78ccf5ff3f28546",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "0c1588b21e3c539c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "4dce09717f5ac465",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "608c75ecd516eba2",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "91b4000a7ae2e3d5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "9e12639fd51c0914",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "b87879b9d89470b0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "Journal.append",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "_write_all",
+      "kind": "filesystem_write",
+      "fingerprint": "96e422b6406e3d71",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "0b554842f9f87d69",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "40f3116b14831221",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "b47baf09c0001e62",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "bda2d638445b264d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "cd04e331629b46c3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.store",
+      "qualname": "initialize",
+      "kind": "filesystem_write",
+      "fingerprint": "d352701a93a6aead",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.fetch.service",
+      "qualname": "FetchService._attempt_strategy",
+      "kind": "sql_unresolvable",
+      "fingerprint": "273d5b79c61f144b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.fetch.service",
+      "qualname": "FetchService.fetch",
+      "kind": "store_write",
+      "fingerprint": "2e0ac86e0ec65bb7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.fetch.strategies.youtube",
+      "qualname": "YouTubeTranscriptStrategy.fetch",
+      "kind": "sql_unresolvable",
+      "fingerprint": "c4cc56b2e231c669",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService._create_user_tenant_membership",
+      "kind": "sql_inline",
+      "fingerprint": "9fbfbdf5425a7c19",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService._touch_provider_link",
+      "kind": "sql_inline",
+      "fingerprint": "dd0f2784b3ea1a60",
+      "tables": [
+        "identity_providers"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.consume_invite",
+      "kind": "sql_inline",
+      "fingerprint": "c48c266fef4a38bc",
+      "tables": [
+        "signup_invites"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.create_user",
+      "kind": "sql_inline",
+      "fingerprint": "0d9644ef9055fb09",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.ensure_owner_membership",
+      "kind": "sql_inline",
+      "fingerprint": "b4e37cfca966c459",
+      "tables": [
+        "tenant_memberships"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.ensure_personal_tenant",
+      "kind": "sql_inline",
+      "fingerprint": "172a1bb0661adb42",
+      "tables": [
+        "tenants"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.find_user_by_normalized_email",
+      "kind": "sql_unresolvable",
+      "fingerprint": "07c770f826b8ab2b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.find_user_by_provider",
+      "kind": "sql_unresolvable",
+      "fingerprint": "54b2e2534ffdab63",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.link_provider_identity",
+      "kind": "sql_inline",
+      "fingerprint": "7542b78ba7a82049",
+      "tables": [
+        "identity_providers"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.set_user_email_verified",
+      "kind": "sql_inline",
+      "fingerprint": "d8bce43d97727f04",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "AccountService.update_user_normalized_email",
+      "kind": "sql_inline",
+      "fingerprint": "98fcc02324d4c1fd",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "_record_dt",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.account_service",
+      "qualname": "_record_dt_or_none",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "EmailChallengeService._create_challenge",
+      "kind": "sql_inline",
+      "fingerprint": "69a4f3791a74f691",
+      "tables": [
+        "email_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "EmailChallengeService.consume_challenge",
+      "kind": "sql_inline",
+      "fingerprint": "2268a7d6063b6665",
+      "tables": [
+        "email_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "EmailChallengeService.consume_challenge",
+      "kind": "sql_inline",
+      "fingerprint": "9ebe1f1ed4a09789",
+      "tables": [
+        "email_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "EmailChallengeService.lock_challenge",
+      "kind": "sql_inline",
+      "fingerprint": "83098dc94b71ac09",
+      "tables": [
+        "email_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "_record_dt",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "_record_dt_or_none",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "normalize_code",
+      "kind": "filesystem_write",
+      "fingerprint": "44ad5581d5c4dd7d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.email_challenge",
+      "qualname": "normalize_code",
+      "kind": "filesystem_write",
+      "fingerprint": "e7411f5d4c1d640a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.google_verifier",
+      "qualname": "GoogleVerifierService.consume_nonce",
+      "kind": "sql_inline",
+      "fingerprint": "eb2eda9fe3ebe93b",
+      "tables": [
+        "google_nonce_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.google_verifier",
+      "qualname": "GoogleVerifierService.issue_nonce",
+      "kind": "sql_inline",
+      "fingerprint": "4d2e905d2ee06dc2",
+      "tables": [
+        "google_nonce_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.google_verifier",
+      "qualname": "_record_dt",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.google_verifier",
+      "qualname": "_record_dt_or_none",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.provenance",
+      "qualname": "attribute_email_challenge",
+      "kind": "sql_inline",
+      "fingerprint": "cc575b1e96417c70",
+      "tables": [
+        "email_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.provenance",
+      "qualname": "attribute_google_nonce",
+      "kind": "sql_inline",
+      "fingerprint": "5305a90fe5e94aa5",
+      "tables": [
+        "google_nonce_challenges"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.retention",
+      "qualname": "sweep_identity_records",
+      "kind": "sql_dynamic",
+      "fingerprint": "47de11d42a7ec2d5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.session_issuance",
+      "qualname": "issue_device_session",
+      "kind": "sql_inline",
+      "fingerprint": "d9745d303dc8f849",
+      "tables": [
+        "devices"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.session_issuance",
+      "qualname": "issue_device_session",
+      "kind": "sql_inline",
+      "fingerprint": "e279375413129e46",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore._purge_account_expired",
+      "kind": "sql_inline",
+      "fingerprint": "4f39705c32594d5d",
+      "tables": [
+        "web_snapshots"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore.create",
+      "kind": "sql_inline",
+      "fingerprint": "e24c97c36e1d6243",
+      "tables": [
+        "web_snapshots"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore.delete",
+      "kind": "sql_inline",
+      "fingerprint": "0666843c38cda565",
+      "tables": [
+        "web_snapshots"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore.find_latest.select",
+      "kind": "sql_unresolvable",
+      "fingerprint": "b9165d81831d8cc6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore.get",
+      "kind": "sql_dynamic",
+      "fingerprint": "16384034f6a40b2c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore.list",
+      "kind": "sql_dynamic",
+      "fingerprint": "17f80fc8281f8475",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "WebSnapshotStore.purge_expired",
+      "kind": "sql_inline",
+      "fingerprint": "9febcf8f9c160536",
+      "tables": [
+        "web_snapshots"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.web_snapshots",
+      "qualname": "_as_aware_utc",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.session_cleanup",
+      "qualname": "cleanup_stale_sessions",
+      "kind": "sql_inline",
+      "fingerprint": "3424e7a3742357bb",
+      "tables": [
+        "sessions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "delete_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "57f37d3f14c8c08d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "write_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "35784d173acf4725",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "write_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "62a66b12f934e288",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "write_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "7ca17ce25949bb72",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "write_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "a02bde7320bcb4fd",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "write_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "a4eae2f5f49860a7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.setup_token_delivery",
+      "qualname": "write_setup_token_file",
+      "kind": "filesystem_write",
+      "fingerprint": "f29c97f4a186923a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skill_evaluator",
+      "qualname": "SkillEvaluator._create_skill",
+      "kind": "sql_unresolvable",
+      "fingerprint": "00f6c559feb093a7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skill_evaluator",
+      "qualname": "SkillEvaluator._refine_or_skip_match",
+      "kind": "sql_unresolvable",
+      "fingerprint": "22e1ba74fe61140d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.clear_pending_update",
+      "kind": "sql_inline",
+      "fingerprint": "1aeb1c7c08df29f5",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.delete_projection",
+      "kind": "sql_inline",
+      "fingerprint": "cb14d3c19bafbcce",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.list_projections",
+      "kind": "sql_unresolvable",
+      "fingerprint": "416412d91c00bdda",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.search_by_embedding",
+      "kind": "sql_unresolvable",
+      "fingerprint": "416412d91c00bdda",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.set_pending_update",
+      "kind": "sql_inline",
+      "fingerprint": "896460650de48a58",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.touch_usage",
+      "kind": "sql_inline",
+      "fingerprint": "c7f2973005dad931",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.update_autonomous_edit",
+      "kind": "sql_inline",
+      "fingerprint": "9658b60f8c5fd264",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.update_autonomous_metadata",
+      "kind": "sql_unresolvable",
+      "fingerprint": "320928823f8ec27c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.update_embedding",
+      "kind": "sql_inline",
+      "fingerprint": "58ea0f29e45682cf",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.update_versions",
+      "kind": "sql_unresolvable",
+      "fingerprint": "320928823f8ec27c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.upsert_projection",
+      "kind": "sql_inline",
+      "fingerprint": "4e7f21c7092cfa16",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_store",
+      "qualname": "create_skill",
+      "kind": "filesystem_write",
+      "fingerprint": "ee9e49098c7f6969",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_store",
+      "qualname": "delete_skill",
+      "kind": "filesystem_write",
+      "fingerprint": "88e0afdf6faa13bf",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_store",
+      "qualname": "ensure_skills_dir",
+      "kind": "filesystem_write",
+      "fingerprint": "c0d446acd41485f7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_store",
+      "qualname": "import_skill_markdown",
+      "kind": "filesystem_write",
+      "fingerprint": "ee9e49098c7f6969",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_store",
+      "qualname": "update_skill",
+      "kind": "filesystem_write",
+      "fingerprint": "ee9e49098c7f6969",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_upgrade",
+      "qualname": "SkillUpgradeService.apply_pending_update",
+      "kind": "filesystem_write",
+      "fingerprint": "31f79f147700753a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_upgrade",
+      "qualname": "_save_snapshot",
+      "kind": "filesystem_write",
+      "fingerprint": "2efabb88bfd0d42c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_upgrade",
+      "qualname": "_save_snapshot",
+      "kind": "filesystem_write",
+      "fingerprint": "6a4333fe5c4893d6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_upgrade",
+      "qualname": "_write_skill_file",
+      "kind": "filesystem_write",
+      "fingerprint": "00cf6a740f6f59a0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_upgrade",
+      "qualname": "save_manifest",
+      "kind": "filesystem_write",
+      "fingerprint": "6f78314ba43eb22b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.skills_upgrade",
+      "qualname": "save_manifest",
+      "kind": "filesystem_write",
+      "fingerprint": "f541a5a0307f3c7b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.authority",
+      "qualname": "SpeechAuthority._fail",
+      "kind": "store_write",
+      "fingerprint": "5065162e20b8b420",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.authority",
+      "qualname": "SpeechAuthority.refresh",
+      "kind": "store_write",
+      "fingerprint": "5065162e20b8b420",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.cache",
+      "qualname": "cache_lock",
+      "kind": "filesystem_write",
+      "fingerprint": "316995e3ada84aef",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "0b8600b65c3e01d5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "1ad299084bfed79f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "44c9b5f354653493",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "5763b0e32542cc8d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "65da215af5d6deae",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "e3751c3a0ca3b223",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "CacheReservation.commit",
+      "kind": "filesystem_write",
+      "fingerprint": "ea30a148a472415c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_Ledger._remove_empty_owner",
+      "kind": "filesystem_write",
+      "fingerprint": "4f8d2db1dfdcbac7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_Ledger._scan_validated",
+      "kind": "filesystem_write",
+      "fingerprint": "4d86b2650158b539",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_Ledger._unlink_exact",
+      "kind": "filesystem_write",
+      "fingerprint": "d2d88e8cdc25e6f8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "88e72ce4fabcaf7b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "db1cefe549b38536",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "479cbedbec4cfaf6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "4a5248c480d87dd9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "c7c94e12b973b5b8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_read_json",
+      "kind": "filesystem_write",
+      "fingerprint": "38eced6a2b8624de",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_store_buffered",
+      "kind": "filesystem_write",
+      "fingerprint": "290439fc68bd6463",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_store_buffered",
+      "kind": "filesystem_write",
+      "fingerprint": "be313492f92ed1bc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "_write_all",
+      "kind": "filesystem_write",
+      "fingerprint": "c562f975af2a4324",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "open_cached_audio",
+      "kind": "filesystem_write",
+      "fingerprint": "ef457392e4d535d3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "reserve_audio",
+      "kind": "filesystem_write",
+      "fingerprint": "5df4bd612d968854",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "reserve_audio",
+      "kind": "filesystem_write",
+      "fingerprint": "65da215af5d6deae",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "reserve_audio",
+      "kind": "filesystem_write",
+      "fingerprint": "bb8167e3ad5747d9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.speech.stream_cache",
+      "qualname": "reserve_audio",
+      "kind": "filesystem_write",
+      "fingerprint": "f01b29a6d0f90c2f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.subagents.base",
+      "qualname": "SubagentManager.spawn",
+      "kind": "sql_unresolvable",
+      "fingerprint": "6707232db1e7cc5c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.subagents.research",
+      "qualname": "ResearchSubagent._search",
+      "kind": "sql_unresolvable",
+      "fingerprint": "a262a7bc62916135",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.fence",
+      "qualname": "FencedTool.execute_invocation",
+      "kind": "sql_unresolvable",
+      "fingerprint": "51e1f6f7a373a88e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.runner",
+      "qualname": "_publish",
+      "kind": "store_write",
+      "fingerprint": "20fce2e3ebc322b5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._accept_once",
+      "kind": "sql_inline",
+      "fingerprint": "01b991a445e05524",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._accept_once",
+      "kind": "sql_inline",
+      "fingerprint": "18933ab45cc0d651",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._append_event",
+      "kind": "sql_inline",
+      "fingerprint": "6da5ac8ee86dff89",
+      "tables": [
+        "task_events"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._append_event",
+      "kind": "sql_inline",
+      "fingerprint": "a0c7211b67ae8d31",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._by_key",
+      "kind": "sql_inline",
+      "fingerprint": "b7be0f1daa8d10bd",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._end_attempt",
+      "kind": "sql_inline",
+      "fingerprint": "c3eca3e20090b664",
+      "tables": [
+        "task_attempts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._finish",
+      "kind": "sql_inline",
+      "fingerprint": "583c42652ee8631f",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._locked_for_epoch",
+      "kind": "sql_dynamic",
+      "fingerprint": "b134cf0d256ec113",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.begin_execution",
+      "kind": "sql_dynamic",
+      "fingerprint": "8096ffa626f8f577",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.begin_execution",
+      "kind": "sql_inline",
+      "fingerprint": "bd8a1a8bea0c6cbe",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.begin_execution",
+      "kind": "sql_inline",
+      "fingerprint": "e8d99a1059806bb0",
+      "tables": [
+        "task_attempts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.begin_operation",
+      "kind": "sql_dynamic",
+      "fingerprint": "993a8c5af06dea20",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.begin_operation",
+      "kind": "sql_inline",
+      "fingerprint": "80c984dd5bab73d9",
+      "tables": [
+        "task_operations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.claim",
+      "kind": "sql_inline",
+      "fingerprint": "094b4b962fa04e28",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.claim",
+      "kind": "sql_inline",
+      "fingerprint": "ed202c3ad91feceb",
+      "tables": [
+        "task_attempts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.complete",
+      "kind": "sql_inline",
+      "fingerprint": "402c026c33b75ace",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.defer_claim",
+      "kind": "sql_inline",
+      "fingerprint": "01755d9c4cba1e7e",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.defer_execution",
+      "kind": "sql_inline",
+      "fingerprint": "7dc5e31bcfd19b97",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.delete_conversation",
+      "kind": "sql_inline",
+      "fingerprint": "a1b2fef322ef3021",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.delete_conversation",
+      "kind": "sql_inline",
+      "fingerprint": "d86964f589fa361d",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.due_for_wakeup",
+      "kind": "sql_inline",
+      "fingerprint": "3bbf381c06e7880b",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.fail_attempt",
+      "kind": "sql_inline",
+      "fingerprint": "895dfadab50497d6",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.finish_operation",
+      "kind": "sql_inline",
+      "fingerprint": "90c7756390a31bd4",
+      "tables": [
+        "task_operations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.heartbeat",
+      "kind": "sql_dynamic",
+      "fingerprint": "1e3b2c9b5b4be8ef",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.heartbeat",
+      "kind": "sql_inline",
+      "fingerprint": "bc6f5df6d6cd62c2",
+      "tables": [
+        "task_attempts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.mark_woken",
+      "kind": "sql_inline",
+      "fingerprint": "1d1e3e55fef28223",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.operation_matches",
+      "kind": "filesystem_write",
+      "fingerprint": "6f32e1c9e704c6d0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.operation_matches",
+      "kind": "sql_unresolvable",
+      "fingerprint": "73b74ba91068ef4c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.operation_progress",
+      "kind": "filesystem_write",
+      "fingerprint": "6f32e1c9e704c6d0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.operation_progress",
+      "kind": "sql_unresolvable",
+      "fingerprint": "637a10cc7f579087",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.pin_page",
+      "kind": "sql_dynamic",
+      "fingerprint": "6d49d24cdc40b703",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.record_compute_scope",
+      "kind": "sql_inline",
+      "fingerprint": "07c7a1d9e1b11e67",
+      "tables": [
+        "task_attempts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.request_cancel",
+      "kind": "sql_inline",
+      "fingerprint": "9f06a75dd75acc27",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore.write_partial",
+      "kind": "sql_inline",
+      "fingerprint": "943fc5ec94d1f07b",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tools.completion",
+      "qualname": "_sanitize_xml_attr",
+      "kind": "filesystem_write",
+      "fingerprint": "bc4b395ad9315884",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.completion",
+      "qualname": "_sanitize_xml_attr",
+      "kind": "filesystem_write",
+      "fingerprint": "cfb19955f0f743b8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.completion",
+      "qualname": "_sanitize_xml_attr",
+      "kind": "filesystem_write",
+      "fingerprint": "f103dfe8175b253d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.completion",
+      "qualname": "_unwrap_tool_result",
+      "kind": "filesystem_write",
+      "fingerprint": "db7898fbe975cbff",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.completion",
+      "qualname": "completion_with_tools",
+      "kind": "sql_unresolvable",
+      "fingerprint": "8dd34fc6f2fe1400",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.document",
+      "qualname": "GenerateDocumentTool._generate_csv",
+      "kind": "filesystem_write",
+      "fingerprint": "3b26c2527c8f1271",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.executor",
+      "qualname": "ToolExecutor.execute_invocation",
+      "kind": "sql_unresolvable",
+      "fingerprint": "7e0f775592446c56",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.reminder",
+      "qualname": "ReminderStorage.__init__",
+      "kind": "filesystem_write",
+      "fingerprint": "b10a2c299c3dcd6c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.reminder",
+      "qualname": "ReminderStorage._ensure_file_exists",
+      "kind": "filesystem_write",
+      "fingerprint": "e0fb8c3465c0dc22",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.reminder",
+      "qualname": "ReminderStorage._save",
+      "kind": "filesystem_write",
+      "fingerprint": "a3006b369704bd6f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.skill_manage",
+      "qualname": "SkillManageTool._patch",
+      "kind": "filesystem_write",
+      "fingerprint": "9f787b1cedb67fe7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.spawn",
+      "qualname": "_write_generated_media",
+      "kind": "filesystem_write",
+      "fingerprint": "0ea51fb836cc8954",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.spawn",
+      "qualname": "_write_generated_media",
+      "kind": "filesystem_write",
+      "fingerprint": "34ac9386ebbf4f7e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.spawn",
+      "qualname": "_write_generated_media",
+      "kind": "filesystem_write",
+      "fingerprint": "5d6b2c720e8335c5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.spawn",
+      "qualname": "_write_generated_media",
+      "kind": "filesystem_write",
+      "fingerprint": "850787496fc0b43b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.spawn",
+      "qualname": "_write_generated_media",
+      "kind": "filesystem_write",
+      "fingerprint": "e0f309f432767b48",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tools.web_fetch",
+      "qualname": "WebFetchTool.execute",
+      "kind": "sql_unresolvable",
+      "fingerprint": "3140128b09cb86fe",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_failed_job",
+      "kind": "sql_unresolvable",
+      "fingerprint": "ec1e3f81c013a73b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_failed_job",
+      "kind": "store_write",
+      "fingerprint": "120bddf2c9112525",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_failed_job",
+      "kind": "store_write",
+      "fingerprint": "3a1ebe6e1276fa0d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_failed_job",
+      "kind": "store_write",
+      "fingerprint": "42e7fdfe35493eff",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_job",
+      "kind": "sql_unresolvable",
+      "fingerprint": "ec1e3f81c013a73b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_job",
+      "kind": "store_write",
+      "fingerprint": "364e0888de7b0a7b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_job",
+      "kind": "store_write",
+      "fingerprint": "3a1ebe6e1276fa0d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "AuditedWorker.finish_job",
+      "kind": "store_write",
+      "fingerprint": "42e7fdfe35493eff",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.audit",
+      "qualname": "persist_worker_job_failure",
+      "kind": "sql_inline",
+      "fingerprint": "21d775ae16654606",
+      "tables": [
+        "job_failures"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.worker.jobs",
+      "qualname": "_cleanup_expired_artifacts",
+      "kind": "filesystem_write",
+      "fingerprint": "c5ca3c5b824ac661",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.jobs",
+      "qualname": "_coerce_message_timestamp",
+      "kind": "filesystem_write",
+      "fingerprint": "237c731376375320",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.jobs",
+      "qualname": "_coerce_message_timestamp",
+      "kind": "filesystem_write",
+      "fingerprint": "4b70f892680f95ab",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.jobs",
+      "qualname": "_coerce_message_timestamp",
+      "kind": "filesystem_write",
+      "fingerprint": "66782e503a23f8c5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.jobs",
+      "qualname": "_extract_memories_once.message_order_key",
+      "kind": "filesystem_write",
+      "fingerprint": "e9e6294796816001",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    }
+  ]
+}
