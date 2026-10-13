@@ -297,3 +297,70 @@ enablement claim. Generic conversation updates and other writers remain uncovere
 The DB-only kernel cannot observe an unprojected journal append; control writers
 must still use account UPDATE-first ordering and startup stays fail closed.
 **#477 remains open.**
+
+## J1c-1d — queued entity projection only
+
+Owner-approved bounded extension after merged #523, 13 October 2026. The owner
+approved terminal legacy/invalid/foreign-origin refusal, one atomic planned-batch
+transaction, terminal stale-plan refusal without automatic replan, the existing
+background compute scope (including otherwise-admitted ambiguous confirmations),
+and processing only eligible owner-qualified source rows. This is source-only
+integration, not deletion/reset, deployment or enablement qualification.
+
+Extraction's original account UUID/generation accompanies both successful and
+failed-suffix entity enqueues. Extraction continuations and serialized ARQ retries
+retain it; a later summary refusal does not replace this independent use of the
+same origin. No entity job recaptures an account or uses `tasks.content_generation`.
+Missing/malformed/foreign captures and malformed identifier lists skip optional
+projection before reads/admission/providers. Fact writes/checkpoints remain outside
+this slice. Input/reference bounds are internal constants in
+[`entity_projection.py`](../orchestrator/memory/entity_projection.py), not new config.
+
+Preflight uses account-first READ COMMITTED and SQL owner qualification before
+decryption. Sources must be active/open and explicitly nonlocal; referenced
+conversations must be owner-qualified cloud sources. Explicit nonlocal manual/import
+records without a conversation remain eligible; missing, foreign, local or unknown
+required provenance is excluded. Canonical names additionally require an eligible
+primary source and eligible ownership/locality for **every** recorded linked memory.
+One cloud link cannot authorize mixed lineage. Excluded canonical/lineage content is
+never decrypted for this job. Recorded references are conservative eligibility
+evidence, not proof that historical lineage is complete or globally repaired.
+
+Immutable in-memory snapshots retain encrypted source/canonical state and provenance
+dependencies. Preflight ends before background compute admission; a second guarded
+check after admission refuses changed inputs before embeddings/model work. Planning
+uses those qualified canonical names without hidden generic-store reads. Existing
+thresholds, rejection/completeness rules and first-source merge grouping remain;
+the selected dedicated embedding route's existing legacy-consumer refusal remains.
+No route, embedding identity or provider is activated. No locks span compute,
+embedding/model calls or Redis. In-flight provider requests cannot be recalled.
+
+Final persistence requires original capture and snapshots, acquires account SHARE
+on the **actual writer connection** before deterministic conversation/source/entity
+row locks, and retains them through the batch commit. It revalidates all consumed
+canonical rows, including nonwinning candidates, and their source dependencies.
+Insertions, aliases and source-memory links commit together; stale plans, failed SQL,
+failed commits and cancellation cannot return successful counts. An unexpected
+same-lookup conflict refuses the whole batch rather than overwriting aliases or
+refreshing/replanning. Repeated keys created within the same transaction can share
+that new entity's qualified links. Empty aliases use the encrypted collection
+representation, not SQL NULL. Concurrent stale alias plans cannot erase newer data.
+
+[`test_entity_account_guard_postgres.py`](../tests/test_entity_account_guard_postgres.py)
+and [`test_entity_producer_postgres.py`](../tests/test_entity_producer_postgres.py)
+exercise actual disposable PostgreSQL input/writer SQL, native enqueue adapters and
+worker entry points with synthetic data/scripted providers. Qualification requires
+non-skipped owner/state/lineage refusals, original origin across HTTP/task/extraction
+carriers, admission/planning edits, duplicate/concurrent writers, observed wait-for
+edges in both account/control orderings, cancellation/failed commit/pool reuse and
+whole-batch atomicity. Existing title/summary/extraction regressions and full project
+gates remain mandatory; mocks or catalogue metadata do not qualify runtime fencing.
+
+Only the three SQL sites in the queued `save_plan` writer are recorded as integrated.
+Generic `MemoryStore` entity methods, retrieval, memory-fact writers, task outputs,
+sessions, request/deletion appliers, markers, readiness and retirement remain
+uncovered/out of scope. Generic insertion's pre-existing NULL-alias issue is tracked
+separately in #524; this queued writer avoids it without claiming all APIs repaired.
+No schema/API/SSE/env/dependency change. Control writers still require account
+UPDATE-first ordering; unprojected journal intent remains outside this DB-only
+guard's visibility. Startup remains fail closed and **#477 remains open**.

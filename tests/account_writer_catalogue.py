@@ -31,7 +31,7 @@ from pathlib import Path
 MANIFEST_SCHEMA = "journal+account_writer_catalogue/v1"
 MANIFEST_PATH = Path(__file__).resolve().parent / "fixtures" / "account_writer_catalogue.json"
 
-# Only this concrete title SQL site may record bounded integration. The scanner
+# Only these concrete SQL sites may record bounded integration. The scanner
 # does not verify the guard: real runtime proofs live in the named contract suite.
 TITLE_GUARDED_SITE = ("orchestrator.memory.store", "MemoryStore.save_generated_conversation_title")
 TITLE_GUARD_CONTRACT = "tests/test_title_account_guard_postgres.py"
@@ -40,6 +40,8 @@ SUMMARY_GUARDED_SITES = {
     ("orchestrator.memory.store", "MemoryStore.clear_finished_summary_continuation"),
 }
 SUMMARY_GUARD_CONTRACT = "tests/test_summary_account_guard_postgres.py"
+ENTITY_GUARDED_SITE = ("orchestrator.memory.entity_projection", "save_plan")
+ENTITY_GUARD_CONTRACT = "tests/test_entity_account_guard_postgres.py"
 
 #: Classification categories; every manifest entry must name exactly one.
 CATEGORIES = ("content", "control", "shared_unowned", "deferred")
@@ -585,7 +587,7 @@ def _validate_entry(name: str, entry: object, expect_paths: bool) -> list[str]:
     else:
         uncovered = entry.get("uncovered")
         site = (entry.get("owner_source"), entry.get("qualname"))
-        title_integration = (
+        bounded_integration = (
             uncovered is False
             and (
                 (site == TITLE_GUARDED_SITE and entry.get("guard_contract") == TITLE_GUARD_CONTRACT)
@@ -593,15 +595,20 @@ def _validate_entry(name: str, entry: object, expect_paths: bool) -> list[str]:
                     site in SUMMARY_GUARDED_SITES
                     and entry.get("guard_contract") == SUMMARY_GUARD_CONTRACT
                 )
+                or (
+                    site == ENTITY_GUARDED_SITE
+                    and entry.get("guard_contract") == ENTITY_GUARD_CONTRACT
+                )
             )
             and category == "content"
             and entry.get("kind") == "sql_inline"
-            and entry.get("tables") == ["conversations"]
+            and entry.get("tables")
+            == (["entities"] if site == ENTITY_GUARDED_SITE else ["conversations"])
             and entry.get("unknown") is False
         )
-        if uncovered is not True and not title_integration:
+        if uncovered is not True and not bounded_integration:
             problems.append(f"{name}/coverage-claim: uncovered={uncovered!r}")
-        if "guard_contract" in entry and not title_integration:
+        if "guard_contract" in entry and not bounded_integration:
             problems.append(f"{name}/unsupported-guard-contract")
         if entry.get("unknown") is True and category not in UNKNOWN_CATEGORIES:
             problems.append(f"{name}/unknown-flag-not-allowed-for-category: {category!r}")

@@ -1,4 +1,4 @@
-"""J1c guard for generated titles/conversation summaries; NOT a completed fence.
+"""J1c guard for titles/summaries/queued entity projection; NOT a completed fence.
 
 Capture before deriving inputs. Acquire on the caller's READ COMMITTED transaction
 before content locks; revalidate after rollback to a savepoint predating the lock.

@@ -27,7 +27,7 @@ from orchestrator.redis_jobs import enqueue_account_job
 from orchestrator.timezones import extract_timezone_name as _extract_timezone_name
 from orchestrator.memory.dreaming import run_dreaming
 from orchestrator.memory.entities import (
-    extract_and_resolve_entities,
+    plan_entity_projection,
     persist_extraction_result,
 )
 from orchestrator.memory.extraction import (
@@ -36,6 +36,7 @@ from orchestrator.memory.extraction import (
     messages_to_extraction_text,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.entity_projection import EntityProjectionStale, MAX_SOURCE_IDS
 from orchestrator.memory.titles import ConversationMessage, generate_conversation_title
 from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 from orchestrator.model_routing import routing_context
@@ -444,6 +445,9 @@ async def _extract_memories_once(
         "origin_account_id": origin_account_id,
         "origin_account_generation": origin_account_generation,
     }
+    # Entity projection has its own use of the SAME immutable origin. A later
+    # summary refusal must not mutate or replace the entity enqueue's currency.
+    entity_generation = summary_generation
     # Observe recovery before a no_messages exit, but never consume before Redis
     # succeeds. Guarded summary progress owns clearing the persistent flag.
     continuation_pending = False
@@ -618,6 +622,8 @@ async def _extract_memories_once(
     last_processed_message_id: str | None = None
 
     async def enqueue_entity_resolution(memories: Sequence[Mapping[str, Any]]) -> None:
+        if entity_generation is None:
+            return
         memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id")]
         if not memory_ids:
             return
@@ -630,6 +636,7 @@ async def _extract_memories_once(
             user_id=owner,
             job_id=f"resolve_entities_{_as_uuid(conversation_id)}_{memory_ids[-1]}",
             args=(str(owner), json.dumps(memory_ids)),
+            kwargs=summary_payload,
         )
 
     for chunk_index, chunk in enumerate(chunks_to_process):
@@ -1683,6 +1690,9 @@ async def resolve_entities_job(
     ctx: WorkerContext,
     user_id: str | uuid.UUID,
     memory_ids_json: str,
+    *,
+    origin_account_id: str | uuid.UUID | None = None,
+    origin_account_generation: int | None = None,
 ) -> EntityResolutionResults:
     """Run entity resolution for newly created memories.
 
@@ -1697,6 +1707,36 @@ async def resolve_entities_job(
     Returns:
         EntityResolutionResults with counts and status
     """
+
+    def skipped(reason: str) -> EntityResolutionResults:
+        return {
+            "status": "skipped",
+            "memories_processed": 0,
+            "entities_created": 0,
+            "entities_updated": 0,
+            "errors": [reason],
+            "error_count": 0,
+        }
+
+    # Decode only original serialized currency. No store/compute/input read can
+    # upgrade a legacy/malformed/foreign-origin job to this generation.
+    try:
+        captured = _summary_capture(origin_account_id, origin_account_generation)
+        uid = _as_uuid(user_id)
+        if captured.account_id != uid:
+            return skipped("invalid_capture")
+    except (WriteGuardRefusal, ValueError, TypeError, AttributeError):
+        return skipped("invalid_capture")
+    try:
+        decoded = json.loads(memory_ids_json)
+        if not isinstance(decoded, list) or len(decoded) > MAX_SOURCE_IDS:
+            return skipped("invalid_memory_ids_json")
+        if any(not isinstance(mid, str) for mid in decoded):
+            return skipped("invalid_memory_ids_json")
+        memory_ids = list(dict.fromkeys(uuid.UUID(mid) for mid in decoded))
+    except (ValueError, TypeError, AttributeError):
+        return skipped("invalid_memory_ids_json")
+
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return EntityResolutionResults(
@@ -1708,21 +1748,6 @@ async def resolve_entities_job(
             error_count=1,
         )
 
-    try:
-        memory_ids = json.loads(memory_ids_json)
-        if not isinstance(memory_ids, list):
-            memory_ids = []
-    except (json.JSONDecodeError, TypeError):
-        return EntityResolutionResults(
-            status="error",
-            memories_processed=0,
-            entities_created=0,
-            entities_updated=0,
-            errors=["invalid_memory_ids_json"],
-            error_count=1,
-        )
-
-    uid = _as_uuid(user_id)
     results: EntityResolutionResults = {
         "status": "ok",
         "memories_processed": 0,
@@ -1732,45 +1757,36 @@ async def resolve_entities_job(
         "error_count": 0,
     }
 
-    memory_contents: list[tuple[str, uuid.UUID | None, str | None]] = []
-    for mid in memory_ids:
-        try:
-            memory_uuid = uuid.UUID(mid) if isinstance(mid, str) else mid
-        except (ValueError, TypeError):
-            continue
-
-        try:
-            memory = await store_obj.get_memory(memory_uuid)
-            if memory and memory.get("content"):
-                content = memory.get("content", "")
-                slot = memory.get("memory_slot")
-                memory_contents.append((content, memory_uuid, slot))
-        except Exception:
-            logger.warning("Failed to fetch memory for entity resolution")
-            continue
-
-    if not memory_contents:
-        return EntityResolutionResults(
-            status="ok",
-            memories_processed=0,
-            entities_created=0,
-            entities_updated=0,
-            errors=[],
-            error_count=0,
-        )
-
     try:
-        extraction_result = await extract_and_resolve_entities(
-            uid, store_obj, memory_contents, use_spacy=False
+        inputs = await store_obj.read_entity_projection_inputs(
+            memory_ids, captured_generation=captured
         )
-
-        if extraction_result.resolutions:
-            entity_ids = await persist_extraction_result(uid, store_obj, extraction_result)
+        if not inputs.memory_contents:
+            return results
+        async with account_compute(
+            ctx.get("db_pool"),
+            uid,
+            operation="agent",
+            auto_route=True,
+            background=True,
+            profile="background",
+        ):
+            await store_obj.check_entity_projection_inputs(inputs, captured_generation=captured)
+            extraction_result = await plan_entity_projection(uid, store_obj, inputs)
+            entity_ids = await persist_extraction_result(
+                uid,
+                store_obj,
+                extraction_result,
+                inputs=inputs,
+                captured_generation=captured,
+            )
             results["entities_created"] = len(entity_ids)
             results["entities_updated"] = len([e for e in entity_ids if e is not None])
-
-        results["memories_processed"] = len(memory_contents)
-
+        results["memories_processed"] = len(inputs.memory_contents)
+    except WriteGuardRefusal as e:
+        return skipped(e.code)
+    except EntityProjectionStale:
+        return skipped("stale_plan")
     except Exception as e:
         logger.warning("Entity resolution failed")
         results["status"] = "error"

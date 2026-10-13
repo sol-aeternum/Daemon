@@ -2,8 +2,9 @@
 
 import uuid
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
+from orchestrator.memory.entity_projection import ProjectionInputs, ProjectionSnapshot
 from orchestrator.memory.entities import (
     CandidateMention,
     EntityResolution,
@@ -11,6 +12,22 @@ from orchestrator.memory.entities import (
     persist_extraction_result,
 )
 from orchestrator.memory.retrieval import _get_entity_expanded_candidates
+from orchestrator.services.account_control.guard import CapturedGeneration
+
+
+def _projection_inputs(captured: CapturedGeneration) -> ProjectionInputs:
+    """Minimal guarded-plan input carrying only the origin capture."""
+    return ProjectionInputs(
+        snapshot=ProjectionSnapshot(
+            origin=captured,
+            source_ids=(),
+            memories=(),
+            conversations=(),
+            canonicals=(),
+        ),
+        memory_contents=(),
+        canonical_names=(),
+    )
 
 
 class TestPersistExtractionNewEntities:
@@ -63,33 +80,40 @@ class TestPersistExtractionNewEntities:
             spacy_enriched=False,
         )
 
-        entity_counter = 0
+        capture = CapturedGeneration(user_id, 7)
+        mock_store.save_entity_projection = AsyncMock(return_value=[uuid.uuid4(), uuid.uuid4()])
 
-        async def mock_insert_entity(
-            user_id=None,
-            canonical_name=None,
-            lookup_key=None,
-            aliases=None,
-            alias_lookup_keys=None,
-            source_memory_id=None,
-        ):
-            nonlocal entity_counter
-            entity_counter += 1
-            result = MagicMock()
-            result.get = lambda key: uuid.uuid4() if key == "id" else None
-            return {"id": uuid.uuid4(), "canonical_name": canonical_name}
-
-        mock_store.insert_entity = mock_insert_entity
-
-        entity_ids = await persist_extraction_result(user_id, mock_store, extraction_result)
+        entity_ids = await persist_extraction_result(
+            user_id,
+            mock_store,
+            extraction_result,
+            inputs=_projection_inputs(capture),
+            captured_generation=capture,
+        )
 
         # BUG: before fix, both Alice and Bob went into one bucket (None) and only
         # ONE entity was created, with Bob as an alias of Alice.
-        # After fix: each new resolution gets its own entity.
-        assert entity_counter == 2, (
-            f"Expected 2 entities (one per unrelated 'new' mention), got {entity_counter}. "
+        # After fix: each new resolution gets its own independent mutation in a
+        # single atomic writer call, never merged via shared alias updates.
+        mock_store.save_entity_projection.assert_awaited_once()
+        save_args, save_kwargs = mock_store.save_entity_projection.await_args
+        assert save_kwargs["captured_generation"] is capture
+        mutations = save_args[1]
+        assert len(mutations) == 2, (
+            f"Expected 2 mutations (one per unrelated 'new' mention), got {len(mutations)}. "
             "Unrelated entities were likely collapsed into one bucket."
         )
+        by_name = {m.canonical_name: m for m in mutations}
+        assert set(by_name) == {"Alice", "Bob"}
+        alice_mutation = by_name["Alice"]
+        bob_mutation = by_name["Bob"]
+        assert alice_mutation.canonical_id is None
+        assert alice_mutation.lookup_key == "alice"
+        assert alice_mutation.source_id == memory_id_alice
+        assert bob_mutation.canonical_id is None
+        assert bob_mutation.lookup_key == "bob"
+        assert bob_mutation.source_id == memory_id_bob
+        assert alice_mutation.source_id != bob_mutation.source_id
         assert len(entity_ids) == 2, f"Expected 2 entity IDs, got {len(entity_ids)}"
 
 
@@ -301,8 +325,9 @@ class TestPersistExtractionLinksNewEntitiesForRetrieval:
     # Bug 3 regression: newly created entities must be linked to memories for retrieval
 
     @pytest.mark.asyncio
-    async def test_new_entity_linked_to_memory_via_link_entity_to_memory(self):
-        # Bug 3: persist_extraction_result must call link_entity_to_memory for new entities
+    async def test_new_entity_links_memory_inside_atomic_writer(self):
+        # Bug 3 regression: the new mention's source memory rides inside the
+        # single atomic writer mutation so linking cannot be lost on retry.
         user_id = uuid.uuid4()
         mock_store = AsyncMock()
 
@@ -328,21 +353,26 @@ class TestPersistExtractionLinksNewEntitiesForRetrieval:
             spacy_enriched=False,
         )
 
+        capture = CapturedGeneration(user_id, 7)
         new_entity_id = uuid.uuid4()
+        mock_store.save_entity_projection = AsyncMock(return_value=[new_entity_id])
 
-        async def mock_insert_entity(
-            user_id=None,
-            canonical_name=None,
-            lookup_key=None,
-            aliases=None,
-            alias_lookup_keys=None,
-            source_memory_id=None,
-        ):
-            return {"id": new_entity_id, "canonical_name": canonical_name}
+        entity_ids = await persist_extraction_result(
+            user_id,
+            mock_store,
+            extraction_result,
+            inputs=_projection_inputs(capture),
+            captured_generation=capture,
+        )
 
-        mock_store.insert_entity = mock_insert_entity
-        mock_store.link_entity_to_memory = AsyncMock(return_value=True)
-
-        await persist_extraction_result(user_id, mock_store, extraction_result)
-
-        mock_store.link_entity_to_memory.assert_called_once_with(new_entity_id, memory_id)
+        mock_store.save_entity_projection.assert_awaited_once()
+        save_args, save_kwargs = mock_store.save_entity_projection.await_args
+        assert save_kwargs["captured_generation"] is capture
+        mutations = save_args[1]
+        assert len(mutations) == 1
+        mutation = mutations[0]
+        assert mutation.canonical_id is None
+        assert mutation.source_id == memory_id
+        # No per-entity link helper remains in the persist path.
+        mock_store.link_entity_to_memory.assert_not_awaited()
+        assert entity_ids == [new_entity_id]

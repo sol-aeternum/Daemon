@@ -23,6 +23,12 @@ from orchestrator.config import get_settings
 from orchestrator.memory.completion import read_completeness
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.entity_projection import (
+    EntityMutation,
+    EntityProjectionStale,
+    ProjectionInputs,
+)
+from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator.model_routing import routing_context
 
 # Entity resolution is a short unattended structured judgement, so it runs on
@@ -593,13 +599,21 @@ async def _get_canonical_embeddings(
 ) -> list[tuple[uuid.UUID, str, list[float]]]:
     """Get all canonical entity embeddings for a user."""
     entities = await store.get_entities_for_user(user_id, limit=1000)
-    result: list[tuple[uuid.UUID, str, list[float]]] = []
+    return await _embed_canonical_names(
+        tuple(
+            (entity["id"], entity.get("canonical_name", ""))
+            for entity in entities
+            if entity.get("id")
+        )
+    )
 
-    for entity in entities:
-        entity_id = entity.get("id")
-        if not entity_id:
-            continue
-        canonical_name = entity.get("canonical_name", "")
+
+async def _embed_canonical_names(
+    names: tuple[tuple[uuid.UUID, str], ...],
+) -> list[tuple[uuid.UUID, str, list[float]]]:
+    """Embed only the caller's already qualified names; no hidden store read."""
+    result: list[tuple[uuid.UUID, str, list[float]]] = []
+    for entity_id, canonical_name in names:
         # Get entity embedding by embedding the canonical name
         try:
             embedding = await embed_query(canonical_name)
@@ -913,7 +927,30 @@ async def extract_and_resolve_entities(
     # Step 2: Get canonical entities for this user
     canonical_entities = await _get_canonical_embeddings(user_id, store)
 
-    # Step 3: Resolve each candidate
+    return await _resolve_candidates(user_id, store, all_candidates, canonical_entities, use_spacy)
+
+
+async def plan_entity_projection(
+    user_id: uuid.UUID, store: MemoryStore, inputs: ProjectionInputs
+) -> ExtractionResult:
+    """Queued planner consumes guarded snapshots, never generic store reads."""
+    all_candidates: list[CandidateMention] = []
+    for content, memory_id, slot in inputs.memory_contents:
+        all_candidates.extend(
+            await extract_entity_candidates(content, memory_id, slot, use_spacy=False)
+        )
+    canonicals = await _embed_canonical_names(inputs.canonical_names) if all_candidates else []
+    return await _resolve_candidates(user_id, store, all_candidates, canonicals, False)
+
+
+async def _resolve_candidates(
+    user_id: uuid.UUID,
+    store: MemoryStore,
+    all_candidates: list[CandidateMention],
+    canonical_entities: list[tuple[uuid.UUID, str, list[float]]],
+    use_spacy: bool,
+) -> ExtractionResult:
+    # Shared resolution semantics for queued and standalone planners.
     resolutions: list[EntityResolution] = []
     for candidate in all_candidates:
         resolution = await resolve_candidate(candidate, user_id, store, canonical_entities)
@@ -945,6 +982,9 @@ async def persist_extraction_result(
     user_id: uuid.UUID,
     store: MemoryStore,
     extraction_result: ExtractionResult,
+    *,
+    inputs: ProjectionInputs,
+    captured_generation: CapturedGeneration,
 ) -> list[uuid.UUID]:
     """Persist extraction results to the canonical entity store.
 
@@ -954,12 +994,16 @@ async def persist_extraction_result(
     Args:
         user_id: User ID
         store: MemoryStore instance
-        extraction_result: Result from extract_and_resolve_entities
+        extraction_result: Result from the snapshot-backed queued planner
+        inputs: Original qualified inputs and their immutable source/lineage snapshots
+        captured_generation: Original account origin, never recaptured on retries
 
     Returns:
         List of created/updated entity IDs
     """
-    entity_ids: list[uuid.UUID] = []
+    if captured_generation.account_id != user_id or inputs.snapshot.origin != captured_generation:
+        raise EntityProjectionStale("stale_plan")
+    mutations: list[EntityMutation] = []
 
     new_resolutions: list[EntityResolution] = []
     merged_resolutions: list[EntityResolution] = []
@@ -997,26 +1041,18 @@ async def persist_extraction_result(
         if not canonical_name:
             continue
 
-        lookup_key = _normalize_lookup_key(canonical_name)
-
-        entity = await store.get_entity(canonical_id)
-        if entity:
-            existing_aliases = entity.get("aliases", [])
-            existing_lookup_keys = list(entity.get("alias_lookup_keys", []))
-
-            if alias and alias != canonical_name:
-                if alias not in existing_aliases:
-                    existing_aliases.append(alias)
-                alias_lookup_key = _normalize_lookup_key(alias)
-                if alias_lookup_key not in existing_lookup_keys:
-                    existing_lookup_keys.append(alias_lookup_key)
-
-            await store.update_entity_aliases(canonical_id, existing_aliases, existing_lookup_keys)
-
-            if linked_memory_id:
-                await store.link_entity_to_memory(canonical_id, linked_memory_id)
-
-            entity_ids.append(canonical_id)
+        if linked_memory_id is None:
+            continue
+        mutations.append(
+            EntityMutation(
+                canonical_id,
+                canonical_name,
+                _normalize_lookup_key(canonical_name),
+                linked_memory_id,
+                alias,
+                _normalize_lookup_key(alias) if alias else None,
+            )
+        )
 
     # Handle new resolutions: each gets its own independent entity
     for resolution in new_resolutions:
@@ -1024,19 +1060,9 @@ async def persist_extraction_result(
         linked_memory_id = resolution.mention.source_memory_id
         lookup_key = _normalize_lookup_key(canonical_name)
 
-        entity = await store.insert_entity(
-            user_id=user_id,
-            canonical_name=canonical_name,
-            lookup_key=lookup_key,
-            aliases=None,
-            alias_lookup_keys=None,
-            source_memory_id=linked_memory_id,
-        )
+        if linked_memory_id is not None:
+            mutations.append(EntityMutation(None, canonical_name, lookup_key, linked_memory_id))
 
-        new_id = entity.get("id")
-        if new_id:
-            if linked_memory_id:
-                await store.link_entity_to_memory(new_id, linked_memory_id)
-            entity_ids.append(new_id)
-
-    return entity_ids
+    return await store.save_entity_projection(
+        inputs, mutations, captured_generation=captured_generation
+    )

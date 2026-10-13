@@ -14,6 +14,8 @@ from arq.constants import default_queue_name, job_key_prefix
 from arq.jobs import deserialize_job
 
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.entity_projection import ProjectionInputs, ProjectionSnapshot
+from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator.redis_account import account_prefix
 from orchestrator.worker import jobs
 from tests.qualified_compute import install_qualified_compute
@@ -55,7 +57,14 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
     store.get_conversation = AsyncMock(return_value={"user_id": owner, "pipeline": "cloud"})
     store.read_summary_continuation_pending = AsyncMock(return_value=False)
     store.log_extraction = AsyncMock()
-    store.get_memory = AsyncMock(return_value={"content": "User likes fictional astronomy"})
+    captured = CapturedGeneration(owner, 7)
+    input_snapshot = ProjectionInputs(
+        ProjectionSnapshot(captured, (memory_id,), (), (), ()),
+        (("User likes fictional astronomy", memory_id, None),),
+        (),
+    )
+    store.read_entity_projection_inputs = AsyncMock(return_value=input_snapshot)
+    store.check_entity_projection_inputs = AsyncMock()
     ctx = {"store": store, "db_pool": object(), "redis": queue}
     fact = SimpleNamespace(
         content="User likes fictional astronomy", category="fact", confidence=0.9, slot=None
@@ -93,9 +102,23 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
     ]
     if failed_suffix:
         with pytest.raises(Retry):
-            await jobs.extract_memories(ctx, owner, conversation, json.dumps(messages))
+            await jobs.extract_memories(
+                ctx,
+                owner,
+                conversation,
+                json.dumps(messages),
+                origin_account_id=str(owner),
+                origin_account_generation=7,
+            )
     else:
-        result = await jobs.extract_memories(ctx, owner, conversation, json.dumps(messages))
+        result = await jobs.extract_memories(
+            ctx,
+            owner,
+            conversation,
+            json.dumps(messages),
+            origin_account_id=str(owner),
+            origin_account_generation=7,
+        )
         assert result["status"] == "ok"
     dedup.assert_awaited_once()
     store.log_extraction.assert_awaited_once()
@@ -116,20 +139,25 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
     decoded = deserialize_job(payload)
     assert decoded.function == "resolve_entities_job"
     assert decoded.args == (str(owner), json.dumps([str(memory_id)]))
-    assert decoded.kwargs == {}
+    assert decoded.kwargs == {"origin_account_id": str(owner), "origin_account_generation": 7}
 
-    async def project(uid, actual_store, contents, *, use_spacy):
-        assert uid == owner and actual_store is store and use_spacy is False
-        assert contents == [(fact.content, memory_id, None)]
+    async def project(uid, actual_store, inputs):
+        assert uid == owner and actual_store is store
+        assert inputs is input_snapshot
         return SimpleNamespace(resolutions=[object()])
 
     projection = AsyncMock(side_effect=project)
     persisted = AsyncMock(return_value=[uuid.UUID(int=30)])
-    monkeypatch.setattr(jobs, "extract_and_resolve_entities", projection)
+    monkeypatch.setattr(jobs, "plan_entity_projection", projection)
     monkeypatch.setattr(jobs, "persist_extraction_result", persisted)
     result = await jobs.resolve_entities_job(ctx, *decoded.args, **decoded.kwargs)
     assert result["status"] == "ok" and result["memories_processed"] == 1
     assert result["entities_created"] == 1
     projection.assert_awaited_once()
     persisted.assert_awaited_once()
-    store.get_memory.assert_awaited_once_with(memory_id)
+    store.read_entity_projection_inputs.assert_awaited_once_with(
+        [memory_id], captured_generation=captured
+    )
+    store.check_entity_projection_inputs.assert_awaited_once_with(
+        input_snapshot, captured_generation=captured
+    )
