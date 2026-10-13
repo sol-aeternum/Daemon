@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from orchestrator.services.account_control.guard import CapturedGeneration
 import json
 import logging
 import uuid
@@ -316,6 +317,16 @@ def effective_provider_and_model(
     return provider, model
 
 
+def _summary_job_payload(captured: CapturedGeneration | None, user_id: Any) -> dict[str, Any]:
+    """Serialize only an upstream, owner-matching capture; never recapture."""
+    if not isinstance(captured, CapturedGeneration) or captured.account_id != user_id:
+        return {}
+    return {
+        "origin_account_id": str(captured.account_id),
+        "origin_account_generation": captured.generation,
+    }
+
+
 async def stream_sse_chat(
     settings: Settings,
     provider_config: ProviderConfig,
@@ -341,6 +352,7 @@ async def stream_sse_chat(
     call_overrides: dict[str, Any] | None = None,
     message_sink: Any = None,
     tool_guard: Callable[[Any], None] | None = None,
+    summary_generation: CapturedGeneration | None = None,
 ) -> AsyncIterator[str]:
     """Stream one chat turn as SSE frames.
 
@@ -1099,6 +1111,10 @@ async def stream_sse_chat(
                     logger.debug("Trust signal application skipped")
 
                 if persisted_status == "complete" and queue is not None:
+                    # Never capture here: a paused stream must keep its original
+                    # upstream generation. Absent/foreign capture only disables
+                    # summary work in extraction, not the memory-fact job itself.
+                    summary_payload = _summary_job_payload(summary_generation, user_id)
                     extract_suffix = f"extract:{conversation_uuid}"
                     extract_job_id = account_job_id(user_id, extract_suffix, settings=settings)
                     try:
@@ -1119,6 +1135,7 @@ async def stream_sse_chat(
                             job_id=extract_suffix,
                             settings=settings,
                             _defer_by=timedelta(seconds=30),
+                            **summary_payload,
                         )
                     except Exception:
                         logger.warning("Failed to enqueue memory extraction")
@@ -1144,6 +1161,7 @@ async def stream_sse_chat(
                                     job_id=follow_up_id,
                                     settings=settings,
                                     _defer_by=timedelta(seconds=60),
+                                    **summary_payload,
                                 )
                             except Exception:
                                 logger.debug("Could not schedule extract follow-up")

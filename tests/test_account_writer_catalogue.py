@@ -154,12 +154,16 @@ def test_manifest_makes_explicit_non_wildcard_classification() -> None:
     assert all(entry["category"] in catalogue.CATEGORIES for entry in manifest["tables"].values())
     assert all(entry["category"] in catalogue.CATEGORIES for entry in manifest["writer_sites"])
     integrated = [entry for entry in manifest["writer_sites"] if entry["uncovered"] is False]
-    assert len(integrated) == 1
-    assert (
-        integrated[0]["owner_source"],
-        integrated[0]["qualname"],
-    ) == catalogue.TITLE_GUARDED_SITE
-    assert integrated[0]["guard_contract"] == catalogue.TITLE_GUARD_CONTRACT
+    assert {(entry["owner_source"], entry["qualname"]) for entry in integrated} == {
+        catalogue.TITLE_GUARDED_SITE,
+        *catalogue.SUMMARY_GUARDED_SITES,
+    }
+    for entry in integrated:
+        assert entry["guard_contract"] == (
+            catalogue.TITLE_GUARD_CONTRACT
+            if (entry["owner_source"], entry["qualname"]) == catalogue.TITLE_GUARDED_SITE
+            else catalogue.SUMMARY_GUARD_CONTRACT
+        )
     assert all(entry["rationale"] and entry["owner_source"] for entry in manifest["writer_sites"])
     used = {entry["category"] for entry in manifest["tables"].values()}
     assert used <= set(catalogue.CATEGORIES)

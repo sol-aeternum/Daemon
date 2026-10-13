@@ -7,7 +7,7 @@ import logging
 import uuid
 import hashlib
 import hmac
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, cast
 
 import asyncpg
@@ -1023,38 +1023,161 @@ class MemoryStore:
         )
         return int(row["count"]) if row else 0
 
-    async def consume_summary_continuation_pending(
+    async def read_conversation_summary_inputs(
         self,
         conversation_id: uuid.UUID,
-    ) -> bool:
-        """Atomically clear the ``summary_continuation_pending`` flag
-        and return its prior value.
+        *,
+        captured_generation: CapturedGeneration,
+        limit: int,
+    ) -> dict[str, Any] | None:
+        """Guard/qualify a bounded summary snapshot before decrypting any inputs.
 
-        Used by the extraction job's retry-recovery path: if a previous
-        attempt committed the summary + continuation-pending flag but
-        failed to enqueue the forced-summary continuation (e.g. Redis
-        transient error -> ``Retry``), the retry may find ``no_messages``
-        after the watermark advances — so we need a separate signal that
-        survives the watermark (Codex P2 on PR #165,
-        ``worker/jobs.py:295``).
+        The conversation SHARE stabilizes its optimistic version during this short
+        read. Message ranks, counts and the batch use one statement snapshot; a
+        streaming status transition cannot change the claim between those reads.
+        Neither lock survives into compute admission or provider work.
         """
-        row = await self._pool.fetchrow(
-            """
-            UPDATE conversations
-            SET metadata = COALESCE(metadata, '{}'::jsonb)
-                || jsonb_build_object(
-                    'summary_continuation_pending',
-                    false
+        from orchestrator.memory.summarization import validated_summary_baseline
+
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                row = await conn.fetchrow(
+                    "SELECT c.*, (SELECT count(*) FROM messages m "
+                    "WHERE m.conversation_id=c.id AND m.user_id=c.user_id "
+                    "AND (m.status IS NULL OR m.status='complete')) AS current_message_count "
+                    "FROM conversations c WHERE c.id=$1 AND c.user_id=$2 FOR SHARE OF c",
+                    conversation_id,
+                    captured_generation.account_id,
                 )
-            WHERE id = $1
-              AND COALESCE(
-                  (metadata ->> 'summary_continuation_pending')::boolean,
-                  false
-              ) = true
-            RETURNING id
-            """,
-            conversation_id,
-        )
+                if row is None:
+                    return None
+                result = dict(row)
+                baseline = validated_summary_baseline(result, int(row["current_message_count"]))
+                snapshot = datetime.now(timezone.utc)
+                batch = await conn.fetchrow(
+                    """
+                    WITH ranked AS (
+                        SELECT id, role, content, status, created_at,
+                               COUNT(*) FILTER (WHERE status IS NULL OR status='complete')
+                               OVER (ORDER BY created_at ASC, id ASC) AS summary_rn
+                        FROM messages WHERE conversation_id=$1 AND user_id=$2
+                          AND created_at <= $3
+                    ), stats AS (
+                        SELECT COALESCE(MAX(summary_rn),0) AS finalized_count,
+                               COALESCE(MIN(summary_rn) FILTER (
+                                   WHERE status IS NOT NULL
+                                     AND status NOT IN ('complete','error','cancelled')
+                               ), COALESCE(MAX(summary_rn),0)) AS contiguous_count,
+                               COUNT(*) FILTER (
+                                   WHERE status IS NOT NULL
+                                     AND status NOT IN ('complete','error','cancelled')
+                               ) > 0 AS has_hole
+                        FROM ranked
+                    ), batch AS (
+                        SELECT id, role, content, created_at FROM ranked
+                        WHERE (status IS NULL OR status='complete')
+                          AND summary_rn > $4
+                          AND summary_rn <= (SELECT contiguous_count FROM stats)
+                        ORDER BY created_at ASC, id ASC LIMIT $5
+                    )
+                    SELECT stats.*, COALESCE((SELECT jsonb_agg(batch ORDER BY created_at,id)
+                                              FROM batch), '[]'::jsonb) AS messages
+                    FROM stats
+                    """,
+                    conversation_id,
+                    captured_generation.account_id,
+                    snapshot,
+                    baseline,
+                    min(100, max(1, limit)),
+                )
+                assert batch is not None
+                result.update(dict(batch))
+                result["persisted_baseline"] = baseline
+                result["snapshot_at"] = snapshot
+                raw_messages = batch["messages"]
+                messages = (
+                    json.loads(raw_messages) if isinstance(raw_messages, str) else raw_messages
+                )
+                result["messages"] = [
+                    {**message, "content": self._enc.decrypt(message["content"])}
+                    for message in messages
+                ]
+                return result
+
+    async def check_conversation_summary_generation(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        captured_generation: CapturedGeneration,
+        expected_summary_updated_at: datetime | None,
+    ) -> bool:
+        """Recheck original account/owner/version after admission, before inference."""
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                return bool(
+                    await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2 "
+                        "AND summary_updated_at IS NOT DISTINCT FROM $3)",
+                        conversation_id,
+                        captured_generation.account_id,
+                        expected_summary_updated_at,
+                    )
+                )
+
+    async def read_summary_continuation_pending(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        captured_generation: CapturedGeneration,
+    ) -> bool:
+        """Observe under the guard; enqueue success is NOT summary completion.
+
+        Never clear before Redis enqueue: failure/cancellation must retain recovery
+        evidence. Only guarded summary progress (or a checked no-op) clears it.
+        """
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                return bool(
+                    await conn.fetchval(
+                        "SELECT metadata->'summary_continuation_pending' = 'true'::jsonb "
+                        "FROM conversations WHERE id=$1 AND user_id=$2",
+                        conversation_id,
+                        captured_generation.account_id,
+                    )
+                )
+
+    async def clear_finished_summary_continuation(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        captured_generation: CapturedGeneration,
+        expected_summary_updated_at: datetime | None,
+        expected_baseline: int,
+    ) -> bool:
+        """Clear only the observed, genuinely drained version; holes retain pending."""
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                row = await conn.fetchrow(
+                    """
+                    UPDATE conversations c
+                    SET metadata=COALESCE(metadata,'{}'::jsonb)
+                        || jsonb_build_object('summary_continuation_pending',false)
+                    WHERE id=$1 AND user_id=$2
+                      AND summary_updated_at IS NOT DISTINCT FROM $3
+                      AND metadata->'last_summarized_msg_count' = to_jsonb($4::bigint)
+                      AND metadata->'summary_continuation_pending' = 'true'::jsonb
+                      AND NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id=c.id
+                          AND user_id=c.user_id AND status IS NOT NULL
+                          AND status NOT IN ('complete','error','cancelled'))
+                      AND (SELECT count(*) FROM messages WHERE conversation_id=c.id
+                          AND user_id=c.user_id AND (status IS NULL OR status='complete')) <= $4
+                    RETURNING id
+                    """,
+                    conversation_id,
+                    captured_generation.account_id,
+                    expected_summary_updated_at,
+                    expected_baseline,
+                )
         return row is not None
 
     async def update_conversation_summary(
@@ -1066,6 +1189,7 @@ class MemoryStore:
         summarized_message_count: int,
         summary_snapshot_at: datetime | None = None,
         summary_continuation_pending: bool = False,
+        captured_generation: CapturedGeneration,
     ) -> bool:
         """Atomically persist a summary and its finalized-message baseline.
 
@@ -1085,8 +1209,10 @@ class MemoryStore:
         snapshot_iso: str | None = None
         if summary_snapshot_at is not None:
             snapshot_iso = summary_snapshot_at.isoformat()
-        row = await self._pool.fetchrow(
-            """
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                row = await conn.fetchrow(
+                    """
             UPDATE conversations
             SET summary = $2,
                 summary_updated_at = NOW(),
@@ -1108,16 +1234,18 @@ class MemoryStore:
                         )
                     END
             WHERE id = $1
+              AND user_id = $7
               AND summary_updated_at IS NOT DISTINCT FROM $3
             RETURNING id
             """,
-            conversation_id,
-            summary,
-            expected_summary_updated_at,
-            summarized_message_count,
-            snapshot_iso,
-            summary_continuation_pending,
-        )
+                    conversation_id,
+                    summary,
+                    expected_summary_updated_at,
+                    summarized_message_count,
+                    snapshot_iso,
+                    summary_continuation_pending,
+                    captured_generation.account_id,
+                )
         return row is not None
 
     async def update_message(

@@ -1708,16 +1708,17 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.consume_summary_continuation_pending",
+      "qualname": "MemoryStore.clear_finished_summary_continuation",
       "kind": "sql_inline",
-      "fingerprint": "478b8749729f576b",
+      "fingerprint": "40894a2d35e19c84",
       "tables": [
         "conversations"
       ],
       "unknown": false,
-      "uncovered": true,
+      "uncovered": false,
       "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "Only observed drained summary progress may clear pending under the original account guard and owner/version/cursor checks.",
+      "guard_contract": "tests/test_summary_account_guard_postgres.py"
     },
     {
       "owner_source": "orchestrator.memory.store",
@@ -2143,14 +2144,15 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.update_conversation_summary",
       "kind": "sql_inline",
-      "fingerprint": "08de8512d0e9ea95",
+      "fingerprint": "06b0260fcf78d08a",
       "tables": [
         "conversations"
       ],
       "unknown": false,
-      "uncovered": true,
+      "uncovered": false,
       "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "Generated summary text, cursor and pending flag commit together under the original account guard with owner-qualified optimistic concurrency.",
+      "guard_contract": "tests/test_summary_account_guard_postgres.py"
     },
     {
       "owner_source": "orchestrator.memory.store",

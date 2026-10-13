@@ -288,6 +288,16 @@ def _as_uuid(value: str | uuid.UUID) -> uuid.UUID:
     return uuid.UUID(value)
 
 
+def _summary_capture(account_id: object, generation: object) -> CapturedGeneration:
+    """Reconstruct only the original wire capture; never read a current generation."""
+    if not isinstance(account_id, (str, uuid.UUID)) or type(generation) is not int:
+        raise WriteGuardRefusal("invalid_capture")
+    try:
+        return CapturedGeneration(_as_uuid(account_id), generation)
+    except (ValueError, TypeError, AttributeError):
+        raise WriteGuardRefusal("invalid_capture") from None
+
+
 async def _user_matches_dream_schedule_hour(
     store: MemoryStore,
     user_id: uuid.UUID,
@@ -410,6 +420,9 @@ async def _extract_memories_once(
     user_id: str | uuid.UUID,
     conversation_id: str | uuid.UUID,
     messages_json: object | None = None,
+    *,
+    origin_account_id: str | uuid.UUID | None = None,
+    origin_account_generation: int | None = None,
 ) -> dict[str, object]:
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
@@ -418,23 +431,34 @@ async def _extract_memories_once(
     if owner != _as_uuid(user_id):
         raise ComputeUnavailable("account_unavailable", "Conversation owner mismatch")
 
-    # Retry-recovery: if a previous attempt committed a summary with
-    # ``summary_continuation_pending=true`` but failed to enqueue the
-    # forced-summary continuation (e.g. Redis transient error -> Retry),
-    # the watermark will have advanced past the messages, so this retry
-    # may find ``no_messages`` and exit before reaching the continuation
-    # enqueue block. Consume the flag first: if it was set, enqueue the
-    # continuation immediately (Codex P2 on PR #165, ``worker/jobs.py:295``).
+    # Missing/invalid/foreign captures disable ONLY summary work. Legacy fact
+    # extraction retains its established inputs, checkpoints and continuations.
+    summary_generation = None
+    try:
+        candidate = _summary_capture(origin_account_id, origin_account_generation)
+        if candidate.account_id == owner:
+            summary_generation = candidate
+    except WriteGuardRefusal:
+        pass
+    summary_payload = {
+        "origin_account_id": origin_account_id,
+        "origin_account_generation": origin_account_generation,
+    }
+    # Observe recovery before a no_messages exit, but never consume before Redis
+    # succeeds. Guarded summary progress owns clearing the persistent flag.
     continuation_pending = False
-    if hasattr(store_obj, "consume_summary_continuation_pending"):
+    if summary_generation is not None:
         try:
-            continuation_pending = await store_obj.consume_summary_continuation_pending(
-                _as_uuid(conversation_id)
+            continuation_pending = await store_obj.read_summary_continuation_pending(
+                _as_uuid(conversation_id), captured_generation=summary_generation
             )
+        except WriteGuardRefusal:
+            summary_generation = None
         except Exception:
             # Conversation resource identifiers are not logged (they can be
             # reconstructed from job arguments/ARQ results instead).
-            logger.warning("Failed to consume summary_continuation_pending")
+            logger.warning("Failed to read summary_continuation_pending")
+            raise Retry(defer=5) from None
 
     if continuation_pending:
         queue = ctx.get("redis")
@@ -450,6 +474,7 @@ async def _extract_memories_once(
                     ),
                     defer_by=timedelta(seconds=1),
                     args=(str(_as_uuid(conversation_id)), True),
+                    kwargs=summary_payload,
                 )
             except Exception:
                 # ``generate_summary_job`` is the only periodic caller of
@@ -461,8 +486,7 @@ async def _extract_memories_once(
                     "Failed to enqueue recovered summary continuation; raising arq Retry"
                 )
                 raise Retry(defer=5) from None
-        # Whether the enqueue succeeded or not, the flag is already
-        # consumed. Continue with the normal extraction flow.
+        # Pending remains set until guarded progress, including on cancellation.
 
     batch_limit = 250
     raw_messages: list[dict[str, Any]]
@@ -640,6 +664,7 @@ async def _extract_memories_once(
                 last_message_id=chunk_last_message_id,
                 chunk_index=chunk_index,
                 cursor_checkpoint=advances_cursor,
+                summary_generation=summary_generation,
             )
         if not chunk_success:
             # Earlier chunks may already have committed memories and cursor
@@ -690,7 +715,7 @@ async def _extract_memories_once(
         except Exception:
             logger.warning("Failed to enqueue entity resolution job")
 
-    if extraction_success and summary_continuation_needed:
+    if extraction_success and summary_continuation_needed and summary_generation is not None:
         try:
             queue = ctx.get("redis")
             if queue is not None and hasattr(queue, "enqueue_job"):
@@ -704,6 +729,7 @@ async def _extract_memories_once(
                     ),
                     defer_by=timedelta(seconds=1),
                     args=(str(_as_uuid(conversation_id)), True),
+                    kwargs=summary_payload,
                 )
         except Retry:
             # Let arq's Retry signal propagate so the extraction job is
@@ -769,6 +795,7 @@ async def _extract_memories_once(
                 job_id=(f"extract_continuation:{_as_uuid(conversation_id)}:{continuation_key}"),
                 defer_by=timedelta(seconds=1),
                 args=continuation_args,
+                kwargs=summary_payload,
             )
         except Retry:
             raise
@@ -791,6 +818,9 @@ async def extract_memories(
     user_id: str | uuid.UUID,
     conversation_id: str | uuid.UUID,
     messages_json: object | None = None,
+    *,
+    origin_account_id: str | uuid.UUID | None = None,
+    origin_account_generation: int | None = None,
 ) -> dict[str, object]:
     """Run one resumable extraction attempt within the arq job deadline.
 
@@ -805,6 +835,8 @@ async def extract_memories(
                 user_id,
                 conversation_id,
                 messages_json,
+                origin_account_id=origin_account_id,
+                origin_account_generation=origin_account_generation,
             )
     except Retry:
         raise
@@ -973,50 +1005,41 @@ async def generate_summary_job(
     ctx: WorkerContext,
     conversation_id: str,
     force: bool = False,
+    *,
+    origin_account_id: str | uuid.UUID | None = None,
+    origin_account_generation: int | None = None,
 ) -> dict[str, Any]:
     """Generate and store one bounded conversation-summary batch."""
     from orchestrator.memory.summarization import (
         generate_summary,
         should_summarize,
-        validated_summary_baseline,
     )
+
+    try:
+        captured = _summary_capture(origin_account_id, origin_account_generation)
+        conv_id = _as_uuid(conversation_id)
+    except (WriteGuardRefusal, ValueError, TypeError):
+        return {"status": "skipped", "reason": "invalid_capture"}
 
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
 
     store = store_obj
-    conv_id = uuid.UUID(conversation_id)
-
-    conversation = await store.get_conversation(conv_id)
+    try:
+        conversation = await store.read_conversation_summary_inputs(
+            conv_id, captured_generation=captured, limit=100
+        )
+    except WriteGuardRefusal as exc:
+        return {"status": "skipped", "reason": exc.code}
     if not conversation:
         return {"status": "not_found"}
 
     last_summary_time = conversation.get("summary_updated_at")
     previous_summary = conversation.get("summary")
-    current_message_count = await store.count_summary_messages(conv_id)
-    persisted_baseline = validated_summary_baseline(
-        conversation,
-        current_message_count,
-    )
-    # Pin the iteration to the moment we started, so concurrent status
-    # flips from ``streaming`` to ``complete`` (which do not change
-    # ``created_at``) cannot reorder the row set under an in-flight
-    # cursor. The next iteration captures a fresh ``now()`` itself.
-    iteration_snapshot = datetime.now(timezone.utc)
-
-    # Advance only through the contiguous-finalized prefix at the snapshot.
-    # A row that was streaming at fetch time but is now finalized with an
-    # earlier ``created_at`` would otherwise insert before the prior
-    # finalized rows and replay messages already counted toward the
-    # baseline (Codex P2 on PR #165). ``persisted_baseline`` is the prior
-    # cursor (lower bound); ``contiguous_baseline`` is the current
-    # contiguous-prefix count, which is only larger when the streaming
-    # tail shrank.
-    contiguous_baseline = await store.count_contiguous_finalized_messages_at(
-        conv_id,
-        snapshot_at=iteration_snapshot,
-    )
+    persisted_baseline = conversation["persisted_baseline"]
+    iteration_snapshot = conversation["snapshot_at"]
+    contiguous_baseline = conversation["contiguous_count"]
     # ``last_summarized_msg_count`` is the count used by ``should_summarize``
     # to compute delta against the current finalized-message count. It is
     # not the offset — those are two distinct concepts (matches the inline
@@ -1030,28 +1053,24 @@ async def generate_summary_job(
         last_summarized_msg_count,
         store,
         settings,
+        current_message_count=conversation["current_message_count"],
     ):
         return {"status": "skipped", "reason": "thresholds_not_met"}
 
-    # The cursor advances only through rows actually included in past
-    # summaries (``persisted_baseline``). ``contiguous_baseline`` is
-    # used solely to bound how far this iteration may claim — never as
-    # an offset. The prior ``max(...)`` offset skipped finalized rows
-    # that were contiguous-but-not-yet-summarized (e.g. baseline 0 with
-    # rows ``complete m1, streaming m2, complete m3``: offset became 1,
-    # so m1 was skipped). Using ``persisted_baseline`` directly produces
-    # the rows that need summarization (Codex P2 on PR #165,
-    # ``worker/jobs.py:441``).
-    messages = await store.get_summary_message_batch(
-        conv_id,
-        offset=persisted_baseline,
-        limit=100,
-        snapshot_at=iteration_snapshot,
-    )
+    messages = conversation["messages"]
     if not messages:
+        try:
+            await store.clear_finished_summary_continuation(
+                conv_id,
+                captured_generation=captured,
+                expected_summary_updated_at=last_summary_time,
+                expected_baseline=persisted_baseline,
+            )
+        except WriteGuardRefusal as exc:
+            return {"status": "skipped", "reason": exc.code}
         return {"status": "skipped", "reason": "up_to_date"}
 
-    owner = await _conversation_owner(ctx, conv_id)
+    owner = captured.account_id
     async with account_compute(
         ctx.get("db_pool"),
         owner,
@@ -1060,6 +1079,14 @@ async def generate_summary_job(
         background=True,
         profile="background",
     ):
+        try:
+            valid = await store.check_conversation_summary_generation(
+                conv_id, captured_generation=captured, expected_summary_updated_at=last_summary_time
+            )
+        except WriteGuardRefusal as exc:
+            return {"status": "skipped", "reason": exc.code}
+        if not valid:
+            raise Retry(defer=5)
         summary = await generate_summary(messages, previous_summary, settings)
     if not summary.strip():
         raise Retry(defer=5)
@@ -1079,13 +1106,23 @@ async def generate_summary_job(
         persisted_baseline + len(messages),
         contiguous_baseline,
     )
-    updated = await store.update_conversation_summary(
-        conv_id,
-        summary=summary,
-        expected_summary_updated_at=last_summary_time,
-        summarized_message_count=summarized_message_count,
-        summary_snapshot_at=iteration_snapshot,
+    continuation_pending = (
+        len(messages) == 100
+        or conversation["has_hole"]
+        or conversation["finalized_count"] > summarized_message_count
     )
+    try:
+        updated = await store.update_conversation_summary(
+            conv_id,
+            summary=summary,
+            expected_summary_updated_at=last_summary_time,
+            summarized_message_count=summarized_message_count,
+            summary_snapshot_at=iteration_snapshot,
+            summary_continuation_pending=continuation_pending,
+            captured_generation=captured,
+        )
+    except WriteGuardRefusal as exc:
+        return {"status": "skipped", "reason": exc.code}
     if not updated:
         raise Retry(defer=5)
 
@@ -1093,14 +1130,21 @@ async def generate_summary_job(
     if len(messages) == 100:
         queue = ctx.get("redis")
         if queue is not None:
-            follow_up = await enqueue_with_debounce(
-                cast(ArqRedis, queue),
-                "generate_summary_job",
-                user_id=owner,
-                job_id=f"summary:{conv_id}:{summarized_message_count}",
-                defer_by=timedelta(seconds=1),
-                args=(str(conv_id), True),
-            )
+            try:
+                follow_up = await enqueue_with_debounce(
+                    cast(ArqRedis, queue),
+                    "generate_summary_job",
+                    user_id=owner,
+                    job_id=f"summary:{conv_id}:{summarized_message_count}",
+                    defer_by=timedelta(seconds=1),
+                    args=(str(conv_id), True),
+                    kwargs={
+                        "origin_account_id": str(captured.account_id),
+                        "origin_account_generation": captured.generation,
+                    },
+                )
+            except Exception:
+                raise Retry(defer=5) from None
             continuation_enqueued = follow_up is not None
 
     return {

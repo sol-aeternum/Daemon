@@ -31,6 +31,7 @@ import importlib
 import json
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -61,6 +62,7 @@ from orchestrator.memory.extraction import (
     extract_facts_from_text,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator.memory.summary import (
     SUMMARY_TEMPERATURE,
     generate_or_update_summary,
@@ -137,6 +139,20 @@ def _summary_store() -> Any:
         return_value=[{"role": "user", "content": "Tell me about the daemon project"}]
     )
     store.update_conversation_summary = AsyncMock(return_value=True)
+    store.read_conversation_summary_inputs = AsyncMock(
+        return_value={
+            "summary": None,
+            "summary_updated_at": None,
+            "persisted_baseline": 0,
+            "current_message_count": 1,
+            "finalized_count": 1,
+            "contiguous_count": 1,
+            "has_hole": False,
+            "snapshot_at": datetime.now(timezone.utc),
+            "messages": [{"role": "user", "content": "Tell me about the daemon project"}],
+        }
+    )
+    store.check_conversation_summary_generation = AsyncMock(return_value=True)
     return store
 
 
@@ -160,7 +176,9 @@ def _summarization_call() -> Any:
 
 
 def _summary_call() -> Any:
-    return generate_or_update_summary(uuid.uuid4(), _summary_store())
+    return generate_or_update_summary(
+        uuid.uuid4(), _summary_store(), captured_generation=CapturedGeneration(uuid.uuid4(), 7)
+    )
 
 
 def _entities_call() -> Any:
@@ -372,7 +390,12 @@ def _summarization_with_model() -> Any:
 
 
 def _summary_with_model() -> Any:
-    return generate_or_update_summary(uuid.uuid4(), _summary_store(), model=REASONING_MODEL)
+    return generate_or_update_summary(
+        uuid.uuid4(),
+        _summary_store(),
+        model=REASONING_MODEL,
+        captured_generation=CapturedGeneration(uuid.uuid4(), 7),
+    )
 
 
 def _entities_with_model() -> Any:

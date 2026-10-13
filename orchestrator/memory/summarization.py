@@ -163,6 +163,8 @@ async def should_summarize(
     last_summarized_msg_count: int,
     store: MemoryStore,
     settings: dict[str, Any] | None = None,
+    *,
+    current_message_count: int | None = None,
 ) -> bool:
     """Check if conversation should be summarized.
 
@@ -185,7 +187,11 @@ async def should_summarize(
     summary_message_delta = settings.get("summary_message_delta", 20)
     idle_delta = 6
 
-    current_msg_count = await store.count_summary_messages(conversation_id)
+    current_msg_count = (
+        current_message_count
+        if current_message_count is not None
+        else await store.count_summary_messages(conversation_id)
+    )
     delta = max(0, int(current_msg_count) - int(last_summarized_msg_count))
     if delta >= int(summary_message_delta):
         return True

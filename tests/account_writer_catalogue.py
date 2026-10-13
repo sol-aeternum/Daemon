@@ -35,6 +35,11 @@ MANIFEST_PATH = Path(__file__).resolve().parent / "fixtures" / "account_writer_c
 # does not verify the guard: real runtime proofs live in the named contract suite.
 TITLE_GUARDED_SITE = ("orchestrator.memory.store", "MemoryStore.save_generated_conversation_title")
 TITLE_GUARD_CONTRACT = "tests/test_title_account_guard_postgres.py"
+SUMMARY_GUARDED_SITES = {
+    ("orchestrator.memory.store", "MemoryStore.update_conversation_summary"),
+    ("orchestrator.memory.store", "MemoryStore.clear_finished_summary_continuation"),
+}
+SUMMARY_GUARD_CONTRACT = "tests/test_summary_account_guard_postgres.py"
 
 #: Classification categories; every manifest entry must name exactly one.
 CATEGORIES = ("content", "control", "shared_unowned", "deferred")
@@ -579,10 +584,16 @@ def _validate_entry(name: str, entry: object, expect_paths: bool) -> list[str]:
             problems.append(f"{name}/missing-ownership-path")
     else:
         uncovered = entry.get("uncovered")
+        site = (entry.get("owner_source"), entry.get("qualname"))
         title_integration = (
             uncovered is False
-            and (entry.get("owner_source"), entry.get("qualname")) == TITLE_GUARDED_SITE
-            and entry.get("guard_contract") == TITLE_GUARD_CONTRACT
+            and (
+                (site == TITLE_GUARDED_SITE and entry.get("guard_contract") == TITLE_GUARD_CONTRACT)
+                or (
+                    site in SUMMARY_GUARDED_SITES
+                    and entry.get("guard_contract") == SUMMARY_GUARD_CONTRACT
+                )
+            )
             and category == "content"
             and entry.get("kind") == "sql_inline"
             and entry.get("tables") == ["conversations"]
