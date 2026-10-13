@@ -17,6 +17,7 @@ from typing import Any  # noqa: E402
 from orchestrator.config import get_settings  # noqa: E402
 from orchestrator.memory.store import MemoryStore  # noqa: E402
 from orchestrator.model_routing import routing_context  # noqa: E402
+from orchestrator.services.account_control.guard import CapturedGeneration  # noqa: E402
 
 # Structured fact extraction is a short unattended workload.
 EXTRACTION_PROFILE = "background"
@@ -685,6 +686,7 @@ async def process_extraction(
     last_message_id: str | None = None,
     chunk_index: int | None = None,
     cursor_checkpoint: bool = True,
+    summary_generation: CapturedGeneration | None = None,
 ) -> tuple[bool, list[dict[str, Any]], bool]:
     """Orchestrate extraction -> dedup -> insert.
 
@@ -824,18 +826,26 @@ async def process_extraction(
         last_message_observed_at=last_message_observed_at,
     )
 
+    if (
+        not isinstance(summary_generation, CapturedGeneration)
+        or summary_generation.account_id != user_id
+    ):
+        return True, result.new, False
+
     try:
         import importlib
 
         summary_module = importlib.import_module("orchestrator.memory.summary")
         update_result_fn = getattr(summary_module, "_generate_or_update_summary_result", None)
         if update_result_fn is not None:
-            update_result = await update_result_fn(conversation_id, store)
+            update_result = await update_result_fn(
+                conversation_id, store, captured_generation=summary_generation
+            )
         else:
             # Older test / shim: fall back to the public wrapper that hides
             # the continuation flag.
             legacy = getattr(summary_module, "generate_or_update_summary")
-            await legacy(conversation_id, store)
+            await legacy(conversation_id, store, captured_generation=summary_generation)
             update_result = None
     except Exception:
         return True, result.new, False

@@ -53,7 +53,7 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
     owner, conversation, memory_id = (uuid.UUID(int=n) for n in (11, 12, 13))
     store = object.__new__(MemoryStore)
     store.get_conversation = AsyncMock(return_value={"user_id": owner, "pipeline": "cloud"})
-    store.consume_summary_continuation_pending = AsyncMock(return_value=False)
+    store.read_summary_continuation_pending = AsyncMock(return_value=False)
     store.log_extraction = AsyncMock()
     store.get_memory = AsyncMock(return_value={"content": "User likes fictional astronomy"})
     ctx = {"store": store, "db_pool": object(), "redis": queue}

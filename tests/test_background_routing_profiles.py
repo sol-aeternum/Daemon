@@ -15,6 +15,7 @@ guard does (``record_selection`` after dispatch), so callers that read
 """
 
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import contextlib
 import json
@@ -568,6 +569,20 @@ def _summary_cursor_store() -> Any:
     store.count_contiguous_finalized_messages_at = AsyncMock(return_value=50)
     store.get_summary_message_batch = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
     store.update_conversation_summary = AsyncMock(return_value=True)
+    store.read_conversation_summary_inputs = AsyncMock(
+        return_value={
+            "summary": None,
+            "summary_updated_at": None,
+            "persisted_baseline": 0,
+            "current_message_count": 50,
+            "contiguous_count": 50,
+            "finalized_count": 50,
+            "snapshot_at": datetime.now(timezone.utc),
+            "has_hole": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+    store.check_conversation_summary_generation = AsyncMock(return_value=True)
     return store
 
 
@@ -624,7 +639,9 @@ async def test_summary_job_opens_background_scoped_account(
             new=AsyncMock(return_value="Summary. Open: none"),
         ),
     ):
-        result = await jobs.generate_summary_job(ctx, str(uuid.uuid4()))
+        result = await jobs.generate_summary_job(
+            ctx, str(uuid.uuid4()), origin_account_id=str(TEST_OWNER), origin_account_generation=3
+        )
 
     assert result["status"] == "success"
     assert [entry["profile"] for entry in recorded] == ["background"]

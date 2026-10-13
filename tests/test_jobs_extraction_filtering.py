@@ -103,7 +103,7 @@ async def test_artifact_only_page_advances_filter_checkpoint() -> None:
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     store.get_conversation = AsyncMock(return_value={"user_id": user_id})
-    store.consume_summary_continuation_pending = AsyncMock(return_value=False)
+    store.read_summary_continuation_pending = AsyncMock(return_value=False)
     store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
     store.get_messages_after_cursor = AsyncMock(
         return_value=[

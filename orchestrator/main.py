@@ -2250,6 +2250,11 @@ async def _durable_chat(
         "trusted_spawn_context": _build_trusted_spawn_context(auth.user_id, payload.metadata),
         "request_id": request_id,
     }
+    if title_generation is not None:
+        # Immutable acceptance-time origin for optional summary follow-ups. It is
+        # encrypted with existing task_input and is never rebuilt on task retry.
+        task_input["summary_origin_account_id"] = str(title_generation.account_id)
+        task_input["summary_origin_account_generation"] = title_generation.generation
     fingerprint = _durable_request_fingerprint(payload, settings, conversation_uuid, user_message)
     try:
         accepted = await store.accept(
@@ -2556,16 +2561,17 @@ async def chat(
             detail={"code": "account_unavailable", "message": "Account compute unavailable"},
         )
 
-    # Capture ONCE before deriving title source inputs. Failure suppresses only
-    # this optional title family; it does not change chat acceptance. Both title
-    # producers and every queue retry retain this same originating generation.
+    # Capture ONCE before deriving title/summary source inputs. Failure suppresses
+    # only these optional writers, not chat acceptance or memory-fact extraction.
     title_generation: CapturedGeneration | None = None
-    if app_state.memory_store is not None and app_state.redis is not None:
+    if app_state.memory_store is not None:
+        # Durable acceptance can outlive a queue outage. Preserve its origin in
+        # task_input even when there is currently no Redis wake-up transport.
         try:
             async with app_state.db_pool.acquire() as title_conn:
                 title_generation = await capture_generation(title_conn, auth.user_id)
         except Exception:
-            logger.warning("Skipping title scheduling: account capture unavailable")
+            logger.warning("Skipping title/summary scheduling: account capture unavailable")
 
     incoming_messages = payload.messages or []
     attachments = payload.attachments or []
@@ -3075,6 +3081,7 @@ async def chat(
                 user_id=user_id,
                 conversation_uuid=conversation_uuid,
                 queue=app_state.redis if app_state else None,
+                summary_generation=title_generation,
                 db_pool=app_state.db_pool if app_state else None,
                 trusted_spawn_context=trusted_spawn_context,
                 disable_memory_write=bool(payload.disable_memory_write),

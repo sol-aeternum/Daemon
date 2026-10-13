@@ -513,6 +513,7 @@ async def settle_lost_attempt_holds(store: TaskStore, db_pool: Any, task_id: uui
 
 async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -> None:
     from orchestrator.daemon import stream_sse_chat
+    from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 
     claim = state.claim
     settings = ctx["settings"]
@@ -520,6 +521,18 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
     db_pool = ctx["db_pool"]
     redis = ctx.get("redis")
     task_input = claim.task_input
+    summary_generation = None
+    # Old/malformed task input suppresses only optional summaries. No capture read
+    # on resumption: task retries retain the original acceptance-time origin.
+    try:
+        origin_id = task_input.get("summary_origin_account_id")
+        origin_generation = task_input.get("summary_origin_account_generation")
+        if isinstance(origin_id, str) and type(origin_generation) is int:
+            candidate = CapturedGeneration(uuid.UUID(origin_id), origin_generation)
+            if candidate.account_id == claim.user_id:
+                summary_generation = candidate
+    except (ValueError, WriteGuardRefusal):
+        pass
     provider_config = settings.get_provider_config(task_input.get("provider"))
     request_id = str(task_input.get("request_id") or f"req_{uuid.uuid4().hex}")
 
@@ -589,6 +602,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             user_timezone=user_timezone,
             message_sink=AttemptSink(store, state),
             tool_guard=lambda registry: _guard_tools(registry, store, state),
+            summary_generation=summary_generation,
         )
         async for frame in frames:
             event, envelope = _parse_frame(frame)

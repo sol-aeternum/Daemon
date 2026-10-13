@@ -24,7 +24,7 @@ contains exactly the approved two tables and account generation column:
 - `entitlement_accounts.content_generation`: recorded account content generation,
   default zero. It is distinct from `tasks.content_generation` (attempt-output
   lease epoch). J1b itself adds no task/auth/client integration; J1c-1b below
-  consumes it only for generated titles.
+  consumes it for generated titles; J1c-1c below extends it to conversation summaries.
 
 Only opaque identifiers, closed codes, hashes, generations and original times
 are stored. No content, destination, secret, report or external-resource registry.
@@ -232,8 +232,68 @@ integration; scanner metadata is not a runtime proof.
 
 Limits remain deliberate: a provider call already in flight is not recalled, and
 the last pre-model check is not atomic authority over later network dispatch.
-Initial conversation titles, manual renames, summaries, general task outputs,
+Initial conversation titles, manual renames, general task outputs,
 memory, sessions, Redis/publication paths, workspace retirement and every other
 writer remain uncovered. Control writers must still use account UPDATE-first
 ordering. The DB-only guard still cannot observe an unprojected durable journal
 append; no request applier, applied marker or startup-readiness release is added.
+
+## J1c-1c — conversation summary writers only
+
+Owner-requested bounded extension of merged #522. Native chat's original
+authenticated capture now accompanies extraction base/follow-up enqueues and the
+existing encrypted durable-task input. Resumed attempts, extraction chunk
+continuations, summary continuations and ARQ retries retain that exact account
+UUID/generation. `tasks.content_generation` remains the task-attempt epoch, not
+the account origin. No capture occurs in a resumed task, stream finalizer or job.
+Historical/malformed/foreign-origin extraction payloads skip **only summary work**:
+fact extraction, checkpoints and its unrelated continuations remain unchanged.
+Historical task input and direct stream callers without a capture similarly
+suppress optional summaries; summary-only legacy jobs terminate before inputs.
+
+Both the 20-row inline and 100-row queued paths use
+`MemoryStore.read_conversation_summary_inputs`: a short READ COMMITTED transaction
+locks account SHARE first, verifies full account state/generation and qualifies
+the conversation owner before decrypting owner-qualified messages. Conversation
+SHARE stabilizes the summary version during preflight; message ranks, contiguous
+prefix counts and bounded batch share one SQL statement snapshot. Foreign rows
+cannot shift cursor ranks or block the owner prefix. Terminal error/cancelled rows
+consume no summary position; streaming/unknown rows still stop the prefix. The
+cursor advances only by incorporated rows, capped at that contiguous prefix.
+
+No lock spans compute admission, model calls or Redis. Queued work rechecks
+account/owner/summary version after admission; inline work inherits extraction's
+existing admitted scope and rechecks immediately before inference. Final
+`update_conversation_summary` requires the original capture and guards account
+SHARE before the owner-qualified optimistic UPDATE. Summary text, timestamps,
+cursor, snapshot and continuation flag commit together; success is reported only
+after commit. Account refusal is not a CAS conflict and does not authorize a new
+continuation. In-flight provider requests are not recalled; stale results cannot
+commit.
+
+Recovery now **observes rather than consumes** `summary_continuation_pending`.
+Enqueue failure, uncertain reply or cancellation leaves the flag set. Full queued
+batches persist it with their summary before enqueue; retry can drain the remaining
+tail. Guarded summary progress recomputes it, while a streaming hole retains it.
+The no-op clearing writer requires the observed summary timestamp/cursor and SQL
+proof that the owner has no mutable hole or unsummarized finalized messages. A
+stale retry cannot clear a new generation's flag; competing progress cannot be
+erased by an old no-op. Duplicate recovery enqueues are safe under summary CAS.
+
+`tests/test_summary_account_guard_postgres.py` exercises actual guarded input and
+writer SQL on disposable PostgreSQL: original-origin propagation through HTTP
+acceptance and resumed tasks, stale retries, legacy summary-only suppression,
+owner/message qualification, admission/provider races, streaming holes/terminal
+states, competing writes/no-op clearing, both observed lock-wait orderings,
+cancellation/connection reuse, repeated enqueue failures and failed real commits.
+Only synthetic fixtures and scripted compute/model boundaries are used; skipped
+PostgreSQL tests are not qualification. Existing summary/title regressions and
+project gates remain required. The catalogue identifies only the two bounded
+summary SQL sites, not complete runtime account-writer coverage.
+
+This adds no memory-fact fence, task-output fence, request/deletion applier,
+schema/API/SSE/env/dependency change, marker, namespace retirement, deployment or
+enablement claim. Generic conversation updates and other writers remain uncovered.
+The DB-only kernel cannot observe an unprojected journal append; control writers
+must still use account UPDATE-first ordering and startup stays fail closed.
+**#477 remains open.**

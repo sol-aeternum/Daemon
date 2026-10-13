@@ -716,11 +716,25 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
     },
+    "orchestrator/daemon.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+    },
+    "orchestrator/tasks/runner.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+    },
+    "orchestrator/memory/extraction.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+    },
+    "orchestrator/memory/summary.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+    },
 }
 
 
 def _assert_only_title_guard_imports(sources):
-    # J1c-1b admits only these guard symbols at these title-family seams.
+    # J1c admits only these symbols at the title/summary propagation seams.
     # This is not permission to call the J1b request/phase store.
     observed = {}
     for path, source in sources.items():

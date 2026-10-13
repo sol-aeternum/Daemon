@@ -515,7 +515,7 @@ async def test_full_oldest_batch_enqueues_extraction_continuation(
 ) -> None:
     store = object.__new__(MemoryStore)
     user_id = uuid.uuid4()
-    store.consume_summary_continuation_pending = AsyncMock(return_value=False)
+    store.read_summary_continuation_pending = AsyncMock(return_value=False)
     store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
     timestamp = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
     store.get_messages_after_cursor = AsyncMock(
@@ -730,7 +730,7 @@ async def test_oversized_message_reference_key_is_stable_and_versioned(
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     store = object.__new__(MemoryStore)
-    store.consume_summary_continuation_pending = AsyncMock(return_value=False)
+    store.read_summary_continuation_pending = AsyncMock(return_value=False)
     store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
     store.get_messages_after_cursor = AsyncMock(
         return_value=[
@@ -829,7 +829,7 @@ async def test_database_continuation_uses_identifiers_not_encrypted_content(
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     store = object.__new__(MemoryStore)
-    store.consume_summary_continuation_pending = AsyncMock(return_value=False)
+    store.read_summary_continuation_pending = AsyncMock(return_value=False)
     store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
     store.get_messages_after_cursor = AsyncMock(
         return_value=[
