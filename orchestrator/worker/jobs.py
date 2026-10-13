@@ -214,16 +214,13 @@ class ExtractionSourceStore(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
-async def _read_extraction_references(
-    store: ExtractionSourceStore,
-    owner: uuid.UUID,
-    conversation_id: uuid.UUID,
+def _validated_extraction_references(
     envelope: Mapping[str, Any],
-) -> list[dict[str, Any]]:
+) -> list[tuple[uuid.UUID, int, str]]:
     references = envelope.get("_extraction_refs")
     if not isinstance(references, list) or not 1 <= len(references) <= 250:
         raise ValueError("Invalid extraction references")
-    raw: list[dict[str, Any]] = []
+    validated: list[tuple[uuid.UUID, int, str]] = []
     seen: set[uuid.UUID] = set()
     for reference in references:
         if not isinstance(reference, dict) or set(reference) != {
@@ -240,6 +237,18 @@ async def _read_extraction_references(
         if not isinstance(version, str) or re.fullmatch(r"[0-9a-f]{64}", version) is None:
             raise ValueError("Invalid extraction source version")
         seen.add(message_id)
+        validated.append((message_id, index, version))
+    return validated
+
+
+async def _read_extraction_references(
+    store: ExtractionSourceStore,
+    owner: uuid.UUID,
+    conversation_id: uuid.UUID,
+    envelope: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    raw: list[dict[str, Any]] = []
+    for message_id, index, version in _validated_extraction_references(envelope):
         message = await store.get_owned_message(
             message_id, user_id=owner, conversation_id=conversation_id
         )
@@ -453,10 +462,8 @@ async def _extract_memories_once(
             )
             if not isinstance(envelope, Mapping) or "_extraction_refs" not in envelope:
                 raise fencing.ExtractionRefused("invalid_source")
+            ids = [mid for mid, _, _ in _validated_extraction_references(envelope)]
             references = envelope["_extraction_refs"]
-            if not isinstance(references, list) or not 1 <= len(references) <= 250:
-                raise fencing.ExtractionRefused("invalid_source")
-            ids = [_as_uuid(ref["message_id"]) for ref in references]
         except (ValueError, TypeError, KeyError, AttributeError):
             raise fencing.ExtractionRefused("invalid_source") from None
         page_inputs, qualified_messages = await fencing.read_references(
@@ -472,11 +479,17 @@ async def _extract_memories_once(
             **envelope,
             "_extraction_refs": [r for r in references if str(r["message_id"]) in remaining_ids],
         }
-        raw_messages = (
-            await _read_extraction_references(QualifiedReferences(), owner, conv_id, envelope)
-            if remaining_ids
-            else []
-        )
+        try:
+            raw_messages = (
+                await _read_extraction_references(QualifiedReferences(), owner, conv_id, envelope)
+                if remaining_ids
+                else []
+            )
+        except ValueError:
+            # Shape was checked before source reads. Remaining validation here
+            # bounds a fragment against its actual qualified source, not a DB
+            # failure; permanently malformed payloads must not consume retries.
+            raise fencing.ExtractionRefused("invalid_source") from None
     else:
         page_inputs, raw_messages = await fencing.read_page(store_obj, summary_generation, conv_id)
     summary_payload = {
@@ -502,7 +515,9 @@ async def _extract_memories_once(
             raise Retry(defer=5) from None
 
     if continuation_pending:
-        await fencing.check(store_obj, page_inputs)
+        # Recovery belongs to the already-committed guarded summary flag, not
+        # unrelated extraction message versions. Retain account/cloud provenance.
+        await fencing.check(store_obj, page_inputs.subset(set()))
         queue = ctx.get("redis")
         if queue is not None and hasattr(queue, "enqueue_job"):
             try:

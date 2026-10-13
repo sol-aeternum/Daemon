@@ -410,9 +410,13 @@ enqueue. Every entity enqueue requalifies committed fact IDs; successful prefixe
 are projected before optional tail checkpoints or later source fences can refuse.
 Continuation references cover the complete uncheckpointed cursor range, including
 leading filtered rows; their job identity follows the remaining selected fragment.
+Malformed reference shapes, duplicates, versions and fragment indices refuse
+terminally rather than exhausting retries; qualified source failures remain distinct.
 Refused work reports skipped rather than success and does not schedule
 derived work as though its suffix completed. Existing already-committed summary-flag recovery
-remains independent of current extraction success. No database lock spans
+remains independent of current extraction success and unrelated message snapshots,
+with original account currency and current owner/cloud conversation qualification.
+No database lock spans
 compute admission, model/embedding calls or Redis; downstream jobs keep the same
 original capture. In-flight network calls cannot be recalled, and pre-dispatch
 checks do not provide atomic authority over a later network send.

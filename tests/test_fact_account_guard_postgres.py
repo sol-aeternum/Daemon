@@ -1089,3 +1089,102 @@ async def test_offline_benchmark_actual_extractor_uses_real_qualified_account_co
         assert await counts(env) == (0, 1)
     with pytest.raises(compute_runtime.ComputeUnavailable):
         compute_runtime.current_scope()  # Scope cannot leak out of the offline operation.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed", ["missing", "extra", "duplicate", "version", "negative", "boolean", "past_end"]
+)
+async def test_malformed_references_refuse_terminally_without_provider_or_checkpoint(
+    env, monkeypatch, malformed
+):
+    conv, mid, extractor, judge = await prepare(env, monkeypatch)
+    _, messages = await fencing.read_page(env.memory, CapturedGeneration(env.alice, 7), conv)
+    reference = {
+        "message_id": str(mid),
+        "source_version": jobs._extraction_source_version(messages[0]),
+        "fragment_index": 0,
+    }
+    if malformed == "missing":
+        del reference["fragment_index"]
+    elif malformed == "extra":
+        reference["extra"] = "not permitted"
+    elif malformed == "version":
+        reference["source_version"] = "malformed"
+    elif malformed in {"negative", "boolean", "past_end"}:
+        reference["fragment_index"] = {"negative": -1, "boolean": True, "past_end": 100}[malformed]
+    refs = [reference, dict(reference)] if malformed == "duplicate" else [reference]
+    result = await run(env, conv, payload={"_extraction_refs": refs})
+    assert result == {"status": "skipped", "reason": "invalid_source"}
+    extractor.assert_not_awaited()
+    judge.assert_not_awaited()
+    assert await counts(env) == (0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["source", "generation", "cause", "local", "foreign"])
+async def test_committed_summary_recovery_ignores_unrelated_message_snapshot_not_account_provenance(
+    env, monkeypatch, entity_queue, mutation
+):
+    conv, mid, extractor, _ = await prepare(env, monkeypatch)
+    assert await env.memory.update_conversation_summary(
+        conv,
+        "Already committed synthetic summary",
+        expected_summary_updated_at=None,
+        summarized_message_count=0,
+        summary_continuation_pending=True,
+        captured_generation=CapturedGeneration(env.alice, 7),
+    )
+    original_read = env.memory.read_summary_continuation_pending
+
+    async def mutate_after_guarded_state(*args, **kwargs):
+        pending = await original_read(*args, **kwargs)
+        assert pending is True
+        if mutation == "source":
+            await env.pool.execute(
+                "UPDATE messages SET content=$2 WHERE id=$1",
+                mid,
+                env.memory.encryption.encrypt("Changed extraction source"),
+            )
+        elif mutation == "generation":
+            await env.pool.execute(
+                "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
+            )
+        elif mutation == "cause":
+            await env.pool.execute(
+                "INSERT INTO account_suspension_causes VALUES($1,$2,'operator')", env.alice, uuid4()
+            )
+        elif mutation == "local":
+            await env.pool.execute("UPDATE conversations SET pipeline='local' WHERE id=$1", conv)
+        else:
+            await env.pool.execute("UPDATE conversations SET user_id=$2 WHERE id=$1", conv, env.bob)
+        return pending
+
+    monkeypatch.setattr(env.memory, "read_summary_continuation_pending", mutate_after_guarded_state)
+    queue, pipeline = entity_queue
+    result = await jobs.extract_memories(
+        {"store": env.memory, "db_pool": env.pool, "redis": queue},
+        env.alice,
+        conv,
+        origin_account_id=str(env.alice),
+        origin_account_generation=7,
+    )
+    assert result["status"] == "skipped"
+    wires = await queued(queue, pipeline, "generate_summary_job")
+    if mutation == "source":
+        assert result["reason"] == "source_changed"
+        assert len(wires) == 1
+        assert wires[0].args == (str(conv), True)
+        assert wires[0].kwargs == {
+            "origin_account_id": str(env.alice),
+            "origin_account_generation": 7,
+        }
+    else:
+        assert wires == []
+    row = await env.pool.fetchrow("SELECT summary,metadata FROM conversations WHERE id=$1", conv)
+    assert row["summary"] == "Already committed synthetic summary"
+    assert json.loads(row["metadata"])["summary_continuation_pending"] is True
+    assert await counts(env) == (0, 0)
+    extractor.assert_not_awaited()
+    assert await queued(queue, pipeline, "resolve_entities_job") == []
+    assert await queued(queue, pipeline, "extract_memories") == []
