@@ -20,6 +20,7 @@ from orchestrator.memory.embedding import (
     embed_query_with_metadata,
     get_selected_embedding_route_id,
 )
+from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -453,29 +454,108 @@ class MemoryStore:
         )
         return dict(row) if row else None
 
+    async def read_conversation_title_inputs(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        captured_generation: CapturedGeneration,
+        user_message_id: uuid.UUID | None = None,
+    ) -> dict[str, Any] | None:
+        """Read only owner-qualified title inputs under the originating account guard.
+
+        The short transaction ends before compute admission or provider work. Never
+        rediscover an owner or refresh the captured generation on delayed jobs.
+        """
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                row = await conn.fetchrow(
+                    "SELECT title, title_locked FROM conversations WHERE id=$1 AND user_id=$2",
+                    conversation_id,
+                    captured_generation.account_id,
+                )
+                if row is None:
+                    return None
+                result = dict(row)
+                result["messages"] = []
+                if row["title_locked"]:
+                    return result
+                if user_message_id is not None:
+                    rows = await conn.fetch(
+                        "SELECT role, content FROM messages "
+                        "WHERE id=$1 AND conversation_id=$2 AND user_id=$3 AND role='user' "
+                        "AND EXISTS(SELECT 1 FROM conversations WHERE id=$2 AND user_id=$3)",
+                        user_message_id,
+                        conversation_id,
+                        captured_generation.account_id,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT role, content FROM ("
+                        "SELECT role, content, created_at FROM messages "
+                        "WHERE conversation_id=$1 AND user_id=$2 "
+                        "AND EXISTS(SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2) "
+                        "ORDER BY created_at DESC LIMIT 50"
+                        ") recent ORDER BY created_at ASC",
+                        conversation_id,
+                        captured_generation.account_id,
+                    )
+                # Qualify both ownership identities before even decrypting input.
+                result["messages"] = [
+                    {"role": item["role"], "content": self._enc.decrypt(item["content"])}
+                    for item in rows
+                    if item["role"] in {"user", "assistant"}
+                ]
+                return result
+
+    async def check_conversation_title_generation(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        captured_generation: CapturedGeneration,
+        expected_title: str | None,
+    ) -> bool:
+        """Last short pre-model check, not authority over an in-flight provider call."""
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                return bool(
+                    await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM conversations "
+                        "WHERE id=$1 AND user_id=$2 AND title IS NOT DISTINCT FROM $3 "
+                        "AND NOT COALESCE(title_locked, FALSE))",
+                        conversation_id,
+                        captured_generation.account_id,
+                        expected_title,
+                    )
+                )
+
     async def save_generated_conversation_title(
         self,
         conversation_id: uuid.UUID,
         *,
         title: str,
         expected_title: str | None,
+        captured_generation: CapturedGeneration,
     ) -> bool:
-        """Save a generated title only if the read-time title is still editable."""
-        row = await self._pool.fetchrow(
-            """
-            UPDATE conversations
-            SET title = $2,
-                updated_at = NOW(),
-                last_activity_at = NOW()
-            WHERE id = $1
-              AND title IS NOT DISTINCT FROM $3
-              AND NOT COALESCE(title_locked, FALSE)
-            RETURNING id
-            """,
-            conversation_id,
-            title,
-            expected_title,
-        )
+        """Guard account first; retain its lock through the owner-qualified title commit."""
+        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            async with guard_content_write(conn, captured_generation):
+                row = await conn.fetchrow(
+                    """
+                    UPDATE conversations
+                    SET title = $2,
+                        updated_at = NOW(),
+                        last_activity_at = NOW()
+                    WHERE id = $1
+                      AND user_id = $4
+                      AND title IS NOT DISTINCT FROM $3
+                      AND NOT COALESCE(title_locked, FALSE)
+                    RETURNING id
+                    """,
+                    conversation_id,
+                    title,
+                    expected_title,
+                    captured_generation.account_id,
+                )
         return row is not None
 
     async def delete_conversation(self, conversation_id: uuid.UUID) -> bool:

@@ -1219,7 +1219,7 @@ async def test_extended_root_consumes_one_unit_then_exhausted_next_root_denies(
 
 
 @pytest.mark.asyncio
-async def test_background_title_job_uses_persisted_conversation_owner(
+async def test_background_title_job_uses_validated_originating_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Load the job directly while an unrelated pre-existing worker.py import
@@ -1232,6 +1232,14 @@ async def test_background_title_job_uses_persisted_conversation_owner(
     class Store:
         get_conversation = AsyncMock(return_value={"user_id": owner, "title_locked": False})
         get_messages = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
+        read_conversation_title_inputs = AsyncMock(
+            return_value={
+                "title": None,
+                "title_locked": False,
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        )
+        check_conversation_title_generation = AsyncMock(return_value=True)
         save_generated_conversation_title = AsyncMock(return_value=True)
 
     @asynccontextmanager
@@ -1251,11 +1259,19 @@ async def test_background_title_job_uses_persisted_conversation_owner(
     monkeypatch.setitem(globals_map, "account_compute", checked_scope)
     generator = AsyncMock(return_value="Greeting")
     monkeypatch.setitem(globals_map, "generate_conversation_title", generator)
-    result = await title_job({"store": Store(), "db_pool": pool}, conversation_id)
+    result = await title_job(
+        {"store": Store(), "db_pool": pool},
+        conversation_id,
+        origin_account_id=str(owner),
+        origin_account_generation=7,
+    )
     assert result == {"status": "ok", "title": "Greeting"}
     generator.assert_awaited_once()
     Store.save_generated_conversation_title.assert_awaited_once_with(
-        conversation_id, title="Greeting", expected_title=None
+        conversation_id,
+        title="Greeting",
+        expected_title=None,
+        captured_generation=jobs["CapturedGeneration"](owner, 7),
     )
 
 

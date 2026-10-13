@@ -30,6 +30,7 @@ import pytest_asyncio
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from orchestrator.worker import jobs
+from orchestrator.services.account_control.guard import CapturedGeneration
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
 
@@ -358,11 +359,15 @@ async def test_title_generation_preserves_in_flight_manual_edits(
     conversation_id = await _add_conversation(
         pool, user_id, title=initial_title, age=timedelta(days=1)
     )
+    await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
     # Legacy drafts have nullable titles and locks; unchanged ones still title normally.
     await pool.execute(
         "UPDATE conversations SET title_locked = $2 WHERE id = $1", conversation_id, initial_lock
     )
     await _add_message(pool, conversation_id, user_id)
+    message_id = await pool.fetchval(
+        "SELECT id FROM messages WHERE conversation_id=$1", conversation_id
+    )
     started, resume = asyncio.Event(), asyncio.Event()
 
     async def paused_generator(messages):
@@ -386,10 +391,11 @@ async def test_title_generation_preserves_in_flight_manual_edits(
     monkeypatch.setattr(jobs, "generate_conversation_title", paused_generator)
     monkeypatch.setattr(jobs, "account_compute", checked_scope)
     ctx = {"store": store, "db_pool": pool}
+    capture = {"origin_account_id": str(user_id), "origin_account_generation": 0}
     coroutine = (
-        jobs.generate_title(ctx, conversation_id, "hello")
+        jobs.generate_title(ctx, conversation_id, message_id, **capture)
         if job_name == "generate_title"
-        else jobs.generate_conversation_title_job(ctx, conversation_id)
+        else jobs.generate_conversation_title_job(ctx, conversation_id, **capture)
     )
     task = asyncio.create_task(coroutine)
     try:
@@ -443,12 +449,17 @@ async def test_generated_title_save_rechecks_after_concurrent_row_lock(
     pool = listing_database
     user_id = await _add_user(pool)
     conversation_id = await _add_conversation(pool, user_id)
+    await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
     saver_connection = await pool.acquire()
     save_task = None
     try:
         # Force the save onto this connection so the test can observe its lock wait.
-        # The helper uses fetchrow only, shared by Pool and Connection.
-        saver = MemoryStore(cast(asyncpg.Pool, saver_connection), _LISTING_ENCRYPTION)
+        class BoundPool:
+            @asynccontextmanager
+            async def acquire(self):
+                yield saver_connection
+
+        saver = MemoryStore(cast(asyncpg.Pool, BoundPool()), _LISTING_ENCRYPTION)
         async with pool.acquire() as editor:
             async with editor.transaction():
                 await editor.execute(
@@ -459,7 +470,10 @@ async def test_generated_title_save_rechecks_after_concurrent_row_lock(
                 )
                 save_task = asyncio.create_task(
                     saver.save_generated_conversation_title(
-                        conversation_id, title="Generated title", expected_title=None
+                        conversation_id,
+                        title="Generated title",
+                        expected_title=None,
+                        captured_generation=CapturedGeneration(user_id, 0),
                     )
                 )
                 # A pending row lock means the UPDATE has started before commit;

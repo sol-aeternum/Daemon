@@ -73,6 +73,12 @@ its first message is saved. Existing nonempty conversations are not automaticall
 backfilled. Both title workers save through an atomic comparison against the
 title read before generation and require the conversation to remain unlocked,
 so a rename or lock during generation prevents the generated title from saving.
+Generated title jobs also carry the original account UUID and account content
+generation captured before chat derives their inputs. Legacy payloads without
+that capture are refused, never refreshed or backfilled. Owner-qualified input
+reads and the final title write use the account guard; the final guard and title
+SQL share one transaction. See `docs/ACCOUNT_CONTROL_PERSISTENCE.md` (J1c-1b).
+This does not fence other conversation or memory writers or enable account reset.
 
 #### `messages`
 ```sql

@@ -1,12 +1,12 @@
 {
   "schema": "journal+account_writer_catalogue/v1",
-  "purpose": "J1c-1a explicit table/writer classification prerequisite. All sites uncovered; source change detection is not runtime fencing.",
+  "purpose": "Explicit table/writer classification. Generated title SQL has bounded J1c-1b integration; every other site remains uncovered. Source change detection is not runtime fencing.",
   "limits": {
     "scanner": "Unquoted forward CREATE/ALTER reference dependencies plus AST SQL execute/executemany/fetch/fetchrow/fetchval, filesystem and store/publication candidates; no runtime imports. Unsupported CREATE/REFERENCES grammar fails.",
     "ownership": "Every FK parent retained, including added ALTER references and cycles. These are conservative historical dependency paths, not policy ownership. Account-control account_id and other non-FK ownership still require source-backed semantics.",
     "dynamic_sql": "Unresolved/augmented/mixed-binding SQL arguments and interpolated strings are deferred candidates. Named-literal fingerprints include all resolved values; repeated identical calls have distinct occurrence identities.",
     "indirect_effects": "No universal call-graph, receiver, trigger, SQL-function, SQL-data or provider-network-effect proof. Custom wrappers/aliases, nonliteral open modes via wrappers and effects outside listed roots/patterns need manual review; AST absence proves nothing.",
-    "status": "All entries are uncovered. False positives (events/contextvars/route-like methods) remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
+    "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
     "account_deletions": {
@@ -2064,14 +2064,15 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.save_generated_conversation_title",
       "kind": "sql_inline",
-      "fingerprint": "7ab239dae88fd4cd",
+      "fingerprint": "47b3049b3332065d",
       "tables": [
         "conversations"
       ],
       "unknown": false,
-      "uncovered": true,
+      "uncovered": false,
+      "guard_contract": "tests/test_title_account_guard_postgres.py",
       "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "J1c-1b generated titles only: originating account guard and owner-qualified SQL in one transaction; both workers carry capture. Initial titles, manual renames and all other writers remain uncovered. Not a completed account fence."
     },
     {
       "owner_source": "orchestrator.memory.store",
