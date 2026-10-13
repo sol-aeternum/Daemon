@@ -310,7 +310,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "UV_PROJECT_ENVIRONMENT": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:38",
+            "frontend/e2e/cache-fixture-server.mjs:49",
             "frontend/e2e/renderer-crash.ts:215",
         ),
         reason=(
@@ -337,10 +337,24 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     ),
     "NODE_OPTIONS": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/scripts/authenticated-browser.mjs:986",),
+        sources=(
+            "frontend/scripts/authenticated-browser.mjs:986",
+            "frontend/e2e/cache-fixture-server.mjs:28",
+        ),
         reason=(
-            "owner-approved diagnostic refusal guard: rejects Node injection options; "
-            "not an application configuration input or a Chromium environment entry"
+            "diagnostic refusal guard still rejects Node injection options; the owner-approved "
+            "test-only clean fixture environment also preserves the caller's bounded Node heap "
+            "control. Only these exact sites are covered, not an application configuration "
+            "input or a Chromium environment entry"
+        ),
+    ),
+    "TMPDIR": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/e2e/cache-fixture-server.mjs:27",),
+        reason=(
+            "owner-approved test-only clean child-process environment preserves the caller's "
+            "task-private temporary directory. Standard process control, not an application "
+            "deployment knob; only this exact fixture launch site is covered"
         ),
     ),
     "NEXT_PUBLIC_API_BASE_URL": NonFieldConsumer(
@@ -1973,7 +1987,7 @@ def test_diagnostic_named_exceptions_do_not_cover_other_sites(name: str) -> None
     )
 
 
-@pytest.mark.parametrize("name", ["HOME", "PATH", "UV_PROJECT_ENVIRONMENT"])
+@pytest.mark.parametrize("name", ["HOME", "PATH", "UV_PROJECT_ENVIRONMENT", "TMPDIR", "NODE_OPTIONS"])
 @pytest.mark.parametrize(
     "new_site",
     [
@@ -2040,6 +2054,7 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
     assert set(FRONTEND_SOURCE_EXCEPTIONS) == {
         "HOME",
         "PATH",
+        "TMPDIR",
         "UV_PROJECT_ENVIRONMENT",
         "NEXT_PUBLIC_API_BASE_URL",
         "DEBUG",
@@ -2049,6 +2064,7 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
     assert set(inventory.names) == {
         "HOME",
         "PATH",
+        "TMPDIR",
         "UV_PROJECT_ENVIRONMENT",
         "NEXT_PUBLIC_API_URL",
         "DAEMON_INTERNAL_API_URL",
