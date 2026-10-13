@@ -823,3 +823,191 @@ async def test_exact_winner_edit_between_conflict_read_and_lock_retries_without_
     assert await counts(env) == (2, 1)
     row = await env.pool.fetchrow("SELECT content FROM memories WHERE category='fact'")
     assert env.memory.encryption.decrypt(row["content"]) == "User likes blue stars."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fragmented, changed_source", [(False, False), (True, False), (True, True)]
+)
+async def test_native_continuation_covers_filtered_boundary_and_drains_remaining_fragments(
+    env, monkeypatch, entity_queue, fragmented, changed_source
+):
+    conv, first, extractor, _ = await prepare(env, monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.memory.summary._generate_or_update_summary_result",
+        AsyncMock(return_value=None),
+    )
+    if fragmented:
+        await env.pool.execute("UPDATE messages SET status='cancelled' WHERE id=$1", first)
+        filtered = first
+    else:
+        await env.pool.execute(
+            "UPDATE messages SET content=$2 WHERE id=$1",
+            first,
+            env.memory.encryption.encrypt("A" * 3000),
+        )
+        filtered = (
+            await env.memory.insert_message(
+                conv, env.alice, "user", "Filtered boundary", status="cancelled"
+            )
+        )["id"]
+    remaining_content = (
+        "".join(f"{index:09d}|" for index in range(1000)) if fragmented else "B" * 3000
+    )
+    last = (
+        await env.memory.insert_message(
+            conv, env.alice, "user", remaining_content, status="complete"
+        )
+    )["id"]
+    monkeypatch.setattr(jobs, "MAX_EXTRACTION_CHUNKS_PER_JOB", 1)
+    queue, pipeline = entity_queue
+    ctx = {"store": env.memory, "db_pool": env.pool, "redis": queue}
+    origin = {"origin_account_id": str(env.alice), "origin_account_generation": 7}
+    assert (await jobs.extract_memories(ctx, env.alice, conv, **origin))["status"] == "ok"
+    wires = await queued(queue, pipeline, "extract_memories")
+    refs = json.loads(wires[-1].args[2])["_extraction_refs"]
+    assert [ref["message_id"] for ref in refs] == [str(filtered), str(last)]
+    assert refs[-1]["fragment_index"] == (1 if fragmented else 0)
+    texts = [call.args[0] for call in extractor.await_args_list]
+    if changed_source:
+        await env.pool.execute(
+            "UPDATE messages SET content=$2 WHERE id=$1",
+            last,
+            env.memory.encryption.encrypt("RESTARTED|" + remaining_content[10:]),
+        )
+    for hop in range(5):
+        wire = wires[-1]
+        assert wire.kwargs == origin
+        assert (await jobs.extract_memories(ctx, *wire.args, **wire.kwargs))["status"] == "ok"
+        if (await env.memory.get_last_extraction_cursor(conv))[1] == str(last):
+            break
+        updated = await queued(queue, pipeline, "extract_memories")
+        assert len(updated) == len(wires) + 1  # Different fragment cannot reuse its running job ID.
+        next_refs = json.loads(updated[-1].args[2])["_extraction_refs"]
+        if changed_source and hop == 0:
+            assert next_refs[-1]["fragment_index"] == 1
+            assert next_refs[-1]["source_version"] != refs[-1]["source_version"]
+            assert extractor.await_args_list[-1].args[0].startswith("[User]: RESTARTED|")
+        else:
+            assert next_refs[-1]["fragment_index"] == refs[-1]["fragment_index"] + 1
+        refs, wires = next_refs, updated
+    else:
+        pytest.fail("bounded continuation did not drain the last source")
+    assert (await env.memory.get_last_extraction_cursor(conv))[1] == str(last)
+    assert len(extractor.await_args_list) == (4 if changed_source else 3 if fragmented else 2)
+    if fragmented:
+        assert [call.args[0] for call in extractor.await_args_list].count(texts[0]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capped", [False, True])
+@pytest.mark.parametrize("restriction", [None, "generation", "cause", "local"])
+async def test_post_loop_refusal_projects_only_independently_qualified_committed_facts(
+    env, monkeypatch, entity_queue, capped, restriction
+):
+    conv, first, extractor, _ = await prepare(env, monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.memory.summary._generate_or_update_summary_result",
+        AsyncMock(return_value=None),
+    )
+    await env.pool.execute(
+        "UPDATE messages SET content=$2 WHERE id=$1",
+        first,
+        env.memory.encryption.encrypt("A" * 3000),
+    )
+    tail = await env.memory.insert_message(
+        conv, env.alice, "user", "Filtered tail", status="cancelled"
+    )
+    if capped:
+        await env.memory.insert_message(conv, env.alice, "user", "B" * 3000, status="complete")
+        monkeypatch.setattr(jobs, "MAX_EXTRACTION_CHUNKS_PER_JOB", 1)
+    outcome = extractor.return_value
+
+    async def changed_tail(*args, **kwargs):
+        await env.pool.execute(
+            "UPDATE messages SET content=$2 WHERE id=$1",
+            tail["id"],
+            env.memory.encryption.encrypt("Changed tail"),
+        )
+        return outcome
+
+    extractor.side_effect = changed_tail
+    original_checkpoint = fencing.checkpoint
+
+    async def checkpoint_then_restrict(*args, **kwargs):
+        result = await original_checkpoint(*args, **kwargs)
+        if restriction == "generation":
+            await env.pool.execute(
+                "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
+            )
+        elif restriction == "cause":
+            await env.pool.execute(
+                "INSERT INTO account_suspension_causes VALUES($1,$2,'operator')", env.alice, uuid4()
+            )
+        elif restriction == "local":
+            await env.pool.execute("UPDATE conversations SET pipeline='local' WHERE id=$1", conv)
+        return result
+
+    monkeypatch.setattr(fencing, "checkpoint", checkpoint_then_restrict)
+    queue, pipeline = entity_queue
+    result = await jobs.extract_memories(
+        {"store": env.memory, "db_pool": env.pool, "redis": queue},
+        env.alice,
+        conv,
+        origin_account_id=str(env.alice),
+        origin_account_generation=7,
+    )
+    assert result["status"] == "skipped"
+    if restriction is None:
+        assert result["reason"] == "source_changed"
+    assert await counts(env) == (1, 1)
+    assert (await env.memory.get_last_extraction_cursor(conv))[1] == str(first)
+    wires = await queued(queue, pipeline, "resolve_entities_job")
+    if restriction is not None:
+        assert wires == []
+    else:
+        saved = await env.pool.fetchval("SELECT id FROM memories")
+        assert len(wires) == 1
+        assert wires[0].args == (str(env.alice), json.dumps([str(saved)]))
+        assert wires[0].kwargs == {
+            "origin_account_id": str(env.alice),
+            "origin_account_generation": 7,
+        }
+    assert await queued(queue, pipeline, "extract_memories") == []
+    assert await queued(queue, pipeline, "generate_summary_job") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_offline_benchmark_helper_runs_real_extraction_without_queued_snapshot_escape(
+    env, monkeypatch, failure
+):
+    from tests.benchmark_extraction import build_benchmark_transcript, invoke_benchmark_extraction
+
+    conv, _, extractor, _ = await prepare(env, monkeypatch)
+    first = build_benchmark_transcript(["First synthetic turn"])
+    assert (await invoke_benchmark_extraction(env.memory, str(env.alice), str(conv), first))[
+        "status"
+    ] == "ok"
+    first_call = extractor.await_args
+    assert first_call is not None and "[User]: First synthetic turn" in first_call.args[0]
+    before = await counts(env)
+    if failure:
+        extractor.return_value = ExtractionOutcome([], 0, 0, 0, 0, succeeded=False)
+    cumulative = build_benchmark_transcript(["First synthetic turn", "B" * 10000])
+    result = await invoke_benchmark_extraction(env.memory, str(env.alice), str(conv), cumulative)
+    assert result["status"] == ("failed" if failure else "ok")
+    if failure:
+        assert await counts(env) == before
+    else:
+        assert result["processed_chunks"] == 4
+        assert len(extractor.await_args_list) == 5
+        assert extractor.await_args_list[0].args[0] == extractor.await_args_list[1].args[0]
+        assert all(
+            len(call.args[0]) <= jobs.MAX_EXTRACTION_INPUT_CHARS
+            for call in extractor.await_args_list
+        )
+    assert (await run(env, conv, payload=cumulative)) == {
+        "status": "skipped",
+        "reason": "invalid_source",
+    }

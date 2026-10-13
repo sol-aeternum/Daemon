@@ -406,7 +406,11 @@ Prefix evidence is recorded after commit, and eligible exact reuse can recover
 projection scheduling on retries without counting reused rows as new. A changed
 later source can schedule only its independently requalified committed prefix,
 not the refused suffix; stale/restricted account currency still prevents that
-enqueue. Refused work reports skipped rather than success and does not schedule
+enqueue. Every entity enqueue requalifies committed fact IDs; successful prefixes
+are projected before optional tail checkpoints or later source fences can refuse.
+Continuation references cover the complete uncheckpointed cursor range, including
+leading filtered rows; their job identity follows the remaining selected fragment.
+Refused work reports skipped rather than success and does not schedule
 derived work as though its suffix completed. Existing already-committed summary-flag recovery
 remains independent of current extraction success. No database lock spans
 compute admission, model/embedding calls or Redis; downstream jobs keep the same

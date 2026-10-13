@@ -590,11 +590,18 @@ async def _extract_memories_once(
             first_remaining["_resume_database_extraction"] = True
             remaining_raw[0] = first_remaining
         references: list[dict[str, Any]] = []
+        resume_id = str(remaining_raw[0]["id"])
         # Include intentionally filtered rows inside the uncheckpointed suffix.
         # References must cover the cursor range, not just extractor-selected rows.
         if remaining_raw:
-            first_id = str(remaining_raw[0]["id"])
-            start = next(i for i, m in enumerate(raw_messages) if str(m["id"]) == first_id)
+            start = 0
+            for processed_chunk in chunks_to_process:
+                if processed_chunk["advances_cursor"]:
+                    completed_id = str(processed_chunk["raw_messages"][-1]["id"])
+                    start = (
+                        max(i for i, m in enumerate(raw_messages) if str(m["id"]) == completed_id)
+                        + 1
+                    )
             remaining_by_id = {}
             for remaining in remaining_raw:
                 remaining_by_id.setdefault(str(remaining["id"]), remaining)
@@ -614,7 +621,9 @@ async def _extract_memories_once(
                     "fragment_index": fragment_index,
                 }
             )
-        first = references[0]
+        # Filtered leading rows prove coverage, but cannot identify progress:
+        # the next fragment must not reuse the still-running filtered-prefix job.
+        first = next(ref for ref in references if ref["message_id"] == resume_id)
         # Include the source generation: a changed-message restart must not
         # enqueue its continuation under the still-running old generation's ID.
         continuation_key = (
@@ -630,21 +639,16 @@ async def _extract_memories_once(
     processed_message_count = 0
     last_processed_message_id: str | None = None
 
-    async def enqueue_entity_resolution(
-        memories: Sequence[Mapping[str, Any]], *, committed_only=False
-    ) -> None:
+    async def enqueue_entity_resolution(memories: Sequence[Mapping[str, Any]]) -> None:
         memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id")]
         if not memory_ids:
             return
-        if committed_only:
-            eligible = await fencing.committed_projection_ids(
-                store_obj, page_inputs, [_as_uuid(mid) for mid in memory_ids]
-            )
-            memory_ids = [mid for mid in memory_ids if _as_uuid(mid) in eligible]
-            if not memory_ids:
-                return
-        else:
-            await fencing.check(store_obj, page_inputs)
+        eligible = await fencing.committed_projection_ids(
+            store_obj, page_inputs, [_as_uuid(mid) for mid in memory_ids]
+        )
+        memory_ids = [mid for mid in memory_ids if _as_uuid(mid) in eligible]
+        if not memory_ids:
+            return
         entity_queue = ctx.get("redis")
         if not isinstance(entity_queue, ArqRedis):
             return
@@ -705,7 +709,7 @@ async def _extract_memories_once(
         except (WriteGuardRefusal, fencing.ExtractionRefused):
             # Refused suffix != uncommitted prefix. Requalify only the actual
             # committed facts under original currency, never the changed suffix.
-            await enqueue_entity_resolution(new_memories, committed_only=True)
+            await enqueue_entity_resolution(new_memories)
             raise
         except Exception:
             await enqueue_entity_resolution(new_memories)
@@ -724,6 +728,14 @@ async def _extract_memories_once(
         if advances_cursor:
             processed_message_count += len(chunk_raw)
             last_processed_message_id = chunk_last_message_id
+
+    # Project only committed facts before any optional tail checkpoint/fence can
+    # refuse. An unrelated changed suffix cannot uncommit this qualified prefix.
+    if extraction_success and new_memories:
+        try:
+            await enqueue_entity_resolution(new_memories)
+        except Exception:
+            logger.warning("Failed to enqueue entity resolution job")
 
     # Intentionally filtered artifacts and malformed rows are not extractor
     # inputs, but they must not pin pagination forever. Advance across a
@@ -756,12 +768,6 @@ async def _extract_memories_once(
                 last_message_observed_at=page_last_observed,
             )
             last_processed_message_id = page_last_id
-
-    if extraction_success and new_memories:
-        try:
-            await enqueue_entity_resolution(new_memories)
-        except Exception:
-            logger.warning("Failed to enqueue entity resolution job")
 
     if extraction_success and summary_continuation_needed and summary_generation is not None:
         try:

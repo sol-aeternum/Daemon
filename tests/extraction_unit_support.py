@@ -44,10 +44,17 @@ def install_inputs(monkeypatch, store, user_id):
     async def with_summary(current, inputs):
         return inputs, None
 
+    async def committed_projection_ids(current, inputs, ids):
+        # Mocked algorithm fixture only; real provenance/account qualification
+        # is exercised separately against PostgreSQL and the native queue.
+        assert current is store
+        return set(ids)
+
     monkeypatch.setattr(fencing, "read_page", read_page)
     monkeypatch.setattr(fencing, "check", AsyncMock())
     monkeypatch.setattr(fencing, "checkpoint", checkpoint)
     monkeypatch.setattr(fencing, "with_summary", with_summary)
+    monkeypatch.setattr(fencing, "committed_projection_ids", committed_projection_ids)
 
 
 async def extract_memories(ctx, user_id, conversation_id, messages_json=None, **kwargs):
