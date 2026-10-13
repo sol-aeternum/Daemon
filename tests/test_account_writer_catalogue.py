@@ -2,8 +2,8 @@
 
 Positive: the explicit classification manifest (tests/fixtures/
 account_writer_catalogue.json) must exactly equal what the bounded stdlib scanner
-discovers today, and every entry must carry owner source, rationale and uncovered
-status.
+discovers today, and every entry must carry owner source, rationale and explicit
+integration status. Only generated title SQL may reference its bounded contract.
 
 Negative synthetic fixtures prove discriminative failure for: a new mutating
 statement inside an already-classified function (per-mutation fingerprint, not
@@ -11,9 +11,8 @@ just new module/function), a new writer module, a new direct account table, a ne
 transitive FK table, malformed/changed categories, unknown classifications and
 unclassified stores.
 
-Nothing here claims runtime safety: the guard kernel under J1c-1a has no callers
-and no producer/applier, so nothing is fenced; assertions below reject any
-manifest that claims otherwise.
+Nothing here proves runtime safety or a completed account fence. The title
+contract is exercised separately; no other writer or producer/applier is covered.
 """
 
 from __future__ import annotations
@@ -154,14 +153,37 @@ def test_manifest_makes_explicit_non_wildcard_classification() -> None:
     )
     assert all(entry["category"] in catalogue.CATEGORIES for entry in manifest["tables"].values())
     assert all(entry["category"] in catalogue.CATEGORIES for entry in manifest["writer_sites"])
-    assert all(
-        entry["uncovered"] is True and entry["rationale"] and entry["owner_source"]
-        for entry in manifest["writer_sites"]
-    )
+    integrated = [entry for entry in manifest["writer_sites"] if entry["uncovered"] is False]
+    assert len(integrated) == 1
+    assert (
+        integrated[0]["owner_source"],
+        integrated[0]["qualname"],
+    ) == catalogue.TITLE_GUARDED_SITE
+    assert integrated[0]["guard_contract"] == catalogue.TITLE_GUARD_CONTRACT
+    assert all(entry["rationale"] and entry["owner_source"] for entry in manifest["writer_sites"])
     used = {entry["category"] for entry in manifest["tables"].values()}
     assert used <= set(catalogue.CATEGORIES)
     assert {"content", "control", "shared_unowned", "deferred"} <= used
     assert {entry["category"] for entry in manifest["writer_sites"]} <= set(catalogue.CATEGORIES)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("owner_source", "orchestrator.worker.jobs"),
+        ("qualname", "MemoryStore.update_conversation"),
+        ("tables", ["memories"]),
+        ("unknown", True),
+        ("category", "control"),
+        ("guard_contract", "unverified"),
+        ("uncovered", True),
+    ],
+)
+def test_title_contract_cannot_be_retagged_as_other_writer_coverage(field, value):
+    manifest = json.loads(catalogue.MANIFEST_PATH.read_text())
+    entry = next(item for item in manifest["writer_sites"] if item["uncovered"] is False)
+    entry[field] = value
+    assert catalogue.validate_manifest_shape(manifest)
 
 
 def test_manifest_does_not_claim_runtime_fencing() -> None:

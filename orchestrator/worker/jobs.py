@@ -37,6 +37,7 @@ from orchestrator.memory.extraction import (
 )
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.titles import ConversationMessage, generate_conversation_title
+from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 from orchestrator.model_routing import routing_context
 from orchestrator.skill_evaluator import (
     SkillEvaluator,
@@ -841,63 +842,71 @@ async def generate_title(
     ctx: WorkerContext,
     conversation_id: str | uuid.UUID,
     user_message_id: str | uuid.UUID,
+    *,
+    origin_account_id: str | uuid.UUID | None = None,
+    origin_account_generation: int | None = None,
 ) -> str | None:
-    store_obj = ctx.get("store")
-    if not isinstance(store_obj, MemoryStore):
+    if not isinstance(user_message_id, (str, uuid.UUID)):
         return None
-
-    conv_id = _as_uuid(conversation_id)
-    try:
-        existing = await store_obj.get_conversation(conv_id)
-    except Exception:
-        logger.warning("Failed to check title lock")
-        return None
-    if not existing or bool(existing.get("title_locked")):
-        return None
-    expected_title = existing.get("title")
-
-    owner = await _conversation_owner(ctx, conv_id)
-    source = await store_obj.get_owned_message(
-        _as_uuid(user_message_id), user_id=owner, conversation_id=conv_id
+    result = await _generate_guarded_title(
+        ctx,
+        conversation_id,
+        user_message_id=user_message_id,
+        origin_account_id=origin_account_id,
+        origin_account_generation=origin_account_generation,
     )
-    if not source or source.get("role") != "user" or not source.get("content"):
-        return None
-    messages = [{"role": "user", "content": source["content"]}]
-    async with account_compute(
-        ctx.get("db_pool"),
-        owner,
-        operation="agent",
-        auto_route=True,
-        background=True,
-        profile="background",
-    ):
-        title = await generate_conversation_title(messages)
-    try:
-        saved = await store_obj.save_generated_conversation_title(
-            conv_id, title=title, expected_title=expected_title
-        )
-    except Exception:
-        logger.warning("Failed to persist conversation title")
-        return None
-    if not saved:
-        return None
-
-    return title
+    return str(result["title"]) if result["status"] == "ok" else None
 
 
 async def generate_conversation_title_job(
     ctx: WorkerContext,
     conversation_id: str | uuid.UUID,
+    *,
+    origin_account_id: str | uuid.UUID | None = None,
+    origin_account_generation: int | None = None,
 ) -> dict[str, object]:
+    return await _generate_guarded_title(
+        ctx,
+        conversation_id,
+        user_message_id=None,
+        origin_account_id=origin_account_id,
+        origin_account_generation=origin_account_generation,
+    )
+
+
+async def _generate_guarded_title(
+    ctx: WorkerContext,
+    conversation_id: str | uuid.UUID,
+    *,
+    user_message_id: str | uuid.UUID | None,
+    origin_account_id: str | uuid.UUID | None,
+    origin_account_generation: int | None,
+) -> dict[str, object]:
+    # Optional fields recognize legacy payloads ONLY to refuse them. A retry
+    # reconstructs the original immutable capture, never reads a new generation.
+    try:
+        if not isinstance(origin_account_id, (str, uuid.UUID)):
+            raise WriteGuardRefusal("invalid_capture")
+        if not isinstance(origin_account_generation, int):
+            raise WriteGuardRefusal("invalid_capture")
+        captured = CapturedGeneration(_as_uuid(origin_account_id), origin_account_generation)
+        conv_id = _as_uuid(conversation_id)
+        source_id = _as_uuid(user_message_id) if user_message_id is not None else None
+    except (WriteGuardRefusal, ValueError, TypeError, AttributeError):
+        return {"status": "skipped", "reason": "invalid_capture"}
+
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
 
-    conv_id = _as_uuid(conversation_id)
     try:
-        conversation = await store_obj.get_conversation(conv_id)
+        conversation = await store_obj.read_conversation_title_inputs(
+            conv_id, captured_generation=captured, user_message_id=source_id
+        )
+    except WriteGuardRefusal as exc:
+        return {"status": "skipped", "reason": exc.code}
     except Exception:
-        logger.warning("Failed to check title lock")
+        logger.warning("Failed to read guarded title inputs")
         return {"status": "error", "reason": "read_failed"}
     if not conversation:
         return {"status": "not_found"}
@@ -905,7 +914,7 @@ async def generate_conversation_title_job(
         return {"status": "skipped", "reason": "title_locked"}
     expected_title = conversation.get("title")
 
-    messages_raw = await store_obj.get_messages(conv_id, limit=50)
+    messages_raw = conversation["messages"]
     messages: list[ConversationMessage] = []
     for msg in messages_raw:
         role = msg.get("role")
@@ -922,21 +931,35 @@ async def generate_conversation_title_job(
     if not messages:
         return {"status": "skipped", "reason": "no_messages"}
 
-    owner = await _conversation_owner(ctx, conv_id)
     async with account_compute(
         ctx.get("db_pool"),
-        owner,
+        captured.account_id,
         operation="agent",
         auto_route=True,
         background=True,
         profile="background",
     ):
+        # Compute admission may wait/change account state. Recheck after it,
+        # ending the read transaction BEFORE invoking the provider.
+        try:
+            valid = await store_obj.check_conversation_title_generation(
+                conv_id, captured_generation=captured, expected_title=expected_title
+            )
+        except WriteGuardRefusal as exc:
+            return {"status": "skipped", "reason": exc.code}
+        except Exception:
+            logger.warning("Failed to recheck guarded title inputs")
+            return {"status": "error", "reason": "read_failed"}
+        if not valid:
+            return {"status": "skipped", "reason": "title_changed_or_locked"}
         title = await generate_conversation_title(messages)
 
     try:
         saved = await store_obj.save_generated_conversation_title(
-            conv_id, title=title, expected_title=expected_title
+            conv_id, title=title, expected_title=expected_title, captured_generation=captured
         )
+    except WriteGuardRefusal as exc:
+        return {"status": "skipped", "reason": exc.code}
     except Exception:
         logger.warning("Failed to persist conversation title")
         return {"status": "error", "reason": "persist_failed"}

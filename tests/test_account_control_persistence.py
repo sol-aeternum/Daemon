@@ -703,25 +703,93 @@ async def test_exact_marker_checks_cannot_be_replaced_by_sequence_presence(env, 
     assert await env.pool.fetchval("SELECT count(*) FROM account_deletions") == 0
 
 
-def test_no_runtime_callers_marker_status_or_phase_api():
+TITLE_GUARD_IMPORTS = {
+    "orchestrator/main.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "capture_generation"),
+    },
+    "orchestrator/memory/store.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
+    "orchestrator/worker/jobs.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+    },
+}
+
+
+def _assert_only_title_guard_imports(sources):
+    # J1c-1b admits only these guard symbols at these title-family seams.
+    # This is not permission to call the J1b request/phase store.
+    observed = {}
+    for path, source in sources.items():
+        imports = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imports.update(
+                    (node.module, name.name)
+                    for name in node.names
+                    if "account_control" in f"{node.module}.{name.name}"
+                )
+            elif isinstance(node, ast.Import):
+                imports.update(
+                    (name.name, "") for name in node.names if "account_control" in name.name
+                )
+        if imports:
+            assert imports <= TITLE_GUARD_IMPORTS.get(path, set()), path
+            observed[path] = imports
+    assert observed == TITLE_GUARD_IMPORTS
+
+
+def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
     root = Path(__file__).resolve().parents[1]
     module = root / "orchestrator/services/account_control/store.py"
     source = module.read_text()
     assert "INSERT INTO deletion_journal_applied" not in source
     assert "SET status" not in source
     assert "SET closed_at" not in source
-    for path in (root / "orchestrator").rglob("*.py"):
-        if "account_control" in path.parts:
-            continue
-        tree = ast.parse(path.read_text())
-        assert not any(
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and "account_control" in node.module
-            or isinstance(node, ast.Import)
-            and any("account_control" in name.name for name in node.names)
-            for node in ast.walk(tree)
-        ), path
+    _assert_only_title_guard_imports(
+        {
+            path.relative_to(root).as_posix(): path.read_text()
+            for path in (root / "orchestrator").rglob("*.py")
+            if "account_control" not in path.parts
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "path,extra",
+    [
+        (
+            "orchestrator/main.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        ("orchestrator/main.py", "import orchestrator.services.account_control.store"),
+        ("orchestrator/main.py", "from orchestrator.services import account_control"),
+        (
+            "orchestrator/main.py",
+            "from orchestrator.services.account_control.guard import guard_content_write",
+        ),
+        (
+            "orchestrator/memory/store.py",
+            "from orchestrator.services.account_control.guard import *",
+        ),
+        (
+            "orchestrator/unapproved_writer.py",
+            "from orchestrator.services.account_control.guard import guard_content_write",
+        ),
+    ],
+)
+def test_runtime_import_contract_rejects_other_account_control_integration(path, extra):
+    sources = {
+        name: "\n".join(f"from {module} import {symbol}" for module, symbol in sorted(imports))
+        for name, imports in TITLE_GUARD_IMPORTS.items()
+    }
+    _assert_only_title_guard_imports(sources)
+    sources[path] = sources.get(path, "") + "\n" + extra
+    with pytest.raises(AssertionError):
+        _assert_only_title_guard_imports(sources)
 
 
 def _cancel_scan_during_shutdown(path, identity):

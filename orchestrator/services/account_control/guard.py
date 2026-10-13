@@ -1,4 +1,4 @@
-"""Uncalled J1c-1a content-writer prerequisite, NOT a completed account fence.
+"""J1c account guard, integrated for generated titles only; NOT a completed fence.
 
 Capture before deriving inputs. Acquire on the caller's READ COMMITTED transaction
 before content locks; revalidate after rollback to a savepoint predating the lock.

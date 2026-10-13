@@ -44,6 +44,7 @@ from orchestrator.speech.cache import audio_filename, cached_audio, run_cache_io
 from orchestrator.speech.contracts import SpeechError, SpeechRequest, canonical_voice
 from orchestrator.speech.service import get_speech_provider, synthesize as synthesize_speech
 from orchestrator.services.identity.rate_limiter import RateLimitUnavailableError
+from orchestrator.services.account_control.guard import CapturedGeneration, capture_generation
 from orchestrator.redis_jobs import enqueue_account_job
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
@@ -2195,6 +2196,7 @@ async def _durable_chat(
     selected_model: str,
     actual_model: str,
     routing_info: dict[str, Any],
+    title_generation: CapturedGeneration | None,
 ) -> StreamingResponse | None:
     """Accept a native chat turn durably and observe it (DURABLE_REQUEST_DESIGN §7).
 
@@ -2304,13 +2306,15 @@ async def _durable_chat(
             )
         except Exception:
             logger.warning("Task wake-up enqueue failed; the sweep will recover it")
-        if needs_title:
+        if needs_title and title_generation is not None:
             try:
                 await enqueue_account_job(
                     app_state.redis,
                     "generate_title",
                     str(accepted.conversation_id),
                     str(accepted.user_message_id),
+                    origin_account_id=str(title_generation.account_id),
+                    origin_account_generation=title_generation.generation,
                     user_id=auth.user_id,
                     job_id=f"title:{accepted.conversation_id}",
                     settings=settings,
@@ -2552,6 +2556,17 @@ async def chat(
             detail={"code": "account_unavailable", "message": "Account compute unavailable"},
         )
 
+    # Capture ONCE before deriving title source inputs. Failure suppresses only
+    # this optional title family; it does not change chat acceptance. Both title
+    # producers and every queue retry retain this same originating generation.
+    title_generation: CapturedGeneration | None = None
+    if app_state.memory_store is not None and app_state.redis is not None:
+        try:
+            async with app_state.db_pool.acquire() as title_conn:
+                title_generation = await capture_generation(title_conn, auth.user_id)
+        except Exception:
+            logger.warning("Skipping title scheduling: account capture unavailable")
+
     incoming_messages = payload.messages or []
     attachments = payload.attachments or []
     suggestion_context: dict[str, Any] | None = None
@@ -2696,6 +2711,7 @@ async def chat(
             selected_model=selected_model,
             actual_model=actual_model,
             routing_info=routing_info,
+            title_generation=title_generation,
         )
         if durable is not None:
             return durable
@@ -2781,8 +2797,10 @@ async def chat(
                     status="complete",
                 )
 
-                if app_state.redis is not None and (
-                    not conversation_exists or existing_draft_needs_title
+                if (
+                    app_state.redis is not None
+                    and title_generation is not None
+                    and (not conversation_exists or existing_draft_needs_title)
                 ):
                     try:
                         await enqueue_account_job(
@@ -2790,6 +2808,8 @@ async def chat(
                             "generate_title",
                             str(conversation_uuid),
                             str(inserted_user_message["id"]),
+                            origin_account_id=str(title_generation.account_id),
+                            origin_account_generation=title_generation.generation,
                             user_id=user_id,
                             job_id=f"title:{conversation_uuid}",
                             settings=settings,

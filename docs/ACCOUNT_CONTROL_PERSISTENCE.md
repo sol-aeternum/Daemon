@@ -23,7 +23,8 @@ contains exactly the approved two tables and account generation column:
   cause snapshot remains in the request's authoritative journal frame.
 - `entitlement_accounts.content_generation`: recorded account content generation,
   default zero. It is distinct from `tasks.content_generation` (attempt-output
-  lease epoch). No task/auth/client/write-guard integration consumes it here.
+  lease epoch). J1b itself adds no task/auth/client integration; J1c-1b below
+  consumes it only for generated titles.
 
 Only opaque identifiers, closed codes, hashes, generations and original times
 are stored. No content, destination, secret, report or external-resource registry.
@@ -122,7 +123,8 @@ review govern qualification; source existence alone is not release clearance.
 Owner-approved bounded source slice, 13 October 2026:
 [`guard.py`](../orchestrator/services/account_control/guard.py) adds immutable
 account-generation capture and a caller-owned transactional `FOR SHARE` scope.
-**No runtime writer calls it.** This is not an account fence, request applier,
+At the #521 prerequisite merge, **no runtime writer called it**; the bounded
+generated-title integration below is the first caller. This is not an account fence, request applier,
 applied-marker writer or readiness change; #477 remains open. Migration 047,
 schema/API/env/dependencies and the settled S1/J1 decisions are unchanged.
 
@@ -169,7 +171,7 @@ historical FK dependencies, semantic ownership notes and uncovered paths, not
 authorization from FK reachability alone. Unsupported table renames and
 quoted/schema-qualified declarations fail closed and require explicit scanner/
 manifest review. Classification itself fences nothing. Later
-runtime generation propagation, account-first lock conversions, ownership fixes,
+generation propagation for other writers, account-first lock conversions, ownership fixes,
 restricted sessions, non-DB/Redis/SSE publication and durable S1 retirement are
 still dependencies. No guard test or classified deferred writer permits an
 applied marker or releases the fail-closed startup barrier.
@@ -177,3 +179,61 @@ applied marker or releases the fail-closed startup barrier.
 An append committed to the journal but not yet projected into PostgreSQL is not
 observable to this DB-only kernel. The startup barrier still refuses that case;
 runtime production/applier integration cannot be inferred from this prerequisite.
+
+## J1c-1b — generated conversation titles only
+
+Owner-approved internal payload and terminal legacy-refusal contract, 13 October
+2026. The two existing title workers now converge on the guarded SQL in
+`MemoryStore.save_generated_conversation_title`. This is source integration, not
+deployment, a complete account fence or permission to enable durable chat.
+**#477 stays open.** No schema, migration, HTTP/SSE, environment, dependency,
+session, retirement or request-application change.
+
+Native chat captures the authenticated account UUID and
+`entitlement_accounts.content_generation` once, before deriving source inputs.
+Both request-bound and durable-acceptance title producers serialize
+`origin_account_id` and `origin_account_generation` alongside conversation/message
+identifiers. Capture failure suppresses optional title scheduling without changing
+chat acceptance. Enqueue delay and ARQ retries retain that original generation;
+neither worker rediscovers an owner or recaptures to cure a stale job. Missing,
+malformed, boolean, negative and out-of-range captures are terminally refused
+before input reads, compute or inference. No legacy-job upgrade or title backfill.
+The task-attempt counter `tasks.content_generation` is never used for this family.
+
+Title preflight uses the full account guard, not the weaker capture read: one
+short READ COMMITTED transaction acquires account SHARE first, validates current
+state/generation and subordinate facts, then reads only owner-qualified title
+metadata and messages on that same connection. The exact-message path requires a
+user message belonging to both the captured account and conversation; the history
+path retains its last-50 ordering and user/assistant filter, excluding foreign
+message rows even in historically inconsistent conversations. Message content is
+decrypted only after SQL ownership qualification. Locked titles skip inference.
+
+Preflight commits before compute admission. A second short guarded check after
+admission rechecks account/ownership/title state before the model; no account
+lock is held across compute admission or provider work. The final save opens its
+own connection and READ COMMITTED transaction, acquires account SHARE **before**
+the conversation update, and retains it through commit. SQL requires the captured
+owner, unchanged expected title and an unlocked title. Guard/database failure or
+cancellation never authorizes a write or reports an uncommitted title as saved;
+transaction contexts own rollback and connection release. Model failures may
+retry with the same original payload; stale/legacy refusals do not retry.
+
+`tests/test_title_account_guard_postgres.py` exercises the real input/writer SQL
+and both worker entry points against owned disposable PostgreSQL, stubbing only
+compute/model boundaries. It includes serialized retry currency, nonzero account
+generations, both HTTP producers, foreign conversations/messages, restricted and
+contradictory account state, compute/model interleavings, observed PostgreSQL
+wait-for edges in both fence orderings, cancellation/connection reuse, failed real
+commits and manual rename/title-lock protections. Existing listing/title suites
+retain their nullable-title and lock-wait regressions. PostgreSQL skips are not
+qualification. The catalogue records only this explicit SQL site's bounded
+integration; scanner metadata is not a runtime proof.
+
+Limits remain deliberate: a provider call already in flight is not recalled, and
+the last pre-model check is not atomic authority over later network dispatch.
+Initial conversation titles, manual renames, summaries, general task outputs,
+memory, sessions, Redis/publication paths, workspace retirement and every other
+writer remain uncovered. Control writers must still use account UPDATE-first
+ordering. The DB-only guard still cannot observe an unprojected durable journal
+append; no request applier, applied marker or startup-readiness release is added.

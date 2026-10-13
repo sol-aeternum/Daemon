@@ -548,6 +548,14 @@ def _title_store() -> Any:
     )
     store.get_messages = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
     store.get_owned_message = AsyncMock(return_value={"role": "user", "content": "hello"})
+    store.read_conversation_title_inputs = AsyncMock(
+        return_value={
+            "title": None,
+            "title_locked": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+    store.check_conversation_title_generation = AsyncMock(return_value=True)
     store.save_generated_conversation_title = AsyncMock(return_value=True)
     store.count_messages = AsyncMock(return_value=50)
     return store
@@ -577,8 +585,9 @@ async def test_title_jobs_open_background_scoped_accounts(
     with patch.object(
         jobs, "generate_conversation_title", new=AsyncMock(return_value="A Title")
     ) as title:
-        await jobs.generate_title(ctx, uuid.uuid4(), uuid.uuid4())
-        await jobs.generate_conversation_title_job(ctx, uuid.uuid4())
+        payload = {"origin_account_id": str(TEST_OWNER), "origin_account_generation": 3}
+        await jobs.generate_title(ctx, uuid.uuid4(), uuid.uuid4(), **payload)
+        await jobs.generate_conversation_title_job(ctx, uuid.uuid4(), **payload)
 
     assert [entry["profile"] for entry in recorded] == ["background", "background"]
     assert all(entry["auto_route"] is True for entry in recorded)

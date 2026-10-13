@@ -1,6 +1,6 @@
 """Static account-writer/ownership classification catalogue: bounded scanner + change detector.
 
-Test infrastructure for the J1c-1a prerequisite. NOT a runtime guard, NOT a coverage
+Test infrastructure for the J1c classification. NOT a runtime guard, NOT a coverage
 proof: nothing here may be used to claim the runtime is fully fenced (an
 ``all_runtime_fenced`` key or an overall ``coverage`` boolean in the manifest is
 invalid by contract, enforced in :mod:`tests.test_account_writer_catalogue`).
@@ -30,6 +30,11 @@ from pathlib import Path
 
 MANIFEST_SCHEMA = "journal+account_writer_catalogue/v1"
 MANIFEST_PATH = Path(__file__).resolve().parent / "fixtures" / "account_writer_catalogue.json"
+
+# Only this concrete title SQL site may record bounded integration. The scanner
+# does not verify the guard: real runtime proofs live in the named contract suite.
+TITLE_GUARDED_SITE = ("orchestrator.memory.store", "MemoryStore.save_generated_conversation_title")
+TITLE_GUARD_CONTRACT = "tests/test_title_account_guard_postgres.py"
 
 #: Classification categories; every manifest entry must name exactly one.
 CATEGORIES = ("content", "control", "shared_unowned", "deferred")
@@ -574,8 +579,19 @@ def _validate_entry(name: str, entry: object, expect_paths: bool) -> list[str]:
             problems.append(f"{name}/missing-ownership-path")
     else:
         uncovered = entry.get("uncovered")
-        if uncovered is not True:
+        title_integration = (
+            uncovered is False
+            and (entry.get("owner_source"), entry.get("qualname")) == TITLE_GUARDED_SITE
+            and entry.get("guard_contract") == TITLE_GUARD_CONTRACT
+            and category == "content"
+            and entry.get("kind") == "sql_inline"
+            and entry.get("tables") == ["conversations"]
+            and entry.get("unknown") is False
+        )
+        if uncovered is not True and not title_integration:
             problems.append(f"{name}/coverage-claim: uncovered={uncovered!r}")
+        if "guard_contract" in entry and not title_integration:
+            problems.append(f"{name}/unsupported-guard-contract")
         if entry.get("unknown") is True and category not in UNKNOWN_CATEGORIES:
             problems.append(f"{name}/unknown-flag-not-allowed-for-category: {category!r}")
         fingerprint = entry.get("fingerprint")

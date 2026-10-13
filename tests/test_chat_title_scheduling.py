@@ -19,13 +19,16 @@ All queues and stores are fakes — no live paid calls.
 from __future__ import annotations
 
 import uuid
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
+from orchestrator import main as main_module
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
@@ -34,6 +37,54 @@ from orchestrator.services.identity.rate_limiter import RateLimiter
 from tests.qualified_compute import install_qualified_compute
 from tests.redis_jobs_support import install_fake_enqueue
 from orchestrator.redis_jobs import account_job_id
+from orchestrator.models import ChatRequest
+from orchestrator.services.account_control.guard import CapturedGeneration
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_capture_failure_never_enqueues_or_breaks_chat_and_cancellation_propagates(
+    client, monkeypatch, cancel
+):
+    owner, conversation = uuid.uuid4(), uuid.uuid4()
+    store = AsyncMock()
+    store.get_conversation.return_value = {
+        "id": conversation,
+        "user_id": owner,
+        "pipeline": "cloud",
+    }
+    store.create_conversation.return_value = {"id": conversation}
+    store.insert_message.return_value = {"id": uuid.uuid4()}
+    queue = FakeTitleQueue()
+    set_app_state(create_mock_app_state(store, queue), owner)
+    failure = asyncio.CancelledError() if cancel else RuntimeError("synthetic capture failure")
+    capture = AsyncMock(side_effect=failure)
+    monkeypatch.setattr("orchestrator.main.capture_generation", capture)
+    monkeypatch.setattr(
+        "orchestrator.memory.injection.build_memory_context", AsyncMock(return_value=None)
+    )
+    with patch("orchestrator.main.stream_sse_chat", mock_stream_sse_chat_factory([])):
+        if cancel:
+            # Test the endpoint boundary directly: BaseHTTPMiddleware rewrites
+            # injected CancelledError into "No response returned" at ASGI level.
+            monkeypatch.setattr(main_module, "_durable_replay", AsyncMock(return_value=None))
+            monkeypatch.setattr(main_module, "_enforce_chat_rate_limit", AsyncMock())
+            with pytest.raises(asyncio.CancelledError):
+                await main_module.chat(
+                    ChatRequest(message="Fictional message"),
+                    Request({"type": "http", "method": "POST", "headers": []}),
+                    get_settings(),
+                    app.state.app_state,
+                    AuthenticatedDevice(
+                        user_id=owner, device_id=uuid.uuid4(), session_id=uuid.uuid4()
+                    ),
+                )
+            store.insert_message.assert_not_awaited()
+        else:
+            assert (await post_chat(client, {"message": "Fictional message"})).status_code == 200
+            store.insert_message.assert_awaited_once()
+    capture.assert_awaited_once()
+    assert title_attempts(queue) == []
 
 
 class FakeTitleQueue:
@@ -79,6 +130,11 @@ async def client(monkeypatch):
     )
     install_qualified_compute(monkeypatch)
     install_fake_enqueue(monkeypatch, "orchestrator.main.enqueue_account_job")
+
+    async def captured_origin(conn, owner):
+        return CapturedGeneration(owner, 7)
+
+    monkeypatch.setattr("orchestrator.main.capture_generation", captured_origin)
 
     async def override_settings():
         return settings
@@ -135,7 +191,7 @@ def create_mock_app_state(mock_store: AsyncMock, queue: FakeTitleQueue | None) -
     app_state = MagicMock(spec=AppState)
     app_state.memory_store = mock_store
     app_state.redis = queue
-    app_state.db_pool = object()
+    app_state.db_pool = MagicMock()
     return app_state
 
 
@@ -217,6 +273,7 @@ async def test_precreated_unlocked_empty_draft_enqueues_title_once(client) -> No
     assert attempt["job_id"] == account_job_id(owner, f"title:{conversation_id}")
     assert "Hello" not in repr(attempt)
     assert attempt["defer_by"] == 0
+    assert attempt["kwargs"] == {"origin_account_id": str(owner), "origin_account_generation": 7}
 
     # The draft probe must not rely on the stale conversations.message_count
     # column: count_messages reads the authoritative message rows instead.
@@ -382,6 +439,10 @@ async def test_newly_created_chat_keeps_title_enqueue(client) -> None:
     )
     assert attempts[0]["job_id"] == account_job_id(owner, f"title:{new_conversation_id}")
     assert "Hello" not in repr(attempts[0])
+    assert attempts[0]["kwargs"] == {
+        "origin_account_id": str(owner),
+        "origin_account_generation": 7,
+    }
 
 
 @pytest.mark.asyncio

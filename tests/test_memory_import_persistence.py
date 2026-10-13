@@ -4,6 +4,8 @@ Proves the reported counts agree with persisted rows when a store failure hits
 part-way through a batch: items that committed are counted and saved, and the
 failing item's writes roll back. Requires ``ENTITLEMENTS_TEST_DATABASE_URL``;
 without it these tests skip before any connection (shared fixture contract).
+Faults target the outcome-returning writer used by production dedup (#465),
+after proving the inserted row is visible inside the actual item transaction.
 """
 
 from __future__ import annotations
@@ -85,20 +87,26 @@ async def test_failure_after_a_write_in_the_same_batch_reports_only_committed_it
     user_id = await _user(pool)
     _unqualified_embeddings(monkeypatch)
 
-    real_insert = store.insert_memory
+    real_insert = store._insert_memory_with_outcome
     calls = 0
+    inserted_ids = []
 
     async def insert_then_fail_second(*args: Any, **kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
-        row = await real_insert(*args, **kwargs)
+        row, inserted = await real_insert(*args, **kwargs)
+        assert inserted
+        conn = kwargs["conn"]
+        assert conn.is_in_transaction()
+        assert await conn.fetchval("SELECT id FROM memories WHERE id=$1", row["id"]) == row["id"]
+        inserted_ids.append(row["id"])
         if calls == 2:
             # The second item's row is already written on its transaction
             # connection; failing now must roll that write back.
             raise RuntimeError("store failure after insert")
-        return row
+        return row, inserted
 
-    monkeypatch.setattr(store, "insert_memory", insert_then_fail_second)
+    monkeypatch.setattr(store, "_insert_memory_with_outcome", insert_then_fail_second)
 
     with pytest.raises(HTTPException) as raised:
         await _import(store, user_id, ["First fact", "Second fact", "Third fact"])
@@ -113,7 +121,10 @@ async def test_failure_after_a_write_in_the_same_batch_reports_only_committed_it
         "superseded": 0,
     }
     rows = await _import_rows(pool, user_id)
+    assert calls == 2, "the third item must not execute after the injected failure"
     assert len(rows) == 1, "only the committed first item may persist"
+    assert rows[0]["id"] == inserted_ids[0]
+    assert await pool.fetchval("SELECT id FROM memories WHERE id=$1", inserted_ids[1]) is None
 
 
 @pytest.mark.asyncio
@@ -129,23 +140,37 @@ async def test_merge_then_failure_keeps_counts_and_rows_in_agreement(
     first = await _import(store, user_id, ["Already known"])
     assert first["created"] == 1 and first["processed"] == 1
 
-    real_insert = store.insert_memory
+    original_id = (await _import_rows(pool, user_id))[0]["id"]
+    real_insert = store._insert_memory_with_outcome
+    outcomes = []
+    failed_ids = []
 
     async def fail_on_insert(*args: Any, **kwargs: Any) -> Any:
-        await real_insert(*args, **kwargs)
-        raise RuntimeError("store failure after insert")
+        row, inserted = await real_insert(*args, **kwargs)
+        outcomes.append(inserted)
+        conn = kwargs["conn"]
+        assert conn.is_in_transaction()
+        assert await conn.fetchval("SELECT id FROM memories WHERE id=$1", row["id"]) == row["id"]
+        if inserted:
+            failed_ids.append(row["id"])
+            raise RuntimeError("store failure after insert")
+        return row, inserted
 
-    monkeypatch.setattr(store, "insert_memory", fail_on_insert)
+    monkeypatch.setattr(store, "_insert_memory_with_outcome", fail_on_insert)
 
     with pytest.raises(HTTPException) as raised:
         await _import(store, user_id, ["Already known", "Brand new"])
 
+    assert raised.value.status_code == 503
     detail: dict[str, Any] = raised.value.detail  # pyright: ignore[reportAssignmentType]
     assert detail["processed"] == 1
     assert detail["merged"] == 1
     assert detail["created"] == 0
     rows = await _import_rows(pool, user_id)
+    assert outcomes == [False, True], "exact reuse must commit before the new insert fails"
     assert len(rows) == 1, "the merge adds no row and the failed insert rolls back"
+    assert rows[0]["id"] == original_id
+    assert await pool.fetchval("SELECT id FROM memories WHERE id=$1", failed_ids[0]) is None
 
 
 @pytest.mark.asyncio
