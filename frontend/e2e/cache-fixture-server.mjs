@@ -24,6 +24,8 @@ const clientBuildOptions = {
 const env = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
+  TMPDIR: process.env.TMPDIR,
+  NODE_OPTIONS: process.env.NODE_OPTIONS,
   PYTHONPATH: '..',
   // Explicit clean env: no inherited application credentials and no implicit
   // dotenv loading inside litellm or any other dependency.
@@ -32,6 +34,15 @@ const env = {
   DAEMON_INTERNAL_API_URL: `${apiOrigin}/daemon`,
   NEXT_PUBLIC_API_URL: `${apiOrigin}/daemon`,
 };
+// Forward only the task's bounded heap control, never preloads or debug options.
+if (
+  env.NODE_OPTIONS &&
+  (!/^--max-old-space-size=[1-9]\d*$/.test(env.NODE_OPTIONS) ||
+    env.NODE_OPTIONS !== env.NODE_OPTIONS.trim() ||
+    Number(env.NODE_OPTIONS.split('=')[1]) > 2048)
+) {
+  throw new Error('Fixture NODE_OPTIONS must be a heap limit of 1–2048 MiB.');
+}
 const api = spawn(
   path.resolve(
     '..',

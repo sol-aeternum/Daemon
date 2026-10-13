@@ -1655,6 +1655,7 @@ class MemoryStore:
         memory_slot: str | None = None,
         metadata: dict[str, Any] | None = None,
         conn: Any | None = None,
+        row_qualifier: Any | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Internal reliable INSERT/reuse disposition; public row shape is unchanged."""
         encrypted_content = self._enc.encrypt(content)
@@ -1739,6 +1740,8 @@ class MemoryStore:
             )
             if row is None:
                 raise RuntimeError("insert_memory: conflict returned no active duplicate")
+        if row_qualifier is not None:
+            row = await row_qualifier(row)
         return self._memory_row_to_dict(row), inserted
 
     async def _lock_memory_rows(
@@ -3365,9 +3368,11 @@ class MemoryStore:
         dedup_results: dict[str, Any] | None = None,
         model_used: str | None = None,
         last_message_observed_at: datetime | None = None,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
         encrypted_snippet = self._enc.encrypt(input_snippet)
-        row = await self._pool.fetchrow(
+        executor = conn if conn is not None else self._pool
+        row = await executor.fetchrow(
             """
             INSERT INTO memory_extraction_log
                 (conversation_id, user_id, input_snippet,

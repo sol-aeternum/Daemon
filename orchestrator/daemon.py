@@ -1112,8 +1112,8 @@ async def stream_sse_chat(
 
                 if persisted_status == "complete" and queue is not None:
                     # Never capture here: a paused stream must keep its original
-                    # upstream generation. Absent/foreign capture only disables
-                    # summary work in extraction, not the memory-fact job itself.
+                    # upstream generation. All queued extraction persistence
+                    # refuses absent/foreign capture rather than refreshing it.
                     summary_payload = _summary_job_payload(summary_generation, user_id)
                     extract_suffix = f"extract:{conversation_uuid}"
                     extract_job_id = account_job_id(user_id, extract_suffix, settings=settings)

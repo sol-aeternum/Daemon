@@ -24,10 +24,11 @@ Changes from v2.1:
 
 Changes from v2.3:
 - Benchmark transcript replay is now deterministic and benchmark-only.
-- Scenario messages are persisted as user turns and replayed through the real
-  worker extraction path via `extract_memories(..., messages_json=...)`.
+- Scenario messages are persisted as user turns and replayed through the explicit
+  offline `process_extraction` adapter, not the account-fenced production queue.
 - This removes `/chat` assistant-response contamination while preserving the
-  production extraction + storage + dedup pipeline under local/dev DB safety.
+  extraction + storage + dedup algorithms under local/dev DB safety. This does
+  not qualify production source admission, account fencing or queue persistence.
 
 Key features:
 - Wipes memories + extraction_log between scenarios (prevents accumulation)
@@ -448,15 +449,41 @@ async def invoke_benchmark_extraction(
     conversation_id: str,
     messages_json: list[dict[str, str]],
 ) -> dict[str, object]:
-    """Run the production worker extraction path for benchmark replay only."""
-    from orchestrator.worker.jobs import extract_memories
+    """Drain cumulative offline transcript chunks; not queued-worker qualification.
 
-    return await extract_memories(
-        {"store": store},
-        user_id,
-        conversation_id,
-        messages_json=messages_json,
-    )
+    Direct benchmark writes remain unfenced. Never pass raw scenario snapshots
+    to the production queue or manufacture account currency to admit them.
+    Provider work retains real account admission, qualified routes and budgets.
+    """
+    from orchestrator.compute_runtime import account_compute
+    from orchestrator.memory.extraction import messages_to_extraction_text, process_extraction
+    from orchestrator.memory.titles import ConversationMessage
+    from orchestrator.worker.jobs import _chunk_messages_for_extraction
+
+    parsed: list[ConversationMessage] = [
+        {"role": message["role"], "content": message["content"]} for message in messages_json
+    ]
+    chunks = _chunk_messages_for_extraction(parsed, messages_json)
+    for index, chunk in enumerate(chunks):
+        async with account_compute(
+            store._pool,
+            _uuid.UUID(user_id),
+            operation="agent",
+            auto_route=True,
+            background=True,
+            profile="background",
+        ):
+            success, _, _ = await process_extraction(
+                store,
+                _uuid.UUID(user_id),
+                _uuid.UUID(conversation_id),
+                messages_to_extraction_text(chunk["messages"]),
+                chunk_index=index,
+                cursor_checkpoint=chunk["advances_cursor"],
+            )
+        if not success:
+            return {"status": "failed", "processed_chunks": index}
+    return {"status": "ok", "processed_chunks": len(chunks)}
 
 
 async def replay_benchmark_conversation(

@@ -12,7 +12,8 @@ import pytest
 
 from orchestrator.memory.extraction import messages_to_extraction_text
 from orchestrator.memory.store import MemoryStore
-from orchestrator.worker.jobs import _is_memory_write_artifact, extract_memories
+from orchestrator.worker.jobs import _is_memory_write_artifact
+from tests.extraction_unit_support import extract_memories, install_inputs
 from tests.qualified_compute import install_qualified_compute
 
 
@@ -43,6 +44,7 @@ async def test_extract_memories_filters_memory_write_artifacts(
     store = MagicMock(spec=MemoryStore)
     store.get_conversation = AsyncMock(return_value={"user_id": user_id})
     ctx: dict[str, object] = {"store": store, "db_pool": object()}
+    install_inputs(monkeypatch, store, user_id)
 
     messages_json = json.dumps(
         [
@@ -98,7 +100,7 @@ def test_extraction_text_uses_bracketed_role_markers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_artifact_only_page_advances_filter_checkpoint() -> None:
+async def test_artifact_only_page_advances_filter_checkpoint(monkeypatch) -> None:
     store = object.__new__(MemoryStore)
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -118,6 +120,7 @@ async def test_artifact_only_page_advances_filter_checkpoint() -> None:
     )
     store.log_extraction = AsyncMock(return_value={"id": "checkpoint"})
     ctx = cast(dict[str, object], {"store": store, "db_pool": object()})
+    install_inputs(monkeypatch, store, user_id)
 
     with (
         patch("orchestrator.worker.jobs.MemoryStore", object),

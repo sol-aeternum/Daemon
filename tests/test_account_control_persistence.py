@@ -738,11 +738,18 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.guard", "Connection"),
         ("orchestrator.services.account_control.guard", "guard_content_write"),
     },
+    # Approved queued fact/checkpoint seam only; request/phase APIs stay denied.
+    # Its actual connection/lock/commit behavior is qualified by real PG tests.
+    "orchestrator/memory/extraction_fencing.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "Connection"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
 }
 
 
 def _assert_only_title_guard_imports(sources):
-    # J1c admits only these symbols at title/summary/queued-entity seams.
+    # J1c admits only these symbols at title/summary/queued-entity/fact seams.
     # This is not permission to call the J1b request/phase store.
     observed = {}
     for path, source in sources.items():
@@ -807,6 +814,14 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         ),
         (
             "orchestrator/memory/entities.py",
+            "from orchestrator.services.account_control.guard import capture_generation",
+        ),
+        (
+            "orchestrator/memory/extraction_fencing.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/memory/extraction_fencing.py",
             "from orchestrator.services.account_control.guard import capture_generation",
         ),
     ],

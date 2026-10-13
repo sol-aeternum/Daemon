@@ -55,6 +55,12 @@ def _clear_settings_cache():
 
 def pytest_addoption(parser):
     parser.addoption(
+        "--p06-redis-port",
+        type=int,
+        default=56379,
+        help="Port of the explicitly owned disposable Redis fixture",
+    )
+    parser.addoption(
         "--p06-disposable-redis",
         action="store_true",
         default=False,

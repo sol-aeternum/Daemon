@@ -310,7 +310,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 - **Cursor model:** persists `last_summarized_msg_count` in `conversations.metadata` JSONB and a per-iteration `snapshot_at` timestamp. The batch is read at `offset = persisted_baseline` and bounded by the contiguous-finalized prefix at the snapshot (the rank of the first non-finalized row, in `created_at ASC, id ASC` order, minus 1). The persisted baseline advances only by the rows actually incorporated in this iteration, capped at `contiguous_baseline` (matches the inline path on `summary.py:225`).
 - **Atomic write:** `update_conversation_summary` advances `summary`, `summary_updated_at`, `summarized_message_count`, `last_summarized_msg_count`, and `summary_continuation_pending` in a single SQL row, with optimistic concurrency; on conflict the inline path surfaces continuation to the extraction caller which re-enqueues `generate_summary_job(force=True)`.
 - **Continuation:** bounded backlog sets `summary_continuation_pending` with the summary; full queued batches enqueue a forced continuation. Extraction retries observe the flag under the original account guard without clearing it before enqueue. Guarded progress (or version/cursor-checked proof of drainage) clears it; streaming holes retain it.
-- **Account fencing:** both summary paths carry the originating account generation through extraction/task retries and continuations, qualify owner inputs before decryption, recheck after compute admission and guard text/cursor/flag in the commit transaction. Legacy extraction without a capture skips only its summary work. Memory-fact writers remain separate and unfenced by this slice; see [J1c-1c](docs/ACCOUNT_CONTROL_PERSISTENCE.md#j1c-1c--conversation-summary-writers-only).
+- **Account fencing:** both summary paths carry the originating account generation through extraction/task retries and continuations, qualify owner inputs before decryption, recheck after compute admission and guard text/cursor/flag in the commit transaction. The later [J1c-1e](docs/ACCOUNT_CONTROL_PERSISTENCE.md#j1c-1e--queued-production-facts-and-extraction-checkpoints) extension now refuses queued fact/checkpoint persistence too when the original capture is invalid; generic memory writers remain separate.
 - Uses the configured routine workload model, subject to account compute and provider privacy policy
 
 ### 9. Injection
@@ -330,8 +330,8 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 Extraction's successful and failed-suffix entity enqueues carry its original
 account UUID/generation through continuations/retries. Legacy/invalid/foreign
-origins skip only optional entity work; memory facts and extraction checkpoints
-remain separate. The queued path owner-qualifies eligible source/canonical lineage
+origins now refuse queued fact/checkpoint persistence as well (J1c-1e), while the
+entity writer keeps its independent guard. The queued path owner-qualifies eligible source/canonical lineage
 before decryption, retains immutable freshness snapshots, rechecks after background
 compute admission and commits entity insertions/aliases/source links as one guarded
 READ COMMITTED batch. Changed plans and unexpected lookup conflicts skip without
@@ -340,7 +340,8 @@ automatic replan or recapture; no lock spans model/embedding work or Redis.
 Canonical cloud use requires eligible primary and linked source provenance;
 unknown/local/foreign lineage is excluded, not backfilled. Existing resolution
 thresholds/grouping and embedding-route refusals remain. This fences only queued
-projection, not generic entity APIs, retrieval or memory-fact writes. See
+projection, not generic entity APIs or retrieval. Queued production fact/checkpoint
+writers have their separate per-fact J1c-1e contract; generic memory writes remain uncovered. See
 [J1c-1d](docs/ACCOUNT_CONTROL_PERSISTENCE.md#j1c-1d--queued-entity-projection-only)
 for the approved contract, real-PostgreSQL qualification and explicit limits.
 

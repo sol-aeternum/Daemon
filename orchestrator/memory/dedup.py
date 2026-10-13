@@ -1101,6 +1101,8 @@ async def deduplicate_facts(
     excluded_memory_ids: set[uuid.UUID] | None = None,
     prepared_plans: list[EquivalencePlan] | None = None,
     locked_rows: dict[uuid.UUID, dict[str, Any]] | None = None,
+    extraction_inputs: Any | None = None,
+    committed_prefix: list[dict[str, Any]] | None = None,
 ) -> DedupResult:
     """Sequential PLAN -> revalidate/COMMIT. Only equivalent verdicts merge.
 
@@ -1109,6 +1111,8 @@ async def deduplicate_facts(
     Locked legacy callers without a plan insert conservatively, with no network.
     """
     if DEDUP_BENCHMARK_MODE:
+        if extraction_inputs is not None:
+            raise ValueError("queued extraction cannot use the offline benchmark writer")
         if lock_conn is not None:
             raise ValueError("historical threshold benchmark cannot run inside a write lock")
         return await _deduplicate_facts_benchmark(
@@ -1129,6 +1133,50 @@ async def deduplicate_facts(
     for index, fact in enumerate(facts):
         if not str(getattr(fact, "content", "") or "").strip():
             logger.warning("deduplicate_facts skipped a blank fact at index %d", index)
+            continue
+        if extraction_inputs is not None:
+            from orchestrator.memory import extraction_fencing as fencing
+
+            if (
+                lock_conn is not None
+                or prepared_plans is not None
+                or prepared_embeddings is not None
+            ):
+                raise ValueError("queued extraction owns its sequential planning/commit boundary")
+            if (
+                extraction_inputs.origin.account_id != user_id
+                or extraction_inputs.conversation.id != conversation_id
+            ):
+                raise fencing.ExtractionRefused("source_unavailable")
+            incoming = IncomingMemory(
+                user_id,
+                fact.content,
+                fact.category,
+                source_type,
+                conversation_id,
+                getattr(fact, "slot", None),
+                getattr(fact, "confidence", 0.8),
+                status,
+            )
+            await fencing.check(store, extraction_inputs)
+            embedding_result = None
+            try:
+                embedding_result = await prepare_memory_embedding(incoming.content, incoming.slot)
+            except EmbeddingConfigurationError:
+                pass
+            await fencing.check(store, extraction_inputs)
+            if embedding_result is not None:
+                _single_vector(embedding_result)  # Preserve the one-input receipt contract.
+            rows, privacy, dependencies = await fencing.discover(
+                store, extraction_inputs, incoming, embedding_result
+            )
+            plan = await plan_equivalence(incoming, rows)
+            memory, inserted = await fencing.commit_fact(
+                store, extraction_inputs, plan, embedding_result, privacy, dependencies
+            )
+            (result.new if inserted else result.merged).append(memory)
+            if committed_prefix is not None and memory.get("source_type") == "extracted":
+                committed_prefix.append(memory)
             continue
         if conversation_id is not None:
             from orchestrator.memory.embedding import get_selected_embedding_route_id

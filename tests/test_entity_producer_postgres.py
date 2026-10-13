@@ -108,7 +108,7 @@ async def test_actual_fact_checkpoint_native_enqueue_worker_preserves_origin(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("origin_kind", ["legacy", "malformed", "foreign"])
-async def test_invalid_origin_suppresses_only_entities_and_preserves_actual_fact_checkpoint(
+async def test_invalid_origin_suppresses_facts_checkpoints_and_entities(
     env, monkeypatch, entity_queue, origin_kind
 ):
     queue, pipeline = entity_queue
@@ -129,13 +129,13 @@ async def test_invalid_origin_suppresses_only_entities_and_preserves_actual_fact
     result = await jobs.extract_memories(
         {"store": env.memory, "db_pool": env.pool, "redis": queue}, env.alice, conv, **payload
     )
-    assert result["status"] == "ok"
-    assert await env.pool.fetchval("SELECT count(*) FROM memories WHERE user_id=$1", env.alice) == 1
+    assert result["status"] == "skipped"
+    assert await env.pool.fetchval("SELECT count(*) FROM memories WHERE user_id=$1", env.alice) == 0
     assert (
         await env.pool.fetchval(
             "SELECT count(*) FROM memory_extraction_log WHERE conversation_id=$1", conv
         )
-        == 1
+        == 0
     )
     assert await queued(queue, pipeline, "resolve_entities_job") == []
     assert await rows(env) == []
@@ -158,12 +158,13 @@ async def test_chunk_continuation_and_entity_jobs_share_original_capture(
     entity = (await queued(queue, pipeline, "resolve_entities_job"))[0]
     continuation = (await queued(queue, pipeline, "extract_memories"))[0]
     assert entity.kwargs == continuation.kwargs == origin
-    # A resumed continuation cannot recapture after a reset. Facts are outside
-    # this fence; entity scheduling still carries 7, and the actual worker refuses.
+    # Neither facts/checkpoints nor entity projection recaptures after a reset.
     await env.pool.execute(
         "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
     )
-    await jobs.extract_memories(ctx, *continuation.args, **continuation.kwargs)
+    assert (await jobs.extract_memories(ctx, *continuation.args, **continuation.kwargs))[
+        "status"
+    ] == "skipped"
     result = await jobs.resolve_entities_job(ctx, *entity.args, **entity.kwargs)
     assert result["status"] == "skipped" and result["errors"] == ["stale_generation"]
     assert await rows(env) == []
@@ -171,7 +172,7 @@ async def test_chunk_continuation_and_entity_jobs_share_original_capture(
         await env.pool.fetchval(
             "SELECT count(*) FROM memory_extraction_log WHERE conversation_id=$1", conv
         )
-        == 2
+        == 1
     )
 
 
@@ -263,11 +264,17 @@ async def test_http_capture_through_native_queue_extraction_and_entity_worker(
             AsyncMock(side_effect=AssertionError("no canonical confirmation expected")),
         )
         ctx = {**api.ctx(), "redis": queue}
-        await jobs.extract_memories(ctx, *extract.args, **extract.kwargs)
-        entity = (await queued(queue, pipeline, "resolve_entities_job"))[0]
-        assert entity.kwargs == extract.kwargs
-        result = await jobs.resolve_entities_job(ctx, *entity.args, **entity.kwargs)
-        assert result["status"] == ("skipped" if reset_after_accept else "ok")
+        result = await jobs.extract_memories(ctx, *extract.args, **extract.kwargs)
+        projected = await queued(queue, pipeline, "resolve_entities_job")
+        if reset_after_accept:
+            assert result["status"] == "skipped" and projected == []
+            assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
+        else:
+            entity = projected[0]
+            assert entity.kwargs == extract.kwargs
+            assert (await jobs.resolve_entities_job(ctx, *entity.args, **entity.kwargs))[
+                "status"
+            ] == "ok"
         assert bool(await rows(env)) is not reset_after_accept
     finally:
         if not request.done():
@@ -332,8 +339,13 @@ async def test_native_stream_duplicate_followup_retains_origin_to_entity_worker(
         )
     script_facts(monkeypatch)
     ctx = {"store": env.memory, "db_pool": env.pool, "redis": queue}
-    await jobs.extract_memories(ctx, *extracts[-1].args, **extracts[-1].kwargs)
-    entity = (await queued(queue, pipeline, "resolve_entities_job"))[0]
+    result = await jobs.extract_memories(ctx, *extracts[-1].args, **extracts[-1].kwargs)
+    projected = await queued(queue, pipeline, "resolve_entities_job")
+    if reset_before_extraction:
+        assert result["status"] == "skipped" and projected == []
+        assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
+        return
+    entity = projected[0]
     assert entity.kwargs == origin
     result = await jobs.resolve_entities_job(ctx, *entity.args, **entity.kwargs)
     assert result["status"] == ("skipped" if reset_before_extraction else "ok")
