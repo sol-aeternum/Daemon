@@ -1987,7 +1987,9 @@ def test_diagnostic_named_exceptions_do_not_cover_other_sites(name: str) -> None
     )
 
 
-@pytest.mark.parametrize("name", ["HOME", "PATH", "UV_PROJECT_ENVIRONMENT", "TMPDIR", "NODE_OPTIONS"])
+@pytest.mark.parametrize(
+    "name", ["HOME", "PATH", "UV_PROJECT_ENVIRONMENT", "TMPDIR", "NODE_OPTIONS"]
+)
 @pytest.mark.parametrize(
     "new_site",
     [
