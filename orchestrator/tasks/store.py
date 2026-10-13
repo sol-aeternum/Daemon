@@ -18,6 +18,11 @@ import asyncpg
 
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.services.account_control.guard import (
+    CapturedGeneration,
+    WriteGuardRefusal,
+    guard_content_write,
+)
 from orchestrator.tasks.inputs import CHAT_INPUT_VERSION, canonical_json
 from orchestrator.tasks.states import (
     ACTIVE_STATUSES,
@@ -373,12 +378,15 @@ class TaskStore:
         assistant_model: str | None,
         max_attempts: int = 2,
         request_canonical: str | None = None,
+        captured_generation: CapturedGeneration | None = None,
     ) -> AcceptedTask:
         """Atomically record the conversation turn and its task.
 
         If the conversation's previous task ended between this transaction's
         conflict and the follow-up lookup, acceptance is retried once rather
         than surfacing the stale uniqueness violation.
+        NEW work requires the original server capture; a replay needs no capture.
+        The same capture is retained through the bounded busy-conflict retry.
         """
         for retry in (False, True):
             try:
@@ -394,6 +402,7 @@ class TaskStore:
                     assistant_model=assistant_model,
                     max_attempts=max_attempts,
                     request_canonical=request_canonical,
+                    captured_generation=captured_generation,
                 )
             except _ActiveTaskEnded as ended:
                 if retry:
@@ -414,6 +423,7 @@ class TaskStore:
         assistant_model: str | None,
         max_attempts: int = 2,
         request_canonical: str | None = None,
+        captured_generation: CapturedGeneration | None = None,
     ) -> AcceptedTask:
         """One acceptance transaction (see :meth:`accept`).
 
@@ -426,7 +436,35 @@ class TaskStore:
             if existing is not None:
                 return existing
         try:
-            async with self._pool.acquire() as conn, conn.transaction():
+            # Validate after replay, not before it. Constructor validation alone
+            # is insufficient for forged/mutated Python instances (bool == 1).
+            account_id = getattr(captured_generation, "account_id", None)
+            generation = getattr(captured_generation, "generation", None)
+            if (
+                type(captured_generation) is not CapturedGeneration
+                or not isinstance(account_id, uuid.UUID)
+                or type(generation) is not int
+                or not 0 <= generation <= 2**63 - 1
+                or account_id != user_id
+            ):
+                raise WriteGuardRefusal("invalid_capture")
+            sealed_input = {
+                **task_input,
+                "origin_account_id": str(account_id),
+                "origin_account_generation": generation,
+                # Existing extraction consumers retain the same original origin.
+                "summary_origin_account_id": str(account_id),
+                "summary_origin_account_generation": generation,
+            }
+            if request_canonical is not None:
+                sealed_input["_request"] = request_canonical
+            # Account SHARE precedes every content lock/write on this connection,
+            # and survives guard scope exit through the actual transaction commit.
+            async with (
+                self._pool.acquire() as conn,
+                conn.transaction(isolation="read_committed"),
+                guard_content_write(conn, captured_generation),
+            ):
                 if conversation_id is None:
                     conversation = await self._memory.create_conversation(
                         user_id=user_id, pipeline=pipeline, title=new_conversation_title, conn=conn
@@ -486,17 +524,24 @@ class TaskStore:
                     conversation_id,
                     user_row["id"],
                     result_row["id"],
-                    self._seal(
-                        {**task_input, "_request": request_canonical}
-                        if request_canonical is not None
-                        else task_input
-                    ),
+                    self._seal(sealed_input),
                     CHAT_INPUT_VERSION,
                     idempotency_key,
                     request_hash,
                     max_attempts,
                 )
                 await self._append_event(conn, task_id, "accepted")
+        except WriteGuardRefusal:
+            # A concurrent matching acceptance may have committed after our first
+            # lookup but before a fence refused NEW work. Resolve it only after
+            # rollback; never refresh the capture or authorize another turn.
+            if idempotency_key is not None:
+                existing = await self._by_key(
+                    user_id, idempotency_key, request_hash, request_canonical
+                )
+                if existing is not None:
+                    return existing
+            raise
         except asyncpg.UniqueViolationError as exc:
             # The transaction rolled back entirely, including the messages.
             if idempotency_key is not None:

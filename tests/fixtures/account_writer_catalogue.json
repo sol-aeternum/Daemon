@@ -4472,14 +4472,14 @@
       "owner_source": "orchestrator.tasks.store",
       "qualname": "TaskStore._accept_once",
       "kind": "sql_inline",
-      "fingerprint": "01b991a445e05524",
+      "fingerprint": "0b8569b0ad0a2d20",
       "tables": [
         "tasks"
       ],
       "unknown": false,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "NEW acceptance uses account-first guard; retained uncovered classification certifies neither runtime enforcement nor general task writers. See tests/test_task_acceptance_account_guard_postgres.py."
     },
     {
       "owner_source": "orchestrator.tasks.store",
@@ -4492,7 +4492,7 @@
       "unknown": false,
       "uncovered": true,
       "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "NEW acceptance uses account-first guard; retained uncovered classification certifies neither runtime enforcement nor generic message writers. See tests/test_task_acceptance_account_guard_postgres.py."
     },
     {
       "owner_source": "orchestrator.tasks.store",

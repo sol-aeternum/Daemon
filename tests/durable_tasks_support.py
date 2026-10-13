@@ -22,6 +22,7 @@ from cryptography.fernet import Fernet
 
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.services.account_control.guard import CapturedGeneration, capture_generation
 from orchestrator.tasks.store import TaskStore
 
 DSN_ENV = "TASKS_TEST_DATABASE_URL"
@@ -38,18 +39,18 @@ class Env:
     bob: uuid.UUID
 
 
-def durable_env_fixture() -> Any:
+def durable_env_fixture(*, accounts: bool = False) -> Any:
     """Build the ``env`` fixture; assign it in each test module (``env = ...``)."""
 
     @pytest_asyncio.fixture
     async def env() -> AsyncIterator[Env]:
-        async for value in _provision():
+        async for value in _provision(accounts=accounts):
             yield value
 
     return env
 
 
-async def _provision() -> AsyncIterator[Env]:
+async def _provision(*, accounts: bool = False) -> AsyncIterator[Env]:
     dsn = os.environ.get(DSN_ENV, "").strip()
     if not dsn:
         pytest.skip(f"requires disposable {DSN_ENV}")
@@ -89,12 +90,24 @@ async def _provision() -> AsyncIterator[Env]:
                 f"{name}-{user_id.hex[:8]}",
             )
             users.append(user_id)
+            if accounts:
+                await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
         yield Env(pool, TaskStore(pool, encryption, memory), memory, users[0], users[1])
     finally:
         if pool is not None:
             await asyncio.wait_for(pool.close(), timeout=10)
         await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin.close()
+
+
+async def task_capture(env: Env, user: uuid.UUID | None = None) -> CapturedGeneration:
+    """Explicit TEST provisioning; production acceptance never creates accounts."""
+    owner = user or env.alice
+    await env.pool.execute(
+        "INSERT INTO entitlement_accounts(user_id) VALUES($1) ON CONFLICT DO NOTHING", owner
+    )
+    async with env.pool.acquire() as conn:
+        return await capture_generation(conn, owner)
 
 
 async def accept_task(env: Env, user: uuid.UUID | None = None, **task_input: object):
@@ -110,6 +123,7 @@ async def accept_task(env: Env, user: uuid.UUID | None = None, **task_input: obj
         request_hash=uuid.uuid4().hex * 2,
         idempotency_key=None,
         assistant_model=None,
+        captured_generation=await task_capture(env, user),
     )
 
 

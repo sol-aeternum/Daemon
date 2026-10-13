@@ -1073,7 +1073,13 @@ async def test_resumed_legacy_task_completes_but_never_upgrades_summary_origin(a
     from orchestrator.tasks import runner
     from tests.durable_tasks_support import accept_task
 
-    accepted = await accept_task(api.env, **input_origin)
+    accepted = await accept_task(api.env)
+    # Historical ciphertext fixture, not a NEW acceptance with caller authority.
+    await api.env.pool.execute(
+        "UPDATE tasks SET input_ciphertext=$2 WHERE id=$1",
+        accepted.task_id,
+        api.env.tasks._seal({"message": "hello", **input_origin}),
+    )
     assert await runner.run_chat_task(api.ctx(), str(accepted.task_id)) == "completed"
     extracts = [kwargs for name, _, kwargs in api.redis.enqueued if name == "extract_memories"]
     assert len(extracts) == 1

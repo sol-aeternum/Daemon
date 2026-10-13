@@ -40,7 +40,7 @@ from tests.durable_tasks_support import (
 from tests.qualified_compute import install_qualified_compute
 from tests.redis_jobs_support import install_fake_enqueue
 
-env = durable_env_fixture()
+env = durable_env_fixture(accounts=True)
 
 
 CHUNKS = ["Durable ", "answers ", "survive ", "closed ", "apps."]

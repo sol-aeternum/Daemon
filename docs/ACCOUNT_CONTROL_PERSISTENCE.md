@@ -441,3 +441,58 @@ it, and its direct calls/toggles are in tests/benchmarks only. It is not silentl
 converted into a production writer. This slice neither repairs #524 nor completes
 deletion/reset, unprojected journal handling, S1 retirement or rollout acceptance.
 Control writers still require account UPDATE-first ordering. **#477 stays open.**
+
+## J1c-1f — NEW native durable-chat acceptance only
+
+Source-only extension after merged #526 under the owner's bounded #477 contract.
+Native `/chat` supplies its existing once-per-request server capture, taken before
+source derivation. `TaskStore.accept` requires a well-formed typed capture matching
+the authenticated owner only when creating NEW work. It never provisions an
+account or captures a replacement generation. Missing/invalid/foreign capture,
+missing account, stale generation, suspension, causes, open operations and database
+refusal fail closed; HTTP acceptance returns existing `task_unavailable` 503,
+without task/title enqueue or request-bound execution fallback.
+
+The actual acceptance connection explicitly uses READ COMMITTED and acquires the
+account SHARE guard before conversation/content locks or mutations. Conversation
+creation (including its initial title), user message, assistant placeholder, task
+and accepted event share that transaction. The account lock survives scope exit
+through the actual commit; cancellation, SQL failure and failed commit roll back
+the whole turn. The bounded busy-task-ended retry retains the identical capture
+and revalidates it in its new transaction, never curing staleness by recapture.
+
+Only NEW encrypted task input receives reserved `origin_account_id` and
+`origin_account_generation`, authored by the store from that capture, overriding
+caller dictionary fields without mutating the caller's dictionary. The existing
+`summary_origin_account_id` / `summary_origin_account_generation` carrier is
+authored from the same capture for existing extraction consumers. General-origin
+consumption by task execution remains a later slice. `tasks.content_generation`
+remains the attempt-output epoch. No origin is added to public task representations,
+SSE/events, logs or the request fingerprint; no DDL/API/env/dependency change.
+
+Replay precedes capture validation and new-turn admission: a matching key returns
+its existing task even when its origin is historical/missing or its account is now
+restricted/stale. No ciphertext is resealed, backfilled or rebound. Existing pepper
+rotation's request-hash update remains identity maintenance, outside this bounded
+new-content claim. Existing uniqueness-conflict recovery is retained; after a
+guard-refusal rollback one bounded key lookup also resolves an acceptance that
+committed concurrently, without authorizing NEW work or retrying a database fault.
+
+`tests/test_task_acceptance_account_guard_postgres.py`, alongside the actual task
+store/API/runner and title/summary/entity/fact suites, qualifies production SQL on
+disposable PostgreSQL and owned Redis with synthetic data/scripted providers:
+generation-zero/nonzero origin, malformed and restricted refusals, exact atomic
+counts, replay/ciphertext preservation, actual busy-conflict retries, account-first
+ordering, both observed lock-wait directions (including subordinate-only control
+commits), cancellation, rollback, deferred failed commits, connection reuse and
+HTTP/queue failure behavior. Skipped PostgreSQL/owned-Redis cases are not qualification.
+
+This is NOT all-task-writer fencing: worker claims/partial/final outputs, terminal
+or settlement paths, generic events, conversation deletion/manual edits,
+request-bound persistence and generic memory writers remain unchanged. Shared
+MemoryStore and `_append_event` SQL catalogue entries remain uncovered where
+generic callers exist; classification is not runtime enforcement. Account-control
+writers still require UPDATE-first ordering. Unprojected journal intent remains
+outside the DB-only guard, startup stays fail closed, and no applier, marker,
+session drain, S1 retirement, reset/deletion, deployment or flag enablement is
+implemented here. **#477 remains open.**

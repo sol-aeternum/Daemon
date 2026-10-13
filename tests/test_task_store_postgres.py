@@ -26,9 +26,9 @@ from orchestrator.tasks.store import (
     LeaseLost,
     TaskNotFound,
 )
-from tests.durable_tasks_support import LEASE_S, Env, durable_env_fixture
+from tests.durable_tasks_support import LEASE_S, Env, durable_env_fixture, task_capture
 
-env = durable_env_fixture()
+env = durable_env_fixture(accounts=True)
 
 
 async def _accept(env: Env, user=None, *, key=None, message="hello", conversation_id=None, h="a"):
@@ -42,6 +42,7 @@ async def _accept(env: Env, user=None, *, key=None, message="hello", conversatio
         request_hash=h * 64,
         idempotency_key=key,
         assistant_model=None,
+        captured_generation=await task_capture(env, user),
     )
 
 
@@ -118,6 +119,7 @@ async def test_failure_before_commit_leaves_nothing(env: Env):
             request_hash="not-a-hash",
             idempotency_key="k",
             assistant_model=None,
+            captured_generation=await task_capture(env),
         )
     assert await env.pool.fetchval("SELECT count(*) FROM messages") == 0
     assert await env.pool.fetchval("SELECT count(*) FROM conversations") == 0
@@ -200,7 +202,13 @@ async def test_duplicate_delivery_yields_one_claim(env: Env):
     # Claiming alone consumes no attempt; execution does.
     assert row["attempt_count"] == 0 and row["status"] == "running"
     assert await _execute(env, winners[0]) == 1
-    assert winners[0].task_input == {"message": "hello"}
+    assert winners[0].task_input == {
+        "message": "hello",
+        "origin_account_id": str(env.alice),
+        "origin_account_generation": 0,
+        "summary_origin_account_id": str(env.alice),
+        "summary_origin_account_generation": 0,
+    }
     assert winners[0].user_id == env.alice
 
 
@@ -800,6 +808,7 @@ async def test_replay_survives_a_rotated_digest_key(env: Env):
         request_canonical=before.canonical,
         idempotency_key="rotated",
         assistant_model=None,
+        captured_generation=await task_capture(env),
     )
     after = fingerprint("pepper-after-rotation", "hello")
     assert after.digest != before.digest
