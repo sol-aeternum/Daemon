@@ -3,7 +3,8 @@
 Positive: the explicit classification manifest (tests/fixtures/
 account_writer_catalogue.json) must exactly equal what the bounded stdlib scanner
 discovers today, and every entry must carry owner source, rationale and explicit
-integration status. Only generated title SQL may reference its bounded contract.
+integration status. Only named title/summary/queued-entity SQL sites may reference
+their bounded contracts.
 
 Negative synthetic fixtures prove discriminative failure for: a new mutating
 statement inside an already-classified function (per-mutation fingerprint, not
@@ -11,8 +12,8 @@ just new module/function), a new writer module, a new direct account table, a ne
 transitive FK table, malformed/changed categories, unknown classifications and
 unclassified stores.
 
-Nothing here proves runtime safety or a completed account fence. The title
-contract is exercised separately; no other writer or producer/applier is covered.
+Nothing here proves runtime safety or a completed account fence. Named contracts
+are exercised separately; other writers and the request applier remain uncovered.
 """
 
 from __future__ import annotations
@@ -157,11 +158,14 @@ def test_manifest_makes_explicit_non_wildcard_classification() -> None:
     assert {(entry["owner_source"], entry["qualname"]) for entry in integrated} == {
         catalogue.TITLE_GUARDED_SITE,
         *catalogue.SUMMARY_GUARDED_SITES,
+        catalogue.ENTITY_GUARDED_SITE,
     }
     for entry in integrated:
         assert entry["guard_contract"] == (
             catalogue.TITLE_GUARD_CONTRACT
             if (entry["owner_source"], entry["qualname"]) == catalogue.TITLE_GUARDED_SITE
+            else catalogue.ENTITY_GUARD_CONTRACT
+            if (entry["owner_source"], entry["qualname"]) == catalogue.ENTITY_GUARDED_SITE
             else catalogue.SUMMARY_GUARD_CONTRACT
         )
     assert all(entry["rationale"] and entry["owner_source"] for entry in manifest["writer_sites"])
@@ -185,7 +189,11 @@ def test_manifest_makes_explicit_non_wildcard_classification() -> None:
 )
 def test_title_contract_cannot_be_retagged_as_other_writer_coverage(field, value):
     manifest = json.loads(catalogue.MANIFEST_PATH.read_text())
-    entry = next(item for item in manifest["writer_sites"] if item["uncovered"] is False)
+    entry = next(
+        item
+        for item in manifest["writer_sites"]
+        if (item["owner_source"], item["qualname"]) == catalogue.TITLE_GUARDED_SITE
+    )
     entry[field] = value
     assert catalogue.validate_manifest_shape(manifest)
 

@@ -730,11 +730,19 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
     },
+    "orchestrator/memory/entities.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+    },
+    "orchestrator/memory/entity_projection.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "Connection"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
 }
 
 
 def _assert_only_title_guard_imports(sources):
-    # J1c admits only these symbols at the title/summary propagation seams.
+    # J1c admits only these symbols at title/summary/queued-entity seams.
     # This is not permission to call the J1b request/phase store.
     observed = {}
     for path, source in sources.items():
@@ -792,6 +800,14 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         (
             "orchestrator/unapproved_writer.py",
             "from orchestrator.services.account_control.guard import guard_content_write",
+        ),
+        (
+            "orchestrator/memory/entity_projection.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/memory/entities.py",
+            "from orchestrator.services.account_control.guard import capture_generation",
         ),
     ],
 )

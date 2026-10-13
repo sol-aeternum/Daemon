@@ -457,13 +457,19 @@ async def test_process_extraction_checkpoint_failure_is_retryable() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_origin", [False, True])
 async def test_failed_chunk_does_not_submit_later_chunks(
     monkeypatch: pytest.MonkeyPatch,
+    with_origin: bool,
 ) -> None:
     store = object.__new__(MemoryStore)
     queue = SimpleNamespace(enqueue_job=AsyncMock())
     user_id = uuid.uuid4()
     ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
+    store.read_summary_continuation_pending = AsyncMock(return_value=False)
+    origin = (
+        {"origin_account_id": str(user_id), "origin_account_generation": 7} if with_origin else {}
+    )
     base = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
     messages = [
         {
@@ -497,16 +503,23 @@ async def test_failed_chunk_does_not_submit_later_chunks(
                 new_callable=AsyncMock,
             ) as enqueue_mock,
         ):
-            with pytest.raises(Exception):
+            with pytest.raises(Retry):
                 await extract_memories(
                     ctx,
                     user_id,
                     uuid.uuid4(),
                     json.dumps(messages, default=str),
+                    **origin,
                 )
 
     assert len(calls) == 2
-    assert any(call.args[1] == "resolve_entities_job" for call in enqueue_mock.await_args_list)
+    entity_enqueues = [
+        call for call in enqueue_mock.await_args_list if call.args[1] == "resolve_entities_job"
+    ]
+    assert len(entity_enqueues) == (1 if with_origin else 0)
+    if with_origin:
+        assert entity_enqueues[0].kwargs["kwargs"] == origin
+        assert entity_enqueues[0].kwargs["args"] == (str(user_id), json.dumps([str(memory_id)]))
 
 
 @pytest.mark.asyncio

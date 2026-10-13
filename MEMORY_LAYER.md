@@ -33,6 +33,7 @@ messages.tool_calls       → versioned encrypted JSON envelope (new writes)
 messages.tool_results     → versioned encrypted JSON envelope (new writes)
 web_snapshots metadata/text → separately encrypted, conversation-scoped
 memories.content          → encrypted
+entities.canonical_name/aliases → encrypted (aliases in a JSONB ciphertext envelope)
 extraction_log.input_snippet → encrypted
 ```
 
@@ -324,6 +325,24 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 6. Format: `About this user:` / `Recent context:` / `[FROZEN MEMORIES]`
 
 `assemble_system_prompt()` then prepends DAEMON_SYSTEM_PROMPT, adds personality/preferences, appends the memory block, and ensures the memory tools reminder is present.
+
+### 10. Queued entity projection
+
+Extraction's successful and failed-suffix entity enqueues carry its original
+account UUID/generation through continuations/retries. Legacy/invalid/foreign
+origins skip only optional entity work; memory facts and extraction checkpoints
+remain separate. The queued path owner-qualifies eligible source/canonical lineage
+before decryption, retains immutable freshness snapshots, rechecks after background
+compute admission and commits entity insertions/aliases/source links as one guarded
+READ COMMITTED batch. Changed plans and unexpected lookup conflicts skip without
+automatic replan or recapture; no lock spans model/embedding work or Redis.
+
+Canonical cloud use requires eligible primary and linked source provenance;
+unknown/local/foreign lineage is excluded, not backfilled. Existing resolution
+thresholds/grouping and embedding-route refusals remain. This fences only queued
+projection, not generic entity APIs, retrieval or memory-fact writes. See
+[J1c-1d](docs/ACCOUNT_CONTROL_PERSISTENCE.md#j1c-1d--queued-entity-projection-only)
+for the approved contract, real-PostgreSQL qualification and explicit limits.
 
 ---
 

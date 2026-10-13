@@ -15,6 +15,13 @@ import asyncpg
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.memory.entity_projection import (
+    EntityMutation,
+    ProjectionInputs,
+    check_inputs as check_entity_inputs,
+    read_inputs as read_entity_inputs,
+    save_plan as save_entity_plan,
+)
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_query_with_metadata,
@@ -3510,6 +3517,25 @@ class MemoryStore:
     # ------------------------------------------------------------------
     # Entity operations
     # ------------------------------------------------------------------
+
+    async def read_entity_projection_inputs(
+        self, source_ids: list[uuid.UUID], *, captured_generation: CapturedGeneration
+    ) -> ProjectionInputs:
+        return await read_entity_inputs(self._pool, self._enc, captured_generation, source_ids)
+
+    async def check_entity_projection_inputs(
+        self, inputs: ProjectionInputs, *, captured_generation: CapturedGeneration
+    ) -> None:
+        await check_entity_inputs(self._pool, inputs.snapshot, captured_generation)
+
+    async def save_entity_projection(
+        self,
+        inputs: ProjectionInputs,
+        mutations: list[EntityMutation],
+        *,
+        captured_generation: CapturedGeneration,
+    ) -> list[uuid.UUID]:
+        return await save_entity_plan(self._pool, self._enc, inputs, captured_generation, mutations)
 
     async def insert_entity(
         self,
