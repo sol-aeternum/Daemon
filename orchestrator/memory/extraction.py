@@ -687,6 +687,8 @@ async def process_extraction(
     chunk_index: int | None = None,
     cursor_checkpoint: bool = True,
     summary_generation: CapturedGeneration | None = None,
+    extraction_inputs: Any | None = None,
+    committed_prefix: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, list[dict[str, Any]], bool]:
     """Orchestrate extraction -> dedup -> insert.
 
@@ -708,7 +710,14 @@ async def process_extraction(
     """
     from orchestrator.memory.dedup import deduplicate_facts
 
-    conversation = await store.get_conversation(conversation_id)
+    from orchestrator.memory import extraction_fencing as fencing
+
+    if extraction_inputs is not None:
+        extraction_inputs, summary = await fencing.with_summary(store, extraction_inputs)
+        conversation = {"pipeline": "cloud", "user_id": user_id, "summary": summary}
+    else:
+        # Offline/direct callers are not claimed as queued production fencing.
+        conversation = await store.get_conversation(conversation_id)
     from orchestrator.memory.embedding import get_selected_embedding_route_id
 
     if get_selected_embedding_route_id() and (
@@ -726,6 +735,8 @@ async def process_extraction(
     # the outcome reports which one actually served the call.
     model = None
     outcome = await extract_facts_from_text(text, model=model, summary=summary)
+    if extraction_inputs is not None:
+        await fencing.check(store, extraction_inputs)
     retry_used = False
 
     outcome_succeeded = bool(getattr(outcome, "succeeded", True))
@@ -748,6 +759,8 @@ async def process_extraction(
                 "mentions. Keep facts user-specific and durable."
             ),
         )
+        if extraction_inputs is not None:
+            await fencing.check(store, extraction_inputs)
         if bool(getattr(retry_outcome, "succeeded", True)):
             outcome = retry_outcome
             outcome_succeeded = True
@@ -755,11 +768,16 @@ async def process_extraction(
     if not outcome_succeeded:
         return False, [], False
 
+    log_writer = (
+        (lambda **kwargs: fencing.checkpoint(store, extraction_inputs, **kwargs))
+        if extraction_inputs is not None
+        else store.log_extraction
+    )
     if not outcome.facts:
         # A successful zero-fact call is still a durable checkpoint. Let
         # logging failures propagate so arq retries instead of reporting
         # success without advancing the cursor.
-        await store.log_extraction(
+        await log_writer(
             user_id=user_id,
             conversation_id=conversation_id,
             input_snippet=text[:1000],
@@ -794,9 +812,11 @@ async def process_extraction(
         outcome.facts,
         conversation_id,
         status="active",
+        extraction_inputs=extraction_inputs,
+        committed_prefix=committed_prefix,
     )
 
-    await store.log_extraction(
+    await log_writer(
         user_id=user_id,
         conversation_id=conversation_id,
         input_snippet=text[:1000],

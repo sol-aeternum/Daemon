@@ -246,8 +246,9 @@ existing encrypted durable-task input. Resumed attempts, extraction chunk
 continuations, summary continuations and ARQ retries retain that exact account
 UUID/generation. `tasks.content_generation` remains the task-attempt epoch, not
 the account origin. No capture occurs in a resumed task, stream finalizer or job.
-Historical/malformed/foreign-origin extraction payloads skip **only summary work**:
-fact extraction, checkpoints and its unrelated continuations remain unchanged.
+At the #523 merge, historical/malformed/foreign-origin extraction payloads skipped
+**only summary work**. The fact/checkpoint extension below now refuses the entire
+queued extraction persistence family for invalid original captures.
 Historical task input and direct stream callers without a capture similarly
 suppress optional summaries; summary-only legacy jobs terminate before inputs.
 
@@ -312,8 +313,8 @@ failed-suffix entity enqueues. Extraction continuations and serialized ARQ retri
 retain it; a later summary refusal does not replace this independent use of the
 same origin. No entity job recaptures an account or uses `tasks.content_generation`.
 Missing/malformed/foreign captures and malformed identifier lists skip optional
-projection before reads/admission/providers. Fact writes/checkpoints remain outside
-this slice. Input/reference bounds are internal constants in
+projection before reads/admission/providers. Fact writes/checkpoints were outside
+this slice at #525; their bounded extension is below. Input/reference bounds are internal constants in
 [`entity_projection.py`](../orchestrator/memory/entity_projection.py), not new config.
 
 Preflight uses account-first READ COMMITTED and SQL owner qualification before
@@ -364,3 +365,71 @@ separately in #524; this queued writer avoids it without claiming all APIs repai
 No schema/API/SSE/env/dependency change. Control writers still require account
 UPDATE-first ordering; unprojected journal intent remains outside this DB-only
 guard's visibility. Startup remains fail closed and **#477 remains open**.
+
+## J1c-1e — queued production facts and extraction checkpoints
+
+Source-only extension after #525 under the owner's conservative policies. The
+existing original account UUID/generation carrier now governs queued extraction
+facts and every extraction log/checkpoint, not only its optional summaries and
+entities. Invalid, legacy, malformed, foreign and stale original captures refuse
+the persistence family; retries never capture a replacement generation. The
+task-attempt epoch remains separate. No schema/API/SSE/environment/dependency,
+retention, account-control producer, marker, readiness or deployment change.
+
+`orchestrator/memory/extraction_fencing.py` supplies bounded account-first READ
+COMMITTED input and writer transactions. Conversation/message ownership and
+explicit cloud locality are SQL-qualified before decryption, independent of
+embedding selection. Arbitrary raw/encrypted legacy job snapshots are refused;
+new continuations use source-version references. Reference ranges cannot jump
+mutable holes or omit uncheckpointed finalized rows. Same-generation changed
+sources retain the approved at-least-once fragment restart; account generations
+are never refreshed. Already-checkpointed reference prefixes are not re-extracted.
+
+Consumed encrypted message state, provenance and summary context are rechecked
+after admission/provider work and before persistence. Candidate discovery qualifies
+canonical ownership/nonlocality and conversation provenance before decrypting.
+Explicit nonlocal manual/import/user-created facts may have no conversation;
+conversation-derived missing, foreign, local or unknown provenance is excluded.
+Each fact plans outside locks, then uses its own guarded transaction through
+commit for canonical touch or conservative insert/exact-conflict reuse. Changed
+semantic matches retain safe conservative insertion; unsafe changed provenance
+refuses. All consumed candidates' privacy evidence is checked, not only winners.
+Late exact-conflict winners are qualified/locked before decrypting; NOWAIT on late
+locks prevents reverse-order waiting and preserves the established suffix retry.
+Later same-batch plans see earlier committed facts; this is not global exactly-once
+semantic deduplication or the entity writer's whole-batch transaction contract.
+
+Every fact, no-fact, fragment and filtered-page log is independently guarded on
+its actual writer connection. Checkpoints advance only after successful commits;
+partial failures retain the committed prefix without crossing the failed suffix.
+Prefix evidence is recorded after commit, and eligible exact reuse can recover
+projection scheduling on retries without counting reused rows as new. A changed
+later source can schedule only its independently requalified committed prefix,
+not the refused suffix; stale/restricted account currency still prevents that
+enqueue. Refused work reports skipped rather than success and does not schedule
+derived work as though its suffix completed. Existing already-committed summary-flag recovery
+remains independent of current extraction success. No database lock spans
+compute admission, model/embedding calls or Redis; downstream jobs keep the same
+original capture. In-flight network calls cannot be recalled, and pre-dispatch
+checks do not provide atomic authority over a later network send.
+
+Qualification is in `tests/test_fact_account_guard_postgres.py` and the actual
+HTTP/task/queue paths in `tests/test_entity_producer_postgres.py`, alongside the
+existing title/summary/entity suites. Required evidence is real disposable
+PostgreSQL and owned Redis with scripted providers, including original capture,
+owner/locality refusals, source/provider races, no-fact/filter checkpoints, prefix
+retry, concurrent exact writers, both observed account-first lock-wait orderings,
+cancellation, failed real commits and pool reuse. Skipped tests and mocked source
+adapters in algorithm-only unit tests do not qualify runtime fencing. Current
+final-state project gates and independent review remain required for publication.
+
+The generic memory insertion/touch/log APIs, import/tool writers, retrieval and
+other writer families remain uncovered. Shared SQL catalogue entries remain
+uncovered where generic callers exist; assembled read queries retain explicit
+scanner uncertainty. The historical threshold supersede/family-closure algorithm
+is unreachable from production without an offline-only flag mutation: the runtime
+default is `DEDUP_BENCHMARK_MODE=False`, no production/script assignment enables
+it, and its direct calls/toggles are in tests/benchmarks only. It is not silently
+converted into a production writer. This slice neither repairs #524 nor completes
+deletion/reset, unprojected journal handling, S1 retirement or rollout acceptance.
+Control writers still require account UPDATE-first ordering. **#477 stays open.**

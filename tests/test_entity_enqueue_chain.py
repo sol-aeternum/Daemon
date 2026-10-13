@@ -20,6 +20,7 @@ from orchestrator.redis_account import account_prefix
 from orchestrator.worker import jobs
 from tests.qualified_compute import install_qualified_compute
 from tests.test_redis_jobs import EnqueuePipeline, _queue
+from tests.extraction_unit_support import extract_memories as exercise_extraction, install_inputs
 
 
 @pytest_asyncio.fixture(params=["recording", "live"])
@@ -34,7 +35,11 @@ async def entity_queue(request, monkeypatch):
         return
     if not request.config.getoption("--p06-disposable-redis"):
         pytest.skip("Requires explicitly approved disposable Redis")
-    queue = await create_pool(RedisSettings(host="127.0.0.1", port=56379, database=15))
+    queue = await create_pool(
+        RedisSettings(
+            host="127.0.0.1", port=request.config.getoption("--p06-redis-port"), database=15
+        )
+    )
     try:
         await queue.flushdb()
         try:
@@ -56,6 +61,7 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
     store = object.__new__(MemoryStore)
     store.get_conversation = AsyncMock(return_value={"user_id": owner, "pipeline": "cloud"})
     store.read_summary_continuation_pending = AsyncMock(return_value=False)
+    install_inputs(monkeypatch, store, owner)
     store.log_extraction = AsyncMock()
     captured = CapturedGeneration(owner, 7)
     input_snapshot = ProjectionInputs(
@@ -102,7 +108,7 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
     ]
     if failed_suffix:
         with pytest.raises(Retry):
-            await jobs.extract_memories(
+            await exercise_extraction(
                 ctx,
                 owner,
                 conversation,
@@ -111,7 +117,7 @@ async def test_nonempty_extraction_native_entity_payload_executes_once(
                 origin_account_generation=7,
             )
     else:
-        result = await jobs.extract_memories(
+        result = await exercise_extraction(
             ctx,
             owner,
             conversation,

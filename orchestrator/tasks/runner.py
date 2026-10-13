@@ -522,7 +522,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
     redis = ctx.get("redis")
     task_input = claim.task_input
     summary_generation = None
-    # Old/malformed task input suppresses only optional summaries. No capture read
+    # Old/malformed task input suppresses optional extraction persistence. No capture read
     # on resumption: task retries retain the original acceptance-time origin.
     try:
         origin_id = task_input.get("summary_origin_account_id")

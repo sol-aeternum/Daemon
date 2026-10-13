@@ -669,14 +669,26 @@ async def test_full_batch_and_repeated_enqueue_failure_preserve_recovery_flag(en
     enqueue.side_effect = None
     enqueue.return_value = object()
     # Enqueue itself does not clear recovery; only the actual continuation does.
-    await jobs.extract_memories(
+    last = await env.pool.fetchrow(
+        "SELECT id,created_at FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1",
+        conv,
+    )
+    await env.memory.log_extraction(
+        env.alice,
+        "",
+        conversation_id=conv,
+        dedup_results={"last_message_id": str(last["id"]), "cursor_checkpoint": True},
+        last_message_observed_at=last["created_at"],
+    )
+    previous_enqueues = enqueue.await_count
+    result = await jobs.extract_memories(
         {"store": env.memory, "db_pool": env.pool, "redis": queue},
         env.alice,
         conv,
-        messages_json="[]",
         origin_account_id=str(env.alice),
         origin_account_generation=7,
     )
+    assert result["status"] == "ok" and enqueue.await_count == previous_enqueues + 1
     assert (await metadata(env, conv))["summary_continuation_pending"] is True
     assert enqueue.await_args is not None
     payload = enqueue.await_args.kwargs["kwargs"]
@@ -690,7 +702,7 @@ async def test_full_batch_and_repeated_enqueue_failure_preserve_recovery_flag(en
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("capture", ["absent", "malformed", "foreign", "stale"])
-async def test_legacy_and_refused_extraction_preserve_unrelated_fact_checkpoint(
+async def test_legacy_and_refused_extraction_preserve_summary_without_fact_checkpoint(
     env, monkeypatch, capture
 ):
     conv, _ = await prepare(env, monkeypatch)
@@ -728,7 +740,7 @@ async def test_legacy_and_refused_extraction_preserve_unrelated_fact_checkpoint(
             )
         ),
     )
-    # Actual fact extraction log is deliberately outside this writer fence.
+    # Invalid original captures now refuse the entire queued extraction family.
     result = await jobs.extract_memories(
         {"store": env.memory, "db_pool": env.pool},
         env.alice,
@@ -736,12 +748,12 @@ async def test_legacy_and_refused_extraction_preserve_unrelated_fact_checkpoint(
         messages_json=json.dumps([{"role": "user", "content": "Fictional short fact input"}]),
         **payload,
     )
-    assert result["status"] == "ok"
+    assert result["status"] == "skipped"
     assert (
         await env.pool.fetchval(
             "SELECT count(*) FROM memory_extraction_log WHERE conversation_id=$1", conv
         )
-        == 1
+        == 0
     )
     assert await row(env, conv) == before
 
@@ -851,9 +863,14 @@ async def test_extraction_chunk_continuation_preserves_origin_without_recapture(
         "origin_account_id": str(env.alice) if generation is not None else None,
         "origin_account_generation": generation,
     }
-    await jobs.extract_memories(
+    result = await jobs.extract_memories(
         {"store": env.memory, "db_pool": env.pool, "redis": queue}, env.alice, conv, **payload
     )
+    if generation is None:
+        assert result["status"] == "skipped"
+        proc.assert_not_awaited()
+        enqueue.assert_not_awaited()
+        return
     assert proc.await_count == 1
     assert proc.await_args is not None
     assert proc.await_args.kwargs["summary_generation"] == (

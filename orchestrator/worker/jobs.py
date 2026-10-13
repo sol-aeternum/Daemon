@@ -35,6 +35,7 @@ from orchestrator.memory.extraction import (
     process_extraction,
     messages_to_extraction_text,
 )
+from orchestrator.memory.extraction_fencing import ExtractionRefused
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.entity_projection import EntityProjectionStale, MAX_SOURCE_IDS
 from orchestrator.memory.titles import ConversationMessage, generate_conversation_title
@@ -252,6 +253,9 @@ async def _read_extraction_references(
         if parsed is None:
             raise Retry(defer=5)
         message["_source_version"] = current_version
+        if message.get("_extraction_skip"):
+            raw.append(message)
+            continue
         fragments = _chunk_messages_for_extraction([parsed], [message])
         if index >= len(fragments):
             raise ValueError("Invalid extraction fragment index")
@@ -428,26 +432,59 @@ async def _extract_memories_once(
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
-    owner = await _conversation_owner(ctx, _as_uuid(conversation_id))
-    if owner != _as_uuid(user_id):
-        raise ComputeUnavailable("account_unavailable", "Conversation owner mismatch")
+    from orchestrator.memory import extraction_fencing as fencing
 
-    # Missing/invalid/foreign captures disable ONLY summary work. Legacy fact
-    # extraction retains its established inputs, checkpoints and continuations.
-    summary_generation = None
     try:
-        candidate = _summary_capture(origin_account_id, origin_account_generation)
-        if candidate.account_id == owner:
-            summary_generation = candidate
-    except WriteGuardRefusal:
-        pass
+        summary_generation = _summary_capture(origin_account_id, origin_account_generation)
+        owner = _as_uuid(user_id)
+        conv_id = _as_uuid(conversation_id)
+        if summary_generation.account_id != owner:
+            raise WriteGuardRefusal("invalid_capture")
+    except (WriteGuardRefusal, ValueError, TypeError, AttributeError):
+        return {"status": "skipped", "reason": "invalid_capture"}
+
+    # Sources are qualified before decryption/admission. Arbitrary legacy bytes
+    # are not source authority, even when accompanied by a valid account capture.
+    reference_input = messages_json is not None
+    if reference_input:
+        try:
+            envelope = (
+                json.loads(messages_json) if isinstance(messages_json, str) else messages_json
+            )
+            if not isinstance(envelope, Mapping) or "_extraction_refs" not in envelope:
+                raise fencing.ExtractionRefused("invalid_source")
+            references = envelope["_extraction_refs"]
+            if not isinstance(references, list) or not 1 <= len(references) <= 250:
+                raise fencing.ExtractionRefused("invalid_source")
+            ids = [_as_uuid(ref["message_id"]) for ref in references]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise fencing.ExtractionRefused("invalid_source") from None
+        page_inputs, qualified_messages = await fencing.read_references(
+            store_obj, summary_generation, conv_id, ids
+        )
+
+        class QualifiedReferences:
+            async def get_owned_message(self, message_id, **kwargs):
+                return next((dict(m) for m in qualified_messages if m["id"] == message_id), None)
+
+        remaining_ids = {str(m["id"]) for m in qualified_messages}
+        envelope = {
+            **envelope,
+            "_extraction_refs": [r for r in references if str(r["message_id"]) in remaining_ids],
+        }
+        raw_messages = (
+            await _read_extraction_references(QualifiedReferences(), owner, conv_id, envelope)
+            if remaining_ids
+            else []
+        )
+    else:
+        page_inputs, raw_messages = await fencing.read_page(store_obj, summary_generation, conv_id)
     summary_payload = {
         "origin_account_id": origin_account_id,
         "origin_account_generation": origin_account_generation,
     }
     # Entity projection has its own use of the SAME immutable origin. A later
     # summary refusal must not mutate or replace the entity enqueue's currency.
-    entity_generation = summary_generation
     # Observe recovery before a no_messages exit, but never consume before Redis
     # succeeds. Guarded summary progress owns clearing the persistent flag.
     continuation_pending = False
@@ -465,6 +502,7 @@ async def _extract_memories_once(
             raise Retry(defer=5) from None
 
     if continuation_pending:
+        await fencing.check(store_obj, page_inputs)
         queue = ctx.get("redis")
         if queue is not None and hasattr(queue, "enqueue_job"):
             try:
@@ -493,45 +531,7 @@ async def _extract_memories_once(
         # Pending remains set until guarded progress, including on cancellation.
 
     batch_limit = 250
-    raw_messages: list[dict[str, Any]]
-    needs_extraction_continuation = False
-    reference_input = False
-    if messages_json is None:
-        cursor_at, cursor_message_id = await store_obj.get_last_extraction_cursor(
-            _as_uuid(conversation_id)
-        )
-        messages = await store_obj.get_messages_after_cursor(
-            _as_uuid(conversation_id),
-            created_at=cursor_at,
-            message_id=cursor_message_id,
-            limit=batch_limit,
-        )
-        raw_messages = [dict(message) for message in messages]
-        needs_extraction_continuation = len(raw_messages) == batch_limit
-    else:
-        decoded_messages_json = messages_json
-        try:
-            envelope = (
-                json.loads(messages_json) if isinstance(messages_json, str) else messages_json
-            )
-        except (TypeError, json.JSONDecodeError):
-            envelope = None
-        if isinstance(envelope, Mapping) and "_extraction_refs" in envelope:
-            raw_messages = await _read_extraction_references(
-                store_obj, owner, _as_uuid(conversation_id), envelope
-            )
-            reference_input = True
-        elif isinstance(envelope, Mapping) and isinstance(
-            envelope.get("_encrypted_extraction_continuation"), str
-        ):
-            decoded_messages_json = store_obj.decrypt_extraction_continuation(
-                str(envelope["_encrypted_extraction_continuation"])
-            )
-            raw_messages = _parse_raw_messages(decoded_messages_json)
-        else:
-            # Read-only legacy/direct-call compatibility. New enqueue payloads
-            # below always use checked source references, never these bytes.
-            raw_messages = _parse_raw_messages(decoded_messages_json)
+    needs_extraction_continuation = not reference_input and len(raw_messages) == batch_limit
 
     for raw_message in raw_messages:
         if "_source_version" not in raw_message:
@@ -564,7 +564,7 @@ async def _extract_memories_once(
     synchronous_direct_call = messages_json is not None and (
         queue is None or not hasattr(queue, "enqueue_job")
     )
-    resume_database_after_payload = any(
+    resume_database_after_payload = (reference_input and not raw_messages) or any(
         bool(raw_message.get("_resume_database_extraction")) for raw_message in raw_messages
     )
     if messages_json is not None:
@@ -590,6 +590,15 @@ async def _extract_memories_once(
             first_remaining["_resume_database_extraction"] = True
             remaining_raw[0] = first_remaining
         references: list[dict[str, Any]] = []
+        # Include intentionally filtered rows inside the uncheckpointed suffix.
+        # References must cover the cursor range, not just extractor-selected rows.
+        if remaining_raw:
+            first_id = str(remaining_raw[0]["id"])
+            start = next(i for i, m in enumerate(raw_messages) if str(m["id"]) == first_id)
+            remaining_by_id = {}
+            for remaining in remaining_raw:
+                remaining_by_id.setdefault(str(remaining["id"]), remaining)
+            remaining_raw = [remaining_by_id.get(str(m["id"]), m) for m in raw_messages[start:]]
         referenced_ids: set[str] = set()
         for remaining in remaining_raw:
             message_id = str(_as_uuid(remaining["id"]))
@@ -621,12 +630,21 @@ async def _extract_memories_once(
     processed_message_count = 0
     last_processed_message_id: str | None = None
 
-    async def enqueue_entity_resolution(memories: Sequence[Mapping[str, Any]]) -> None:
-        if entity_generation is None:
-            return
+    async def enqueue_entity_resolution(
+        memories: Sequence[Mapping[str, Any]], *, committed_only=False
+    ) -> None:
         memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id")]
         if not memory_ids:
             return
+        if committed_only:
+            eligible = await fencing.committed_projection_ids(
+                store_obj, page_inputs, [_as_uuid(mid) for mid in memory_ids]
+            )
+            memory_ids = [mid for mid in memory_ids if _as_uuid(mid) in eligible]
+            if not memory_ids:
+                return
+        else:
+            await fencing.check(store_obj, page_inputs)
         entity_queue = ctx.get("redis")
         if not isinstance(entity_queue, ArqRedis):
             return
@@ -654,33 +672,54 @@ async def _extract_memories_once(
         raw_message_id = cursor_message.get("id") if advances_cursor else None
         chunk_last_message_id = str(raw_message_id) if raw_message_id is not None else None
 
-        async with account_compute(
-            ctx.get("db_pool"),
-            owner,
-            operation="agent",
-            auto_route=True,
-            background=True,
-            profile="background",
-        ):
-            chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
-                store=store_obj,
-                user_id=_as_uuid(user_id),
-                conversation_id=_as_uuid(conversation_id),
-                text=chunk_text,
-                last_message_observed_at=chunk_last_observed,
-                last_message_id=chunk_last_message_id,
-                chunk_index=chunk_index,
-                cursor_checkpoint=advances_cursor,
-                summary_generation=summary_generation,
-            )
+        try:
+            async with account_compute(
+                ctx.get("db_pool"),
+                owner,
+                operation="agent",
+                auto_route=True,
+                background=True,
+                profile="background",
+            ):
+                # This chunk's cursor may cross intentionally filtered rows too.
+                # Keep every source in that prefix, not only model-visible rows.
+                last_source = str(chunk_raw[-1]["id"])
+                crossed = next(i for i, m in enumerate(raw_messages) if str(m["id"]) == last_source)
+                chunk_inputs = page_inputs.subset(
+                    {_as_uuid(m["id"]) for m in raw_messages[: crossed + 1]}
+                )
+                await fencing.check(store_obj, chunk_inputs)
+                chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
+                    store=store_obj,
+                    user_id=_as_uuid(user_id),
+                    conversation_id=_as_uuid(conversation_id),
+                    text=chunk_text,
+                    last_message_observed_at=chunk_last_observed,
+                    last_message_id=chunk_last_message_id,
+                    chunk_index=chunk_index,
+                    cursor_checkpoint=advances_cursor,
+                    summary_generation=summary_generation,
+                    extraction_inputs=chunk_inputs,
+                    committed_prefix=new_memories,
+                )
+        except (WriteGuardRefusal, fencing.ExtractionRefused):
+            # Refused suffix != uncommitted prefix. Requalify only the actual
+            # committed facts under original currency, never the changed suffix.
+            await enqueue_entity_resolution(new_memories, committed_only=True)
+            raise
+        except Exception:
+            await enqueue_entity_resolution(new_memories)
+            raise
         if not chunk_success:
             # Earlier chunks may already have committed memories and cursor
             # checkpoints. Queue their entity projection before retrying the
             # failed suffix, because the retry will start after those chunks.
             await enqueue_entity_resolution(new_memories)
             raise Retry(defer=5)
-        if chunk_new_memories:
-            new_memories.extend(chunk_new_memories)
+        # The shared prefix includes successful exact reuse, and is populated
+        # only after each fact commits, including when this chunk later fails.
+        known_ids = {m.get("id") for m in new_memories}
+        new_memories.extend(m for m in chunk_new_memories if m.get("id") not in known_ids)
         summary_continuation_needed = summary_continuation_needed or chunk_continuation
         if advances_cursor:
             processed_message_count += len(chunk_raw)
@@ -698,7 +737,9 @@ async def _extract_memories_once(
             page_last_observed = _coerce_message_timestamp(page_last.get("created_at"))
             if page_last_observed is None:
                 raise Retry(defer=5)
-            await store_obj.log_extraction(
+            await fencing.checkpoint(
+                store_obj,
+                page_inputs,
                 user_id=_as_uuid(user_id),
                 conversation_id=_as_uuid(conversation_id),
                 input_snippet="",
@@ -724,6 +765,7 @@ async def _extract_memories_once(
 
     if extraction_success and summary_continuation_needed and summary_generation is not None:
         try:
+            await fencing.check(store_obj, page_inputs)
             queue = ctx.get("redis")
             if queue is not None and hasattr(queue, "enqueue_job"):
                 await enqueue_with_debounce(
@@ -757,6 +799,7 @@ async def _extract_memories_once(
             raise Retry(defer=5) from None
 
     if needs_extraction_continuation:
+        await fencing.check(store_obj, page_inputs)
         queue = ctx.get("redis")
         if queue is None or not hasattr(queue, "enqueue_job"):
             raise Retry(defer=5)
@@ -812,6 +855,7 @@ async def _extract_memories_once(
         if enqueued is None:
             raise Retry(defer=5)
 
+    await fencing.check(store_obj, page_inputs)
     return {
         "status": "ok",
         "processed_messages": processed_message_count,
@@ -847,6 +891,8 @@ async def extract_memories(
             )
     except Retry:
         raise
+    except (WriteGuardRefusal, ExtractionRefused) as exc:
+        return {"status": "skipped", "reason": str(exc)}
     except TimeoutError:
         logger.warning("Extraction reached its internal deadline; retrying")
         raise Retry(defer=5) from None

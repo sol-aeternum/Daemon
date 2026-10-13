@@ -23,6 +23,7 @@ from orchestrator.memory.store import MemoryStore
 from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 from orchestrator.worker import jobs
 from tests.qualified_compute import install_qualified_compute
+from tests.extraction_unit_support import extract_memories as exercise_extraction, install_inputs
 
 
 def _account_context(
@@ -34,6 +35,7 @@ def _account_context(
 ) -> dict[str, object]:
     install_qualified_compute(monkeypatch)
     store.get_conversation = AsyncMock(return_value={"user_id": user_id})
+    install_inputs(monkeypatch, store, user_id)
     ctx: dict[str, object] = {"store": store, "db_pool": object()}
     if queue is not None:
         ctx["redis"] = queue
@@ -441,7 +443,7 @@ async def test_extract_memories_enqueues_summary_continuation(
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
         proc.return_value = (True, [], True)  # success, no new memories, continuation_needed
-        await jobs.extract_memories(
+        await exercise_extraction(
             ctx,
             user_id,
             conversation_id,
@@ -469,8 +471,7 @@ async def test_extract_memories_enqueues_summary_continuation(
 async def test_extract_memories_no_summarization_without_capture_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Legacy queued extraction payloads carry no summary origin; fact
-    extraction proceeds but the summary family is disabled."""
+    """Legacy queued extraction payloads refuse the whole persistence family."""
     from orchestrator.worker import jobs
 
     conversation_id = uuid4()
@@ -494,9 +495,7 @@ async def test_extract_memories_no_summarization_without_capture_payload(
 
     # No summary enqueue despite inline continuation: summary work disabled.
     assert enqueue.await_count == 0
-    proc.assert_awaited_once()
-    assert proc.await_args is not None
-    assert proc.await_args.kwargs["summary_generation"] is None
+    proc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -522,7 +521,7 @@ async def test_extract_memories_skips_continuation_when_not_needed(
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
         proc.return_value = (True, [], False)  # no continuation
-        await jobs.extract_memories(
+        await exercise_extraction(
             ctx,
             user_id,
             conversation_id,
@@ -565,7 +564,7 @@ async def test_extract_memories_recovers_pending_continuation_on_retry(
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
         # Even with no messages, the recovery path enqueues the
         # continuation because the pending flag was set.
-        await jobs.extract_memories(
+        await exercise_extraction(
             ctx,
             user_id,
             conversation_id,
@@ -615,7 +614,7 @@ async def test_extract_memories_does_not_recover_when_flag_unset(
     ctx = _account_context(monkeypatch, store, user_id, queue=queue)
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
-        await jobs.extract_memories(
+        await exercise_extraction(
             ctx,
             user_id,
             conversation_id,
@@ -654,7 +653,7 @@ async def test_extract_memories_foreign_capture_disables_summary(
     ctx = _account_context(monkeypatch, store, user_id, queue=queue)
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
-        await jobs.extract_memories(
+        await exercise_extraction(
             ctx,
             user_id,
             conversation_id,
@@ -694,7 +693,7 @@ async def test_extract_memories_read_failure_is_retryable(
         pytest.raises(Retry),
         patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock),
     ):
-        await jobs.extract_memories(
+        await exercise_extraction(
             ctx,
             user_id,
             conversation_id,

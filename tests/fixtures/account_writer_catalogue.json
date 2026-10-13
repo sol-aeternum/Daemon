@@ -2054,14 +2054,113 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.log_extraction",
       "kind": "sql_inline",
-      "fingerprint": "5d87e013fe115c7c",
+      "fingerprint": "e8fc3fbd70f3a35d",
       "tables": [
         "memory_extraction_log"
       ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "Queued extraction calls this SQL only through extraction_fencing.checkpoint with original account/source guards on the same connection. Generic and offline callers remain uncovered; this shared SQL site is not wholly integrated."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "_conversation",
+      "kind": "sql_unresolvable",
+      "fingerprint": "e1c5aa44fce8a96f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner cannot resolve assembled SELECT columns; source inspection identifies qualified conversation reads/SHARE locks, not a content mutation. No generic writer coverage claimed."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "_provenance",
+      "kind": "sql_unresolvable",
+      "fingerprint": "6d24d4aa6f4e8ac5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled qualified provenance SELECT/SHARE lock. Scanner uncertainty remains explicit; no content mutation or generic coverage certification."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "commit_fact.qualify",
+      "kind": "sql_unresolvable",
+      "fingerprint": "6698b8e1b364d203",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled exact-winner eligibility SELECT/UPDATE row lock before decryption. Per-fact guard applies to this caller, not every generic insertion caller. Real qualification in test_fact_account_guard_postgres.py, not scanner metadata."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "discover",
+      "kind": "sql_unresolvable",
+      "fingerprint": "36e94f78018ee5e7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled bounded candidate SELECT with SQL owner/locality/provenance qualification. Scanner cannot resolve it; no generic writer integration claim."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "read_page",
+      "kind": "sql_unresolvable",
+      "fingerprint": "99d41d47fcf7d8cb",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled qualified message-page SELECT. Source-only queued extraction reader, not a content mutation; bounded scanner uncertainty retained."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "read_references",
+      "kind": "sql_unresolvable",
+      "fingerprint": "8da10cfdf4d8f2ba",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled qualified reference SELECT. Continuity/freshness is qualified by real PostgreSQL tests, not inferred from catalogue membership."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "validate",
+      "kind": "sql_unresolvable",
+      "fingerprint": "b75e459b8d106698",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled source-version SELECT/SHARE row locks. No overall writer fence is certified; shared store mutations remain covered only for the explicit queued extraction path."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "committed_projection_ids",
+      "kind": "sql_unresolvable",
+      "fingerprint": "1d680f06481955fb",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled committed-prefix eligibility SELECT/SHARE lock, without decryption or content mutation. Bounded scanner uncertainty retained, not generic writer coverage."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction_fencing",
+      "qualname": "committed_projection_ids",
+      "kind": "sql_unresolvable",
+      "fingerprint": "d3ab0baa319ea207",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Assembled current committed-prefix ownership/provenance SELECT, no contents decoded. No source-mutation or overall account-fence certification."
     },
     {
       "owner_source": "orchestrator.memory.store",

@@ -2251,7 +2251,7 @@ async def _durable_chat(
         "request_id": request_id,
     }
     if title_generation is not None:
-        # Immutable acceptance-time origin for optional summary follow-ups. It is
+        # Immutable acceptance-time origin for optional extraction follow-ups. It is
         # encrypted with existing task_input and is never rebuilt on task retry.
         task_input["summary_origin_account_id"] = str(title_generation.account_id)
         task_input["summary_origin_account_generation"] = title_generation.generation

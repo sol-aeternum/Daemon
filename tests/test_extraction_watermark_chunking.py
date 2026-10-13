@@ -40,8 +40,8 @@ from orchestrator.memory.extraction import (
 from orchestrator.memory.store import MemoryStore
 from orchestrator.worker.jobs import (
     _chunk_messages_for_extraction,
-    extract_memories,
 )
+from tests.extraction_unit_support import extract_memories, install_inputs
 from tests.qualified_compute import install_qualified_compute
 
 
@@ -60,6 +60,7 @@ def _worker_context(
     """Exercise the real owner lookup and account scope with test-qualified compute."""
     install_qualified_compute(monkeypatch)
     store.get_conversation = AsyncMock(return_value={"user_id": user_id})
+    install_inputs(monkeypatch, store, user_id)
     ctx: dict[str, object] = {"store": store, "db_pool": object()}
     if queue is not None:
         ctx["redis"] = queue
@@ -503,6 +504,14 @@ async def test_failed_chunk_does_not_submit_later_chunks(
                 new_callable=AsyncMock,
             ) as enqueue_mock,
         ):
+            if not with_origin:
+                from orchestrator.worker.jobs import extract_memories as real_job
+
+                result = await real_job(ctx, user_id, uuid.uuid4(), json.dumps(messages))
+                assert result["status"] == "skipped"
+                assert calls == []
+                enqueue_mock.assert_not_awaited()
+                return
             with pytest.raises(Retry):
                 await extract_memories(
                     ctx,

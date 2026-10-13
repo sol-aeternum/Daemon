@@ -24,6 +24,8 @@ const clientBuildOptions = {
 const env = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
+  TMPDIR: process.env.TMPDIR,
+  NODE_OPTIONS: process.env.NODE_OPTIONS,
   PYTHONPATH: '..',
   // Explicit clean env: no inherited application credentials and no implicit
   // dotenv loading inside litellm or any other dependency.
