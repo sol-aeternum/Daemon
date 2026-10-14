@@ -32,7 +32,7 @@ from tests.durable_tasks_support import (
     expire_lease,
 )
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 
 
 @pytest.fixture(autouse=True)

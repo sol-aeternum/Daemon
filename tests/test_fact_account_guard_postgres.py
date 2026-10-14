@@ -1024,6 +1024,7 @@ async def test_offline_benchmark_actual_extractor_uses_real_qualified_account_co
     from tests.benchmark_extraction import invoke_benchmark_extraction
     from tests.qualified_compute import install_qualified_compute
     from tests.test_compute_runtime import install_routing, routing_document
+    from tests.durable_tasks_support import seed_entitlement
 
     monkeypatch.setenv("DAEMON_AUTH_PEPPER", "synthetic-benchmark-admission-pepper")
     model = "openrouter/test/explicit-model"
@@ -1034,6 +1035,7 @@ async def test_offline_benchmark_actual_extractor_uses_real_qualified_account_co
     monkeypatch.setattr(compute_runtime, "EntitlementService", EntitlementService)
     monkeypatch.setattr(extraction, "BENCHMARK_MODE", True)
     monkeypatch.setattr(extraction, "BENCHMARK_EXTRACTION_MODEL", model)
+    await seed_entitlement(env.pool, env.alice)
     if denial == "route":
         policy = compute_runtime.load_inference_policy()
         assert isinstance(policy.routes, dict)  # This fixture's explicitly synthetic route map.
@@ -1041,7 +1043,7 @@ async def test_offline_benchmark_actual_extractor_uses_real_qualified_account_co
     conv = (await env.memory.create_conversation(env.alice, title="Offline admission"))["id"]
     if denial == "suspended":
         await env.pool.execute(
-            "INSERT INTO entitlement_accounts(user_id,status) VALUES($1,'suspended')", env.alice
+            "UPDATE entitlement_accounts SET status='suspended' WHERE user_id=$1", env.alice
         )
 
     async def transport(**kwargs):

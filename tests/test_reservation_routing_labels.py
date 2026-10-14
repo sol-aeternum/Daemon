@@ -64,6 +64,8 @@ async def test_dispatch_records_the_profile_and_effort_actually_sent(
 
 @pytest_asyncio.fixture
 async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
+    from tests.durable_tasks_support import seed_entitlement
+
     dsn = os.environ.get("ENTITLEMENTS_TEST_DATABASE_URL")
     if not dsn:
         pytest.skip("requires isolated ENTITLEMENTS_TEST_DATABASE_URL")
@@ -83,6 +85,7 @@ async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
                 await conn.execute((MIGRATIONS / name).read_text())
             # Re-applying is a no-op, as scripts/migrate.py may do on a partial run.
             await conn.execute(MIGRATION.read_text())
+            await seed_entitlement(conn, user_id)
         yield pool, user_id
     finally:
         if pool is not None:

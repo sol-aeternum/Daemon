@@ -40,7 +40,11 @@ async def unused_job(ctx):
 async def redis(request):
     if not request.config.getoption("--p06-disposable-redis"):
         pytest.skip("Requires explicitly approved disposable Redis")
-    queue = await create_pool(RedisSettings(host="127.0.0.1", port=56379, database=15))
+    queue = await create_pool(
+        RedisSettings(
+            host="127.0.0.1", port=request.config.getoption("--p06-redis-port"), database=15
+        )
+    )
     try:
         await queue.flushdb()
         try:

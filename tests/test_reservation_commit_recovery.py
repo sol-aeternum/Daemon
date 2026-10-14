@@ -34,6 +34,8 @@ from orchestrator.entitlements.service import EntitlementService
 
 @pytest_asyncio.fixture
 async def recovery_database() -> AsyncIterator[tuple[Any, uuid.UUID]]:
+    from tests.durable_tasks_support import seed_entitlement
+
     dsn = os.environ.get("ENTITLEMENTS_TEST_DATABASE_URL")
     if not dsn:
         pytest.skip("requires isolated ENTITLEMENTS_TEST_DATABASE_URL")
@@ -58,6 +60,7 @@ async def recovery_database() -> AsyncIterator[tuple[Any, uuid.UUID]]:
             migrations = Path(__file__).resolve().parents[1] / "migrations"
             for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
                 await conn.execute((migrations / name).read_text())
+            await seed_entitlement(conn, uid)
         yield pool, uid
     finally:
         if pool is not None:

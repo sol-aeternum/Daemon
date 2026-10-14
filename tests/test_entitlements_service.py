@@ -28,6 +28,7 @@ from orchestrator.entitlements.errors import (
 from orchestrator.entitlements.models import SubscriptionEvent
 from orchestrator.entitlements.plans import ChargeKind, Plan, ReservationStatus
 from orchestrator.entitlements.service import EntitlementService
+from tests.durable_tasks_support import seed_entitlement
 
 
 @pytest.mark.asyncio
@@ -96,6 +97,7 @@ async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
             migrations = Path(__file__).resolve().parents[1] / "migrations"
             for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
                 await conn.execute((migrations / name).read_text())
+            await seed_entitlement(conn, user_id)
         yield pool, user_id
     finally:
         if pool is not None:
@@ -519,6 +521,7 @@ async def test_rate_identity_ignores_background_and_does_not_share_unscoped_or_o
     other = uuid.uuid4()
     async with pool.acquire() as conn:
         await conn.execute("INSERT INTO users (id) VALUES ($1)", other)
+        await seed_entitlement(conn, other)
     await service.release(await service.reserve(other, 0, operation="chat", scope_id=scope))
     async with pool.acquire() as conn:
         assert (

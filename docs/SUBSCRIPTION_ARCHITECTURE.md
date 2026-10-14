@@ -143,6 +143,13 @@ plan does not refill or discard the remaining trial allocation.
 The grant is stored when the account's entitlement record is first initialized;
 changing development trial defaults must not silently refill existing accounts.
 
+Initialization now requires an actual successful new-identity insertion in the
+same identity/session transaction, not lazy resolution of a missing entitlement.
+Existing missing-entitlement identities fail closed; their remediation (including
+the migration-seeded self-hosted singleton) is a separate unresolved rollout
+prerequisite, not an implicit trial refill or account recreation. See
+[first-time entitlement initialization](ACCOUNT_CONTROL_PERSISTENCE.md#first-time-entitlement-prerequisite--new-identity-birth-only).
+
 Before outbound execution, reserve a conservative maximum cost under an account
 row lock. Include open reservations when admitting concurrent work. Each inference
 reservation records unit-economics labels that never affect admission or

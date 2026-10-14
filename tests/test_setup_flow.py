@@ -24,6 +24,17 @@ from orchestrator.setup_token_delivery import write_setup_token_file
 SINGLETON_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
+@pytest.fixture(autouse=True)
+def algorithm_only_birth_history(monkeypatch):
+    # Setup/cookie algorithm fakes, not PostgreSQL/journal qualification.
+    async def verified_in_postgres(*_args):
+        pass
+
+    monkeypatch.setattr(
+        "orchestrator.services.identity.initialization._verify_birth_history", verified_in_postgres
+    )
+
+
 class MockConn:
     def __init__(self, pool):
         self._pool = pool
@@ -31,6 +42,8 @@ class MockConn:
         self._session_insert_args = None
 
     async def fetchval(self, sql, *args):
+        if "SELECT user_id FROM entitlement_accounts" in sql:
+            return SINGLETON_ID if self._pool._entitlement_exists else None
         if "FROM system_state" in sql:
             return self._pool._system_state.get(args[0])
         if "COUNT(*)" in sql and "devices" in sql:
@@ -65,6 +78,8 @@ class MockConn:
         return None
 
     async def execute(self, sql, *args):
+        if "INSERT INTO entitlement_accounts" in sql:
+            self._pool._entitlement_exists = True
         if "INSERT INTO system_state" in sql:
             key, value = args[:2]
             self._pool._system_state[key] = value
@@ -81,6 +96,13 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
+        if "SELECT id FROM users WHERE" in sql:
+            return {"id": SINGLETON_ID} if self._pool._singleton_exists else None
+        if "INSERT INTO users" in sql:
+            if self._pool._singleton_exists:
+                return None
+            self._pool._singleton_exists = True
+            return {"id": SINGLETON_ID, "normalized_email": None, "email_verified_at": None}
         if "INSERT INTO system_state" in sql and "ON CONFLICT" in sql:
             key, value = args[:2]
             if key in self._pool._system_state:
@@ -101,17 +123,22 @@ class MockConn:
 
     @asynccontextmanager
     async def transaction(self):
+        prior = self._in_transaction
         self._in_transaction = True
         try:
             yield self
         finally:
-            self._in_transaction = False
+            self._in_transaction = prior
+
+    def is_in_transaction(self):
+        return self._in_transaction
 
 
 class MockPool:
-    def __init__(self, active_device_count=0, singleton_user_exists=False, has_valid_session=True):
+    def __init__(self, active_device_count=0, singleton_user_exists=True, has_valid_session=True):
         self._active_count = active_device_count
         self._singleton_exists = singleton_user_exists
+        self._entitlement_exists = singleton_user_exists
         self._has_valid_session = has_valid_session
         self._closed = False
         self._lock_acquired = False
@@ -280,7 +307,8 @@ class TestStartupRecoveryWithStaleDevices:
 class TestSetupHappyPath:
     @pytest.mark.asyncio
     async def test_setup_creates_first_device(self, setup_env, monkeypatch):
-        mock_pool = MockPool(active_device_count=0, singleton_user_exists=False)
+        # Existing initialized singleton; new/missing identity is not setup authority.
+        mock_pool = MockPool(active_device_count=0, singleton_user_exists=True)
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
@@ -338,7 +366,7 @@ class TestSetupHappyPath:
     async def test_setup_uses_configured_private_refresh_ttl(self, setup_env, monkeypatch):
         monkeypatch.setenv("DAEMON_PRIVATE_REFRESH_TTL_DAYS", "7")
         get_settings.cache_clear()
-        mock_pool = MockPool(active_device_count=0, singleton_user_exists=False)
+        mock_pool = MockPool(active_device_count=0, singleton_user_exists=True)
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):

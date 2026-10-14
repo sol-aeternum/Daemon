@@ -38,15 +38,35 @@ class Env:
     bob: uuid.UUID
 
 
-def durable_env_fixture() -> Any:
+def durable_env_fixture(*, initialized: bool = False) -> Any:
     """Build the ``env`` fixture; assign it in each test module (``env = ...``)."""
 
     @pytest_asyncio.fixture
     async def env() -> AsyncIterator[Env]:
         async for value in _provision():
+            if initialized:
+                # Historical initialized-account fixtures, NOT sign-up evidence.
+                for uid in (value.alice, value.bob):
+                    await seed_entitlement(value.pool, uid)
             yield value
 
     return env
+
+
+async def seed_entitlement(conn: Any, uid: uuid.UUID) -> None:
+    """Explicit synthetic initialized state; never used for fresh-user HTTP tests."""
+    from orchestrator.entitlements.policy import load_policy
+
+    policy = load_policy()
+    budget = policy.trial.budget_for_new_account()
+    await conn.execute(
+        "INSERT INTO entitlement_accounts(user_id,trial_state,trial_budget_microusd,"
+        "trial_extended_agents) VALUES($1,$2,$3,$4)",
+        uid,
+        "active" if budget > 0 else "exhausted",
+        budget,
+        policy.trial.extended_agents_for_new_account(),
+    )
 
 
 async def _provision() -> AsyncIterator[Env]:

@@ -704,6 +704,14 @@ async def test_exact_marker_checks_cannot_be_replaced_by_sequence_presence(env, 
 
 
 TITLE_GUARD_IMPORTS = {
+    # Approved birth-only primitive access, NOT request persistence/applier APIs.
+    "orchestrator/services/identity/account_service.py": {
+        ("orchestrator.services.account_control.store", "Connection"),
+    },
+    "orchestrator/services/identity/initialization.py": {
+        ("orchestrator.services.account_control.store", "Connection"),
+        ("orchestrator.services.account_control.store", "account_lock_key"),
+    },
     "orchestrator/main.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "capture_generation"),
@@ -749,7 +757,7 @@ TITLE_GUARD_IMPORTS = {
 
 
 def _assert_only_title_guard_imports(sources):
-    # J1c admits only these symbols at title/summary/queued-entity/fact seams.
+    # J1c admits only these symbols at named writer and birth-only seams.
     # This is not permission to call the J1b request/phase store.
     observed = {}
     for path, source in sources.items():
@@ -790,6 +798,14 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
 @pytest.mark.parametrize(
     "path,extra",
     [
+        (
+            "orchestrator/services/identity/initialization.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/services/identity/account_service.py",
+            "from orchestrator.services.account_control.store import lock_account_control",
+        ),
         (
             "orchestrator/main.py",
             "from orchestrator.services.account_control.store import record_request_facts",
