@@ -27,7 +27,8 @@ async def fresh_client(env, monkeypatch, provider):
     signed_in = await complete(app, provider, payload)
     assert signed_in.status_code == 200, signed_in.text
     uid = await env.pool.fetchval("SELECT id FROM users WHERE normalized_email=$1", address)
-    assert (await account_row(env, uid))["content_generation"] == 0
+    initialized = await account_row(env, uid)
+    assert initialized is not None and initialized["content_generation"] == 0
     settings.durable_chat_enabled = True
     app.state.app_state.memory_store = env.memory
     app.dependency_overrides[main.get_settings] = lambda: settings
@@ -147,6 +148,7 @@ async def test_newborn_lifecycle_change_after_original_http_capture_cannot_accep
         assert await account_row(env, uid) is None
     else:
         state = await account_row(env, uid)
+        assert state is not None
         assert state["content_generation"] == (8 if change == "generation" else 0)
         assert state["status"] == ("suspended" if change == "suspended" else "active")
     # Identity/session state committed before chat remains; refusal cannot reset it.
