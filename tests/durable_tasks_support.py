@@ -22,6 +22,7 @@ from cryptography.fernet import Fernet
 
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.services.account_control.guard import CapturedGeneration, capture_generation
 from orchestrator.tasks.store import TaskStore
 
 DSN_ENV = "TASKS_TEST_DATABASE_URL"
@@ -117,6 +118,13 @@ async def _provision() -> AsyncIterator[Env]:
         await admin.close()
 
 
+async def task_capture(env: Env, user: uuid.UUID | None = None) -> CapturedGeneration:
+    """Capture explicit initialized fixture state; never repair missing rows."""
+    owner = user or env.alice
+    async with env.pool.acquire() as conn:
+        return await capture_generation(conn, owner)
+
+
 async def accept_task(env: Env, user: uuid.UUID | None = None, **task_input: object):
     """Accept a fresh chat task with a minimal input for ``user`` (Alice by default)."""
     message = str(task_input.get("message", "hello"))
@@ -130,6 +138,7 @@ async def accept_task(env: Env, user: uuid.UUID | None = None, **task_input: obj
         request_hash=uuid.uuid4().hex * 2,
         idempotency_key=None,
         assistant_model=None,
+        captured_generation=await task_capture(env, user),
     )
 
 

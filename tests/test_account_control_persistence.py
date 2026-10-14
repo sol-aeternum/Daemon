@@ -731,6 +731,12 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
     },
+    # Approved NEW durable acceptance seam; no recapture or control-store API.
+    "orchestrator/tasks/store.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
     "orchestrator/memory/extraction.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
     },
@@ -757,7 +763,7 @@ TITLE_GUARD_IMPORTS = {
 
 
 def _assert_only_title_guard_imports(sources):
-    # J1c admits only these symbols at named writer and birth-only seams.
+    # J1c admits only these symbols at named writer/NEW acceptance/birth seams.
     # This is not permission to call the J1b request/phase store.
     observed = {}
     for path, source in sources.items():
@@ -839,6 +845,14 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         (
             "orchestrator/memory/extraction_fencing.py",
             "from orchestrator.services.account_control.guard import capture_generation",
+        ),
+        (
+            "orchestrator/tasks/store.py",
+            "from orchestrator.services.account_control.guard import capture_generation",
+        ),
+        (
+            "orchestrator/tasks/store.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
         ),
     ],
 )

@@ -11,7 +11,7 @@ import pytest
 from orchestrator.tasks import observe, runner
 from tests.durable_tasks_support import LEASE_S, Env, FakeRedis, accept_task, durable_env_fixture
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 
 
 def _live(accepted, claim, seq, kind, name, **data):

@@ -2250,11 +2250,6 @@ async def _durable_chat(
         "trusted_spawn_context": _build_trusted_spawn_context(auth.user_id, payload.metadata),
         "request_id": request_id,
     }
-    if title_generation is not None:
-        # Immutable acceptance-time origin for optional extraction follow-ups. It is
-        # encrypted with existing task_input and is never rebuilt on task retry.
-        task_input["summary_origin_account_id"] = str(title_generation.account_id)
-        task_input["summary_origin_account_generation"] = title_generation.generation
     fingerprint = _durable_request_fingerprint(payload, settings, conversation_uuid, user_message)
     try:
         accepted = await store.accept(
@@ -2270,6 +2265,7 @@ async def _durable_chat(
             request_canonical=fingerprint.canonical,
             idempotency_key=idempotency_key,
             assistant_model=actual_model if explicit else None,
+            captured_generation=title_generation,
         )
     except IdempotencyConflict as exc:
         raise HTTPException(
@@ -2561,8 +2557,8 @@ async def chat(
             detail={"code": "account_unavailable", "message": "Account compute unavailable"},
         )
 
-    # Capture ONCE before deriving title/summary source inputs. Failure suppresses
-    # only these optional writers, not chat acceptance or memory-fact extraction.
+    # Capture ONCE before deriving source inputs. NEW durable acceptance requires
+    # it; existing replays above do not. Other paths retain optional scheduling.
     title_generation: CapturedGeneration | None = None
     if app_state.memory_store is not None:
         # Durable acceptance can outlive a queue outage. Preserve its origin in
