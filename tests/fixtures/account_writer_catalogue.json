@@ -766,17 +766,30 @@
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
-      "owner_source": "orchestrator.entitlements.store",
-      "qualname": "EntitlementStore.ensure_account",
-      "kind": "sql_dynamic",
-      "fingerprint": "eb08e994a731d518",
+      "owner_source": "orchestrator.services.identity.initialization",
+      "qualname": "_insert_identity",
+      "kind": "sql_inline",
+      "fingerprint": "05530942bd92a5d0",
       "tables": [
         "entitlement_accounts"
       ],
-      "unknown": true,
+      "unknown": false,
       "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
+      "category": "control",
+      "rationale": "Birth-only defaults after this transaction's successful new-user INSERT; not a content guard or completed lifecycle fence. Qualification: tests/test_identity_initialization_postgres.py."
+    },
+    {
+      "owner_source": "orchestrator.services.identity.initialization",
+      "qualname": "_insert_identity",
+      "kind": "sql_inline",
+      "fingerprint": "1d8487a402eb76b3",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Successful hosted new-user INSERT is birth authority for same-transaction defaults. Reserved fixed singleton cannot be minted. Not a completed account fence; tests/test_identity_initialization_postgres.py qualifies the bounded SQL."
     },
     {
       "owner_source": "orchestrator.entitlements.store",
@@ -2613,19 +2626,6 @@
     },
     {
       "owner_source": "orchestrator.routes.auth_setup",
-      "qualname": "_find_or_create_singleton_user",
-      "kind": "sql_inline",
-      "fingerprint": "91c1fb9d1e1182c7",
-      "tables": [
-        "users"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "control",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.routes.auth_setup",
       "qualname": "_record_device_creation_audit",
       "kind": "sql_inline",
       "fingerprint": "1eac9677b8cded4a",
@@ -3294,19 +3294,6 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.services.identity.account_service",
-      "qualname": "AccountService._create_user_tenant_membership",
-      "kind": "sql_inline",
-      "fingerprint": "9fbfbdf5425a7c19",
-      "tables": [
-        "users"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "control",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
       "owner_source": "orchestrator.services.identity.account_service",

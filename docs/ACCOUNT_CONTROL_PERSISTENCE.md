@@ -32,7 +32,10 @@ No live migration, legacy backfill, provisioning or configuration change occurre
 
 ## Internal contracts
 
-`orchestrator/services/account_control/store.py` has no runtime callers.
+The request-fact persistence APIs in
+`orchestrator/services/account_control/store.py` have no runtime callers. The
+birth-only prerequisite below reuses only its advisory-key derivation, not its
+request persistence, phase or application authority.
 
 1. `lock_account_control(conn, account_id, operation_id=None)` requires a caller
    transaction: domain-separated SHA-256-to-int64 account advisory lock, entitlement
@@ -453,6 +456,13 @@ missing account, stale generation, suspension, causes, open operations and datab
 refusal fail closed; HTTP acceptance returns existing `task_unavailable` 503,
 without task/title enqueue or request-bound execution fallback.
 
+The merged #528 birth-only prerequisite initializes genuinely new hosted identities
+before this original capture. Acceptance itself remains non-provisioning. Existing,
+historical and migration-seeded singleton identities with missing entitlements still
+fail closed and remain a **separate unresolved rollout prerequisite** below. The
+revised #527 integrates that exact prerequisite; neither merge nor passing combined
+qualification authorizes deployment, enablement or historical repair.
+
 The actual acceptance connection explicitly uses READ COMMITTED and acquires the
 account SHARE guard before conversation/content locks or mutations. Conversation
 creation (including its initial title), user message, assistant placeholder, task
@@ -486,6 +496,12 @@ counts, replay/ciphertext preservation, actual busy-conflict retries, account-fi
 ordering, both observed lock-wait directions (including subordinate-only control
 commits), cancellation, rollback, deferred failed commits, connection reuse and
 HTTP/queue failure behavior. Skipped PostgreSQL/owned-Redis cases are not qualification.
+`tests/test_identity_durable_acceptance_postgres.py` additionally exercises actual
+email/Google sign-in and the first authenticated durable turn without fresh-user
+entitlement preseed, original encrypted origin, restricted replay and post-capture
+lifecycle/generation/missing-row refusals on the integrated source. External proof
+verification and inference/observation are scripted; identity and acceptance SQL
+are not mocked. Prior test-only combined trees do not qualify the revised head.
 
 This is NOT all-task-writer fencing: worker claims/partial/final outputs, terminal
 or settlement paths, generic events, conversation deletion/manual edits,
@@ -496,3 +512,49 @@ writers still require UPDATE-first ordering. Unprojected journal intent remains
 outside the DB-only guard, startup stays fail closed, and no applier, marker,
 session drain, S1 retirement, reset/deletion, deployment or flag enablement is
 implemented here. **#477 remains open.**
+
+## First-time entitlement prerequisite — new identity birth only
+
+The owner approved the narrower, lifecycle-safe policy: defaults are initialized
+only with a genuinely new identity, in the identity/session transaction, before
+the existing original native-chat generation capture. This does not repair
+historical missing entitlements or complete account fencing or startup replay.
+
+`services/identity/initialization.py` selects a server-owned UUID, takes the
+account-control advisory lock before published identity/content locks, checks
+existing entitlement/control/commercial evidence and authoritative journal state,
+then requires its own successful `users INSERT ... RETURNING` before inserting
+current centralized defaults. An absent entitlement or diagnostic `is_new_user`
+flag is not authority. Conflicting/repeated claims never initialize; closed as
+well as open operations and any journaled history disqualify a reused UUID.
+Configured journals require the existing binding and exact applied evidence;
+unavailable/unapplied/mismatched/partial state fails closed. Initialization never
+writes binding/applied markers or releases startup readiness.
+
+Defaults, user/ownership, proof attribution and issued sessions share the caller's
+transaction through durable commit. Failure/cancellation rolls back that state;
+already-burned identity proofs stay burned. Locks never span Google verification,
+notifications, Redis or provider inference. Generic entitlement resolution,
+reservation, subscription events and receipt recovery are non-provisioning.
+Existing initialized generations, status, plans, counters and causes are not reset.
+Native chat still captures once, after replay lookup and before source derivation;
+no acceptance/job recapture or legacy task rebinding is introduced.
+
+**Separate unresolved rollout prerequisite:** existing identities whose entitlement
+row is missing are refused, not automatically repaired. This includes the singleton
+pre-created by migration `007_seed_default_user.sql`, even on a fresh schema.
+Setup-token recovery and zero active devices do not prove a new identity. The
+fixed migration-owned UUID is never eligible for runtime birth; an absent singleton
+also fails closed rather than being resurrected. Historical account remediation
+requires a separate approved design; this
+prerequisite does not certify all first-touch identities or #477 enablement.
+No migration/backfill, schema/API/SSE/env/dependency/plan/default/retention change,
+deployment or flag enablement is included. **#477 remains open.**
+
+`tests/test_identity_initialization_postgres.py` qualifies actual identity, auth,
+first-chat capture and durable SQL on disposable PostgreSQL without pre-seeding
+fresh-user entitlements or mocking initialization. Synthetic providers/proofs only;
+existing-account regression fixtures are explicitly initialized test state, not
+birth evidence. Final-source independent review and all project gates remain
+required. Combined qualification with pending PR527 must be reported separately
+from prerequisite-only evidence; it is not a claim that main contains PR527.

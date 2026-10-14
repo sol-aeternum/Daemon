@@ -22,7 +22,7 @@ from orchestrator.services.identity.provenance import (
 from orchestrator.services.identity.retention import sweep_identity_records
 from tests.durable_tasks_support import DSN_ENV, Env, MIGRATIONS, durable_env_fixture
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 NOW = datetime(2035, 2, 10, 12, tzinfo=timezone.utc)
 DAY = timedelta(days=1)
 

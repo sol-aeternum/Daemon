@@ -21,12 +21,25 @@ from orchestrator.setup_token_delivery import write_setup_token_file
 SINGLETON_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
+@pytest.fixture(autouse=True)
+def algorithm_only_birth_history(monkeypatch):
+    # Auth transport fakes; real initialization qualification is separate.
+    async def verified_in_postgres(*_args):
+        pass
+
+    monkeypatch.setattr(
+        "orchestrator.services.identity.initialization._verify_birth_history", verified_in_postgres
+    )
+
+
 class MockConn:
     def __init__(self, pool):
         self._pool = pool
         self._in_transaction = False
 
     async def fetchval(self, sql, *args):
+        if "SELECT user_id FROM entitlement_accounts" in sql:
+            return SINGLETON_ID if self._pool._entitlement_exists else None
         if "FROM system_state" in sql:
             return self._pool._system_state.get(args[0])
         if "COUNT(*)" in sql and "devices" in sql:
@@ -198,6 +211,13 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
+        if "SELECT id FROM users WHERE" in sql:
+            return {"id": SINGLETON_ID} if self._pool._singleton_exists else None
+        if "INSERT INTO users" in sql:
+            if self._pool._singleton_exists:
+                return None
+            self._pool._singleton_exists = True
+            return {"id": SINGLETON_ID, "normalized_email": None, "email_verified_at": None}
         if "INSERT INTO system_state" in sql and "ON CONFLICT" in sql:
             key, value = args[:2]
             if key in self._pool._system_state:
@@ -327,6 +347,8 @@ class MockConn:
         return []
 
     async def execute(self, sql, *args):
+        if "INSERT INTO entitlement_accounts" in sql:
+            self._pool._entitlement_exists = True
         if "INSERT INTO system_state" in sql:
             key, value = args[:2]
             self._pool._system_state[key] = value
@@ -391,11 +413,15 @@ class MockConn:
 
     @asynccontextmanager
     async def transaction(self):
+        prior = self._in_transaction
         self._in_transaction = True
         try:
             yield self
         finally:
-            self._in_transaction = False
+            self._in_transaction = prior
+
+    def is_in_transaction(self):
+        return self._in_transaction
 
 
 class MockPool:
@@ -406,7 +432,9 @@ class MockPool:
         self._tenants: dict[uuid.UUID, dict[str, Any]] = {}
         self._tenant_memberships: dict[tuple[uuid.UUID, uuid.UUID], str] = {}
         self._active_count = active_device_count
-        self._singleton_exists = False
+        # Transport smoke starts with a historical initialized singleton.
+        self._singleton_exists = True
+        self._entitlement_exists = True
         self._closed = False
         self._connections = []
         self._system_state: dict[str, str] = {}

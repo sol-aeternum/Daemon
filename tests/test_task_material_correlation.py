@@ -20,7 +20,7 @@ from orchestrator.tools.registry import Tool, ToolRegistry
 from tests.durable_tasks_support import LEASE_S
 from tests.durable_tasks_support import Env, FakeRedis, accept_task, durable_env_fixture
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 
 
 class MediaTool(Tool):

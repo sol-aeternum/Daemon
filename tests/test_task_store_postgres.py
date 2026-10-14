@@ -28,7 +28,7 @@ from orchestrator.tasks.store import (
 )
 from tests.durable_tasks_support import LEASE_S, Env, durable_env_fixture, task_capture
 
-env = durable_env_fixture(accounts=True)
+env = durable_env_fixture(initialized=True)
 
 
 async def _accept(env: Env, user=None, *, key=None, message="hello", conversation_id=None, h="a"):

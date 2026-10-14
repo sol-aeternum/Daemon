@@ -67,6 +67,19 @@ from orchestrator.services.identity.account_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def algorithm_only_birth_history(monkeypatch):
+    # These SQL-shape fakes qualify identity algorithms only. Actual lifecycle,
+    # journal, defaults and commit qualification is PostgreSQL/HTTP coverage.
+    async def checked_by_postgres_suite(*_args):
+        pass
+
+    monkeypatch.setattr(
+        "orchestrator.services.identity.initialization._verify_birth_history",
+        checked_by_postgres_suite,
+    )
+
+
 # ---------------------------------------------------------------------------
 # In-memory record helpers
 # ---------------------------------------------------------------------------
@@ -126,6 +139,7 @@ class _IdentityMockConn:
         self.transaction_stack: list[bool] = []
         self.reserved_user_ids: set[uuid.UUID] = {uuid.UUID("00000000-0000-0000-0000-000000000000")}
         self.miss_next_user_lookup_for: set[str] = set()
+        self.entitlements: set[uuid.UUID] = set()
 
     # ----- helpers used by tests -----
 
@@ -138,6 +152,7 @@ class _IdentityMockConn:
         username: str = "user",
     ) -> uuid.UUID:
         uid = user_id or uuid.uuid4()
+        self.entitlements.add(uid)
         if uid in self.reserved_user_ids:
             raise ValueError(f"add_user: reserved id {uid} cannot be used as a real user")
         self._store["users"].append(
@@ -257,6 +272,9 @@ class _IdentityMockConn:
 
     # ----- asyncpg-shape operations -----
 
+    def is_in_transaction(self):
+        return self._transaction_active
+
     @asynccontextmanager
     async def transaction(self):
         self._transaction_active = True
@@ -312,11 +330,9 @@ class _IdentityMockConn:
                     return _Record(inv)
             return None
         if q.startswith("INSERT INTO users"):
-            username = args[0]
-            email_value = args[1]
-            name_value = args[2]
-            normalized_email = args[3]
-            email_verified_at = args[4]
+            birth = len(args) == 6
+            values = args[1:] if birth else args
+            username, email_value, name_value, normalized_email, email_verified_at = values
             if not username or not isinstance(username, str):
                 raise _NotNullViolationError(
                     "users.username is NOT NULL; INSERT must include a non-empty value"
@@ -326,7 +342,7 @@ class _IdentityMockConn:
                     if "ON CONFLICT" in q:
                         return None
                     raise _UniqueViolationError("unique violation on users.normalized_email")
-            new_id = uuid.uuid4()
+            new_id = args[0] if birth else uuid.uuid4()
             self._store["users"].append(
                 {
                     "id": new_id,
@@ -500,6 +516,8 @@ class _IdentityMockConn:
     async def fetchval(self, query: str, *args: Any) -> Any:
         self.calls.append((query, args))
         q = _strip_sql(query)
+        if q.startswith("SELECT user_id FROM entitlement_accounts"):
+            return args[0] if args[0] in self.entitlements else None
         if q.startswith("SELECT role FROM tenant_memberships WHERE tenant_id"):
             tenant_id = args[0]
             user_id = args[1]
@@ -556,6 +574,8 @@ class _IdentityMockConn:
 
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append((query, args))
+        if "INSERT INTO entitlement_accounts" in query:
+            self.entitlements.add(args[0])
         # Service does not branch on the execute return for the
         # account service; record it for debugging only.
         return "OK"

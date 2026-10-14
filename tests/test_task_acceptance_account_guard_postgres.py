@@ -30,7 +30,7 @@ from tests.test_entity_enqueue_chain import entity_queue as entity_queue
 from tests.test_entity_producer_postgres import queued
 from tests.test_task_api_postgres import api as api
 
-env = durable_env_fixture(accounts=True)
+env = durable_env_fixture(initialized=True)
 
 
 async def accept(env, capture, *, key=None, conversation=None, task_input=None, digest="a" * 64):

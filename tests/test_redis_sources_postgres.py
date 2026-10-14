@@ -9,7 +9,7 @@ from arq import Retry
 from orchestrator.worker.jobs import _extraction_source_version, _read_extraction_references
 from tests.durable_tasks_support import Env, accept_task, durable_env_fixture
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 
 
 @pytest.mark.asyncio

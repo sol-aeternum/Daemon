@@ -28,6 +28,7 @@ from orchestrator.main import app
 from orchestrator.redis_jobs import account_job_id
 from orchestrator.tasks import observe as observe_module
 from orchestrator.tasks import runner
+from orchestrator.tasks.store import TaskStore
 from orchestrator.tasks.observe import observe_task
 from tests.durable_tasks_support import (
     LEASE_S,
@@ -40,7 +41,7 @@ from tests.durable_tasks_support import (
 from tests.qualified_compute import install_qualified_compute
 from tests.redis_jobs_support import install_fake_enqueue
 
-env = durable_env_fixture(accounts=True)
+env = durable_env_fixture(initialized=True)
 
 
 CHUNKS = ["Durable ", "answers ", "survive ", "closed ", "apps."]
@@ -275,16 +276,31 @@ async def test_dispatch_sweep_recovers_lost_wakeup_with_owner_qualified_job_id(a
 
 
 @pytest.mark.asyncio
-async def test_closing_the_client_does_not_cancel_and_another_device_sees_the_result(api: Api):
+@pytest.mark.parametrize("wake_marked", [False, True])
+async def test_closing_the_client_does_not_cancel_and_another_device_sees_the_result(
+    api: Api, monkeypatch, wake_marked
+):
+    # Observe either actual post-acceptance/pre-wake or committed wake/pre-enqueue
+    # boundary. Polling task visibility alone can race an in-flight mark_woken.
+    disconnect = asyncio.Event()
+    original_mark = TaskStore.mark_woken
+
+    async def stop_before_enqueue(store, task_id):
+        if wake_marked:
+            await original_mark(store, task_id)
+        disconnect.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(TaskStore, "mark_woken", stop_before_enqueue)
     # The "phone" submits, then disappears while the answer is still pending.
     phone = asyncio.create_task(_post(api, key="phone-1"))
     async with asyncio.timeout(10):
-        while not await api.env.pool.fetchval("SELECT count(*) FROM tasks"):
-            await asyncio.sleep(0.01)
+        await disconnect.wait()
     phone.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await phone
     task_id = await api.env.pool.fetchval("SELECT id FROM tasks")
+    monkeypatch.setattr(TaskStore, "mark_woken", original_mark)
     # The disconnect may land before the post-commit wake-up was enqueued; the
     # dispatch sweep recovers that window. Either way the task runs once.
     if not api.redis.enqueued:
