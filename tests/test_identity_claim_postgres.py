@@ -24,7 +24,7 @@ from orchestrator.services.identity.google_verifier import (
 from tests.durable_tasks_support import Env, durable_env_fixture
 from orchestrator.services.identity.retention import sweep_identity_records
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 
 
 def _unused_google_verifier(

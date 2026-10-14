@@ -36,7 +36,7 @@ class AccountSuspended(AccountError):
 
 
 class UnknownAccount(AccountError):
-    """The user has no entitlement account and none could be created."""
+    """The user has no initialized entitlement account; consumers never repair it."""
 
 
 @dataclass(frozen=True, slots=True)

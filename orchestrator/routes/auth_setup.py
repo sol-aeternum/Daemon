@@ -109,6 +109,11 @@ from orchestrator.services.identity import (
 from orchestrator.services.identity.session_issuance import (
     _compute_refresh_ttl_seconds,
 )
+from orchestrator.services.identity.initialization import (
+    IdentityInitializationRefused,
+    require_existing_entitlement,
+)
+from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.identity.provenance import (
     attribute_email_challenge,
     attribute_google_nonce,
@@ -264,27 +269,17 @@ class SetupResponse(BaseModel):
     token_type: str = "Bearer"
 
 
-async def _find_or_create_singleton_user(conn) -> uuid.UUID:
+async def _find_or_create_singleton_user(conn, settings=None) -> uuid.UUID:
     row = await conn.fetchrow(
         "SELECT id FROM users WHERE id = $1",
         SINGLETON_USER_ID,
     )
     if row is not None:
+        await require_existing_entitlement(conn, row["id"])
         return row["id"]
-    return await conn.fetchval(
-        """
-        INSERT INTO users (id, email, name, username, preferences, settings)
-        VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb)
-        ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
-        RETURNING id
-        """,
-        SINGLETON_USER_ID,
-        "setup@daemon.local",
-        "Default User",
-        "daemon",
-        "{}",
-        "{}",
-    )
+    # Migration 007 owns this fixed UUID. Its absence cannot prove a genuinely
+    # new identity rather than loss/retirement; no runtime resurrection path.
+    raise IdentityInitializationRefused("missing_identity")
 
 
 async def _ensure_singleton_tenant(conn, user_id: uuid.UUID) -> uuid.UUID:
@@ -747,7 +742,7 @@ async def email_complete_endpoint(
             pepper=pepper,
         )
         identity_conn = cast(SupportsIdentityQueries, conn)
-        account_service = AccountService(identity_conn)
+        account_service = AccountService(identity_conn, settings)
 
         try:
             consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
@@ -777,6 +772,8 @@ async def email_complete_endpoint(
                 )
             except (EmailChallengeInvalid, InviteOnlyRejection, SignupDisabled):
                 raise _email_complete_failure()
+            except (IdentityInitializationRefused, JournalError) as exc:
+                raise HTTPException(status_code=503, detail="service_unavailable") from exc
 
             await _enforce_device_creation_limits(conn, claim_result.user.id)
             issued_session = await issue_device_session(
@@ -1208,7 +1205,7 @@ async def google_complete_endpoint(
             pepper=pepper,
         )
         identity_conn = cast(SupportsIdentityQueries, conn)
-        account_service = AccountService(identity_conn)
+        account_service = AccountService(identity_conn, settings)
 
         try:
             consumed_nonce = await verifier_service.consume_nonce(
@@ -1254,6 +1251,8 @@ async def google_complete_endpoint(
                 SignupDisabled,
             ):
                 raise _google_complete_failure()
+            except (IdentityInitializationRefused, JournalError) as exc:
+                raise HTTPException(status_code=503, detail="service_unavailable") from exc
 
             await _enforce_device_creation_limits(conn, claim_result.user.id)
             issued_session = await issue_device_session(
@@ -1442,7 +1441,10 @@ async def setup_endpoint(
                     detail="setup_already_complete",
                 )
 
-            user_id = await _find_or_create_singleton_user(conn)
+            try:
+                user_id = await _find_or_create_singleton_user(conn, settings)
+            except (IdentityInitializationRefused, JournalError) as exc:
+                raise HTTPException(status_code=503, detail="service_unavailable") from exc
             tenant_id = await _ensure_singleton_tenant(conn, user_id)
             access_token, refresh_token = await _create_first_device_and_session(
                 conn,

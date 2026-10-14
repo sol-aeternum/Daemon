@@ -89,8 +89,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
+
+from orchestrator.config import Settings, get_settings
+from orchestrator.services.account_control.store import Connection
+from orchestrator.services.identity.initialization import (
+    insert_hosted_identity,
+    require_existing_entitlement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -333,8 +340,9 @@ class AccountService:
     per-request inputs are passed as method arguments.
     """
 
-    def __init__(self, conn: SupportsIdentityQueries) -> None:
+    def __init__(self, conn: SupportsIdentityQueries, settings: Settings | None = None) -> None:
         self._conn = conn
+        self._settings = settings
 
     # ------------------------------------------------------------------
     # Lookups (claim-time locking is opt-in)
@@ -505,6 +513,10 @@ class AccountService:
         email_verified_at: datetime | None,
     ) -> UserRow:
         """Insert a new `users` row and return the resulting user.
+
+        Legacy low-level primitive, not called by runtime claims/session issuance
+        and not entitlement initialization authority. A row made here remains
+        unusable to entitlement consumers; qualified claims use the birth helper.
 
         The `users` schema (migrations 002 + 010 + 032) requires:
           - `username TEXT NOT NULL` (from migration 010; backfilled
@@ -1151,6 +1163,7 @@ class AccountService:
         (useful for audit and for the "first device" / "first
         identity-claim" notifications in TODO 14).
         """
+        await require_existing_entitlement(cast(Connection, self._conn), user.id)
         tenant, is_new_tenant = await self.ensure_personal_tenant(user.id)
         role, is_new_membership = await self.ensure_owner_membership(tenant.id, user.id)
         # Stamp verification if the user just proved email
@@ -1202,28 +1215,14 @@ class AccountService:
         # poison the surrounding transaction. If the INSERT returns no
         # row, a separate read resolves the existing user.
         username = _derive_username(normalized_email)
-        row = await self._conn.fetchrow(
-            """
-            INSERT INTO users (
-                username,
-                email,
-                name,
-                normalized_email,
-                email_verified_at
-            )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (normalized_email)
-            WHERE normalized_email IS NOT NULL
-            DO NOTHING
-            RETURNING id,
-                      normalized_email,
-                      email_verified_at
-            """,
-            username,
-            normalized_email,
-            normalized_email,
-            normalized_email,
-            email_verified_at,
+        if email_verified_at is None:
+            raise ValueError("new hosted identity requires verified proof")
+        row = await insert_hosted_identity(
+            cast(Connection, self._conn),
+            self._settings or get_settings(),
+            normalized_email=normalized_email,
+            username=username,
+            email_verified_at=email_verified_at,
         )
         if row is None:
             existing = await self.find_user_by_normalized_email(normalized_email, for_update=True)

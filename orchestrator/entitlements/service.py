@@ -249,9 +249,8 @@ class EntitlementService:
     async def resolve(self, user_id: uuid.UUID | str) -> ResolvedPolicy:
         """Resolve the account's current plan, capabilities, limits and trial.
 
-        Idempotent and safe on a first-touch account: the row is created with
-        ``plan='free'`` and a finite trial allowance. The legacy global tier
-        default is never consulted.
+        Non-provisioning: only the proven new-identity transaction initializes
+        defaults. A missing historical account is refused, never repaired.
         """
         uid = coerce_user_id(user_id)
         now = self.now()
@@ -529,8 +528,8 @@ class EntitlementService:
         """Resolve one server receipt after the original account-lock barrier.
 
         A fresh connection ensures no failed transaction snapshot is reused.
-        The uniqueness barrier also handles accounts created by the uncertain
-        transaction. Only then may an absent reservation prove rollback.
+        The existing account-row barrier waits for the original transaction.
+        Missing accounts remain unresolved, never recreated to prove rollback.
         This never creates or retries a reservation and never permits dispatch.
         """
         try:
@@ -1121,15 +1120,10 @@ class EntitlementService:
             )
 
     async def _ensure_account(self, conn: Connection, uid: uuid.UUID) -> AccountRecord:
-        try:
-            return await self._store.ensure_account(
-                conn,
-                uid,
-                trial_budget_microusd=self._policy.trial.budget_for_new_account(),
-                trial_extended_agents=self._policy.trial.extended_agents_for_new_account(),
-            )
-        except asyncpg.ForeignKeyViolationError as exc:
-            raise UnknownAccount(str(uid)) from exc
+        record = await self._store.get_account(conn, uid)
+        if record is None:
+            raise UnknownAccount(str(uid))
+        return record
 
     def _require_usable(
         self, record: AccountRecord, *, resolved: ResolvedPolicy, premium: bool, extended: bool

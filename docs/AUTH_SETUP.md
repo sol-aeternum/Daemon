@@ -4,7 +4,7 @@ This guide covers Daemon's per-device authentication model for hosted and self-h
 
 Hosted deployments present configured identity providers only; Google-only deployments show a standard Google sign-in button without enrollment fields. A "Keep me signed in" checkbox, off by default, selects a long-lived `private` session; otherwise the session is `temporary` for shared or public computers. Those providers prove account identity only: Google credentials, Google ID tokens, email codes, invite tokens, setup tokens, and enrollment tokens are never API credentials. Protected APIs trust only Daemon-issued device/session access tokens and rotating refresh tokens after identity proof, setup, or enrollment completes.
 
-Self-hosted first-boot setup remains a separate operator path for deployments configured as `self_hosted`, including recovery from zero active devices.
+Self-hosted first-boot setup remains a separate operator path for deployments configured as `self_hosted`, including recovery from zero active devices, but requires an existing singleton identity and entitlement row. Missing singleton state is a separate unresolved rollout prerequisite, not repaired by setup.
 
 ---
 
@@ -19,6 +19,8 @@ Hosted Google and email sign-in exchange a verified identity proof for a normal 
 - **Temporary or public-computer sessions**, when offered, are intentionally temporary, narrow-capability sessions; they do not authorize normal protected APIs unless a route explicitly allows temporary sessions.
 
 GitHub sign-in is out of scope. Provider tokens are never accepted as protected API authorization.
+
+Genuinely new hosted identities initialize entitlement defaults in the same identity/session transaction. Existing identities without entitlement rows are refused with `503 service_unavailable`, never repaired by sign-in. Historical account remediation requires a separate approved design; see [the birth-only prerequisite boundary](ACCOUNT_CONTROL_PERSISTENCE.md#first-time-entitlement-prerequisite--new-identity-birth-only).
 
 Hosted identity still has residual phishing and social-engineering risk: users can be tricked into entering email codes or approving the wrong account. Daemon mitigates this with nonce-bound challenges, single-use codes, generic responses, short TTLs, new-device visibility, and revocation, but operators should still treat suspicious sign-ins as account-security events.
 
@@ -100,13 +102,15 @@ and secure-cookie configuration. Preserve the database and encryption/auth keys.
 
 First-boot setup is the self-hosted and recovery path. Hosted deployments direct users to identity sign-in instead; the hosted backend rejects first-boot setup requests.
 
+**Current rollout blocker:** migration `007_seed_default_user.sql` pre-creates the fixed singleton identity without an entitlement row. On a database produced by the current migrations, `/v1/auth/setup` therefore refuses with `503 service_unavailable` and creates no device/session, even with a valid token and zero active devices. An absent singleton identity is also refused, never resurrected. Token delivery is not proof that setup can complete. Historical/singleton remediation remains a separate unresolved prerequisite requiring its own approved design; this guide does not authorize a manual entitlement insert, backfill or deployment. See [the implementation and qualification boundary](ACCOUNT_CONTROL_PERSISTENCE.md#first-time-entitlement-prerequisite--new-identity-birth-only).
+
 On a fresh Daemon installation with no active devices, the backend writes a one-time setup token to the local operator token file at startup. The default path is `.daemon/setup-token`; override it with `DAEMON_SETUP_TOKEN_FILE` if your deployment needs a different writable secret handoff path.
 
 ```
 >>> Daemon setup required. Open http://<host>:<port>/setup and enter the setup token from .daemon/setup-token
 ```
 
-The token file is written with `0600` permissions for the backend process user. Read that file locally, open the URL in your browser, and paste the token into the setup form field. Do not pass it as a URL parameter or query string.
+The token file is written with `0600` permissions for the backend process user. For an already-initialized singleton with an existing entitlement row, read that file locally, open the URL in your browser, and paste the token into the setup form field. Do not pass it as a URL parameter or query string. The token cannot create or repair missing singleton state.
 
 In multi-worker deployments, the setup token verifier is stored in Postgres-backed shared runtime state. Only the worker that creates or rotates a setup token writes the plaintext token file; every worker accepts that same token. If Daemon finds an existing setup-token verifier but no token file, it rotates the verifier and writes a fresh file so any token leaked by older logs stops working on the next startup.
 
@@ -172,7 +176,7 @@ Revocation is permanent. To regain access, the device must complete hosted ident
 
 ## Recovery — All Devices Revoked or Lost
 
-If all devices are revoked (or lost) and no enrolled browser can reach the Devices panel, recovery is possible because the setup condition is tied to **active device count**, not to whether setup has ever run.
+If all devices are revoked (or lost) and no enrolled browser can reach the Devices panel, setup-token recovery remains available only when the singleton identity and entitlement row already exist. **Zero active devices** is necessary, not sufficient; whether setup has ever run does not establish eligibility or authorize missing-state repair.
 
 When the server restarts with **zero active devices**, it will write a new one-time setup token:
 
@@ -180,9 +184,9 @@ When the server restarts with **zero active devices**, it will write a new one-t
 >>> Daemon setup required. Open http://<host>:<port>/setup and enter the setup token from .daemon/setup-token
 ```
 
-Because the setup token verifier is shared through Postgres, multiple backend workers accept the same recovery token. Read the token from the local token file and complete first-boot setup again from any browser to create a fresh device and regain access.
+Because the setup token verifier is shared through Postgres, multiple backend workers validate the same recovery token. For an already-initialized singleton, read the token from the local token file and complete setup again from any browser to create a fresh device. If the singleton identity or entitlement row is missing, setup refuses with `503 service_unavailable` and creates no device/session; restart and token rotation do not repair it. Recovery does not activate or reset entitlement status, generations, plans or counters.
 
-This means recovery requires server restart access — a self-hosted deployment's physical or container restart resets the setup flow when no devices are active.
+This recovery path requires server restart access — a self-hosted deployment's physical or container restart makes token recovery available when no devices are active, subject to the existing-singleton prerequisite above. It is not clearance to deploy the unresolved fresh-install path.
 
 ---
 

@@ -288,44 +288,6 @@ class EntitlementStore:
         return self._pool
 
     # ----------------------------------------------------------------- account
-    async def ensure_account(
-        self,
-        conn: Connection,
-        user_id: uuid.UUID,
-        *,
-        trial_budget_microusd: int,
-        trial_extended_agents: int,
-    ) -> AccountRecord:
-        """Create the account row on first touch. Idempotent and race-safe.
-
-        A brand new account is always ``free`` with a finite trial allowance.
-        Nothing here consults a global default tier.
-        """
-        trial_state = "active" if trial_budget_microusd > 0 else "exhausted"
-        row: Mapping[str, Any] | None = await conn.fetchrow(
-            f"""
-            INSERT INTO entitlement_accounts (
-                user_id, plan, plan_source, status, byok_enabled,
-                trial_state, trial_budget_microusd,
-                trial_consumed_microusd, trial_reserved_microusd, trial_extended_agents
-            )
-            VALUES ($1, 'free', 'default', 'active', FALSE, $2, $3, 0, 0, $4)
-            ON CONFLICT (user_id) DO NOTHING
-            RETURNING {_ACCOUNT_COLUMNS}
-            """,
-            user_id,
-            trial_state,
-            trial_budget_microusd,
-            trial_extended_agents,
-        )
-        if row is None:
-            record = await self.get_account(conn, user_id)
-        else:
-            record = _account_from_row(row)
-        if record is None:  # pragma: no cover - impossible inside a transaction
-            raise RuntimeError(f"entitlement account for {user_id} vanished")
-        return record
-
     async def get_account(self, conn: Connection, user_id: uuid.UUID) -> AccountRecord | None:
         row = await conn.fetchrow(
             f"SELECT {_ACCOUNT_COLUMNS} FROM entitlement_accounts WHERE user_id = $1",

@@ -178,6 +178,8 @@ async def test_sweep_reconciles_waits_expires_and_retries() -> None:
 # --------------------------------------------------------------------------- ledger
 @pytest_asyncio.fixture
 async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
+    from tests.durable_tasks_support import seed_entitlement
+
     dsn = os.environ.get("ENTITLEMENTS_TEST_DATABASE_URL")
     if not dsn:
         pytest.skip("requires isolated ENTITLEMENTS_TEST_DATABASE_URL")
@@ -196,6 +198,7 @@ async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
             migrations = Path(__file__).resolve().parents[1] / "migrations"
             for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
                 await conn.execute((migrations / name).read_text())
+            await seed_entitlement(conn, user_id)
         yield pool, user_id
     finally:
         if pool is not None:

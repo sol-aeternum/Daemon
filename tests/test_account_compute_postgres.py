@@ -22,6 +22,7 @@ from orchestrator.entitlements.errors import AccountSuspended, LimitExceeded, St
 from orchestrator.entitlements.models import SubscriptionEvent
 from orchestrator.entitlements.plans import Plan
 from orchestrator.entitlements.service import EntitlementService
+from tests.durable_tasks_support import seed_entitlement
 
 
 @pytest_asyncio.fixture
@@ -48,6 +49,7 @@ async def account_database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
             migrations = Path(__file__).resolve().parents[1] / "migrations"
             for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
                 await conn.execute((migrations / name).read_text())
+            await seed_entitlement(conn, user_id)
         yield pool, user_id
     finally:
         if pool is not None:
