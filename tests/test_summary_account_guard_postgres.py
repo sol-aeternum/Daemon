@@ -1071,8 +1071,11 @@ async def test_actual_stream_duplicate_followup_carries_origin_or_legacy_skip(
 )
 async def test_resumed_legacy_task_completes_but_never_upgrades_summary_origin(api, input_origin):
     from orchestrator.tasks import runner
-    from tests.durable_tasks_support import accept_task
+    from tests.durable_tasks_support import accept_task, seed_entitlement
 
+    # This module's generic env is intentionally uninitialized. Only this legacy
+    # runner fixture needs historical initialized state; never repair via capture.
+    await seed_entitlement(api.env.pool, api.env.alice)
     accepted = await accept_task(api.env)
     # Historical ciphertext fixture, not a NEW acceptance with caller authority.
     await api.env.pool.execute(
