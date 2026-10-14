@@ -356,7 +356,7 @@ async def test_real_setup_http_refuses_seeded_missing_entitlement_without_sessio
     from orchestrator.auth_tokens import hash_token
 
     app, settings, _, _, _, _ = await _prepare(env, monkeypatch, "email")
-    settings.daemon_deployment_mode = "self-hosted"
+    settings.daemon_deployment_mode = "self_hosted"
     settings.daemon_setup_token_file = str(tmp_path / "synthetic-setup-token")
     token = "synthetic-setup-proof-not-a-production-credential"
     async with env.pool.acquire() as conn:
