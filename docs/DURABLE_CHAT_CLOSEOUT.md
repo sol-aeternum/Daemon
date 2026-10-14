@@ -41,6 +41,22 @@ their original issues cleared the later regressions.
 | #486 legacy HTTP-cache privacy | **Still blocked / separate** | Real-browser pre-existing cache and account-change acceptance |
 | Deployment / enablement | **Not authorized** | Separate owner decisions after remaining gate dependencies |
 
+## New prerequisite S0 — source only, uncalled
+
+The 14 October 2026 owner authorization implements only an uncalled pure
+general-origin decoder/classifier with immutable data contracts and synthetic
+tests: [TASK_ORIGIN_CLASSIFIER.md](TASK_ORIGIN_CLASSIFIER.md). It distinguishes
+missing legacy data, authenticated invalid input and foreign origin without
+choosing task disposition or observing upstream operational failures. Missing
+legacy origins remain blocked pending separate disposition, never automatically
+repaired. Parsing is not provenance/authentication or write authority.
+
+This does not fence task execution/output, stop producers, settle accounting,
+protect evidence cascades or qualify deletion/readback. Separately approved
+bounded lifecycle/recovery and evidence/disposition prerequisites must precede
+runtime consumers, preserving existing recovery/deletion guarantees. No deployment,
+enablement or broader sequence completion; **#477 remains open**.
+
 ## Deterministic restart proof
 
 Run `scripts/durable_restart_drill.sh` from a checkout without `.env`.

@@ -513,6 +513,23 @@ outside the DB-only guard, startup stays fail closed, and no applier, marker,
 session drain, S1 retirement, reset/deletion, deployment or flag enablement is
 implemented here. **#477 remains open.**
 
+## S0 — uncalled general task-origin classification
+
+The owner authorized only the first new #477 prerequisite slice on 14 October
+2026. [`_origin.py`](../orchestrator/tasks/_origin.py) supplies a pure raw
+authenticated-input decoder and passive immutable contracts, with synthetic tests
+and **no runtime callers**. See [TASK_ORIGIN_CLASSIFIER.md](TASK_ORIGIN_CLASSIFIER.md)
+for closed codes, precedence and qualification limits. Parsed UUID/generation data
+is not provenance/authentication, owner proof, write/control authority or a guard.
+Missing legacy general origins (including summary-only input) stay blocked pending
+separate disposition, with no automatic repair or terminalization. S0 chooses no
+task status; restoration cannot silently restart or refresh refused work.
+
+Exclusive cleanup/accounting and safe bounded recovery, evidence/deletion/readback
+protections and runtime consumers remain unimplemented prerequisites. No existing
+recovery/deletion guarantee, schema, API, environment, dependency or runtime path
+changes here; no fence/readiness, deployment or enablement claim. **#477 stays open.**
+
 ## First-time entitlement prerequisite — new identity birth only
 
 The owner approved the narrower, lifecycle-safe policy: defaults are initialized
