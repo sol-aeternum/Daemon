@@ -11,7 +11,7 @@ import asyncio
 import os
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -98,7 +98,7 @@ async def seed_entitlement(conn: Any, uid: uuid.UUID) -> None:
     )
 
 
-async def _provision() -> AsyncIterator[Env]:
+async def _provision() -> AsyncGenerator[Env, None]:
     dsn = os.environ.get(DSN_ENV, "").strip()
     if not dsn:
         pytest.skip(f"requires disposable {DSN_ENV}")
