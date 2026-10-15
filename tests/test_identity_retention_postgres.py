@@ -20,7 +20,13 @@ from orchestrator.services.identity.provenance import (
     lock_consumed_email_challenge,
 )
 from orchestrator.services.identity.retention import sweep_identity_records
-from tests.durable_tasks_support import DSN_ENV, Env, MIGRATIONS, durable_env_fixture
+from tests.durable_tasks_support import (
+    DSN_ENV,
+    Env,
+    MIGRATIONS,
+    durable_env_fixture,
+    migration_sql_for_schema,
+)
 
 env = durable_env_fixture(initialized=True)
 NOW = datetime(2035, 2, 10, 12, tzinfo=timezone.utc)
@@ -101,7 +107,7 @@ async def test_observation_baseline_and_legacy_unknowns_are_repeat_safe() -> Non
         for path in sorted(MIGRATIONS.glob("*.sql")):
             if path != migration:
                 async with conn.transaction():
-                    await conn.execute(path.read_text())
+                    await conn.execute(migration_sql_for_schema(path, schema))
         user = uuid.uuid4()
         await conn.execute(
             "INSERT INTO users(id,email,normalized_email,name,username,created_at) "

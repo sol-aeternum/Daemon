@@ -2,7 +2,7 @@
   "schema": "journal+account_writer_catalogue/v1",
   "purpose": "Explicit table/writer classification. Generated title SQL has bounded J1c-1b integration; every other site remains uncovered. Source change detection is not runtime fencing.",
   "limits": {
-    "scanner": "Unquoted forward CREATE/ALTER reference dependencies plus AST SQL execute/executemany/fetch/fetchrow/fetchval, filesystem and store/publication candidates; no runtime imports. Unsupported CREATE/REFERENCES grammar fails.",
+    "scanner": "Unquoted default/public forward CREATE/ALTER reference dependencies plus AST SQL execute/executemany/fetch/fetchrow/fetchval, filesystem and store/publication candidates; no runtime imports. Quoted names, other schemas and unsupported declaration grammar fail; unresolved mutation targets remain explicit unknown candidates.",
     "ownership": "Every FK parent retained, including added ALTER references and cycles. These are conservative historical dependency paths, not policy ownership. Account-control account_id and other non-FK ownership still require source-backed semantics.",
     "dynamic_sql": "Unresolved/augmented/mixed-binding SQL arguments and interpolated strings are deferred candidates. Named-literal fingerprints include all resolved values; repeated identical calls have distinct occurrence identities.",
     "indirect_effects": "No universal call-graph, receiver, trigger, SQL-function, SQL-data or provider-network-effect proof. Custom wrappers/aliases, nonliteral open modes via wrappers and effects outside listed roots/patterns need manual review; AST absence proves nothing.",
@@ -26,6 +26,18 @@
       "owner_source": "migrations/047_account_control_persistence.sql",
       "ownership_path": "root:users <- entitlement_accounts <- account_suspension_causes",
       "rationale": "Account/identity/billing/control state; future narrowly authorized control APIs required, not ordinary content permission. Uncovered."
+    },
+    "compute_reservation_metadata": {
+      "category": "control",
+      "owner_source": "migrations/048_compute_metadata.sql",
+      "ownership_path": "root:users <- entitlement_accounts <- compute_scope_metadata <- compute_reservation_metadata | root:users <- entitlement_reservations <- compute_reservation_metadata",
+      "rationale": "Uncovered storage/identity/accounting-extension control metadata, not content, financial authority or runtime integration. Both metadata-scope and existing reservation FK dependency paths retained; no execution or account-fence claim."
+    },
+    "compute_scope_metadata": {
+      "category": "control",
+      "owner_source": "migrations/048_compute_metadata.sql",
+      "ownership_path": "root:users <- entitlement_accounts <- compute_scope_metadata",
+      "rationale": "Uncovered storage/identity/accounting-extension control metadata owned through the existing account dependency. Not ordinary content permission, account provisioning, execution authority or runtime integration."
     },
     "conversations": {
       "category": "content",
@@ -278,6 +290,13 @@
     "account_suspension_causes": [
       "entitlement_accounts"
     ],
+    "compute_reservation_metadata": [
+      "compute_scope_metadata",
+      "entitlement_reservations"
+    ],
+    "compute_scope_metadata": [
+      "entitlement_accounts"
+    ],
     "conversations": [
       "users"
     ],
@@ -403,6 +422,8 @@
     "account_deletions": "root:deletion_journal_binding <- account_deletions",
     "account_email_ownership": "root:users <- account_email_ownership",
     "account_suspension_causes": "root:users <- entitlement_accounts <- account_suspension_causes",
+    "compute_reservation_metadata": "root:users <- entitlement_accounts <- compute_scope_metadata <- compute_reservation_metadata | root:users <- entitlement_reservations <- compute_reservation_metadata",
+    "compute_scope_metadata": "root:users <- entitlement_accounts <- compute_scope_metadata",
     "conversations": "root:users <- conversations",
     "council_sessions": "root:users <- conversations <- council_sessions",
     "deletion_journal_applied": "root:deletion_journal_binding <- deletion_journal_applied",
@@ -617,6 +638,39 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.compute_metadata",
+      "qualname": "ComputeMetadataStore._call",
+      "kind": "sql_dynamic",
+      "fingerprint": "d40a05b340371439",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Interpolated LOCAL timeout settings remain an explicit unresolved AST candidate. Uncalled storage-only metadata path; no content mutation, runtime integration or account-fence coverage inferred."
+    },
+    {
+      "owner_source": "orchestrator.compute_metadata",
+      "qualname": "ComputeMetadataStore._call",
+      "kind": "sql_named",
+      "fingerprint": "04e9a52382876841",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Caller eligibility SELECT contains mutation words in privilege literals, triggering the bounded textual detector without a mutation target. Explicit deferred/uncovered candidate, not a claimed writer or runtime fence."
+    },
+    {
+      "owner_source": "orchestrator.compute_metadata",
+      "qualname": "ComputeMetadataStore._call",
+      "kind": "sql_unresolvable",
+      "fingerprint": "e4337c4affc45ef2",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Indexed function-statement selection and SQL-function effects are not resolved by the bounded AST scanner. Uncalled storage/identity/accounting extension remains explicitly deferred/uncovered; no runtime integration or fence proof."
     },
     {
       "owner_source": "orchestrator.compute_runtime",

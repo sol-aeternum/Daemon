@@ -23,6 +23,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.durable_tasks_support import migration_sql_for_schema
+
 MIGRATIONS_DIR_UP_LEVELS = 2
 TEST_DSN_ENV_VAR = "ENTITLEMENTS_TEST_DATABASE_URL"
 DEFAULT_SCHEMA_PREFIX = "bench_isolated_"
@@ -106,7 +108,9 @@ def _scoped_dsn(dsn: str, schema: str) -> str:
     return f"{dsn}{separator}{options}"
 
 
-async def _apply_migrations(conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy) -> None:
+async def _apply_migrations(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, schema: str
+) -> None:
     """Apply the shipped migrations into the isolated schema.
 
     ``scripts/migrate.py`` bookkeeping (``_migrations``) is intentionally
@@ -120,7 +124,7 @@ async def _apply_migrations(conn: asyncpg.Connection | asyncpg.pool.PoolConnecti
     assert migration_files, f"no migration files found under {migrations_dir}"
     for path in migration_files:
         async with conn.transaction():
-            await conn.execute(path.read_text())
+            await conn.execute(migration_sql_for_schema(path, schema, schema_prefix=schema[:-32]))
 
 
 async def _public_relations(
@@ -153,7 +157,7 @@ async def _assert_migration_probes(
 ) -> None:
     """Run the shared isolation + metadata contract probes against the schema."""
     public_before = await _public_relations(conn)
-    await _apply_migrations(conn)
+    await _apply_migrations(conn, schema)
     public_after = await _public_relations(conn)
     added = sorted(public_after - public_before)
     removed = sorted(public_before - public_after)
