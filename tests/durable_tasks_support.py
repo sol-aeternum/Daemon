@@ -31,19 +31,29 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 LEASE_S = 45.0
 
 
-def migration_sql_for_schema(path: Path, schema: str) -> str:
+def migration_sql_for_schema(path: Path, schema: str, *, schema_prefix: str | None = None) -> str:
     """Relocate only 048's public namespace for existing isolated-schema tests.
 
     Production SQL is unchanged. The metadata PostgreSQL suite separately runs
     the original file in public; this adapter is not its security qualification.
     PUBLIC (the privilege grantee) and fixed pg_catalog search paths stay intact.
     """
-    if not re.fullmatch(r"(?:tasks_test|identity_legacy)_[0-9a-f]{32}", schema):
+    if schema_prefix is None:
+        owned = re.fullmatch(r"(?:tasks_test|identity_legacy)_[0-9a-f]{32}", schema)
+        namespace = schema
+    else:
+        # The benchmark provisioner supplies its already validated prefix and
+        # generated UUID suffix. No arbitrary schema or public fallback.
+        owned = re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_]{0,30}", schema_prefix, re.ASCII
+        ) and re.fullmatch(re.escape(schema_prefix) + r"[0-9a-f]{32}", schema)
+        namespace = f'"{schema}"'
+    if not owned:
         raise ValueError("expected an owned durable-test schema")
     sql = path.read_text()
     if path.name != "048_compute_metadata.sql":
         return sql
-    return sql.replace("public.", schema + ".").replace(
+    return sql.replace("public.", namespace + ".").replace(
         "n.nspname='public'", f"n.nspname='{schema}'"
     )
 

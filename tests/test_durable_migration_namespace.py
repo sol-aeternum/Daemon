@@ -6,8 +6,10 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from tests.benchmark_longmemeval.isolated_database import provision_isolated_database
 from tests.durable_tasks_support import (
     DSN_ENV,
+    Env,
     MIGRATIONS,
     _provision,
     migration_sql_for_schema,
@@ -25,11 +27,30 @@ def test_namespace_adapter_leaves_previous_migrations_exact():
     assert migration_sql_for_schema(path, "tasks_test_" + uuid4().hex) == path.read_text()
 
 
+@pytest.mark.parametrize(
+    ("prefix", "schema"),
+    [
+        ("", "a" * 32),
+        ("unsafe;", "unsafe;" + "a" * 32),
+        ("x" * 32, "x" * 32 + "a" * 32),
+        ("bench_", "public"),
+        ("bench_", "other_" + "a" * 32),
+    ],
+)
+def test_custom_namespace_requires_valid_prefix_and_generated_suffix(prefix, schema):
+    with pytest.raises(ValueError, match="owned durable-test schema"):
+        migration_sql_for_schema(
+            MIGRATIONS / "048_compute_metadata.sql", schema, schema_prefix=prefix
+        )
+
+
 @pytest.mark.asyncio
-async def test_full_fixture_replay_keeps_metadata_and_dependencies_private():
-    dsn = os.environ.get(DSN_ENV, "").strip()
+@pytest.mark.parametrize("fixture_kind", ["durable", "benchmark"])
+async def test_full_fixture_replay_keeps_metadata_and_dependencies_private(fixture_kind):
+    dsn_env = DSN_ENV if fixture_kind == "durable" else "ENTITLEMENTS_TEST_DATABASE_URL"
+    dsn = os.environ.get(dsn_env, "").strip()
     if not dsn:
-        pytest.skip(f"requires disposable {DSN_ENV}")
+        pytest.skip(f"requires disposable {dsn_env}")
     admin = await asyncpg.connect(dsn)
 
     async def public_snapshot():
@@ -41,10 +62,16 @@ async def test_full_fixture_replay_keeps_metadata_and_dependencies_private():
             FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
             WHERE n.nspname='public' AND p.proname LIKE 'compute_metadata_%'))""")
 
-    fixture = _provision()
+    fixture = (
+        _provision()
+        if fixture_kind == "durable"
+        else provision_isolated_database("bench_metadata_")
+    )
     schema = None
     canaries_created = False
     try:
+        for extension in ("pgcrypto", "vector"):
+            await admin.execute(f"CREATE EXTENSION IF NOT EXISTS {extension} WITH SCHEMA public")
         # Nonempty public canaries discriminate accidental public DDL/revokes.
         # Never replace existing objects, even in a disposable test database.
         assert await admin.fetchval("SELECT to_regclass('public.compute_scope_metadata')") is None
@@ -63,15 +90,26 @@ async def test_full_fixture_replay_keeps_metadata_and_dependencies_private():
         canaries_created = True
         before = await public_snapshot()
         env = await anext(fixture)
-        async with env.pool.acquire() as conn:
+        pool = env.pool if isinstance(env, Env) else env[0]
+        async with pool.acquire() as conn:
             schema = await conn.fetchval("SELECT current_schema()")
-            assert schema.startswith("tasks_test_")
+            prefix = "tasks_test_" if fixture_kind == "durable" else "bench_metadata_"
+            assert schema.startswith(prefix)
+            namespace = schema if fixture_kind == "durable" else f'"{schema}"'
             tables = await conn.fetchval(
                 "SELECT count(*) FROM pg_class WHERE relnamespace=$1::regnamespace "
                 "AND relname IN ('compute_scope_metadata','compute_reservation_metadata')",
                 schema,
             )
             assert tables == 2
+            assert not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM pg_class c CROSS JOIN LATERAL "
+                "aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a "
+                "WHERE c.relnamespace=$1::regnamespace AND "
+                "c.relname IN ('compute_scope_metadata','compute_reservation_metadata') "
+                "AND a.grantee=0)",
+                schema,
+            )
             edges = await conn.fetch(
                 """SELECT c.relname AS child,p.relname AS parent,
                 cn.nspname AS child_schema,pn.nspname AS parent_schema
@@ -102,7 +140,7 @@ async def test_full_fixture_replay_keeps_metadata_and_dependencies_private():
                 r["prosecdef"]
                 and r["proconfig"] == ["search_path=pg_catalog"]
                 and not r["public_grant"]
-                and schema + "." in r["definition"]
+                and namespace + "." in r["definition"]
                 and "public." not in r["definition"]
                 for r in functions
             )
