@@ -32,7 +32,7 @@ LEASE_S = 45.0
 
 
 def migration_sql_for_schema(path: Path, schema: str, *, schema_prefix: str | None = None) -> str:
-    """Relocate only 048's public namespace for existing isolated-schema tests.
+    """Relocate explicit public namespaces for existing isolated-schema tests.
 
     Production SQL is unchanged. The metadata PostgreSQL suite separately runs
     the original file in public; this adapter is not its security qualification.
@@ -51,7 +51,7 @@ def migration_sql_for_schema(path: Path, schema: str, *, schema_prefix: str | No
     if not owned:
         raise ValueError("expected an owned durable-test schema")
     sql = path.read_text()
-    if path.name != "048_compute_metadata.sql":
+    if path.name not in ("048_compute_metadata.sql", "049_attempt_lifecycle.sql"):
         return sql
     return sql.replace("public.", namespace + ".").replace(
         "n.nspname='public'", f"n.nspname='{schema}'"

@@ -9,6 +9,18 @@
     "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
+    "attempt_lifecycle_commands": {
+      "category": "control",
+      "owner_source": "migrations/049_attempt_lifecycle.sql",
+      "ownership_path": "root:attempt_lifecycle_control <- attempt_lifecycle_commands",
+      "rationale": "Uncalled immutable command history, not content permission or current execution authority. Retained account-linked identifiers; disposition and restore remain release gates. Uncovered."
+    },
+    "attempt_lifecycle_control": {
+      "category": "control",
+      "owner_source": "migrations/049_attempt_lifecycle.sql",
+      "ownership_path": "root:attempt_lifecycle_control",
+      "rationale": "No outbound FK; explicit immutable identity.account_id/account_id binds account ownership. Uncalled OPEN/CLOSED control, not runtime fencing, stop or erasure evidence. Uncovered."
+    },
     "account_deletions": {
       "category": "control",
       "owner_source": "migrations/047_account_control_persistence.sql",
@@ -281,6 +293,9 @@
     }
   },
   "fk_edges": {
+    "attempt_lifecycle_commands": [
+      "attempt_lifecycle_control"
+    ],
     "account_deletions": [
       "deletion_journal_binding"
     ],
@@ -419,6 +434,8 @@
     ]
   },
   "ownership_paths": {
+    "attempt_lifecycle_commands": "root:attempt_lifecycle_control <- attempt_lifecycle_commands",
+    "attempt_lifecycle_control": "root:attempt_lifecycle_control",
     "account_deletions": "root:deletion_journal_binding <- account_deletions",
     "account_email_ownership": "root:users <- account_email_ownership",
     "account_suspension_causes": "root:users <- entitlement_accounts <- account_suspension_causes",
@@ -466,6 +483,42 @@
     "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots"
   },
   "writer_sites": [
+    {
+      "owner_source": "orchestrator.attempt_lifecycle",
+      "qualname": "AttemptLifecycleStore._call",
+      "kind": "sql_dynamic",
+      "line_hint": 183,
+      "fingerprint": "7bf68242c0c24486",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded uncalled SQL operation dispatch. Scanner cannot prove definer effects; lifecycle contracts/tests do not establish a runtime fence."
+    },
+    {
+      "owner_source": "orchestrator.attempt_lifecycle",
+      "qualname": "AttemptLifecycleStore._call",
+      "kind": "sql_unresolvable",
+      "line_hint": 178,
+      "fingerprint": "f600f60971c2232a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Caller privilege predicate; scanner cannot resolve computed SQL. Uncovered source-only prerequisite, no runtime integration."
+    },
+    {
+      "owner_source": "orchestrator.attempt_lifecycle",
+      "qualname": "assert_open",
+      "kind": "sql_unresolvable",
+      "line_hint": 141,
+      "fingerprint": "f600f60971c2232a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Caller privilege predicate; unresolved SQL retained conservatively. The gate is uncalled, not universal content or runtime fencing."
+    },
     {
       "owner_source": "orchestrator.artifacts",
       "qualname": "user_artifact_directory",
