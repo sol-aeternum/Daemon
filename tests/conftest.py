@@ -55,6 +55,12 @@ def _clear_settings_cache():
 
 def pytest_addoption(parser):
     parser.addoption(
+        "--compute-metadata-postgres",
+        action="store_true",
+        default=False,
+        help="Launch a fresh owned network-none cached PostgreSQL container (no DSN fallback)",
+    )
+    parser.addoption(
         "--p06-redis-port",
         type=int,
         default=56379,
