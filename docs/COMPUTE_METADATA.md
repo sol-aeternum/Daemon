@@ -120,6 +120,12 @@ application DSN or shared database fallback. The finite private Unix bridge reap
 its exact children and verifies stopped containers/backend reconciliation.
 Without the switch integration tests skip and are **not qualification evidence**.
 
+Existing durable-task fixtures replay 048 in their own generated private schemas
+using the test-only `migration_sql_for_schema` namespace adapter. It preserves
+fixture isolation and does not qualify the production public namespace. The
+explicit metadata suite above still executes unchanged production SQL in public;
+production prerequisites and grants are not weakened by the test adapter.
+
 Tests cover the full source migration chain, restricted principals and exact ACL
 restoration, natural lock/deadlock waits, deliberate server trigger faults,
 real adapter COMMIT-response loss (including unsent-COMMIT absence), a killed

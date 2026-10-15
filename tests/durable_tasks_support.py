@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -28,6 +29,23 @@ from orchestrator.tasks.store import TaskStore
 DSN_ENV = "TASKS_TEST_DATABASE_URL"
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 LEASE_S = 45.0
+
+
+def migration_sql_for_schema(path: Path, schema: str) -> str:
+    """Relocate only 048's public namespace for existing isolated-schema tests.
+
+    Production SQL is unchanged. The metadata PostgreSQL suite separately runs
+    the original file in public; this adapter is not its security qualification.
+    PUBLIC (the privilege grantee) and fixed pg_catalog search paths stay intact.
+    """
+    if not re.fullmatch(r"(?:tasks_test|identity_legacy)_[0-9a-f]{32}", schema):
+        raise ValueError("expected an owned durable-test schema")
+    sql = path.read_text()
+    if path.name != "048_compute_metadata.sql":
+        return sql
+    return sql.replace("public.", schema + ".").replace(
+        "n.nspname='public'", f"n.nspname='{schema}'"
+    )
 
 
 @dataclass
@@ -97,7 +115,7 @@ async def _provision() -> AsyncIterator[Env]:
         async with pool.acquire() as conn:
             for path in sorted(MIGRATIONS.glob("*.sql")):
                 async with conn.transaction():
-                    await conn.execute(path.read_text())
+                    await conn.execute(migration_sql_for_schema(path, schema))
         encryption = ContentEncryption(Fernet.generate_key().decode())
         memory = MemoryStore(pool, encryption)
         users = []
