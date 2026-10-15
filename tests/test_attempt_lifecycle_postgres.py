@@ -805,7 +805,11 @@ async def test_actual_writer_lock_inversion_is_bounded_refusal(db):
         try:
             await lc.AttemptLifecycleStore(pool).register(ident, uuid4())
             await admin.execute(
-                f"ALTER ROLE md_app IN DATABASE {db.name} SET deadlock_timeout='10ms'"
+                # Let the observer and opposing query form the cycle before
+                # PostgreSQL's one-shot detector runs. 10ms could elapse before
+                # observation completed, leaving only the real 250ms lock bound.
+                # This changes the disposable detector, NOT the primitive bound.
+                f"ALTER ROLE md_app IN DATABASE {db.name} SET deadlock_timeout='100ms'"
             )
             # New connection picks up the disposable role setting.
             async with db.connection("md_app") as gate:
