@@ -7,6 +7,7 @@ import asyncpg
 import pytest
 
 from tests.benchmark_longmemeval.isolated_database import provision_isolated_database
+from tests.test_conversation_listing_metadata import listing_database
 from tests.durable_tasks_support import (
     DSN_ENV,
     Env,
@@ -45,7 +46,105 @@ def test_custom_namespace_requires_valid_prefix_and_generated_suffix(prefix, sch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fixture_kind", ["durable", "benchmark"])
+@pytest.mark.parametrize("foreign_extension", ["pgcrypto", "vector"])
+async def test_listing_refuses_foreign_extension_home_before_private_ddl(
+    monkeypatch, foreign_extension
+):
+    statements = []
+
+    class Admin:
+        closed = False
+
+        async def execute(self, sql):
+            statements.append(sql)
+
+        async def fetchval(self, sql, extension):
+            return "foreign_fixture" if extension == foreign_extension else "public"
+
+        async def close(self):
+            self.closed = True
+
+    admin = Admin()
+
+    async def connect(_dsn):
+        return admin
+
+    async def forbidden_pool(*args, **kwargs):
+        pytest.fail("foreign extension home reached pool/private schema provisioning")
+
+    monkeypatch.setenv("ENTITLEMENTS_TEST_DATABASE_URL", "synthetic-never-connected")
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    monkeypatch.setattr(asyncpg, "create_pool", forbidden_pool)
+    fixture = getattr(listing_database, "__wrapped__")()
+    with pytest.raises(RuntimeError, match="extensions must be installed in public"):
+        await anext(fixture)
+    assert admin.closed
+    assert statements and all(s.startswith("CREATE EXTENSION IF NOT EXISTS ") for s in statements)
+    assert all("WITH SCHEMA public" in s for s in statements)
+
+
+@pytest.mark.asyncio
+async def test_listing_close_timeout_retains_schema_and_reports_failure(monkeypatch, tmp_path):
+    import asyncio
+
+    from tests import test_conversation_listing_metadata as listing
+
+    statements = []
+
+    class Admin:
+        closed = False
+
+        async def execute(self, sql):
+            statements.append(sql)
+
+        async def fetchval(self, sql, extension):
+            return "public"
+
+        async def close(self):
+            self.closed = True
+
+    class Pool:
+        terminated = False
+
+        def acquire(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def close(self):
+            await asyncio.Event().wait()
+
+        def terminate(self):
+            self.terminated = True
+
+    admin, pool = Admin(), Pool()
+
+    async def connect(_dsn):
+        return admin
+
+    async def create_pool(*args, **kwargs):
+        return pool
+
+    monkeypatch.setenv("ENTITLEMENTS_TEST_DATABASE_URL", "synthetic-never-connected")
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    monkeypatch.setattr(asyncpg, "create_pool", create_pool)
+    monkeypatch.setattr(listing, "MIGRATIONS_DIR", tmp_path)
+    monkeypatch.setattr(listing, "_LISTING_POOL_CLOSE_TIMEOUT_S", 0.01)
+    fixture = getattr(listing_database, "__wrapped__")()
+    assert await anext(fixture) is pool
+    with pytest.raises(TimeoutError):
+        await fixture.aclose()
+    assert pool.terminated and admin.closed
+    assert any(s.startswith("CREATE SCHEMA ") for s in statements)
+    assert not any("DROP SCHEMA" in s for s in statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fixture_kind", ["durable", "benchmark", "listing"])
 async def test_full_fixture_replay_keeps_metadata_and_dependencies_private(fixture_kind):
     dsn_env = DSN_ENV if fixture_kind == "durable" else "ENTITLEMENTS_TEST_DATABASE_URL"
     dsn = os.environ.get(dsn_env, "").strip()
@@ -62,11 +161,14 @@ async def test_full_fixture_replay_keeps_metadata_and_dependencies_private(fixtu
             FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
             WHERE n.nspname='public' AND p.proname LIKE 'compute_metadata_%'))""")
 
-    fixture = (
-        _provision()
-        if fixture_kind == "durable"
-        else provision_isolated_database("bench_metadata_")
-    )
+    if fixture_kind == "durable":
+        fixture = _provision()
+    elif fixture_kind == "benchmark":
+        fixture = provision_isolated_database("bench_metadata_")
+    else:
+        # Drive the real pytest fixture's preserved generator so the same
+        # canary/namespace/ACL and explicit aclose teardown probes cover it.
+        fixture = getattr(listing_database, "__wrapped__")()
     schema = None
     canaries_created = False
     try:
@@ -90,10 +192,16 @@ async def test_full_fixture_replay_keeps_metadata_and_dependencies_private(fixtu
         canaries_created = True
         before = await public_snapshot()
         env = await anext(fixture)
-        pool = env.pool if isinstance(env, Env) else env[0]
+        pool = (
+            env.pool if isinstance(env, Env) else env if isinstance(env, asyncpg.Pool) else env[0]
+        )
         async with pool.acquire() as conn:
             schema = await conn.fetchval("SELECT current_schema()")
-            prefix = "tasks_test_" if fixture_kind == "durable" else "bench_metadata_"
+            prefix = {
+                "durable": "tasks_test_",
+                "benchmark": "bench_metadata_",
+                "listing": "history_listing_test_",
+            }[fixture_kind]
             assert schema.startswith(prefix)
             namespace = schema if fixture_kind == "durable" else f'"{schema}"'
             tables = await conn.fetchval(

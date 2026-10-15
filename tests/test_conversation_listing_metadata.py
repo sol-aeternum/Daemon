@@ -31,6 +31,7 @@ from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from orchestrator.worker import jobs
 from orchestrator.services.account_control.guard import CapturedGeneration
+from tests.durable_tasks_support import migration_sql_for_schema
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
 
@@ -42,6 +43,7 @@ def _store(pool: asyncpg.Pool) -> MemoryStore:
 
 
 _LISTING_ENCRYPTION = ContentEncryption(Fernet.generate_key().decode())
+_LISTING_POOL_CLOSE_TIMEOUT_S = 10.0
 
 
 @pytest_asyncio.fixture
@@ -52,8 +54,20 @@ async def listing_database() -> AsyncIterator[asyncpg.Pool]:
     schema = f"history_listing_test_{uuid.uuid4().hex}"
     admin = await asyncpg.connect(dsn)
     pool = None
+    schema_created = False
     try:
+        # Extensions must survive disposal of this private schema. Refuse an
+        # existing foreign home rather than relocating someone else's objects.
+        for extension in ("pgcrypto", "vector"):
+            await admin.execute(f"CREATE EXTENSION IF NOT EXISTS {extension} WITH SCHEMA public")
+            home = await admin.fetchval(
+                "SELECT extnamespace::regnamespace::text FROM pg_extension WHERE extname = $1",
+                extension,
+            )
+            if home != "public":
+                raise RuntimeError("listing test extensions must be installed in public")
         await admin.execute(f'CREATE SCHEMA "{schema}"')
+        schema_created = True
         pool = await asyncpg.create_pool(
             dsn,
             min_size=1,
@@ -63,13 +77,26 @@ async def listing_database() -> AsyncIterator[asyncpg.Pool]:
         async with pool.acquire() as conn:
             for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
                 async with conn.transaction():
-                    await conn.execute(migration.read_text())
+                    await conn.execute(
+                        migration_sql_for_schema(
+                            migration, schema, schema_prefix="history_listing_test_"
+                        )
+                    )
         yield pool
     finally:
-        if pool is not None:
-            await pool.close()
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
+        try:
+            if pool is not None:
+                try:
+                    await asyncio.wait_for(pool.close(), timeout=_LISTING_POOL_CLOSE_TIMEOUT_S)
+                except BaseException:
+                    # Report the failure and retain the schema, never treat
+                    # termination as proof of successful rollback/remote stop.
+                    pool.terminate()
+                    raise
+            if schema_created:
+                await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await admin.close()
 
 
 async def _add_user(pool: asyncpg.Pool) -> uuid.UUID:
