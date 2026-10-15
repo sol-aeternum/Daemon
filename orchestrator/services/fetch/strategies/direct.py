@@ -15,11 +15,15 @@ import httpx
 from orchestrator.config import DEFAULT_FETCH_USER_AGENT, get_settings
 from orchestrator.services.fetch.bounds import max_response_bytes
 from orchestrator.services.fetch.models import (
+    FetchAccessDeniedError,
+    FetchChallengeError,
     FetchContentError,
     FetchExtractionError,
+    FetchHttpError,
     FetchPageTooLargeError,
     FetchPolicy,
     FetchResult,
+    FetchTransportError,
 )
 from orchestrator.services.fetch.pinned_http import (
     build_host_header,
@@ -39,6 +43,7 @@ _FETCH_SCHEMES = frozenset({"http", "https"})
 _FETCH_PORTS = frozenset({80, 443})
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_REDIRECTS = 5
+_DENIED_STATUSES = frozenset({401, 403, 407, 429})
 
 # Per-address socket timeout. Stays modest so a single silent drop cannot
 # consume the entire per-fetch budget on its own.
@@ -317,7 +322,10 @@ class DirectFetchStrategy:
             url: URL to fetch
 
         Returns:
-            FetchResult with content or None if fetch failed
+            FetchResult with content or None if content policy rejects it.
+
+        Known HTTP/transport failures raise bounded FetchContentError categories.
+        URL safety violations retain their existing SsrfViolation path.
         """
         try:
             current_url = url
@@ -349,7 +357,7 @@ class DirectFetchStrategy:
                     logger.info(
                         "Direct fetch abandoned: shared per-fetch deadline already exhausted"
                     )
-                    return None
+                    raise FetchTransportError()
                 if _is_blocked_domain(current_url, self.policy.blocked_domains):
                     raise SsrfPolicyViolation(f"hostname is blocked by fetch policy: {current_url}")
                 try:
@@ -360,19 +368,9 @@ class DirectFetchStrategy:
                         timeout=remaining,
                     )
                 except SsrfUnreachable:
-                    # Target unreachable (DNS timeout / gaierror / no
-                    # results / bounded resolver exhaustion). The direct
-                    # path could not connect, but fallbacks that contact
-                    # r.jina.ai / archive.org instead of the target host
-                    # may still succeed. Swallow and let the chain
-                    # continue. Exception text can carry the requested
-                    # host and is never logged.
-                    logger.info(
-                        "Direct fetch unavailable: resolver could not "
-                        "validate the target; fallback strategies may "
-                        "still succeed"
-                    )
-                    return None
+                    # DNS unavailability is not an unsafe-URL verdict.
+                    # Preserve only a fixed category, never resolver details.
+                    raise FetchTransportError() from None
                 except SsrfPolicyViolation:
                     # URL is unsafe by policy (blocked IP, blocked host,
                     # disallowed scheme/port, userinfo, malformed host,
@@ -381,13 +379,7 @@ class DirectFetchStrategy:
                     # that may itself bypass policy.
                     raise
                 if not validated.addresses:
-                    # No validated addresses is a target unavailability, not
-                    # a safety violation — same treatment as DNS failure.
-                    logger.info(
-                        "Direct fetch had no validated addresses; "
-                        "fallback strategies may still succeed"
-                    )
-                    return None
+                    raise FetchTransportError()
                 # httpx requires ASCII header values; convert IDN hosts to IDNA
                 # so Unicode hostnames (e.g. bücher.example) don't raise
                 # UnicodeEncodeError when constructing the request. Preserve an
@@ -413,19 +405,27 @@ class DirectFetchStrategy:
                     cookies=shared_cookies,
                 )
                 if response is None:
-                    # Every validated address was unreachable. Return ``None``
-                    # so FetchService can continue to its next strategy.
-                    return None
+                    # Every bounded validated-address attempt was unreachable.
+                    raise FetchTransportError()
+                # Explicit response evidence, not a 403, CDN identity, page
+                # title or arbitrary body text. Check before following another
+                # redirect or extracting/caching any content. The transport's
+                # existing decoded-body and deadline bounds still take priority.
+                if response.headers.get("cf-mitigated", "").strip().lower() == "challenge":
+                    raise FetchChallengeError()
                 if response.status_code not in _REDIRECT_STATUSES:
                     break
                 location = response.headers.get("location")
                 if not location or redirect_count == _MAX_REDIRECTS:
-                    return None
+                    raise FetchHttpError()
                 current_url = urljoin(current_url, location)
 
             if response is None:
-                return None
-            _ = response.raise_for_status()
+                raise FetchTransportError()
+            if response.status_code in _DENIED_STATUSES:
+                raise FetchAccessDeniedError()
+            if not 200 <= response.status_code <= 299:
+                raise FetchHttpError()
 
             content = response.text
             content_type: str = response.headers.get("content-type", "") or ""
@@ -454,6 +454,8 @@ class DirectFetchStrategy:
             raise
         except FetchContentError:
             raise
+        except (httpx.RequestError, TimeoutError):
+            raise FetchTransportError() from None
         except Exception:
             # Fetch/network exceptions can carry requested-URL fragments,
             # response headers or page content, so neither their text nor a

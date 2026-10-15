@@ -25,6 +25,10 @@ EXTRACTION_VERSION_V1: Final[str] = "web-reader-v1"
 _ERROR_MESSAGES: Final[dict[str, str]] = {
     "page_too_large": ("page_too_large: content exceeds the configured maximum response size"),
     "extraction_failed": ("extraction_failed: requested extraction unavailable for this source"),
+    "upstream_challenge": "upstream_challenge: source requires a challenge",
+    "access_denied": "access_denied: source denied the request",
+    "http_error": "http_error: source returned an unsuccessful HTTP response",
+    "transport_error": "transport_error: source could not be reached or read",
 }
 
 
@@ -33,9 +37,8 @@ class FetchContentError(Exception):
 
     Raised instead of a partial/placeholder success. ``str(exc)`` is a
     single fixed, secret-free message for the tool error path; ``code``
-    is a stable machine-readable category (``page_too_large`` or
-    ``extraction_failed``). Programs should branch on ``code``, not on
-    exception text.
+    is a stable machine-readable category. Programs should branch on
+    ``code``, not on exception text.
     """
 
     code: ClassVar[str]
@@ -64,6 +67,30 @@ class FetchExtractionError(FetchContentError):
     """
 
     code: ClassVar[str] = "extraction_failed"
+
+
+class FetchChallengeError(FetchContentError):
+    """An explicit upstream challenge marker was received; never bypass it."""
+
+    code: ClassVar[str] = "upstream_challenge"
+
+
+class FetchAccessDeniedError(FetchContentError):
+    """HTTP authentication, access or rate denial, not proof of a challenge."""
+
+    code: ClassVar[str] = "access_denied"
+
+
+class FetchHttpError(FetchContentError):
+    """Other unsuccessful HTTP response or unusable/exhausted redirect."""
+
+    code: ClassVar[str] = "http_error"
+
+
+class FetchTransportError(FetchContentError):
+    """DNS, connection or read failure after applying the existing URL policy."""
+
+    code: ClassVar[str] = "transport_error"
 
 
 def error_code(exc: BaseException) -> str | None:
