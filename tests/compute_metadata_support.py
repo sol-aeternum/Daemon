@@ -133,7 +133,9 @@ class Cluster:
     def prepare(self, database):
         self.sql(f'CREATE DATABASE "{database}"')
         self.databases.add(database)
-        files = sorted((ROOT / "migrations").glob("*.sql"))
+        # This fixture qualifies the pinned metadata boundary through 048. Later
+        # source-only migrations have their own explicit qualification fixtures.
+        files = [p for p in sorted((ROOT / "migrations").glob("*.sql")) if p.name <= MIGRATION]
         assert files[-2].name == "047_account_control_persistence.sql"
         self.sql(
             "GRANT USAGE,CREATE ON SCHEMA public TO md_owner;"
@@ -365,6 +367,8 @@ class Database:
 
     @asynccontextmanager
     async def pool(self, **kw):
+        kw.setdefault("min_size", 0)
+        kw.setdefault("max_size", 2)
         pool = await asyncpg.create_pool(
             host=str(self.host),
             user="md_app",
@@ -372,8 +376,6 @@ class Database:
             database=self.name,
             ssl=False,
             timeout=2,
-            min_size=0,
-            max_size=2,
             **kw,
         )
         try:
