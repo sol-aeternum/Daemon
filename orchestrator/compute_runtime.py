@@ -562,6 +562,15 @@ class _MeteredStream(AsyncIterator[Any]):
         self.control = control
         self.closed = False
         self.pulling = False
+        self.closing: asyncio.Task[None] | None = None
+
+    async def _close_iterator(self) -> None:
+        # Call only after the pull has unwound. Concurrent explicit close and
+        # pull-finally must join one generator finalizer, including its settlement.
+        if self.closing is None:
+            self.closing = asyncio.create_task(self.iterator.aclose())
+            self.closing.add_done_callback(_consume_close_result)
+        await asyncio.shield(self.closing)
 
     def __aiter__(self) -> _MeteredStream:
         return self
@@ -573,17 +582,20 @@ class _MeteredStream(AsyncIterator[Any]):
             raise RuntimeError("Concurrent metered inference stream read")
         self.pulling = True
         try:
-            return await anext(self.iterator)
+            chunk = await anext(self.iterator)
+            if self.closed:
+                raise StopAsyncIteration
+            return chunk
         finally:
             self.pulling = False
             if self.closed:
-                await self.iterator.aclose()
+                await self._close_iterator()
 
     async def aclose(self) -> None:
         self.closed = True
         await self.control().close()
         if not self.pulling:
-            await self.iterator.aclose()
+            await self._close_iterator()
 
 
 def _hold_key(reservation: Any) -> Any:
@@ -2209,11 +2221,20 @@ async def guarded_completion(
             "No qualified route supports the workload and requested token limits",
         )
 
+    # Safely initialized before initial acquisition. Once returned, this same
+    # facade's terminal latch also governs any still-in-flight fallback walk.
+    metered: _MeteredStream | None = None
+
+    def refuse_closed_stream() -> None:
+        if metered is not None and metered.closed:
+            raise ComputeUnavailable("capacity_unavailable", "Inference stream is closed")
+
     async def dispatch(
         candidate: tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None],
         attempt_index: int,
     ) -> tuple[Any, Any]:
         bound, output_tokens, route, premium, placement = candidate
+        refuse_closed_stream()
         if scope.closed:
             raise ComputeUnavailable("capacity_unavailable", "Account compute scope is closed")
         inference = load_inference_policy()
@@ -2318,6 +2339,7 @@ async def guarded_completion(
         try:
             # Reservation can consume time: the SDK and local wait share the
             # remainder rather than using an earlier, longer SDK allowance.
+            refuse_closed_stream()
             remaining = dispatch_deadline - asyncio.get_running_loop().time()
             if remaining <= 0 or scope.closed:
                 raise ComputeUnavailable(
@@ -2367,6 +2389,7 @@ async def guarded_completion(
         last_failure: DispatchFailure | None = None
         revoked: _CandidateRevoked | None = None
         for index in range(start, len(candidates)):
+            refuse_closed_stream()
             walk_on = "fallback" if automatic and index + 1 < len(candidates) else "raise"
             try:
                 response, reservation = await dispatch(candidates[index], index)
@@ -2464,6 +2487,10 @@ async def guarded_completion(
             failed = False
             generation_id: str | None = None
             try:
+                # A fallback may have been acquired while explicit close awaited
+                # the previous control. Own/settle this hold without reading it.
+                if metered is not None and metered.closed:
+                    return
                 while True:
                     try:
                         chunk = await control.next()
@@ -2535,4 +2562,5 @@ async def guarded_completion(
             index, response, reservation = await first_response(index + 1)
             control = acquired_control(reservation)
 
-    return _MeteredStream(metered_stream(), lambda: control)
+    metered = _MeteredStream(metered_stream(), lambda: control)
+    return metered

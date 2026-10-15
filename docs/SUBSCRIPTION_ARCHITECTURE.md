@@ -174,6 +174,10 @@ enforced whole-call deadline, including stream consumption. Acquired completion
 streams now arm a scope-owned local deadline before return, including unstarted
 streams; expiry blocks late output/fallback and attempts bounded transport close
 without settling the hold. Unknown usage retains the full-hold treatment above.
+Explicit close also latches the logical stream terminal: an in-flight fallback
+acquired afterward is closed without reads and settled at its full hold, and no
+further candidate is dispatched. Concurrent close waiters share one generator
+finalizer as well as one transport cleanup owner, preserving single settlement.
 Read quiescence and close share a finite cleanup budget; failures or cancellation
 resistance are explicitly uncertain. A returned SDK close may hide an inner
 failure and is not remote-stop evidence. Event-loop suspension and remote

@@ -1911,6 +1911,128 @@ async def test_active_read_cancellation_closes_before_accounting(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("barrier", ["acquisition", "acquisition_failure", "reservation"])
+async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrier):
+    routes = [
+        _route(model=f"openrouter/test/close-race-{i}", input_price=1000 * (i + 1))
+        for i in range(3)
+    ]
+    for i, route in enumerate(routes):
+        route.route_id = f"close-race-{i}"
+    service = _deadline_service(monkeypatch, route=routes)
+    entered, release = asyncio.Event(), asyncio.Event()
+    holds: list[str] = []
+
+    async def reserve(*args, **kwargs):
+        hold = f"hold-{len(holds)}"
+        holds.append(hold)
+        if len(holds) == 2 and barrier == "reservation":
+            entered.set()
+            await release.wait()
+        return hold
+
+    service.reserve = AsyncMock(side_effect=reserve)
+
+    class FailedFirst(_ObservedStream):
+        async def __anext__(self):
+            raise _status_error(503)
+
+    first, fallback = FailedFirst(), _ObservedStream()
+
+    async def acquire(**kwargs):
+        if provider.await_count == 1:
+            return first
+        if barrier != "reservation" and provider.await_count == 2:
+            entered.set()
+            await release.wait()
+            if barrier == "acquisition_failure":
+                raise _status_error(503)
+        return fallback
+
+    provider = AsyncMock(side_effect=acquire)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            model="auto", messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        pulling = asyncio.create_task(anext(stream))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            await stream.aclose()  # latches closure while fallback acquisition is held
+            release.set()
+            result = (await asyncio.wait_for(asyncio.gather(pulling, return_exceptions=True), 1))[0]
+            assert isinstance(result, (StopAsyncIteration, runtime.ComputeUnavailable)), result
+            assert fallback.reads == 0
+            assert fallback.closes == (1 if barrier == "acquisition" else 0)
+            assert first.closes == 1
+            assert provider.await_count == (1 if barrier == "reservation" else 2)
+            assert len(holds) == service.settle.await_count == 2
+            assert [call.args[0] for call in service.settle.await_args_list] == holds
+            assert all(
+                settled.args[1] == reserved.args[1]
+                for settled, reserved in zip(
+                    service.settle.await_args_list, service.reserve.await_args_list, strict=True
+                )
+            )
+            assert not scope.outstanding  # no deferral of the second hold to scope exit
+        finally:
+            release.set()
+            if not pulling.done():
+                pulling.cancel()
+            await asyncio.gather(pulling, return_exceptions=True)
+            await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_concurrent_metered_closes_share_generator_finalization(monkeypatch, cancel_waiter):
+    service = _deadline_service(monkeypatch)
+    entered, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def settle(*args, **kwargs):
+        entered.set()
+        await release.wait()
+
+    service.settle = AsyncMock(side_effect=settle)
+    source = _ObservedStream()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        await anext(stream)
+        first_close = asyncio.create_task(stream.aclose())
+        closes = [first_close]
+        try:
+            await asyncio.wait_for(entered.wait(), 1)  # generator finally suspended in ledger
+
+            async def second_close():
+                second_started.set()
+                await stream.aclose()
+
+            closes.append(asyncio.create_task(second_close()))
+            await asyncio.wait_for(second_started.wait(), 1)
+            # Bounded diagnostic scheduling window, not the race trigger: settlement
+            # remains explicitly held until BOTH callers have entered close.
+            await asyncio.wait({closes[1]}, timeout=0.02)
+            if cancel_waiter:
+                first_close.cancel()
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(*closes, return_exceptions=True), 1)
+            if cancel_waiter:
+                assert isinstance(results[0], asyncio.CancelledError)
+                assert results[1] is None
+            else:
+                assert results == [None, None]
+            assert source.closes == service.settle.await_count == 1
+            assert not scope.outstanding
+        finally:
+            release.set()
+            await asyncio.gather(*closes, return_exceptions=True)
+            await stream.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("started", [False, True])
 async def test_real_litellm_loopback_disconnect_without_consumer_progress(monkeypatch, started):
     """Real LiteLLM/OpenAI/HTTPX stream; server independently observes local disconnect.
