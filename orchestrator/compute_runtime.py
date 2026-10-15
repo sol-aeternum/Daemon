@@ -32,11 +32,11 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Final, cast
+from typing import Any, Final
 
 import httpx
 import litellm
@@ -81,7 +81,7 @@ def _count(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _consume_close_result(task: asyncio.Task[None]) -> None:
+def _consume_close_result(task: asyncio.Task[Any]) -> None:
     """Retrieve errors from abandoned transport cleanup without blocking accounting."""
     if not task.cancelled():
         task.exception()
@@ -350,40 +350,14 @@ class ComputeScope:
     attempts: int = 0
     started_at: float = field(default_factory=time.monotonic)
     first_output_at: float | None = None
+    # Independent of outstanding: settlement must not lose a live cleanup owner.
+    streams: set[_StreamControl] = field(default_factory=set)
+    closed: bool = False
 
     async def close_stream(self, hold: ReservationHold) -> None:
         """Close acquired transport even when its iterator was never advanced."""
-        if hold.response is None:
-            return
-        if hold.closing is None:
-
-            async def close() -> None:
-                closer = getattr(hold.response, "aclose", None)
-                if not callable(closer):
-                    closer = getattr(hold.response, "close", None)
-                if callable(closer):
-                    try:
-                        result = closer()
-                        if inspect.isawaitable(result):
-                            await result
-                    except Exception:
-                        logger.warning("Could not close an upstream inference stream")
-
-            async def bounded_close() -> None:
-                task = asyncio.create_task(close())
-                try:
-                    done, _ = await asyncio.wait({task}, timeout=STREAM_CLOSE_TIMEOUT_S)
-                    if done:
-                        await task
-                    else:
-                        logger.warning("Upstream inference stream cleanup timed out")
-                finally:
-                    if not task.done():
-                        task.cancel()
-                    task.add_done_callback(_consume_close_result)
-
-            hold.closing = asyncio.create_task(bounded_close())
-        await asyncio.shield(hold.closing)
+        if hold.stream is not None:
+            await hold.stream.close()
 
     async def settle(
         self,
@@ -451,8 +425,177 @@ class ReservationHold:
     bound: int
     settlement: asyncio.Task[Any] | None = None
     actual: int | None = None
-    response: Any = None
-    closing: asyncio.Task[None] | None = None
+    stream: _StreamControl | None = None
+    final_usage: dict[str, Any] | None = None
+
+
+class _StreamControl:
+    """One acquired transport's local lifetime, never financial/producer authority.
+
+    The deadline is armed before returning the acquired stream. Reads are strictly
+    demand driven; only their private tasks, never a consumer task, are cancelled.
+    A resistant read/closer can outlive bounded cleanup: that is explicit uncertainty,
+    not proof of transport closure or remote termination.
+    """
+
+    def __init__(self, scope: ComputeScope, response: Any, deadline: float) -> None:
+        self.scope = scope
+        self.response = response
+        self.deadline = deadline
+        self.state = "open"
+        self.cleanup_outcome: str | None = None
+        self.iterator: AsyncIterator[Any] | None = None
+        self.reading: asyncio.Task[Any] | None = None
+        self.closer: asyncio.Task[None] | None = None
+        self.closing: asyncio.Task[None] | None = None
+        loop = asyncio.get_running_loop()
+        self.stopped: asyncio.Future[None] = loop.create_future()
+        self.timer = loop.call_at(deadline, self.expire)
+        scope.streams.add(self)
+
+    def expire(self) -> None:
+        if self.state == "open":
+            self.state = "expired"
+            self.stop()
+
+    def stop(self) -> asyncio.Task[None]:
+        # No await between the terminal latch and registration of its sole owner.
+        if self.state == "open":
+            self.state = "closed"
+        self.timer.cancel()
+        if not self.stopped.done():
+            self.stopped.set_result(None)
+        if self.closing is None:
+            self.closing = asyncio.create_task(self._cleanup())
+            self.closing.add_done_callback(self._observe)
+        return self.closing
+
+    async def close(self) -> None:
+        await asyncio.shield(self.stop())
+
+    def _observe(self, task: asyncio.Task[Any]) -> None:
+        _consume_close_result(task)
+        tasks = (self.reading, self.closer, self.closing)
+        if self.closing is not None and all(t is None or t.done() for t in tasks):
+            self.scope.streams.discard(self)
+
+    def _uncertain(self, reason: str) -> None:
+        self.cleanup_outcome = reason
+        logger.warning("Upstream inference stream cleanup uncertain (%s)", reason)
+
+    async def _cleanup(self) -> None:
+        end = asyncio.get_running_loop().time() + STREAM_CLOSE_TIMEOUT_S
+        if self.reading is not None and not self.reading.done():
+            self.reading.cancel()
+            done, _ = await asyncio.wait({self.reading}, timeout=STREAM_CLOSE_TIMEOUT_S)
+            if not done:
+                # Calling aclose concurrently with a running anext is unsafe.
+                # Keep the read referenced/observed, but do not await it forever.
+                self._uncertain("read_unresolved")
+                return
+
+        async def close_transport() -> None:
+            closer = getattr(self.response, "aclose", None)
+            if not callable(closer):
+                closer = getattr(self.response, "close", None)
+            if not callable(closer):
+                self._uncertain("no_closer")
+                return
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+
+        self.closer = asyncio.create_task(close_transport())
+        self.closer.add_done_callback(self._observe)
+        done, _ = await asyncio.wait(
+            {self.closer}, timeout=max(0, end - asyncio.get_running_loop().time())
+        )
+        if not done:
+            self.closer.cancel()
+            self._uncertain("close_timeout")
+        elif self.closer.cancelled() or self.closer.exception() is not None:
+            self._uncertain("close_failed")
+        elif self.cleanup_outcome is None:
+            # Some SDK wrappers swallow their inner close errors. This records
+            # only return from the local method, never verified remote shutdown.
+            self.cleanup_outcome = "close_returned"
+
+    def _check_open(self) -> None:
+        if self.state == "open" and asyncio.get_running_loop().time() >= self.deadline:
+            self.expire()
+        if self.state == "expired":
+            raise TimeoutError
+        if self.state != "open":
+            raise RuntimeError("Upstream inference stream is closed")
+
+    async def next(self) -> Any:
+        self._check_open()
+        if self.reading is not None and not self.reading.done():
+            raise RuntimeError("Concurrent upstream inference stream read")
+
+        async def read() -> Any:
+            if self.iterator is None:
+                self.iterator = aiter(self.response)
+            return await anext(self.iterator)
+
+        task = self.reading = asyncio.create_task(read())
+        task.add_done_callback(self._observe)
+        await asyncio.wait({task, self.stopped}, return_when=asyncio.FIRST_COMPLETED)
+        # Even a read which suppresses cancellation/returns late cannot release
+        # a late chunk, EOF or usage. This check also covers a delayed timer callback.
+        self._check_open()
+        try:
+            return task.result()
+        except StopAsyncIteration:
+            self.state = "eof"
+            self.timer.cancel()
+            raise
+
+
+class _MeteredStream(AsyncIterator[Any]):
+    """Preserve iteration/aclose, including explicit close before the first pull."""
+
+    def __init__(
+        self, iterator: AsyncGenerator[Any, None], control: Callable[[], _StreamControl]
+    ) -> None:
+        self.iterator = iterator
+        self.control = control
+        self.closed = False
+        self.pulling = False
+        self.closing: asyncio.Task[None] | None = None
+
+    async def _close_iterator(self) -> None:
+        # Call only after the pull has unwound. Concurrent explicit close and
+        # pull-finally must join one generator finalizer, including its settlement.
+        if self.closing is None:
+            self.closing = asyncio.create_task(self.iterator.aclose())
+            self.closing.add_done_callback(_consume_close_result)
+        await asyncio.shield(self.closing)
+
+    def __aiter__(self) -> _MeteredStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self.closed:
+            raise StopAsyncIteration
+        if self.pulling:
+            raise RuntimeError("Concurrent metered inference stream read")
+        self.pulling = True
+        try:
+            chunk = await anext(self.iterator)
+            if self.closed:
+                raise StopAsyncIteration
+            return chunk
+        finally:
+            self.pulling = False
+            if self.closed:
+                await self._close_iterator()
+
+    async def aclose(self) -> None:
+        self.closed = True
+        await self.control().close()
+        if not self.pulling:
+            await self._close_iterator()
 
 
 def _hold_key(reservation: Any) -> Any:
@@ -526,6 +669,10 @@ async def account_compute(
         raise
     finally:
         try:
+            # Latch all transport owners before any await or financial cleanup.
+            # Settled holds may already have left outstanding.
+            scope.closed = True
+            stream_cleanup = [stream.stop() for stream in tuple(scope.streams)]
 
             async def cleanup(hold: ReservationHold) -> None:
                 try:
@@ -534,14 +681,18 @@ async def account_compute(
                     await scope.settle(
                         hold.reservation,
                         hold.actual if hold.actual is not None else hold.bound,
+                        usage=hold.final_usage,
                         path="scope_cleanup",
                     )
 
             settlements = [
                 asyncio.create_task(cleanup(hold)) for hold in tuple(scope.outstanding.values())
             ]
-            if settlements:
-                results = await asyncio.gather(*settlements, return_exceptions=True)
+            if settlements or stream_cleanup:
+                results = await asyncio.gather(
+                    *(asyncio.shield(task) for task in [*settlements, *stream_cleanup]),
+                    return_exceptions=True,
+                )
                 for result in results:
                     if isinstance(result, BaseException):
                         raise result
@@ -2070,11 +2221,22 @@ async def guarded_completion(
             "No qualified route supports the workload and requested token limits",
         )
 
+    # Safely initialized before initial acquisition. Once returned, this same
+    # facade's terminal latch also governs any still-in-flight fallback walk.
+    metered: _MeteredStream | None = None
+
+    def refuse_closed_stream() -> None:
+        if metered is not None and metered.closed:
+            raise ComputeUnavailable("capacity_unavailable", "Inference stream is closed")
+
     async def dispatch(
         candidate: tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None],
         attempt_index: int,
     ) -> tuple[Any, Any]:
         bound, output_tokens, route, premium, placement = candidate
+        refuse_closed_stream()
+        if scope.closed:
+            raise ComputeUnavailable("capacity_unavailable", "Account compute scope is closed")
         inference = load_inference_policy()
         current_route = inference.routes.get(route.route_id)
         if current_route != route or not route.is_approved(inference.requirements):
@@ -2177,8 +2339,9 @@ async def guarded_completion(
         try:
             # Reservation can consume time: the SDK and local wait share the
             # remainder rather than using an earlier, longer SDK allowance.
+            refuse_closed_stream()
             remaining = dispatch_deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
+            if remaining <= 0 or scope.closed:
                 raise ComputeUnavailable(
                     "capacity_unavailable",
                     "Dispatch deadline exceeded",
@@ -2196,7 +2359,9 @@ async def guarded_completion(
             await scope.settle(reservation, bound, path="dispatch_failure")
             raise
         if params.get("stream"):
-            scope.outstanding[_hold_key(reservation)].response = response
+            scope.outstanding[_hold_key(reservation)].stream = _StreamControl(
+                scope, response, dispatch_deadline
+            )
         # Attribution records what actually went out, on both the precise routing
         # state and the coarser account scope, after any fallback has taken effect.
         sent_effort = _label(resolved.get("reasoning_effort"))
@@ -2224,6 +2389,7 @@ async def guarded_completion(
         last_failure: DispatchFailure | None = None
         revoked: _CandidateRevoked | None = None
         for index in range(start, len(candidates)):
+            refuse_closed_stream()
             walk_on = "fallback" if automatic and index + 1 < len(candidates) else "raise"
             try:
                 response, reservation = await dispatch(candidates[index], index)
@@ -2304,8 +2470,15 @@ async def guarded_completion(
         )
         return response
 
-    async def metered_stream() -> AsyncIterator[Any]:
-        nonlocal index, response, reservation
+    def acquired_control(reservation: Any) -> _StreamControl:
+        stream_control = scope.outstanding[_hold_key(reservation)].stream
+        assert stream_control is not None
+        return stream_control
+
+    control = acquired_control(reservation)
+
+    async def metered_stream() -> AsyncGenerator[Any, None]:
+        nonlocal index, response, reservation, control
         while True:
             bound, _, route, _, _ = candidates[index]
             settlement: tuple[int, dict[str, int]] | None = None
@@ -2314,14 +2487,13 @@ async def guarded_completion(
             failed = False
             generation_id: str | None = None
             try:
-                chunks = aiter(cast(AsyncIterator[Any], response))
+                # A fallback may have been acquired while explicit close awaited
+                # the previous control. Own/settle this hold without reading it.
+                if metered is not None and metered.closed:
+                    return
                 while True:
-                    # Bound upstream reads, not consumer time suspended at yield.
-                    if asyncio.get_running_loop().time() >= dispatch_deadline:
-                        raise TimeoutError
                     try:
-                        async with asyncio.timeout_at(dispatch_deadline):
-                            chunk = await anext(chunks)
+                        chunk = await control.next()
                     except StopAsyncIteration:
                         break
                     parsed = _usage_settlement(_chunk_usage(chunk), route, bound)
@@ -2337,12 +2509,19 @@ async def guarded_completion(
                 outcome(index, "completed", "none", output_released=emitted)
             except Exception as failure:
                 failed = True
+                expired = control.state == "expired"
                 classified = _classify_dispatch_failure(
-                    failure,
-                    deadline_bound=asyncio.get_running_loop().time() >= deadline,
+                    TimeoutError() if expired else failure,
+                    deadline_bound=expired
+                    or asyncio.get_running_loop().time() >= dispatch_deadline,
                     output_released=emitted,
                 )
-                terminal = emitted or not automatic or index + 1 >= len(candidates)
+                terminal = (
+                    control.state != "open"
+                    or emitted
+                    or not automatic
+                    or index + 1 >= len(candidates)
+                )
                 outcome(
                     index,
                     "failed",
@@ -2359,6 +2538,14 @@ async def guarded_completion(
             finally:
                 hold = scope.outstanding.get(_hold_key(reservation))
                 if hold is not None:
+                    # Publish the intended amount without yielding so scope exit
+                    # cannot race known successful usage against a full-hold charge.
+                    hold.actual = settlement[0] if completed and settlement is not None else bound
+                    hold.final_usage = (
+                        settlement[1]
+                        if completed and settlement is not None
+                        else _estimated_usage(generation_id)
+                    )
                     await scope.close_stream(hold)
                 await scope.settle(
                     reservation,
@@ -2373,5 +2560,7 @@ async def guarded_completion(
             if not failed:
                 return
             index, response, reservation = await first_response(index + 1)
+            control = acquired_control(reservation)
 
-    return metered_stream()
+    metered = _MeteredStream(metered_stream(), lambda: control)
+    return metered
