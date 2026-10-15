@@ -25,6 +25,108 @@ from orchestrator.entitlements.service import EntitlementService
 from tests.durable_tasks_support import seed_entitlement
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["unstarted", "suspended", "eof", "cancelled"])
+async def test_acquired_deadline_preserves_real_hold_and_original_period(
+    account_database, monkeypatch, ending
+):
+    """Real ledger qualification; only transport and route catalogue are synthetic."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from orchestrator import compute_runtime as runtime
+    from tests.test_compute_runtime import _ObservedStream, _qualified_policy, _route
+
+    pool, user_id = account_database
+    _qualified_policy(monkeypatch, route=_route())
+    monkeypatch.setattr(
+        runtime,
+        "get_settings",
+        lambda: SimpleNamespace(
+            request_timeout_s=30,
+            openrouter_api_key=None,
+            get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+        ),
+    )
+    # Account-scope recovery uses the real wall clock; start the service clock
+    # just ahead of it rather than accidentally making its cutoff a future date.
+    clock = [datetime.now(timezone.utc) + timedelta(minutes=1)]
+    service = EntitlementService(pool, clock=lambda: clock[0])
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+    reading = asyncio.Event()
+
+    class Transport(_ObservedStream):
+        async def __anext__(self):
+            if ending == "cancelled":
+                reading.set()
+                await asyncio.Event().wait()
+            self.reads += 1
+            if self.reads == 1:
+                return {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+            raise StopAsyncIteration
+
+    source = Transport()
+    provider = AsyncMock(return_value=source)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(pool, user_id) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}],
+            stream=True,
+            _dispatch_timeout_s=0.08 if ending in {"unstarted", "suspended"} else 30,
+        )
+        hold = next(iter(scope.outstanding.values()))
+        reservation = hold.reservation
+        clock[0] += timedelta(days=40)  # settle AFTER rollover
+        if ending in {"suspended", "eof"}:
+            await anext(stream)
+        if ending in {"unstarted", "suspended"}:
+            await asyncio.wait_for(source.closed.wait(), 1)
+            row = await pool.fetchrow(
+                "SELECT status,actual_microusd FROM entitlement_reservations WHERE id=$1",
+                reservation.id,
+            )
+            assert row["status"] == "open" and row["actual_microusd"] is None
+            # Deadline control has not settled/refunded the real financial hold.
+            assert scope.outstanding
+            with pytest.raises(runtime.ComputeUnavailable) as denied:
+                await anext(stream)
+            assert denied.value.category == "deadline_exceeded"
+        elif ending == "eof":
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+        else:
+            pulling = asyncio.create_task(anext(stream))
+            await asyncio.wait_for(reading.wait(), 1)
+            pulling.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pulling
+        await stream.aclose()
+    expected = 15 if ending == "eof" else hold.bound
+    row = await pool.fetchrow(
+        "SELECT status,actual_microusd,period_key FROM entitlement_reservations WHERE id=$1",
+        reservation.id,
+    )
+    assert dict(row) == {
+        "status": "settled",
+        "actual_microusd": expected,
+        "period_key": reservation.period_key,
+    }
+    period = await pool.fetchrow(
+        "SELECT spent_microusd,reserved_microusd FROM entitlement_usage_periods "
+        "WHERE user_id=$1 AND period_key=$2",
+        user_id,
+        reservation.period_key,
+    )
+    assert dict(period) == {"spent_microusd": expected, "reserved_microusd": 0}
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM entitlement_reservations WHERE user_id=$1", user_id
+        )
+        == 1
+    )
+    assert source.closes == provider.await_count == 1
+
+
 @pytest_asyncio.fixture
 async def account_database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
     dsn = os.environ.get("ENTITLEMENTS_TEST_DATABASE_URL")

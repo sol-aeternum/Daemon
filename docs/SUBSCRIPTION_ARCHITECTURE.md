@@ -170,7 +170,17 @@ concurrency capacity, but must remain admissible after the funded balance reache
 zero. Clients cannot submit their own authoritative cost, plan, or allowance.
 An expired hold left by a killed process is recovered at its full reserved cost,
 not refunded as though no work happened. Recovery must use a cutoff beyond the
-enforced whole-call deadline, including stream consumption. A reported cost above
+enforced whole-call deadline, including stream consumption. Acquired completion
+streams now arm a scope-owned local deadline before return, including unstarted
+streams; expiry blocks late output/fallback and attempts bounded transport close
+without settling the hold. Unknown usage retains the full-hold treatment above.
+Read quiescence and close share a finite cleanup budget; failures or cancellation
+resistance are explicitly uncertain. A returned SDK close may hide an inner
+failure and is not remote-stop evidence. Event-loop suspension and remote
+generation/billing after disconnect remain outside this local bound: the cutoff
+alone does not qualify producer-stop, settlement safety or takeover. Those #477
+gates, and runtime use of the uncalled lifecycle/metadata primitives, remain
+unresolved. A reported cost above
 the reserved quote closes the hold truthfully and suspends further execution for
 operator reconciliation; spare monthly capacity must not hide a broken quote.
 The quote's input side is priced at one token per UTF-8 byte plus per-message

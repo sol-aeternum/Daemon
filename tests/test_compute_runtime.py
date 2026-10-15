@@ -1574,6 +1574,422 @@ def _funded_service(
     )
 
 
+class _ObservedStream:
+    """Synthetic transport: closing is observable without reading another chunk."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+        self.closes = 0
+        self.closed = asyncio.Event()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> Any:
+        self.reads += 1
+        return {"text": "chunk"}
+
+    async def aclose(self):
+        self.closes += 1
+        self.closed.set()
+
+
+def _deadline_service(monkeypatch: pytest.MonkeyPatch, *, route=None):
+    _qualified_policy(monkeypatch, route=route or _route())
+    settings = SimpleNamespace(
+        request_timeout_s=30,
+        openrouter_api_key="synthetic-loopback-not-a-credential",
+        get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = _funded_service()
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+    return service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", [False, True])
+async def test_acquired_stream_deadline_closes_without_another_pull(
+    monkeypatch: pytest.MonkeyPatch, started: bool
+) -> None:
+    service = _deadline_service(monkeypatch)
+    source = _ObservedStream()
+    provider = AsyncMock(return_value=source)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}],
+            stream=True,
+            _dispatch_timeout_s=0.04,
+        )
+        hold = next(iter(scope.outstanding.values()))
+        if started:
+            assert await anext(stream) == {"text": "chunk"}
+        # No consumer pull, aclose, GC or scope exit supplies the close. The
+        # consumer waits on an unrelated event; cancelling it would fail the test.
+        await asyncio.wait_for(source.closed.wait(), timeout=1)
+        assert source.reads == int(started)  # no eager read/prefetch
+        assert source.closes == 1
+        assert hold.stream is not None
+        assert hold.stream.state == "expired"
+        service.settle.assert_not_awaited()  # timer has NO financial authority
+        assert len(scope.outstanding) == 1
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await anext(stream)
+        assert denied.value.category == "deadline_exceeded"
+        assert denied.value.retryable is False
+        assert source.reads == int(started)
+        assert provider.await_count == 1
+    service.settle.assert_awaited_once_with("hold", hold.bound, usage={"estimated_cost": True})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", [False, True])
+async def test_explicit_close_disarms_acquired_stream_even_when_unstarted(
+    monkeypatch: pytest.MonkeyPatch, started: bool
+) -> None:
+    service = _deadline_service(monkeypatch)
+    source = _ObservedStream()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        hold = next(iter(scope.outstanding.values()))
+        if started:
+            await anext(stream)
+        await stream.aclose()
+        await stream.aclose()
+        assert source.closes == 1
+        assert hold.stream is not None
+        assert hold.stream.timer.cancelled()
+        assert not scope.streams
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+    assert service.settle.await_count == 1
+    assert service.settle.await_args.args == ("hold", hold.bound)
+
+
+@pytest.mark.asyncio
+async def test_scope_exit_closes_unstarted_stream_and_blocks_late_resume(monkeypatch):
+    service = _deadline_service(monkeypatch)
+    source = _ObservedStream()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        hold = next(iter(scope.outstanding.values()))
+    assert hold.stream is not None
+    assert hold.stream.timer.cancelled()
+    assert source.closes == 1
+    with pytest.raises(runtime.ComputeUnavailable):
+        await anext(stream)
+    assert source.reads == 0
+    assert service.settle.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_unstarted_automatic_stream_never_falls_back(monkeypatch):
+    routes = [_route(model="openrouter/test/a"), _route(model="openrouter/test/b")]
+    routes[1].route_id = "approved-2"
+    service = _deadline_service(monkeypatch, route=routes)
+    source = _ObservedStream()
+    provider = AsyncMock(return_value=source)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(object(), uuid.uuid4(), auto_route=True):
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}],
+            stream=True,
+            _dispatch_timeout_s=0.04,
+        )
+        await asyncio.wait_for(source.closed.wait(), 1)
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await anext(stream)
+        assert denied.value.category == "deadline_exceeded"
+        assert not denied.value.retryable
+    assert provider.await_count == service.reserve.await_count == service.settle.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_eof", [False, True])
+async def test_deadline_read_race_rejects_late_chunk_and_eof(monkeypatch, late_eof):
+    service = _deadline_service(monkeypatch)
+    monkeypatch.setattr(runtime, "STREAM_CLOSE_TIMEOUT_S", 0.02)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class ResistantRead(_ObservedStream):
+        async def __anext__(self):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            if late_eof:
+                raise StopAsyncIteration
+            return {"usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    source = ResistantRead()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        control = next(iter(scope.outstanding.values())).stream
+        assert control is not None
+        pulling = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(entered.wait(), 1)
+        control.expire()  # deterministically wins before read completion
+        try:
+            with pytest.raises(runtime.ComputeUnavailable) as denied:
+                await asyncio.wait_for(pulling, 1)
+            assert denied.value.category == "deadline_exceeded"
+            assert control.cleanup_outcome == "read_unresolved"
+            assert source.closes == 0  # never close concurrently with a running read
+            assert control in scope.streams  # retain cancellation-resistant work
+        finally:
+            release.set()
+            assert control.reading is not None
+            await asyncio.gather(control.reading, return_exceptions=True)
+        assert control.timer.cancelled()
+    assert service.settle.await_count == 1
+    assert service.settle.await_args.args[1] == service.reserve.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_eof_usage_wins_before_scope_close_while_transport_close_waits(monkeypatch):
+    service = _deadline_service(monkeypatch)
+    closing, release = asyncio.Event(), asyncio.Event()
+
+    class Finished(_ObservedStream):
+        async def __anext__(self):
+            self.reads += 1
+            if self.reads == 1:
+                return {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            self.closes += 1
+            closing.set()
+            await release.wait()
+
+    source = Finished()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        await anext(stream)
+        finishing = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(closing.wait(), 1)
+        hold = next(iter(scope.outstanding.values()))
+        assert hold.actual == 15  # published before bounded transport cleanup awaits
+        assert hold.stream is not None
+        assert hold.stream.state == "eof"
+        assert hold.stream.timer.cancelled()
+        release.set()
+        # No join: real scope-finally races metered-finally on its original hold.
+    with pytest.raises(StopAsyncIteration):
+        await finishing
+    assert source.closes == 1
+    service.settle.assert_awaited_once_with(
+        "hold", 15, usage={"input_tokens": 10, "output_tokens": 5}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["absent", "raises", "slow", "resists"])
+async def test_stream_cleanup_failures_are_bounded_explicit_uncertainty(monkeypatch, caplog, mode):
+    service = _deadline_service(monkeypatch)
+    monkeypatch.setattr(runtime, "STREAM_CLOSE_TIMEOUT_S", 0.02)
+    release = asyncio.Event()
+
+    class FailedClose(_ObservedStream):
+        async def aclose(self):
+            self.closes += 1
+            if mode == "raises":
+                raise ValueError("private transport diagnostic must not be logged")
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                if mode != "resists":
+                    raise
+                await release.wait()
+
+    source = FailedClose() if mode != "absent" else object()
+    scope = runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    control = runtime._StreamControl(scope, source, asyncio.get_running_loop().time() + 30)
+    try:
+        await asyncio.wait_for(control.close(), 0.5)
+        assert (
+            control.cleanup_outcome
+            == {
+                "absent": "no_closer",
+                "raises": "close_failed",
+                "slow": "close_timeout",
+                "resists": "close_timeout",
+            }[mode]
+        )
+        await control.close()
+        assert control.timer.cancelled()
+        assert "cleanup uncertain" in caplog.text
+        assert "private transport diagnostic" not in caplog.text
+        service.settle.assert_not_awaited()
+    finally:
+        release.set()
+        if control.closer is not None:
+            await asyncio.gather(control.closer, return_exceptions=True)
+    if isinstance(source, FailedClose):
+        assert source.closes == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_and_explicit_close_join_one_stream_cleanup(monkeypatch):
+    service = _deadline_service(monkeypatch)
+    closing, release = asyncio.Event(), asyncio.Event()
+
+    class SlowClose(_ObservedStream):
+        async def aclose(self):
+            self.closes += 1
+            closing.set()
+            await release.wait()
+
+    source = SlowClose()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        await anext(stream)
+        hold = next(iter(scope.outstanding.values()))
+        first = asyncio.create_task(stream.aclose())
+        await asyncio.wait_for(closing.wait(), 1)
+        first.cancel()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(stream.aclose())
+        assert hold.stream is not None
+        hold.stream.expire()  # already closed; cannot install another owner
+        release.set()
+        await asyncio.wait_for(second, 1)
+        assert source.closes == 1
+        assert not scope.streams
+    assert service.settle.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_active_read_cancellation_closes_before_accounting(monkeypatch):
+    service = _deadline_service(monkeypatch)
+    reading = asyncio.Event()
+
+    class Waiting(_ObservedStream):
+        async def __anext__(self):
+            reading.set()
+            await asyncio.Event().wait()
+
+    source = Waiting()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=source))
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        stream = await runtime.guarded_completion(
+            messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        control = next(iter(scope.outstanding.values())).stream
+        assert control is not None
+        pull = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(reading.wait(), 1)
+        with pytest.raises(RuntimeError, match="Concurrent metered"):
+            await anext(stream)
+        pull.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pull
+        assert control.reading is not None
+        assert control.reading.done()
+        assert source.closes == 1
+        assert control.timer.cancelled()
+    assert service.settle.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", [False, True])
+async def test_real_litellm_loopback_disconnect_without_consumer_progress(monkeypatch, started):
+    """Real LiteLLM/OpenAI/HTTPX stream; server independently observes local disconnect.
+
+    This is synthetic loopback transport evidence, NOT provider generation/billing
+    termination, a live route qualification, or durable lifecycle authority.
+    """
+    acquired, disconnected = asyncio.Event(), asyncio.Event()
+    handlers: set[asyncio.Task] = set()
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        task = asyncio.current_task()
+        assert task is not None
+        handlers.add(task)
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in head.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            await reader.readexactly(length)
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            )
+            data = (
+                b'data: {"id":"synthetic","object":"chat.completion.chunk","created":1,'
+                b'"model":"reviewed/model","choices":[{"index":0,"delta":{"content":"hi"},'
+                b'"finish_reason":null}]}\n\n'
+            )
+            writer.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            await writer.drain()
+            acquired.set()
+            assert await reader.read() == b""
+            disconnected.set()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.discard(task)
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    # Use a model the real SDK recognizes; all traffic still goes exclusively
+    # to the synthetic loopback server, not this model's provider.
+    route = _route(model="openrouter/openai/gpt-5")
+    route.endpoint = f"http://127.0.0.1:{port}/v1"
+    service = _deadline_service(monkeypatch, route=route)
+    try:
+        async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+            # Do NOT mock acompletion or the SDK stream/close method.
+            stream = await runtime.guarded_completion(
+                model=route.model,
+                messages=[{"role": "user", "content": "synthetic"}],
+                stream=True,
+                _dispatch_timeout_s=1.0,
+            )
+            await asyncio.wait_for(acquired.wait(), 2)
+            hold = next(iter(scope.outstanding.values()))
+            if started:
+                chunk = await anext(stream)
+                assert chunk.choices[0].delta.content == "hi"
+            await asyncio.wait_for(disconnected.wait(), 3)
+            assert hold.stream is not None
+            assert hold.stream.state == "expired"
+            service.settle.assert_not_awaited()
+            assert scope.outstanding
+            with pytest.raises(runtime.ComputeUnavailable) as denied:
+                await anext(stream)
+            assert denied.value.category == "deadline_exceeded"
+        assert service.settle.await_count == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+        for task in tuple(handlers):
+            task.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_account_frames_closing_mid_stream_does_not_hang(
     monkeypatch: pytest.MonkeyPatch,
