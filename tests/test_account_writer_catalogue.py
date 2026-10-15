@@ -458,6 +458,107 @@ def test_all_multi_parent_paths_and_alter_references_are_retained(tmp_path):
     assert "root:messages" not in path
 
 
+def test_public_qualified_create_fk_alter_normalize_and_keep_all_paths(tmp_path):
+    sql = (
+        "CREATE TABLE PUBLIC.users(id uuid PRIMARY KEY);"
+        "CREATE TABLE public.tenants(id uuid, user_id uuid REFERENCES public.users(id));"
+        "CREATE TABLE IF NOT EXISTS public . messages(id uuid, tenant_id uuid REFERENCES PUBLIC.tenants(id));"
+        "ALTER TABLE public.messages ADD COLUMN user_id uuid REFERENCES public . users(id);"
+        "CREATE TABLE public.receipts(id uuid, message_id uuid REFERENCES public.messages(id), "
+        "user_id uuid REFERENCES users(id));"
+        "ALTER TABLE public.messages ALTER COLUMN id SET NOT NULL;"
+        "ALTER TABLE public.messages DROP COLUMN obsolete;"
+    )
+    migrations, _ = _write_tree(tmp_path, sql, {})
+    graph = catalogue.discover_tables(migrations)
+    assert set(graph.tables) == {"users", "tenants", "messages", "receipts"}
+    assert graph.edges == {
+        "tenants": ("users",),
+        "messages": ("tenants", "users"),
+        "receipts": ("messages", "users"),
+    }
+    assert catalogue.ownership_paths(graph)["receipts"] == (
+        "root:users <- messages <- receipts | root:users <- receipts | "
+        "root:users <- tenants <- messages <- receipts"
+    )
+
+
+@pytest.mark.parametrize(
+    "sql,target",
+    [
+        ("INSERT INTO public.messages(id) VALUES($1)", "messages"),
+        ("UPDATE PUBLIC . messages SET id=$1", "messages"),
+        ("DELETE FROM public.messages WHERE id=$1", "messages"),
+        ("MERGE INTO public.messages USING incoming ON false WHEN MATCHED THEN DELETE", "messages"),
+        ("TRUNCATE TABLE public.messages", "messages"),
+        ("DROP TABLE IF EXISTS public.messages", "messages"),
+        ("CREATE TABLE IF NOT EXISTS public.messages(id uuid)", "messages"),
+        ("ALTER TABLE public.messages ADD COLUMN extra uuid", "messages"),
+        ("COPY public.messages FROM STDIN", "messages"),
+    ],
+)
+def test_public_mutation_targets_are_identities_not_schema_prefixes(tmp_path, sql, target):
+    _, app = _write_tree(tmp_path, _BASE_MIGRATIONS, {"app.py": f"db.execute({sql!r})"})
+    (site,) = catalogue.discover_writer_sites(app)
+    assert site.tables == (target,) and site.unknown is False
+
+
+@pytest.mark.parametrize(
+    "sql,targets",
+    [
+        ('INSERT INTO "messages"(id) VALUES($1)', ()),
+        ('COPY "messages" FROM STDIN', ()),
+        ('COPY public."messages" FROM STDIN', ()),
+        ('UPDATE public."messages" SET id=$1', ()),
+        ("DELETE FROM archive.messages", ()),
+        ("DELETE FROM archive . messages", ()),
+        ("UPDATE public.messages.extra SET id=$1", ()),
+        ("UPDATE public . messages . extra SET id=$1", ()),
+        ("UPDATE ONLY public.messages SET id=$1", ()),
+        ("UPDATE messages$alias SET id=$1", ()),
+        ("TRUNCATE public.messages, public.users", ("messages",)),
+        ("TRUNCATE TABLE archive.messages", ()),
+        ('TRUNCATE TABLE public."messages"', ()),
+        ("TRUNCATE TABLE ONLY public.messages", ()),
+        ("DROP TABLE public.messages, public.users", ("messages",)),
+        ("CREATE UNLOGGED TABLE messages(id uuid)", ()),
+        ("CREATE TABLE public.messages AS SELECT 1", ("messages",)),
+        ("ALTER TABLE public.messages RENAME TO receipts", ("messages",)),
+        ("INSERT INTO messages(id) VALUES($1); DELETE FROM archive.users", ("messages",)),
+        ("UPDATE SET", ()),
+    ],
+)
+def test_unsupported_mutation_targets_remain_explicit_unknown_candidates(tmp_path, sql, targets):
+    _, app = _write_tree(tmp_path, _BASE_MIGRATIONS, {"app.py": f"db.execute({sql!r})"})
+    (site,) = catalogue.discover_writer_sites(app)
+    assert site.kind == "sql_inline" and site.unknown is True and site.tables == targets
+    assert "public" not in site.tables and "archive" not in site.tables
+
+
+def test_public_dynamic_and_named_mutations_are_never_lost(tmp_path):
+    _, app = _write_tree(
+        tmp_path,
+        _BASE_MIGRATIONS,
+        {
+            "app.py": (
+                "async def write(db,target):\n"
+                " sql='DELETE FROM public.messages'\n await db.execute(sql)\n"
+                " await db.execute(f'UPDATE public.{target} SET id=$1')\n"
+                " await db.fetchrow(queries[target])\n"
+                " await db.execute('INSERT INTO public.messages(id) VALUES($1) ON CONFLICT(id) DO UPDATE SET id=$1')\n"
+            )
+        },
+    )
+    sites = catalogue.discover_writer_sites(app)
+    assert len(sites) == 4
+    assert {(s.kind, s.tables, s.unknown) for s in sites} == {
+        ("sql_named", ("messages",), False),
+        ("sql_dynamic", (), True),
+        ("sql_unresolvable", (), True),
+        ("sql_inline", ("messages",), False),
+    }
+
+
 def test_fetch_returning_and_named_sql_changes_and_duplicate_writes_are_detected(tmp_path):
     base = {
         "app.py": "async def write(db):\n sql='INSERT INTO messages(id) VALUES($1)'\n await db.fetchrow(sql, 1)\n"
@@ -509,12 +610,29 @@ def test_branch_reassignment_and_augmented_sql_are_not_treated_as_pure_reads(tmp
     "sql",
     [
         'CREATE TABLE "notes"(id uuid);',
-        "CREATE TABLE public.notes(id uuid);",
+        'CREATE TABLE "public".notes(id uuid);',
+        'CREATE TABLE public."notes"(id uuid);',
+        "CREATE TABLE archive.notes(id uuid);",
+        "CREATE TABLE public.notes.extra(id uuid);",
+        "CREATE TABLE public..notes(id uuid);",
+        "CREATE TABLE public.notes$extra(id uuid);",
+        "CREATE TABLE public.notes AS SELECT 1;",
+        "CREATE TABLE IF EXISTS public.notes(id uuid);",
         'CREATE TABLE notes(id uuid REFERENCES "users"(id));',
+        "CREATE TABLE notes(id uuid REFERENCES archive.users(id));",
+        'CREATE TABLE notes(id uuid REFERENCES public."users"(id));',
+        "CREATE TABLE notes(id uuid REFERENCES public.users.extra(id));",
+        "CREATE TABLE notes(id uuid REFERENCES public.users);",
+        "CREATE TABLE notes(id uuid REFERENCES ONLY public.users(id));",
         'ALTER TABLE "messages" ADD COLUMN owner uuid REFERENCES users(id);',
-        "ALTER TABLE public.messages ADD COLUMN owner uuid REFERENCES users(id);",
+        "ALTER TABLE archive.messages ADD COLUMN owner uuid REFERENCES users(id);",
+        "ALTER TABLE public.messages.extra ADD COLUMN owner uuid REFERENCES users(id);",
+        "ALTER TABLE ONLY public.messages ADD COLUMN owner uuid REFERENCES users(id);",
+        "ALTER TABLE public.messages;",
+        "ALTER TABLE public.messages ADD;",
         "CREATE UNLOGGED TABLE account_notes(id uuid);",
         "CREATE FOREIGN TABLE account_notes(id uuid) SERVER synthetic;",
+        "CREATE TEMP TABLE public.account_notes(id uuid);",
     ],
 )
 def test_unrecognized_schema_grammar_fails_closed(tmp_path, sql):
@@ -523,13 +641,14 @@ def test_unrecognized_schema_grammar_fails_closed(tmp_path, sql):
         catalogue.discover_tables(migrations)
 
 
-def test_renamed_persistent_table_requires_explicit_scanner_support(tmp_path):
+@pytest.mark.parametrize("name", ["messages", "public.messages"])
+def test_renamed_persistent_table_requires_explicit_scanner_support(tmp_path, name):
     migrations, app = _write_tree(tmp_path / "base", _BASE_MIGRATIONS, _BASE_APP)
     manifest = _synthetic_manifest(migrations, app)
     assert catalogue.compare_manifest_to_discovery(migrations, [app], manifest) == []
     renamed, changed_app = _write_tree(
         tmp_path / "renamed",
-        _BASE_MIGRATIONS + "ALTER TABLE messages RENAME TO account_messages;",
+        _BASE_MIGRATIONS + f"ALTER TABLE {name} RENAME TO account_messages;",
         _BASE_APP,
     )
     with pytest.raises(ValueError, match="unsupported table rename"):

@@ -50,17 +50,27 @@ UNKNOWN_CATEGORIES = ("deferred", "shared_unowned")
 
 MUTATION_SQL_RE = re.compile(
     r"\b(insert\s+into|update|delete\s+from|merge\s+into|truncate|"
-    r"alter\s+table|create\s+table|drop\s+table|copy\s+)\b",
+    r"alter\s+table|create\s+(?:(?:unlogged|temporary|temp|foreign|global|local)\s+)*table|"
+    r"drop\s+table|copy)\b",
     re.IGNORECASE,
 )
+# Only unquoted names in the default/public namespace are representable. Guard
+# the entire identifier: never interpret other.notes or public.notes.extra as
+# the table 'other'/'public', or a dollar/quoted suffix as a valid prefix.
+_TABLE_IDENTIFIER = r"((?:public\s*\.\s*)?(?!only\b)[a-z_][a-z_0-9]*)(?![a-z_0-9$])(?!\s*\.)"
 _CREATE_TABLE_RE = re.compile(
-    r"\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_][a-z_0-9]*)\b", re.IGNORECASE
+    r"\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?" + _TABLE_IDENTIFIER + r"(?=\s*\()",
+    re.IGNORECASE,
 )
-_FK_RE = re.compile(r"\breferences\s+([a-z_][a-z_0-9]*)\b", re.IGNORECASE)
-_ALTER_TABLE_RE = re.compile(r"\balter\s+table\s+([a-z_][a-z_0-9]*)\b", re.IGNORECASE)
+_FK_RE = re.compile(r"\breferences\s+" + _TABLE_IDENTIFIER + r"(?=\s*\()", re.IGNORECASE)
+_ALTER_TABLE_RE = re.compile(
+    r"\balter\s+table\s+" + _TABLE_IDENTIFIER + r"(?=\s+(?:add|alter|drop)\s+[a-z_])",
+    re.IGNORECASE,
+)
 TABLE_TARGET_RE = re.compile(
-    r"\b(?:insert\s+into|delete\s+from|update|merge\s+into|truncate|"
-    r"alter\s+table|drop\s+table|create\s+table|copy)\s+([a-z_][a-z_0-9]*)\b",
+    r"\b(?:insert\s+into|delete\s+from|update|merge\s+into|truncate(?:\s+table)?|"
+    r"alter\s+table|drop\s+table(?:\s+if\s+exists)?|"
+    r"create\s+table(?:\s+if\s+not\s+exists)?|copy)\s+" + _TABLE_IDENTIFIER + r"(?=\s|[,(;)]|$)",
     re.IGNORECASE,
 )
 
@@ -117,6 +127,10 @@ def _normalize(text: str) -> str:
     return " ".join(text.split())
 
 
+def _table_identity(name: str) -> str:
+    return re.sub(r"\s+", "", name).lower().removeprefix("public.")
+
+
 def _fingerprint(kind: str, text: str) -> str:
     """Deterministic per-mutation fingerprint of the source snippet."""
     return hashlib.sha256(f"{kind}\x00{_normalize(text)}".encode("utf-8")).hexdigest()[:16]
@@ -163,37 +177,32 @@ def discover_tables(migrations_dir: Path) -> TableGraph:
             # A persistent rename creates a new classification identity. Do not
             # let the historical CREATE name make that migration pass unseen.
             raise ValueError(f"unsupported table rename in {path.name}")
-        # Do not silently accept a new quoted/schema-qualified grammar that the
-        # bounded parser cannot represent: it needs an explicit scanner update.
+        # Public-qualified names normalize to existing identities. Everything
+        # outside this bounded declaration grammar still needs explicit review.
         for start in re.finditer(
             r"\bcreate\s+(?:(?:unlogged|temporary|temp|foreign|global|local)\s+)*table\b",
             text,
             re.I,
         ):
             match = _CREATE_TABLE_RE.match(text, start.start())
-            if match is None or text[match.end() :].lstrip().startswith("."):
+            if match is None:
                 raise ValueError(f"unsupported table declaration in {path.name}")
         for start in re.finditer(r"\balter\s+table\b", text, re.I):
             match = _ALTER_TABLE_RE.match(text, start.start())
-            if match is None or text[match.end() :].lstrip().startswith("."):
+            if match is None:
                 raise ValueError(f"unsupported ALTER declaration in {path.name}")
         for start in re.finditer(r"\breferences\b", text, re.I):
             match = _FK_RE.match(text, start.start())
-            if match is None or text[match.end() :].lstrip().startswith("."):
+            if match is None:
                 raise ValueError(f"unsupported reference declaration in {path.name}")
         for match in _CREATE_TABLE_RE.finditer(text):
-            tables.setdefault(match.group(1), path.name)
+            tables.setdefault(_table_identity(match.group(1)), path.name)
         for statement in text.split(";"):
-            declaration = re.search(
-                r"\b(?:create\s+table\s+(?:if\s+not\s+exists\s+)?|alter\s+table\s+)"
-                r"([a-z_][a-z_0-9]*)\b",
-                statement,
-                re.I,
-            )
+            declaration = _CREATE_TABLE_RE.search(statement) or _ALTER_TABLE_RE.search(statement)
             if declaration:
-                child = declaration.group(1).lower()
+                child = _table_identity(declaration.group(1))
                 for parent in _FK_RE.findall(statement):
-                    raw_edges.setdefault(child, set()).add(parent.lower())
+                    raw_edges.setdefault(child, set()).add(_table_identity(parent))
     edges = {child: tuple(sorted(parents)) for child, parents in raw_edges.items()}
     return TableGraph(tables=tables, edges=edges)
 
@@ -245,21 +254,41 @@ def _joinedstr_text(node: ast.JoinedStr) -> str:
     return "".join(parts)
 
 
-_TABLE_NAME_EXCLUSIONS = frozenset({"set", "values", "from", "where", "on", "if", "exists"})
+_TABLE_NAME_EXCLUSIONS = frozenset(
+    {"set", "values", "from", "where", "on", "if", "exists", "table"}
+)
 
 
-def _table_targets(sql: str) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                name.lower()
-                for name in TABLE_TARGET_RE.findall(
-                    re.sub(r"\bfor\s+(?:no\s+key\s+)?update\b", "", sql, flags=re.I)
-                )
-                if name.lower() not in _TABLE_NAME_EXCLUSIONS
-            }
-        )
-    )
+def _table_targets(sql: str) -> tuple[tuple[str, ...], bool]:
+    """Known targets plus uncertainty, never a guessed schema-name prefix.
+
+    This is still a textual candidate detector, not SQL execution/validation.
+    Unsupported targets and multi-table mutation lists stay explicitly unknown.
+    """
+    text = re.sub(r"\bfor\s+(?:no\s+key\s+)?update\b", "", sql, flags=re.I)
+    targets: set[str] = set()
+    unknown = False
+    for start in MUTATION_SQL_RE.finditer(text):
+        match = TABLE_TARGET_RE.match(text, start.start())
+        if match is None:
+            unknown = True
+            continue
+        name = _table_identity(match.group(1))
+        if name in _TABLE_NAME_EXCLUSIONS:  # e.g. ON CONFLICT DO UPDATE SET
+            continue
+        targets.add(name)
+        tail = text[match.end() :].lstrip()
+        if tail.startswith(",") or re.match(r"rename\b", tail, re.I):
+            unknown = True
+        if re.match(r"create\b", start.group(), re.I) and not _CREATE_TABLE_RE.match(
+            text, start.start()
+        ):
+            unknown = True
+        if re.match(r"alter\b", start.group(), re.I) and not _ALTER_TABLE_RE.match(
+            text, start.start()
+        ):
+            unknown = True
+    return tuple(sorted(targets)), unknown or not targets
 
 
 def discover_writer_sites(python_root: Path) -> list[WriterSite]:
@@ -390,7 +419,8 @@ def _handle_sql_call(
     literal = _string_constant(first)
     if literal is not None:
         if _mutates(literal):
-            _record(state, qualname, "sql_inline", call, _table_targets(literal), unknown=False)
+            targets, unknown = _table_targets(literal)
+            _record(state, qualname, "sql_inline", call, targets, unknown=unknown)
         return
     key = ""
     if isinstance(first, ast.Name):
@@ -405,20 +435,22 @@ def _handle_sql_call(
     if key in state.literals:
         named_sql = "\n".join(sorted(state.literals[key]))
         if _mutates(named_sql):
+            targets, unknown = _table_targets(named_sql)
             _record(
                 state,
                 qualname,
                 "sql_named",
                 call,
-                _table_targets(named_sql),
-                unknown=False,
+                targets,
+                unknown=unknown,
                 resolved=named_sql,
             )
         return
     if isinstance(first, ast.JoinedStr):
         text = _joinedstr_text(first)
         # Interpolation is not proven read-only or a complete table target.
-        _record(state, qualname, "sql_dynamic", call, _table_targets(text), unknown=True)
+        targets, _ = _table_targets(text)
+        _record(state, qualname, "sql_dynamic", call, targets, unknown=True)
         return
     # Unknown/unresolvable argument: recorded explicitly, never skipped.
     _record(state, qualname, "sql_unresolvable", call, (), unknown=True)

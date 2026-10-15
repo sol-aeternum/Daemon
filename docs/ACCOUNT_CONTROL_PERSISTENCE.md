@@ -171,9 +171,10 @@ The explicit writer/table catalogue in
 fixture/tests is bounded source-change detection, **not complete runtime
 enforcement**. Content/control/shared-unowned/deferred classifications record
 historical FK dependencies, semantic ownership notes and uncovered paths, not
-authorization from FK reachability alone. Unsupported table renames and
-quoted/schema-qualified declarations fail closed and require explicit scanner/
-manifest review. Classification itself fences nothing. Later
+authorization from FK reachability alone. Unquoted `public`-qualified CREATE,
+REFERENCES and ALTER targets normalize to existing table identities. Table renames,
+quoted names, other schemas and unsupported declaration modifiers still fail
+closed and require explicit scanner/manifest review. Classification itself fences nothing. Later
 generation propagation for other writers, account-first lock conversions, ownership fixes,
 restricted sessions, non-DB/Redis/SSE publication and durable S1 retirement are
 still dependencies. No guard test or classified deferred writer permits an

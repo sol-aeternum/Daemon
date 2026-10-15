@@ -5,7 +5,9 @@ import asyncio
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 import importlib.util
+import os
 from pathlib import Path
+import sys
 from typing import Any, Literal, cast, overload
 from uuid import uuid4
 
@@ -13,6 +15,7 @@ import asyncpg
 import pytest
 
 from orchestrator import compute_metadata as m
+from tests.compute_metadata_support import Bridge
 
 
 class FakePool:
@@ -332,3 +335,89 @@ def test_runtime_import_isolation_with_discriminating_controls(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.ComputeMetadataStore(object())
+
+
+class BridgeReceipts:
+    """Synthetic local-process stand-in, NOT PostgreSQL/remote-stop evidence."""
+
+    container = "synthetic-no-docker-container"
+
+    def __init__(self):
+        self.rows = []
+        self.started = asyncio.Event()
+
+    def record(self, event, **data):
+        self.rows.append({"event": event, **data})
+        if event == "bridge_started":
+            self.started.set()
+
+
+def bridge_path(tmp_path):
+    resource = Path(os.environ.get("OPENCODE_WORK_TEST_DIR", str(tmp_path))) / (
+        "b-" + uuid4().hex[:6]
+    )
+    resource.mkdir(mode=0o700)
+    path = resource / "s"
+    assert len(os.fsencode(path)) < 108
+    return path
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_reaps_lingering_client(tmp_path, monkeypatch):
+    receipts = BridgeReceipts()
+    bridge = Bridge(receipts, bridge_path(tmp_path))
+    real_spawn = asyncio.create_subprocess_exec
+
+    async def spawn_local_owned_child(*args, **kwargs):
+        assert args[:4] == ("docker", "exec", "-i", receipts.container)
+        # A real owned subprocess holds stdout open and ignores stdin EOF. This
+        # forces the existing handler's bounded kill/reap path without Docker,
+        # a database DSN, external service or remote-lifetime assertion.
+        return await real_spawn(sys.executable, "-I", "-c", "import time; time.sleep(60)", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_local_owned_child)
+    await bridge.start()
+    reader, writer = await asyncio.open_unix_connection(str(bridge.path))
+    closed = False
+    try:
+        await asyncio.wait_for(receipts.started.wait(), 1)
+        (proc,) = bridge.processes
+        assert proc.returncode is None and bridge.handlers
+        # Discriminating old-order control: on Python 3.14 this waits for the
+        # attached client, not merely the now-stopped listener. No cleanup yet.
+        bridge.server.close()
+        if sys.version_info >= (3, 14):
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.05):
+                    await bridge.server.wait_closed()
+        assert bridge.handlers and proc.returncode is None
+        start = asyncio.get_running_loop().time()
+        await bridge.close()
+        closed = True
+        elapsed = asyncio.get_running_loop().time() - start
+        assert 2 <= elapsed < 4.5  # Existing 2s grace + 2s cancel/join + 0.5s server allowance.
+        assert not bridge.server.is_serving() and not bridge.handlers and not bridge.failures
+        assert proc.returncode == -9
+        assert await asyncio.wait_for(reader.read(), 0.5) == b""
+        assert {row["pid"] for row in receipts.rows if row["event"] == "bridge_reaped"} == {
+            proc.pid
+        }
+        assert receipts.rows[-1] == {"event": "bridge_closed", "handlers": 0, "processes": 1}
+    finally:
+        # Preserve failures, but always attempt bounded cleanup of this exact
+        # owned listener/client/child, including when an assertion above fails.
+        if not closed:
+            await bridge.close()
+        writer.close()
+        await asyncio.wait_for(writer.wait_closed(), 0.5)
+
+
+@pytest.mark.asyncio
+async def test_bridge_empty_close_is_bounded(tmp_path):
+    receipts = BridgeReceipts()
+    bridge = Bridge(receipts, bridge_path(tmp_path))
+    await bridge.start()
+    async with asyncio.timeout(0.5):
+        await bridge.close()
+    assert not bridge.handlers and not bridge.processes and not bridge.server.is_serving()
+    assert receipts.rows == [{"event": "bridge_closed", "handlers": 0, "processes": 0}]

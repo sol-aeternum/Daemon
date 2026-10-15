@@ -305,15 +305,20 @@ class Bridge:
 
     async def close(self):
         self.server.close()
-        async with asyncio.timeout(0.5):
-            await self.server.wait_closed()
-        if self.handlers:
-            _, pending = await asyncio.wait(list(self.handlers), timeout=2)
-            if pending:
-                for task in pending:
-                    task.cancel()
-                _, pending = await asyncio.wait(pending, timeout=2)
-            assert not pending, "owned bridge handlers unfinished"
+        try:
+            if self.handlers:
+                _, pending = await asyncio.wait(list(self.handlers), timeout=2)
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    _, pending = await asyncio.wait(pending, timeout=2)
+                assert not pending, "owned bridge handlers unfinished"
+        finally:
+            # Python 3.14 Server.wait_closed includes active clients, not just
+            # listener shutdown. First let handler finalizers close writers and
+            # reap their exact processes; never skip those on an early timeout.
+            async with asyncio.timeout(0.5):
+                await self.server.wait_closed()
         assert not self.failures, self.failures
         assert all(proc.returncode is not None for proc in self.processes)
         self.cluster.record(
