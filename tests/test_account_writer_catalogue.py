@@ -526,6 +526,21 @@ def test_public_mutation_targets_are_identities_not_schema_prefixes(tmp_path, sq
         ("ALTER TABLE public.messages RENAME TO receipts", ("messages",)),
         ("INSERT INTO messages(id) VALUES($1); DELETE FROM archive.users", ("messages",)),
         ("UPDATE SET", ()),
+        ("TRUNCATE TABLE archive.messages; DELETE FROM public.messages", ("messages",)),
+        ("DROP TABLE IF EXISTS archive.messages; DELETE FROM public.messages", ("messages",)),
+        (
+            'CREATE TABLE IF NOT EXISTS "messages"(id uuid); DELETE FROM public.messages',
+            ("messages",),
+        ),
+        (
+            "ALTER TABLE IF EXISTS archive.messages ADD COLUMN x uuid; DELETE FROM public.messages",
+            ("messages",),
+        ),
+        ("UPDATE SET; DELETE FROM public.messages", ("messages",)),
+        ("TRUNCATE TABLE public.messages CASCADE", ("messages",)),
+        ("TRUNCATE public.messages RESTART IDENTITY CASCADE", ("messages",)),
+        ("DROP TABLE public.messages CASCADE", ("messages",)),
+        ("UPDATE public.messages * SET id=$1", ("messages",)),
     ],
 )
 def test_unsupported_mutation_targets_remain_explicit_unknown_candidates(tmp_path, sql, targets):

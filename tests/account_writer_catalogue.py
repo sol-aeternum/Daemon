@@ -274,11 +274,19 @@ def _table_targets(sql: str) -> tuple[tuple[str, ...], bool]:
             unknown = True
             continue
         name = _table_identity(match.group(1))
-        if name in _TABLE_NAME_EXCLUSIONS:  # e.g. ON CONFLICT DO UPDATE SET
+        if name in _TABLE_NAME_EXCLUSIONS:
+            # Optional keyword fallback is unknown, even beside a known target.
+            # Only the concrete ON CONFLICT ... DO UPDATE SET clause is exempt.
+            if name != "set" or not re.search(
+                r"\bon\s+conflict\b[^;]*\bdo\s*$", text[: start.start()], re.I
+            ):
+                unknown = True
             continue
         targets.add(name)
         tail = text[match.end() :].lstrip()
-        if tail.startswith(",") or re.match(r"rename\b", tail, re.I):
+        if tail.startswith((",", "*")) or re.match(
+            r"(?:rename|(?:(?:restart|continue)\s+identity\s+)?cascade)\b", tail, re.I
+        ):
             unknown = True
         if re.match(r"create\b", start.group(), re.I) and not _CREATE_TABLE_RE.match(
             text, start.start()
