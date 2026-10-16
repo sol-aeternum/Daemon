@@ -463,12 +463,12 @@ class FetchService:
     def _is_html_source(self, result: FetchResult) -> bool:
         """Whether a strategy result is raw HTML needing readable extraction.
 
-        Only the direct transport returns raw HTML; vendor/transcript
-        strategies already provide processed or transcript content, so
+        Direct transport and the uncalled Crawl4AI adapter return raw HTML;
+        other vendor/transcript strategies provide processed content, so
         their output is never re-extracted (that would corrupt, e.g.,
         archived markdown).
         """
-        if result.strategy_used != "direct":
+        if result.strategy_used not in {"direct", "crawl4ai"}:
             return False
         content_type = (result.content_type or "").lower()
         if content_type:

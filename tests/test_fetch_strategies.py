@@ -1040,18 +1040,28 @@ class TestCrawl4AIStrategy:
     async def test_fetch_success(self, fetch_policy):
         strategy = Crawl4AIStrategy(fetch_policy)
 
-        # Mock httpx response
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": [
-                {
-                    "markdown": "# Article\n\nThis is sufficiently long content from Crawl4AI for testing purposes"
-                }
-            ]
-        }
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(
+            200,
+            json={
+                "success": True,
+                "results": [
+                    {
+                        "url": "https://example.com",
+                        "success": True,
+                        "status_code": 200,
+                        "html": "<html><body>This is sufficiently long content from Crawl4AI for testing purposes</body></html>",
+                    }
+                ],
+            },
+        )
 
-        with patch("httpx.AsyncClient.post", return_value=mock_response):
+        with (
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.validate_url_and_resolve_async",
+                new=AsyncMock(return_value=_validated_direct_url("https://example.com")),
+            ),
+            patch("httpx.AsyncClient.send", new=AsyncMock(return_value=mock_response)),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
@@ -1064,12 +1074,15 @@ class TestCrawl4AIStrategy:
     async def test_fetch_no_result(self, fetch_policy):
         strategy = Crawl4AIStrategy(fetch_policy)
 
-        # Mock httpx response with empty result
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"result": []}
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(200, json={"success": True, "results": []})
 
-        with patch("httpx.AsyncClient.post", return_value=mock_response):
+        with (
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.validate_url_and_resolve_async",
+                new=AsyncMock(return_value=_validated_direct_url("https://example.com")),
+            ),
+            patch("httpx.AsyncClient.send", new=AsyncMock(return_value=mock_response)),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is None
