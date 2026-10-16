@@ -6,7 +6,9 @@ from argparse import Namespace
 import copy
 from decimal import Decimal
 import hashlib
+from importlib.metadata import version
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -415,16 +417,25 @@ def test_sanitized_receipt_has_no_headers_keys_or_secret():
     }
 
 
-def test_direct_body_matches_installed_production_sdk_transform():
-    """Pin the preset's wire spelling to the installed production adapter."""
+SDK_METADATA = Path(__file__).parent / "fixtures/judge_sdk_capabilities.json"
+SDK_METADATA_SHA256 = "e6435552686f0894d83fba10180e6f7ae78b7311c603b9c6354ec7f200a9fe15"
+
+
+def reviewed_sdk_metadata(path=SDK_METADATA, *, installed_version=None):
+    """Fail closed on unreviewed bytes or SDK upgrades; never fetch metadata."""
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != SDK_METADATA_SHA256:
+        raise ValueError("Unreviewed SDK capability metadata SHA-256")
+    data = json.loads(raw)
+    if (installed_version or version("litellm")) != data["sdk"]["version"]:
+        raise ValueError("SDK version requires capability-input review")
+    return data
+
+
+def sdk_wire(params, provider, preset):
+    """Real installed mapper and transformer, with no support-function mocks."""
     from litellm.llms.openrouter.chat.transformation import OpenrouterConfig
 
-    _, _, provider, preset = screen.configured_route()
-    params = {
-        "messages": [{"role": "user", "content": "Fictional parity check"}],
-        "max_tokens": screen.OUTPUT,
-        "response_format": {"type": "json_object"},
-    }
     config = OpenrouterConfig()
     optional = config.map_openai_params(
         {"max_tokens": screen.OUTPUT, "response_format": {"type": "json_object"}, **preset},
@@ -435,7 +446,113 @@ def test_direct_body_matches_installed_production_sdk_transform():
     optional["extra_body"] = {"provider": provider}
     wire = config.transform_request("openai/gpt-6-luna", params["messages"], optional, {}, {})
     wire["stream"] = False
-    assert screen.request_body(params, {"provider": provider, "preset": preset}) == wire
+    return wire
+
+
+def test_direct_body_matches_installed_production_sdk_transform(
+    monkeypatch, record_testsuite_property
+):
+    """Parity under reviewed metadata, NOT evidence about bundled/provider support."""
+    import litellm
+
+    metadata = reviewed_sdk_metadata()
+    _, _, provider, preset = screen.configured_route()
+    params = {
+        "messages": [{"role": "user", "content": "Fictional parity check"}],
+        "max_tokens": screen.OUTPUT,
+        "response_format": {"type": "json_object"},
+    }
+    record_testsuite_property("sdk_capability_input", json.dumps(metadata, sort_keys=True))
+    original = litellm.model_cost
+    # Replace only the data input, not SDK logic. No ambient remote entries,
+    # registration side effects, synthesized aliases or permanent runtime overlay.
+    with monkeypatch.context() as context:
+        context.setattr(litellm, "model_cost", copy.deepcopy(metadata["models"]))
+        wire = sdk_wire(params, provider, preset)
+        assert wire["reasoning_effort"] == "medium"
+        assert screen.request_body(params, {"provider": provider, "preset": preset}) == wire
+    assert litellm.model_cost is original
+
+
+@pytest.mark.parametrize("invalid_version", ["unknown", "0.0.0", "1.96.3"])
+def test_sdk_capability_input_rejects_unreviewed_version(invalid_version):
+    with pytest.raises(ValueError, match="SDK version"):
+        reviewed_sdk_metadata(installed_version=invalid_version)
+
+
+@pytest.mark.parametrize("corruption", ["bytes", "provenance", "alias", "support"])
+def test_sdk_capability_input_integrity(tmp_path, corruption):
+    raw = SDK_METADATA.read_bytes()
+    data = json.loads(raw)
+    if corruption == "provenance":
+        data["provenance"]["revision"] = "0" * 40
+    elif corruption == "alias":
+        data["models"]["openrouter/openai/gpt-6-luna"] = data["models"]["gpt-6-luna"]
+    elif corruption == "support":
+        data["models"]["gpt-6-luna"]["supports_reasoning"] = False
+    path = tmp_path / "metadata.json"
+    path.write_bytes(raw + b"\n" if corruption == "bytes" else json.dumps(data).encode())
+    with pytest.raises(ValueError, match="SHA-256"):
+        reviewed_sdk_metadata(path)
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        reviewed_sdk_metadata(path)
+
+
+@pytest.mark.parametrize("capability", ["absent", False, None])
+def test_sdk_missing_reasoning_metadata_does_not_satisfy_parity(monkeypatch, capability):
+    import litellm
+
+    models = copy.deepcopy(reviewed_sdk_metadata()["models"])
+    if capability == "absent":
+        models = {}
+    else:
+        models["gpt-6-luna"]["supports_reasoning"] = capability
+    _, _, provider, preset = screen.configured_route()
+    params = {
+        "messages": [{"role": "user", "content": "Fictional negative check"}],
+        "max_tokens": screen.OUTPUT,
+        "response_format": {"type": "json_object"},
+    }
+    with monkeypatch.context() as context:
+        context.setattr(litellm, "model_cost", models)
+        wire = sdk_wire(params, provider, preset)
+        assert "reasoning_effort" not in wire
+        body = screen.request_body(params, {"provider": provider, "preset": preset})
+        assert set(body) - set(wire) == {"reasoning_effort"}
+        assert body.pop("reasoning_effort") == "medium"
+        assert body == wire
+
+
+def test_sdk_capability_lookup_uses_exact_native_alias_resolution(monkeypatch):
+    import litellm
+
+    models = reviewed_sdk_metadata()["models"]
+    assert set(models) == {"gpt-6-luna"}
+    with monkeypatch.context() as context:
+        context.setattr(litellm, "model_cost", copy.deepcopy(models))
+        # OpenrouterConfig tries explicit OpenRouter lookup, then native lookup.
+        # Only the latter resolves openai/<model> through this upstream entry.
+        assert not litellm.supports_reasoning("openai/gpt-6-luna", "openrouter")
+        assert litellm.supports_reasoning("openai/gpt-6-luna")
+        # The full routing identifier is not itself a native capability alias.
+        assert not litellm.supports_reasoning(screen.MODEL)
+        for model in ("openai/gpt-6-luna-unknown-date", "openai/gpt-6-luna-pro"):
+            assert not litellm.supports_reasoning(model)
+
+
+def test_raw_bundled_sdk_metadata_is_not_reviewed_input(monkeypatch, record_testsuite_property):
+    import litellm
+    from litellm.litellm_core_utils.get_model_cost_map import GetModelCostMap
+
+    bundled = GetModelCostMap.load_local_model_cost_map()
+    aliases = ("gpt-6-luna", "openai/gpt-6-luna", "openrouter/openai/gpt-6-luna")
+    observed = {alias: bundled.get(alias) for alias in aliases}
+    record_testsuite_property("bundled_sdk_aliases", json.dumps(observed, sort_keys=True))
+    assert all(entry is None for entry in observed.values())
+    with monkeypatch.context() as context:
+        context.setattr(litellm, "model_cost", bundled)
+        assert not litellm.supports_reasoning("openai/gpt-6-luna")
 
 
 def test_positive_controls_do_not_leak_a_constant_position():

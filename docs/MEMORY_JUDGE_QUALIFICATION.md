@@ -18,7 +18,8 @@ embedding activation or merge was authorized.
 `scripts/qualify_memory_judge.py` exercises the production equivalence prompt,
 planner and strict parser using a fictional owner and a bounded direct transport.
 It bypasses production account/DB operations. An offline parity test compares the
-wire format with the installed production LiteLLM adapter. Provider selection is
+wire format with the installed LiteLLM OpenRouter adapter under a reviewed,
+integrity-pinned capability input (see the boundary below). Provider selection is
 pinned with fallback disabled, ZDR/data-collection controls, price ceilings,
 zero retries and no redirects. Public route attestation is checked before every
 send; EU evidence is the exact pin and live listing, not the generic Azure receipt
@@ -133,3 +134,43 @@ output tokens. Cumulative reserved cost is US$0.05935413; reported model cost is
 US$0.00515812 before fee allowance. No further calls are authorized by this budget.
 Original judge and embedding ledger byte hashes were independently checked and
 remain unchanged. No merge, deployment or production memory mutation occurred.
+
+## Reproducible SDK parity input (#451)
+
+The parity assertion still requires the complete direct request, including
+`reasoning_effort: medium`, to equal the real installed SDK mapper/transformer
+output. The parity result no longer depends on LiteLLM's mutable main-branch
+model map. Ordinary imports can still attempt that pre-existing remote fetch
+unless `LITELLM_LOCAL_MODEL_COST_MAP=True`; this repair does not change import
+policy. The fetch can fail and silently select the package's older backup,
+which lacks the judge's three tested model spellings.
+
+`tests/fixtures/judge_sdk_capabilities.json` records the immutable upstream
+revision, full-source SHA-256, retrieval timestamp, compatible installed SDK
+version and exact four-field projection of the upstream `gpt-6-luna` entry.
+The fixture's bytes are independently pinned in `tests/test_judge_qualification.py`.
+Its provenance is SDK metadata, **not** an OpenRouter/Azure capability attestation.
+No prefixed alias or capability flag was invented. The real SDK resolves
+`openai/gpt-6-luna` using its native lookup; an explicit OpenRouter lookup alone
+does not resolve this entry. No transform or support function is mocked.
+This is adapter-level parity after the routing prefix is removed, not coverage
+of the full `acompletion`/preset-selection/endpoint/header/retry execution path.
+As in the original assertion, the test supplies the configured provider payload
+and normalizes non-streaming output with `stream: false` after transformation.
+
+Only this test's scoped model-map data input is replaced, then restored. No
+production code, request, preset, routing, dependency, qualification ledger or
+SDK installation changes. Updating the input or SDK version requires deliberate
+source/provenance review and a new integrity pin; ordinary tests never refresh it.
+Missing/corrupt inputs and unreviewed versions fail. Negative tests retain the
+missing/false/unknown-capability mismatch and reject lookalike model names.
+
+The test report records the reviewed input separately from raw bundled alias
+availability, not the finalized or remotely loaded runtime map. A parity pass
+proves **conditional SDK wire compatibility only**.
+The installed bundle still does not justify reasoning support for this route;
+later remote metadata and actual provider support require separate evidence.
+The runner's dry-run freezes requests and computes reservations, not SDK/provider
+capability qualification. Historical fictional-screen results above are unchanged,
+not refreshed or expanded by this repair. Do not treat the pinned input as a
+runtime overlay, live attestation, production qualification or execution approval.
