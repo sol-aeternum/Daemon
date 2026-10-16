@@ -45,6 +45,7 @@ from orchestrator.services.fetch.models import (
     FetchPageTooLargeError,
     FetchPolicy,
     FetchResult,
+    FetchTransportError,
 )
 from orchestrator.services.fetch.service import (
     FetchService,
@@ -383,11 +384,11 @@ async def test_direct_body_deadline_bounds_streaming(fetch_policy, monkeypatch) 
         with (
             _patch_resolution(),
             _with_mock_transport(httpx.MockTransport(handler)),
+            pytest.raises(FetchTransportError),
         ):
-            result = await DirectFetchStrategy(fetch_policy).fetch("https://example.com/drip")
+            await DirectFetchStrategy(fetch_policy).fetch("https://example.com/drip")
         elapsed = time.monotonic() - started
 
-        assert result is None  # deadline abort — never a partial page
         assert elapsed < 2.0
         assert closed_count == 1  # the aborted stream was closed
     finally:

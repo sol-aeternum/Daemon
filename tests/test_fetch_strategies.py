@@ -17,7 +17,12 @@ from orchestrator.config import Settings
 from orchestrator.services.fetch import cache as fetch_cache_module
 from orchestrator.services.fetch import models as fetch_models
 from orchestrator.services.fetch.cache import FetchCache
-from orchestrator.services.fetch.models import FetchPolicy, FetchResult
+from orchestrator.services.fetch.models import (
+    FetchHttpError,
+    FetchPolicy,
+    FetchResult,
+    FetchTransportError,
+)
 from orchestrator.services.fetch.service import FetchService
 from orchestrator.services.fetch.strategies.archive import ArchiveOrgStrategy
 from orchestrator.services.fetch.strategies.crawl4ai import Crawl4AIStrategy
@@ -470,8 +475,8 @@ class TestDirectStrategy:
         assert str(second_request.url) == "https://93.184.216.34/article"
 
     @pytest.mark.asyncio
-    async def test_address_fallback_returns_none_when_all_addresses_fail(self, fetch_policy):
-        """When every validated address fails to connect, the strategy returns ``None``."""
+    async def test_address_fallback_categorizes_when_all_addresses_fail(self, fetch_policy):
+        """Every validated address failing produces a bounded transport category."""
         strategy = DirectFetchStrategy(fetch_policy)
 
         with (
@@ -487,10 +492,9 @@ class TestDirectStrategy:
                     httpx.ConnectError("second address unreachable"),
                 ],
             ),
+            pytest.raises(FetchTransportError),
         ):
-            result = await strategy.fetch("https://example.com/article")
-
-        assert result is None
+            await strategy.fetch("https://example.com/article")
 
     @pytest.mark.asyncio
     async def test_cookies_preserved_across_redirect_hops(self, fetch_policy):
@@ -1936,13 +1940,9 @@ class TestFetchService:
                     return_value=_redirect_response(),
                 ),
             ):
-                # Redirect chain will hit ``_MAX_REDIRECTS`` (5) and
-                # then return None.
-                result = await DirectFetchStrategy(fetch_policy).fetch(
-                    "https://example.com/article"
-                )
-
-            assert result is None
+                # Redirect chain hits the unchanged redirect bound.
+                with pytest.raises(FetchHttpError):
+                    await DirectFetchStrategy(fetch_policy).fetch("https://example.com/article")
             # Multiple hops reached — at least 3 (loop visits 6 total,
             # minus the early termination once the deadline is gone).
             assert mock_validate.await_count >= 3, (
@@ -2017,12 +2017,10 @@ class TestFetchService:
                 ),
             ):
                 started = _time.monotonic()
-                result = await DirectFetchStrategy(fetch_policy).fetch(
-                    "https://example.com/article"
-                )
+                with pytest.raises(FetchTransportError):
+                    await DirectFetchStrategy(fetch_policy).fetch("https://example.com/article")
                 elapsed = _time.monotonic() - started
 
-            assert result is None
             # Slow-drip response was bounded by the shared deadline
             # (~0.3s) rather than the inactivity timeout (2s) or the
             # 5s self-loop the mock would otherwise run.
@@ -2036,18 +2034,9 @@ class TestFetchService:
 
     @pytest.mark.asyncio
     async def test_dns_unreachable_is_typed_separately_from_policy_violation(self, fetch_service):
-        """``SsrfUnreachable`` must be caught and let fallbacks run.
-
-        Mirrors Codex round-4 finding #1 — the prior keyword-scan approach
-        scanned attacker-controlled exception text. The new typed
-        ``SsrfUnreachable`` exception is the unambiguous signal that the
-        target was *unreachable*, not *unsafe*, so the direct strategy
-        returns ``None`` and the strategy chain proceeds to Jina/Archive.
-        """
+        """DNS failure is a bounded transport error, not an unsafe-URL verdict."""
         from orchestrator.services.fetch.strategies import direct as _direct_module
 
-        # Drive the same scenario as test_archive_fallback_used_when_direct_dns_unavailable
-        # but assert the new typed exception is what unblocks the chain.
         archive_strategy = fetch_service.archive_strategy
         assert archive_strategy is not None
         archive_strategy.fetch = AsyncMock(
@@ -2073,11 +2062,10 @@ class TestFetchService:
             "validate_url_and_resolve_async",
             new=AsyncMock(side_effect=SsrfUnreachable("gaierror: Name or service not known")),
         ):
-            result = await fetch_service.fetch("https://example.com/")
+            with pytest.raises(FetchTransportError):
+                await fetch_service.fetch("https://example.com/")
 
-        assert result is not None
-        assert result.strategy_used == "archive"
-        fetch_service.archive_strategy.fetch.assert_awaited_once()
+        fetch_service.archive_strategy.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_policy_violation_does_not_trigger_fallback(self, fetch_service):
@@ -2110,21 +2098,11 @@ class TestFetchService:
         fetch_service.archive_strategy.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_archive_fallback_used_when_direct_dns_unavailable(self, fetch_service):
-        """Jina/Archive fallbacks must run when the direct strategy's DNS fails.
-
-        Mirrors Codex finding #2 — Archive.org can recover a recent snapshot
-        even when the target host is temporarily unresolvable. Failing the
-        whole fetch on direct DNS failure prevents those external fallbacks
-        from running.
-        """
+    async def test_direct_dns_failure_does_not_silently_use_archive(self, fetch_service):
+        """The categorized direct failure propagates without vendor fallback."""
         from orchestrator.services.fetch.strategies import direct as _direct_module
 
-        # The real direct strategy is in play here. We patch only its DNS
-        # validator to simulate a target-host DNS failure; the strategy's
-        # own fetch method then distinguishes DNS unavailability from a
-        # safety violation and returns ``None`` instead of propagating
-        # SsrfViolation, so the chain proceeds to Jina and Archive.
+        # The real direct strategy is in play; only its DNS validator is mocked.
         archive_strategy = fetch_service.archive_strategy
         assert archive_strategy is not None
         archive_strategy.fetch = AsyncMock(
@@ -2154,14 +2132,11 @@ class TestFetchService:
             "validate_url_and_resolve_async",
             new=AsyncMock(side_effect=SsrfUnreachable("DNS validation timed out")),
         ):
-            result = await fetch_service.fetch("https://example.com/")
+            with pytest.raises(FetchTransportError):
+                await fetch_service.fetch("https://example.com/")
 
-        assert result is not None
-        assert result.strategy_used == "archive"
-        # Direct tried (and failed via DNS unavailability) before Jina and
-        # Archive were attempted.
-        fetch_service.jina_strategy.fetch.assert_awaited_once()
-        fetch_service.archive_strategy.fetch.assert_awaited_once()
+        fetch_service.jina_strategy.fetch.assert_not_awaited()
+        fetch_service.archive_strategy.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_address_retry_bounded_by_shared_deadline(self, fetch_policy):
@@ -2200,11 +2175,11 @@ class TestFetchService:
                 new_callable=AsyncMock,
                 side_effect=slow_connect,
             ) as mock_send,
+            pytest.raises(FetchTransportError),
         ):
-            result = await strategy.fetch("https://example.com/article")
+            await strategy.fetch("https://example.com/article")
         elapsed = _time.monotonic() - started
 
-        assert result is None
         # The shared deadline must cap total attempts at most
         # ``ceil(_PER_FETCH_DEADLINE_SECONDS / _PER_ADDRESS_TIMEOUT_SECONDS)``
         # plus one final attempt that observes the deadline already exhausted.
@@ -2244,11 +2219,11 @@ class TestFetchService:
                 new_callable=AsyncMock,
                 side_effect=slow_connect,
             ) as mock_send,
+            pytest.raises(FetchTransportError),
         ):
-            result = await strategy.fetch("https://example.com/article")
+            await strategy.fetch("https://example.com/article")
         elapsed = _time.monotonic() - started
 
-        assert result is None
         # The first attempt consumes the budget; the second short-circuits.
         assert mock_send.await_count <= 2
         # Wallclock bounded by per-attempt cap, not by ``2 × timeout``.
@@ -2326,12 +2301,10 @@ class TestFetchService:
                     side_effect=slow_redirect_then_fail,
                 ),
             ):
-                result = await strategy_fetch_with_short_deadline(
-                    fetch_policy=fetch_policy,
-                )
+                with pytest.raises(FetchTransportError):
+                    await strategy_fetch_with_short_deadline(fetch_policy=fetch_policy)
             elapsed = _time.monotonic() - started
 
-            assert result is None
             # First call slept ~0.5s; under the fix the second hop's
             # address attempt short-circuits before sleeping. Under the
             # bug, the second hop would grant a fresh 0.3s budget,
