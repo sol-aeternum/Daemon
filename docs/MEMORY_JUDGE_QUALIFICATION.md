@@ -158,7 +158,18 @@ of the full `acompletion`/preset-selection/endpoint/header/retry execution path.
 As in the original assertion, the test supplies the configured provider payload
 and normalizes non-streaming output with `stream: false` after transformation.
 
-Only this test's scoped model-map data input is replaced, then restored. No
+Only the scoped tests' metadata inputs are replaced, then restored: the model
+map, its derived case-insensitive index and the SDK's separately compiled
+fallback-generalization registry. Replacing
+the map alone leaves import-time remote rules active, which can supply reasoning
+support even when a negative test's map omits it (#537 hosted failure). Tests run
+with and without the same immutable upstream reasoning-family rule as ambient
+data; real SDK finalization and lookup execute against the scoped input, and both
+original metadata objects and index are restored. Cold/warm-index regressions
+also verify subsequent case-insensitive lookup of a real pre-scope key. This scope
+covers the tested uncached support/transform path, not public model-info caches.
+Raw-bundle checks finalize the actual
+bundle in the same isolated registry rather than retaining remote rules. No
 production code, request, preset, routing, dependency, qualification ledger or
 SDK installation changes. Updating the input or SDK version requires deliberate
 source/provenance review and a new integrity pin; ordinary tests never refresh it.
