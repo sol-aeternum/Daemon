@@ -31,7 +31,7 @@ import json
 import logging
 import uuid
 import asyncio
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, overload
@@ -39,8 +39,11 @@ from typing import Any, overload
 import asyncpg
 
 from orchestrator import routing_log
+from orchestrator.attempt_lifecycle import AttemptIdentity, LifecycleError
+from orchestrator.entitlements.attempt import _attempt_transaction
 from orchestrator.entitlements.errors import (
     AccountSuspended,
+    AttemptReservationUnavailable,
     BudgetExceeded,
     CapabilityDenied,
     ConcurrencyExceeded,
@@ -162,6 +165,35 @@ def _reservation_from_row(row: Mapping[str, Any]) -> Reservation:
         overage_microusd=int(row["overage_microusd"]),
         created_at=row["created_at"],
     )
+
+
+def _match_reservation_receipt(
+    row: Mapping[str, Any] | None, receipt: ReservationReceipt
+) -> Reservation | None:
+    if row is None:
+        return None
+    candidate = receipt.reservation
+    expected = {
+        "id": candidate.id,
+        "user_id": receipt.user_id,
+        "period_key": candidate.period_key,
+        "plan": candidate.plan.value,
+        "operation": candidate.operation,
+        "charge_kind": candidate.charge_kind.value,
+        "premium": candidate.premium,
+        "extended": candidate.extended,
+        "reserved_microusd": candidate.reserved_microusd,
+        "created_at": candidate.created_at,
+        "scope_id": receipt.scope_id,
+        "provider": receipt.provider,
+        "model": receipt.model,
+        "route_id": receipt.route_id,
+        "extended_run": receipt.extended_run,
+        "background": receipt.background,
+    }
+    if any(row[key] != value for key, value in expected.items()):
+        raise ReservationRecoveryUnresolved(receipt)
+    return _reservation_from_row(row)
 
 
 def _limit_error(
@@ -413,116 +445,250 @@ class EntitlementService:
         receipts: list[ReservationReceipt] = []
         async with self._reservation_connection(receipts) as conn:
             async with conn.transaction():
-                await self._ensure_account(conn, uid)
-                record = await self._store.lock_account(conn, uid)
-                if record is None:  # pragma: no cover - locked row just ensured
-                    raise UnknownAccount(str(uid))
-                resolved = resolve_account_policy(record, self._policy, period=period)
-                self._require_usable(
-                    record, resolved=resolved, premium=premium, extended=extended_run
-                )
-                kind = resolved.charge_kind_for(premium)
-                limits = resolved.limits_for(premium)
-                context = AdmissionContext(
-                    limits=limits,
-                    budget_ceiling_microusd=resolved.budget_ceiling_for(premium),
-                    charge_kind=kind,
-                    now=now,
-                    trial_extended_agents_remaining=resolved.trial.extended_agents_remaining,
-                )
-                request = ReservationRequest(
-                    amount_microusd=amount,
-                    extended=extended,
-                    charge_kind=kind,
-                    extended_run=extended_run,
-                    background=background,
-                    joins_open_operation=await self._store.operation_is_open(
-                        conn, user_id=uid, scope_id=scope_id
-                    ),
-                    shares_rate_slot=await self._store.operation_has_rate_slot(
-                        conn, user_id=uid, scope_id=scope_id
-                    ),
-                )
-
-                state = await self._store.read_period_state(conn, user_id=uid, period_key=period)
-                early = admit(state, request, context)
-                if not early.admitted:
-                    raise _limit_error(
-                        early.denial_code or "budget_exceeded",
-                        state=state,
-                        request=request,
-                        context=context,
-                    )
-
-                await self._store.ensure_period(conn, user_id=uid, period_key=period)
-                held = await self._store.hold(
+                return await self._reserve_body(
                     conn,
-                    user_id=uid,
-                    period_key=period,
-                    amount=amount,
+                    uid,
+                    amount,
+                    receipts,
+                    operation=operation,
+                    premium=premium,
                     extended=extended,
-                    now=now,
-                    budget_ceiling=resolved.budget_ceiling_for(premium),
-                    extended_budget_ceiling=limits.extended_agent_budget_microusd,
-                    rate_limit=limits.requests_per_minute,
-                    concurrency_limit=limits.max_concurrent_operations,
-                    extended_run_limit=limits.extended_agents_per_period,
-                    money_applies=context.period_owns_money(),
                     extended_run=extended_run,
                     background=background,
                     scope_id=scope_id,
-                )
-                if held is None:
-                    # Lost a race: re-read and report the reason the SQL used.
-                    state = await self._store.read_period_state(
-                        conn, user_id=uid, period_key=period
-                    )
-                    admission: Admission = admit(state, request, context)
-                    raise _limit_error(
-                        admission.denial_code or "budget_exceeded",
-                        state=state,
-                        request=request,
-                        context=context,
-                    )
-
-                row = await self._store.insert_reservation(
-                    conn,
-                    user_id=uid,
-                    period_key=period,
-                    plan=resolved.plan,
-                    operation=operation,
-                    charge_kind=kind,
-                    premium=premium,
-                    extended=extended,
-                    reserved=amount,
-                    now=now,
                     provider=provider,
                     model=model,
                     route_id=route_id,
-                    extended_run=extended_run,
-                    background=background,
-                    scope_id=scope_id,
+                    now=now,
+                    period=period,
                     workload_profile=workload_profile,
                     reasoning_effort=reasoning_effort,
                 )
-                if kind is ChargeKind.TRIAL:
-                    await self._store.hold_trial(
-                        conn, user_id=uid, amount=amount, extended=extended_run, now=now
-                    )
-                candidate = _reservation_from_row(row)
-                receipts.append(
-                    ReservationReceipt(
-                        reservation=candidate,
-                        user_id=uid,
-                        scope_id=scope_id,
-                        provider=provider,
-                        model=model,
-                        route_id=route_id,
-                        extended_run=extended_run,
-                        background=background,
-                    )
-                )
-                return candidate
+
+    async def _reserve_body(
+        self,
+        conn: Connection,
+        uid: uuid.UUID,
+        amount: int,
+        receipts: list[ReservationReceipt],
+        *,
+        operation: str,
+        premium: bool,
+        extended: bool,
+        extended_run: bool,
+        background: bool,
+        scope_id: uuid.UUID | None,
+        provider: str | None,
+        model: str | None,
+        route_id: str | None,
+        now: datetime,
+        period: str,
+        workload_profile: str | None = None,
+        reasoning_effort: str | None = None,
+        guard: Callable[[], Awaitable[None]] | None = None,
+    ) -> Reservation:
+        """Existing financial body; private guard adds no new financial policy."""
+        await self._ensure_account(conn, uid)
+        record = await self._store.lock_account(conn, uid)
+        if record is None:  # pragma: no cover - locked row just ensured
+            raise UnknownAccount(str(uid))
+        resolved = resolve_account_policy(record, self._policy, period=period)
+        self._require_usable(record, resolved=resolved, premium=premium, extended=extended_run)
+        kind = resolved.charge_kind_for(premium)
+        limits = resolved.limits_for(premium)
+        context = AdmissionContext(
+            limits=limits,
+            budget_ceiling_microusd=resolved.budget_ceiling_for(premium),
+            charge_kind=kind,
+            now=now,
+            trial_extended_agents_remaining=resolved.trial.extended_agents_remaining,
+        )
+        request = ReservationRequest(
+            amount_microusd=amount,
+            extended=extended,
+            charge_kind=kind,
+            extended_run=extended_run,
+            background=background,
+            joins_open_operation=await self._store.operation_is_open(
+                conn, user_id=uid, scope_id=scope_id
+            ),
+            shares_rate_slot=await self._store.operation_has_rate_slot(
+                conn, user_id=uid, scope_id=scope_id
+            ),
+        )
+        state = await self._store.read_period_state(conn, user_id=uid, period_key=period)
+        early = admit(state, request, context)
+        if not early.admitted:
+            raise _limit_error(
+                early.denial_code or "budget_exceeded",
+                state=state,
+                request=request,
+                context=context,
+            )
+        if guard is not None:
+            await guard()
+        await self._store.ensure_period(conn, user_id=uid, period_key=period)
+        if guard is not None:
+            await guard()
+        held = await self._store.hold(
+            conn,
+            user_id=uid,
+            period_key=period,
+            amount=amount,
+            extended=extended,
+            now=now,
+            budget_ceiling=resolved.budget_ceiling_for(premium),
+            extended_budget_ceiling=limits.extended_agent_budget_microusd,
+            rate_limit=limits.requests_per_minute,
+            concurrency_limit=limits.max_concurrent_operations,
+            extended_run_limit=limits.extended_agents_per_period,
+            money_applies=context.period_owns_money(),
+            extended_run=extended_run,
+            background=background,
+            scope_id=scope_id,
+        )
+        if held is None:
+            state = await self._store.read_period_state(conn, user_id=uid, period_key=period)
+            admission: Admission = admit(state, request, context)
+            raise _limit_error(
+                admission.denial_code or "budget_exceeded",
+                state=state,
+                request=request,
+                context=context,
+            )
+        if guard is not None:
+            await guard()
+        row = await self._store.insert_reservation(
+            conn,
+            user_id=uid,
+            period_key=period,
+            plan=resolved.plan,
+            operation=operation,
+            charge_kind=kind,
+            premium=premium,
+            extended=extended,
+            reserved=amount,
+            now=now,
+            provider=provider,
+            model=model,
+            route_id=route_id,
+            extended_run=extended_run,
+            background=background,
+            scope_id=scope_id,
+            workload_profile=workload_profile,
+            reasoning_effort=reasoning_effort,
+        )
+        if kind is ChargeKind.TRIAL:
+            if guard is not None:
+                await guard()
+            await self._store.hold_trial(
+                conn, user_id=uid, amount=amount, extended=extended_run, now=now
+            )
+        candidate = _reservation_from_row(row)
+        receipts.append(
+            ReservationReceipt(
+                reservation=candidate,
+                user_id=uid,
+                scope_id=scope_id,
+                provider=provider,
+                model=model,
+                route_id=route_id,
+                extended_run=extended_run,
+                background=background,
+            )
+        )
+        return candidate
+
+    async def reserve_for_attempt(
+        self,
+        identity: AttemptIdentity,
+        amount_microusd: int,
+        *,
+        operation: str,
+        premium: bool = False,
+        extended: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+        route_id: str | None = None,
+        extended_run: bool | None = None,
+        background: bool = False,
+        expected_period: str | None = None,
+        workload_profile: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Reservation:
+        """Uncalled internal admission; committed return never grants dispatch.
+
+        No supplied connection/outer transaction, analytics write, retry, origin
+        recapture or lifecycle registration. All effects share the gate transaction.
+        """
+        try:
+            if type(identity) is not AttemptIdentity:
+                raise LifecycleError("identity_refused")
+            identity.wire()
+        except LifecycleError:
+            raise AttemptReservationUnavailable("identity_refused") from None
+        amount = _require_amount(amount_microusd, field="amount_microusd")
+        if operation not in self._policy.operations:
+            raise UnknownOperation(operation)
+        now = self.now()
+        period = period_key(now)
+        if expected_period is not None and period != expected_period:
+            raise LimitExceeded("reservation period changed")
+        receipts: list[ReservationReceipt] = []
+        async with _attempt_transaction(self._pool, identity=identity) as state:
+            assert state.conn is not None
+            candidate = await self._reserve_body(
+                state.conn,
+                identity.account_id,
+                amount,
+                receipts,
+                operation=operation,
+                premium=premium,
+                extended=extended,
+                extended_run=extended if extended_run is None else extended_run,
+                background=background,
+                scope_id=identity.financial_scope_id,
+                provider=provider,
+                model=model,
+                route_id=route_id,
+                now=now,
+                period=period,
+                workload_profile=workload_profile,
+                reasoning_effort=reasoning_effort,
+                guard=state.guard,
+            )
+            state.receipt = receipts[0]
+            await state.commit()
+        return candidate
+
+    async def recover_attempt_reservation(
+        self, receipt: ReservationReceipt, *, commit_acknowledged: bool
+    ) -> Reservation | None:
+        """Bounded explicit financial observation only; never replay/dispatch."""
+        if (
+            type(receipt) is not ReservationReceipt
+            or type(commit_acknowledged) is not bool
+            or type(receipt.reservation) is not Reservation
+            or not isinstance(receipt.id, uuid.UUID)
+            or not isinstance(receipt.user_id, uuid.UUID)
+            or not isinstance(receipt.scope_id, uuid.UUID)
+            or receipt.reservation.user_id != receipt.user_id
+        ):
+            raise ReservationRecoveryUnresolved(receipt)
+        async with _attempt_transaction(
+            self._pool, receipt=receipt, acknowledged=commit_acknowledged
+        ) as state:
+            assert state.conn is not None
+            await self._ensure_account(state.conn, receipt.user_id)
+            account = await self._store.lock_account(state.conn, receipt.user_id)
+            if account is None:
+                raise ReservationRecoveryUnresolved(receipt)
+            row = await self._store.get_reservation(state.conn, receipt.id, for_update=True)
+            if row is None and commit_acknowledged:
+                raise ReservationRecoveryUnresolved(receipt)
+            result = _match_reservation_receipt(row, receipt)
+            await state.commit()
+        return result
 
     async def recover_reservation(self, receipt: ReservationReceipt) -> Reservation | None:
         """Resolve one server receipt after the original account-lock barrier.
@@ -543,29 +709,7 @@ class EntitlementService:
                     if account is None:
                         raise ReservationRecoveryUnresolved(receipt)
                     row = await self._store.get_reservation(conn, receipt.id, for_update=True)
-                    if row is None:
-                        return None
-                    expected = {
-                        "id": candidate.id,
-                        "user_id": receipt.user_id,
-                        "period_key": candidate.period_key,
-                        "plan": candidate.plan.value,
-                        "operation": candidate.operation,
-                        "charge_kind": candidate.charge_kind.value,
-                        "premium": candidate.premium,
-                        "extended": candidate.extended,
-                        "reserved_microusd": candidate.reserved_microusd,
-                        "created_at": candidate.created_at,
-                        "scope_id": receipt.scope_id,
-                        "provider": receipt.provider,
-                        "model": receipt.model,
-                        "route_id": receipt.route_id,
-                        "extended_run": receipt.extended_run,
-                        "background": receipt.background,
-                    }
-                    if any(row[key] != value for key, value in expected.items()):
-                        raise ReservationRecoveryUnresolved(receipt)
-                    return _reservation_from_row(row)
+                    return _match_reservation_receipt(row, receipt)
         except ReservationRecoveryUnresolved:
             raise
         except Exception:

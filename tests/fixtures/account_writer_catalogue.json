@@ -858,6 +858,28 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
+      "owner_source": "orchestrator.entitlements.attempt",
+      "qualname": "_AttemptTransaction.open",
+      "kind": "sql_dynamic",
+      "fingerprint": "63096fd06207cce6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Interpolated LOCAL timeout settings in the uncalled attempt financial adapter; explicit unresolved AST candidate, not a content mutation or runtime fence claim. Real SQL/financial qualification remains separate."
+    },
+    {
+      "owner_source": "orchestrator.entitlements.attempt",
+      "qualname": "_attempt_transaction",
+      "kind": "filesystem_write",
+      "fingerprint": "561e84144b945ea4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "The bounded name detector matches state.open(), a private database connection/transaction opener, not filesystem mutation. Uncalled source-only financial seam; no runtime authority inferred."
+    },
+    {
       "owner_source": "orchestrator.entitlements.attestation",
       "qualname": "record",
       "kind": "sql_named",

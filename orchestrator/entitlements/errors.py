@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from orchestrator.attempt_lifecycle import AttemptIdentity
     from orchestrator.entitlements.models import Reservation
 
 
@@ -69,6 +70,39 @@ class ReservationCommitUncertain(AccountError):
         super().__init__("Account reservation commit outcome is uncertain")
         self.receipt = receipt
         self.interrupted = interrupted
+        self.commit_acknowledged = False
+        self.termination_failed = False
+
+
+class ReservationCommittedResultUnavailable(ReservationCommitUncertain):
+    """Admission COMMIT acknowledged, but successful return/release unavailable."""
+
+    def __init__(self, receipt: ReservationReceipt) -> None:
+        super().__init__(receipt)
+        self.args = ("Account reservation committed; result unavailable",)
+        self.commit_acknowledged = True
+
+
+class AttemptReservationUnavailable(AccountError):
+    """Safe internal refusal; neither a provider failure nor admission authority."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        identity: AttemptIdentity | None = None,
+        sqlstate: str | None = None,
+        lifecycle_code: str | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.identity = identity
+        self.sqlstate = sqlstate
+        self.lifecycle_code = lifecycle_code
+        self.reservation_receipt: ReservationReceipt | None = None
+        self.commit_acknowledged = False
+        self.rollback_acknowledged = False
+        self.termination_failed = False
 
 
 class ReservationRecoveryUnresolved(AccountError):
@@ -77,6 +111,9 @@ class ReservationRecoveryUnresolved(AccountError):
     def __init__(self, receipt: ReservationReceipt) -> None:
         super().__init__("Account reservation outcome could not be resolved")
         self.receipt = receipt
+        self.commit_acknowledged = False
+        self.rollback_acknowledged = False
+        self.termination_failed = False
 
 
 class AccessDenied(EntitlementsError):
@@ -280,6 +317,7 @@ __all__ = [
     "AccessDenied",
     "AccountError",
     "AccountSuspended",
+    "AttemptReservationUnavailable",
     "BudgetExceeded",
     "CapabilityDenied",
     "ConcurrencyExceeded",
@@ -294,6 +332,7 @@ __all__ = [
     "RateLimitExceeded",
     "ReservationNotFound",
     "ReservationCommitUncertain",
+    "ReservationCommittedResultUnavailable",
     "ReservationReceipt",
     "ReservationRecoveryUnresolved",
     "RouteNotApproved",
