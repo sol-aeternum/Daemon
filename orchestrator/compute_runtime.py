@@ -379,14 +379,37 @@ class ComputeScope:
             )
         if hold.settlement is None:
             # One task per reservation prevents racing a stream-finally against
-            # the account-scope-finally on client cancellation.
+            # the account-scope-finally on client cancellation. Its initiating
+            # caller also owns telemetry, even if that waiter is cancelled.
             hold.actual = amount
-            if usage:
-                hold.settlement = asyncio.create_task(
-                    self.service.settle(reservation, amount, usage=usage)
+            has_usage = bool(usage)
+            settlement_fields = {
+                "scope_id": str(self.scope_id),
+                "reservation_id": _label(key),
+                "path": path,
+                "actual": amount,
+                "hold_bound": hold.bound,
+                "estimated": not usage or bool(usage.get("estimated_cost")),
+                "input_tokens": _count((usage or {}).get("input_tokens")),
+                "output_tokens": _count((usage or {}).get("output_tokens")),
+            }
+
+            async def settle_once() -> Any:
+                if has_usage:
+                    result = await self.service.settle(reservation, amount, usage=usage)
+                else:
+                    result = await self.service.settle(reservation, amount)
+                # No await between financial success and the single emission.
+                # Failed/cancelled owners never emit a successful settlement.
+                routing_log.emit(
+                    "settlement",
+                    **settlement_fields,
+                    status=_label(getattr(result, "status", None)),
+                    overage=_count(getattr(result, "overage_microusd", None)),
                 )
-            else:
-                hold.settlement = asyncio.create_task(self.service.settle(reservation, amount))
+                return result
+
+            hold.settlement = asyncio.create_task(settle_once())
         elif hold.actual != amount:
             raise ComputeUnavailable(
                 "settlement_conflict",
@@ -403,20 +426,6 @@ class ComputeScope:
             ) from None
         self.settled[key] = amount
         self.outstanding.pop(key, None)
-        result = hold.settlement.result() if hold.settlement.done() else None
-        routing_log.emit(
-            "settlement",
-            scope_id=str(self.scope_id),
-            reservation_id=_label(key),
-            path=path,
-            status=_label(getattr(result, "status", None)),
-            actual=amount,
-            hold_bound=hold.bound,
-            estimated=not usage or bool(usage.get("estimated_cost")),
-            input_tokens=_count((usage or {}).get("input_tokens")),
-            output_tokens=_count((usage or {}).get("output_tokens")),
-            overage=_count(getattr(result, "overage_microusd", None)),
-        )
 
 
 @dataclass
@@ -2226,6 +2235,8 @@ async def guarded_completion(
     metered: _MeteredStream | None = None
 
     def refuse_closed_stream() -> None:
+        if scope.closed:
+            raise ComputeUnavailable("capacity_unavailable", "Account compute scope is closed")
         if metered is not None and metered.closed:
             raise ComputeUnavailable("capacity_unavailable", "Inference stream is closed")
 
@@ -2307,7 +2318,8 @@ async def guarded_completion(
             raise
         except Exception:
             raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
-        scope.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound)
+        hold = ReservationHold(reservation, bound)
+        scope.outstanding[_hold_key(reservation)] = hold
         reservation_id = _label(_hold_key(reservation))
         attempt_reservations[attempt_index] = reservation_id
         scope.attempts += 1
@@ -2352,16 +2364,39 @@ async def guarded_completion(
                 litellm.acompletion(**call),
                 timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
             )
+            if stream:
+                # Keep the original hold handle: scope cleanup may already be
+                # settling it or have removed it while acquisition was pending.
+                hold.stream = _StreamControl(scope, response, dispatch_deadline)
+            try:
+                if asyncio.get_running_loop().time() >= dispatch_deadline:
+                    if hold.stream is not None:
+                        hold.stream.expire()
+                    raise ComputeUnavailable(
+                        "capacity_unavailable",
+                        "Dispatch deadline exceeded",
+                        category=FAILURE_DEADLINE_EXCEEDED,
+                    )
+                if scope.closed:
+                    raise ComputeUnavailable(
+                        "capacity_unavailable", "Account compute scope is closed"
+                    )
+                # Consumer-only close is clean EOF, not a scope/provider refusal.
+                # With no intervening await, metered_stream takes its closed
+                # early return and finally closes/settles this acquired hold.
+            except BaseException:
+                if hold.stream is not None:
+                    # Register the sole bounded cleanup owner before yielding;
+                    # this control missed the scope's earlier stop snapshot.
+                    hold.stream.stop()
+                    await hold.stream.close()
+                raise
         except BaseException:
             # An unknown or cancelled outcome still cost what was reserved, and a
             # failed settlement replaces this exception rather than hiding behind
             # a retryable one, so incomplete accounting stays visible.
             await scope.settle(reservation, bound, path="dispatch_failure")
             raise
-        if params.get("stream"):
-            scope.outstanding[_hold_key(reservation)].stream = _StreamControl(
-                scope, response, dispatch_deadline
-            )
         # Attribution records what actually went out, on both the precise routing
         # state and the coarser account scope, after any fallback has taken effect.
         sent_effort = _label(resolved.get("reasoning_effort"))

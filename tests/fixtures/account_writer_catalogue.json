@@ -738,6 +738,17 @@
     },
     {
       "owner_source": "orchestrator.compute_runtime",
+      "qualname": "guarded_completion.dispatch",
+      "kind": "store_write",
+      "fingerprint": "3007129999382f47",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Late acquired-stream hold.stream.expire() triggers the bounded name-based store detector; it latches in-memory deadline state and requests bounded transport cleanup, not a database mutation. Explicit deferred/uncovered candidate, not a runtime fence or lifecycle authority."
+    },
+    {
+      "owner_source": "orchestrator.compute_runtime",
       "qualname": "account_compute",
       "kind": "store_write",
       "fingerprint": "64b4e48998562a00",

@@ -1607,6 +1607,378 @@ def _deadline_service(monkeypatch: pytest.MonkeyPatch, *, route=None):
     return service
 
 
+async def _scope_acquisition_race(
+    monkeypatch,
+    service,
+    *,
+    fallback,
+    settling,
+    pool,
+    user_id,
+    before_exit=None,
+    cancel_cleanup=False,
+    close_consumer=False,
+):
+    """Real scope owner/child handoff; settlement may use a real PostgreSQL service."""
+    entered, acquired = asyncio.Event(), asyncio.Event()
+    exit_scope, settlement_entered, settle_release = (asyncio.Event() for _ in range(3))
+    if not settling:
+        settle_release.set()
+    records, scopes, holds, streams, settlements = [], [], [], [], []
+    original_settle = service.settle
+
+    async def settle(reservation, amount, **kwargs):
+        settlements.append((reservation, amount))
+        if len(settlements) == (2 if fallback else 1):
+            settlement_entered.set()
+            await settle_release.wait()
+        return await original_settle(reservation, amount, **kwargs)
+
+    monkeypatch.setattr(service, "settle", settle)
+    monkeypatch.setattr(
+        runtime.routing_log, "emit", lambda event, **kw: records.append((event, kw))
+    )
+
+    class FailedFirst(_ObservedStream):
+        async def __anext__(self):
+            raise _status_error(503)
+
+    close_release = asyncio.Event()
+
+    class Late(_ObservedStream):
+        async def aclose(self):
+            await super().aclose()
+            if cancel_cleanup:
+                await close_release.wait()
+
+    first, late = FailedFirst(), Late()
+
+    async def acquire(**kwargs):
+        if fallback and provider.await_count == 1:
+            return first
+        entered.set()
+        await acquired.wait()
+        return late
+
+    provider = AsyncMock(side_effect=acquire)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+
+    async def invoke():
+        stream = await runtime.guarded_completion(
+            model="auto", messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        streams.append(stream)
+        return await anext(stream)
+
+    children = []
+
+    async def owner():
+        async with runtime.account_compute(pool, user_id) as scope:
+            scopes.append(scope)
+            children.append(asyncio.create_task(invoke()))
+            await entered.wait()
+            holds.extend(scope.outstanding.values())
+            await exit_scope.wait()
+
+    owning = asyncio.create_task(owner())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        if before_exit is not None:
+            before_exit()
+        if close_consumer:
+            assert fallback and len(streams) == 1
+            await streams[0].aclose()
+        # owner records the original hold before allowing its actual finally.
+        exit_scope.set()
+        await asyncio.wait_for(settlement_entered.wait(), 2)
+        scope = scopes[0]
+        hold = holds[-1]
+        assert scope.closed
+        if settling:
+            assert scope.outstanding[runtime._hold_key(hold.reservation)] is hold
+            assert hold.settlement is not None and not hold.settlement.done()
+        else:
+            await asyncio.wait_for(asyncio.shield(owning), 2)
+            assert not scope.outstanding
+        acquired.set()
+        # Original 30s deadline is deliberately far away. No consumer close/GC
+        # may supply this prompt closure after the scope's earlier snapshot.
+        await asyncio.wait_for(late.closed.wait(), 1)
+        assert late.reads == 0
+        assert late.closes == 1
+        if cancel_cleanup:
+            children[0].cancel()
+            assert hold.stream is not None and hold.stream.closing is not None
+        close_release.set()
+        settle_release.set()
+        await asyncio.wait_for(asyncio.shield(owning), 2)
+        result = (await asyncio.wait_for(asyncio.gather(*children, return_exceptions=True), 2))[0]
+        if cancel_cleanup:
+            assert isinstance(result, asyncio.CancelledError), result
+        else:
+            assert isinstance(result, runtime.ComputeUnavailable), result
+            assert not result.retryable
+        assert provider.await_count == (2 if fallback else 1)
+        assert len(settlements) == (2 if fallback else 1)
+        assert all(amount == hold.bound for _, amount in settlements)
+        assert not scope.outstanding
+        assert hold.stream is not None and hold.stream.timer.cancelled()
+        if cancel_cleanup:
+            # Cancellation releases the waiter, not its shielded cleanup owner.
+            await asyncio.wait_for(hold.stream.close(), 1)
+        assert hold.stream.cleanup_outcome == "close_returned"
+        assert not scope.streams
+        assert first.closes == int(fallback)
+        target = 1 if fallback else 0
+        target_outcomes = [
+            data
+            for event, data in records
+            if event == "attempt_outcome" and data.get("attempt_index") == target
+        ]
+        if cancel_cleanup:
+            assert target_outcomes == []
+        else:
+            assert len(target_outcomes) == 1
+            assert target_outcomes[0]["outcome"] == "refused"
+            assert target_outcomes[0]["next_action"] == "raise"
+            assert target_outcomes[0]["failure_category"] == "unspecified"
+            assert str(result) == "Account compute scope is closed"
+        for reservation, amount in settlements:
+            events = [
+                data
+                for event, data in records
+                if event == "settlement"
+                and data.get("reservation_id") == runtime._label(runtime._hold_key(reservation))
+            ]
+            assert len(events) == 1
+            assert events[0]["actual"] == amount
+            assert events[0]["estimated"] is True
+            assert events[0]["path"] == (
+                "scope_cleanup" if reservation == hold.reservation else "stream_end"
+            )
+        return holds, settlements
+    finally:
+        acquired.set()
+        close_release.set()
+        exit_scope.set()
+        settle_release.set()
+        await asyncio.gather(owning, return_exceptions=True)
+        await asyncio.gather(*children, return_exceptions=True)
+        for scope in scopes:
+            await asyncio.gather(*(control.close() for control in tuple(scope.streams)))
+        for stream in streams:
+            await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [False, True], ids=["initial", "fallback"])
+@pytest.mark.parametrize("settling", [True, False], ids=["settling", "removed"])
+async def test_scope_close_during_acquisition_is_terminal(monkeypatch, fallback, settling):
+    routes = [_route(model=f"openrouter/test/scope-{i}") for i in range(3)]
+    for i, route in enumerate(routes):
+        route.route_id = f"scope-{i}"
+    service = _deadline_service(monkeypatch, route=routes)
+    service.reserve = AsyncMock(side_effect=[f"hold-{i}" for i in range(3)])
+    await _scope_acquisition_race(
+        monkeypatch,
+        service,
+        fallback=fallback,
+        settling=settling,
+        pool=object(),
+        user_id=uuid.uuid4(),
+    )
+    assert service.reserve.await_count == (2 if fallback else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settling", [True, False], ids=["settling", "removed"])
+async def test_scope_refusal_wins_over_consumer_close_during_fallback(monkeypatch, settling):
+    routes = [_route(model=f"openrouter/test/scope-close-{i}") for i in range(3)]
+    for i, route in enumerate(routes):
+        route.route_id = f"scope-close-{i}"
+    service = _deadline_service(monkeypatch, route=routes)
+    service.reserve = AsyncMock(side_effect=[f"hold-{i}" for i in range(3)])
+    await _scope_acquisition_race(
+        monkeypatch,
+        service,
+        fallback=True,
+        settling=settling,
+        pool=object(),
+        user_id=uuid.uuid4(),
+        close_consumer=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settling", [True, False], ids=["settling", "removed"])
+async def test_cancel_late_acquisition_cleanup_keeps_one_owner(monkeypatch, settling):
+    service = _deadline_service(monkeypatch)
+    await _scope_acquisition_race(
+        monkeypatch,
+        service,
+        fallback=False,
+        settling=settling,
+        pool=object(),
+        user_id=uuid.uuid4(),
+        cancel_cleanup=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("barrier", ["reservation", "acquisition_failure"])
+async def test_scope_close_before_acquisition_send_or_failure_is_terminal(
+    monkeypatch, fallback, barrier
+):
+    routes = [_route(model=f"openrouter/test/no-send-{i}") for i in range(3)]
+    for i, route in enumerate(routes):
+        route.route_id = f"no-send-{i}"
+    service = _deadline_service(monkeypatch, route=routes)
+    entered, release, leave = (asyncio.Event() for _ in range(3))
+    target = 2 if fallback else 1
+
+    async def reserve(*args, **kwargs):
+        if service.reserve.await_count == target and barrier == "reservation":
+            entered.set()
+            await release.wait()
+        return f"hold-{service.reserve.await_count}"
+
+    service.reserve = AsyncMock(side_effect=reserve)
+
+    class FailedFirst(_ObservedStream):
+        async def __anext__(self):
+            raise _status_error(503)
+
+    first = FailedFirst()
+
+    async def acquire(**kwargs):
+        if fallback and provider.await_count == 1:
+            return first
+        entered.set()
+        await release.wait()
+        raise _status_error(503)
+
+    provider = AsyncMock(side_effect=acquire)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    children, scopes = [], []
+
+    async def invoke():
+        stream = await runtime.guarded_completion(
+            model="auto", messages=[{"role": "user", "content": "synthetic"}], stream=True
+        )
+        return await anext(stream)
+
+    async def owner():
+        async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+            scopes.append(scope)
+            children.append(asyncio.create_task(invoke()))
+            await leave.wait()
+
+    owning = asyncio.create_task(owner())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        leave.set()
+        await asyncio.wait_for(asyncio.shield(owning), 2)
+        assert scopes[0].closed
+        release.set()
+        result = (await asyncio.wait_for(asyncio.gather(*children, return_exceptions=True), 2))[0]
+        assert isinstance(result, runtime.ComputeUnavailable), result
+        assert not result.retryable
+        assert provider.await_count == target - int(barrier == "reservation")
+        assert service.reserve.await_count == service.settle.await_count == target
+        assert len({call.args[0] for call in service.settle.await_args_list}) == target
+        assert not scopes[0].outstanding
+        assert first.closes == int(fallback)
+    finally:
+        release.set()
+        leave.set()
+        await asyncio.gather(owning, *children, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_acquisition_returning_after_original_deadline_never_reads(monkeypatch):
+    service = _deadline_service(monkeypatch)
+    cancelled, release = asyncio.Event(), asyncio.Event()
+    source = _ObservedStream()
+
+    async def acquire(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()  # SDK suppresses wait_for's timeout cancellation
+        return source
+
+    provider = AsyncMock(side_effect=acquire)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        child = asyncio.create_task(
+            runtime.guarded_completion(
+                messages=[{"role": "user", "content": "synthetic"}],
+                stream=True,
+                _dispatch_timeout_s=0.02,
+            )
+        )
+        try:
+            await asyncio.wait_for(cancelled.wait(), 1)
+            hold = next(iter(scope.outstanding.values()))
+            release.set()
+            with pytest.raises(runtime.ComputeUnavailable) as refused:
+                await asyncio.wait_for(asyncio.shield(child), 1)
+            assert refused.value.category == "deadline_exceeded"
+            assert not refused.value.retryable
+            assert source.reads == 0 and source.closes == 1
+            assert hold.stream is not None
+            assert hold.stream.state == "expired" and hold.stream.timer.cancelled()
+        finally:
+            release.set()
+            await asyncio.gather(child, return_exceptions=True)
+    assert provider.await_count == service.settle.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_nonstream_acquisition_after_scope_exit_preserves_scope_charge(monkeypatch):
+    service = _deadline_service(monkeypatch)
+    entered, release, leave = (asyncio.Event() for _ in range(3))
+    children, scopes = [], []
+
+    async def acquire(**kwargs):
+        entered.set()
+        await release.wait()
+        return {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+
+    provider = AsyncMock(side_effect=acquire)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+
+    async def owner():
+        async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+            scopes.append(scope)
+            children.append(
+                asyncio.create_task(
+                    runtime.guarded_completion(messages=[{"role": "user", "content": "synthetic"}])
+                )
+            )
+            await leave.wait()
+
+    owning = asyncio.create_task(owner())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        bound = next(iter(scopes[0].outstanding.values())).bound
+        leave.set()
+        await asyncio.wait_for(asyncio.shield(owning), 1)
+        release.set()
+        with pytest.raises(runtime.ComputeUnavailable) as refused:
+            await asyncio.wait_for(asyncio.shield(children[0]), 1)
+        assert not refused.value.retryable
+        assert provider.await_count == service.settle.await_count == 1
+        assert service.settle.await_args.args == ("hold", bound)
+        assert scopes[0].first_output_at is None
+    finally:
+        release.set()
+        leave.set()
+        await asyncio.gather(owning, *children, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("started", [False, True])
 async def test_acquired_stream_deadline_closes_without_another_pull(
@@ -1911,7 +2283,9 @@ async def test_active_read_cancellation_closes_before_accounting(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("barrier", ["acquisition", "acquisition_failure", "reservation"])
+@pytest.mark.parametrize(
+    "barrier", ["acquisition", "acquisition_failure", "reservation", "expired_acquisition"]
+)
 async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrier):
     routes = [
         _route(model=f"openrouter/test/close-race-{i}", input_price=1000 * (i + 1))
@@ -1920,7 +2294,11 @@ async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrie
     for i, route in enumerate(routes):
         route.route_id = f"close-race-{i}"
     service = _deadline_service(monkeypatch, route=routes)
-    entered, release = asyncio.Event(), asyncio.Event()
+    records = []
+    monkeypatch.setattr(
+        runtime.routing_log, "emit", lambda event, **kw: records.append((event, kw))
+    )
+    entered, release, expired = (asyncio.Event() for _ in range(3))
     holds: list[str] = []
 
     async def reserve(*args, **kwargs):
@@ -1944,7 +2322,13 @@ async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrie
             return first
         if barrier != "reservation" and provider.await_count == 2:
             entered.set()
-            await release.wait()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                if barrier != "expired_acquisition":
+                    raise
+                expired.set()
+                await release.wait()  # synthetic SDK suppresses its deadline cancellation
             if barrier == "acquisition_failure":
                 raise _status_error(503)
         return fallback
@@ -1953,17 +2337,51 @@ async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrie
     monkeypatch.setattr(runtime.litellm, "acompletion", provider)
     async with runtime.account_compute(object(), uuid.uuid4()) as scope:
         stream = await runtime.guarded_completion(
-            model="auto", messages=[{"role": "user", "content": "synthetic"}], stream=True
+            model="auto",
+            messages=[{"role": "user", "content": "synthetic"}],
+            stream=True,
+            _dispatch_timeout_s=0.1 if barrier == "expired_acquisition" else None,
         )
         pulling = asyncio.create_task(anext(stream))
         try:
             await asyncio.wait_for(entered.wait(), 1)
             await stream.aclose()  # latches closure while fallback acquisition is held
+            if barrier == "expired_acquisition":
+                await asyncio.wait_for(expired.wait(), 1)
             release.set()
             result = (await asyncio.wait_for(asyncio.gather(pulling, return_exceptions=True), 1))[0]
-            assert isinstance(result, (StopAsyncIteration, runtime.ComputeUnavailable)), result
+            if barrier == "acquisition":
+                assert isinstance(result, StopAsyncIteration), result
+            else:
+                assert isinstance(result, runtime.ComputeUnavailable), result
+                if barrier == "expired_acquisition":
+                    assert result.category == "deadline_exceeded"
+                    assert str(result) == "Dispatch deadline exceeded"
+                else:
+                    assert str(result) == "Inference stream is closed"
+                assert not result.retryable
+            target_outcomes = [
+                (data["outcome"], data["next_action"], data.get("failure_category"))
+                for event, data in records
+                if event == "attempt_outcome" and data.get("attempt_index") == 1
+            ]
+            assert (
+                target_outcomes
+                == {
+                    "acquisition": [],  # consumer-only close is not a provider/scope refusal
+                    "reservation": [("refused", "raise", "unspecified")],
+                    "acquisition_failure": [("failed", "fallback", "upstream_unavailable")],
+                    "expired_acquisition": [("refused", "raise", "deadline_exceeded")],
+                }[barrier]
+            )
+            assert not any(
+                event == "attempt_outcome" and data.get("attempt_index") == 2
+                for event, data in records
+            )
             assert fallback.reads == 0
-            assert fallback.closes == (1 if barrier == "acquisition" else 0)
+            assert fallback.closes == (
+                1 if barrier in {"acquisition", "expired_acquisition"} else 0
+            )
             assert first.closes == 1
             assert provider.await_count == (1 if barrier == "reservation" else 2)
             assert len(holds) == service.settle.await_count == 2
@@ -1975,6 +2393,14 @@ async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrie
                 )
             )
             assert not scope.outstanding  # no deferral of the second hold to scope exit
+            for hold in holds:
+                events = [
+                    data
+                    for event, data in records
+                    if event == "settlement" and data.get("reservation_id") == hold
+                ]
+                assert len(events) == 1
+                assert events[0]["estimated"] is True
         finally:
             release.set()
             if not pulling.done():
@@ -3057,6 +3483,111 @@ async def test_ledger_transport_looking_error_is_not_a_provider_retry(
     assert denied.value.status_code is None
     provider.assert_awaited_once()
     service.settle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ending", ["success", "waiter_cancelled", "owner_cancelled", "service_failure"]
+)
+async def test_settlement_owner_emits_once_despite_waiter_lifetime(monkeypatch, ending):
+    entered, release, joined = (asyncio.Event() for _ in range(3))
+    records = []
+    monkeypatch.setattr(
+        runtime.routing_log, "emit", lambda event, **kw: records.append((event, kw))
+    )
+
+    async def settle(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        if ending == "service_failure":
+            raise RuntimeError("synthetic ledger failure")
+        return SimpleNamespace(status="settled", overage_microusd=2)
+
+    service = _funded_service()
+    service.settle = AsyncMock(side_effect=settle)
+    scope = runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    hold = runtime.ReservationHold("reservation", 7)
+    scope.outstanding["reservation"] = hold
+    usage = {"input_tokens": 3, "output_tokens": 4}
+    first = asyncio.create_task(scope.settle("reservation", 7, usage=usage, path="stream_end"))
+    waiters = [first]
+
+    async def join():
+        joined.set()
+        await scope.settle("reservation", 7, path="scope_cleanup")
+
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert hold.settlement is not None
+        owner = hold.settlement
+        waiters.append(asyncio.create_task(join()))
+        await asyncio.wait_for(joined.wait(), 1)
+        assert hold.settlement is owner
+        with pytest.raises(runtime.ComputeUnavailable) as conflict:
+            await scope.settle("reservation", 6)
+        assert conflict.value.code == "settlement_conflict"
+        assert not conflict.value.retryable
+        assert records == []
+        # An awaiting caller's mutable metadata must not relabel the owner's event.
+        usage["input_tokens"] = 99
+        if ending == "waiter_cancelled":
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert not owner.done()
+        elif ending == "owner_cancelled":
+            owner.cancel()
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(*waiters, return_exceptions=True), 1)
+        service.settle.assert_awaited_once_with("reservation", 7, usage=usage)
+        if ending in {"success", "waiter_cancelled"}:
+            if ending == "success":
+                assert results == [None, None]
+            else:
+                assert isinstance(results[0], asyncio.CancelledError)
+                assert results[1] is None
+            assert records == [
+                (
+                    "settlement",
+                    {
+                        "scope_id": str(scope.scope_id),
+                        "reservation_id": "reservation",
+                        "path": "stream_end",
+                        "status": "settled",
+                        "actual": 7,
+                        "hold_bound": 7,
+                        "estimated": False,
+                        "input_tokens": 3,
+                        "output_tokens": 4,
+                        "overage": 2,
+                    },
+                )
+            ]
+            assert not scope.outstanding and scope.settled == {"reservation": 7}
+            await scope.settle("reservation", 7, path="dispatch_failure")
+            assert len(records) == service.settle.await_count == 1
+        else:
+            assert records == []
+            assert scope.outstanding["reservation"] is hold
+            assert not scope.settled
+            if ending == "owner_cancelled":
+                assert all(isinstance(result, asyncio.CancelledError) for result in results)
+                with pytest.raises(asyncio.CancelledError):
+                    await scope.settle("reservation", 7)
+            else:
+                assert all(
+                    isinstance(result, runtime.ComputeUnavailable)
+                    and result.code == "settlement_failed"
+                    and not result.retryable
+                    for result in results
+                )
+                with pytest.raises(runtime.ComputeUnavailable) as failed_again:
+                    await scope.settle("reservation", 7)
+                assert failed_again.value.code == "settlement_failed"
+            assert service.settle.await_count == 1 and records == []
+    finally:
+        release.set()
+        await asyncio.gather(*waiters, return_exceptions=True)
 
 
 @pytest.mark.asyncio
