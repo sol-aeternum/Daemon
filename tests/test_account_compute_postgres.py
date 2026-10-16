@@ -53,6 +53,10 @@ async def test_acquired_deadline_preserves_real_hold_and_original_period(
     clock = [datetime.now(timezone.utc) + timedelta(minutes=1)]
     service = EntitlementService(pool, clock=lambda: clock[0])
     monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+    records = []
+    monkeypatch.setattr(
+        runtime.routing_log, "emit", lambda event, **kw: records.append((event, kw))
+    )
     reading = asyncio.Event()
 
     class Transport(_ObservedStream):
@@ -125,6 +129,87 @@ async def test_acquired_deadline_preserves_real_hold_and_original_period(
         == 1
     )
     assert source.closes == provider.await_count == 1
+    events = [
+        data
+        for event, data in records
+        if event == "settlement" and data.get("reservation_id") == str(reservation.id)
+    ]
+    assert len(events) == 1
+    assert events[0]["actual"] == expected
+    assert events[0]["estimated"] is (ending != "eof")
+    assert events[0]["path"] == "stream_end"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [False, True], ids=["initial", "fallback"])
+@pytest.mark.parametrize("settling", [True, False], ids=["settling", "removed"])
+async def test_late_scope_acquisition_preserves_single_original_period_charge(
+    account_database, monkeypatch, fallback, settling
+):
+    from types import SimpleNamespace
+
+    from orchestrator import compute_runtime as runtime
+    from tests.test_compute_runtime import _qualified_policy, _route, _scope_acquisition_race
+
+    pool, user_id = account_database
+    routes = [_route(model=f"openrouter/test/scope-{i}") for i in range(3)]
+    for i, route in enumerate(routes):
+        route.route_id = f"scope-{i}"
+    _qualified_policy(monkeypatch, route=routes)
+    monkeypatch.setattr(
+        runtime,
+        "get_settings",
+        lambda: SimpleNamespace(
+            request_timeout_s=30,
+            openrouter_api_key=None,
+            get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+        ),
+    )
+    clock = [datetime.now(timezone.utc) + timedelta(minutes=1)]
+    service = EntitlementService(pool, clock=lambda: clock[0])
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+
+    def rollover():
+        clock[0] += timedelta(days=40)
+
+    _, settlements = await _scope_acquisition_race(
+        monkeypatch,
+        service,
+        fallback=fallback,
+        settling=settling,
+        pool=pool,
+        user_id=user_id,
+        before_exit=rollover,
+    )
+    assert len(settlements) == (2 if fallback else 1)
+    assert len({reservation.id for reservation, _ in settlements}) == len(settlements)
+    for reservation, amount in settlements:
+        row = await pool.fetchrow(
+            "SELECT status,actual_microusd,period_key,reserved_microusd "
+            "FROM entitlement_reservations WHERE id=$1",
+            reservation.id,
+        )
+        assert dict(row) == {
+            "status": "settled",
+            "actual_microusd": amount,
+            "period_key": reservation.period_key,
+            "reserved_microusd": amount,
+        }
+    periods = await pool.fetch(
+        "SELECT period_key,spent_microusd,reserved_microusd FROM entitlement_usage_periods "
+        "WHERE user_id=$1",
+        user_id,
+    )
+    assert len(periods) == 1  # rollover must not charge a new period
+    assert dict(periods[0]) == {
+        "period_key": settlements[0][0].period_key,
+        "spent_microusd": sum(amount for _, amount in settlements),
+        "reserved_microusd": 0,
+    }
+    assert await pool.fetchval(
+        "SELECT count(*) FROM entitlement_reservations WHERE user_id=$1",
+        user_id,
+    ) == len(settlements)
 
 
 @pytest_asyncio.fixture
