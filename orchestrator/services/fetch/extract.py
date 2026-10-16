@@ -47,8 +47,8 @@ def html_to_markdown(html: str) -> str | None:
             return markdown_content.strip()
         return None
 
-    except Exception as e:
-        logger.warning(f"HTML to markdown conversion failed: {e}")
+    except Exception:
+        logger.warning("HTML to markdown conversion failed")
         return None
 
 
@@ -85,8 +85,8 @@ def extract_html_title(html: str) -> str | None:
         parser.close()
         title = " ".join(" ".join(parser._parts).split())
         return title[:_MAX_TITLE_CHARS] or None
-    except Exception as e:
-        logger.debug(f"HTML title extraction failed: {e}")
+    except Exception:
+        logger.debug("HTML title extraction failed")
         return None
 
 
