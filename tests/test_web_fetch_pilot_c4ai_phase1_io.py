@@ -13,13 +13,18 @@ route out, embedded DNS does not forward, no host route):
 - a stdlib client container that reads the token from stdin and exercises the
   token-authenticated API.
 
-Pass requires: unauthenticated crawl refused (401); the fixture crawl fails
+Pass requires: unauthenticated crawl refused (401); authenticated inline HTML
+control succeeds; every private target returns the exact structured HTTP 400
+application policy denial (transport/auth/internal errors are inconclusive).
+Separately, the TLS fixture crawl fails
 with the fixture seeing a handshake attempt and completing none (TLS verified
 through upstream's egress proxy); metadata, loopback, private and IPv6
-loopback targets all fail; identity-checked removal of everything. A
+loopback targets are policy-denied; identity-checked removal of everything. A
 fixture attempt also proves Chromium launched with its sandbox (it refuses to
 start otherwise). Only statuses, success flags, short error excerpts and
-counts are recorded; no page content.
+counts are recorded; no page content. This gate is not OS confinement evidence
+for the network-attached reader. Its TLS fixture may be denied at the seed
+validator before a handshake on upstream 0.9.4; that is NOT TLS qualification.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from scripts.web_fetch_pilot_command import CommandExecutor
+from scripts.web_fetch_pilot_c4ai_evidence import require_application_evidence
 from scripts.web_fetch_pilot_docker import (
     AttachedContainer,
     ContainerPolicy,
@@ -57,12 +63,6 @@ PROFILE = ROOT / "scripts/web_fetch_pilot_browser_seccomp.json"
 OVERRIDE = ROOT / "scripts/web_fetch_pilot_c4ai_config_sandboxed.yml"
 ALIAS = "reader.pilot.test"
 URL = "https://openai.com/index/introducing-dots/"  # Resolves only to the fixture here.
-PRIVATE = (
-    "http://169.254.169.254/latest/meta-data/",
-    "http://127.0.0.1:6379/",
-    "http://10.0.0.1/",
-    "http://[::1]/",
-)
 PYTHON = ("-i", "LANG=C.UTF-8", "PATH=/usr/local/bin:/usr/bin:/bin", "/usr/local/bin/python")
 FIXTURE_SERVER = r"""
 import json, os, signal, socket, ssl, struct, sys, time
@@ -110,50 +110,6 @@ while time.monotonic() < deadline and not os.path.exists("/tmp/stop"):
     if report["attempts"] >= 1:
         deadline = min(deadline, time.monotonic() + 20)
 os.write(1, json.dumps(report, sort_keys=True).encode() + b"\n")
-"""
-CLIENT = r"""
-import json, os, signal, sys, time, urllib.error, urllib.request
-signal.alarm(280)
-sys.dont_write_bytecode = True
-token = sys.stdin.readline().strip()
-BASE = "http://reader.pilot.test:11235"
-def call(path, payload=None, auth=True, timeout=120):
-    data = None if payload is None else json.dumps(payload).encode()
-    request = urllib.request.Request(BASE + path, data=data, method="GET" if data is None else "POST")
-    request.add_header("Content-Type", "application/json")
-    if auth:
-        request.add_header("Authorization", "Bearer " + token)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.status, json.loads(response.read(4 * 1024 * 1024) or b"null")
-    except urllib.error.HTTPError as exc:
-        return exc.code, None
-    except OSError as exc:
-        return type(exc).__name__, None
-record = {}
-start = time.monotonic()
-while True:
-    status, _ = call("/health", timeout=5)
-    if status == 200 or time.monotonic() - start > 150:
-        break
-    time.sleep(2)
-record["health"] = status
-record["health_wait_s"] = round(time.monotonic() - start, 1)
-record["unauth_crawl"] = call("/crawl", {"urls": ["https://openai.com/"]}, auth=False)[0]
-def crawl(url):
-    status, body = call("/crawl", {"urls": [url], "browser_config": {}, "crawler_config": {}})
-    result = (body or {}).get("results", [{}])[0] if isinstance(body, dict) else {}
-    markdown = result.get("markdown") if isinstance(result, dict) else None
-    text = markdown.get("raw_markdown") if isinstance(markdown, dict) else markdown
-    return {
-        "status": status,
-        "success": result.get("success") if isinstance(result, dict) else None,
-        "error": str(result.get("error_message") or "")[:160] if isinstance(result, dict) else "",
-        "markdown_chars": len(text) if isinstance(text, str) else 0,
-    }
-record["fixture"] = crawl(sys.argv[1])
-record["private"] = {url: crawl(url) for url in sys.argv[2:]}
-os.write(1, json.dumps(record, sort_keys=True).encode() + b"\n")
 """
 
 
@@ -205,7 +161,6 @@ async def test_native_c4ai_094_isolated_auth_egress_and_tls(tmp_path: Path, mode
                 sandboxed=sandboxed,
                 profile_path=str(PROFILE) if sandboxed else None,
                 profile=PROFILE.read_bytes() if sandboxed else None,
-                config_path=str(OVERRIDE) if sandboxed else None,
                 config=OVERRIDE.read_bytes() if sandboxed else None,
             )
             fixture_driver = driver(networked_policy(net, network_id, "fixture", alias=HOST))
@@ -227,7 +182,15 @@ async def test_native_c4ai_094_isolated_auth_egress_and_tls(tmp_path: Path, mode
             drains.extend((asyncio.create_task(drain(reader.stdout)), reader_logs))
 
             client = await client_driver.start(
-                (*PYTHON, "-I", "-S", "-u", "-c", CLIENT, URL, *PRIVATE)
+                (
+                    *PYTHON,
+                    "-I",
+                    "-S",
+                    "-u",
+                    "-c",
+                    (ROOT / "scripts/web_fetch_pilot_c4ai_evidence.py").read_text() + "\nmain()\n",
+                    URL,
+                )
             )
             await send(client, api_token.encode("ascii") + b"\n")
             client.stdin.close()
@@ -245,11 +208,10 @@ async def test_native_c4ai_094_isolated_auth_egress_and_tls(tmp_path: Path, mode
             logs = await asyncio.wait_for(reader_logs, 5)
             print("C4AI_LOG_TAIL", logs[-3000:].decode("utf-8", "replace"))  # Diagnosis only.
             assert client_code == 0 and record.get("health") == 200, evidence
-            assert record["unauth_crawl"] == 401, evidence
+            require_application_evidence(record)
             assert record["fixture"]["success"] is False, evidence
             assert record["fixture"]["markdown_chars"] == 0, evidence
             assert report.get("attempts", 0) >= 1 and report.get("handshakes") == 0, evidence
-            assert all(item["success"] is not True for item in record["private"].values())
             assert all(d.retained is None and not d.cleanup_failed for d in drivers)
             assert network.retained is None and not network.cleanup_failed
     finally:

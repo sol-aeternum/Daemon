@@ -2391,3 +2391,80 @@ gate therefore runs in sandboxed mode only. Owner-approved run of
 26.10 s** — health 200, unauthenticated crawl 401, metadata/loopback/private/IPv6-loopback
 targets refused, the self-signed fixture saw attempts and no completed handshake, identity-checked
 removal of everything.
+
+### PR #431 review repairs — offline only (2026-10-16)
+
+Addresses [the two P2 findings](https://github.com/sol-aeternum/Daemon/pull/431#issuecomment-5977786783).
+No live test, Docker command, image execution, deployment or activation is part of this repair.
+The custom pilot, pinned derivative, seccomp profile, unchanged service entrypoint and single
+read-only config-file mount exception are preserved. Production remains direct-only.
+
+**Positive application-policy evidence.** The isolated client now uses the same stdlib source
+covered by the offline HTTP-fake tests, in `scripts/web_fetch_pilot_c4ai_evidence.py`. It bounds
+both successful and HTTPError response bodies (including an extra byte to detect overflow).
+Each of the four exact private literal-IP probes must receive HTTP **400** with exactly
+`{"detail":"URL blocked (SSRF protection): URL blocked"}`. This contract comes from
+[v0.9.4 `validate_url_destination` / `validate_webhook_url`](https://github.com/unclecode/crawl4ai/blob/v0.9.4/deploy/docker/utils.py)
+and [the crawl handler's HTTPException passthrough](https://github.com/unclecode/crawl4ai/blob/v0.9.4/deploy/docker/api.py)
+(source inspected 2026-10-16). Missing probes, generic 400s, 401/500, malformed/oversized bodies,
+missing results and transport failures cannot qualify. An authenticated synthetic `raw:` HTML
+crawl must independently succeed with the exact expected marker; only its size/hash and match
+flag are recorded, not its body. This is an **inline-reader/auth control**, not a network/TLS
+success control. Neither internal-URL allowances nor TLS bypasses are enabled.
+
+**Config consumption binding.** `c4ai_policy` accepts hash-verified bytes, no caller config
+pathname. For each allocation the lifecycle driver exclusively creates a separate 0700 input
+directory and a 0444 regular config file from those bytes. All path components are opened
+without following symlinks, and owner/device/inode, link count, mode, size and bytes are checked.
+Only that snapshot's path is bound to `/app/config.yml`. Before `start`, the identity-checked
+container must still be `created` and not running, and bounded `docker cp FULL_ID:/app/config.yml -`
+readback must contain exactly one ordinary `config.yml` with the reviewed bytes. No image code
+runs during that readback. Links, extended headers, extra entries, truncation, oversized archives
+and readback errors refuse start; paths are never extracted. Identity, mount/state and staged
+bytes are checked again before attachment. Snapshot ownership precedes creation and remains
+with the allocation until container removal is verified; uncertain removal or a substituted
+input inode retains the allocation and input visibly (`retained_config`), without deleting
+foreign files. Cancellation never cancels the owned teardown.
+
+Readback semantics are source-backed, not inferred from `docker export`: Moby
+[v28.5.1 `containerArchivePath`](https://github.com/moby/moby/blob/v28.5.1/daemon/archive_unix.go)
+uses [`openContainerFS`](https://github.com/moby/moby/blob/v28.5.1/daemon/containerfs_linux.go),
+which sets up the container's bind mounts in a private filesystem view, including for a stopped
+container. This does not establish compatibility with the installed daemon; no native readback
+or revised qualification gate has run. Restrictive permissions are not OS-level immutable-file
+enforcement: the local host user and daemon remain trusted, not adversarial same-UID/root
+writers. The driver never intentionally rewrites a staged file and retains it through removal.
+
+**Qualification limits.** The 2026-10-04 run above is historical evidence from the old permissive
+gate, not proof of positive policy denial under this revised contract. The public upstream tag
+does not attest the private derivative's contents. Source inspection also shows that the
+public-looking TLS fixture hostname can be denied at seed validation when it resolves to its
+private isolated-network address, before any handshake. The existing TLS/handshake assertions
+are deliberately not relaxed: policy denial cannot substitute for TLS qualification. The
+network-none confinement result applies only to the custom browser-policy container, not the
+network-attached Crawl4AI service. Any revised native qualification remains unverified and
+requires separate owner approval; this draft is returned for review, not merge clearance.
+
+Offline check results for this repair: scoped regressions **260 passed**; full backend
+**5417 passed, 166 skipped**, frontend **666 passed**. Full lint, formatting, basedpyright,
+high-severity Bandit, frontend locked install/braces guard/type/lint/format/build, feature
+matrix, doc freshness and pre-commit/secret scanning pass. Full Bandit remains a non-blocking
+inventory (0 high; includes B310 on the fixed-base stdlib qualification client). The first
+aggregate runner hit its shell deadline after the first four backend gates; its stopped owned
+scope was reconciled with unknown exit status, and only the remaining gates were then run to
+completion using the unchanged commands from `scripts/local_ci.sh`.
+
+**Definition of Done remains blocked by unchanged dependency locks:** Python audit reports
+`fsspec 2026.1.0` / `PYSEC-2026-4217` and `multidict 6.7.0` / `PYSEC-2026-4244` ([#376](https://github.com/sol-aeternum/Daemon/issues/376));
+npm audit reports high advisories for `sharp` / `GHSA-wq5f-xc86-pv6w` and `source-map-js` /
+`GHSA-68fv-2mgg-jv7q`, plus moderate `postcss-selector-parser` / `GHSA-rj75-hqrm-r3gf` and
+dependents ([#311](https://github.com/sol-aeternum/Daemon/issues/311)). No dependencies or gates
+were changed. Existing TestClient and `utcnow` deprecations were reported to [#192](https://github.com/sol-aeternum/Daemon/issues/192)
+and [#228](https://github.com/sol-aeternum/Daemon/issues/228). Evidence is retained in the
+registered `pr431-review-fixes-20261016` task, outside the repository.
+
+Independent review: one fresh enforced read-only GLM review of the OpenAI-authored repairs
+and surrounding contracts returned **no findings**; no repair was requested. It executed no
+commands or tests. The primary inspected the integrated changes and recorded check results;
+neither review nor passing functional gates overrides the two dependency-audit blockers or
+authorizes a native run, merge or activation.

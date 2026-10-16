@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from scripts.web_fetch_pilot_command import CommandLimitFailure, CommandResult
+from scripts.web_fetch_pilot_config_snapshot import ConfigSnapshot, require_config_archive
 from scripts.web_fetch_pilot_container_policy import (
     OWNER_LABEL,
     RUN_LABEL,
@@ -156,6 +157,8 @@ class ContainerPolicy:
     create: Callable[[str, tuple[str, ...], str], tuple[str, ...]]
     preflight: Callable[[object, str, tuple[str, ...], str, str], str]
     identity: Callable[[object, str, str | None, str], str]
+    config_snapshot: bytes | None = None
+    bind_snapshot: Callable[[str], ContainerPolicy] | None = None
 
 
 GATEWAY_POLICY = ContainerPolicy(
@@ -227,13 +230,13 @@ def c4ai_policy(
     sandboxed: bool,
     profile_path: str | None = None,
     profile: bytes | None = None,
-    config_path: str | None = None,
     config: bytes | None = None,
 ) -> ContainerPolicy:
     """Upstream Crawl4AI 0.9.4 service role; its own entrypoint runs unchanged.
 
-    Sandboxed mode verifies the pinned seccomp profile and the reviewed config
-    override bytes here, once; preflight compares the record with those bytes.
+    Sandboxed mode checks immutable config bytes; the driver stages them for
+    each allocation, binds ONLY that owned snapshot and checks container readback.
+    No caller source pathname is accepted as a mount input.
     """
     option: str | None = None
     if sandboxed:
@@ -243,40 +246,45 @@ def c4ai_policy(
         if hashlib.sha256(config).hexdigest() != C4AI_SANDBOXED_CONFIG_SHA256:
             raise PreflightError("offline gateway preflight refused")
 
-    def create(name: str, command: tuple[str, ...], run: str) -> tuple[str, ...]:
-        if command != ():
-            raise PreflightError("offline gateway preflight refused")  # Upstream entrypoint only.
-        return c4ai_create_arguments(
-            name,
-            network,
-            alias,
-            run_token=run,
-            api_token=api_token,
-            sandboxed=sandboxed,
-            profile_path=profile_path,
-            config_path=config_path,
+    def bound(snapshot_path: str | None) -> ContainerPolicy:
+        def create(name: str, command: tuple[str, ...], run: str) -> tuple[str, ...]:
+            if command != () or (sandboxed and snapshot_path is None):
+                raise PreflightError("offline gateway preflight refused")
+            return c4ai_create_arguments(
+                name,
+                network,
+                alias,
+                run_token=run,
+                api_token=api_token,
+                sandboxed=sandboxed,
+                profile_path=profile_path,
+                config_path=snapshot_path,
+            )
+
+        return ContainerPolicy(
+            lambda: "daemon-c4ai-" + secrets.token_hex(12),
+            create,
+            lambda record, name, command, identifier, run: require_c4ai(
+                record,
+                name,
+                network,
+                alias,
+                run_token=run,
+                network_id=network_id,
+                api_token=api_token,
+                sandboxed=sandboxed,
+                seccomp_option=option,
+                config_path=snapshot_path,
+                container_id=identifier,
+            ),
+            lambda record, name, identifier, run: require_c4ai_identity(
+                record, name, container_id=identifier, run_token=run
+            ),
+            config if sandboxed and snapshot_path is None else None,
+            bound if sandboxed and snapshot_path is None else None,
         )
 
-    return ContainerPolicy(
-        lambda: "daemon-c4ai-" + secrets.token_hex(12),
-        create,
-        lambda record, name, command, identifier, run: require_c4ai(
-            record,
-            name,
-            network,
-            alias,
-            run_token=run,
-            network_id=network_id,
-            api_token=api_token,
-            sandboxed=sandboxed,
-            seccomp_option=option,
-            config_path=config_path,
-            container_id=identifier,
-        ),
-        lambda record, name, identifier, run: require_c4ai_identity(
-            record, name, container_id=identifier, run_token=run
-        ),
-    )
+    return bound(None)
 
 
 def _refuse(message: str) -> DockerLifecycleFailure:
@@ -374,6 +382,8 @@ class _Allocation:
     final_state: tuple[str, int] | None = None
     teardown: asyncio.Task[None] | None = None
     released: bool = False
+    snapshot: ConfigSnapshot | None = None
+    policy: ContainerPolicy | None = None
 
 
 class AttachedContainer:
@@ -482,6 +492,13 @@ class OfflineContainerDriver:
         return allocation.name, allocation.container_id
 
     @property
+    def retained_config(self) -> str | None:
+        allocation = self._allocation
+        if allocation is None or allocation.snapshot is None:
+            return None
+        return allocation.snapshot.path
+
+    @property
     def pending_tasks(self) -> tuple[asyncio.Task[None], ...]:
         allocation = self._allocation
         if allocation is None or allocation.teardown is None or allocation.teardown.done():
@@ -542,8 +559,13 @@ class OfflineContainerDriver:
             raise _refuse("preflight required before create")
         if self._allocation is not None:
             raise _refuse("allocation slot occupied")
-        arguments = self._policy.create(self._name_factory(), command, self._run)  # Checked.
-        name = arguments[arguments.index("--name") + 1]
+        name = self._name_factory()
+        # Ordinary roles retain their pure vector validation before any I/O.
+        arguments = (
+            self._policy.create(name, command, self._run)
+            if self._policy.config_snapshot is None
+            else None
+        )
         orphans = await self.foreign_ids()  # Other runs report and block; ours do not.
         if orphans:
             raise OrphansPresent(orphans)
@@ -553,8 +575,23 @@ class OfflineContainerDriver:
         self._allocation = allocation  # Ownership intent precedes create.
         failure: BaseException | None = None
         try:
+            if self._policy.config_snapshot is not None:
+                snapshot = ConfigSnapshot(
+                    os.path.dirname(self._config_dir), self._policy.config_snapshot
+                )
+                allocation.snapshot = snapshot  # Ownership precedes all staging I/O.
+                snapshot.create()
+                bind = self._policy.bind_snapshot
+                if bind is None:
+                    raise _refuse("snapshot policy missing")
+                allocation.policy = bind(snapshot.path)
+                arguments = allocation.policy.create(name, command, self._run)
+            if arguments is None:
+                raise _refuse("container arguments missing")
             await self._create(allocation, arguments)
             await self._preflight_created(allocation)
+            if allocation.snapshot is not None:
+                await self._verify_config(allocation)
             launcher = self._attach_factory()
             allocation.attach = launcher
             identifier = allocation.container_id
@@ -602,7 +639,29 @@ class OfflineContainerDriver:
         if identifier is None:
             raise DockerCleanupFailure("container identity missing")
         record = await self._inspect(identifier, timeout=COMMAND_SECONDS)
-        self._policy.preflight(record, allocation.name, allocation.command, identifier, self._run)
+        policy = allocation.policy or self._policy
+        policy.preflight(record, allocation.name, allocation.command, identifier, self._run)
+        if allocation.snapshot is not None:
+            state = record.get("State")
+            if (
+                type(state) is not dict
+                or state.get("Status") != "created"
+                or state.get("Running") is not False
+            ):
+                raise _refuse("config verification requires an unstarted container")
+
+    async def _verify_config(self, allocation: _Allocation) -> None:
+        snapshot = allocation.snapshot
+        assert snapshot is not None and allocation.container_id is not None
+        snapshot.verify()
+        # cp FROM streams a tar of the mount-aware container filesystem without
+        # executing its image. No -L, extraction, export, shell or exec is used.
+        copied = await self._docker("cp", allocation.container_id + ":/app/config.yml", "-")
+        if copied.returncode != 0:
+            raise _refuse("container config readback refused")
+        require_config_archive(copied.stdout, snapshot.content)
+        await self._preflight_created(allocation)
+        snapshot.verify()  # Last synchronous check before start; trusted host/daemon.
 
     def _start_teardown(self, allocation: _Allocation) -> asyncio.Task[None]:
         if allocation.teardown is not None:
@@ -630,6 +689,11 @@ class OfflineContainerDriver:
             await self._remove(allocation)
         except BaseException as exc:
             failure = exc
+        if failure is None and allocation.snapshot is not None:
+            try:
+                allocation.snapshot.cleanup()
+            except BaseException as exc:
+                failure = exc  # Keep the allocation/input visible on uncertainty.
         launcher = allocation.attach
         if launcher is not None:
             launcher.close()
