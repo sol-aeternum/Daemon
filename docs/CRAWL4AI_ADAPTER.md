@@ -6,6 +6,9 @@ fallback or a qualified browser boundary. `FetchService.crawl4ai_strategy` remai
 deployment configuration, environment variable, permission or dependency is changed.
 This internal prerequisite does not promote a feature-matrix state.
 
+The separate [source-only isolation controls](CRAWL4AI_QUALIFICATION.md) cut the
+necessary pilot dependencies without qualifying a native runtime or enabling this adapter.
+
 ## Contract and local protections
 
 `orchestrator/services/fetch/strategies/crawl4ai.py` captures the existing
