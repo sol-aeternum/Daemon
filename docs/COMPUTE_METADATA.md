@@ -71,8 +71,13 @@ by object identity. Public messages contain no SQL key/detail/query text.
 | Acknowledged COMMIT, then decode/release failure | `ComputeMetadataCommittedResultUnavailable`, acknowledgement true |
 | Non-write failure | Unavailable, apart from precise identity/account errors |
 
-Failures/cancellation synchronously terminate the acquired connection. This is
-**not a rollback oracle** and does not prove remote query cessation. Termination
+Before release, failures/cancellation synchronously terminate the still-owned
+connection. Ownership transfers **before invoking** native pool release; afterwards
+the application never terminates, reclaims or retries that proxy. This prevents
+premature holder reuse while the driver's shielded reset still runs. Even failure
+before native shield creation leaves cleanup unresolved, not application-owned.
+Driver cleanup may outlive the application deadline; no extra grace/task is added.
+Termination is **not a rollback oracle** or proof of remote query cessation. Termination
 failure is exposed on the error/cancellation and in `cleanup_events`; resource
 reconciliation is still required. Original `CancelledError` propagates with
 `metadata_identity`, `metadata_outcome` (`not_issued`, `uncertain`, `committed`)

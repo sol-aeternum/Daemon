@@ -225,7 +225,7 @@ async def test_injected_failure_phase_outcomes(phase, error_type):
     exc = caught.value
     assert exc.identity is ident and exc.commit_acknowledged == (phase == "release")
     assert "secret" not in str(exc)
-    assert fake.terminated == (phase != "acquire")
+    assert fake.terminated == (phase not in ("acquire", "release"))
     assert fake.calls.count("statement") <= 1 and fake.calls.count("commit") <= 1
 
 
@@ -278,7 +278,8 @@ async def test_cooperative_deadline_includes_fake_ignored_release_allowance():
     with pytest.raises(m.ComputeMetadataCommittedResultUnavailable) as caught:
         await fake_store(fake).create_scope(ident)
     assert 1.8 < asyncio.get_running_loop().time() - start < 2.5
-    assert caught.value.commit_acknowledged and caught.value.identity is ident and fake.terminated
+    assert caught.value.commit_acknowledged and caught.value.identity is ident
+    assert not fake.terminated  # Ownership already transferred, despite the ignored allowance.
 
 
 def test_factories_are_frozen_uuid4_and_constructor_cannot_bypass():

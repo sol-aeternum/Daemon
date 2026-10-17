@@ -78,6 +78,15 @@ Cross-order lock timeout/deadlock is refusal, never retry or success. Function-l
 acquire/release and cooperative operation bounds; these are database operation
 bounds, NOT whole-call, producer termination or billing/drain deadlines.
 
+The standalone register/close/readback adapter relinquishes connection-proxy
+ownership **before invoking** native pool release. After transfer it never
+terminates, reclaims or retries that proxy, even on failure before shield creation.
+This prevents application cleanup from recycling a holder while its old shielded
+reset still runs. Native cleanup may remain unresolved beyond the application
+deadline; no extra grace/task or synchronous reset/server-stop guarantee is added.
+Before transfer, failure cleanup still terminates the owned connection. Identity,
+command, cancellation and acknowledgement classifications remain unchanged.
+
 Deletion first means registration/gate refuses; gate first serializes existing
 task changes through caller commit. TaskStore keeps a running conversation and
 requests cancellation; MemoryStore may delete it. Subsequent gate refuses for
