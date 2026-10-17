@@ -79,7 +79,7 @@ Run through the registered task's `opencode-work run TASK --` wrapper:
 
 ```sh
 uv run pytest -q tests/test_owned_search_redis.py tests/test_search_pacing.py tests/test_metered_web_search.py
-uv run pytest -q tests/test_cache_fixture_ownership.py
+uv run pytest -q frontend/e2e/cache_fixture_ownership.py
 npm --prefix frontend run test:run -- __tests__/cache-fixture-control.test.ts
 npm --prefix frontend run test:browser -- --config playwright.cache.config.ts
 ```
@@ -89,6 +89,13 @@ until explicit local teardown. A foreign port collision is refusal, never a reas
 to stop a process, borrow a server or weaken the gate. Nonces prevent accidental
 cross-task reuse under the trusted same-UID/Docker-administrator model; they are
 not protection against a malicious administrator or same-UID peer.
+
+The three real collision checks are an explicit **blocking frontend gate** after
+both locked environments are installed, before the browser suite. They are not
+part of default backend pytest discovery: the backend CI job intentionally does
+not install Next/frontend packages. No assertion is skipped or removed; the local
+runner and CI both invoke the same module explicitly, with ordering and refusal
+semantics covered by `tests/test_local_ci_frontend_setup.py`.
 
 Targeted passes do not replace the full repository gates, final independent review
 or `scripts/pr_create.sh`. Resources with incomplete cleanup remain pinned with

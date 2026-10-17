@@ -148,6 +148,12 @@ jobs:
           UV_PROJECT_ENVIRONMENT: .uv-venv
         run: uv sync --locked
 
+      - name: Refuse foreign cache fixture endpoints
+        working-directory: .
+        env:
+          UV_PROJECT_ENVIRONMENT: .uv-venv
+        run: uv run pytest -q frontend/e2e/cache_fixture_ownership.py
+
       - name: Browser HTTP-cache isolation regression
         run: npx playwright test --config playwright.cache.config.ts
 

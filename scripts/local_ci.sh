@@ -73,6 +73,7 @@ frontend|format-check|blocking|npm --prefix frontend run format:check
 frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
 frontend|test-run|blocking|npm --prefix frontend run test:run
 frontend|cache-fixture-python|blocking|uv sync --locked
+frontend|cache-fixture-ownership|blocking|uv run pytest -q frontend/e2e/cache_fixture_ownership.py
 frontend|http-cache-browser|blocking|(cd frontend && npx playwright test --config playwright.cache.config.ts)
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py

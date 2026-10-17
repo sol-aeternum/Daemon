@@ -37,7 +37,7 @@ def test_foreign_cache_listener_never_receives_warmup_or_cleanup(port):
     foreign.server_activate()
     thread = Thread(target=foreign.serve_forever, daemon=True)
     thread.start()
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     env = {
         key: os.environ[key]
         for key in ("PATH", "HOME", "TMPDIR", "UV_PROJECT_ENVIRONMENT")
