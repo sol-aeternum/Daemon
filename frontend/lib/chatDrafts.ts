@@ -2,6 +2,13 @@
 
 import { getAuthGeneration, subscribeAuthGeneration } from './auth';
 import {
+  copyAnswerControls,
+  DEFAULT_ANSWER_CONTROLS,
+  newTurnControls,
+  sameAnswerControls,
+  type AnswerControls,
+} from './answerControls';
+import {
   ATTACHMENT_TTL_MS,
   MAX_PERSISTED_FILE_BYTES,
   MAX_PERSISTED_TOTAL_BYTES,
@@ -22,6 +29,9 @@ export interface DraftAttachment {
 }
 
 export interface ChatDraft {
+  /** Values may be materialized on a new send without changing its edit token. */
+  controls: AnswerControls;
+  readonly controlToken: object;
   input: string;
   pendingAttachments: DraftAttachment[];
   /** Changes only on explicit discard; old setters cannot undo a reset. */
@@ -54,6 +64,7 @@ export interface ChatDraftScope {
  * session; attachments in the attachment store) and discarded with drafts.
  */
 export interface HeldSubmission {
+  readonly controls: AnswerControls;
   readonly key: string;
   /** The conversation it belongs to (an unnamed new chat's is promoted). */
   conversationId: string | null;
@@ -64,12 +75,20 @@ export interface HeldSubmission {
 }
 
 export interface ChatDraftSubmission {
+  readonly controlSnapshot: object;
+  readonly controls: AnswerControls;
   readonly scope: ChatDraftScope;
   readonly input: string;
   readonly pendingAttachments: DraftAttachment[];
 }
 
-const EMPTY: ChatDraft = { input: '', pendingAttachments: [], epoch: 0 };
+const EMPTY: ChatDraft = {
+  input: '',
+  pendingAttachments: [],
+  epoch: 0,
+  controls: DEFAULT_ANSWER_CONTROLS,
+  controlToken: Object.freeze({}),
+};
 // The store of record is tab memory; draftPersistence mirrors it so a reload of
 // this tab restores unsent text and attachments (never credentials or URLs).
 // Retain unfinished drafts until explicit reset or sign-in-lifetime invalidation;
@@ -137,11 +156,16 @@ function persist(): void {
       }
       if (persistedIds.has(id)) attachmentIds.push(id);
     }
-    if (input || attachmentIds.length > 0) {
+    if (
+      input ||
+      attachmentIds.length > 0 ||
+      !sameAnswerControls(entry.snapshot.controls, DEFAULT_ANSWER_CONTROLS)
+    ) {
       drafts.push({
         conversationId,
         input,
         attachmentIds,
+        ...copyAnswerControls(entry.snapshot.controls),
         ...(entry.snapshot.restoredKey
           ? { restoredKey: entry.snapshot.restoredKey }
           : {}),
@@ -170,6 +194,7 @@ function persist(): void {
       input: submission.input,
       attachmentIds,
       attachmentCount: submission.attachmentCount,
+      ...copyAnswerControls(submission.controls),
     });
   }
   saveDraftText(drafts, heldRecords);
@@ -262,6 +287,8 @@ function hydrate(): void {
         input: draft.input,
         pendingAttachments: [],
         epoch: 0,
+        controls: copyAnswerControls(draft),
+        controlToken: Object.freeze({}),
         ...(typeof draft.restoredKey === 'string'
           ? { restoredKey: draft.restoredKey }
           : {}),
@@ -287,6 +314,7 @@ function hydrate(): void {
         (record) =>
           record.conversationId === draft.conversationId &&
           record.input === draft.input &&
+          sameAnswerControls(record, draft) &&
           record.attachmentIds.join('\u0000') ===
             draft.attachmentIds.join('\u0000'),
       );
@@ -301,6 +329,7 @@ function hydrate(): void {
       key: record.key,
       conversationId: record.conversationId,
       input: record.input,
+      controls: copyAnswerControls(record),
       pendingAttachments: [],
       attachmentCount: record.attachmentCount ?? record.attachmentIds.length,
     });
@@ -431,6 +460,45 @@ export function setChatDraftAttachments(
   emit();
 }
 
+export function setChatDraftControls(
+  scope: ChatDraftScope,
+  controls: AnswerControls,
+): void {
+  if (
+    !isCurrent(scope) ||
+    sameAnswerControls(scope.entry.snapshot.controls, controls)
+  )
+    return;
+  scope.entry.snapshot = {
+    ...scope.entry.snapshot,
+    controls: copyAnswerControls(controls),
+    controlToken: Object.freeze({}),
+    restoredKey: undefined,
+  };
+  emit();
+}
+
+export function captureChatDraftSubmission(
+  scope: ChatDraftScope,
+  input: string,
+  pendingAttachments: DraftAttachment[],
+  controls?: AnswerControls,
+): ChatDraftSubmission {
+  const snapshot = scope.entry.snapshot;
+  return {
+    scope,
+    input,
+    pendingAttachments,
+    controlSnapshot: snapshot.controlToken,
+    controls: copyAnswerControls(
+      controls ??
+        (snapshot.restoredKey
+          ? snapshot.controls
+          : newTurnControls(snapshot.controls)),
+    ),
+  };
+}
+
 /** Explicit New Chat/discard: invalidate earlier async setters, even if empty. */
 export function resetChatDraft(scope: ChatDraftScope): void {
   if (!isCurrent(scope)) return;
@@ -458,6 +526,16 @@ export function clearSubmittedChatDraft(
       previous.pendingAttachments === pendingAttachments
         ? []
         : previous.pendingAttachments,
+    controls:
+      previous.input === input &&
+      previous.pendingAttachments === pendingAttachments
+        ? copyAnswerControls(DEFAULT_ANSWER_CONTROLS)
+        : previous.controls,
+    controlToken:
+      previous.input === input &&
+      previous.pendingAttachments === pendingAttachments
+        ? Object.freeze({})
+        : previous.controlToken,
   };
   emit();
 }
@@ -470,7 +548,8 @@ export function clearChatDraftSubmission(
   if (
     submission.scope.generation !== currentScope.generation ||
     submission.scope.entry !== currentScope.entry ||
-    submission.scope.epoch !== currentScope.epoch
+    submission.scope.epoch !== currentScope.epoch ||
+    submission.controlSnapshot !== currentScope.entry.snapshot.controlToken
   )
     return;
   clearSubmittedChatDraft(
@@ -507,6 +586,7 @@ export function holdSubmission(
   key: string,
   input: string,
   pendingAttachments: DraftAttachment[],
+  receipt?: ChatDraftSubmission,
 ): void {
   if (
     scope.generation !== getAuthGeneration() ||
@@ -514,18 +594,22 @@ export function holdSubmission(
   )
     return;
   const existing = held.get(key);
+  const controls = receipt?.controls ?? scope.entry.snapshot.controls;
   // Never overwrite a held submission with a different request (for
   // example one that lost files): it is the evidence of what was sent.
   if (
     existing &&
     (existing.input !== input ||
-      existing.attachmentCount !== pendingAttachments.length)
+      existing.attachmentCount !== pendingAttachments.length ||
+      !sameAnswerControls(existing.controls, controls))
   )
     return;
   held.delete(key); // re-insert as the newest
   // The draft being sent is this submission until it is cleared or edited.
   if (
     isCurrent(scope) &&
+    (!receipt ||
+      receipt.controlSnapshot === scope.entry.snapshot.controlToken) &&
     sameContent(
       scope.entry.snapshot.input,
       scope.entry.snapshot.pendingAttachments,
@@ -533,7 +617,11 @@ export function holdSubmission(
       pendingAttachments,
     )
   ) {
-    scope.entry.snapshot = { ...scope.entry.snapshot, restoredKey: key };
+    scope.entry.snapshot = {
+      ...scope.entry.snapshot,
+      restoredKey: key,
+      controls: copyAnswerControls(controls),
+    };
   }
   held.set(key, {
     key,
@@ -541,6 +629,7 @@ export function holdSubmission(
     input,
     pendingAttachments: [...pendingAttachments],
     attachmentCount: pendingAttachments.length,
+    controls: copyAnswerControls(controls),
   });
   emit();
 }
@@ -565,9 +654,11 @@ export function isHeldResend(
   submission: HeldSubmission | undefined,
   input: string,
   pendingAttachments: DraftAttachment[],
+  controls?: AnswerControls,
 ): submission is HeldSubmission {
   return (
     !!submission &&
+    (!controls || sameAnswerControls(submission.controls, controls)) &&
     sameContent(
       submission.input,
       submission.pendingAttachments,
@@ -613,6 +704,8 @@ export function acceptSubmission(key: string): void {
       input: '',
       pendingAttachments: [],
       restoredKey: undefined,
+      controls: copyAnswerControls(DEFAULT_ANSWER_CONTROLS),
+      controlToken: Object.freeze({}),
     };
   }
   releaseSubmission(key);
@@ -659,12 +752,13 @@ export function heldResendStatus(
   key: string,
   input: string,
   pendingAttachments: DraftAttachment[],
+  controls?: AnswerControls,
 ): 'new' | 'resend' | 'loading' | 'incomplete' {
   const submission = held.get(key);
   if (!submission) return 'new';
   if (!heldLoaded || heldRestores.has(key)) return 'loading';
   if (!heldSubmissionComplete(key)) return 'incomplete';
-  return isHeldResend(submission, input, pendingAttachments)
+  return isHeldResend(submission, input, pendingAttachments, controls)
     ? 'resend'
     : 'incomplete';
 }
@@ -697,6 +791,8 @@ export function restoreHeldSubmission(key: string): boolean {
     input: submission.input,
     pendingAttachments: [...submission.pendingAttachments],
     restoredKey: key,
+    controls: copyAnswerControls(submission.controls),
+    controlToken: Object.freeze({}),
   };
   emit();
   return true;

@@ -4,6 +4,10 @@ import { WelcomeScreen } from '../components/WelcomeScreen';
 import { SuggestionSourceContext } from '../components/SuggestionSourceContext';
 import { chatTransportFetch } from '../lib/chatTransportFetch';
 import {
+  DEFAULT_ANSWER_CONTROLS,
+  newTurnControls,
+} from '../lib/answerControls';
+import {
   attachmentsForRetry,
   reconcileSubmission,
   shouldDetachStream,
@@ -876,6 +880,11 @@ function ChatContent() {
       return;
     }
     const retryKey = held?.key ?? (turnUnresolved ? turnKey : null);
+    // An unresolved key is an exact replay, including legacy absence. The
+    // transport restores pending metadata when only that record survives.
+    const retryControls = retryKey
+      ? (held?.controls ?? lastTurn?.controls ?? {})
+      : DEFAULT_ANSWER_CONTROLS;
     if (retryKey) resentKeysRef.current.add(retryKey);
     beginSend(retryKey ?? null);
     void regenerate({
@@ -887,6 +896,7 @@ function ChatContent() {
         // would see (and run) a different request. Another conversation's
         // files are never sent.
         attachments: retryAttachments,
+        ...retryControls,
       },
     });
   };
@@ -1066,7 +1076,7 @@ function ChatContent() {
     // request under a new one: the key is resolved with the server first.
     const heldKey = command ? undefined : draft.restoredKey;
     const status = heldKey
-      ? heldResendStatus(heldKey, input, pendingAttachments)
+      ? heldResendStatus(heldKey, input, pendingAttachments, draft.controls)
       : 'new';
     if (status === 'loading') {
       showError('Your attachments are still loading. Try again in a moment.');
@@ -1083,7 +1093,15 @@ function ChatContent() {
     const key = resend && heldKey ? heldKey : crypto.randomUUID();
     const generation = getAuthGeneration();
     const binding = draft.setInput;
-    const receipt = draft.captureSubmission(input, pendingAttachments);
+    const controls =
+      resend && heldKey
+        ? (heldSubmission(heldKey)?.controls ?? {})
+        : newTurnControls(draft.controls);
+    const receipt = draft.captureSubmission(
+      input,
+      pendingAttachments,
+      controls,
+    );
     const trimmedInput = (command ?? input).trim();
     const attachments =
       !command && pendingAttachments.length > 0
@@ -1098,7 +1116,10 @@ function ChatContent() {
     // The held submission may have been resolved while its files were read
     // (the server had it, or refused it): this send is then not needed, and
     // must never go out again under a new key.
-    if (resend && heldResendStatus(key, input, pendingAttachments) !== 'resend')
+    if (
+      resend &&
+      heldResendStatus(key, input, pendingAttachments, controls) !== 'resend'
+    )
       return;
     const content =
       trimmedInput ||
@@ -1117,6 +1138,7 @@ function ChatContent() {
       conversationId: conversationScope,
       attachments,
       submissionKey: key,
+      controls: command ? undefined : controls,
     };
     // The key belongs to the submitted draft: resending the held draft
     // unchanged (after a lost response or a reload) reuses its key, so the
@@ -1124,7 +1146,7 @@ function ChatContent() {
     // Only the draft that was put back from a held submission, unedited, is
     // its resend; the same text typed anew is a new request with a new key.
     if (resend) resentKeysRef.current.add(key);
-    if (!command) draft.holdSubmission(key, input, pendingAttachments);
+    if (!command) draft.holdSubmission(key, input, pendingAttachments, receipt);
 
     composerSendInFlightRef.current = true;
     try {
@@ -1137,6 +1159,7 @@ function ChatContent() {
             model: activeModel,
             attachments,
             idempotency_key: key,
+            ...(!command ? controls : {}),
           },
         },
       );
@@ -1570,6 +1593,7 @@ function ChatContent() {
             id: null,
             suggestion_id: suggestion.id,
             __suggestionAuthGeneration: generation,
+            ...DEFAULT_ANSWER_CONTROLS,
           },
         },
       );
@@ -1879,6 +1903,8 @@ function ChatContent() {
     <form onSubmit={handleSubmit} className="mx-auto w-full max-w-3xl">
       <ChatInputBar
         selectedModel={activeModel}
+        controls={draft.controls}
+        onControlsChange={draft.setControls}
         onSelectModel={(modelId) => {
           setActiveModel(modelId);
           if (currentId) setConversationModel(currentId, modelId);

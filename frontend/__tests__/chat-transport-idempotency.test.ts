@@ -52,6 +52,7 @@ async function send(
     model = 'auto',
     attachments = [] as unknown[],
     key = undefined as string | undefined,
+    controls = {} as Record<string, unknown>,
   } = {},
 ) {
   await chatTransportFetch(
@@ -62,6 +63,7 @@ async function send(
         messages: [{ role: 'user', parts: [{ type: 'text', text }] }],
         attachments,
         ...(key ? { idempotency_key: key } : {}),
+        ...controls,
       }),
     },
     {
@@ -80,6 +82,30 @@ function lastBody(): Record<string, unknown> {
   const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
   return JSON.parse((calls[calls.length - 1][1] as RequestInit).body as string);
 }
+
+it.each([
+  {},
+  { answer_detail: null, research_effort: null },
+  { answer_detail: 'brief' },
+  { research_effort: 'research' },
+  { answer_detail: 'brief', research_effort: 'research' },
+])(
+  'restores exact recorded controls, deleting newer defaults for absent fields: %j',
+  async (controls) => {
+    await send('question', { key: 'original', controls });
+    await send('question', {
+      key: 'original',
+      controls: { answer_detail: 'detailed', research_effort: 'auto' },
+    });
+    const body = lastBody();
+    expect(body.answer_detail).toEqual(controls.answer_detail);
+    expect(body.research_effort).toEqual(controls.research_effort);
+    if (!('answer_detail' in controls))
+      expect(body).not.toHaveProperty('answer_detail');
+    if (!('research_effort' in controls))
+      expect(body).not.toHaveProperty('research_effort');
+  },
+);
 
 it('gives a send without a key a fresh key and records it without content', async () => {
   const key = await send('a private question', { model: 'chosen' });

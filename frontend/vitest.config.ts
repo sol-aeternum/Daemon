@@ -7,6 +7,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    globalSetup: ['./__tests__/progressive-research-setup.ts'],
     include: ['__tests__/**/*.test.{ts,tsx}', '**/*.test.{ts,tsx}'],
   },
   resolve: {

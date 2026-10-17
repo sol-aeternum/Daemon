@@ -182,6 +182,20 @@ def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
     assert vitest_idx < chromium_idx < browser_idx < build_idx
 
 
+def test_cross_language_vitest_has_locked_python_before_execution() -> None:
+    workflow = _load_ci_workflow()
+    frontend_steps = [name for job_id, name, _ in _iter_job_steps(workflow) if job_id == "frontend"]
+    assert (
+        frontend_steps.index("Set up uv for HTTP-cache isolation fixture")
+        < frontend_steps.index("Install locked cache fixture backend")
+        < frontend_steps.index("Vitest")
+    )
+    local_ci = LOCAL_CI.read_text(encoding="utf-8")
+    assert local_ci.index(
+        "frontend|cache-fixture-python|blocking|uv sync --locked"
+    ) < local_ci.index("frontend|test-run|blocking|npm --prefix frontend run test:run")
+
+
 def test_backend_pytest_diagnostics_have_bounded_execution_and_narrow_upload() -> None:
     workflow = _load_ci_workflow()
     backend = workflow["jobs"]["backend"]

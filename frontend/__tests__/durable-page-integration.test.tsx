@@ -20,6 +20,7 @@ import {
   reloadChatDraftsForTests,
   setChatDraftInput,
   setChatDraftAttachments,
+  setChatDraftControls,
 } from '../lib/chatDrafts';
 import {
   setAttachmentStoreForTests,
@@ -275,6 +276,64 @@ describe('#477 submission reliability closeout', () => {
     id: 'loaded-task',
     conversationId: 'loaded-conv',
     status,
+  });
+
+  it('explicitly sends Balanced + Auto for a new turn', async () => {
+    render(<ChatPage />);
+    fireEvent.change(screen.getByLabelText('Composer'), {
+      target: { value: 'A new question' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body).toMatchObject({
+      answer_detail: 'balanced',
+      research_effort: 'auto',
+    });
+  });
+
+  it('snapshots controls before file serialization and preserves changed-back draft on late hold/ack', async () => {
+    const scope = openChatDraft('conv-1', auth.getAuthGeneration());
+    let release!: (text: string) => void;
+    const file = new File(['evidence'], 'notes.txt', { type: 'text/plain' });
+    Object.defineProperty(file, 'text', {
+      value: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+          }),
+      ),
+    });
+    const controls = {
+      answer_detail: 'brief',
+      research_effort: 'research',
+    } as const;
+    act(() => {
+      setChatDraftInput(scope, 'Check the notes');
+      setChatDraftAttachments(scope, [{ id: 'notes', file }]);
+      setChatDraftControls(scope, controls);
+    });
+    render(<ChatPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    act(() =>
+      setChatDraftControls(scope, { ...controls, answer_detail: 'detailed' }),
+    );
+    act(() => setChatDraftControls(scope, controls));
+    await act(async () => release('evidence'));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    const first = state.send.mock.calls[0][1].body;
+    expect(first).toMatchObject(controls);
+    expect(getChatDraft('conv-1').restoredKey).toBeUndefined();
+    expect(getChatDraft('conv-1').input).toBe('Check the notes');
+    expect(heldSubmission(first.idempotency_key)?.controls).toEqual(controls);
+    act(() => acceptSubmission(first.idempotency_key));
+    expect(getChatDraft('conv-1').input).toBe('Check the notes');
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await act(async () => release('evidence'));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(2));
+    expect(state.send.mock.calls[1][1].body.idempotency_key).not.toBe(
+      first.idempotency_key,
+    );
   });
 
   it.each(['running', 'completed'])(

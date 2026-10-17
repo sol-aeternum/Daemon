@@ -1,5 +1,7 @@
 'use client';
 
+import type { AnswerControls } from './answerControls';
+
 // Reload persistence for unsent chat drafts.
 // Text lives in this tab's sessionStorage, so it survives reload but not tab
 // close. Attachment files live in IndexedDB (sessionStorage cannot hold them),
@@ -17,7 +19,7 @@ export const ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_PERSISTED_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_PERSISTED_TOTAL_BYTES = 100 * 1024 * 1024;
 
-export interface PersistedDraft {
+export interface PersistedDraft extends AnswerControls {
   conversationId: string | null;
   input: string;
   attachmentIds: string[];
@@ -26,7 +28,7 @@ export interface PersistedDraft {
 }
 
 /** A sent draft held until its outcome is known (see lib/chatDrafts). */
-export interface PersistedHeld {
+export interface PersistedHeld extends AnswerControls {
   key: string;
   conversationId: string | null;
   input: string;

@@ -383,9 +383,29 @@ async def stream_sse_chat(
     turn_finished_normally = False
     _last_persist_s: float | None = None
     _persist_interval_s = 1.0
+    _persisted_text_chunks = 0
 
     forced_terminal_status: str | None = None
     terminal_reason: str | None = None
+
+    async def flush_partial_before_tool(now: float) -> None:
+        nonlocal _persisted_text_chunks, _last_persist_s
+        if message_sink is None or len(final_text_parts) <= _persisted_text_chunks:
+            return
+        # A coherent early section must survive reattachment while the next
+        # tool blocks. The runner consumed preceding token yields, so this
+        # existing fenced write saves text with its matching delta sequence.
+        # Never move the write before those yields or resume the tool on failure.
+        if not (memory_store and conversation_uuid and user_id and assistant_message_id):
+            raise RuntimeError("Partial answer writer unavailable")
+        updated = await message_writer.update_message(
+            message_id=assistant_message_id,
+            content="".join(final_text_parts),
+        )
+        if updated is None:
+            raise RuntimeError("Partial answer persistence refused")
+        _persisted_text_chunks = len(final_text_parts)
+        _last_persist_s = now
 
     async def terminalize_incomplete_assistant() -> None:
         """Best-effort transition for a pre-inserted row on every exit path."""
@@ -644,10 +664,12 @@ async def stream_sse_chat(
                                 or (current_time - _last_persist_s) >= _persist_interval_s
                             ):
                                 try:
-                                    await message_writer.update_message(
+                                    updated = await message_writer.update_message(
                                         message_id=assistant_message_id,
                                         content="".join(final_text_parts),
                                     )
+                                    if updated is not None:
+                                        _persisted_text_chunks = len(final_text_parts)
                                     _last_persist_s = current_time
                                 except Exception:
                                     logger.warning("Failed to persist incremental content")
@@ -673,6 +695,7 @@ async def stream_sse_chat(
                             ),
                         )
                     elif event_type == "tool_executing":
+                        await flush_partial_before_tool(now)
                         tool_name = str(event.get("name") or "tool")
                         pending_tool_calls.append(tool_name)
                         # Track if memory_write occurred (for trust signal)
@@ -882,8 +905,8 @@ async def stream_sse_chat(
                             )
 
                         graceful_notice = (
-                            "I hit a tool error and will continue with the best available "
-                            f"information. ({error_message})"
+                            "\n\nFurther work stopped after an execution error; "
+                            f"available findings may be incomplete. ({error_message})"
                         )
 
                         if first_token_time is None:
@@ -906,8 +929,8 @@ async def stream_sse_chat(
                             pending_tool_calls.clear()
 
                             done_notice = (
-                                "Some tool calls did not finish before the turn ended. "
-                                "I will continue with the best available information."
+                                "\n\nSome tool calls did not finish before the turn ended. "
+                                "Further checking stopped; available findings may be incomplete."
                             )
                             if first_token_time is None:
                                 first_token_time = now

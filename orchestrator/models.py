@@ -98,6 +98,8 @@ class OpenAIModelList(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    answer_detail: Literal["brief", "balanced", "detailed"] | None = None
+    research_effort: Literal["auto", "research"] | None = None
     conversation_id: str | None = None
     suggestion_id: str | None = Field(default=None, min_length=32, max_length=32)
     message: str

@@ -74,12 +74,22 @@ export async function chatTransportFetch(
     body.model = recorded.model ?? 'auto';
     if (recorded.provider == null) delete body.provider;
     else body.provider = recorded.provider;
+    for (const field of ['answer_detail', 'research_effort'] as const) {
+      if (recorded[field] === undefined) delete body[field];
+      else body[field] = recorded[field];
+    }
   } else {
     registerSubmission(key, {
       scope: scope.conversationId,
       requestConversationId: typeof body.id === 'string' ? body.id : null,
       model: body.model,
       provider: body.provider,
+      ...(body.answer_detail !== undefined
+        ? { answer_detail: body.answer_detail }
+        : {}),
+      ...(body.research_effort !== undefined
+        ? { research_effort: body.research_effort }
+        : {}),
     });
   }
   scope.onSubmissionKey?.(body.idempotency_key as string, scope.conversationId);

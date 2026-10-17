@@ -16,6 +16,12 @@ export function isolateSuggestionBody(
     id: null,
     model: body.model,
     suggestion_id: body.suggestion_id,
+    ...(body.answer_detail !== undefined
+      ? { answer_detail: body.answer_detail }
+      : {}),
+    ...(body.research_effort !== undefined
+      ? { research_effort: body.research_effort }
+      : {}),
     messages: lastUser ? [lastUser] : [],
     // Suggestions run request-bound; declaring the client's features lets the
     // bridge say so, so Stop knows aborting the request is the cancellation.

@@ -436,6 +436,7 @@ async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[
 
 
 async def _system_prompt(memory: Any, db_pool: Any, claim: Claim) -> tuple[str, str | None]:
+    from orchestrator.answer_controls import append_answer_controls
     from orchestrator.memory.embedding import raise_if_embedding_accounting_error
     from orchestrator.memory.injection import (
         assemble_system_prompt,
@@ -472,7 +473,9 @@ async def _system_prompt(memory: Any, db_pool: Any, claim: Claim) -> tuple[str, 
         logger.warning("Memory injection failed, using base prompt", exc_info=True)
     if skills_block and skills_block not in prompt:
         prompt = f"{prompt.rstrip()}\n\n{skills_block}"
-    return prompt, user_timezone
+    return append_answer_controls(
+        prompt, claim.task_input.get("answer_detail"), claim.task_input.get("research_effort")
+    ), user_timezone
 
 
 async def settle_lost_attempt_holds(store: TaskStore, db_pool: Any, task_id: uuid.UUID) -> int:

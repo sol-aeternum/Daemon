@@ -180,6 +180,8 @@ describe('page suggestion activation and draft isolation', () => {
           id: null,
           suggestion_id: candidate.id,
           __suggestionAuthGeneration: generation,
+          answer_detail: 'balanced',
+          research_effort: 'auto',
         },
       });
       act(() =>
