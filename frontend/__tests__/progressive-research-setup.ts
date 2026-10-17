@@ -49,15 +49,16 @@ export default function setup(project: TestProject) {
     HF_HUB_OFFLINE: '1',
     PYTHONPATH: '.',
   };
-  for (const key of [
-    'PATH',
-    'HOME',
-    'TMPDIR',
-    'TMP',
-    'TEMP',
-    'PYTHONPYCACHEPREFIX',
-  ]) {
-    if (process.env[key]) env[key] = process.env[key];
+  const inherited = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TMPDIR: process.env.TMPDIR,
+    TMP: process.env.TMP,
+    TEMP: process.env.TEMP,
+    PYTHONPYCACHEPREFIX: process.env.PYTHONPYCACHEPREFIX,
+  };
+  for (const [key, value] of Object.entries(inherited)) {
+    if (value) env[key] = value;
   }
   const transcripts = JSON.parse(
     execFileSync(python, ['-m', 'tests.progressive_research_support'], {

@@ -12,7 +12,10 @@ vi.mock('node:perf_hooks', () => {
   const exports = { performance: { now: vi.fn() } };
   return { ...exports, default: exports };
 });
-afterEach(() => vi.resetAllMocks());
+afterEach(() => {
+  vi.resetAllMocks();
+  vi.unstubAllEnvs();
+});
 
 function project() {
   return { config: { root: '/synthetic/frontend' }, provide: vi.fn() };
@@ -47,4 +50,34 @@ it('rejects invalid backend output instead of substituting a transcript', () => 
   vi.mocked(execFileSync).mockReturnValue('not json');
   expect(() => setup(p as unknown as TestProject)).toThrow();
   expect(p.provide).not.toHaveBeenCalled();
+});
+
+it('forwards only the existing literal process controls, retaining truthy omission and no credentials', () => {
+  const p = project();
+  vi.mocked(performance.now).mockReturnValue(0);
+  vi.mocked(execFileSync).mockReturnValue('{}');
+  vi.stubEnv('PATH', '/synthetic/bin');
+  vi.stubEnv('HOME', '/synthetic/home');
+  vi.stubEnv('TMPDIR', '/synthetic/tmp');
+  vi.stubEnv('TMP', '');
+  vi.stubEnv('TEMP', undefined);
+  vi.stubEnv('PYTHONPYCACHEPREFIX', '/synthetic/bytecode');
+  vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-not-forwarded');
+  setup(p as unknown as TestProject);
+  expect(execFileSync).toHaveBeenCalledWith(
+    expect.any(String),
+    ['-m', 'tests.progressive_research_support'],
+    expect.objectContaining({
+      env: {
+        NODE_ENV: 'test',
+        LITELLM_MODE: 'PRODUCTION',
+        HF_HUB_OFFLINE: '1',
+        PYTHONPATH: '.',
+        PATH: '/synthetic/bin',
+        HOME: '/synthetic/home',
+        TMPDIR: '/synthetic/tmp',
+        PYTHONPYCACHEPREFIX: '/synthetic/bytecode',
+      },
+    }),
+  );
 });

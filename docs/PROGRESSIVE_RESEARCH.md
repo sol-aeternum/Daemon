@@ -195,5 +195,10 @@ including failed attempts, cancellation latency and duplicate content/actions/ef
 Record actual clock boundaries, stop reasons and available usage; missing usage is
 unknown. Existing generic timings are not these research-specific measurements.
 Research checkpoint resume and production enablement remain deferred. Full local
-pytest/browser gates require task-owned fixture isolation; targeted synthetic passes
-do not waive these gates or authorize a draft PR through a wrapper bypass.
+pytest/cache-browser gates consume the separately reviewed #541 prerequisite
+([draft #544](https://github.com/sol-aeternum/Daemon/pull/544)); its owned Redis and
+exclusive cache endpoints are documented in [OWNED_TEST_FIXTURES.md](OWNED_TEST_FIXTURES.md).
+The locked Python setup stays before Vitest, and the blocking cache collision check
+stays before the cache-browser suite in both local CI and CI. General browser
+ports 3100/3101 remain outside this authorization. Targeted synthetic passes do not
+waive complete local gates or authorize a draft PR through a wrapper bypass.
