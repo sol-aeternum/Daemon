@@ -844,3 +844,87 @@ async def test_actual_writer_lock_inversion_is_bounded_refusal(db):
             db.cluster.record("lifecycle_real_deadlock_refused", sqlstate="40P01")
         finally:
             await wp.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", ["cancel", "deadline"])
+async def test_acknowledged_register_release_interruption_retains_driver_ownership(
+    db, interrupt, monkeypatch
+):
+    entered, finish = asyncio.Event(), asyncio.Event()
+    resets = []
+    backend = []
+    armed = False
+
+    async def paused_reset(conn):
+        if not armed:
+            return
+        # Synthetic reset pause around REAL SQL, COMMIT and native Pool.release.
+        backend.append(conn.get_server_pid())
+        resets.append(asyncio.current_task())
+        entered.set()
+        await finish.wait()
+
+    async with db.connection() as owner:
+        ident, _, wp, _, _ = await seed(db, owner)
+        command = uuid4()
+        try:
+            async with db.pool(reset=paused_reset, max_size=1) as pool:
+                # Connect through Docker/bridge before shortening the budget.
+                async with pool.acquire(timeout=2) as warm:
+                    assert await warm.fetchval("SELECT 1") == 1
+                armed = True
+                if interrupt == "deadline":
+                    monkeypatch.setattr(lc, "OPERATION_S", 0.3)
+                job = asyncio.create_task(lc.AttemptLifecycleStore(pool).register(ident, command))
+                try:
+                    async with asyncio.timeout(2):
+                        await entered.wait()
+                    if interrupt == "cancel":
+                        job.cancel("original lifecycle release cancellation")
+                    with pytest.raises(
+                        asyncio.CancelledError if interrupt == "cancel" else lc.LifecycleError
+                    ) as caught:
+                        async with asyncio.timeout(2):
+                            await job
+                    if interrupt == "cancel":
+                        assert caught.value.args == ("original lifecycle release cancellation",)
+                        assert getattr(caught.value, "lifecycle_identity") is ident
+                        assert getattr(caught.value, "lifecycle_command_id") is command
+                        assert getattr(caught.value, "lifecycle_outcome") == "committed"
+                        assert not getattr(caught.value, "lifecycle_termination_failed")
+                    else:
+                        assert isinstance(caught.value, lc.LifecycleError)
+                        assert caught.value.identity is ident and caught.value.command_id is command
+                        assert caught.value.commit_acknowledged
+                        assert caught.value.code == "committed_result_unavailable"
+                        assert not caught.value.termination_failed
+                    # Observe within native release's 0.5s allowance; the pause
+                    # does not disable that cap or promise indefinite ownership.
+                    assert pool.get_size() == 1 and pool.get_idle_size() == 0
+                finally:
+                    finish.set()
+                    if not job.done():
+                        job.cancel()
+                    async with asyncio.timeout(2):
+                        await asyncio.gather(job, *resets, return_exceptions=True)
+                async with pool.acquire(timeout=0.5) as next_conn:
+                    assert next_conn.get_server_pid() == backend[0]
+                    assert await next_conn.fetchval("SELECT 1") == 1
+            async with db.pool() as fresh:
+                result = await lc.AttemptLifecycleStore(fresh).readback(ident, command)
+                assert result["control"]["identity"] == json.loads(ident.wire())
+                assert result["receipt"]["command_id"] == str(command)
+                assert result["receipt"]["opcode"] == "register"
+            db.cluster.record(
+                "lifecycle_acknowledged_release_interruption",
+                interrupt=interrupt,
+                identity_preserved=True,
+                commit_acknowledged=True,
+                native_holder_retained=True,
+                committed_readback=True,
+                synthetic_reset_pause=True,
+                remote_stop_certified=False,
+            )
+        finally:
+            await wp.close()

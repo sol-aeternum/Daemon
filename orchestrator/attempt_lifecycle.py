@@ -230,8 +230,11 @@ class AttemptLifecycleStore:
                 ):
                     raise ValueError("mismatched_receipt")
                 phase = "release"
-                await self._pool.release(conn, timeout=0.5)
+                # Native release shields reset. Relinquish ownership before entry:
+                # terminating here could recycle a holder whose OLD reset still runs.
+                release_conn = conn
                 conn = None
+                await self._pool.release(release_conn, timeout=0.5)
                 return result
         except BaseException as exc:
             termination_failed = False

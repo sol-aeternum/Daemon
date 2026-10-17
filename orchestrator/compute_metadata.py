@@ -243,8 +243,11 @@ class ComputeMetadataStore:
                 phase = "decode"
                 result = _decode(key, args, row)
                 phase = "release"
-                await self._pool.release(conn, timeout=RELEASE_S)
+                # Native release shields reset. Relinquish ownership before entry:
+                # terminating here could recycle a holder whose OLD reset still runs.
+                release_conn = conn
                 conn = None
+                await self._pool.release(release_conn, timeout=RELEASE_S)
                 return result
         except BaseException as exc:
             termination_failed = False

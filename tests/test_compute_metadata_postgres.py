@@ -1070,3 +1070,82 @@ async def test_missing_required_function_refuses_before_any_write(db):
             await owner.execute(
                 "ALTER FUNCTION public.md_hidden(uuid,uuid) RENAME TO compute_metadata_read_scope"
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", ["cancel", "deadline"])
+async def test_acknowledged_write_release_interruption_retains_driver_ownership(
+    db, interrupt, monkeypatch
+):
+    entered, finish = asyncio.Event(), asyncio.Event()
+    resets = []
+    backend = []
+    armed = False
+
+    async def paused_reset(conn):
+        if not armed:
+            return
+        # Synthetic reset pause around REAL SQL, COMMIT and native Pool.release.
+        backend.append(conn.get_server_pid())
+        resets.append(asyncio.current_task())
+        entered.set()
+        await finish.wait()
+
+    async with db.connection() as owner, db.pool(reset=paused_reset, max_size=1) as pool:
+        account = await db.account(owner)
+        ident = m.new_scope_metadata_identity(account_id=account)
+        # Connect through Docker/bridge before shortening the operation budget.
+        async with pool.acquire(timeout=2) as warm:
+            assert await warm.fetchval("SELECT 1") == 1
+        armed = True
+        if interrupt == "deadline":
+            monkeypatch.setattr(m, "OPERATION_S", 0.3)
+        job = asyncio.create_task(m.ComputeMetadataStore(pool).create_scope(ident))
+        try:
+            async with asyncio.timeout(2):
+                await entered.wait()
+            if interrupt == "cancel":
+                job.cancel("original metadata release cancellation")
+            with pytest.raises(
+                asyncio.CancelledError
+                if interrupt == "cancel"
+                else m.ComputeMetadataCommittedResultUnavailable
+            ) as caught:
+                async with asyncio.timeout(2):
+                    await job
+            if interrupt == "cancel":
+                assert caught.value.args == ("original metadata release cancellation",)
+                assert getattr(caught.value, "metadata_identity") is ident
+                assert getattr(caught.value, "metadata_outcome") == "committed"
+                assert not getattr(caught.value, "metadata_termination_failed")
+            else:
+                assert isinstance(caught.value, m.ComputeMetadataCommittedResultUnavailable)
+                assert caught.value.identity is ident and caught.value.commit_acknowledged
+                assert not caught.value.termination_failed
+            # Before native release's own 0.5s allowance expires, the paused reset
+            # still owns the sole lease. No claim that the pause disables that cap.
+            assert pool.get_size() == 1 and pool.get_idle_size() == 0
+        finally:
+            finish.set()
+            if not job.done():
+                job.cancel()
+            async with asyncio.timeout(2):
+                await asyncio.gather(job, *resets, return_exceptions=True)
+        async with pool.acquire(timeout=0.5) as next_conn:
+            assert next_conn.get_server_pid() == backend[0]
+            assert await next_conn.fetchval("SELECT 1") == 1
+        async with db.pool() as fresh:
+            row = await m.ComputeMetadataStore(fresh).read_scope(
+                account_id=account, metadata_scope_id=ident.metadata_scope_id
+            )
+            assert row is not None and row.identity == ident
+        db.cluster.record(
+            "metadata_acknowledged_release_interruption",
+            interrupt=interrupt,
+            identity_preserved=True,
+            commit_acknowledged=True,
+            native_holder_retained=True,
+            committed_readback=True,
+            synthetic_reset_pause=True,
+            remote_stop_certified=False,
+        )
