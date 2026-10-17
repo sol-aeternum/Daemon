@@ -11,6 +11,7 @@ import pytest
 
 from tests import owned_search_redis as module
 from tests.owned_search_redis import OwnedSearchRedis, OwnershipError
+from tests.search_redis_image import CONFIG_DIGEST, IMAGE_REFERENCE, INDEX_DIGEST
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def owner(tmp_path):
 
 def inspected(owner: OwnedSearchRedis) -> dict[str, Any]:
     owner.container = "a" * 64
-    owner.image = "sha256:" + "b" * 64
+    owner.image = CONFIG_DIGEST
     return {
         "Id": owner.container,
         "Name": "/" + owner.name,
@@ -121,17 +122,31 @@ def test_stop_uncertainty_retains_without_force_or_remove(owner, monkeypatch):
     assert not any(call[0] == "rm" for call in calls)
 
 
-def test_create_timeout_reconciles_exact_name_without_start_or_retry(owner, monkeypatch):
+@pytest.mark.parametrize("image_id", [CONFIG_DIGEST, INDEX_DIGEST])
+def test_create_timeout_reconciles_exact_name_without_start_or_retry(owner, monkeypatch, image_id):
     item = inspected(owner)
+    owner.image = item["Image"] = image_id
     owner.container = ""
     calls = []
 
     def fake(*args):
         calls.append(args)
         if args[:2] == ("image", "inspect"):
-            return json.dumps([{"Id": item["Image"]}])
+            assert args == ("image", "inspect", IMAGE_REFERENCE)
+            return json.dumps(
+                [
+                    {
+                        "Id": item["Image"],
+                        "RepoDigests": [IMAGE_REFERENCE],
+                        "Os": "linux",
+                        "Architecture": "amd64",
+                    }
+                ]
+            )
         if args[0] == "create":
             assert "--pull=never" in args
+            assert "--platform=linux/amd64" in args
+            assert item["Image"] in args
             assert "--tmpfs=/data:rw,noexec,nosuid,size=16m" in args
             raise subprocess.TimeoutExpired("synthetic create", 15)
         assert args == ("inspect", owner.name)
@@ -158,24 +173,24 @@ def test_image_inspect_failure_reports_actual_reason_without_create_or_retry(
     calls = []
     cause = subprocess.CalledProcessError(
         1,
-        ["docker", "image", "inspect", "redis:7-alpine"],
+        ["docker", "image", "inspect", IMAGE_REFERENCE],
         output="[]\n",
         stderr=detail,
     )
 
     def fake(*args):
         calls.append(args)
-        assert args == ("image", "inspect", "redis:7-alpine")
+        assert args == ("image", "inspect", IMAGE_REFERENCE)
         raise cause
 
     monkeypatch.setattr(module, "docker", fake)
     with pytest.raises(OwnershipError) as caught:
         owner.start()
     assert caught.value.__cause__ is cause
-    assert "docker image inspect redis:7-alpine failed (exit 1)" in str(caught.value)
+    assert f"docker image inspect {IMAGE_REFERENCE} failed (exit 1)" in str(caught.value)
     assert json.dumps(detail) in str(caught.value)
     assert 'stdout="[]\\n"' in str(caught.value)
-    assert calls == [("image", "inspect", "redis:7-alpine")]
+    assert calls == [("image", "inspect", IMAGE_REFERENCE)]
     assert owner.container == ""
     assert owner.events[-1] == {
         "event": "image-inspect-failed",
@@ -189,7 +204,7 @@ def test_image_inspect_diagnostics_are_bounded_and_terminal_escaped(owner, monke
     detail = "\x1b[31m" + "x" * 10000
 
     def fake(*args):
-        assert args == ("image", "inspect", "redis:7-alpine")
+        assert args == ("image", "inspect", IMAGE_REFERENCE)
         raise subprocess.CalledProcessError(2, "synthetic inspect", output=detail, stderr=detail)
 
     monkeypatch.setattr(module, "docker", fake)
@@ -198,7 +213,10 @@ def test_image_inspect_diagnostics_are_bounded_and_terminal_escaped(owner, monke
     message = str(caught.value)
     assert "\x1b" not in message
     assert json.dumps(detail[:2048]) in message
-    assert len(message) < 4300
+    assert message == (
+        f"docker image inspect {IMAGE_REFERENCE} failed (exit 2); "
+        f"stderr={json.dumps(detail[:2048])}; stdout={json.dumps(detail[:2048])}"
+    )
     assert len(owner.events[-1]["stderr"]) == 2048
     assert len(owner.events[-1]["stdout"]) == 2048
 

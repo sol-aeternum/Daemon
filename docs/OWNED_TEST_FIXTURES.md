@@ -8,13 +8,36 @@ requests, production Redis, database migrations or new dependencies.
 
 The default search pacing tests and the final-send metered-search regression use
 `tests/owned_search_redis.py`, via a lazy session fixture in `tests/conftest.py`.
-They require Docker and the already-cached official `redis:7-alpine` image (the
-same tag as Compose). The fixture resolves its local immutable image ID and uses
-`--pull=never`: absent tooling/image is an error, not a download, skip or fallback.
-CI must provision the approved cached image separately; this change does not
-authorize image pulls.
+They require Docker and the pinned Docker Library Redis **7.4.7-alpine** image.
+`tests/search_redis_image.py` owns the qualified reference and Linux/amd64 contract:
 
-If that fixed image inspection fails, its operation/exit code and bounded Docker
+- Registry index: `sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf`
+- Linux/amd64 manifest: `sha256:b9f6cf0cab55fdd102fd2182deeae150457943d33439d18c6e2fc5666d3228c1`
+- Config: `sha256:e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94`
+
+These are independently hash-verified registry responses, not a local ID assumed
+to be a registry digest. Official provenance is the
+[Docker Library publication](https://github.com/docker-library/official-images/blob/d12d9da8aa52024646555edc8fd567861d2d610b/library/redis)
+and its matching
+[Redis Dockerfile](https://github.com/redis/docker-library-redis/blob/d42d7aec93b1c54dd46f37a66a92f62478456039/7.4/alpine/Dockerfile).
+The index uniquely selects that amd64 manifest, which references that config.
+
+The existing hosted backend job explicitly provisions only this approved official
+index with `docker pull --platform=linux/amd64`, then runs the shared verifier
+before pytest. Failure blocks the job; there is no credential, retry, mutable-tag
+fallback, test skip or timeout change. Compressed image layers total 17,233,628
+bytes. No other image download, runtime change or general provisioning is approved.
+
+The fixture itself **never pulls**. It inspects the exact pinned reference and
+rejects unknown IDs, repository digests, metadata or OS/architecture. It accepts
+only the index ID (containerd image store) or the linked amd64 config ID (classic
+Docker store), with `redis@INDEX` or `docker.io/library/redis@INDEX` repository
+identity. It records the exact resolved daemon ID and uses that ID for container
+creation with `--platform=linux/amd64 --pull=never`; container identity must still
+match that same ID exactly. Local validation uses the existing cache; missing
+tooling or image is an error, never a fixture download or substitution.
+
+If that fixed image inspection exits nonzero, its operation/exit code and bounded Docker
 stderr/stdout are preserved in the test error and task receipt. Exit 1 alone does
 not prove a missing image: daemon or access errors are also possible. This does
 not retry, provision, pull or substitute anything. Hosted runner diagnostics that
@@ -84,7 +107,7 @@ manifests or make unmerged/uncertain tasks eligible for disposal.
 Run through the registered task's `opencode-work run TASK --` wrapper:
 
 ```sh
-uv run pytest -q tests/test_owned_search_redis.py tests/test_search_pacing.py tests/test_metered_web_search.py
+uv run pytest -q tests/test_search_redis_image.py tests/test_owned_search_redis.py tests/test_search_pacing.py tests/test_metered_web_search.py
 uv run pytest -q frontend/e2e/cache_fixture_ownership.py
 npm --prefix frontend run test:run -- __tests__/cache-fixture-control.test.ts
 npm --prefix frontend run test:browser -- --config playwright.cache.config.ts

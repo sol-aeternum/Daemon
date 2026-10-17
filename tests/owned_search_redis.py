@@ -20,6 +20,8 @@ from uuid import uuid4
 import redis
 import redis.asyncio as aioredis
 
+from tests.search_redis_image import IMAGE_REFERENCE, PLATFORM, validate_cached_image
+
 
 class OwnershipError(RuntimeError):
     pass
@@ -144,7 +146,7 @@ class OwnedSearchRedis:
 
     def start(self) -> None:
         try:
-            image = json.loads(docker("image", "inspect", "redis:7-alpine"))
+            output = docker("image", "inspect", IMAGE_REFERENCE)
         except subprocess.CalledProcessError as error:
             # Only this fixed, credential-free inspection is reported. Do not
             # infer image absence from exit 1 or discard Docker's actual reason.
@@ -152,16 +154,18 @@ class OwnedSearchRedis:
             stdout = (error.stdout or "")[:2048]
             self.record("image-inspect-failed", exit=error.returncode, stderr=stderr, stdout=stdout)
             raise OwnershipError(
-                "docker image inspect redis:7-alpine failed "
+                f"docker image inspect {IMAGE_REFERENCE} failed "
                 f"(exit {error.returncode}); stderr={json.dumps(stderr)}; stdout={json.dumps(stdout)}"
             ) from error
-        self.image = image[0]["Id"]
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.image):
-            raise OwnershipError("Cached approved Redis image identity unavailable")
-        self.record("image", image=self.image)
+        try:
+            self.image = validate_cached_image(json.loads(output))
+        except ValueError as error:
+            raise OwnershipError(f"Pinned Redis prerequisite rejected: {error}") from error
+        self.record("image", image=self.image, reference=IMAGE_REFERENCE, platform=PLATFORM)
         args = [
             "create",
             "--pull=never",
+            f"--platform={PLATFORM}",
             "--name",
             self.name,
             "--network=none",
