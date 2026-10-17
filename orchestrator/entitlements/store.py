@@ -303,15 +303,20 @@ class EntitlementStore:
         )
         return _account_from_row(row) if row is not None else None
 
-    async def set_status(
-        self, conn: Connection, *, user_id: uuid.UUID, status: AccountStatus, now: datetime
+    async def reinstate_account(
+        self, conn: Connection, *, user_id: uuid.UUID, expected_generation: int, now: datetime
     ) -> None:
-        await conn.execute(
-            "UPDATE entitlement_accounts SET status = $2, updated_at = $3 WHERE user_id = $1",
+        """Caller holds account-control/account locks and owns commit."""
+        changed = await conn.fetchval(
+            "UPDATE entitlement_accounts SET status='active', content_generation=$2+1, "
+            "updated_at=$3 WHERE user_id=$1 AND status='suspended' "
+            "AND content_generation=$2 RETURNING user_id",
             user_id,
-            status.value,
+            expected_generation,
             now,
         )
+        if changed != user_id:
+            raise ValueError("account_generation_mismatch")
 
     async def set_plan(
         self,

@@ -94,6 +94,8 @@ from orchestrator.entitlements.plans import (
 from orchestrator.entitlements.policy import CommercialPolicy, load_policy
 from orchestrator.entitlements.resolver import resolve_account_policy
 from orchestrator.entitlements.store import Connection, EntitlementStore
+from orchestrator.services.account_control.store import account_lock_key
+from orchestrator.services.account_control.transaction import control_transaction
 
 #: Default source for the explicit legacy-tier import helper.
 LEGACY_IMPORT_SOURCE = "legacy_import"
@@ -1188,29 +1190,60 @@ class EntitlementService:
         )
         return await self.apply_subscription_event(event)
 
-    async def reinstate(self, user_id: uuid.UUID | str, *, reason: str) -> bool:
+    async def reinstate(
+        self, user_id: uuid.UUID | str, *, reason: str, expected_generation: int
+    ) -> bool:
         """Operator reconciliation: return a suspended account to ``active``.
 
         Settling above a reservation's quote suspends the account (see
         :meth:`settle`) until an operator has reconciled the broken quote. This
         is that operator step; it is never reachable from a request path.
-        Returns whether the status changed.
+        Atomically revokes all older captured work. Returns whether status changed;
+        an active duplicate is not proof that this command previously committed.
         """
         uid = coerce_user_id(user_id)
         note = reason.strip() if isinstance(reason, str) else ""
         if not note:
             raise ValueError("a reconciliation reason is required")
+        if type(expected_generation) is not int or not 0 <= expected_generation <= 2**63 - 1:
+            raise ValueError("invalid expected generation")
+        from orchestrator.config import get_settings
+        from orchestrator.services.deletion_journal.barrier import configured_journal
+
+        # Configuration failures propagate: unknown/invalid is never absent.
+        if configured_journal(get_settings()) is not None:
+            raise ValueError("account_control_pending")
         now = self.now()
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                record = await self._store.lock_account(conn, uid)
-                if record is None:
-                    raise UnknownAccount(str(uid))
-                if record.status is AccountStatus.ACTIVE:
-                    return False
-                await self._store.set_status(
-                    conn, user_id=uid, status=AccountStatus.ACTIVE, now=now
-                )
+        async with control_transaction(self._pool, refusals=(ValueError, UnknownAccount)) as conn:
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", account_lock_key(uid))
+            row = await conn.fetchrow(
+                "SELECT status,content_generation FROM entitlement_accounts "
+                "WHERE user_id=$1 FOR UPDATE",
+                uid,
+            )
+            if row is None:
+                raise UnknownAccount(str(uid))
+            state = await conn.fetchrow(
+                "SELECT EXISTS(SELECT 1 FROM deletion_journal_binding) AS bound, "
+                "EXISTS(SELECT 1 FROM deletion_journal_applied) AS applied, "
+                "EXISTS(SELECT 1 FROM account_deletions "
+                "WHERE account_id=$1 AND closed_at IS NULL) AS operation, "
+                "EXISTS(SELECT 1 FROM account_suspension_causes WHERE account_id=$1) AS cause",
+                uid,
+            )
+            if state is None or any(state.values()):
+                raise ValueError("account_control_pending")
+            if row["status"] == "active":
+                return False
+            if row["status"] != "suspended":
+                raise ValueError("account_control_pending")
+            if row["content_generation"] != expected_generation:
+                raise ValueError("account_generation_mismatch")
+            if expected_generation == 2**63 - 1:
+                raise ValueError("account_generation_exhausted")
+            await self._store.reinstate_account(
+                conn, user_id=uid, expected_generation=expected_generation, now=now
+            )
         logger.warning("Entitlement account %s reinstated by operator: %s", uid, note)
         return True
 

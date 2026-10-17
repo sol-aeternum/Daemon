@@ -49,8 +49,9 @@ async def test_paginated_history_flushes_before_done_and_never_regresses_status(
             claim.epoch,
             "tool_result",
             {"name": f"read_{i}", "epoch": claim.epoch},
+            binding=claim,
         )
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
     frames = _frames(await _observe(env, accepted.task_id))
     durable = [(event, data["data"]) for event, data in frames if "event_seq" in data["data"]]
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
@@ -95,13 +96,18 @@ async def test_redis_gap_out_of_order_and_duplicates_are_only_hints(env: Env):
     observer = asyncio.create_task(consume())
     await asyncio.wait_for(ready.wait(), 5)
     first = await env.tasks.record_event(
-        accepted.task_id, claim.epoch, "tool_call", {"name": "read", "epoch": claim.epoch}
+        accepted.task_id,
+        claim.epoch,
+        "tool_call",
+        {"name": "read", "epoch": claim.epoch},
+        binding=claim,
     )
     second = await env.tasks.record_event(
         accepted.task_id,
         claim.epoch,
         "tool_result",
         {"name": "read", "epoch": claim.epoch, "outcome": "failed"},
+        binding=claim,
     )
     channel = runner.live_channel(accepted.task_id)
     # Later seq arrives first; body is untrusted/incorrect, never replayed.
@@ -112,7 +118,7 @@ async def test_redis_gap_out_of_order_and_duplicates_are_only_hints(env: Env):
                 {"t": "frame", "gen": claim.epoch, "seq": seq, "frame": "not authoritative"}
             ),
         )
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
     await redis.publish(channel, json.dumps({"t": "terminal", "gen": claim.epoch}))
     await asyncio.wait_for(observer, 5)
     tools = [
@@ -150,7 +156,11 @@ async def test_fixed_deadline_catches_lost_progress_during_continuous_deltas(env
     observer = asyncio.create_task(consume())
     await asyncio.wait_for(ready.wait(), 5)
     await env.tasks.record_event(
-        accepted.task_id, claim.epoch, "tool_result", {"name": "lost_publish", "epoch": claim.epoch}
+        accepted.task_id,
+        claim.epoch,
+        "tool_result",
+        {"name": "lost_publish", "epoch": claim.epoch},
+        binding=claim,
     )
 
     async def live_traffic():
@@ -169,7 +179,7 @@ async def test_fixed_deadline_catches_lost_progress_during_continuous_deltas(env
     finally:
         traffic.cancel()
         await asyncio.gather(traffic, return_exceptions=True)
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
     await asyncio.wait_for(observer, 5)
     assert all(
         data["data"]["content_generation"] == claim.epoch
@@ -202,7 +212,7 @@ async def test_finished_operation_recovers_without_progress_recording(env: Env, 
     accepted = await accept_task(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="one", lease_s=LEASE_S)
     assert claim is not None
-    await FencedTool(Http(), env.tasks, accepted.task_id, claim.epoch).execute()
+    await FencedTool(Http(), env.tasks, accepted.task_id, claim.epoch, binding=claim).execute()
     # Simulate crash before runner's tool_result progress record. No retry is
     # permitted after an operation starts, regardless of its outcome.
     assert (
@@ -211,6 +221,7 @@ async def test_finished_operation_recovers_without_progress_recording(env: Env, 
             claim.epoch,
             cause=RetryCause.RETRYABLE_ERROR,
             error_code="internal_error",
+            binding=claim,
         )
         is TaskStatus.NEEDS_ATTENTION
     )
@@ -233,7 +244,12 @@ async def test_stale_worker_completion_remains_durable_and_idempotent(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="one", lease_s=LEASE_S)
     assert claim is not None
     operation = await env.tasks.begin_operation(
-        accepted.task_id, claim.epoch, tool_name="http_request", target=None, min_lease_margin_s=0
+        accepted.task_id,
+        claim.epoch,
+        tool_name="http_request",
+        target=None,
+        min_lease_margin_s=0,
+        binding=claim,
     )
     await expire_lease(env, accepted.task_id)
     assert await env.tasks.claim(accepted.task_id, worker_id="next", lease_s=LEASE_S) is None
@@ -253,9 +269,14 @@ async def test_deferred_and_claim_only_generations_are_not_regenerations(env: En
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="one", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4(), binding=first)
     assert await env.tasks.defer_execution(
-        accepted.task_id, first.epoch, delay_s=0, reason="rate_limited", max_wait_s=900
+        accepted.task_id,
+        first.epoch,
+        delay_s=0,
+        reason="rate_limited",
+        max_wait_s=900,
+        binding=first,
     )
     second = await env.tasks.claim(accepted.task_id, worker_id="two", lease_s=LEASE_S)
     assert second is not None
@@ -265,7 +286,7 @@ async def test_deferred_and_claim_only_generations_are_not_regenerations(env: En
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
     assert snapshot.regenerated_after_interruption == 0
-    await env.tasks.begin_execution(accepted.task_id, third.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, third.epoch, uuid.uuid4(), binding=third)
     await expire_lease(env, accepted.task_id)
     fourth = await env.tasks.claim(accepted.task_id, worker_id="four", lease_s=LEASE_S)
     assert fourth is not None
@@ -279,7 +300,7 @@ async def test_deferred_and_claim_only_generations_are_not_regenerations(env: En
     # must deduplicate disclosure by count, never equate any reset with a retry.
     corrections = _frames(view.catch_up(replace(snapshot, content="different committed content")))
     assert corrections[0][1]["data"]["regenerated_after_interruption"] == 1
-    await env.tasks.complete(accepted.task_id, fourth.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, fourth.epoch, content="final", binding=fourth)
     assert await env.tasks.events_since(env.bob, accepted.task_id, after_seq=0) == []
     assert [
         frame
@@ -296,9 +317,13 @@ async def test_revocation_during_paginated_replay_stops_without_done(env: Env, m
     assert claim is not None
     for _ in range(5):
         await env.tasks.record_event(
-            accepted.task_id, claim.epoch, "tool_call", {"name": "read", "epoch": claim.epoch}
+            accepted.task_id,
+            claim.epoch,
+            "tool_call",
+            {"name": "read", "epoch": claim.epoch},
+            binding=claim,
         )
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
     monkeypatch.setattr(observe, "REPLAY_EVENT_LIMIT", 2)
     checks = 0
 
@@ -321,10 +346,19 @@ async def test_terminal_watermark_refresh_includes_concurrent_late_evidence(env:
     claim = await env.tasks.claim(accepted.task_id, worker_id="one", lease_s=LEASE_S)
     assert claim is not None
     operation = await env.tasks.begin_operation(
-        accepted.task_id, claim.epoch, tool_name="http_request", target=None, min_lease_margin_s=0
+        accepted.task_id,
+        claim.epoch,
+        tool_name="http_request",
+        target=None,
+        min_lease_margin_s=0,
+        binding=claim,
     )
     await env.tasks.fail_attempt(
-        accepted.task_id, claim.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="internal_error"
+        accepted.task_id,
+        claim.epoch,
+        cause=RetryCause.RETRYABLE_ERROR,
+        error_code="internal_error",
+        binding=claim,
     )
     read = env.tasks.events_since
     recorded = False
@@ -350,8 +384,10 @@ async def test_generation_change_replays_lifecycle_without_relabeling_old_progre
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="one", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
-    await env.tasks.write_partial(accepted.task_id, first.epoch, content="partial", delta_seq=1)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4(), binding=first)
+    await env.tasks.write_partial(
+        accepted.task_id, first.epoch, content="partial", delta_seq=1, binding=first
+    )
     redis = FakeRedis()
     ready, regenerated = asyncio.Event(), asyncio.Event()
     frames = []
@@ -375,14 +411,18 @@ async def test_generation_change_replays_lifecycle_without_relabeling_old_progre
     observer = asyncio.create_task(consume())
     await asyncio.wait_for(ready.wait(), 5)
     await env.tasks.fail_attempt(
-        accepted.task_id, first.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="internal_error"
+        accepted.task_id,
+        first.epoch,
+        cause=RetryCause.RETRYABLE_ERROR,
+        error_code="internal_error",
+        binding=first,
     )
     await env.pool.execute(
         "UPDATE tasks SET next_wakeup_at = now() WHERE id = $1", accepted.task_id
     )
     second = await env.tasks.claim(accepted.task_id, worker_id="two", lease_s=LEASE_S)
     assert second is not None
-    await env.tasks.begin_execution(accepted.task_id, second.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, second.epoch, uuid.uuid4(), binding=second)
     await redis.publish(
         runner.live_channel(accepted.task_id), json.dumps({"t": "terminal", "gen": second.epoch})
     )
@@ -391,7 +431,7 @@ async def test_generation_change_replays_lifecycle_without_relabeling_old_progre
         runner.live_channel(accepted.task_id),
         json.dumps({"t": "delta", "gen": first.epoch, "seq": 2, "text": "stale text"}),
     )
-    await env.tasks.complete(accepted.task_id, second.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, second.epoch, content="final", binding=second)
     await redis.publish(
         runner.live_channel(accepted.task_id), json.dumps({"t": "terminal", "gen": second.epoch})
     )
@@ -414,10 +454,19 @@ async def test_operation_lifecycle_does_not_duplicate_call_or_result_indicators(
     claim = await env.tasks.claim(accepted.task_id, worker_id="one", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.record_event(
-        accepted.task_id, claim.epoch, "tool_call", {"name": "http_request", "epoch": claim.epoch}
+        accepted.task_id,
+        claim.epoch,
+        "tool_call",
+        {"name": "http_request", "epoch": claim.epoch},
+        binding=claim,
     )
     operation = await env.tasks.begin_operation(
-        accepted.task_id, claim.epoch, tool_name="http_request", target=None, min_lease_margin_s=0
+        accepted.task_id,
+        claim.epoch,
+        tool_name="http_request",
+        target=None,
+        min_lease_margin_s=0,
+        binding=claim,
     )
     await env.tasks.finish_operation(operation, outcome="unknown")
     await env.tasks.record_event(
@@ -425,8 +474,9 @@ async def test_operation_lifecycle_does_not_duplicate_call_or_result_indicators(
         claim.epoch,
         "tool_result",
         {"name": "http_request", "epoch": claim.epoch, "outcome": "unknown"},
+        binding=claim,
     )
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
     parsed = _frames(await _observe(env, accepted.task_id))
     assert [event for event, _ in parsed if event in {"tool_call", "tool_result"}] == [
         "tool_call",

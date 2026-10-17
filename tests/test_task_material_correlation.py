@@ -243,7 +243,7 @@ async def test_real_fenced_media_result_enriches_one_operation(env: Env, monkeyp
         # Repeat delivery after completion/uncertain crash cannot repeat effects.
         assert (
             await runner.run_chat_task({"task_store": env.tasks}, str(accepted.task_id))
-            == "skipped"
+            == "task_already_terminal"
         )
         assert all("file_url" not in str(e.payload) for e in events)
     finally:
@@ -261,7 +261,7 @@ async def test_invocation_identity_isolated_for_same_name_nested_and_refused_cal
     assert claim is not None
     registry = ToolRegistry()
     media = MediaTool()
-    registry.register(FencedTool(media, env.tasks, accepted.task_id, claim.epoch))
+    registry.register(FencedTool(media, env.tasks, accepted.task_id, claim.epoch, binding=claim))
     executor = ToolExecutor(registry)
     forged = str(uuid.uuid4())
     first, second = await asyncio.gather(
@@ -287,7 +287,9 @@ async def test_invocation_identity_isolated_for_same_name_nested_and_refused_cal
             assert child.operation is not None
             return json.dumps({"success": True, "operation_id": str(child.operation.operation_id)})
 
-    registry.register(FencedTool(Advisor(), env.tasks, accepted.task_id, claim.epoch))
+    registry.register(
+        FencedTool(Advisor(), env.tasks, accepted.task_id, claim.epoch, binding=claim)
+    )
     parent = await executor.execute_invocation("consult_advisor", {})
     assert parent.operation is not None
     assert child is not None and child.operation is not None
@@ -311,12 +313,16 @@ async def test_invocation_identity_isolated_for_same_name_nested_and_refused_cal
 
 async def _material_progress(env, accepted, claim, *, filler=False, label="fixture"):
     registry = ToolRegistry()
-    registry.register(FencedTool(MediaTool(), env.tasks, accepted.task_id, claim.epoch))
+    registry.register(
+        FencedTool(MediaTool(), env.tasks, accepted.task_id, claim.epoch, binding=claim)
+    )
     invocation = await ToolExecutor(registry).execute_invocation(
         "generate_document", {"label": label}
     )
     if filler:
-        await env.tasks.record_event(accepted.task_id, claim.epoch, "fixture_gap", {})
+        await env.tasks.record_event(
+            accepted.task_id, claim.epoch, "fixture_gap", {}, binding=claim
+        )
     data = {
         "name": "generate_document",
         "result": json.loads(invocation.result),
@@ -505,7 +511,9 @@ async def test_runner_rejects_unproven_identity_and_preserves_suppressed_outcome
     assert claim is not None
     state = runner.AttemptState(claim)
     registry = ToolRegistry()
-    registry.register(FencedTool(MediaTool(), env.tasks, accepted.task_id, claim.epoch))
+    registry.register(
+        FencedTool(MediaTool(), env.tasks, accepted.task_id, claim.epoch, binding=claim)
+    )
     invocation = await ToolExecutor(registry).execute_invocation("generate_document", {})
     full = {
         "name": "generate_document",
@@ -538,7 +546,7 @@ async def test_completion_skip_and_auto_spawn_identity_paths(env: Env, monkeypat
     if path == "auto_spawn":
         media.name = "spawn_agent"
     registry = ToolRegistry()
-    registry.register(FencedTool(media, env.tasks, accepted.task_id, claim.epoch))
+    registry.register(FencedTool(media, env.tasks, accepted.task_id, claim.epoch, binding=claim))
 
     async def budget(*args):
         return SimpleNamespace(
@@ -633,6 +641,7 @@ async def test_finish_recording_failure_cannot_create_hidden_correlated_progress
         claim.epoch,
         "tool_call",
         {"name": "generate_document", "epoch": claim.epoch},
+        binding=claim,
     )
     original = await _material_progress(env, accepted, claim)
     _, envelope = runner._parse_frame(original["frame"])

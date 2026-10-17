@@ -30,7 +30,7 @@ async def check(command: str, argument: str | None) -> None:
         IssueSessionRequest,
         issue_device_session,
     )
-    from orchestrator.tasks.store import LeaseLost, TaskStore
+    from orchestrator.tasks.store import Claim, LeaseLost, TaskStore
 
     settings = get_settings()
     pool = await asyncpg.create_pool(resolve_database_url(), min_size=1, max_size=2)
@@ -119,11 +119,31 @@ async def check(command: str, argument: str | None) -> None:
                 "completed settlement invalid",
             )
             store = TaskStore(pool, encryption, MemoryStore(pool, encryption))
+            old = Claim(
+                task_id=task_id,
+                epoch=1,
+                user_id=task["user_id"],
+                conversation_id=task["conversation_id"],
+                user_message_id=task["user_message_id"],
+                result_message_id=task["result_message_id"],
+                attempt_count=1,
+                max_attempts=task["max_attempts"],
+                task_input={},
+                worker_id=attempts[0]["worker_id"],
+                origin=store._origin(task),
+            )
             for operation in (
-                lambda: store.write_partial(task_id, 1, content="stale overwrite", delta_seq=999),
-                lambda: store.complete(task_id, 1, content="stale completion"),
+                lambda: store.write_partial(
+                    task_id, 1, content="stale overwrite", delta_seq=999, binding=old
+                ),
+                lambda: store.complete(task_id, 1, content="stale completion", binding=old),
                 lambda: store.begin_operation(
-                    task_id, 1, tool_name="notification_send", target={}, min_lease_margin_s=15
+                    task_id,
+                    1,
+                    tool_name="notification_send",
+                    target={},
+                    min_lease_margin_s=15,
+                    binding=old,
                 ),
             ):
                 try:
