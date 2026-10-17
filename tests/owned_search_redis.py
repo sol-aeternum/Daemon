@@ -143,7 +143,18 @@ class OwnedSearchRedis:
         self.socket_identity = actual
 
     def start(self) -> None:
-        image = json.loads(docker("image", "inspect", "redis:7-alpine"))
+        try:
+            image = json.loads(docker("image", "inspect", "redis:7-alpine"))
+        except subprocess.CalledProcessError as error:
+            # Only this fixed, credential-free inspection is reported. Do not
+            # infer image absence from exit 1 or discard Docker's actual reason.
+            stderr = (error.stderr or "")[:2048]
+            stdout = (error.stdout or "")[:2048]
+            self.record("image-inspect-failed", exit=error.returncode, stderr=stderr, stdout=stdout)
+            raise OwnershipError(
+                "docker image inspect redis:7-alpine failed "
+                f"(exit {error.returncode}); stderr={json.dumps(stderr)}; stdout={json.dumps(stdout)}"
+            ) from error
         self.image = image[0]["Id"]
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.image):
             raise OwnershipError("Cached approved Redis image identity unavailable")

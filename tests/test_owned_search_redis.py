@@ -144,15 +144,63 @@ def test_create_timeout_reconciles_exact_name_without_start_or_retry(owner, monk
     assert owner.container == item["Id"]
 
 
-def test_absent_cached_image_has_no_create(owner, monkeypatch):
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Error response from daemon: No such image: redis:7-alpine\n",
+        "Cannot connect to the Docker daemon at unix:///synthetic/docker.sock\n",
+        "permission denied while trying to connect to the Docker daemon\n",
+    ],
+)
+def test_image_inspect_failure_reports_actual_reason_without_create_or_retry(
+    owner, monkeypatch, detail
+):
+    calls = []
+    cause = subprocess.CalledProcessError(
+        1,
+        ["docker", "image", "inspect", "redis:7-alpine"],
+        output="[]\n",
+        stderr=detail,
+    )
+
     def fake(*args):
+        calls.append(args)
         assert args == ("image", "inspect", "redis:7-alpine")
-        raise subprocess.CalledProcessError(1, "synthetic missing image")
+        raise cause
 
     monkeypatch.setattr(module, "docker", fake)
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(OwnershipError) as caught:
         owner.start()
+    assert caught.value.__cause__ is cause
+    assert "docker image inspect redis:7-alpine failed (exit 1)" in str(caught.value)
+    assert json.dumps(detail) in str(caught.value)
+    assert 'stdout="[]\\n"' in str(caught.value)
+    assert calls == [("image", "inspect", "redis:7-alpine")]
     assert owner.container == ""
+    assert owner.events[-1] == {
+        "event": "image-inspect-failed",
+        "exit": 1,
+        "stderr": detail,
+        "stdout": "[]\n",
+    }
+
+
+def test_image_inspect_diagnostics_are_bounded_and_terminal_escaped(owner, monkeypatch):
+    detail = "\x1b[31m" + "x" * 10000
+
+    def fake(*args):
+        assert args == ("image", "inspect", "redis:7-alpine")
+        raise subprocess.CalledProcessError(2, "synthetic inspect", output=detail, stderr=detail)
+
+    monkeypatch.setattr(module, "docker", fake)
+    with pytest.raises(OwnershipError) as caught:
+        owner.start()
+    message = str(caught.value)
+    assert "\x1b" not in message
+    assert json.dumps(detail[:2048]) in message
+    assert len(message) < 4300
+    assert len(owner.events[-1]["stderr"]) == 2048
+    assert len(owner.events[-1]["stdout"]) == 2048
 
 
 def test_directory_substitution_refused_before_docker(owner, monkeypatch):
