@@ -92,7 +92,11 @@ async def test_connected_observer_preserves_full_payloads_once(env: Env, fixture
     channel = runner.live_channel(accepted.task_id)
     try:
         call = await env.tasks.record_event(
-            accepted.task_id, claim.epoch, "tool_call", {"name": name, "epoch": claim.epoch}
+            accepted.task_id,
+            claim.epoch,
+            "tool_call",
+            {"name": name, "epoch": claim.epoch},
+            binding=claim,
         )
         await redis.publish(
             channel,
@@ -104,6 +108,7 @@ async def test_connected_observer_preserves_full_payloads_once(env: Env, fixture
             claim.epoch,
             "tool_result",
             {"name": name, "epoch": claim.epoch, "outcome": "succeeded"},
+            binding=claim,
         )
         message = _live(
             accepted, claim, completed, "tool_result", name, result=result, outcome="succeeded"
@@ -111,7 +116,7 @@ async def test_connected_observer_preserves_full_payloads_once(env: Env, fixture
         await redis.publish(channel, json.dumps(message))
         await until(completed)
         await redis.publish(channel, json.dumps(message))
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
         await redis.publish(channel, json.dumps({"t": "terminal", "gen": claim.epoch}))
         await asyncio.wait_for(task, 5)
         tools = [(kind, e) for kind, e in frames if kind in {"tool_call", "tool_result"}]
@@ -138,13 +143,18 @@ async def test_later_sequence_recovers_gap_without_losing_available_result(env: 
     frames, task, until = await _connected(env, accepted, redis)
     try:
         call = await env.tasks.record_event(
-            accepted.task_id, claim.epoch, "tool_call", {"name": "web_search", "epoch": claim.epoch}
+            accepted.task_id,
+            claim.epoch,
+            "tool_call",
+            {"name": "web_search", "epoch": claim.epoch},
+            binding=claim,
         )
         completed = await env.tasks.record_event(
             accepted.task_id,
             claim.epoch,
             "tool_result",
             {"name": "web_search", "epoch": claim.epoch, "outcome": "succeeded"},
+            binding=claim,
         )
         result = {"query": "q", "results": [], "total_found": 0}
         message = _live(
@@ -171,7 +181,7 @@ async def test_later_sequence_recovers_gap_without_losing_available_result(env: 
                 )
             ),
         )
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
         await redis.publish(
             runner.live_channel(accepted.task_id), json.dumps({"t": "terminal", "gen": claim.epoch})
         )
@@ -195,6 +205,7 @@ async def test_payload_attribution_and_authorization_fail_closed(env: Env):
         claim.epoch,
         "tool_result",
         {"name": "web_search", "epoch": claim.epoch, "outcome": "succeeded"},
+        binding=claim,
     )
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
@@ -292,6 +303,7 @@ async def test_initial_replay_never_duplicates_or_enriches_late_payload(env: Env
         claim.epoch,
         "tool_result",
         {"name": "web_search", "epoch": claim.epoch, "outcome": "succeeded"},
+        binding=claim,
     )
     redis = FakeRedis()
     frames, task, until = await _connected(env, accepted, redis)
@@ -311,7 +323,7 @@ async def test_initial_replay_never_duplicates_or_enriches_late_payload(env: Env
                 )
             ),
         )
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
         await redis.publish(
             runner.live_channel(accepted.task_id), json.dumps({"t": "terminal", "gen": claim.epoch})
         )
@@ -334,6 +346,7 @@ async def test_material_summary_stays_single_without_proven_operation_correlatio
         tool_name="generate_document",
         target=None,
         min_lease_margin_s=0,
+        binding=claim,
     )
     await env.tasks.finish_operation(operation, outcome="succeeded")
     seq = await env.tasks.record_event(
@@ -341,6 +354,7 @@ async def test_material_summary_stays_single_without_proven_operation_correlatio
         claim.epoch,
         "tool_result",
         {"name": "generate_document", "epoch": claim.epoch, "outcome": "succeeded"},
+        binding=claim,
     )
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
@@ -398,13 +412,18 @@ async def test_ready_queued_sibling_payload_is_preserved_before_projection(
     channel = runner.live_channel(accepted.task_id)
     try:
         call = await env.tasks.record_event(
-            accepted.task_id, claim.epoch, "tool_call", {"name": "web_search", "epoch": claim.epoch}
+            accepted.task_id,
+            claim.epoch,
+            "tool_call",
+            {"name": "web_search", "epoch": claim.epoch},
+            binding=claim,
         )
         completed = await env.tasks.record_event(
             accepted.task_id,
             claim.epoch,
             "tool_result",
             {"name": "web_search", "epoch": claim.epoch, "outcome": "succeeded"},
+            binding=claim,
         )
         result = {
             "query": "q",
@@ -420,7 +439,7 @@ async def test_ready_queued_sibling_payload_is_preserved_before_projection(
             # A delta gap forces resync while subsequent tool frames are ready.
             first = {"t": "delta", "gen": claim.epoch, "seq": 2, "text": "uncommitted"}
         else:
-            await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+            await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
             first = {"t": "terminal", "gen": claim.epoch}
         await redis.publish(channel, json.dumps(first))
         await asyncio.wait_for(entered.wait(), 5)
@@ -445,7 +464,7 @@ async def test_ready_queued_sibling_payload_is_preserved_before_projection(
         release.set()
         await until(completed)
         if trigger != "terminal":
-            await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+            await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
             await redis.publish(channel, json.dumps({"t": "terminal", "gen": claim.epoch}))
         await asyncio.wait_for(task, 5)
         tools = [e["data"] for kind, e in frames if kind in {"tool_call", "tool_result"}]
@@ -478,6 +497,7 @@ async def test_malformed_delta_sequence_does_not_end_observation(env: Env, bad_s
             claim.epoch,
             "tool_result",
             {"name": "web_search", "epoch": claim.epoch, "outcome": "succeeded"},
+            binding=claim,
         )
         result = {"query": "q", "results": [], "total_found": 0}
         await redis.publish(
@@ -495,7 +515,7 @@ async def test_malformed_delta_sequence_does_not_end_observation(env: Env, bad_s
             ),
         )
         await until(seq)
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
         await redis.publish(channel, json.dumps({"t": "terminal", "gen": claim.epoch}))
         await asyncio.wait_for(task, 5)
         results = [e["data"]["result"] for kind, e in frames if kind == "tool_result"]
@@ -545,6 +565,7 @@ async def test_malformed_live_generation_does_not_end_observation(env: Env):
             claim.epoch,
             "tool_result",
             {"name": "web_search", "epoch": claim.epoch, "outcome": "succeeded"},
+            binding=claim,
         )
         result = {"query": "q", "results": [], "total_found": 0}
         await redis.publish(
@@ -562,7 +583,7 @@ async def test_malformed_live_generation_does_not_end_observation(env: Env):
             ),
         )
         await until(seq)
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="final")
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="final", binding=claim)
         await redis.publish(channel, json.dumps({"t": "terminal", "gen": claim.epoch}))
         await asyncio.wait_for(task, 5)
         assert [e["data"]["result"] for kind, e in frames if kind == "tool_result"] == [result]

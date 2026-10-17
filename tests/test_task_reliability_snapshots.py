@@ -19,6 +19,7 @@ from orchestrator.services.fetch.service import FetchService
 from orchestrator.services.web_snapshots import WebSnapshotStore
 from orchestrator.tasks import runner
 from orchestrator.tasks.store import ExecutionRefused
+from orchestrator.services.account_control.transaction import TransactionUnavailable
 from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.web_fetch import WebFetchTool
 from tests.durable_tasks_support import (
@@ -70,6 +71,55 @@ async def _seed_snapshot(env, accepted, snapshots, content="already retained"):
         extract_mode="article",
         extraction_version=EXTRACTION_VERSION_V1,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publication", ["create", "reuse"])
+@pytest.mark.parametrize("fault", ["generation", "origin", "query"])
+async def test_publication_refusal_closes_admission_before_tool_error(
+    env: Env, monkeypatch, publication, fault
+):
+    from orchestrator.entitlements.service import EntitlementService
+    from orchestrator.services.account_control.transaction import ObservationBlocked
+
+    accepted = await accept_task(env)
+    claim = await env.tasks.claim(accepted.task_id, worker_id="first", lease_s=LEASE_S)
+    assert claim is not None
+    tool, snapshots, fetcher = _reader(env, accepted, claim)
+    state = runner.AttemptState(claim=claim)
+    tool.refresh_guard = runner._TaskRefreshGuard(env.tasks, state)
+    if publication == "reuse":
+        await _seed_snapshot(env, accepted, snapshots)
+    if fault == "generation":
+        await env.pool.execute(
+            "UPDATE entitlement_accounts SET status='suspended' WHERE user_id=$1", env.alice
+        )
+        assert await EntitlementService(env.pool).reinstate(
+            env.alice, reason="synthetic snapshot fence", expected_generation=0
+        )
+    elif fault == "origin":
+        await env.pool.execute(
+            "UPDATE tasks SET input_ciphertext='invalid-synthetic-ciphertext' WHERE id=$1",
+            claim.task_id,
+        )
+    else:
+
+        async def unreadable(*args, **kwargs):
+            raise OSError("synthetic failed publication query")
+
+        monkeypatch.setattr(env.tasks, "pin_page", unreadable)
+    before = await env.pool.fetchrow("SELECT * FROM tasks WHERE id=$1", claim.task_id)
+    assert "error" in json.loads(await tool.execute(url=URL, force_refresh=publication == "create"))
+    assert state.stopping and state.blocked == "task_observation_indeterminate"
+    assert state.phase == "closed" and state.result is None
+    assert await runner._resolve(env.tasks, state) == state.blocked
+    with pytest.raises(ObservationBlocked):
+        async with runner._mutation(state):
+            pytest.fail("publication error must not admit another writer")
+    assert await env.pool.fetchrow("SELECT * FROM tasks WHERE id=$1", claim.task_id) == before
+    assert await _counts(env) == (int(publication == "reuse"), 0)
+    if publication == "reuse":
+        fetcher.fetch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -320,10 +370,13 @@ async def test_cancel_snapshot_fk_lock_interleaving(
         await _seed_snapshot(env, accepted, snapshots)
     cancel_locked = asyncio.Event()
     parents_locked = asyncio.Event()
+    cycle_seen = asyncio.Event()
+    actors: dict[str, int] = {}
     append = env.tasks._append_event
 
     async def gated_append(conn, task_id, kind, payload=None):
         if kind == "cancel_requested":
+            actors["cancel"] = conn.get_server_pid()
             cancel_locked.set()
             await asyncio.wait_for(parents_locked.wait(), 5)
         return await append(conn, task_id, kind, payload)
@@ -347,11 +400,32 @@ async def test_cancel_snapshot_fk_lock_interleaving(
         monkeypatch.setattr(snapshots, "_lock_owned_conversation", old_conversation)
 
     async def publish(conn, snapshot_id):
+        actors["publication"] = conn.get_server_pid()
         parents_locked.set()
         await env.tasks.pin_page(conn, claim, "lock-interleaving", snapshot_id)
 
+    async def observe_cycle():
+        await parents_locked.wait()
+        # Native deadlock detection remains unchanged. Observe ONLY these two
+        # known test actors, never query text or unrelated sessions.
+        for _ in range(60):
+            rows = await env.pool.fetch(
+                "SELECT pid,pg_blocking_pids(pid) AS blockers FROM pg_stat_activity "
+                "WHERE pid=$1 OR pid=$2",
+                actors["cancel"],
+                actors["publication"],
+            )
+            graph = {r["pid"]: r["blockers"] for r in rows}
+            if actors["publication"] in graph.get(actors["cancel"], []) and actors[
+                "cancel"
+            ] in graph.get(actors["publication"], []):
+                cycle_seen.set()
+                return
+            await asyncio.sleep(0.02)
+
     cancel = asyncio.create_task(env.tasks.request_cancel(env.alice, accepted.task_id))
     publication = None
+    monitor = asyncio.create_task(observe_cycle())
     try:
         await asyncio.wait_for(cancel_locked.wait(), 5)
         if publication_kind == "create":
@@ -378,18 +452,30 @@ async def test_cancel_snapshot_fk_lock_interleaving(
             asyncio.gather(cancel, publication, return_exceptions=True), 8
         )
         if exclusive_parent is not None:
-            assert any(isinstance(result, asyncpg.DeadlockDetectedError) for result in results)
+
+            def native_deadlock(result):
+                if isinstance(result, TransactionUnavailable):
+                    assert not result.commit_attempted and not result.commit_acknowledged
+                    result = result.__cause__
+                return (
+                    isinstance(result, asyncpg.DeadlockDetectedError) and result.sqlstate == "40P01"
+                )
+
+            assert any(native_deadlock(result) for result in results)
+            assert cycle_seen.is_set()  # actual opposing DB waits, not arbitrary wrapper failure
         else:
+            assert not cycle_seen.is_set()
             assert not isinstance(results[0], BaseException)
             assert isinstance(results[1], ExecutionRefused)
             assert results[1].reason == "cancel_requested"
             assert await _counts(env) == (int(publication_kind == "reuse"), 0)
     finally:
-        tasks = [cancel] + ([publication] if publication is not None else [])
+        tasks = [cancel, monitor] + ([publication] if publication is not None else [])
         for task in tasks:
             if not task.done():
                 task.cancel()
         await asyncio.gather(cancel, return_exceptions=True)
+        await asyncio.gather(monitor, return_exceptions=True)
         if publication is not None:
             await asyncio.gather(publication, return_exceptions=True)
 
@@ -465,7 +551,11 @@ async def test_legacy_marker_has_no_invented_snapshot_provenance(env: Env):
     assert claim is not None
     tool, _, fetcher = _reader(env, accepted, claim)
     await env.tasks.record_event(
-        accepted.task_id, claim.epoch, "page_refreshed", {"key": runner._page_key(URL, "article")}
+        accepted.task_id,
+        claim.epoch,
+        "page_refreshed",
+        {"key": runner._page_key(URL, "article")},
+        binding=claim,
     )
     assert "error" in json.loads(await tool.execute(url=URL, force_refresh=True))
     fetcher.fetch.assert_not_awaited()

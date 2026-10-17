@@ -178,9 +178,9 @@ async def test_chunk_continuation_and_entity_jobs_share_original_capture(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("durable", [False, True])
-@pytest.mark.parametrize("reset_after_accept", [False, True])
+@pytest.mark.parametrize("reset_at", ["never", "acceptance", "completion"])
 async def test_http_capture_through_native_queue_extraction_and_entity_worker(
-    api, monkeypatch, entity_queue, durable, reset_after_accept
+    api, monkeypatch, entity_queue, durable, reset_at
 ):
     from orchestrator import main, redis_jobs
     from orchestrator.tasks import runner
@@ -208,7 +208,7 @@ async def test_http_capture_through_native_queue_extraction_and_entity_worker(
     async def acceptance(*args, **kwargs):
         assert captures == [CapturedGeneration(env.alice, 7)]
         result = await original_source(*args, **kwargs)
-        if reset_after_accept:
+        if reset_at == "acceptance":
             await env.pool.execute(
                 "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
             )
@@ -233,6 +233,35 @@ async def test_http_capture_through_native_queue_extraction_and_entity_worker(
                 while not any(name == "run_chat_task" for name, _, _ in api.redis.enqueued):
                     await asyncio.sleep(0)
             tid = next(args[0] for name, args, _ in api.redis.enqueued if name == "run_chat_task")
+            saved = await env.pool.fetchrow("SELECT * FROM tasks WHERE id=$1", UUID(tid))
+            stored = env.tasks._open(saved["input_ciphertext"])
+            assert (
+                stored["origin_account_id"] == stored["summary_origin_account_id"] == str(env.alice)
+            )
+            assert (
+                stored["origin_account_generation"]
+                == stored["summary_origin_account_generation"]
+                == 7
+            )
+            if reset_at == "acceptance":
+
+                async def forbidden(*args, **kwargs):
+                    pytest.fail("revoked task cannot execute or settle")
+
+                monkeypatch.setattr(runner, "_execute", forbidden)
+                monkeypatch.setattr(runner, "settle_lost_attempt_holds", forbidden)
+                assert await runner.run_chat_task(api.ctx(), tid) == "failed"
+                row = await env.pool.fetchrow("SELECT * FROM tasks WHERE id=$1", UUID(tid))
+                assert row["terminal_code"] == "task_generation_stale"
+                assert row["attempt_count"] == row["lease_epoch"] == 0
+                assert row["input_ciphertext"] == saved["input_ciphertext"]
+                assert (await asyncio.wait_for(request, 15)).status_code == 200
+                assert captures == [CapturedGeneration(env.alice, 7)]
+                assert await queued(queue, pipeline, "extract_memories") == []
+                assert await queued(queue, pipeline, "resolve_entities_job") == []
+                assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
+                assert await rows(env) == []
+                return
             claim = await env.tasks.claim(UUID(tid), worker_id="abandoned", lease_s=45)
             assert claim is not None and claim.task_input["summary_origin_account_generation"] == 7
             await expire_lease(env, claim.task_id)
@@ -245,6 +274,11 @@ async def test_http_capture_through_native_queue_extraction_and_entity_worker(
             )
         assert (await asyncio.wait_for(request, 15)).status_code == 200
         assert captures == [CapturedGeneration(env.alice, 7)]
+        if reset_at == "completion":
+            # Actual extraction was queued with generation seven before revocation.
+            await env.pool.execute(
+                "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
+            )
         extract = (await queued(queue, pipeline, "extract_memories"))[0]
         assert extract.kwargs == {
             "origin_account_id": str(env.alice),
@@ -266,7 +300,7 @@ async def test_http_capture_through_native_queue_extraction_and_entity_worker(
         ctx = {**api.ctx(), "redis": queue}
         result = await jobs.extract_memories(ctx, *extract.args, **extract.kwargs)
         projected = await queued(queue, pipeline, "resolve_entities_job")
-        if reset_after_accept:
+        if reset_at != "never":
             assert result["status"] == "skipped" and projected == []
             assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
         else:
@@ -275,7 +309,7 @@ async def test_http_capture_through_native_queue_extraction_and_entity_worker(
             assert (await jobs.resolve_entities_job(ctx, *entity.args, **entity.kwargs))[
                 "status"
             ] == "ok"
-        assert bool(await rows(env)) is not reset_after_accept
+        assert bool(await rows(env)) is (reset_at == "never")
     finally:
         if not request.done():
             request.cancel()

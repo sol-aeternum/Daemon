@@ -49,16 +49,21 @@ def test_normalizes_real_http_and_missing_evidence(result, expected):
 async def test_durable_sink_saves_the_live_outcome_without_mutating_engine_rows(result, expected):
     store = MagicMock(spec=TaskStore)
     store.complete = AsyncMock(return_value=TaskStatus.COMPLETED)
+    from orchestrator.tasks._origin import OriginalTaskOrigin
+
+    user_id = uuid.uuid4()
     claim = Claim(
         task_id=uuid.uuid4(),
         epoch=1,
-        user_id=uuid.uuid4(),
+        user_id=user_id,
         conversation_id=uuid.uuid4(),
         user_message_id=uuid.uuid4(),
         result_message_id=uuid.uuid4(),
         attempt_count=1,
         max_attempts=3,
         task_input={},
+        worker_id="synthetic-worker",
+        origin=OriginalTaskOrigin(user_id, 0),
     )
     sink = AttemptSink(store, AttemptState(claim))
     # Live/replay classify the result itself, not an untrusted outcome in it.
