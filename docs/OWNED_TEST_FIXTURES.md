@@ -14,6 +14,12 @@ same tag as Compose). The fixture resolves its local immutable image ID and uses
 CI must provision the approved cached image separately; this change does not
 authorize image pulls.
 
+If that fixed image inspection fails, its operation/exit code and bounded Docker
+stderr/stdout are preserved in the test error and task receipt. Exit 1 alone does
+not prove a missing image: daemon or access errors are also possible. This does
+not retry, provision, pull or substitute anything. Hosted runner diagnostics that
+do not expose Docker's actual error leave the underlying cause unqualified.
+
 One fresh container has network `none`, no published ports, a private Unix socket,
 non-root task UID/GID, read-only root, dropped capabilities, no-new-privileges,
 bounded memory/PIDs and bounded `/tmp` and `/data` tmpfs. Masking `/data` prevents
