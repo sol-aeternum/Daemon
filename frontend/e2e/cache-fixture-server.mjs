@@ -5,7 +5,18 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { build } from 'esbuild';
 import path from 'node:path';
+import { appendFileSync, openSync } from 'node:fs';
 import { cacheFixtureURLs } from './cache-fixture-url.mjs';
+import { fixtureEnvironment } from './cache-fixture-environment.mjs';
+import {
+  identityFor,
+  serveAppGate,
+  childControl,
+  launchIdentity,
+  ownChild,
+  verifyHTTP,
+  waitFor,
+} from './cache-fixture-control.mjs';
 
 const appOrigin = 'http://127.0.0.1:3142';
 const nextOrigin = 'http://127.0.0.1:3141';
@@ -21,62 +32,38 @@ const clientBuildOptions = {
     'process.env.NODE_ENV': JSON.stringify('development'),
   },
 };
-const env = {
-  PATH: process.env.PATH,
-  HOME: process.env.HOME,
-  TMPDIR: process.env.TMPDIR,
-  NODE_OPTIONS: process.env.NODE_OPTIONS,
-  PYTHONPATH: '..',
-  // Explicit clean env: no inherited application credentials and no implicit
-  // dotenv loading inside litellm or any other dependency.
-  LITELLM_MODE: 'PRODUCTION',
-  NEXT_TELEMETRY_DISABLED: '1',
-  DAEMON_INTERNAL_API_URL: `${apiOrigin}/daemon`,
-  NEXT_PUBLIC_API_URL: `${apiOrigin}/daemon`,
-};
-// Forward only the task's bounded heap control, never preloads or debug options.
-if (
-  env.NODE_OPTIONS &&
-  (!/^--max-old-space-size=[1-9]\d*$/.test(env.NODE_OPTIONS) ||
-    env.NODE_OPTIONS !== env.NODE_OPTIONS.trim() ||
-    Number(env.NODE_OPTIONS.split('=')[1]) > 2048)
-) {
-  throw new Error('Fixture NODE_OPTIONS must be a heap limit of 1–2048 MiB.');
+const env = fixtureEnvironment();
+// Start owned participants only after the app's exclusive bind succeeds.
+const identity = launchIdentity();
+const receipt = openSync(
+  path.join(env.TMPDIR, `cache-${identity.nonce}.jsonl`),
+  'ax',
+  0o600,
+);
+function record(event, values = {}) {
+  appendFileSync(
+    receipt,
+    JSON.stringify({ event, ...identity, ...values }) + '\n',
+  );
 }
-const api = spawn(
-  path.resolve(
-    '..',
-    process.env.UV_PROJECT_ENVIRONMENT ?? '.uv-venv',
-    'bin/python',
-  ),
-  [
-    '-m',
-    'uvicorn',
-    'cache-fixture-api:app',
-    '--app-dir',
-    'e2e',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    '3143',
-  ],
-  { env, stdio: 'inherit' },
-);
-const next = spawn(
-  process.execPath,
-  [
-    'node_modules/next/dist/bin/next',
-    'dev',
-    '-H',
-    '127.0.0.1',
-    '-p',
-    '3141',
-    '--webpack',
-  ],
-  { env, stdio: 'inherit' },
-);
+record('intent');
+let ready = false;
+let stopping;
+let rejectFailed;
+const failed = new Promise((_, reject) => {
+  rejectFailed = reject;
+});
+failed.catch(() => {});
+const children = [];
+function fail(error) {
+  ready = false;
+  record('failure', { message: String(error) });
+  rejectFailed(error);
+  if (!stopping) void stop(1);
+}
 const state = { upgraded: false, hits: 0 };
 const server = http.createServer(async (request, response) => {
+  if (serveAppGate(request, response, identity, ready)) return;
   let url;
   let upstreamUrl;
   try {
@@ -201,51 +188,87 @@ const server = http.createServer(async (request, response) => {
     }
   }
 });
-function stop() {
-  server.close();
-  api.kill('SIGTERM');
-  next.kill('SIGTERM');
+const control = childControl(identity, 'app', () => stop());
+function stop(code = process.exitCode ?? 0) {
+  if (stopping) return stopping;
+  ready = false;
+  stopping = (async () => {
+    server.close();
+    server.closeAllConnections();
+    const outcomes = await Promise.allSettled(
+      children.map((child) => child.stop()),
+    );
+    const incomplete = outcomes.some(
+      (outcome) => outcome.status === 'rejected',
+    );
+    record(incomplete ? 'cleanup-incomplete-retained' : 'children-stopped', {
+      outcomes: outcomes.map((outcome) =>
+        outcome.status === 'rejected' ? String(outcome.reason) : 'exited',
+      ),
+    });
+    process.exitCode = incomplete ? 1 : code;
+    // Startup refusal must close the launch pipe too: otherwise the parent waits
+    // for EOF while this coordinator waits for a command on the same live pipe.
+    process.stdin.destroy();
+  })();
+  return stopping;
 }
-process.on('SIGTERM', stop);
-process.on('SIGINT', stop);
-api.on('exit', () => {
-  server.close();
-  next.kill('SIGTERM');
-});
-next.on('exit', () => {
-  server.close();
-  api.kill('SIGTERM');
-});
+process.on('SIGTERM', () => void stop());
+process.on('SIGINT', () => void stop());
 
 // The readiness URL must represent ALL participants, not just the seed server.
 // Compile the actual proxy before Playwright starts; assertion timeouts stay
 // unchanged and no test has to race Python/router import or Next compilation.
-const deadline = Date.now() + 90_000;
-let ready = false;
 try {
-  while (Date.now() < deadline) {
-    try {
-      const backend = await fetch(`${apiOrigin}/__fixture/status`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      const proxy = await fetch(`${nextOrigin}/api/v1/auth/cache/clear`, {
-        method: 'POST',
-        headers: { Origin: appOrigin, 'Sec-Fetch-Site': 'same-origin' },
-        signal: AbortSignal.timeout(2000),
-      });
-      if (backend.ok && proxy.status === 204) {
+  await waitFor(
+    Promise.race([
+      failed,
+      (async () => {
+        await new Promise((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(3142, '127.0.0.1', resolve);
+        });
+        record('bound', identityFor(identity, 'app'));
+        const api = spawn(
+          path.resolve('..', env.UV_PROJECT_ENVIRONMENT, 'bin/python'),
+          ['e2e/cache-fixture-api-runner.py', identity.task, identity.nonce],
+          { env, stdio: ['pipe', 'inherit', 'inherit', 'pipe'] },
+        );
+        children.push(ownChild(api, identity, 'api', fail, record));
+        const next = spawn(
+          process.execPath,
+          ['e2e/cache-fixture-next.mjs', identity.task, identity.nonce],
+          { env, stdio: ['pipe', 'inherit', 'inherit', 'pipe'] },
+        );
+        children.push(ownChild(next, identity, 'next', fail, record));
+        await Promise.all(children.map((child) => child.bound));
+        for (const child of children) child.assertAlive();
+        await Promise.all([
+          verifyHTTP(appOrigin, identityFor(identity, 'app')),
+          verifyHTTP(apiOrigin, identityFor(identity, 'api')),
+          verifyHTTP(nextOrigin, identityFor(identity, 'next')),
+        ]);
+        // Arm only proven-owned listeners. The public app/seed remains gated.
+        await Promise.all(children.map((child) => child.arm()));
+        for (const child of children) child.assertAlive();
+        const proxy = await fetch(`${nextOrigin}/api/v1/auth/cache/clear`, {
+          method: 'POST',
+          redirect: 'error',
+          headers: { Origin: appOrigin, 'Sec-Fetch-Site': 'same-origin' },
+          signal: AbortSignal.timeout(60000),
+        });
+        if (proxy.status !== 204) throw new Error('Owned proxy warm-up failed');
+        for (const child of children) child.assertAlive();
+        if (stopping) throw new Error('Fixture stopped during startup');
         ready = true;
-        break;
-      }
-    } catch {
-      // Both child processes are still starting; no application request replay.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (!ready)
-    throw new Error('Cache fixture backend/proxy failed to become ready');
-  server.listen(3142, '127.0.0.1');
+        record('ready');
+        control.bound(server.address());
+      })(),
+    ]),
+    90000,
+    'aggregate startup',
+  );
 } catch (error) {
-  stop();
-  throw error;
+  console.error(error);
+  await stop(1);
 }

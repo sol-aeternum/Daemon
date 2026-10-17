@@ -1,27 +1,16 @@
-import { readFileSync } from 'node:fs';
-import { runInNewContext } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fixtureEnvironment } from '../e2e/cache-fixture-environment.mjs';
 
-// Execute the actual environment construction/guard, without starting servers.
-const source = readFileSync('e2e/cache-fixture-server.mjs', 'utf8');
-const environment = source.slice(
-  source.indexOf('const env ='),
-  source.indexOf('const api = spawn('),
-);
+afterEach(() => vi.unstubAllEnvs());
 
 function fixtureEnv(options: string | undefined) {
-  return runInNewContext(`${environment}\nenv;`, {
-    process: {
-      env: {
-        PATH: '/synthetic/bin',
-        HOME: '/synthetic/home',
-        TMPDIR: '/synthetic/task/tmp',
-        NODE_OPTIONS: options,
-        OPENROUTER_API_KEY: 'synthetic-must-not-be-forwarded',
-      },
-    },
-    apiOrigin: 'http://127.0.0.1:3143',
-  }) as Record<string, string | undefined>;
+  vi.stubEnv('PATH', '/synthetic/bin');
+  vi.stubEnv('HOME', '/synthetic/home');
+  vi.stubEnv('TMPDIR', '/synthetic/task/tmp');
+  vi.stubEnv('NODE_OPTIONS', options);
+  vi.stubEnv('UV_PROJECT_ENVIRONMENT', '.uv-venv');
+  vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-must-not-be-forwarded');
+  return fixtureEnvironment();
 }
 
 describe('clean cache fixture child environment', () => {
@@ -37,13 +26,14 @@ describe('clean cache fixture child environment', () => {
       expect(env.TMPDIR).toBe('/synthetic/task/tmp');
       expect(env.NODE_OPTIONS).toBe(options);
       expect(env.LITELLM_MODE).toBe('PRODUCTION');
-      expect(env.OPENROUTER_API_KEY).toBeUndefined();
+      expect(env).not.toHaveProperty('OPENROUTER_API_KEY');
       expect(Object.keys(env).sort()).toEqual(
         [
           'PATH',
           'HOME',
           'TMPDIR',
           'NODE_OPTIONS',
+          'UV_PROJECT_ENVIRONMENT',
           'PYTHONPATH',
           'LITELLM_MODE',
           'NEXT_TELEMETRY_DISABLED',
@@ -53,6 +43,13 @@ describe('clean cache fixture child environment', () => {
       );
     },
   );
+
+  it('uses the standard temporary root when TMPDIR is absent, without a new setting', () => {
+    fixtureEnv(undefined);
+    vi.stubEnv('TMPDIR', undefined);
+    expect(fixtureEnvironment().TMPDIR).toBeTruthy();
+    expect(fixtureEnvironment()).not.toHaveProperty('OPENROUTER_API_KEY');
+  });
 
   it.each([
     '--require=/synthetic/preload.cjs',

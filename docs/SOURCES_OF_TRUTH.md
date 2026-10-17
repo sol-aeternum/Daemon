@@ -83,6 +83,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `frontend/PWA_CHECKLIST.md` | N/A | Engineering | raw-log | Build environment report |
 | `docs/BRACES_SECURITY_MAINTENANCE.md` | N/A | Engineering | ungated-reference | Temporary vendored dependency lineage, mandatory security checks and maintenance/retirement contract; not deployment authority |
 | `docs/CI_PYTEST_DIAGNOSTICS.md` | N/A | Engineering | ungated-reference | Bounded backend CI diagnostics and synthetic regression contract; not an established root cause or resolution of #454 |
+| `docs/OWNED_TEST_FIXTURES.md` | N/A | Engineering | ungated-reference | #541 synthetic owned Redis and cache-browser prerequisite; fixture source/tests and current gate evidence govern implementation, not runtime qualification |
 | `README.md` | N/A | Engineering | ungated-reference | Project overview |
 | `QUICKSTART.md` | N/A | Engineering | ungated-reference | Setup instructions |
 | `AGENTS.md` | N/A | Engineering | ungated-reference | Agent behavior rules |
