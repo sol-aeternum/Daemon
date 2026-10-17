@@ -37,13 +37,34 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
     ):
         assert imports_lifecycle(text)
     root = Path(__file__).resolve().parents[1]
+    # These exact uncalled financial adapters may compose the gate. No runtime
+    # consumer, registration or lifecycle mutation is authorized by this allowlist.
+    adapters = {
+        "orchestrator/entitlements/attempt.py",
+        "orchestrator/entitlements/service.py",
+        "orchestrator/entitlements/errors.py",
+    }
     for base in ("orchestrator", "providers", "scripts"):
         for path in (root / base).rglob("*.py"):
             if path.name == "attempt_lifecycle.py":
                 continue
             text = path.read_text()
+            if path.relative_to(root).as_posix() in adapters:
+                assert not any(
+                    isinstance(n, ast.Attribute)
+                    and n.attr in {"register", "close", "readback"}
+                    and isinstance(n.value, ast.Name)
+                    and n.value.id in {"lc", "lifecycle"}
+                    for n in ast.walk(ast.parse(text))
+                )
+                continue
             assert not imports_lifecycle(text), str(path)
             assert "attempt_lifecycle_" not in text, str(path)
+            assert not any(
+                isinstance(n, ast.Attribute)
+                and n.attr in {"reserve_for_attempt", "recover_attempt_reservation"}
+                for n in ast.walk(ast.parse(text))
+            ), str(path)
 
     def forbidden(*args, **kwargs):
         pytest.fail("import/construction caused I/O")
