@@ -1417,15 +1417,38 @@ async def metered_tool_call(
 class EmbeddingCallCharge:
     """Dispatch state and a validated input-token receipt for one embedding POST."""
 
-    def __init__(self, hold: ReservationHold, route: EmbeddingRoutePolicy) -> None:
+    def __init__(
+        self, hold: ReservationHold, route: EmbeddingRoutePolicy, *, scope: ComputeScope
+    ) -> None:
         self._hold = hold
         self._route = route
+        # Retain the admitted binding, not whatever a later context/scope exposes.
+        self._scope = scope
+        self._invocation = scope.inference_invocation
+        self._identity = scope.inference_identity
+        self._recovery = scope.inference_recovery
         self._state = "pre_dispatch"
         self.input_tokens: int | None = None
         self.actual: int | None = None
 
+    def _require_effect(self) -> None:
+        if (
+            self._scope.inference_invocation is not self._invocation
+            or self._scope.inference_identity != self._identity
+            or self._scope.inference_recovery is not self._recovery
+        ):
+            for known in (self._invocation, self._scope.inference_invocation, invocation.get()):
+                if known is not None:
+                    known.block("inference_identity_unavailable")
+            raise ObservationBlocked("inference_identity_unavailable")
+        self._scope.require_inference_effect()
+
     def mark_dispatched(self) -> None:
-        require_effect()
+        self._require_effect()
+        if self._invocation is not None:
+            self._invocation.require_send()
+            if self._scope.closed:
+                raise InferenceInterrupted(INFERENCE_UNRESOLVED)
         if self._state != "pre_dispatch" or self._hold.settlement is not None:
             raise ComputeUnavailable(
                 "settlement_conflict",
@@ -1436,6 +1459,9 @@ class EmbeddingCallCharge:
         self._state = "dispatched"
 
     def confirm(self, *, input_tokens: int, actual_microusd: int) -> None:
+        # A sound receipt is still account-able after a known local interruption;
+        # unlike a send, it must not consult the lease/cancel/send callback.
+        self._require_effect()
         if self._state != "dispatched":
             raise RuntimeError("Embedding confirmation requires one marked dispatch")
         if type(input_tokens) is not int or input_tokens <= 0:
@@ -1608,39 +1634,48 @@ async def metered_embedding_call(
     except Exception:
         raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
 
-    charge = EmbeddingCallCharge(active.outstanding[_hold_key(reservation)], route)
+    charge = EmbeddingCallCharge(active.outstanding[_hold_key(reservation)], route, scope=active)
     if active.inference_invocation is not None:
         assert active.inference_recovery is not None and active.inference_identity is not None
         await active.inference_recovery.mark(
             active.inference_identity, _hold_key(reservation), active.inference_invocation
         )
         active.require_inference()
+    primary_error: BaseException | None = None
     try:
         yield charge
-    except BaseException:
-        if active.inference_invocation is not None:
-            active.inference_invocation.call_failed = True
+    except BaseException as exc:
+        primary_error = exc
+        if charge._invocation is not None:
+            charge._invocation.call_failed = True
         raise
     finally:
-        if charge._state == "pre_dispatch":
-            await active.settle(reservation, 0, path="embedding_not_dispatched")
-        elif charge.actual is not None:
-            await active.settle(
-                reservation,
-                charge.actual,
-                usage={"input_tokens": charge.input_tokens, "output_tokens": 0},
-                path="embedding_call",
-            )
-            if charge.actual > bound:
-                raise ComputeUnavailable(
-                    "embedding_price_exceeded",
-                    "Embedding charge exceeded its reserved price",
-                    category=FAILURE_SETTLEMENT_FAILED,
+        try:
+            charge._require_effect()
+            if charge._state == "pre_dispatch":
+                await active.settle(reservation, 0, path="embedding_not_dispatched")
+            elif charge.actual is not None:
+                await active.settle(
+                    reservation,
+                    charge.actual,
+                    usage={"input_tokens": charge.input_tokens, "output_tokens": 0},
+                    path="embedding_call",
                 )
-        else:
-            await active.settle(
-                reservation, bound, usage={"estimated_cost": True}, path="embedding_call"
-            )
+                if charge.actual > bound:
+                    raise ComputeUnavailable(
+                        "embedding_price_exceeded",
+                        "Embedding charge exceeded its reserved price",
+                        category=FAILURE_SETTLEMENT_FAILED,
+                    )
+            else:
+                await active.settle(
+                    reservation, bound, usage={"estimated_cost": True}, path="embedding_call"
+                )
+        except BaseException:
+            # A secondary refusal never replaces the covered caller's original
+            # error/cancellation. Failed/uncertain holds remain with their owner.
+            if primary_error is None or charge._invocation is None:
+                raise
 
 
 async def _settle_tool_hold(

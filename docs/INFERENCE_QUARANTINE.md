@@ -84,7 +84,30 @@ A known provider/local interruption forbids further inference without pretending
 it is a DB uncertainty. With sound authority, known committed quarantine may hand
 back to the **existing** ended-hold accounting path. It does not release remote
 work or change financial amounts, original ownership/periods, or charge/refund
-policy. Uncertain invocations leave accounting to the independent reconciler.
+policy. Uncertain invocations require independent reconciliation rather than new
+effects from the uncertain owner. The explicitly injected task sweep now retries
+original open holds for a finished `needs_attention` /
+`inference_dispatch_unresolved` task and matching ended original attempt. It
+authenticates the sealed original origin/coverage and uses the existing recovery
+lock to observe the matching possible-dispatch identity and closed lifecycle;
+wrong/missing provenance refuses, never falls back to generic per-user recovery.
+Observation locks are released before existing full-hold settlement takes its
+account/reservation money locks. Original owner, period, scope, operation, labels
+and amount survive; this is neither new execution admission nor a refund policy.
+
+This accounting-only branch needs the existing explicit recovery and same DB pool
+injection, not Redis or a provider key. Production startup remains unwired. Each
+fresh independent pass refuses an inherited invocation, considers at most 50
+original reservations with a separate process-local circular fairness cursor,
+and shares one cooperative two-second deadline with transaction-local 250ms lock /
+1000ms statement bounds. Default settlement callers are unchanged. Uncertainty or
+cancellation ends the pass; native release ownership is not reclaimed. Original
+OPEN rows remain durable pending work after rollback; a committed closure with a
+lost ACK disappears from selection. A later independent pass reobserves them,
+never clears an execution latch or resends. The cursor is not a success receipt,
+and timeout is not remote-stop or bounded-cleanup proof. Receipt reconciliation
+still selects settled receipts only. Production and broader deletion/restore
+qualification remain outside this source-only repair.
 
 Covered metered tools use the same attempt-qualified admission and shared send
 fence before reservation, yield and dispatch-aware marking. The charge retains
@@ -92,6 +115,16 @@ the exact invocation even after ContextVar reset. Known interruption blocks new
 sends but does not erase an acknowledged existing hold or its sound-authority
 accounting. The actual search adapter marks immediately before its HTTP send;
 arbitrary legacy caller I/O after a context-manager yield is not contained by Python.
+
+Covered embedding charges also retain the original shared invocation, immutable
+attempt identity and recovery collaborator. Dispatch revalidates that binding,
+the current-context conflict, send callback and scope closure immediately before
+the adapter's POST mark. Receipt confirmation and finally accounting check the
+same original binding and uncertainty, but known interruption alone does not
+erase valid usage or forbid sound-authority settlement. Secondary covered cleanup
+refusals preserve the original error/cancellation and retain unresolved holds.
+`tests/test_embedding_invocation_fence.py` exercises these interfaces offline;
+this is not real-provider or terminal-reconciliation qualification.
 
 ## Internal surfaces and privilege prerequisite
 

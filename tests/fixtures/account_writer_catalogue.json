@@ -4650,6 +4650,39 @@
       "rationale": "ContextVar.set for the invocation owner is a conservative store-write scanner candidate, not proven persistence or account-fence coverage. Uncovered."
     },
     {
+      "owner_source": "orchestrator.tasks.runner",
+      "qualname": "_settle_quarantined_holds",
+      "kind": "store_write",
+      "fingerprint": "88289cd7dc53ec2e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "ContextVar.set establishes only the independent accounting invocation owner. Conservative name-based store-write candidate, not persistence, execution admission or a general account-writer fence. Source-only original-hold retry remains uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._observe_quarantine_hold",
+      "kind": "sql_unresolvable",
+      "fingerprint": "e7d18d7dbbdbd292",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Concatenated original-quarantine hold SELECT is unresolved by the bounded scanner. Explicit observation candidate; no protected-table bypass, financial mutation or general writer-fence qualification inferred. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._quarantine_hold_candidates",
+      "kind": "sql_unresolvable",
+      "fingerprint": "a089fe51f12a033b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Concatenated bounded circular pending-hold SELECT is unresolved by the bounded scanner. Conservative deferred observation inventory only; original OPEN rows are pending work, not new execution or financial authority. Uncovered."
+    },
+    {
       "owner_source": "orchestrator.tasks.store",
       "qualname": "TaskStore._accept_once",
       "kind": "sql_inline",

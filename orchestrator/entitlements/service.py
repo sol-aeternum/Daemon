@@ -253,11 +253,13 @@ class EntitlementService:
         *,
         policy: CommercialPolicy | None = None,
         clock: Clock | None = None,
+        _bounded_settlement: bool = False,
     ) -> None:
         self._pool = pool
         self._policy = policy or load_policy()
         self._store = EntitlementStore(pool)
         self._clock: Clock = clock or _utcnow
+        self._bounded_settlement = _bounded_settlement
 
     @property
     def policy(self) -> CommercialPolicy:
@@ -770,6 +772,22 @@ class EntitlementService:
             cancelled=False,
         )
 
+    @asynccontextmanager
+    async def _finish_connection(self) -> AsyncIterator[Connection]:
+        """Private recovery bounds; default settlement ownership is unchanged."""
+        if self._bounded_settlement:
+            async with control_transaction(
+                self._pool, refusals=(ReservationNotFound, SettlementConflict)
+            ) as conn:
+                await conn.execute(
+                    "SET LOCAL lock_timeout='250ms'; SET LOCAL statement_timeout='1000ms'"
+                )
+                yield conn
+        else:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    yield conn
+
     async def _finish(
         self,
         reservation: Reservation | uuid.UUID | str,
@@ -796,105 +814,102 @@ class EntitlementService:
             "route_id": route_id or metadata.get("route_id"),
         }
 
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                existing = await self._store.get_reservation(conn, rid)
-                if existing is None:
-                    raise ReservationNotFound(str(rid))
-                account = await self._store.lock_account(conn, existing["user_id"])
-                assert account is not None
+        async with self._finish_connection() as conn:
+            existing = await self._store.get_reservation(conn, rid)
+            if existing is None:
+                raise ReservationNotFound(str(rid))
+            account = await self._store.lock_account(conn, existing["user_id"])
+            assert account is not None
+            current = await self._store.get_reservation(conn, rid, for_update=True)
+            if current is None:  # pragma: no cover - row read a moment ago
+                raise ReservationNotFound(str(rid))
+            if ReservationStatus(current["status"]) is not ReservationStatus.OPEN:
+                if usage is not None and _as_json_mapping(current["usage"]) != metadata:
+                    raise SettlementConflict(str(rid), int(current["actual_microusd"]), actual)
+                return self._replayed_settlement(current, actual, cancelled)
+
+            kind = ChargeKind(current["charge_kind"])
+            period_state = await self._store.read_period_state(
+                conn, user_id=current["user_id"], period_key=current["period_key"]
+            )
+            # Admission uses the current plan's ceiling, but settlement must
+            # honor all already-funded holds across upgrades/downgrades and
+            # configuration changes. Using this reservation's older, smaller
+            # plan here could silently discard spend after an upgrade.
+            ceiling = max(
+                self._policy.plan(account.plan).limits.monthly_budget_microusd,
+                period_state.spent_microusd + period_state.reserved_microusd,
+            )
+            available = (
+                max(
+                    0,
+                    ceiling
+                    - period_state.spent_microusd
+                    - period_state.reserved_microusd
+                    + int(current["reserved_microusd"]),
+                )
+                if kind is ChargeKind.PLAN
+                else max(
+                    0,
+                    account.trial_budget_microusd
+                    - account.trial_consumed_microusd
+                    - account.trial_reserved_microusd
+                    + int(current["reserved_microusd"]),
+                )
+            )
+            overage = max(0, actual - available)
+
+            closed = await self._store.mark_reservation(
+                conn,
+                reservation_id=rid,
+                status=ReservationStatus.RELEASED if cancelled else ReservationStatus.SETTLED,
+                actual=actual,
+                overage=overage,
+                usage=metadata,
+                now=now,
+                provider=_as_optional_str(labels["provider"]),
+                model=_as_optional_str(labels["model"]),
+                route_id=_as_optional_str(labels["route_id"]),
+            )
+            if closed is None:  # pragma: no cover - row is locked and open
                 current = await self._store.get_reservation(conn, rid, for_update=True)
-                if current is None:  # pragma: no cover - row read a moment ago
-                    raise ReservationNotFound(str(rid))
-                if ReservationStatus(current["status"]) is not ReservationStatus.OPEN:
-                    if usage is not None and _as_json_mapping(current["usage"]) != metadata:
-                        raise SettlementConflict(str(rid), int(current["actual_microusd"]), actual)
-                    return self._replayed_settlement(current, actual, cancelled)
+                assert current is not None
+                return self._replayed_settlement(current, actual, cancelled)
 
-                kind = ChargeKind(current["charge_kind"])
-                period_state = await self._store.read_period_state(
-                    conn, user_id=current["user_id"], period_key=current["period_key"]
-                )
-                # Admission uses the current plan's ceiling, but settlement must
-                # honor all already-funded holds across upgrades/downgrades and
-                # configuration changes. Using this reservation's older, smaller
-                # plan here could silently discard spend after an upgrade.
-                ceiling = max(
-                    self._policy.plan(account.plan).limits.monthly_budget_microusd,
-                    period_state.spent_microusd + period_state.reserved_microusd,
-                )
-                available = (
-                    max(
-                        0,
-                        ceiling
-                        - period_state.spent_microusd
-                        - period_state.reserved_microusd
-                        + int(current["reserved_microusd"]),
-                    )
-                    if kind is ChargeKind.PLAN
-                    else max(
-                        0,
-                        account.trial_budget_microusd
-                        - account.trial_consumed_microusd
-                        - account.trial_reserved_microusd
-                        + int(current["reserved_microusd"]),
-                    )
-                )
-                overage = max(0, actual - available)
-
-                closed = await self._store.mark_reservation(
-                    conn,
-                    reservation_id=rid,
-                    status=ReservationStatus.RELEASED if cancelled else ReservationStatus.SETTLED,
-                    actual=actual,
-                    overage=overage,
-                    usage=metadata,
-                    now=now,
-                    provider=_as_optional_str(labels["provider"]),
-                    model=_as_optional_str(labels["model"]),
-                    route_id=_as_optional_str(labels["route_id"]),
-                )
-                if closed is None:  # pragma: no cover - row is locked and open
-                    current = await self._store.get_reservation(conn, rid, for_update=True)
-                    assert current is not None
-                    return self._replayed_settlement(current, actual, cancelled)
-
-                await self._store.settle_period(
+            await self._store.settle_period(
+                conn,
+                user_id=current["user_id"],
+                period_key=current["period_key"],
+                actual=actual,
+                reserved=int(current["reserved_microusd"]),
+                extended=bool(current["extended"]),
+                now=now,
+                ceiling=(
+                    period_state.spent_microusd + available if kind is ChargeKind.PLAN else ceiling
+                ),
+                period_money=kind is ChargeKind.PLAN,
+                consumed=not cancelled,
+                extended_run=bool(current["extended_run"]),
+            )
+            if kind is ChargeKind.TRIAL:
+                await self._store.settle_trial(
                     conn,
                     user_id=current["user_id"],
-                    period_key=current["period_key"],
-                    actual=actual,
                     reserved=int(current["reserved_microusd"]),
-                    extended=bool(current["extended"]),
-                    now=now,
-                    ceiling=(
-                        period_state.spent_microusd + available
-                        if kind is ChargeKind.PLAN
-                        else ceiling
-                    ),
-                    period_money=kind is ChargeKind.PLAN,
+                    actual=actual,
+                    extended=bool(current["extended_run"]),
                     consumed=not cancelled,
-                    extended_run=bool(current["extended_run"]),
+                    now=now,
                 )
-                if kind is ChargeKind.TRIAL:
-                    await self._store.settle_trial(
-                        conn,
-                        user_id=current["user_id"],
-                        reserved=int(current["reserved_microusd"]),
-                        actual=actual,
-                        extended=bool(current["extended_run"]),
-                        consumed=not cancelled,
-                        now=now,
-                    )
-                if overage or actual > int(current["reserved_microusd"]):
-                    # A quote breach invalidates the execution bound even when
-                    # this account happens to have spare recurring allowance.
-                    await conn.execute(
-                        "UPDATE entitlement_accounts SET status = 'suspended', updated_at = $2 WHERE user_id = $1",
-                        current["user_id"],
-                        now,
-                    )
-                reservation_value = _reservation_from_row(closed)
+            if overage or actual > int(current["reserved_microusd"]):
+                # A quote breach invalidates the execution bound even when
+                # this account happens to have spare recurring allowance.
+                await conn.execute(
+                    "UPDATE entitlement_accounts SET status = 'suspended', updated_at = $2 WHERE user_id = $1",
+                    current["user_id"],
+                    now,
+                )
+            reservation_value = _reservation_from_row(closed)
 
         return Settlement(
             reservation=reservation_value,

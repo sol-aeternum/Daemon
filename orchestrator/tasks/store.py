@@ -65,6 +65,21 @@ _LEASE_HELD = "tasks.lease_expires_at > clock_timestamp()"
 IDEMPOTENCY_INDEX = "uq_tasks_user_idempotency"
 CONVERSATION_ACTIVE_INDEX = "uq_tasks_conversation_active"
 
+# Original OPEN ledger rows are the pending queue, never a new financial intent.
+# Only ordinary application tables here; protected provenance is observed through
+# InferenceRecovery.lock, not direct joins under the separated worker principal.
+_QUARANTINE_HOLDS = """
+    SELECT t.id AS task_id, r.id AS reservation_id, r.user_id, r.scope_id,
+           r.reserved_microusd
+    FROM tasks t
+    JOIN task_attempts a ON a.task_id=t.id AND a.epoch=t.lease_epoch
+    JOIN entitlement_reservations r ON r.scope_id=a.compute_scope_id AND r.user_id=t.user_id
+    WHERE t.status='needs_attention' AND t.terminal_code='inference_dispatch_unresolved'
+      AND t.finished_at IS NOT NULL AND t.lease_owner IS NULL AND t.lease_expires_at IS NULL
+      AND a.outcome='needs_attention' AND a.terminal_code='inference_dispatch_unresolved'
+      AND a.ended_at IS NOT NULL AND r.status='open'
+"""
+
 #: Message status mirrored onto the result message for each terminal task status.
 _MESSAGE_STATUS = {
     TaskStatus.COMPLETED: "complete",
@@ -258,6 +273,8 @@ class TaskStore:
         # these collaborators. Acceptor INSERT and worker EXECUTE use different roles.
         self._inference = inference_recovery
         self._cover_new_inference = cover_new_inference
+        # Fairness only, independent of abandoned-pass lifecycle observation.
+        self._quarantine_hold_after: tuple[uuid.UUID, uuid.UUID] | None = None
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -1111,6 +1128,74 @@ class TaskStore:
                 task_id,
             )
         )
+
+    async def _quarantine_hold_candidates(self) -> list[tuple[uuid.UUID, uuid.UUID]]:
+        """Bounded circular page; no locks retained across financial settlement."""
+        require_effect()
+        after = self._quarantine_hold_after
+        async with control_transaction(self._pool) as conn:
+            await conn.execute(
+                "SET LOCAL lock_timeout='250ms'; SET LOCAL statement_timeout='1000ms'"
+            )
+            rows = await conn.fetch(
+                _QUARANTINE_HOLDS + " ORDER BY CASE WHEN $1::uuid IS NULL THEN false "
+                "ELSE (t.id,r.id)<=($1,$2::uuid) END, t.id,r.id LIMIT 50",
+                None if after is None else after[0],
+                None if after is None else after[1],
+            )
+        return [(r["task_id"], r["reservation_id"]) for r in rows]
+
+    async def _observe_quarantine_hold(
+        self, task_id: uuid.UUID, reservation_id: uuid.UUID
+    ) -> int | None:
+        """Authenticate original closed obligation; release ALL locks before settle."""
+        require_effect()
+        if self._inference is None or self._inference.pool is not self._pool:
+            raise ObservationBlocked("inference_coverage_unavailable")
+        async with control_transaction(self._pool) as conn:
+            await conn.execute(
+                "SET LOCAL lock_timeout='250ms'; SET LOCAL statement_timeout='1000ms'"
+            )
+            row = await conn.fetchrow("SELECT * FROM tasks WHERE id=$1", task_id)
+            if row is None or not self._covered(row):
+                raise ObservationBlocked("task_not_owned")
+            origin = self._origin(row)
+            observation = await self._inference.lock(
+                conn, row["user_id"], origin.generation, task_id, int(row["lease_epoch"])
+            )
+            # READ COMMITTED statements AFTER waits; do not trust pre-lock row data.
+            current = await conn.fetchrow("SELECT * FROM tasks WHERE id=$1", task_id)
+            if (
+                current is None
+                or not self._covered(current)
+                or self._origin(current) != origin
+                or current["lease_epoch"] != row["lease_epoch"]
+                or current["user_id"] != row["user_id"]
+            ):
+                raise ObservationBlocked("inference_origin_unavailable")
+            hold = await conn.fetchrow(
+                _QUARANTINE_HOLDS + " AND t.id=$1 AND r.id=$2", task_id, reservation_id
+            )
+            # A concurrent pass's acknowledged settlement simply removes pending work.
+            if hold is None:
+                return None
+            identity = observation.identity
+            if (
+                not observation.possible
+                or observation.closed is not True
+                or identity is None
+                or identity.financial_scope_id != hold["scope_id"]
+                or identity.account_id != hold["user_id"]
+                or not await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM entitlement_accounts WHERE user_id=$1)",
+                    hold["user_id"],
+                )
+            ):
+                raise ObservationBlocked("inference_obligation_unavailable")
+            require_effect()
+            amount = int(hold["reserved_microusd"])
+        require_effect()
+        return amount
 
     async def due_for_wakeup(
         self, *, limit: int = 50, rewake_after_s: float = 60.0

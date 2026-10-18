@@ -1151,9 +1151,54 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     return outcome
 
 
+async def _settle_quarantined_holds(store: TaskStore, pool: Any) -> None:
+    """Independent accounting owner; original ledger rows survive every failed ACK."""
+    from orchestrator.entitlements.service import EntitlementService
+
+    if invocation.get() is not None:
+        raise ObservationBlocked("inherited_inference_invocation")
+    if store._pool is not pool or store._inference is None or store._inference.pool is not pool:
+        raise ObservationBlocked("inference_coverage_unavailable")
+    state = InferenceInvocation()
+    token = invocation.set(state)
+    deadline = asyncio.get_running_loop().time() + 2.0
+    try:
+        async with asyncio.timeout_at(deadline):
+            service = EntitlementService(pool, _bounded_settlement=True)
+            for task_id, reservation_id in await store._quarantine_hold_candidates():
+                # Advance only attempted work, BEFORE its first fallible await.
+                # Never a durable success marker or authority to reset a latch.
+                store._quarantine_hold_after = (task_id, reservation_id)
+                state.require_effect()
+                amount = await store._observe_quarantine_hold(task_id, reservation_id)
+                if amount is None:
+                    continue
+                state.require_effect()
+                await service.settle(
+                    reservation_id,
+                    amount,
+                    usage={"estimated_cost": True, "recovered_after_timeout": True},
+                )
+                state.require_effect()
+    except BaseException:
+        state.block("inference_accounting_unavailable")
+        raise
+    finally:
+        invocation.reset(token)
+
+
 async def sweep_tasks(ctx: dict[str, Any]) -> int:
     """arq cron: wake tasks whose wake-up was lost or whose lease expired."""
     store: TaskStore | None = ctx.get("task_store")
+    # Refuse inherited execution even before ordinary wake-up effects. Never clear
+    # an uncertain execution latch to manufacture an independent accounting pass.
+    if isinstance(store, TaskStore) and store._inference is not None:
+        if invocation.get() is not None:
+            raise ObservationBlocked("inherited_inference_invocation")
+        pool = ctx.get("db_pool")
+        if pool is not None:
+            await _settle_quarantined_holds(store, pool)
+        # A failed accounting pass propagates; no enqueue/finally effects follow.
     redis = ctx.get("redis")
     if store is None or redis is None:
         return 0
