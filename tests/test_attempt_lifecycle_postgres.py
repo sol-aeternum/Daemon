@@ -109,7 +109,7 @@ async def seed(db, owner, *, account=None):
     try:
         claim = await tasks.claim(task, worker_id="fixture", lease_s=45)
         assert claim is not None
-        await tasks.record_compute_scope(task, claim.epoch, scope)
+        await tasks.record_compute_scope(task, claim.epoch, scope, binding=claim)
         await owner.execute("SELECT public.compute_metadata_create_scope($1,$2)", account, metadata)
         ident = lc.AttemptIdentity(uuid4(), account, 0, task, claim.epoch, scope, metadata, uuid4())
         return ident, conversation, pool, tasks, memory

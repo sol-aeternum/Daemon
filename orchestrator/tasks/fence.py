@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import nullcontext
 from collections.abc import Callable
 from typing import Any, Final
 
-from orchestrator.tasks.store import EffectRefused, LeaseLost, TaskStore
+from orchestrator.tasks.store import Claim, EffectRefused, LeaseLost, TaskStore
+from orchestrator.services.account_control.transaction import ObservationBlocked
 from orchestrator.tools.executor import OperationIdentity, ToolExecution
 from orchestrator.tools.registry import Tool
 
@@ -447,6 +449,10 @@ class FencedTool(Tool):
         epoch: int,
         on_lease_lost: Callable[[], None] | None = None,
         on_refused: Callable[[str], None] | None = None,
+        *,
+        binding: Claim,
+        admission: Any = nullcontext,
+        may_act: Callable[[], bool] = lambda: True,
     ) -> None:
         self._inner = inner
         self._store = store
@@ -454,6 +460,9 @@ class FencedTool(Tool):
         self._epoch = epoch
         self._on_lease_lost = on_lease_lost
         self._on_refused = on_refused
+        self._binding = binding
+        self._admission = admission
+        self._may_act = may_act
         self.name = inner.name
         self.description = inner.description
         self.parameters = inner.parameters
@@ -470,12 +479,30 @@ class FencedTool(Tool):
 
     async def execute_invocation(self, **kwargs: Any) -> ToolExecution:
         try:
-            operation_id = await self._store.begin_operation(
-                self._task_id,
-                self._epoch,
-                tool_name=self.name,
-                target=_target_summary(self.name, kwargs),
-                min_lease_margin_s=MIN_LEASE_MARGIN_S,
+            async with self._admission():
+                operation_id = await self._store.begin_operation(
+                    self._task_id,
+                    self._epoch,
+                    tool_name=self.name,
+                    target=_target_summary(self.name, kwargs),
+                    min_lease_margin_s=MIN_LEASE_MARGIN_S,
+                    binding=self._binding,
+                )
+        except ObservationBlocked as blocked:
+            if self._on_refused is not None:
+                self._on_refused(blocked.code)
+            # This invocation has not entered the tool body. Keep that explicit
+            # for result classifiers/executors even when the fence transaction's
+            # outcome is unknown. The callback closes the worker's admission;
+            # this result is NOT replay/settlement or effect-resolution authority.
+            return ToolExecution(
+                json.dumps(
+                    {
+                        "success": False,
+                        "performed": False,
+                        "error": "Not performed: this task can no longer act.",
+                    }
+                )
             )
         except LeaseLost:
             # This attempt no longer owns the task: the effect is not attempted,
@@ -505,6 +532,10 @@ class FencedTool(Tool):
                     }
                 )
             )
+        if not self._may_act():
+            # Preserve the already-committed started evidence. No inference that
+            # the external action ran; no post-refusal producer continuation.
+            raise ObservationBlocked()
         try:
             result = await self._inner.execute(**kwargs)
         except BaseException:
@@ -531,9 +562,25 @@ def guard_registry(
     epoch: int,
     on_lease_lost: Callable[[], None] | None = None,
     on_refused: Callable[[str], None] | None = None,
+    *,
+    binding: Claim,
+    admission: Any = nullcontext,
+    may_act: Callable[[], bool] = lambda: True,
 ) -> None:
     """Wrap every material tool in ``registry`` with the effect fence."""
     for name in registry.names():
         tool = registry.get(name)
         if tool is not None and is_material(name) and not isinstance(tool, FencedTool):
-            registry.register(FencedTool(tool, store, task_id, epoch, on_lease_lost, on_refused))
+            registry.register(
+                FencedTool(
+                    tool,
+                    store,
+                    task_id,
+                    epoch,
+                    on_lease_lost,
+                    on_refused,
+                    binding=binding,
+                    admission=admission,
+                    may_act=may_act,
+                )
+            )

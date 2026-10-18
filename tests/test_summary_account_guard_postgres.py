@@ -908,9 +908,9 @@ async def test_malformed_queued_capture_refuses_before_any_input_or_compute(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("durable", [False, True])
-@pytest.mark.parametrize("reset_after_accept", [False, True])
+@pytest.mark.parametrize("reset_at", ["never", "acceptance", "completion"])
 async def test_http_acceptance_and_actual_stream_preserve_original_summary_origin(
-    api, monkeypatch, durable, reset_after_accept
+    api, monkeypatch, durable, reset_at
 ):
     from orchestrator import main
     from orchestrator.tasks import runner
@@ -935,7 +935,7 @@ async def test_http_acceptance_and_actual_stream_preserve_original_summary_origi
     async def source(*args, **kwargs):
         assert captures == [CapturedGeneration(env.alice, 7)]
         result = await original_source(*args, **kwargs)
-        if reset_after_accept:
+        if reset_at == "acceptance":
             await env.pool.execute(
                 "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
             )
@@ -960,6 +960,32 @@ async def test_http_acceptance_and_actual_stream_preserve_original_summary_origi
             task_row = await env.pool.fetchrow(
                 "SELECT input_ciphertext,content_generation FROM tasks WHERE id=$1", UUID(task_id)
             )
+            stored = env.tasks._open(task_row["input_ciphertext"])
+            assert (
+                stored["origin_account_id"] == stored["summary_origin_account_id"] == str(env.alice)
+            )
+            assert (
+                stored["origin_account_generation"]
+                == stored["summary_origin_account_generation"]
+                == 7
+            )
+            assert task_row["content_generation"] == 0
+            if reset_at == "acceptance":
+
+                async def forbidden(*args, **kwargs):
+                    pytest.fail("revoked queued work cannot execute or settle lost holds")
+
+                monkeypatch.setattr(runner, "_execute", forbidden)
+                monkeypatch.setattr(runner, "settle_lost_attempt_holds", forbidden)
+                assert await runner.run_chat_task(api.ctx(), task_id) == "failed"
+                saved = await env.pool.fetchrow("SELECT * FROM tasks WHERE id=$1", UUID(task_id))
+                assert saved["terminal_code"] == "task_generation_stale"
+                assert saved["attempt_count"] == saved["lease_epoch"] == 0
+                assert saved["input_ciphertext"] == task_row["input_ciphertext"]
+                assert (await asyncio.wait_for(request_task, 15)).status_code == 200
+                assert captures == [CapturedGeneration(env.alice, 7)]
+                assert not any(name == "extract_memories" for name, _, _ in api.redis.enqueued)
+                return
             # Inspect the actual stored input via the same decrypt method as claims.
             claim = await env.tasks.claim(UUID(task_id), worker_id="abandoned", lease_s=45)
             assert claim is not None
@@ -973,6 +999,12 @@ async def test_http_acceptance_and_actual_stream_preserve_original_summary_origi
             assert await runner.run_chat_task(api.ctx(), task_id) == "completed"
         response = await asyncio.wait_for(request_task, 15)
         assert response.status_code == 200
+        if reset_at == "completion":
+            # Preserve the downstream stale-summary guard proof: this work was
+            # legitimately queued BEFORE revocation, unlike an old queued task.
+            await env.pool.execute(
+                "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
+            )
         extracts = [
             (args, kwargs)
             for name, args, kwargs in api.redis.enqueued
@@ -993,7 +1025,7 @@ async def test_http_acceptance_and_actual_stream_preserve_original_summary_origi
         )
         pending = await env.memory.read_summary_continuation_pending(
             UUID(args[1]),
-            captured_generation=CapturedGeneration(env.alice, 8 if reset_after_accept else 7),
+            captured_generation=CapturedGeneration(env.alice, 7 if reset_at == "never" else 8),
         )
         assert pending is True
         proc = AsyncMock(return_value=(True, [], False))
@@ -1002,7 +1034,7 @@ async def test_http_acceptance_and_actual_stream_preserve_original_summary_origi
         monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
         await jobs.extract_memories(api.ctx(), *decoded.args, **decoded.kwargs)
         assert (await metadata(env, UUID(args[1])))["summary_continuation_pending"] is True
-        assert enqueue.await_count == (0 if reset_after_accept else 1)
+        assert enqueue.await_count == (1 if reset_at == "never" else 0)
         if enqueue.await_count:
             assert enqueue.await_args is not None
             assert enqueue.await_args.kwargs["kwargs"] == payload
@@ -1069,7 +1101,9 @@ async def test_actual_stream_duplicate_followup_carries_origin_or_legacy_skip(
         {"summary_origin_account_id": "bad", "summary_origin_account_generation": 7},
     ],
 )
-async def test_resumed_legacy_task_completes_but_never_upgrades_summary_origin(api, input_origin):
+async def test_resumed_legacy_task_blocks_without_upgrading_summary_origin(
+    api, monkeypatch, input_origin
+):
     from orchestrator.tasks import runner
     from tests.durable_tasks_support import accept_task, seed_entitlement
 
@@ -1083,14 +1117,39 @@ async def test_resumed_legacy_task_completes_but_never_upgrades_summary_origin(a
         accepted.task_id,
         api.env.tasks._seal({"message": "hello", **input_origin}),
     )
-    assert await runner.run_chat_task(api.ctx(), str(accepted.task_id)) == "completed"
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("missing general origin cannot recapture, execute or settle")
+
+    monkeypatch.setattr("orchestrator.main.capture_generation", forbidden)
+    monkeypatch.setattr(runner, "_execute", forbidden)
+    monkeypatch.setattr(runner, "settle_lost_attempt_holds", forbidden)
+
+    async def persisted():
+        return (
+            await api.env.pool.fetch("SELECT * FROM tasks WHERE id=$1", accepted.task_id),
+            await api.env.pool.fetch(
+                "SELECT * FROM messages WHERE conversation_id=$1 ORDER BY id",
+                accepted.conversation_id,
+            ),
+            await api.env.pool.fetch(
+                "SELECT * FROM task_attempts WHERE task_id=$1", accepted.task_id
+            ),
+            await api.env.pool.fetch(
+                "SELECT * FROM task_events WHERE task_id=$1 ORDER BY seq", accepted.task_id
+            ),
+        )
+
+    before = await persisted()
+    assert await runner.run_chat_task(api.ctx(), str(accepted.task_id)) == "task_origin_missing"
+    assert await persisted() == before  # exact ciphertext, counters, events and status unchanged
     extracts = [kwargs for name, _, kwargs in api.redis.enqueued if name == "extract_memories"]
-    assert len(extracts) == 1
-    assert "origin_account_id" not in extracts[0] and "origin_account_generation" not in extracts[0]
+    assert extracts == []
 
 
 @pytest.mark.asyncio
-async def test_durable_acceptance_keeps_origin_across_queue_outage(api, monkeypatch):
+@pytest.mark.parametrize("revoke", [False, True])
+async def test_durable_acceptance_keeps_origin_across_queue_outage(api, monkeypatch, revoke):
     from orchestrator import main
     from orchestrator.tasks import runner
 
@@ -1114,17 +1173,40 @@ async def test_durable_acceptance_keeps_origin_across_queue_outage(api, monkeypa
         stored = env.tasks._open(task_row["input_ciphertext"])
         assert stored["summary_origin_account_id"] == str(env.alice)
         assert stored["summary_origin_account_generation"] == 7
+        assert stored["origin_account_id"] == str(env.alice)
+        assert stored["origin_account_generation"] == 7
         assert api.redis.enqueued == []
-        await env.pool.execute(
-            "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
+        if revoke:
+            await env.pool.execute(
+                "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
+            )
+
+            async def forbidden(*args, **kwargs):
+                pytest.fail("revoked queue-outage task cannot execute or settle")
+
+            monkeypatch.setattr(runner, "_execute", forbidden)
+            monkeypatch.setattr(runner, "settle_lost_attempt_holds", forbidden)
+        # Queue/worker comes back: old capture is preserved, not permission to run.
+        assert await runner.run_chat_task(api.ctx(), str(task_row["id"])) == (
+            "failed" if revoke else "completed"
         )
-        # Queue/worker comes back; captured origin remains seven, not current eight.
-        assert await runner.run_chat_task(api.ctx(), str(task_row["id"])) == "completed"
         assert (await asyncio.wait_for(request_task, 15)).status_code == 200
+        assert (
+            await env.pool.fetchval(
+                "SELECT input_ciphertext FROM tasks WHERE id=$1", task_row["id"]
+            )
+            == task_row["input_ciphertext"]
+        )
         extracts = [kwargs for name, _, kwargs in api.redis.enqueued if name == "extract_memories"]
-        assert len(extracts) == 1
-        assert extracts[0]["origin_account_id"] == str(env.alice)
-        assert extracts[0]["origin_account_generation"] == 7
+        if revoke:
+            assert extracts == []
+            row = await env.pool.fetchrow("SELECT * FROM tasks WHERE id=$1", task_row["id"])
+            assert row["status"] == "failed" and row["terminal_code"] == "task_generation_stale"
+            assert row["attempt_count"] == row["lease_epoch"] == 0
+        else:
+            assert len(extracts) == 1
+            assert extracts[0]["origin_account_id"] == str(env.alice)
+            assert extracts[0]["origin_account_generation"] == 7
         capture.assert_awaited_once()
     finally:
         if not request_task.done():

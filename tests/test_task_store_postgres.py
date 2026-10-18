@@ -25,7 +25,9 @@ from orchestrator.tasks.store import (
     IdempotencyConflict,
     LeaseLost,
     TaskNotFound,
+    TaskControlled,
 )
+from orchestrator.services.account_control.transaction import ObservationBlocked
 from tests.durable_tasks_support import LEASE_S, Env, durable_env_fixture, task_capture
 
 env = durable_env_fixture(initialized=True)
@@ -48,7 +50,7 @@ async def _accept(env: Env, user=None, *, key=None, message="hello", conversatio
 
 async def _execute(env: Env, claim) -> int:
     """The attempt starts inference work: only now does it count."""
-    return await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4())
+    return await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4(), binding=claim)
 
 
 async def _expire_lease(env: Env, task_id: uuid.UUID) -> None:
@@ -172,7 +174,7 @@ async def test_second_submission_while_active_is_busy(env: Env):
     assert await env.pool.fetchval("SELECT count(*) FROM messages") == 2
     claim = await env.tasks.claim(first.task_id, worker_id="w1", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.complete(first.task_id, claim.epoch, content="done")
+    await env.tasks.complete(first.task_id, claim.epoch, content="done", binding=claim)
     second = await _accept(env, key="k2", conversation_id=first.conversation_id, h="b")
     assert second.created
 
@@ -235,7 +237,9 @@ async def test_lost_attempt_is_regenerated_with_partial_preserved(env: Env):
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
     await _execute(env, first)
-    await env.tasks.write_partial(accepted.task_id, first.epoch, content="half an ans", delta_seq=3)
+    await env.tasks.write_partial(
+        accepted.task_id, first.epoch, content="half an ans", delta_seq=3, binding=first
+    )
     await _expire_lease(env, accepted.task_id)
 
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
@@ -251,7 +255,7 @@ async def test_lost_attempt_is_regenerated_with_partial_preserved(env: Env):
     assert lost["outcome"] == "lost" and lost["ended_at"] is not None
     assert env.tasks._enc.decrypt(lost["partial_ciphertext"]) == "half an ans"
 
-    await env.tasks.complete(accepted.task_id, second.epoch, content="full answer")
+    await env.tasks.complete(accepted.task_id, second.epoch, content="full answer", binding=second)
     final = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert final is not None and final.status is TaskStatus.COMPLETED
     assert final.content == "full answer"
@@ -265,21 +269,34 @@ async def test_stale_worker_is_fenced_out_of_every_write(env: Env):
     await _expire_lease(env, accepted.task_id)
     fresh = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert fresh is not None
-    await env.tasks.write_partial(accepted.task_id, fresh.epoch, content="new", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, fresh.epoch, content="new", delta_seq=1, binding=fresh
+    )
 
     with pytest.raises(LeaseLost):
-        await env.tasks.heartbeat(accepted.task_id, stale.epoch, lease_s=LEASE_S)
+        await env.tasks.heartbeat(accepted.task_id, stale.epoch, lease_s=LEASE_S, binding=stale)
     with pytest.raises(LeaseLost):
-        await env.tasks.write_partial(accepted.task_id, stale.epoch, content="old", delta_seq=9)
-    with pytest.raises(LeaseLost):
-        await env.tasks.begin_operation(
-            accepted.task_id, stale.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+        await env.tasks.write_partial(
+            accepted.task_id, stale.epoch, content="old", delta_seq=9, binding=stale
         )
     with pytest.raises(LeaseLost):
-        await env.tasks.complete(accepted.task_id, stale.epoch, content="old final")
+        await env.tasks.begin_operation(
+            accepted.task_id,
+            stale.epoch,
+            tool_name="notify",
+            target=None,
+            min_lease_margin_s=1,
+            binding=stale,
+        )
+    with pytest.raises(LeaseLost):
+        await env.tasks.complete(accepted.task_id, stale.epoch, content="old final", binding=stale)
     with pytest.raises(LeaseLost):
         await env.tasks.fail_attempt(
-            accepted.task_id, stale.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="x"
+            accepted.task_id,
+            stale.epoch,
+            cause=RetryCause.RETRYABLE_ERROR,
+            error_code="x",
+            binding=stale,
         )
 
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
@@ -299,18 +316,29 @@ async def test_expired_lease_is_fenced_before_any_takeover(env: Env):
     expired_at = (await _task(env, accepted.task_id))["lease_expires_at"]
 
     with pytest.raises(LeaseLost):
-        await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+        await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S, binding=claim)
     with pytest.raises(LeaseLost):
-        await env.tasks.write_partial(accepted.task_id, claim.epoch, content="late", delta_seq=1)
-    with pytest.raises(LeaseLost):
-        await env.tasks.begin_operation(
-            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=0
+        await env.tasks.write_partial(
+            accepted.task_id, claim.epoch, content="late", delta_seq=1, binding=claim
         )
     with pytest.raises(LeaseLost):
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="late final")
+        await env.tasks.begin_operation(
+            accepted.task_id,
+            claim.epoch,
+            tool_name="notify",
+            target=None,
+            min_lease_margin_s=0,
+            binding=claim,
+        )
+    with pytest.raises(LeaseLost):
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="late final", binding=claim)
     with pytest.raises(LeaseLost):
         await env.tasks.fail_attempt(
-            accepted.task_id, claim.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="x"
+            accepted.task_id,
+            claim.epoch,
+            cause=RetryCause.RETRYABLE_ERROR,
+            error_code="x",
+            binding=claim,
         )
 
     row = await _task(env, accepted.task_id)
@@ -334,10 +362,12 @@ async def test_lease_that_expires_while_waiting_for_the_row_lock_is_fenced(env: 
         await holder.execute("SELECT 1 FROM tasks WHERE id = $1 FOR UPDATE", accepted.task_id)
         blocked = [
             asyncio.create_task(
-                env.tasks.write_partial(accepted.task_id, claim.epoch, content="late", delta_seq=1)
+                env.tasks.write_partial(
+                    accepted.task_id, claim.epoch, content="late", delta_seq=1, binding=claim
+                )
             ),
             asyncio.create_task(
-                env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+                env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S, binding=claim)
             ),
         ]
         await asyncio.sleep(1.3)  # the lease lapses while both wait for the lock
@@ -357,11 +387,11 @@ async def test_heartbeat_extends_lease_and_reports_cancel(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=5)
     assert claim is not None
     before = (await _task(env, accepted.task_id))["lease_expires_at"]
-    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S, binding=claim)
     assert not beat.cancel_requested
     assert (await _task(env, accepted.task_id))["lease_expires_at"] > before
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S, binding=claim)
     assert beat.cancel_requested
 
 
@@ -372,7 +402,12 @@ async def test_effect_fence_refuses_near_lease_expiry(env: Env):
     assert claim is not None
     with pytest.raises(EffectRefused):
         await env.tasks.begin_operation(
-            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=10
+            accepted.task_id,
+            claim.epoch,
+            tool_name="notify",
+            target=None,
+            min_lease_margin_s=10,
+            binding=claim,
         )
     assert await env.pool.fetchval("SELECT count(*) FROM task_operations") == 0
 
@@ -394,6 +429,7 @@ async def test_lost_attempt_after_material_operation_needs_attention(env: Env):
         tool_name="notification_send",
         target={"channel": "ntfy"},
         min_lease_margin_s=1,
+        binding=claim,
     )
     # Crash before the outcome is saved: the effect may or may not have happened.
     await _expire_lease(env, accepted.task_id)
@@ -417,7 +453,11 @@ async def test_lost_attempt_after_material_operation_needs_attention(env: Env):
     retry = await env.tasks.claim(failed.task_id, worker_id="w3", lease_s=LEASE_S)
     assert retry is not None
     await env.tasks.fail_attempt(
-        failed.task_id, retry.epoch, cause=RetryCause.TERMINAL_ERROR, error_code="route_unavailable"
+        failed.task_id,
+        retry.epoch,
+        cause=RetryCause.TERMINAL_ERROR,
+        error_code="route_unavailable",
+        binding=retry,
     )
     history = await env.memory.get_recent_messages(
         accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
@@ -433,16 +473,26 @@ async def test_retryable_error_after_material_operation_never_replays(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert claim is not None
     op = await env.tasks.begin_operation(
-        accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+        accepted.task_id,
+        claim.epoch,
+        tool_name="notify",
+        target=None,
+        min_lease_margin_s=1,
+        binding=claim,
     )
     calls.append("notify")
     await env.tasks.finish_operation(op, outcome="succeeded")
     status = await env.tasks.fail_attempt(
-        accepted.task_id, claim.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="rate_limited"
+        accepted.task_id,
+        claim.epoch,
+        cause=RetryCause.RETRYABLE_ERROR,
+        error_code="rate_limited",
+        binding=claim,
     )
     assert status is TaskStatus.NEEDS_ATTENTION
     await _make_due(env, accepted.task_id)
-    assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
+    with pytest.raises(ObservationBlocked, match="task_already_terminal"):
+        await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert calls == ["notify"]
 
 
@@ -453,7 +503,11 @@ async def test_retryable_error_requeues_with_backoff_then_caps(env: Env):
     assert first is not None
     await _execute(env, first)
     status = await env.tasks.fail_attempt(
-        accepted.task_id, first.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="upstream_busy"
+        accepted.task_id,
+        first.epoch,
+        cause=RetryCause.RETRYABLE_ERROR,
+        error_code="upstream_busy",
+        binding=first,
     )
     assert status is TaskStatus.QUEUED
     row = await _task(env, accepted.task_id)
@@ -465,7 +519,11 @@ async def test_retryable_error_requeues_with_backoff_then_caps(env: Env):
     assert second is not None and second.epoch == 2
     await _execute(env, second)
     status = await env.tasks.fail_attempt(
-        accepted.task_id, second.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="upstream_busy"
+        accepted.task_id,
+        second.epoch,
+        cause=RetryCause.RETRYABLE_ERROR,
+        error_code="upstream_busy",
+        binding=second,
     )
     assert status is TaskStatus.FAILED
     assert (await _task(env, accepted.task_id))["terminal_code"] == "interrupted"
@@ -494,7 +552,11 @@ async def test_capacity_denial_is_terminal_with_its_code(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     status = await env.tasks.fail_attempt(
-        accepted.task_id, claim.epoch, cause=RetryCause.CAPACITY, error_code="budget_exhausted"
+        accepted.task_id,
+        claim.epoch,
+        cause=RetryCause.CAPACITY,
+        error_code="budget_exhausted",
+        binding=claim,
     )
     assert status is TaskStatus.FAILED
     assert (await _task(env, accepted.task_id))["terminal_code"] == "budget_exhausted"
@@ -515,13 +577,14 @@ async def test_completion_publishes_result_once(env: Env):
         claim.epoch,
         content="the answer",
         message_fields={"model": "mock-model", "metadata": {"finish_reason": "stop"}},
+        binding=claim,
     )
     assert status is TaskStatus.COMPLETED
     message = await _message(env, accepted.result_message_id)
     assert message["status"] == "complete" and message["content"] == "the answer"
     assert message["model"] == "mock-model"
     with pytest.raises(LeaseLost):
-        await env.tasks.complete(accepted.task_id, claim.epoch, content="again")
+        await env.tasks.complete(accepted.task_id, claim.epoch, content="again", binding=claim)
     history = await env.memory.get_recent_messages(
         accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
     )
@@ -535,7 +598,8 @@ async def test_cancel_queued_task_is_immediate(env: Env):
     accepted = await _accept(env)
     outcome = await env.tasks.request_cancel(env.alice, accepted.task_id)
     assert outcome.accepted and outcome.status is TaskStatus.CANCELLED
-    assert await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S) is None
+    with pytest.raises(ObservationBlocked, match="task_already_terminal"):
+        await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert (await _message(env, accepted.result_message_id))["status"] == "cancelled"
 
 
@@ -546,7 +610,7 @@ async def test_cancel_running_task_is_acknowledged_by_worker(env: Env):
     assert claim is not None
     outcome = await env.tasks.request_cancel(env.alice, accepted.task_id)
     assert outcome.accepted and outcome.status is TaskStatus.RUNNING
-    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch)
+    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch, binding=claim)
     assert (await _task(env, accepted.task_id))["status"] == "cancelled"
 
 
@@ -556,10 +620,18 @@ async def test_cancel_before_completion_commit_wins(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    status = await env.tasks.complete(accepted.task_id, claim.epoch, content="late answer")
+    status = await env.tasks.complete(
+        accepted.task_id, claim.epoch, content="late answer", binding=claim
+    )
     assert status is TaskStatus.CANCELLED
     message = await _message(env, accepted.result_message_id)
-    assert message["status"] == "cancelled" and message["content"] == "late answer"
+    assert message["status"] == "cancelled" and message["content"] == ""
+    assert (
+        await env.pool.fetchval(
+            "SELECT partial_ciphertext FROM task_attempts WHERE task_id=$1", accepted.task_id
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -567,7 +639,7 @@ async def test_cancel_after_completion_changes_nothing(env: Env):
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="answer")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="answer", binding=claim)
     outcome = await env.tasks.request_cancel(env.alice, accepted.task_id)
     assert not outcome.accepted and outcome.status is TaskStatus.COMPLETED
 
@@ -579,7 +651,9 @@ async def test_cancel_with_dead_worker_resolves_on_reclaim(env: Env):
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
     await _expire_lease(env, accepted.task_id)
-    assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
+    with pytest.raises(TaskControlled) as controlled:
+        await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
+    assert controlled.value.status is TaskStatus.CANCELLED
     assert (await _task(env, accepted.task_id))["status"] == "cancelled"
 
 
@@ -598,7 +672,7 @@ async def test_sweep_recovers_accepted_work_after_queue_loss(env: Env):
     assert await env.tasks.due_for_wakeup() == []
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="answer")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="answer", binding=claim)
     assert (await _task(env, accepted.task_id))["status"] == "completed"
 
 
@@ -647,7 +721,9 @@ async def test_owner_snapshot_tracks_generation_and_delta_seq(env: Env):
     assert active is not None and active.task_id == accepted.task_id
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.write_partial(accepted.task_id, claim.epoch, content="Hel", delta_seq=3)
+    await env.tasks.write_partial(
+        accepted.task_id, claim.epoch, content="Hel", delta_seq=3, binding=claim
+    )
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
     assert (snapshot.status, snapshot.content, snapshot.content_generation) == (
@@ -673,10 +749,16 @@ async def test_no_material_effect_starts_after_cancel_is_requested(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    with pytest.raises(EffectRefused):
+    with pytest.raises(TaskControlled) as controlled:
         await env.tasks.begin_operation(
-            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+            accepted.task_id,
+            claim.epoch,
+            tool_name="notify",
+            target=None,
+            min_lease_margin_s=1,
+            binding=claim,
         )
+    assert controlled.value.status is TaskStatus.CANCELLED
     assert await env.pool.fetchval("SELECT count(*) FROM task_operations") == 0
 
 
@@ -686,14 +768,22 @@ async def test_suspension_mid_attempt_blocks_effects_and_publication(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await _suspend(env, env.alice)
-    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S, binding=claim)
     assert beat.account_suspended and not beat.cancel_requested
-    with pytest.raises(EffectRefused):
+    with pytest.raises(TaskControlled) as controlled:
         await env.tasks.begin_operation(
-            accepted.task_id, claim.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+            accepted.task_id,
+            claim.epoch,
+            tool_name="notify",
+            target=None,
+            min_lease_margin_s=1,
+            binding=claim,
         )
-    status = await env.tasks.complete(accepted.task_id, claim.epoch, content="should not publish")
-    assert status is TaskStatus.FAILED
+    assert controlled.value.status is TaskStatus.FAILED
+    with pytest.raises(LeaseLost):
+        await env.tasks.complete(
+            accepted.task_id, claim.epoch, content="should not publish", binding=claim
+        )
     row = await _task(env, accepted.task_id)
     assert row["status"] == "failed" and row["terminal_code"] == "account_suspended"
     assert (await _message(env, accepted.result_message_id))["status"] == "error"
@@ -705,9 +795,9 @@ async def test_other_accounts_suspension_does_not_affect_this_task(env: Env):
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await _suspend(env, env.bob)
-    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S)
+    beat = await env.tasks.heartbeat(accepted.task_id, claim.epoch, lease_s=LEASE_S, binding=claim)
     assert not beat.account_suspended
-    assert await env.tasks.complete(accepted.task_id, claim.epoch, content="ok") is (
+    assert await env.tasks.complete(accepted.task_id, claim.epoch, content="ok", binding=claim) is (
         TaskStatus.COMPLETED
     )
 
@@ -730,11 +820,11 @@ async def test_ended_compute_scopes_never_include_the_running_attempt(env: Env):
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
     lost_scope, live_scope = uuid.uuid4(), uuid.uuid4()
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, lost_scope)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, lost_scope, binding=first)
     await _expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None
-    await env.tasks.begin_execution(accepted.task_id, second.epoch, live_scope)
+    await env.tasks.begin_execution(accepted.task_id, second.epoch, live_scope, binding=second)
     assert await env.tasks.ended_compute_scopes(accepted.task_id) == [lost_scope]
 
 
@@ -744,7 +834,9 @@ async def test_queued_task_with_pending_cancel_is_never_claimed(env: Env):
     await env.pool.execute(
         "UPDATE tasks SET cancel_requested_at = now() WHERE id = $1", accepted.task_id
     )
-    assert await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S) is None
+    with pytest.raises(TaskControlled) as controlled:
+        await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
+    assert controlled.value.status is TaskStatus.CANCELLED
     assert (await _task(env, accepted.task_id))["status"] == "cancelled"
 
 
@@ -756,7 +848,11 @@ async def test_requeued_task_is_rewoken_at_its_backoff_not_after_suppression(env
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.fail_attempt(
-        accepted.task_id, claim.epoch, cause=RetryCause.RETRYABLE_ERROR, error_code="busy"
+        accepted.task_id,
+        claim.epoch,
+        cause=RetryCause.RETRYABLE_ERROR,
+        error_code="busy",
+        binding=claim,
     )
     await _make_due(env, accepted.task_id)
     woken = await env.tasks.due_for_wakeup()
@@ -774,9 +870,9 @@ async def test_claims_lost_before_execution_never_exhaust_the_task(env: Env):
     final = await env.tasks.claim(accepted.task_id, worker_id="w5", lease_s=LEASE_S)
     assert final is not None
     assert await _execute(env, final) == 1
-    assert await env.tasks.complete(accepted.task_id, final.epoch, content="done") is (
-        TaskStatus.COMPLETED
-    )
+    assert await env.tasks.complete(
+        accepted.task_id, final.epoch, content="done", binding=final
+    ) is (TaskStatus.COMPLETED)
 
 
 @pytest.mark.asyncio
@@ -824,15 +920,13 @@ async def test_replay_survives_a_rotated_digest_key(env: Env):
 @pytest.mark.asyncio
 async def test_execution_is_refused_after_a_cancel_or_suspension(env: Env):
     """Review of #466: begin_execution rechecks what may have changed since the claim."""
-    from orchestrator.tasks.store import ExecutionRefused
-
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    with pytest.raises(ExecutionRefused) as refused:
-        await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4())
-    assert refused.value.reason == "cancel_requested"
+    with pytest.raises(TaskControlled) as refused:
+        await env.tasks.begin_execution(claim.task_id, claim.epoch, uuid.uuid4(), binding=claim)
+    assert refused.value.status is TaskStatus.CANCELLED
     assert (await _task(env, accepted.task_id))["attempt_count"] == 0
 
 
@@ -844,7 +938,9 @@ async def test_suspension_wins_over_a_cancel_at_publication(env: Env):
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
     await _suspend(env, env.alice)
-    status = await env.tasks.complete(accepted.task_id, claim.epoch, content="full answer")
+    status = await env.tasks.complete(
+        accepted.task_id, claim.epoch, content="full answer", binding=claim
+    )
     assert status is TaskStatus.FAILED
     row = await _task(env, accepted.task_id)
     assert row["terminal_code"] == "account_suspended"
@@ -858,7 +954,10 @@ async def test_suspension_wins_over_a_cancel_when_the_attempt_stops(env: Env):
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
     await _suspend(env, env.alice)
-    assert await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch) is TaskStatus.FAILED
+    assert (
+        await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch, binding=claim)
+        is TaskStatus.FAILED
+    )
     assert (await _task(env, accepted.task_id))["terminal_code"] == "account_suspended"
 
 
@@ -875,28 +974,35 @@ async def test_a_cancelled_task_that_started_an_action_stays_visible_in_history(
         tool_name="notification_send",
         target={"channel": "ntfy"},
         min_lease_margin_s=1,
+        binding=claim,
     )
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    assert await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch) is TaskStatus.CANCELLED
+    assert (
+        await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch, binding=claim)
+        is TaskStatus.CANCELLED
+    )
     history = await env.memory.get_recent_messages(
         accepted.conversation_id, exclude_status=["streaming", "error", "cancelled"]
     )
     assert [m["role"] for m in history] == ["user", "assistant"]
-    assert "notification_send" in history[-1]["content"]
+    assert "cannot rule out an external action" in history[-1]["content"]
+    assert "notification_send" not in history[-1]["content"]
 
 
 @pytest.mark.asyncio
-async def test_suspension_wins_when_an_expired_cancelled_attempt_is_resolved(env: Env):
-    """Review of #466: the expired-lease recovery path checks suspension first."""
+async def test_equal_generation_suspension_blocks_reclaim_without_controller_authority(env: Env):
+    """No new W and no newer generation: admission has only observation authority."""
     accepted = await _accept(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert claim is not None
     await env.tasks.request_cancel(env.alice, accepted.task_id)
     await _suspend(env, env.alice)
     await _expire_lease(env, accepted.task_id)  # the worker died
-    assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
+    with pytest.raises(ObservationBlocked, match="account_suspended"):
+        await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     row = await _task(env, accepted.task_id)
-    assert row["status"] == "failed" and row["terminal_code"] == "account_suspended"
+    assert row["status"] == "running" and row["terminal_code"] is None
+    assert row["cancel_requested_at"] is not None
 
 
 @pytest.mark.asyncio

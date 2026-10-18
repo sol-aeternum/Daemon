@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -22,6 +25,17 @@ from orchestrator.services.account_control.guard import (
     CapturedGeneration,
     WriteGuardRefusal,
     guard_content_write,
+)
+from orchestrator.services.account_control.store import account_lock_key
+from orchestrator.services.account_control.transaction import (
+    ObservationBlocked,
+    control_transaction,
+)
+from orchestrator.tasks._origin import (
+    OriginalTaskOrigin,
+    TaskOriginContext,
+    TaskOriginRefusal,
+    _classify_task_origin,
 )
 from orchestrator.tasks.inputs import CHAT_INPUT_VERSION, canonical_json
 from orchestrator.tasks.states import (
@@ -112,6 +126,18 @@ class LeaseLost(TaskError):
     """This attempt no longer holds the task's lease; it must stop writing."""
 
 
+class _PermissionRefused(ObservationBlocked):
+    """Latched definite refusal; only acknowledged rollback permits control exit."""
+
+
+class TaskControlled(ObservationBlocked):
+    """An acknowledged control-only exit, never a financial recovery grant."""
+
+    def __init__(self, status: TaskStatus) -> None:
+        super().__init__("task_controlled")
+        self.status = status
+
+
 class EffectRefused(TaskError):
     """A material operation may not start: the task was cancelled, its account
     suspended, or too little lease time remains. ``reason`` is
@@ -153,12 +179,22 @@ class Claim:
     attempt_count: int
     max_attempts: int
     task_input: dict[str, Any]
+    worker_id: str
+    origin: OriginalTaskOrigin
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledClaim:
+    """Acknowledged controller exit, with no settlement or execution authority."""
+
+    status: TaskStatus
 
 
 @dataclass(frozen=True, slots=True)
 class Heartbeat:
     cancel_requested: bool
     account_suspended: bool = False
+    refusal: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +249,319 @@ class TaskStore:
             return {}
         value = json.loads(self._enc.decrypt(ciphertext))
         return value if isinstance(value, dict) else {}
+
+    def _origin(self, row: Any) -> OriginalTaskOrigin:
+        # Authentication/key failures propagate as operational uncertainty. Never
+        # classify invented plaintext, or substitute summary/decoded input fields.
+        owner = row["user_id"]
+        if not isinstance(owner, uuid.UUID):
+            raise ObservationBlocked("task_not_owned")
+        # asyncpg's UUID codec returns a UUID subclass. Normalize only the
+        # independently established persisted identity, never the saved origin.
+        origin = _classify_task_origin(
+            self._enc.decrypt(row["input_ciphertext"]),
+            input_version=row["input_version"],
+            context=TaskOriginContext(uuid.UUID(bytes=owner.bytes)),
+        )
+        if isinstance(origin, TaskOriginRefusal):
+            raise ObservationBlocked(origin.code)
+        return origin
+
+    async def _account(self, conn: Any, owner: uuid.UUID) -> Any:
+        if await conn.fetchval("SHOW transaction_isolation") != "read committed":
+            raise ObservationBlocked()
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", account_lock_key(owner))
+        account = await conn.fetchrow(
+            "SELECT status,content_generation FROM entitlement_accounts WHERE user_id=$1 FOR SHARE",
+            owner,
+        )
+        # Separate post-lock statement: subordinate-only changes must be visible.
+        state = await conn.fetchrow(
+            "SELECT EXISTS(SELECT 1 FROM account_deletions "
+            "WHERE account_id=$1 AND closed_at IS NULL) AS operation, "
+            "EXISTS(SELECT 1 FROM account_suspension_causes WHERE account_id=$1) AS cause",
+            owner,
+        )
+        if state is None:
+            raise ObservationBlocked()
+        return account, state
+
+    @staticmethod
+    def _refusal(account: Any, state: Any, origin: OriginalTaskOrigin) -> str | None:
+        if account is None:
+            return "account_unavailable"
+        generation = account["content_generation"]
+        if type(generation) is not int or not 0 <= generation <= 2**63 - 1:
+            return "task_account_inconsistent"
+        # A restored/contradictory earlier generation is NOT revocation proof,
+        # even if the restored status currently says suspended.
+        if generation < origin.generation:
+            raise ObservationBlocked()
+        if account["status"] == "suspended":
+            return "account_suspended"
+        if account["status"] != "active":
+            return "task_account_inconsistent"
+        if generation > origin.generation:
+            return "task_generation_stale"
+        if state["operation"]:
+            return "task_account_operation"
+        if state["cause"]:
+            return "task_account_inconsistent"
+        return None
+
+    async def _references(self, conn: Any, row: Any) -> None:
+        owner = row["user_id"]
+        if not await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2)",
+            row["conversation_id"],
+            owner,
+        ):
+            raise ObservationBlocked("task_not_owned")
+        messages = await conn.fetch(
+            "SELECT id,role FROM messages WHERE id IN ($1::uuid,$2::uuid) "
+            "AND conversation_id=$3 AND user_id=$4 FOR UPDATE",
+            row["user_message_id"],
+            row["result_message_id"],
+            row["conversation_id"],
+            owner,
+        )
+        roles = {r["id"]: r["role"] for r in messages}
+        if roles != {row["user_message_id"]: "user", row["result_message_id"]: "assistant"}:
+            raise ObservationBlocked("task_not_owned")
+
+    async def _attempt(self, conn: Any, row: Any, binding: Claim | None = None) -> Any:
+        attempt = await conn.fetchrow(
+            "SELECT task_id,epoch,worker_id,outcome,ended_at FROM task_attempts "
+            "WHERE task_id=$1 AND epoch=$2 FOR UPDATE",
+            row["id"],
+            row["lease_epoch"],
+        )
+        if (
+            attempt is None
+            or attempt["worker_id"] != row["lease_owner"]
+            or attempt["outcome"] != "running"
+            or attempt["ended_at"] is not None
+            or (binding is not None and attempt["worker_id"] != binding.worker_id)
+        ):
+            raise ObservationBlocked("task_attempt_not_current")
+        return attempt
+
+    async def _worker_row(self, conn: Any, task_id: uuid.UUID, epoch: int, binding: Claim) -> Any:
+        if not isinstance(binding, Claim) or (task_id, epoch) != (binding.task_id, binding.epoch):
+            raise ObservationBlocked("task_attempt_not_current")
+        row = await self._locked_for_epoch(conn, task_id, epoch)
+        if row is None:
+            raise LeaseLost("lease lost")
+        if (
+            row["user_id"] != binding.user_id
+            or row["conversation_id"] != binding.conversation_id
+            or row["user_message_id"] != binding.user_message_id
+            or row["result_message_id"] != binding.result_message_id
+        ):
+            raise ObservationBlocked("task_not_owned")
+        await self._attempt(conn, row, binding)
+        await self._references(conn, row)
+        if self._origin(row) != binding.origin:
+            raise ObservationBlocked()
+        if not await conn.fetchval(f"SELECT {_LEASE_HELD} FROM tasks WHERE id=$1", task_id):
+            raise LeaseLost("lease lost")
+        return row
+
+    @asynccontextmanager
+    async def _worker(
+        self, task_id: uuid.UUID, epoch: int, binding: Claim
+    ) -> AsyncIterator[tuple[Any, Any]]:
+        """Actual content/requeue authority, followed by a distinct control exit."""
+        try:
+            async with control_transaction(self._pool, refusals=(TaskError,)) as conn:
+                account, state = await self._account(conn, binding.user_id)
+                reason = self._refusal(account, state, binding.origin)
+                if reason:
+                    raise _PermissionRefused(reason)  # latch before another await
+                try:
+                    async with guard_content_write(
+                        conn, CapturedGeneration(binding.user_id, binding.origin.generation)
+                    ):
+                        row = await self._worker_row(conn, task_id, epoch, binding)
+                        if row["cancel_requested_at"] is not None:
+                            raise _PermissionRefused("cancelled")
+                        yield conn, row
+                        if not await conn.fetchval(
+                            "SELECT clock_timestamp() < $1::timestamptz", row["lease_expires_at"]
+                        ):
+                            raise LeaseLost("lease lost")
+                except WriteGuardRefusal:
+                    # An invariant/protocol failure is not a semantic account refusal.
+                    raise ObservationBlocked() from None
+        except _PermissionRefused as refusal:
+            status = await self.finish_refusal(task_id, epoch, binding=binding, reason=refusal.code)
+            raise TaskControlled(status) from None
+
+    async def _material_possible(self, conn: Any, row: Any) -> bool:
+        """M=YES/UNKNOWN -> True; read failures propagate, never become UNKNOWN."""
+        attempts = await conn.fetch(
+            "SELECT a.epoch,a.worker_id,a.outcome,a.ended_at,a.started_at,a.execution_started_at "
+            "FROM task_attempts a JOIN tasks t ON t.id=a.task_id "
+            "WHERE t.id=$1 AND t.user_id=$2 ORDER BY a.epoch",
+            row["id"],
+            row["user_id"],
+        )
+        operations = await conn.fetch(
+            "SELECT o.epoch,o.effect_class,o.outcome,o.started_at,o.completed_at "
+            "FROM task_operations o JOIN tasks t ON t.id=o.task_id "
+            "WHERE t.id=$1 AND t.user_id=$2",
+            row["id"],
+            row["user_id"],
+        )
+        markers = await conn.fetch(
+            "SELECT e.kind FROM task_events e JOIN tasks t ON t.id=e.task_id "
+            "WHERE t.id=$1 AND t.user_id=$2 "
+            "AND e.kind IN ('execution_started','operation_started','operation_finished')",
+            row["id"],
+            row["user_id"],
+        )
+        # All material outcomes count. Inconsistent associations, nonmaterial rows,
+        # dangling markers and gaps also mean possible, never evidence of absence.
+        if operations or markers or row["attempt_count"] != 0:
+            return True
+        if len(attempts) != row["lease_epoch"] or any(
+            a["epoch"] != index for index, a in enumerate(attempts, start=1)
+        ):
+            return True
+        for attempt in attempts:
+            current_running = row["status"] == "running" and attempt["epoch"] == row["lease_epoch"]
+            if (
+                attempt["execution_started_at"] is not None
+                or not isinstance(attempt["started_at"], datetime)
+                or (attempt["outcome"] == "running") != current_running
+                or (attempt["ended_at"] is None) != current_running
+                or (current_running and attempt["worker_id"] != row["lease_owner"])
+            ):
+                return True
+        return False
+
+    async def _control_end(
+        self, conn: Any, row: Any, status: TaskStatus, code: str, *, end_attempt: bool
+    ) -> None:
+        """T: no message decryption, body/trace copy or attempt archival."""
+        allowed = {
+            "cancelled",
+            "account_suspended",
+            "account_unavailable",
+            "task_generation_stale",
+            "task_account_operation",
+            "task_account_inconsistent",
+            "uncertain_effect",
+        }
+        if code not in allowed or status not in {
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.NEEDS_ATTENTION,
+        }:
+            raise ObservationBlocked()
+        possible = await self._material_possible(conn, row)
+        metadata: dict[str, Any] = {
+            "terminal_status": _MESSAGE_STATUS[status],
+            "terminal_reason": code,
+        }
+        if possible:
+            metadata["material_effect_possible"] = True
+        now = await conn.fetchval("SELECT clock_timestamp()")
+        if (
+            await conn.fetchval(
+                "UPDATE messages SET status=$4, metadata=metadata || $5::jsonb "
+                "WHERE id=$1 AND user_id=$2 AND conversation_id=$3 "
+                "AND jsonb_typeof(metadata)='object' RETURNING id",
+                row["result_message_id"],
+                row["user_id"],
+                row["conversation_id"],
+                _MESSAGE_STATUS[status],
+                json.dumps(metadata),
+            )
+            != row["result_message_id"]
+        ):
+            raise ObservationBlocked()
+        if end_attempt:
+            if (
+                await conn.fetchval(
+                    "UPDATE task_attempts SET outcome=$4,terminal_code=$5,ended_at=$6 "
+                    "WHERE task_id=$1 AND epoch=$2 AND worker_id=$3 "
+                    "AND outcome='running' AND ended_at IS NULL RETURNING id",
+                    row["id"],
+                    row["lease_epoch"],
+                    row["lease_owner"],
+                    _ATTEMPT_OUTCOME[status],
+                    code,
+                    now,
+                )
+                is None
+            ):
+                raise ObservationBlocked()
+        payload = self._seal({"status": status.value, "code": code})
+        seq = await conn.fetchval(
+            "UPDATE tasks SET status=$2,terminal_code=$3,finished_at=$4,updated_at=$4, "
+            "lease_owner=NULL,lease_expires_at=NULL,event_seq=event_seq+1 "
+            "WHERE id=$1 AND user_id=$5 AND status=$6 RETURNING event_seq",
+            row["id"],
+            status.value,
+            code,
+            now,
+            row["user_id"],
+            row["status"],
+        )
+        if seq is None:
+            raise ObservationBlocked()
+        if (
+            await conn.fetchval(
+                "INSERT INTO task_events(task_id,seq,kind,payload_ciphertext,created_at) "
+                "VALUES($1,$2,'finished',$3,$4) RETURNING seq",
+                row["id"],
+                seq,
+                payload,
+                now,
+            )
+            != seq
+        ):
+            raise ObservationBlocked()
+
+    async def finish_refusal(
+        self, task_id: uuid.UUID, epoch: int, *, binding: Claim, reason: str
+    ) -> TaskStatus:
+        """Fresh W/O/control authority; the latch is evidence, not write permission."""
+        if reason not in {
+            "account_suspended",
+            "cancelled",
+            "account_unavailable",
+            "task_generation_stale",
+            "task_account_operation",
+            "task_account_inconsistent",
+        }:
+            raise ObservationBlocked()
+        async with control_transaction(self._pool, refusals=(LeaseLost,)) as conn:
+            account, state = await self._account(conn, binding.user_id)
+            row = await self._worker_row(conn, task_id, epoch, binding)
+            current = self._refusal(account, state, binding.origin)
+            status, code = await self._disposition(conn, row, current, reason)
+            await self._control_end(conn, row, status, code, end_attempt=True)
+            if not await conn.fetchval(
+                "SELECT clock_timestamp() < $1::timestamptz", row["lease_expires_at"]
+            ):
+                raise LeaseLost("lease lost")
+            return status
+
+    async def _disposition(
+        self, conn: Any, row: Any, current: str | None, latched: str | None = None
+    ) -> tuple[TaskStatus, str]:
+        if current == "account_suspended" or latched == "account_suspended":
+            return TaskStatus.FAILED, "account_suspended"
+        if row["cancel_requested_at"] is not None:
+            return TaskStatus.CANCELLED, "cancelled"
+        reason = current or latched
+        if reason in (None, "cancelled"):
+            raise ObservationBlocked()
+        if await self._material_possible(conn, row):
+            return TaskStatus.NEEDS_ATTENTION, "uncertain_effect"
+        return TaskStatus.FAILED, reason
 
     async def _append_event(
         self, conn: Any, task_id: uuid.UUID, kind: str, payload: dict[str, Any] | None = None
@@ -679,6 +1028,14 @@ class TaskStore:
     # ------------------------------------------------------------------ #
 
     async def claim(self, task_id: uuid.UUID, *, worker_id: str, lease_s: float) -> Claim | None:
+        result = await self._claim(task_id, worker_id=worker_id, lease_s=lease_s)
+        if isinstance(result, ControlledClaim):
+            raise TaskControlled(result.status)
+        return result
+
+    async def _claim(
+        self, task_id: uuid.UUID, *, worker_id: str, lease_s: float
+    ) -> Claim | ControlledClaim | None:
         """Claim a due task, taking over an expired lease if needed.
 
         Returns ``None`` for a duplicate delivery, a task that is not due, or a
@@ -686,23 +1043,61 @@ class TaskStore:
         stopped at ``needs_attention`` because a lost attempt may have caused a
         material effect).
         """
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with control_transaction(self._pool, refusals=(LeaseLost,)) as conn:
+            owner = await conn.fetchval("SELECT user_id FROM tasks WHERE id=$1", task_id)
+            if owner is None:
+                raise ObservationBlocked("task_not_owned")
+            account, state = await self._account(conn, owner)
             row = await self._locked(conn, task_id)
-            if row is None or not (row["due"] or row["lease_expired"]):
+            if row is None or row["user_id"] != owner:
+                raise ObservationBlocked("task_not_owned")
+            if row["status"] not in {s.value for s in ACTIVE_STATUSES}:
+                raise ObservationBlocked("task_already_terminal")
+            origin = self._origin(row)
+            refusal = self._refusal(account, state, origin)
+            # Recompute due/expiry AFTER any lock wait, not against query snapshot.
+            due = await conn.fetchval(
+                "SELECT (status='queued' AND next_wakeup_at<=clock_timestamp()) OR "
+                "(status='running' AND lease_expires_at<clock_timestamp()) FROM tasks WHERE id=$1",
+                task_id,
+            )
+            if not due:
+                if refusal:
+                    # A live foreign writer stays untouched, but a known account
+                    # refusal is not ordinary None/lost-hold settlement authority.
+                    raise ObservationBlocked(refusal)
                 return None
+            row = dict(row)
+            row["lease_expired"] = row["status"] == "running"
+            await self._references(conn, row)
+            if row["status"] == "running":
+                await self._attempt(conn, row)
+            newer = account is not None and account["content_generation"] > origin.generation
+            if newer:
+                status, code = await self._disposition(conn, row, refusal, "task_generation_stale")
+                await self._control_end(
+                    conn, row, status, code, end_attempt=row["status"] == "running"
+                )
+                # Signal only AFTER commit/release, below; not ordinary None/settlement.
+                controlled = status
+            else:
+                controlled = None
+                if refusal:
+                    raise ObservationBlocked(refusal)
+            if controlled is not None:
+                # Returning a closed result cannot be mistaken for a Claim or None.
+                return ControlledClaim(controlled)
+            async with guard_content_write(conn, CapturedGeneration(owner, origin.generation)):
+                pass  # account locks survive this scope through COMMIT
             if row["lease_expired"]:
                 epoch = int(row["lease_epoch"])
                 # Suspension wins over a cancel or a retry, here as at
                 # publication: a suspended account's task ends failed.
-                if await self._account_suspended(conn, row["user_id"]):
-                    await self._end_suspended(conn, row, epoch)
-                    return None
                 if row["cancel_requested_at"] is not None:
-                    await self._end_attempt(
-                        conn, task_id, epoch, "cancelled", None, row["result_message_id"]
+                    await self._control_end(
+                        conn, row, TaskStatus.CANCELLED, "cancelled", end_attempt=True
                     )
-                    await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
-                    return None
+                    return ControlledClaim(TaskStatus.CANCELLED)
                 decision = decide_after_attempt(
                     cause=RetryCause.LOST,
                     attempt_count=int(row["attempt_count"]),
@@ -726,8 +1121,10 @@ class TaskStore:
             elif row["cancel_requested_at"] is not None:
                 # Defensive: cancelling a queued task terminalises it directly,
                 # so a pending cancel must never start an attempt.
-                await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
-                return None
+                await self._control_end(
+                    conn, row, TaskStatus.CANCELLED, "cancelled", end_attempt=False
+                )
+                return ControlledClaim(TaskStatus.CANCELLED)
             elif await self._material_started(conn, task_id):
                 # Defensive: a queued task never carries operations, because
                 # every retry path checks them first.
@@ -774,14 +1171,25 @@ class TaskStore:
                 attempt_count=int(claimed["attempt_count"]),
                 max_attempts=int(row["max_attempts"]),
                 task_input=self._open(row["input_ciphertext"]),
+                worker_id=worker_id,
+                origin=origin,
             )
 
-    async def heartbeat(self, task_id: uuid.UUID, epoch: int, *, lease_s: float) -> Heartbeat:
+    async def heartbeat(
+        self, task_id: uuid.UUID, epoch: int, *, lease_s: float, binding: Claim
+    ) -> Heartbeat:
         """Extend this attempt's lease; raises :class:`LeaseLost` when fenced out."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            # An expired lease is never revived, even before a takeover.
-            if await self._locked_for_epoch(conn, task_id, epoch) is None:
-                raise LeaseLost("lease lost")
+        async with control_transaction(self._pool, refusals=(LeaseLost,)) as conn:
+            account, state = await self._account(conn, binding.user_id)
+            row = await self._worker_row(conn, task_id, epoch, binding)
+            refusal = self._refusal(account, state, binding.origin)
+            if refusal or row["cancel_requested_at"] is not None:
+                # Observation-only: stop the engine, do not renew a refused lease.
+                return Heartbeat(
+                    cancel_requested=row["cancel_requested_at"] is not None,
+                    account_suspended=refusal == "account_suspended",
+                    refusal=refusal,
+                )
             row = await conn.fetchrow(
                 f"""
                 UPDATE tasks
@@ -803,14 +1211,71 @@ class TaskStore:
                 account_suspended=bool(row["account_suspended"]),
             )
 
+    async def observe_attempt(self, binding: Claim) -> Heartbeat:
+        """One coherent read-only snapshot. Never a lease or mutation grant.
+
+        In particular no account/task row lock can wait behind this invocation's
+        completion. Terminal state may belong to another caller; report only loss
+        of the observed running lease, not a completion receipt.
+        """
+        row = await self._pool.fetchrow(
+            "SELECT t.status,t.lease_epoch,t.lease_owner,"
+            "t.lease_expires_at>clock_timestamp() AS live,t.cancel_requested_at,"
+            "a.worker_id,a.outcome,a.ended_at,ea.user_id AS account_id,"
+            "ea.status AS account_status,ea.content_generation,"
+            "EXISTS(SELECT 1 FROM account_deletions WHERE account_id=t.user_id "
+            "AND closed_at IS NULL) AS operation,"
+            "EXISTS(SELECT 1 FROM account_suspension_causes WHERE account_id=t.user_id) AS cause "
+            "FROM tasks t JOIN conversations c ON c.id=t.conversation_id AND c.user_id=t.user_id "
+            "JOIN messages u ON u.id=t.user_message_id AND u.user_id=t.user_id "
+            "AND u.conversation_id=t.conversation_id AND u.role='user' "
+            "JOIN messages m ON m.id=t.result_message_id AND m.user_id=t.user_id "
+            "AND m.conversation_id=t.conversation_id AND m.role='assistant' "
+            "LEFT JOIN task_attempts a ON a.task_id=t.id AND a.epoch=t.lease_epoch "
+            "LEFT JOIN entitlement_accounts ea ON ea.user_id=t.user_id "
+            "WHERE t.id=$1 AND t.user_id=$2 AND t.conversation_id=$3 "
+            "AND t.user_message_id=$4 AND t.result_message_id=$5",
+            binding.task_id,
+            binding.user_id,
+            binding.conversation_id,
+            binding.user_message_id,
+            binding.result_message_id,
+        )
+        if row is None:
+            raise ObservationBlocked("task_not_owned")
+        if (
+            row["status"] != "running"
+            or row["lease_epoch"] != binding.epoch
+            or row["lease_owner"] != binding.worker_id
+            or not row["live"]
+        ):
+            raise LeaseLost("lease lost")
+        if (
+            row["worker_id"] != binding.worker_id
+            or row["outcome"] != "running"
+            or row["ended_at"] is not None
+        ):
+            raise ObservationBlocked("task_attempt_not_current")
+        account = (
+            None
+            if row["account_id"] is None
+            else {
+                "status": row["account_status"],
+                "content_generation": row["content_generation"],
+            }
+        )
+        reason = self._refusal(account, row, binding.origin)
+        return Heartbeat(
+            cancel_requested=row["cancel_requested_at"] is not None,
+            account_suspended=reason == "account_suspended",
+            refusal=reason,
+        )
+
     async def write_partial(
-        self, task_id: uuid.UUID, epoch: int, *, content: str, delta_seq: int
+        self, task_id: uuid.UUID, epoch: int, *, content: str, delta_seq: int, binding: Claim
     ) -> None:
         """Persist streamed content of this attempt's generation under the fence."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, row):
             await self._memory.update_message(row["result_message_id"], content=content, conn=conn)
             await conn.execute(
                 "UPDATE tasks SET content_delta_seq = $2, updated_at = now() WHERE id = $1",
@@ -826,6 +1291,7 @@ class TaskStore:
         tool_name: str,
         target: dict[str, Any] | None,
         min_lease_margin_s: float,
+        binding: Claim,
     ) -> uuid.UUID:
         """Record a material operation before it runs (the effect fence).
 
@@ -834,9 +1300,7 @@ class TaskStore:
         account is not suspended. The gap between this commit and the actual
         external call can be narrowed, not closed.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            if await self._locked_for_epoch(conn, task_id, epoch) is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, _):
             # Read under the lock, so a cancel, suspension or lapse that
             # committed while this waited is seen.
             row = await conn.fetchrow(
@@ -874,17 +1338,14 @@ class TaskStore:
             return operation_id
 
     async def record_compute_scope(
-        self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID
+        self, task_id: uuid.UUID, epoch: int, scope_id: uuid.UUID, *, binding: Claim
     ) -> None:
         """Link this attempt's account compute scope before any reservation.
 
         Preparation (memory retrieval) can reserve under the scope before the
         attempt is counted; a lost attempt's holds are found through it.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, row):
             # Preparation can call the embedding provider: a cancel or
             # suspension that committed since the claim stops it first.
             if await self._account_suspended(conn, row["user_id"]):
@@ -905,6 +1366,7 @@ class TaskStore:
         scope_id: uuid.UUID,
         *,
         prompt_version: str | None = None,
+        binding: Claim,
     ) -> int:
         """Mark this attempt as executing; only now does it count as an attempt.
 
@@ -915,10 +1377,7 @@ class TaskStore:
         cannot exhaust the task. A cancel or suspension that committed since
         the claim raises :class:`ExecutionRefused` before any inference.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, row):
             if int(row["attempt_count"]) >= int(row["max_attempts"]):
                 raise LeaseLost("no attempts left")  # defensive: the claim checks this
             if await conn.fetchval(f"SELECT {_SUSPENDED} FROM tasks WHERE id = $1", task_id):
@@ -958,13 +1417,16 @@ class TaskStore:
         return [row["compute_scope_id"] for row in rows]
 
     async def record_event(
-        self, task_id: uuid.UUID, epoch: int, kind: str, payload: dict[str, Any] | None = None
+        self,
+        task_id: uuid.UUID,
+        epoch: int,
+        kind: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        binding: Claim,
     ) -> int:
         """Append a lifecycle event from the running attempt, under the fence."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, _):
             return await self._append_event(conn, task_id, kind, payload)
 
     async def refreshed_pages(self, task_id: uuid.UUID) -> set[str]:
@@ -1005,9 +1467,12 @@ class TaskStore:
 
     async def pin_page(self, conn: Any, claim: Claim, key: str, snapshot_id: uuid.UUID) -> None:
         """Same-connection snapshot publication, after account/conversation locks."""
-        row = await self._locked_for_epoch(conn, claim.task_id, claim.epoch)
-        if row is None:
-            raise LeaseLost("lease lost")
+        # Caller already owns its account-first content transaction. This adds
+        # original task currency; it is not a generation recapture or a commit.
+        async with guard_content_write(
+            conn, CapturedGeneration(claim.user_id, claim.origin.generation)
+        ):
+            row = await self._worker_row(conn, claim.task_id, claim.epoch, claim)
         if row["user_id"] != claim.user_id or row["conversation_id"] != claim.conversation_id:
             raise ExecutionRefused("snapshot_owner_mismatch")
         if row["cancel_requested_at"] is not None:
@@ -1156,28 +1621,28 @@ class TaskStore:
         *,
         content: str,
         message_fields: dict[str, Any] | None = None,
+        binding: Claim,
     ) -> TaskStatus:
-        """Publish the result and complete the task in one transaction.
-
-        A cancel requested before this commit wins: the content is kept on the
-        message but the task ends ``cancelled``. A suspended account's result is
-        not published: the task ends ``failed`` (``account_suspended``).
-        """
-        fields = dict(message_fields or {})
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
-            # Suspension wins over a cancel: a suspended account's result is
-            # never published, whatever else was requested.
-            if await self._account_suspended(conn, row["user_id"]):
-                await self._end_suspended(conn, row, epoch)
-                return TaskStatus.FAILED
-            status = (
-                TaskStatus.CANCELLED
-                if row["cancel_requested_at"] is not None
-                else TaskStatus.COMPLETED
+        """Return only an acknowledged guarded result or control-only exit."""
+        try:
+            return await self._complete(
+                task_id, epoch, content=content, message_fields=message_fields, binding=binding
             )
+        except TaskControlled as controlled:
+            return controlled.status
+
+    async def _complete(
+        self,
+        task_id: uuid.UUID,
+        epoch: int,
+        *,
+        content: str,
+        message_fields: dict[str, Any] | None,
+        binding: Claim,
+    ) -> TaskStatus:
+        fields = dict(message_fields or {})
+        async with self._worker(task_id, epoch, binding) as (conn, row):
+            status = TaskStatus.COMPLETED
             metadata = dict(fields.pop("metadata", None) or {})
             metadata["terminal_status"] = _MESSAGE_STATUS[status]
             await _disclose_regeneration(conn, metadata, row)
@@ -1221,21 +1686,10 @@ class TaskStore:
         *,
         cause: RetryCause,
         error_code: str | None,
+        binding: Claim,
     ) -> TaskStatus:
         """End this attempt unsuccessfully and apply the retry rules."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
-            if await self._account_suspended(conn, row["user_id"]):
-                await self._end_suspended(conn, row, epoch)
-                return TaskStatus.FAILED
-            if row["cancel_requested_at"] is not None:
-                await self._end_attempt(
-                    conn, task_id, epoch, "cancelled", "cancelled", row["result_message_id"]
-                )
-                await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
-                return TaskStatus.CANCELLED
+        async with self._worker(task_id, epoch, binding) as (conn, row):
             decision = decide_after_attempt(
                 cause=cause,
                 attempt_count=int(row["attempt_count"]),
@@ -1274,7 +1728,7 @@ class TaskStore:
             return decision.status
 
     async def defer_claim(
-        self, task_id: uuid.UUID, epoch: int, *, delay_s: float, reason: str
+        self, task_id: uuid.UUID, epoch: int, *, delay_s: float, reason: str, binding: Claim
     ) -> None:
         """Hand a claimed task back to the queue without consuming its attempt.
 
@@ -1283,10 +1737,7 @@ class TaskStore:
         nothing counts against ``max_attempts``; if this write also fails, the
         lease simply expires and the next claim finds no executed attempt.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, row):
             await self._end_attempt(
                 conn, task_id, epoch, "deferred", reason, row["result_message_id"]
             )
@@ -1312,6 +1763,7 @@ class TaskStore:
         reason: str,
         max_wait_s: float,
         before_dispatch: bool = False,
+        binding: Claim,
     ) -> bool:
         """Re-queue an attempt the account refused admission, returning its attempt.
 
@@ -1327,10 +1779,7 @@ class TaskStore:
         counted, so no provider call can have been made; reservations from
         preparation (memory retrieval) do not prevent the deferral.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
+        async with self._worker(task_id, epoch, binding) as (conn, row):
             check = await conn.fetchrow(
                 """
                 SELECT t.created_at > now() - make_interval(secs => $3)
@@ -1399,30 +1848,22 @@ class TaskStore:
             for row in rows
         ]
 
-    async def acknowledge_cancel(self, task_id: uuid.UUID, epoch: int) -> TaskStatus:
+    async def acknowledge_cancel(
+        self, task_id: uuid.UUID, epoch: int, *, binding: Claim
+    ) -> TaskStatus:
         """The running attempt observed a cancel request and stopped.
 
         A suspended account ends ``failed`` (``account_suspended``) instead.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await self._locked_for_epoch(conn, task_id, epoch)
-            if row is None:
-                raise LeaseLost("lease lost")
-            if await self._account_suspended(conn, row["user_id"]):
-                await self._end_suspended(conn, row, epoch)
-                return TaskStatus.FAILED
-            await self._end_attempt(
-                conn, task_id, epoch, "cancelled", "cancelled", row["result_message_id"]
-            )
-            await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
-            return TaskStatus.CANCELLED
+        return await self.finish_refusal(task_id, epoch, binding=binding, reason="cancelled")
 
     # ------------------------------------------------------------------ #
     # Owner-facing reads and control
     # ------------------------------------------------------------------ #
 
     async def request_cancel(self, user_id: uuid.UUID, task_id: uuid.UUID) -> CancelOutcome:
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with control_transaction(self._pool, refusals=(TaskNotFound,)) as conn:
+            await self._account(conn, user_id)
             row = await conn.fetchrow(
                 "SELECT * FROM tasks WHERE id = $1 AND user_id = $2 FOR UPDATE", task_id, user_id
             )
@@ -1430,7 +1871,10 @@ class TaskStore:
                 raise TaskNotFound("task not found")
             status = TaskStatus(row["status"])
             if status is TaskStatus.QUEUED:
-                await self._finish(conn, row, TaskStatus.CANCELLED, "cancelled")
+                await self._references(conn, row)
+                await self._control_end(
+                    conn, row, TaskStatus.CANCELLED, "cancelled", end_attempt=False
+                )
                 return CancelOutcome(TaskStatus.CANCELLED, accepted=True)
             if status is TaskStatus.RUNNING:
                 if row["cancel_requested_at"] is None:

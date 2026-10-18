@@ -1,4 +1,4 @@
-"""Synthetic S0 contracts only: no encrypted/real-user inputs or runtime wiring."""
+"""Synthetic S0 contracts and the exact approved task-store runtime import seam."""
 
 from __future__ import annotations
 
@@ -218,7 +218,47 @@ def test_import_tripwire_covers_relative_and_data_only_imports(source):
     assert imports_origin(ast.parse(source))
 
 
-def test_source_boundary_is_stdlib_only_and_has_no_runtime_importers():
+def _assert_origin_import_boundary(path, text):
+    if path == "orchestrator/tasks/store.py":
+        nodes = [
+            node
+            for node in ast.walk(ast.parse(text))
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            and imports_origin(ast.Module(body=[node], type_ignores=[]))
+        ]
+        assert len(nodes) == 1
+        node = nodes[0]
+        assert isinstance(node, ast.ImportFrom)
+        assert node.level == 0 and node.module == "orchestrator.tasks._origin"
+        assert {(alias.name, alias.asname) for alias in node.names} == {
+            ("OriginalTaskOrigin", None),
+            ("TaskOriginContext", None),
+            ("TaskOriginRefusal", None),
+            ("_classify_task_origin", None),
+        }
+    else:
+        assert "_classify_task_origin" not in text, path
+        assert "tasks._origin" not in text, path
+        assert "import _origin" not in text, path
+        assert not imports_origin(ast.parse(text)), path
+
+
+@pytest.mark.parametrize(
+    "path,text",
+    [
+        ("orchestrator/unapproved.py", "from orchestrator.tasks._origin import OriginalTaskOrigin"),
+        ("scripts/unapproved.py", "from orchestrator.tasks import _origin"),
+        ("providers/unapproved.py", "from ._origin import _classify_task_origin"),
+        ("orchestrator/tasks/store.py", "from orchestrator.tasks._origin import *"),
+        ("orchestrator/tasks/store.py", "import orchestrator.tasks._origin"),
+    ],
+)
+def test_runtime_adoption_does_not_admit_other_importers_or_symbols(path, text):
+    with pytest.raises(AssertionError):
+        _assert_origin_import_boundary(path, text)
+
+
+def test_source_boundary_is_stdlib_only_and_runtime_importer_is_exact():
     root = Path(__file__).resolve().parents[1]
     source = root / "orchestrator/tasks/_origin.py"
     tree = ast.parse(source.read_text())
@@ -235,7 +275,4 @@ def test_source_boundary_is_stdlib_only_and_has_no_runtime_importers():
         for path in (root / directory).rglob("*.py"):
             if path != source:
                 text = path.read_text()
-                assert "_classify_task_origin" not in text, path
-                assert "tasks._origin" not in text, path
-                assert "import _origin" not in text, path
-                assert not imports_origin(ast.parse(text)), path
+                _assert_origin_import_boundary(path.relative_to(root).as_posix(), text)

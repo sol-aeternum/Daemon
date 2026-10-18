@@ -202,6 +202,18 @@ The quote's input side is priced at one token per UTF-8 byte plus per-message
 framing, which byte-level tokenizers cannot exceed; a separate ~3-bytes-per-token
 estimate only sizes the context window and output budget. After reconciling,
 an operator reinstates the account with `scripts/entitlements_reinstate.py`.
+The command requires `--expected-generation G` from the operator's original
+suspended observation. Eligible reinstatement atomically changes `suspended,G`
+to `active,G+1`, revoking **all** older captured work (including queued/background
+work that never observed suspension). Financial suspension/settlement arithmetic
+and original reservation owner/period are unchanged. An eligible active duplicate
+is an unchanged no-op, not proof that this command previously committed; stale
+expectation on a suspended account, bigint exhaustion, configured/bound journal,
+pending/unknown account controls or invalid configuration fail closed. Lost COMMIT
+acknowledgement never authorizes blind retry, settlement or generation repair.
+New authenticated requests capture the new generation; old idempotent replays
+retain their original origin. This source rule covers one authoritative DB history,
+not revocation rollback on restore or remote producer/billing cessation (#477).
 
 Search explicitly opts into dispatch-aware tool metering. Its temporary hold
 settles at zero when a local refusal, timeout, or cancellation occurs before

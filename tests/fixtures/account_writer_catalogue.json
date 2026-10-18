@@ -1107,16 +1107,16 @@
     },
     {
       "owner_source": "orchestrator.entitlements.store",
-      "qualname": "EntitlementStore.set_status",
+      "qualname": "EntitlementStore.reinstate_account",
       "kind": "sql_inline",
-      "fingerprint": "14d2b4ab6095232e",
+      "fingerprint": "ec674b2f21e67451",
       "tables": [
         "entitlement_accounts"
       ],
       "unknown": false,
       "uncovered": true,
       "category": "control",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "Expected-generation reinstatement CAS; caller owns account-first control transaction. Conservative uncovered inventory, not whole-runtime qualification."
     },
     {
       "owner_source": "orchestrator.entitlements.store",
@@ -4771,7 +4771,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore.claim",
+      "qualname": "TaskStore._claim",
       "kind": "sql_inline",
       "fingerprint": "094b4b962fa04e28",
       "tables": [
@@ -4784,7 +4784,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore.claim",
+      "qualname": "TaskStore._claim",
       "kind": "sql_inline",
       "fingerprint": "ed202c3ad91feceb",
       "tables": [
@@ -4797,7 +4797,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore.complete",
+      "qualname": "TaskStore._complete",
       "kind": "sql_inline",
       "fingerprint": "402c026c33b75ace",
       "tables": [
@@ -4807,6 +4807,69 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._control_end",
+      "kind": "sql_inline",
+      "fingerprint": "586083d6ac8b6c2d",
+      "tables": [
+        "task_events"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Control-only finished event after fresh worker/controller authority; inventory is not whole-runtime qualification."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._control_end",
+      "kind": "sql_inline",
+      "fingerprint": "627fc2a59aa11115",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Owned message status/terminal metadata only, preserving ciphertext; conservative uncovered inventory."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._control_end",
+      "kind": "sql_inline",
+      "fingerprint": "6688ba2f3a709eaf",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Allowlisted task terminal control fields under fresh authority; inventory is not whole-runtime qualification."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._control_end",
+      "kind": "sql_inline",
+      "fingerprint": "e2c3fc0b7b38e6e5",
+      "tables": [
+        "task_attempts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exact current running attempt control fields only; ended historical attempts remain untouched. Conservative uncovered inventory."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._worker_row",
+      "kind": "sql_dynamic",
+      "fingerprint": "7ece78b47239a3b0",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Dynamic lock-qualified task query; target resolution remains unknown to the bounded scanner, not silently covered."
     },
     {
       "owner_source": "orchestrator.tasks.store",
