@@ -25,6 +25,7 @@ from orchestrator.tasks.fence import outcome_of_tool_result
 from orchestrator.tasks.runner import live_channel
 from orchestrator.tasks.states import TERMINAL_STATUSES, TaskStatus
 from orchestrator.tasks.store import TaskEvent, TaskSnapshot, TaskStore
+from orchestrator.tasks.inference import CODE as INFERENCE_UNRESOLVED, NOTICE as INFERENCE_NOTICE
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ REAUTH_S = 15.0
 POLL_S = 2.0
 
 _TERMINAL_MESSAGES = {
+    INFERENCE_UNRESOLVED: INFERENCE_NOTICE,
     "uncertain_effect": (
         "This task was interrupted after an action that may already have happened. "
         "Check its result before retrying."

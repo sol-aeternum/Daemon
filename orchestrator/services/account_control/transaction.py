@@ -11,6 +11,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from orchestrator.tasks._invocation import block, require_effect
+
 
 class ObservationBlocked(Exception):
     """An internal observation, never a terminal reason or retry authority."""
@@ -47,10 +49,13 @@ async def control_transaction(
     tx = None
     attempted = acknowledged = False
     try:
+        require_effect()
         conn = await pool.acquire()
         tx = conn.transaction(isolation="read_committed")
         await tx.start()
+        require_effect()
         yield conn
+        require_effect()
         attempted = True
         await tx.commit()
         acknowledged = True
@@ -87,6 +92,7 @@ async def control_transaction(
                 except Exception:
                     pass
         if isinstance(original, asyncio.CancelledError):
+            block("task_transition_indeterminate")
             original.task_commit_attempted = attempted  # type: ignore[attr-defined]
             original.task_commit_acknowledged = acknowledged  # type: ignore[attr-defined]
             raise original
@@ -94,4 +100,7 @@ async def control_transaction(
             raise original
         if cleaned and isinstance(original, (ObservationBlocked, *refusals)):
             raise original
+        block(
+            "task_committed_result_unavailable" if acknowledged else "task_transition_indeterminate"
+        )
         raise TransactionUnavailable(attempted=attempted, acknowledged=acknowledged) from original

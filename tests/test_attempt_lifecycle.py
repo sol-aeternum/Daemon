@@ -37,12 +37,15 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
     ):
         assert imports_lifecycle(text)
     root = Path(__file__).resolve().parents[1]
-    # These exact uncalled financial adapters may compose the gate. No runtime
-    # consumer, registration or lifecycle mutation is authorized by this allowlist.
+    # Exact financial adapters and owner-approved fixture-injected inference seams.
+    # Production constructors/startup remain unwired (checked separately below).
     adapters = {
         "orchestrator/entitlements/attempt.py",
         "orchestrator/entitlements/service.py",
         "orchestrator/entitlements/errors.py",
+        "orchestrator/compute_runtime.py",
+        "orchestrator/tasks/runner.py",
+        "orchestrator/tasks/inference.py",
     }
     for base in ("orchestrator", "providers", "scripts"):
         for path in (root / base).rglob("*.py"):

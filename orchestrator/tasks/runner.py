@@ -38,9 +38,17 @@ from orchestrator.tasks.store import (
     ExecutionRefused,
     LeaseLost,
     TaskControlled,
+    TaskQuarantined,
     TaskStore,
 )
 from orchestrator.services.account_control.transaction import ObservationBlocked
+from orchestrator.attempt_lifecycle import AttemptIdentity
+from orchestrator.tasks._invocation import (
+    InferenceInterrupted,
+    InferenceInvocation,
+    invocation,
+    require_effect,
+)
 from orchestrator.redis_jobs import enqueue_account_job
 
 logger = logging.getLogger(__name__)
@@ -147,6 +155,9 @@ def _halt_writes(state: AttemptState, code: str) -> None:
     # Synchronous latch before any cleanup await; do not resolve/settle this result.
     state.blocked = code
     state.phase = "closed"
+    shared = invocation.get()
+    if shared is not None:
+        shared.block(code)
     if state.heartbeat is not None and state.heartbeat is not asyncio.current_task():
         state.heartbeat.cancel()
 
@@ -180,7 +191,7 @@ async def _mutation(state: AttemptState, *, final: bool = False) -> AsyncIterato
             yield
             if state.blocked is not None:
                 raise ObservationBlocked(state.blocked)
-        except (LeaseLost, EffectRefused, ExecutionRefused):
+        except (LeaseLost, EffectRefused, ExecutionRefused, InferenceInterrupted):
             raise
         except ObservationBlocked as blocked:
             _halt_writes(state, blocked.code)
@@ -281,6 +292,8 @@ class AttemptSink:
                 # cancelled / error: the runner applies the task-level outcome.
                 self._state.requested_terminal = status
             return self._row()
+        except InferenceInterrupted:
+            raise
         except ObservationBlocked as blocked:
             _halt_writes(self._state, blocked.code)
             if isinstance(blocked, TaskControlled):
@@ -575,6 +588,12 @@ def _parse_frame(frame: str) -> tuple[str | None, dict[str, Any]]:
 
 
 async def _publish(redis: Any, state: AttemptState, message: dict[str, Any]) -> None:
+    shared = invocation.get()
+    if shared is not None and (
+        shared.uncertainty is not None
+        or ((shared.call_failed or state.result is not None) and message.get("t") != "terminal")
+    ):
+        return
     if redis is None:
         return
     try:
@@ -678,6 +697,7 @@ async def settle_lost_attempt_holds(store: TaskStore, db_pool: Any, task_id: uui
     from orchestrator.entitlements.errors import ReservationNotFound, SettlementConflict
     from orchestrator.entitlements.service import EntitlementService
 
+    require_effect()
     scopes = await store.ended_compute_scopes(task_id)
     if not scopes:
         return 0
@@ -690,6 +710,7 @@ async def settle_lost_attempt_holds(store: TaskStore, db_pool: Any, task_id: uui
     settled = 0
     for row in rows:
         try:
+            require_effect()
             await service.settle(
                 row["id"],
                 int(row["reserved_microusd"]),
@@ -731,19 +752,57 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         # never a client disconnect.
         return state.stopping
 
+    identity = None
+    shared = invocation.get()
+    if claim.inference_covered:
+        if shared is None or store._inference is None:
+            raise ObservationBlocked("inference_coverage_unavailable")
+
+        def send_check() -> None:
+            if state.blocked is not None:
+                raise ObservationBlocked(state.blocked)
+            if state.fenced or asyncio.get_running_loop().time() >= state.lease_deadline:
+                raise LeaseLost("lease lost")
+            if state.account_suspended:
+                raise ExecutionRefused("account_suspended")
+            if state.cancel_requested:
+                raise ExecutionRefused("cancel_requested")
+            if state.permission_refusal is not None:
+                raise ObservationBlocked(state.permission_refusal)
+
+        shared.send_check = send_check
+        identity = AttemptIdentity(
+            uuid.uuid4(),
+            claim.user_id,
+            claim.origin.generation,
+            claim.task_id,
+            claim.epoch,
+            uuid.uuid4(),
+            uuid.uuid4(),
+            uuid.uuid4(),
+        )
+        async with _mutation(state):
+            await store.record_compute_scope(
+                claim.task_id, claim.epoch, identity.financial_scope_id, binding=claim
+            )
+            await store._inference.register(identity, shared)
+
     async with account_compute(
         db_pool,
         claim.user_id,
         auto_route=bool(task_input.get("auto_route", True)),
         profile=str(task_input.get("profile") or "routine"),
         request_id=request_id,
+        inference_identity=identity,
+        inference_recovery=store._inference if claim.inference_covered else None,
     ):
         scope_id = current_scope().scope_id
         try:
-            async with _mutation(state):
-                await store.record_compute_scope(
-                    claim.task_id, claim.epoch, scope_id, binding=claim
-                )
+            if not claim.inference_covered:
+                async with _mutation(state):
+                    await store.record_compute_scope(
+                        claim.task_id, claim.epoch, scope_id, binding=claim
+                    )
         except ObservationBlocked as blocked:
             _halt_writes(state, blocked.code)
             raise
@@ -940,7 +999,7 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
             cause, code = _classify(state.error)
             if cause is RetryCause.RETRYABLE_ERROR:
                 reason = "preparation_failed" if code == "internal_error" else code
-                if await store.defer_execution(
+                deferred = await store.defer_execution(
                     claim.task_id,
                     claim.epoch,
                     delay_s=DEFER_S,
@@ -948,21 +1007,28 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
                     max_wait_s=ADMISSION_WAIT_S,
                     before_dispatch=True,
                     binding=claim,
-                ):
+                )
+                if deferred is TaskStatus.NEEDS_ATTENTION:
+                    return deferred.value
+                if deferred is True:
                     return TaskStatus.QUEUED.value
                 # Waited too long: end honestly rather than retry uncounted forever.
                 cause, code = RetryCause.TERMINAL_ERROR, reason
         elif state.error is not None:
             cause, code = _classify(state.error)
-            if code in ADMISSION_CODES and await store.defer_execution(
-                claim.task_id,
-                claim.epoch,
-                delay_s=DEFER_S,
-                reason=code,
-                max_wait_s=ADMISSION_WAIT_S,
-                binding=claim,
-            ):
-                return TaskStatus.QUEUED.value
+            if code in ADMISSION_CODES:
+                deferred = await store.defer_execution(
+                    claim.task_id,
+                    claim.epoch,
+                    delay_s=DEFER_S,
+                    reason=code,
+                    max_wait_s=ADMISSION_WAIT_S,
+                    binding=claim,
+                )
+                if deferred is TaskStatus.NEEDS_ATTENTION:
+                    return deferred.value
+                if deferred is True:
+                    return TaskStatus.QUEUED.value
         else:
             # The engine ended without publishing a result (an internal error
             # it reported in-stream, or an unexpected early stop).
@@ -981,6 +1047,17 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
 
 
 async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
+    store = ctx.get("task_store")
+    if isinstance(store, TaskStore) and store._inference is not None:
+        token = invocation.set(InferenceInvocation())
+        try:
+            return await _run_chat_task(ctx, task_id)
+        finally:
+            invocation.reset(token)
+    return await _run_chat_task(ctx, task_id)
+
+
+async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     """arq job: run one attempt of a durable chat task."""
     store: TaskStore | None = ctx.get("task_store")
     if store is None:
@@ -992,6 +1069,9 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     lease_deadline = loop.time() + LEASE_S - LEASE_SAFETY_S
     try:
         claim = await store.claim(uuid.UUID(task_id), worker_id=WORKER_ID, lease_s=LEASE_S)
+    except TaskQuarantined as quarantined:
+        await settle_lost_attempt_holds(store, ctx["db_pool"], uuid.UUID(task_id))
+        return quarantined.status.value
     except ObservationBlocked as blocked:
         return blocked.status.value if isinstance(blocked, TaskControlled) else blocked.code
     if claim is None:
@@ -1012,13 +1092,15 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         # without consuming the attempt; the sweep retries later.
         logger.warning("Could not settle a lost attempt's holds; deferring", exc_info=True)
         try:
-            await store.defer_claim(
+            deferred = await store.defer_claim(
                 claim.task_id,
                 claim.epoch,
                 delay_s=DEFER_S,
                 reason="recovery_pending",
                 binding=claim,
             )
+            if deferred is TaskStatus.NEEDS_ATTENTION:
+                return deferred.value
         except Exception:
             # The database is unavailable for this write too. Nothing executed,
             # so the lease simply lapses and a later claim starts afresh
@@ -1056,14 +1138,67 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await heartbeat
     outcome = await _resolve(store, state)
+    shared = invocation.get()
+    if (
+        outcome == TaskStatus.NEEDS_ATTENTION.value
+        and claim.inference_covered
+        and shared is not None
+        and shared.uncertainty is None
+    ):
+        await settle_lost_attempt_holds(store, ctx["db_pool"], claim.task_id)
     if state.blocked is None or state.result is not None:
         await _publish(ctx.get("redis"), state, {"t": "terminal", "gen": claim.epoch})
     return outcome
 
 
+async def _settle_quarantined_holds(store: TaskStore, pool: Any) -> None:
+    """Independent accounting owner; original ledger rows survive every failed ACK."""
+    from orchestrator.entitlements.service import EntitlementService
+
+    if invocation.get() is not None:
+        raise ObservationBlocked("inherited_inference_invocation")
+    if store._pool is not pool or store._inference is None or store._inference.pool is not pool:
+        raise ObservationBlocked("inference_coverage_unavailable")
+    state = InferenceInvocation()
+    token = invocation.set(state)
+    deadline = asyncio.get_running_loop().time() + 2.0
+    try:
+        async with asyncio.timeout_at(deadline):
+            service = EntitlementService(pool, _bounded_settlement=True)
+            for task_id, reservation_id in await store._quarantine_hold_candidates():
+                # Advance only attempted work, BEFORE its first fallible await.
+                # Never a durable success marker or authority to reset a latch.
+                store._quarantine_hold_after = (task_id, reservation_id)
+                state.require_effect()
+                amount = await store._observe_quarantine_hold(task_id, reservation_id)
+                if amount is None:
+                    continue
+                state.require_effect()
+                await service.settle(
+                    reservation_id,
+                    amount,
+                    usage={"estimated_cost": True, "recovered_after_timeout": True},
+                )
+                state.require_effect()
+    except BaseException:
+        state.block("inference_accounting_unavailable")
+        raise
+    finally:
+        invocation.reset(token)
+
+
 async def sweep_tasks(ctx: dict[str, Any]) -> int:
     """arq cron: wake tasks whose wake-up was lost or whose lease expired."""
     store: TaskStore | None = ctx.get("task_store")
+    # Refuse inherited execution even before ordinary wake-up effects. Never clear
+    # an uncertain execution latch to manufacture an independent accounting pass.
+    if isinstance(store, TaskStore) and store._inference is not None:
+        if invocation.get() is not None:
+            raise ObservationBlocked("inherited_inference_invocation")
+        pool = ctx.get("db_pool")
+        if pool is not None:
+            await _settle_quarantined_holds(store, pool)
+        # A failed accounting pass propagates; no enqueue/finally effects follow.
     redis = ctx.get("redis")
     if store is None or redis is None:
         return 0

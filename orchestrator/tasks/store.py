@@ -38,6 +38,12 @@ from orchestrator.tasks._origin import (
     _classify_task_origin,
 )
 from orchestrator.tasks.inputs import CHAT_INPUT_VERSION, canonical_json
+from orchestrator.tasks._invocation import InferenceInterrupted, invocation, require_effect
+from orchestrator.tasks.inference import (
+    CODE as INFERENCE_UNRESOLVED,
+    InferenceRecovery,
+    RecoveryObservation,
+)
 from orchestrator.tasks.states import (
     ACTIVE_STATUSES,
     RetryCause,
@@ -58,6 +64,21 @@ _LEASE_HELD = "tasks.lease_expires_at > clock_timestamp()"
 
 IDEMPOTENCY_INDEX = "uq_tasks_user_idempotency"
 CONVERSATION_ACTIVE_INDEX = "uq_tasks_conversation_active"
+
+# Original OPEN ledger rows are the pending queue, never a new financial intent.
+# Only ordinary application tables here; protected provenance is observed through
+# InferenceRecovery.lock, not direct joins under the separated worker principal.
+_QUARANTINE_HOLDS = """
+    SELECT t.id AS task_id, r.id AS reservation_id, r.user_id, r.scope_id,
+           r.reserved_microusd
+    FROM tasks t
+    JOIN task_attempts a ON a.task_id=t.id AND a.epoch=t.lease_epoch
+    JOIN entitlement_reservations r ON r.scope_id=a.compute_scope_id AND r.user_id=t.user_id
+    WHERE t.status='needs_attention' AND t.terminal_code='inference_dispatch_unresolved'
+      AND t.finished_at IS NOT NULL AND t.lease_owner IS NULL AND t.lease_expires_at IS NULL
+      AND a.outcome='needs_attention' AND a.terminal_code='inference_dispatch_unresolved'
+      AND a.ended_at IS NOT NULL AND r.status='open'
+"""
 
 #: Message status mirrored onto the result message for each terminal task status.
 _MESSAGE_STATUS = {
@@ -138,6 +159,10 @@ class TaskControlled(ObservationBlocked):
         self.status = status
 
 
+class TaskQuarantined(TaskControlled):
+    """Own ACKed quarantine; permits existing ended-hold accounting, never a send."""
+
+
 class EffectRefused(TaskError):
     """A material operation may not start: the task was cancelled, its account
     suspended, or too little lease time remains. ``reason`` is
@@ -181,6 +206,7 @@ class Claim:
     task_input: dict[str, Any]
     worker_id: str
     origin: OriginalTaskOrigin
+    inference_covered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +214,7 @@ class ControlledClaim:
     """Acknowledged controller exit, with no settlement or execution authority."""
 
     status: TaskStatus
+    inference_quarantine: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,11 +258,23 @@ class CancelOutcome:
 
 class TaskStore:
     def __init__(
-        self, pool: asyncpg.Pool, encryption: ContentEncryption, memory: MemoryStore
+        self,
+        pool: asyncpg.Pool,
+        encryption: ContentEncryption,
+        memory: MemoryStore,
+        *,
+        inference_recovery: InferenceRecovery | None = None,
+        cover_new_inference: bool = False,
     ) -> None:
         self._pool = pool
         self._enc = encryption
         self._memory = memory
+        # Fixture-only explicit composition. Neither HTTP nor worker startup supplies
+        # these collaborators. Acceptor INSERT and worker EXECUTE use different roles.
+        self._inference = inference_recovery
+        self._cover_new_inference = cover_new_inference
+        # Fairness only, independent of abandoned-pass lifecycle observation.
+        self._quarantine_hold_after: tuple[uuid.UUID, uuid.UUID] | None = None
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -266,6 +305,63 @@ class TaskStore:
         if isinstance(origin, TaskOriginRefusal):
             raise ObservationBlocked(origin.code)
         return origin
+
+    def _covered(self, row: Any) -> bool:
+        value = self._open(row["input_ciphertext"]).get("_inference_recovery_version")
+        covered = type(value) is int and value == 1
+        if (
+            (value is not None and not covered)
+            or (covered and self._inference is None)
+            or (self._inference is not None and not covered)
+        ):
+            raise ObservationBlocked("inference_coverage_unavailable")
+        return covered
+
+    async def _inference_order(self, conn: Any, row: Any) -> RecoveryObservation | None:
+        require_effect()
+        if not self._covered(row):
+            return None
+        origin = self._origin(row)
+        assert self._inference is not None
+        return await self._inference.lock(
+            conn, row["user_id"], origin.generation, row["id"], int(row["lease_epoch"])
+        )
+
+    async def _inference_before_task(self, conn: Any, task_id: uuid.UUID) -> None:
+        row = await conn.fetchrow("SELECT * FROM tasks WHERE id=$1", task_id)
+        if row is None:
+            raise ObservationBlocked("task_not_owned")
+        await self._inference_order(conn, row)
+
+    async def _close_inference(self, conn: Any, row: Any, reason: str) -> None:
+        observation = await self._inference_order(conn, row)
+        if observation is not None:
+            assert self._inference is not None
+            if (
+                reason != "stale"
+                and row["status"] == "running"
+                and not row.get("lease_expired", False)
+            ):
+                if not await conn.fetchval(
+                    f"SELECT {_LEASE_HELD} FROM tasks WHERE id=$1", row["id"]
+                ):
+                    raise LeaseLost("lease lost")
+            await self._inference.close(conn, observation, reason)
+
+    async def _quarantine(self, conn: Any, row: Any) -> bool:
+        observation = await self._inference_order(conn, row)
+        if observation is None or not observation.possible:
+            return False
+        # _worker/claim authenticate the original and recheck ownership/lease before
+        # this call. No _end_attempt: that helper archives ciphertext.
+        await self._control_end(
+            conn,
+            row,
+            TaskStatus.NEEDS_ATTENTION,
+            INFERENCE_UNRESOLVED,
+            end_attempt=row["status"] == "running",
+        )
+        return True
 
     async def _account(self, conn: Any, owner: uuid.UUID) -> Any:
         if await conn.fetchval("SHOW transaction_isolation") != "read committed":
@@ -369,11 +465,19 @@ class TaskStore:
 
     @asynccontextmanager
     async def _worker(
-        self, task_id: uuid.UUID, epoch: int, binding: Claim
+        self,
+        task_id: uuid.UUID,
+        epoch: int,
+        binding: Claim,
+        *,
+        allow_interrupted: bool = False,
     ) -> AsyncIterator[tuple[Any, Any]]:
         """Actual content/requeue authority, followed by a distinct control exit."""
         try:
-            async with control_transaction(self._pool, refusals=(TaskError,)) as conn:
+            async with control_transaction(
+                self._pool, refusals=(TaskError, InferenceInterrupted)
+            ) as conn:
+                await self._inference_before_task(conn, task_id)
                 account, state = await self._account(conn, binding.user_id)
                 reason = self._refusal(account, state, binding.origin)
                 if reason:
@@ -385,7 +489,14 @@ class TaskStore:
                         row = await self._worker_row(conn, task_id, epoch, binding)
                         if row["cancel_requested_at"] is not None:
                             raise _PermissionRefused("cancelled")
+                        require_effect()
+                        shared = invocation.get()
+                        if not allow_interrupted and shared is not None and shared.call_failed:
+                            raise InferenceInterrupted(INFERENCE_UNRESOLVED)
                         yield conn, row
+                        require_effect()
+                        if not allow_interrupted and shared is not None and shared.call_failed:
+                            raise InferenceInterrupted(INFERENCE_UNRESOLVED)
                         if not await conn.fetchval(
                             "SELECT clock_timestamp() < $1::timestamptz", row["lease_expires_at"]
                         ):
@@ -445,6 +556,7 @@ class TaskStore:
     ) -> None:
         """T: no message decryption, body/trace copy or attempt archival."""
         allowed = {
+            INFERENCE_UNRESOLVED,
             "cancelled",
             "account_suspended",
             "account_unavailable",
@@ -459,11 +571,18 @@ class TaskStore:
             TaskStatus.NEEDS_ATTENTION,
         }:
             raise ObservationBlocked()
+        require_effect()
+        await self._close_inference(
+            conn, row, "cancelled" if status is TaskStatus.CANCELLED else "requested"
+        )
         possible = await self._material_possible(conn, row)
         metadata: dict[str, Any] = {
             "terminal_status": _MESSAGE_STATUS[status],
             "terminal_reason": code,
         }
+        inference = await self._inference_order(conn, row)
+        if inference is not None and inference.possible:
+            metadata["inference_dispatch_possible"] = True
         if possible:
             metadata["material_effect_possible"] = True
         now = await conn.fetchval("SELECT clock_timestamp()")
@@ -538,6 +657,7 @@ class TaskStore:
         }:
             raise ObservationBlocked()
         async with control_transaction(self._pool, refusals=(LeaseLost,)) as conn:
+            await self._inference_before_task(conn, task_id)
             account, state = await self._account(conn, binding.user_id)
             row = await self._worker_row(conn, task_id, epoch, binding)
             current = self._refusal(account, state, binding.origin)
@@ -596,6 +716,11 @@ class TaskStore:
         terminal_code: str | None,
         result_message_id: uuid.UUID,
     ) -> None:
+        require_effect()
+        row = await conn.fetchrow("SELECT * FROM tasks WHERE id=$1", task_id)
+        if row is None:
+            raise ObservationBlocked()
+        await self._close_inference(conn, row, "stale" if outcome == "lost" else "requested")
         # The result message's content column is already application-layer
         # ciphertext; copying it keeps this attempt's output for disclosure
         # after a later attempt overwrites the message.
@@ -805,6 +930,10 @@ class TaskStore:
                 "summary_origin_account_id": str(account_id),
                 "summary_origin_account_generation": generation,
             }
+            # Never trust a caller's internal coverage claim.
+            sealed_input.pop("_inference_recovery_version", None)
+            if self._cover_new_inference:
+                sealed_input["_inference_recovery_version"] = 1
             if request_canonical is not None:
                 sealed_input["_request"] = request_canonical
             # Account SHARE precedes every content lock/write on this connection,
@@ -879,6 +1008,13 @@ class TaskStore:
                     request_hash,
                     max_attempts,
                 )
+                if self._cover_new_inference:
+                    await conn.execute(
+                        "INSERT INTO public.task_inference_recovery(task_id,account_id,account_generation,protocol_version) VALUES($1,$2,$3,1)",
+                        task_id,
+                        user_id,
+                        generation,
+                    )
                 await self._append_event(conn, task_id, "accepted")
         except WriteGuardRefusal:
             # A concurrent matching acceptance may have committed after our first
@@ -993,6 +1129,74 @@ class TaskStore:
             )
         )
 
+    async def _quarantine_hold_candidates(self) -> list[tuple[uuid.UUID, uuid.UUID]]:
+        """Bounded circular page; no locks retained across financial settlement."""
+        require_effect()
+        after = self._quarantine_hold_after
+        async with control_transaction(self._pool) as conn:
+            await conn.execute(
+                "SET LOCAL lock_timeout='250ms'; SET LOCAL statement_timeout='1000ms'"
+            )
+            rows = await conn.fetch(
+                _QUARANTINE_HOLDS + " ORDER BY CASE WHEN $1::uuid IS NULL THEN false "
+                "ELSE (t.id,r.id)<=($1,$2::uuid) END, t.id,r.id LIMIT 50",
+                None if after is None else after[0],
+                None if after is None else after[1],
+            )
+        return [(r["task_id"], r["reservation_id"]) for r in rows]
+
+    async def _observe_quarantine_hold(
+        self, task_id: uuid.UUID, reservation_id: uuid.UUID
+    ) -> int | None:
+        """Authenticate original closed obligation; release ALL locks before settle."""
+        require_effect()
+        if self._inference is None or self._inference.pool is not self._pool:
+            raise ObservationBlocked("inference_coverage_unavailable")
+        async with control_transaction(self._pool) as conn:
+            await conn.execute(
+                "SET LOCAL lock_timeout='250ms'; SET LOCAL statement_timeout='1000ms'"
+            )
+            row = await conn.fetchrow("SELECT * FROM tasks WHERE id=$1", task_id)
+            if row is None or not self._covered(row):
+                raise ObservationBlocked("task_not_owned")
+            origin = self._origin(row)
+            observation = await self._inference.lock(
+                conn, row["user_id"], origin.generation, task_id, int(row["lease_epoch"])
+            )
+            # READ COMMITTED statements AFTER waits; do not trust pre-lock row data.
+            current = await conn.fetchrow("SELECT * FROM tasks WHERE id=$1", task_id)
+            if (
+                current is None
+                or not self._covered(current)
+                or self._origin(current) != origin
+                or current["lease_epoch"] != row["lease_epoch"]
+                or current["user_id"] != row["user_id"]
+            ):
+                raise ObservationBlocked("inference_origin_unavailable")
+            hold = await conn.fetchrow(
+                _QUARANTINE_HOLDS + " AND t.id=$1 AND r.id=$2", task_id, reservation_id
+            )
+            # A concurrent pass's acknowledged settlement simply removes pending work.
+            if hold is None:
+                return None
+            identity = observation.identity
+            if (
+                not observation.possible
+                or observation.closed is not True
+                or identity is None
+                or identity.financial_scope_id != hold["scope_id"]
+                or identity.account_id != hold["user_id"]
+                or not await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM entitlement_accounts WHERE user_id=$1)",
+                    hold["user_id"],
+                )
+            ):
+                raise ObservationBlocked("inference_obligation_unavailable")
+            require_effect()
+            amount = int(hold["reserved_microusd"])
+        require_effect()
+        return amount
+
     async def due_for_wakeup(
         self, *, limit: int = 50, rewake_after_s: float = 60.0
     ) -> list[tuple[uuid.UUID, int, uuid.UUID]]:
@@ -1030,6 +1234,8 @@ class TaskStore:
     async def claim(self, task_id: uuid.UUID, *, worker_id: str, lease_s: float) -> Claim | None:
         result = await self._claim(task_id, worker_id=worker_id, lease_s=lease_s)
         if isinstance(result, ControlledClaim):
+            if result.inference_quarantine:
+                raise TaskQuarantined(result.status)
             raise TaskControlled(result.status)
         return result
 
@@ -1047,6 +1253,7 @@ class TaskStore:
             owner = await conn.fetchval("SELECT user_id FROM tasks WHERE id=$1", task_id)
             if owner is None:
                 raise ObservationBlocked("task_not_owned")
+            await self._inference_before_task(conn, task_id)
             account, state = await self._account(conn, owner)
             row = await self._locked(conn, task_id)
             if row is None or row["user_id"] != owner:
@@ -1089,6 +1296,8 @@ class TaskStore:
                 return ControlledClaim(controlled)
             async with guard_content_write(conn, CapturedGeneration(owner, origin.generation)):
                 pass  # account locks survive this scope through COMMIT
+            if row["cancel_requested_at"] is None and await self._quarantine(conn, row):
+                return ControlledClaim(TaskStatus.NEEDS_ATTENTION, inference_quarantine=True)
             if row["lease_expired"]:
                 epoch = int(row["lease_epoch"])
                 # Suspension wins over a cancel or a retry, here as at
@@ -1134,6 +1343,10 @@ class TaskStore:
                 await self._finish(conn, row, TaskStatus.FAILED, "interrupted")
                 return None
 
+            # Also fence a queued ended pre-dispatch attempt whose control was
+            # left open. Due/origin/owner checks above precede this staged close.
+            await self._close_inference(conn, row, "stale")
+
             claimed = await conn.fetchrow(
                 """
                 UPDATE tasks
@@ -1173,6 +1386,7 @@ class TaskStore:
                 task_input=self._open(row["input_ciphertext"]),
                 worker_id=worker_id,
                 origin=origin,
+                inference_covered=self._covered(row),
             )
 
     async def heartbeat(
@@ -1641,7 +1855,12 @@ class TaskStore:
         binding: Claim,
     ) -> TaskStatus:
         fields = dict(message_fields or {})
-        async with self._worker(task_id, epoch, binding) as (conn, row):
+        async with self._worker(task_id, epoch, binding, allow_interrupted=True) as (conn, row):
+            shared = invocation.get()
+            if shared is not None and shared.call_failed:
+                if not await self._quarantine(conn, row):
+                    raise ObservationBlocked("inference_coverage_unavailable")
+                return TaskStatus.NEEDS_ATTENTION
             status = TaskStatus.COMPLETED
             metadata = dict(fields.pop("metadata", None) or {})
             metadata["terminal_status"] = _MESSAGE_STATUS[status]
@@ -1689,7 +1908,9 @@ class TaskStore:
         binding: Claim,
     ) -> TaskStatus:
         """End this attempt unsuccessfully and apply the retry rules."""
-        async with self._worker(task_id, epoch, binding) as (conn, row):
+        async with self._worker(task_id, epoch, binding, allow_interrupted=True) as (conn, row):
+            if await self._quarantine(conn, row):
+                return TaskStatus.NEEDS_ATTENTION
             decision = decide_after_attempt(
                 cause=cause,
                 attempt_count=int(row["attempt_count"]),
@@ -1729,7 +1950,7 @@ class TaskStore:
 
     async def defer_claim(
         self, task_id: uuid.UUID, epoch: int, *, delay_s: float, reason: str, binding: Claim
-    ) -> None:
+    ) -> TaskStatus | None:
         """Hand a claimed task back to the queue without consuming its attempt.
 
         Used when a precondition for safe admission (such as settling a lost
@@ -1737,7 +1958,9 @@ class TaskStore:
         nothing counts against ``max_attempts``; if this write also fails, the
         lease simply expires and the next claim finds no executed attempt.
         """
-        async with self._worker(task_id, epoch, binding) as (conn, row):
+        async with self._worker(task_id, epoch, binding, allow_interrupted=True) as (conn, row):
+            if await self._quarantine(conn, row):
+                return TaskStatus.NEEDS_ATTENTION
             await self._end_attempt(
                 conn, task_id, epoch, "deferred", reason, row["result_message_id"]
             )
@@ -1764,7 +1987,7 @@ class TaskStore:
         max_wait_s: float,
         before_dispatch: bool = False,
         binding: Claim,
-    ) -> bool:
+    ) -> bool | TaskStatus:
         """Re-queue an attempt the account refused admission, returning its attempt.
 
         A concurrency or rate refusal of the attempt's first reservation means
@@ -1779,7 +2002,9 @@ class TaskStore:
         counted, so no provider call can have been made; reservations from
         preparation (memory retrieval) do not prevent the deferral.
         """
-        async with self._worker(task_id, epoch, binding) as (conn, row):
+        async with self._worker(task_id, epoch, binding, allow_interrupted=True) as (conn, row):
+            if await self._quarantine(conn, row):
+                return TaskStatus.NEEDS_ATTENTION
             check = await conn.fetchrow(
                 """
                 SELECT t.created_at > now() - make_interval(secs => $3)
@@ -1863,6 +2088,12 @@ class TaskStore:
 
     async def request_cancel(self, user_id: uuid.UUID, task_id: uuid.UUID) -> CancelOutcome:
         async with control_transaction(self._pool, refusals=(TaskNotFound,)) as conn:
+            preliminary = await conn.fetchrow(
+                "SELECT * FROM tasks WHERE id=$1 AND user_id=$2", task_id, user_id
+            )
+            if preliminary is None:
+                raise TaskNotFound("task not found")
+            await self._inference_order(conn, preliminary)
             await self._account(conn, user_id)
             row = await conn.fetchrow(
                 "SELECT * FROM tasks WHERE id = $1 AND user_id = $2 FOR UPDATE", task_id, user_id

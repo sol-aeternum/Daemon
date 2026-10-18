@@ -645,47 +645,248 @@ async def test_real_store_statement_errors_and_bounded_account_barrier(db):
 
 @pytest.mark.asyncio
 async def test_natural_deadlock_through_store_not_classifier(db):
+    from contextlib import AsyncExitStack
+
     async with db.connection("postgres") as admin, db.connection() as owner:
         # Synthetic cluster only. 10ms detector lets the real deadlock beat the
         # store's 250ms lock timeout; the opposing connection detects at 5s.
         await admin.execute(f"ALTER ROLE md_app IN DATABASE {db.name} SET deadlock_timeout='10ms'")
         a, b = await db.account(owner), await db.account(owner)
-        await owner.execute(f"""CREATE FUNCTION public.md_deadlock() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN PERFORM 1 FROM public.entitlement_accounts WHERE user_id='{b}'::uuid FOR UPDATE; RETURN NEW; END $$;
-            CREATE TRIGGER md_deadlock BEFORE INSERT ON public.compute_scope_metadata FOR EACH ROW EXECUTE FUNCTION public.md_deadlock();""")
-        async with db.pool() as pool, db.connection("postgres") as opponent:
-            await opponent.execute(
-                "BEGIN; SET LOCAL deadlock_timeout='5s'; SET LOCAL statement_timeout='3s'"
+        key = uuid4().int
+        key1, key2 = key & 0x7FFFFFFF, (key >> 32) & 0x7FFFFFFF
+        gate_state = "not_acquired"
+        gate_deadline = None
+        adapter_pid = None
+        opponent = None
+        job = other = None
+        primary_error = None
+        loop = asyncio.get_running_loop()
+
+        async def remember_adapter(conn):
+            nonlocal adapter_pid
+            assert adapter_pid is None, "fixture unexpectedly acquired another adapter connection"
+            adapter_pid = conn.get_server_pid()
+            settings = await conn.fetchrow("""SELECT current_user AS role,
+                session_user AS session_role, current_database() AS database,
+                current_setting('deadlock_timeout') AS deadlock_timeout,
+                current_setting('lock_timeout') AS lock_timeout,
+                current_setting('statement_timeout') AS statement_timeout""")
+            assert settings["role"] == "md_app" and settings["database"] == db.name
+            assert settings["deadlock_timeout"] == "10ms"
+            db.cluster.record(
+                "corrected_deadlock_adapter_init",
+                pid=adapter_pid,
+                point="before_store_transaction_not_effective_SET_LOCAL",
+                settings=dict(settings),
             )
-            await opponent.execute(
-                "SELECT 1 FROM entitlement_accounts WHERE user_id=$1 FOR UPDATE", b
-            )
-            ident = m.new_scope_metadata_identity(account_id=a)
-            job = asyncio.create_task(m.ComputeMetadataStore(pool).create_scope(ident))
+
+        async def release_gate(deadline):
+            nonlocal gate_state
+            assert gate_state == "held"
+            gate_state = "releasing"  # unknown acknowledgment must not cause a repeated unlock
             try:
-                # Observe the actual store waiter, then close the cycle.
-                async with asyncio.timeout(1):
-                    while not await admin.fetchval(
-                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND usename='md_app' AND wait_event_type='Lock')",
-                        db.name,
-                    ):
+                async with asyncio.timeout_at(deadline):
+                    assert (
+                        await admin.fetchval(
+                            "SELECT pg_advisory_unlock($1::int,$2::int)", key1, key2
+                        )
+                        is True
+                    )
+            except BaseException:
+                gate_state = "uncertain"
+                raise
+            gate_state = "released"
+
+        proof_sql = """SELECT a.pid AS adapter_pid, b.pid AS opponent_pid,
+            a.backend_xid::text AS adapter_xid, b.backend_xid::text AS opponent_xid,
+            a.query AS adapter_query, b.query AS opponent_query,
+            clock_timestamp()::text AS observed_at, g.waitstart::text AS gate_waitstart,
+            extract(epoch FROM (clock_timestamp()-g.waitstart))::float8 AS gate_age_s,
+            pg_blocking_pids(a.pid) AS adapter_blockers,
+            pg_blocking_pids(b.pid) AS opponent_blockers,
+            EXISTS(SELECT 1 FROM pg_locks c WHERE c.pid=$3 AND c.locktype='advisory'
+                AND c.classid::bigint=$4 AND c.objid::bigint=$5 AND c.objsubid=2
+                AND c.mode='ExclusiveLock' AND c.granted) AS gate_owner,
+            (b.wait_event_type='Lock' AND EXISTS(SELECT 1 FROM pg_locks t
+                WHERE t.pid=b.pid AND t.locktype='transactionid' AND t.mode='ShareLock'
+                AND NOT t.granted AND t.transactionid=a.backend_xid)) AS opposing_edge,
+            (SELECT t.waitstart::text FROM pg_locks t WHERE t.pid=b.pid
+                AND t.locktype='transactionid' AND t.mode='ShareLock'
+                AND NOT t.granted AND t.transactionid=a.backend_xid LIMIT 1) AS opponent_waitstart
+            FROM pg_stat_activity a JOIN pg_locks g ON g.pid=a.pid
+            JOIN pg_stat_activity b ON b.pid=$2 AND b.datname=$6 AND b.usename='postgres'
+            WHERE a.pid=$1 AND a.datname=$6 AND a.usename='md_app'
+                AND a.wait_event_type='Lock' AND g.locktype='advisory'
+                AND g.classid::bigint=$4 AND g.objid::bigint=$5 AND g.objsubid=2
+                AND g.mode='ExclusiveLock' AND NOT g.granted"""
+
+        async with AsyncExitStack() as resources:
+            try:
+                gate_state = "acquiring"
+                assert (
+                    await admin.fetchval("SELECT pg_try_advisory_lock($1::int,$2::int)", key1, key2)
+                    is True
+                )
+                gate_state = "held"
+                await owner.execute(f"""CREATE FUNCTION public.md_deadlock() RETURNS trigger LANGUAGE plpgsql AS $$
+                    BEGIN PERFORM pg_advisory_xact_lock({key1},{key2});
+                    PERFORM 1 FROM public.entitlement_accounts WHERE user_id='{b}'::uuid FOR UPDATE; RETURN NEW; END $$;
+                    CREATE TRIGGER md_deadlock BEFORE INSERT ON public.compute_scope_metadata FOR EACH ROW EXECUTE FUNCTION public.md_deadlock();""")
+                pool = await resources.enter_async_context(db.pool(init=remember_adapter))
+                opponent = await resources.enter_async_context(db.connection("postgres"))
+                await opponent.execute(
+                    "BEGIN; SET LOCAL deadlock_timeout='5s'; SET LOCAL statement_timeout='3s'"
+                )
+                settings = await opponent.fetchrow("""SELECT current_user AS role,
+                    session_user AS session_role, current_database() AS database,
+                    current_setting('deadlock_timeout') AS deadlock_timeout,
+                    current_setting('lock_timeout') AS lock_timeout,
+                    current_setting('statement_timeout') AS statement_timeout""")
+                assert (
+                    settings["deadlock_timeout"] == "5s" and settings["statement_timeout"] == "3s"
+                )
+                db.cluster.record(
+                    "corrected_deadlock_opponent_settings",
+                    pid=opponent.get_server_pid(),
+                    settings=dict(settings),
+                )
+                await opponent.execute(
+                    "SELECT 1 FROM entitlement_accounts WHERE user_id=$1 FOR UPDATE", b
+                )
+                ident = m.new_scope_metadata_identity(account_id=a)
+                started = loop.time()
+                outer_deadline = started + 1
+                # Also bound discovery before the first server waitstart receipt.
+                # Starting earlier than A's gate wait can only shorten its budget.
+                gate_deadline = started + 0.150
+                job = asyncio.create_task(m.ComputeMetadataStore(pool).create_scope(ident))
+
+                async def proof():
+                    nonlocal gate_deadline
+                    assert gate_deadline is not None and loop.time() < gate_deadline
+                    assert job is not None and not job.done(), "adapter ended before cycle proof"
+                    if adapter_pid is None:
+                        return None
+                    query_started = loop.time()
+                    async with asyncio.timeout_at(gate_deadline):
+                        row = await admin.fetchrow(
+                            proof_sql,
+                            adapter_pid,
+                            opponent.get_server_pid(),
+                            admin.get_server_pid(),
+                            key1,
+                            key2,
+                            db.name,
+                        )
+                    if row is None:
+                        return None
+                    assert row["gate_owner"] and row["adapter_blockers"] == [admin.get_server_pid()]
+                    age = row["gate_age_s"]
+                    assert age is not None and 0 <= age < 0.150, (
+                        "fixture gate proof budget exhausted"
+                    )
+                    # Anchor at query START: response/observation delay cannot extend it.
+                    gate_deadline = min(gate_deadline, outer_deadline, query_started + 0.150 - age)
+                    assert loop.time() < gate_deadline, "fixture gate proof arrived too late"
+                    return row
+
+                async with asyncio.timeout_at(outer_deadline):
+                    while await proof() is None:
                         await asyncio.sleep(0.005)
                 other = asyncio.create_task(
                     opponent.execute(
                         "SELECT 1 FROM entitlement_accounts WHERE user_id=$1 FOR UPDATE", a
                     )
                 )
+                async with asyncio.timeout_at(gate_deadline):
+                    while True:
+                        row = await proof()
+                        assert row is not None, (
+                            "adapter lost the fixture gate before opposing proof"
+                        )
+                        assert not other.done(), "opponent ended before cycle proof"
+                        if row["opposing_edge"] and row["opponent_blockers"] == [adapter_pid]:
+                            break
+                        await asyncio.sleep(0.005)
+                    db.cluster.record(
+                        "corrected_deadlock_pre_release_graph",
+                        database=db.name,
+                        admin_pid=admin.get_server_pid(),
+                        gate_key=[key1, key2],
+                        proof=dict(row),
+                        gate_budget_s=0.150,
+                    )
+                    assert not job.done() and not other.done() and loop.time() < gate_deadline
+                    await release_gate(gate_deadline)
                 with pytest.raises(m.ComputeMetadataUnavailable) as caught:
                     await job
                 assert caught.value.sqlstate == "40P01" and caught.value.identity is ident
                 assert not caught.value.commit_acknowledged
                 await other
-                db.cluster.record("actual_adapter_deadlock", sqlstate="40P01", natural_cycle=True)
+                db.cluster.record(
+                    "actual_adapter_deadlock",
+                    sqlstate="40P01",
+                    natural_cycle=True,
+                    qualification="corrected_fixture_not_observation_diagnostic",
+                )
+            except BaseException as exc:
+                primary_error = exc
+                raise
             finally:
-                await opponent.execute("ROLLBACK")
-                if not job.done():
-                    job.cancel()
-                    await asyncio.gather(job, return_exceptions=True)
+                cleanup_errors = []
+                if gate_state == "held":
+                    if gate_deadline is None or loop.time() >= gate_deadline:
+                        # No new unlock budget/retry: the existing admin connection
+                        # context closes its session as the documented backstop.
+                        gate_state = "admin_close_backstop"
+                        cleanup_errors.append(
+                            AssertionError("Fixture gate deadline unavailable or expired")
+                        )
+                    else:
+                        try:
+                            await release_gate(gate_deadline)
+                        except BaseException as exc:
+                            cleanup_errors.append(exc)
+                tasks = {task for task in (job, other) if task is not None}
+                try:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    if tasks:
+                        done, pending = await asyncio.wait(tasks, timeout=0.7)
+                        for task in done:
+                            if not task.cancelled():
+                                error = (
+                                    task.exception()
+                                )  # retrieve, never hide unknown task outcomes
+                                if error is not None:
+                                    db.cluster.record(
+                                        "corrected_deadlock_task_outcome",
+                                        type=type(error).__name__,
+                                        sqlstate=getattr(error, "sqlstate", None),
+                                    )
+                        assert not pending, (
+                            "owned fixture tasks unfinished; skip concurrent rollback"
+                        )
+                    if opponent is not None:
+                        await opponent.execute("ROLLBACK")
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                db.cluster.record(
+                    "corrected_deadlock_cleanup",
+                    gate_state=gate_state,
+                    owned_tasks=len(tasks),
+                    terminal_tasks=sum(task.done() for task in tasks),
+                    errors=[type(exc).__name__ for exc in cleanup_errors],
+                )
+                if cleanup_errors:
+                    if primary_error is not None:
+                        for exc in cleanup_errors:
+                            primary_error.add_note(
+                                f"Owned fixture cleanup failure: {type(exc).__name__}: {exc}"
+                            )
+                    else:
+                        raise BaseExceptionGroup("Owned fixture cleanup failures", cleanup_errors)
 
 
 @pytest.mark.asyncio

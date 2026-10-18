@@ -51,7 +51,11 @@ def migration_sql_for_schema(path: Path, schema: str, *, schema_prefix: str | No
     if not owned:
         raise ValueError("expected an owned durable-test schema")
     sql = path.read_text()
-    if path.name not in ("048_compute_metadata.sql", "049_attempt_lifecycle.sql"):
+    if path.name not in (
+        "048_compute_metadata.sql",
+        "049_attempt_lifecycle.sql",
+        "050_task_inference_recovery.sql",
+    ):
         return sql
     return sql.replace("public.", namespace + ".").replace(
         "n.nspname='public'", f"n.nspname='{schema}'"

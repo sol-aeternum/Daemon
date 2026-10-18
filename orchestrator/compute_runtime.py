@@ -27,6 +27,7 @@ import math
 import inspect
 import logging
 import re
+import sys
 import uuid
 import asyncio
 import time
@@ -64,6 +65,19 @@ from orchestrator.entitlements.errors import (
     ReservationRecoveryUnresolved,
 )
 from orchestrator.config import get_settings
+from orchestrator.attempt_lifecycle import AttemptIdentity
+from orchestrator.services.account_control.transaction import ObservationBlocked
+from orchestrator.tasks._invocation import (
+    InferenceInterrupted,
+    InferenceInvocation,
+    invocation,
+    require_effect,
+)
+from orchestrator.tasks.inference import (
+    CODE as INFERENCE_UNRESOLVED,
+    NOTICE as INFERENCE_NOTICE,
+    InferenceRecovery,
+)
 
 logger = logging.getLogger(__name__)
 STREAM_CLOSE_TIMEOUT_S = 2.0
@@ -309,6 +323,8 @@ def compute_error(exc: BaseException) -> ComputeUnavailable | None:
     """Sanitized client-facing capacity error for ``exc``, or None if it is not one."""
     if isinstance(exc, ComputeUnavailable):
         return exc
+    if isinstance(exc, InferenceInterrupted):
+        return ComputeUnavailable(INFERENCE_UNRESOLVED, INFERENCE_NOTICE)
     if isinstance(exc, AccountSuspended):
         return ComputeUnavailable("account_suspended", "Account compute is suspended")
     if isinstance(exc, AccountError):
@@ -353,6 +369,9 @@ class ComputeScope:
     # Independent of outstanding: settlement must not lose a live cleanup owner.
     streams: set[_StreamControl] = field(default_factory=set)
     closed: bool = False
+    inference_identity: AttemptIdentity | None = None
+    inference_recovery: InferenceRecovery | None = None
+    inference_invocation: InferenceInvocation | None = None
 
     async def close_stream(self, hold: ReservationHold) -> None:
         """Close acquired transport even when its iterator was never advanced."""
@@ -367,6 +386,7 @@ class ComputeScope:
         usage: dict[str, Any] | None = None,
         path: str = "unspecified",
     ) -> None:
+        self.require_inference_effect()
         key = _hold_key(reservation)
         hold = self.outstanding.get(key)
         if hold is None:
@@ -395,6 +415,7 @@ class ComputeScope:
             }
 
             async def settle_once() -> Any:
+                self.require_inference_effect()
                 if has_usage:
                     result = await self.service.settle(reservation, amount, usage=usage)
                 else:
@@ -418,14 +439,72 @@ class ComputeScope:
             )
         try:
             await asyncio.shield(hold.settlement)
-        except Exception:
-            raise ComputeUnavailable(
-                "settlement_failed",
-                "Reservation settlement failed",
-                category=FAILURE_SETTLEMENT_FAILED,
-            ) from None
+        except BaseException as exc:
+            if self.inference_invocation is not None:
+                self.inference_invocation.block("inference_settlement_unavailable")
+            elif isinstance(exc, Exception):
+                raise ComputeUnavailable(
+                    "settlement_failed",
+                    "Reservation settlement failed",
+                    category=FAILURE_SETTLEMENT_FAILED,
+                ) from None
+            raise
         self.settled[key] = amount
         self.outstanding.pop(key, None)
+
+    def require_inference_effect(self) -> None:
+        """Validate a covered binding without forbidding known-hold accounting."""
+        state = self.inference_invocation
+        current = invocation.get()
+        covered = any(
+            value is not None
+            for value in (
+                state,
+                current,
+                self.inference_identity,
+                self.inference_recovery,
+            )
+        )
+        if not covered:
+            return
+        if (
+            state is None
+            or (current is not None and current is not state)
+            or self.inference_identity is None
+            or self.inference_recovery is None
+            or self.inference_identity.account_id != self.user_id
+            or self.inference_identity.financial_scope_id != self.scope_id
+        ):
+            for known in (state, current):
+                if known is not None:
+                    known.block("inference_identity_unavailable")
+            raise ObservationBlocked("inference_identity_unavailable")
+        state.require_effect()
+
+    def require_inference(self) -> None:
+        self.require_inference_effect()
+        if self.inference_invocation is None:
+            return
+        self.inference_invocation.require_send()
+        if self.closed:
+            raise InferenceInterrupted(INFERENCE_UNRESOLVED)
+
+    async def reserve_inference(self, amount: int, **options: Any) -> Any:
+        """Choose the existing financial entrypoint; never recover a send grant."""
+        self.require_inference()
+        if self.inference_invocation is None:
+            return await self.service.reserve(
+                self.user_id, amount, scope_id=self.scope_id, **options
+            )
+        assert self.inference_identity is not None
+        try:
+            return await self.service.reserve_for_attempt(
+                self.inference_identity, amount, **options
+            )
+        except BaseException as exc:
+            if getattr(exc, "rollback_acknowledged", False) is not True:
+                self.inference_invocation.block("inference_reservation_unavailable")
+            raise
 
 
 @dataclass
@@ -449,13 +528,17 @@ class _StreamControl:
 
     def __init__(self, scope: ComputeScope, response: Any, deadline: float) -> None:
         self.scope = scope
+        # Bind once: a later ContextVar reset or scope mutation is not authority.
+        self.invocation = scope.inference_invocation
         self.response = response
         self.deadline = deadline
         self.state = "open"
         self.cleanup_outcome: str | None = None
+        self.cleanup_blocked = False
         self.iterator: AsyncIterator[Any] | None = None
         self.reading: asyncio.Task[Any] | None = None
         self.closer: asyncio.Task[None] | None = None
+        self.close_awaitable: Any = None
         self.closing: asyncio.Task[None] | None = None
         loop = asyncio.get_running_loop()
         self.stopped: asyncio.Future[None] = loop.create_future()
@@ -467,7 +550,24 @@ class _StreamControl:
             self.state = "expired"
             self.stop()
 
-    def stop(self) -> asyncio.Task[None]:
+    def cleanup_fenced(self) -> bool:
+        """Local unresolved receipt only; no transport work or publication."""
+        if self.invocation is None or self.invocation.uncertainty is None:
+            return False
+        self.cleanup_blocked = True
+        if self.cleanup_outcome is None:
+            self.cleanup_outcome = "invocation_uncertain"
+        if self.state == "open":
+            self.state = "closed"
+        if not self.stopped.done():
+            self.stopped.set_result(None)
+        return True
+
+    def stop(self) -> asyncio.Future[None]:
+        if self.cleanup_fenced():
+            # The existing stopped Future means LOCAL stop, not transport closure.
+            # An existing owner may still be observed; never create a dummy Task.
+            return self.closing if self.closing is not None else self.stopped
         # No await between the terminal latch and registration of its sole owner.
         if self.state == "open":
             self.state = "closed"
@@ -484,8 +584,13 @@ class _StreamControl:
 
     def _observe(self, task: asyncio.Task[Any]) -> None:
         _consume_close_result(task)
+        self.cleanup_fenced()
         tasks = (self.reading, self.closer, self.closing)
-        if self.closing is not None and all(t is None or t.done() for t in tasks):
+        if (
+            not self.cleanup_blocked
+            and self.closing is not None
+            and all(t is None or t.done() for t in tasks)
+        ):
             self.scope.streams.discard(self)
 
     def _uncertain(self, reason: str) -> None:
@@ -493,10 +598,16 @@ class _StreamControl:
         logger.warning("Upstream inference stream cleanup uncertain (%s)", reason)
 
     async def _cleanup(self) -> None:
+        if self.cleanup_fenced():
+            return
         end = asyncio.get_running_loop().time() + STREAM_CLOSE_TIMEOUT_S
         if self.reading is not None and not self.reading.done():
+            if self.cleanup_fenced():
+                return
             self.reading.cancel()
             done, _ = await asyncio.wait({self.reading}, timeout=STREAM_CLOSE_TIMEOUT_S)
+            if self.cleanup_fenced():
+                return
             if not done:
                 # Calling aclose concurrently with a running anext is unsafe.
                 # Keep the read referenced/observed, but do not await it forever.
@@ -504,21 +615,35 @@ class _StreamControl:
                 return
 
         async def close_transport() -> None:
+            if self.cleanup_fenced():
+                return
             closer = getattr(self.response, "aclose", None)
+            if self.cleanup_fenced():
+                return
             if not callable(closer):
                 closer = getattr(self.response, "close", None)
+                if self.cleanup_fenced():
+                    return
             if not callable(closer):
                 self._uncertain("no_closer")
                 return
-            result = closer()
+            result = self.close_awaitable = closer()
+            # The synchronous SDK call itself may close the shared fence. An
+            # already returned awaitable is owned here, but starting it is not.
+            if self.cleanup_fenced():
+                return
             if inspect.isawaitable(result):
                 await result
 
+        if self.cleanup_fenced():
+            return
         self.closer = asyncio.create_task(close_transport())
         self.closer.add_done_callback(self._observe)
         done, _ = await asyncio.wait(
             {self.closer}, timeout=max(0, end - asyncio.get_running_loop().time())
         )
+        if self.cleanup_fenced():
+            return
         if not done:
             self.closer.cancel()
             self._uncertain("close_timeout")
@@ -529,7 +654,13 @@ class _StreamControl:
             # only return from the local method, never verified remote shutdown.
             self.cleanup_outcome = "close_returned"
 
+    def _require_effect(self) -> None:
+        if self.cleanup_fenced():
+            assert self.invocation is not None
+            self.invocation.require_effect()
+
     def _check_open(self) -> None:
+        self._require_effect()
         if self.state == "open" and asyncio.get_running_loop().time() >= self.deadline:
             self.expire()
         if self.state == "expired":
@@ -543,8 +674,10 @@ class _StreamControl:
             raise RuntimeError("Concurrent upstream inference stream read")
 
         async def read() -> Any:
+            self._check_open()
             if self.iterator is None:
                 self.iterator = aiter(self.response)
+            self._check_open()  # aiter may itself execute SDK/user hooks
             return await anext(self.iterator)
 
         task = self.reading = asyncio.create_task(read())
@@ -576,8 +709,17 @@ class _MeteredStream(AsyncIterator[Any]):
     async def _close_iterator(self) -> None:
         # Call only after the pull has unwound. Concurrent explicit close and
         # pull-finally must join one generator finalizer, including its settlement.
+        if self.control().cleanup_fenced():
+            # Existing finalizer ownership/callback remains; uncertainty is not
+            # permission to initiate another (potentially indefinite) join.
+            return
         if self.closing is None:
-            self.closing = asyncio.create_task(self.iterator.aclose())
+
+            async def close_iterator() -> None:
+                if not self.control().cleanup_fenced():
+                    await self.iterator.aclose()
+
+            self.closing = asyncio.create_task(close_iterator())
             self.closing.add_done_callback(_consume_close_result)
         await asyncio.shield(self.closing)
 
@@ -591,14 +733,24 @@ class _MeteredStream(AsyncIterator[Any]):
             raise RuntimeError("Concurrent metered inference stream read")
         self.pulling = True
         try:
+            self.control()._require_effect()
             chunk = await anext(self.iterator)
+            self.control()._require_effect()
             if self.closed:
                 raise StopAsyncIteration
             return chunk
         finally:
+            primary_error = sys.exception()
             self.pulling = False
             if self.closed:
-                await self._close_iterator()
+                try:
+                    await self._close_iterator()
+                except BaseException as cleanup_error:
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(
+                        f"Iterator cleanup failed ({type(cleanup_error).__name__})"
+                    )
 
     async def aclose(self) -> None:
         self.closed = True
@@ -627,6 +779,8 @@ async def account_compute(
     profile: str = "routine",
     expected_period: str | None = None,
     request_id: str | None = None,
+    inference_identity: AttemptIdentity | None = None,
+    inference_recovery: InferenceRecovery | None = None,
 ) -> AsyncIterator[ComputeScope]:
     """Account scope for one operation. ``background`` marks worker jobs: charged
     to the budget, but never counted against rate or concurrency ceilings."""
@@ -648,10 +802,60 @@ async def account_compute(
     scope.account_allow_premium = account_profile.allow_premium
     scope.request_id = request_id
     scope.profile = profile
-    await scope.service.reconcile_expired_reservations(
-        user_id,
-        before=datetime.now(timezone.utc) - timedelta(seconds=2 * get_settings().request_timeout_s),
+    parent = _scope.get()
+    current = invocation.get()
+    inherited = parent.inference_invocation if parent else None
+    parent_covered = parent is not None and any(
+        value is not None
+        for value in (
+            inherited,
+            parent.inference_identity,
+            parent.inference_recovery,
+        )
     )
+    if (
+        parent is not None
+        and parent_covered
+        and (
+            (current is not None and current is not inherited)
+            or (inference_identity is not None and inference_identity != parent.inference_identity)
+            or (
+                inference_recovery is not None
+                and inference_recovery is not parent.inference_recovery
+            )
+        )
+    ):
+        for known in (current, inherited):
+            if known is not None:
+                known.block("inference_identity_unavailable")
+        raise ObservationBlocked("inference_identity_unavailable")
+    scope.inference_invocation = inherited if parent_covered else current
+    scope.inference_identity = (
+        inference_identity
+        if inference_identity is not None
+        else (parent.inference_identity if parent else None)
+    )
+    scope.inference_recovery = (
+        inference_recovery
+        if inference_recovery is not None
+        else (parent.inference_recovery if parent else None)
+    )
+    if scope.inference_identity is not None:
+        scope.scope_id = scope.inference_identity.financial_scope_id
+    scope.require_inference()
+    if scope.inference_invocation is not None:
+        scope.require_inference()
+        assert scope.inference_identity is not None
+        if scope.inference_identity.account_id != user_id:
+            scope.inference_invocation.block("inference_identity_unavailable")
+            scope.inference_invocation.require_effect()
+        scope.scope_id = scope.inference_identity.financial_scope_id
+    else:
+        await scope.service.reconcile_expired_reservations(
+            user_id,
+            before=datetime.now(timezone.utc)
+            - timedelta(seconds=2 * get_settings().request_timeout_s),
+        )
     if extended and "extended_agents" not in (await scope.service.resolve(user_id)).capabilities:
         raise ComputeUnavailable(
             "extended_agents_exhausted",
@@ -677,6 +881,7 @@ async def account_compute(
         exit_status = _exit_label(exc)
         raise
     finally:
+        primary_error = sys.exception()
         try:
             # Latch all transport owners before any await or financial cleanup.
             # Settled holds may already have left outstanding.
@@ -687,15 +892,22 @@ async def account_compute(
                 try:
                     await scope.close_stream(hold)
                 finally:
-                    await scope.settle(
-                        hold.reservation,
-                        hold.actual if hold.actual is not None else hold.bound,
-                        usage=hold.final_usage,
-                        path="scope_cleanup",
-                    )
+                    if (
+                        scope.inference_invocation is None
+                        or scope.inference_invocation.uncertainty is None
+                    ):
+                        await scope.settle(
+                            hold.reservation,
+                            hold.actual if hold.actual is not None else hold.bound,
+                            usage=hold.final_usage,
+                            path="scope_cleanup",
+                        )
 
             settlements = [
-                asyncio.create_task(cleanup(hold)) for hold in tuple(scope.outstanding.values())
+                asyncio.create_task(cleanup(hold))
+                for hold in tuple(scope.outstanding.values())
+                if scope.inference_invocation is None
+                or scope.inference_invocation.uncertainty is None
             ]
             if settlements or stream_cleanup:
                 results = await asyncio.gather(
@@ -705,6 +917,10 @@ async def account_compute(
                 for result in results:
                     if isinstance(result, BaseException):
                         raise result
+        except BaseException as cleanup_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(f"Scope cleanup failed ({type(cleanup_error).__name__})")
         finally:
             _scope.reset(token)
             _emit_scope_close(scope, exit_status)
@@ -885,15 +1101,20 @@ class ToolCallCharge:
     only the initial state establishes a known zero provider outcome.
     """
 
-    __slots__ = ("_dispatch_aware", "_hold", "_state", "_units")
+    __slots__ = ("_dispatch_aware", "_hold", "_state", "_units", "_invocation")
 
     def __init__(
-        self, *, dispatch_aware: bool = False, hold: ReservationHold | None = None
+        self,
+        *,
+        dispatch_aware: bool = False,
+        hold: ReservationHold | None = None,
+        inference_invocation: InferenceInvocation | None = None,
     ) -> None:
         self._dispatch_aware = dispatch_aware
         self._hold = hold
         self._state = "pre_dispatch"
         self._units = 1
+        self._invocation = inference_invocation
 
     @property
     def confirmed(self) -> bool:
@@ -909,6 +1130,15 @@ class ToolCallCharge:
 
     def mark_dispatched(self) -> None:
         """Irreversibly leave known-zero state immediately before network I/O."""
+        current = invocation.get()
+        if current is not None and current is not self._invocation:
+            current.block("inference_identity_unavailable")
+            if self._invocation is not None:
+                self._invocation.block("inference_identity_unavailable")
+            raise ObservationBlocked("inference_identity_unavailable")
+        require_effect()
+        if self._invocation is not None:
+            self._invocation.require_send()
         if self._state != "pre_dispatch":
             raise RuntimeError("Tool dispatch was already marked or confirmed")
         if self._hold is not None:
@@ -980,6 +1210,7 @@ async def metered_tool_call(
     finish outside the work deadline and never dispatches provider work.
     """
     active = scope if scope is not None else current_scope()
+    active.require_inference()
     if type(dispatch_aware) is not bool:
         raise ValueError("Tool dispatch tracking must be explicitly boolean")
     if work_deadline is not None and (not dispatch_aware or not math.isfinite(work_deadline)):
@@ -994,8 +1225,7 @@ async def metered_tool_call(
             else {}
         )
         try:
-            reservation = await active.service.reserve(
-                active.user_id,
+            reservation = await active.reserve_inference(
                 approval.ceiling_microusd,
                 operation=active.operation,
                 provider=approval.provider,
@@ -1004,10 +1234,12 @@ async def metered_tool_call(
                 extended=active.extended,
                 extended_run=first_extended,
                 background=active.background,
-                scope_id=active.scope_id,
                 **reserve_options,
             )
         except ReservationCommitUncertain as exc:
+            if active.inference_invocation is not None:
+                active.inference_invocation.block("tool_reservation_unavailable")
+                raise
             receipt: ReservationReceipt = exc.receipt
             # Receipt identity survives even when its committed outcome cannot
             # currently be established. Scope cleanup revalidates this receipt
@@ -1105,7 +1337,11 @@ async def metered_tool_call(
                     acquisition = asyncio.create_task(acquire_and_register(first_extended))
                     try:
                         reservation = await asyncio.shield(acquisition)
-                    except BaseException:
+                    except BaseException as exc:
+                        if active.inference_invocation is not None:
+                            if not acquisition.done() or isinstance(exc, asyncio.CancelledError):
+                                active.inference_invocation.block("tool_reservation_unavailable")
+                            raise
 
                         async def recover_acquisition() -> None:
                             try:
@@ -1141,6 +1377,8 @@ async def metered_tool_call(
         raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
     except ComputeUnavailable:
         raise
+    except (InferenceInterrupted, ObservationBlocked):
+        raise
     except EntitlementsError as exc:
         raise compute_error(exc) or ComputeUnavailable(
             "account_unavailable", "Account compute unavailable"
@@ -1151,6 +1389,7 @@ async def metered_tool_call(
     charge = ToolCallCharge(
         dispatch_aware=dispatch_aware,
         hold=active.outstanding[_hold_key(reservation)] if dispatch_aware else None,
+        inference_invocation=active.inference_invocation,
     )
     try:
         approved_tool_service(
@@ -1169,6 +1408,7 @@ async def metered_tool_call(
         await active.settle(reservation, 0, path="tool_not_dispatched")
         raise
     try:
+        active.require_inference()
         yield charge
     finally:
         await _settle_tool_hold(active, reservation, approval, charge=charge)
@@ -1177,14 +1417,38 @@ async def metered_tool_call(
 class EmbeddingCallCharge:
     """Dispatch state and a validated input-token receipt for one embedding POST."""
 
-    def __init__(self, hold: ReservationHold, route: EmbeddingRoutePolicy) -> None:
+    def __init__(
+        self, hold: ReservationHold, route: EmbeddingRoutePolicy, *, scope: ComputeScope
+    ) -> None:
         self._hold = hold
         self._route = route
+        # Retain the admitted binding, not whatever a later context/scope exposes.
+        self._scope = scope
+        self._invocation = scope.inference_invocation
+        self._identity = scope.inference_identity
+        self._recovery = scope.inference_recovery
         self._state = "pre_dispatch"
         self.input_tokens: int | None = None
         self.actual: int | None = None
 
+    def _require_effect(self) -> None:
+        if (
+            self._scope.inference_invocation is not self._invocation
+            or self._scope.inference_identity != self._identity
+            or self._scope.inference_recovery is not self._recovery
+        ):
+            for known in (self._invocation, self._scope.inference_invocation, invocation.get()):
+                if known is not None:
+                    known.block("inference_identity_unavailable")
+            raise ObservationBlocked("inference_identity_unavailable")
+        self._scope.require_inference_effect()
+
     def mark_dispatched(self) -> None:
+        self._require_effect()
+        if self._invocation is not None:
+            self._invocation.require_send()
+            if self._scope.closed:
+                raise InferenceInterrupted(INFERENCE_UNRESOLVED)
         if self._state != "pre_dispatch" or self._hold.settlement is not None:
             raise ComputeUnavailable(
                 "settlement_conflict",
@@ -1195,6 +1459,9 @@ class EmbeddingCallCharge:
         self._state = "dispatched"
 
     def confirm(self, *, input_tokens: int, actual_microusd: int) -> None:
+        # A sound receipt is still account-able after a known local interruption;
+        # unlike a send, it must not consult the lease/cancel/send callback.
+        self._require_effect()
         if self._state != "dispatched":
             raise RuntimeError("Embedding confirmation requires one marked dispatch")
         if type(input_tokens) is not int or input_tokens <= 0:
@@ -1222,6 +1489,7 @@ async def metered_embedding_call(
     The adapter rechecks its exact route/attestation after acquisition, before send.
     """
     active = scope if scope is not None else current_scope()
+    active.require_inference()
     if type(input_token_bound) is not int or not 0 < input_token_bound <= route.max_batch_tokens:
         raise ComputeUnavailable("embedding_unavailable", "Invalid embedding input bound")
     policy = load_inference_policy()
@@ -1238,8 +1506,7 @@ async def metered_embedding_call(
             else {}
         )
         try:
-            reservation = await active.service.reserve(
-                active.user_id,
+            reservation = await active.reserve_inference(
                 bound,
                 operation=active.operation,
                 provider=route.provider,
@@ -1249,10 +1516,12 @@ async def metered_embedding_call(
                 extended=active.extended,
                 extended_run=first_extended,
                 background=active.background,
-                scope_id=active.scope_id,
                 **options,
             )
         except ReservationCommitUncertain as exc:
+            if active.inference_invocation is not None:
+                active.inference_invocation.block("embedding_reservation_unavailable")
+                raise
             receipt = exc.receipt
             active.outstanding[receipt.id] = ReservationHold(receipt, bound, actual=0)
 
@@ -1331,6 +1600,9 @@ async def metered_embedding_call(
             try:
                 reservation = await asyncio.shield(acquisition)
             except BaseException:
+                if active.inference_invocation is not None:
+                    active.inference_invocation.block("embedding_reservation_unavailable")
+                    raise
 
                 async def recover_acquisition() -> None:
                     try:
@@ -1362,29 +1634,48 @@ async def metered_embedding_call(
     except Exception:
         raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
 
-    charge = EmbeddingCallCharge(active.outstanding[_hold_key(reservation)], route)
+    charge = EmbeddingCallCharge(active.outstanding[_hold_key(reservation)], route, scope=active)
+    if active.inference_invocation is not None:
+        assert active.inference_recovery is not None and active.inference_identity is not None
+        await active.inference_recovery.mark(
+            active.inference_identity, _hold_key(reservation), active.inference_invocation
+        )
+        active.require_inference()
+    primary_error: BaseException | None = None
     try:
         yield charge
+    except BaseException as exc:
+        primary_error = exc
+        if charge._invocation is not None:
+            charge._invocation.call_failed = True
+        raise
     finally:
-        if charge._state == "pre_dispatch":
-            await active.settle(reservation, 0, path="embedding_not_dispatched")
-        elif charge.actual is not None:
-            await active.settle(
-                reservation,
-                charge.actual,
-                usage={"input_tokens": charge.input_tokens, "output_tokens": 0},
-                path="embedding_call",
-            )
-            if charge.actual > bound:
-                raise ComputeUnavailable(
-                    "embedding_price_exceeded",
-                    "Embedding charge exceeded its reserved price",
-                    category=FAILURE_SETTLEMENT_FAILED,
+        try:
+            charge._require_effect()
+            if charge._state == "pre_dispatch":
+                await active.settle(reservation, 0, path="embedding_not_dispatched")
+            elif charge.actual is not None:
+                await active.settle(
+                    reservation,
+                    charge.actual,
+                    usage={"input_tokens": charge.input_tokens, "output_tokens": 0},
+                    path="embedding_call",
                 )
-        else:
-            await active.settle(
-                reservation, bound, usage={"estimated_cost": True}, path="embedding_call"
-            )
+                if charge.actual > bound:
+                    raise ComputeUnavailable(
+                        "embedding_price_exceeded",
+                        "Embedding charge exceeded its reserved price",
+                        category=FAILURE_SETTLEMENT_FAILED,
+                    )
+            else:
+                await active.settle(
+                    reservation, bound, usage={"estimated_cost": True}, path="embedding_call"
+                )
+        except BaseException:
+            # A secondary refusal never replaces the covered caller's original
+            # error/cancellation. Failed/uncertain holds remain with their owner.
+            if primary_error is None or charge._invocation is None:
+                raise
 
 
 async def _settle_tool_hold(
@@ -2058,6 +2349,7 @@ async def guarded_completion(
     ``retryable`` classification a failed call raises.
     """
     scope = current_scope()
+    scope.require_inference()
     started = asyncio.get_running_loop().time()
     deadline = started + get_settings().request_timeout_s
     dispatch_deadline = started + _dispatch_budget_s(_dispatch_timeout_s, deadline - started)
@@ -2235,6 +2527,7 @@ async def guarded_completion(
     metered: _MeteredStream | None = None
 
     def refuse_closed_stream() -> None:
+        scope.require_inference()
         if scope.closed:
             raise ComputeUnavailable("capacity_unavailable", "Account compute scope is closed")
         if metered is not None and metered.closed:
@@ -2296,8 +2589,7 @@ async def guarded_completion(
                     if scope.expected_period is not None
                     else {}
                 )
-                reservation = await scope.service.reserve(
-                    scope.user_id,
+                reservation = await scope.reserve_inference(
                     bound,
                     operation=scope.operation,
                     provider=route.provider,
@@ -2307,7 +2599,6 @@ async def guarded_completion(
                     extended=scope.extended,
                     extended_run=first_extended,
                     background=scope.background,
-                    scope_id=scope.scope_id,
                     workload_profile=routing.profile,
                     reasoning_effort=_label(resolved.get("reasoning_effort")),
                     **reserve_options,
@@ -2352,6 +2643,12 @@ async def guarded_completion(
             # Reservation can consume time: the SDK and local wait share the
             # remainder rather than using an earlier, longer SDK allowance.
             refuse_closed_stream()
+            if scope.inference_invocation is not None:
+                assert scope.inference_identity is not None and scope.inference_recovery is not None
+                await scope.inference_recovery.mark(
+                    scope.inference_identity, _hold_key(reservation), scope.inference_invocation
+                )
+                refuse_closed_stream()
             remaining = dispatch_deadline - asyncio.get_running_loop().time()
             if remaining <= 0 or scope.closed:
                 raise ComputeUnavailable(
@@ -2392,10 +2689,13 @@ async def guarded_completion(
                     await hold.stream.close()
                 raise
         except BaseException:
+            if scope.inference_invocation is not None:
+                scope.inference_invocation.call_failed = True
             # An unknown or cancelled outcome still cost what was reserved, and a
             # failed settlement replaces this exception rather than hiding behind
             # a retryable one, so incomplete accounting stays visible.
-            await scope.settle(reservation, bound, path="dispatch_failure")
+            if scope.inference_invocation is None or scope.inference_invocation.uncertainty is None:
+                await scope.settle(reservation, bound, path="dispatch_failure")
             raise
         # Attribution records what actually went out, on both the precise routing
         # state and the coarser account scope, after any fallback has taken effect.
@@ -2456,6 +2756,9 @@ async def guarded_completion(
                 outcome(index, "refused", "raise", failure_category=exc.category)
                 raise
             except Exception as failure:
+                if scope.inference_invocation is not None:
+                    scope.inference_invocation.call_failed = True
+                    raise
                 last_failure = _classify_dispatch_failure(
                     failure,
                     deadline_bound=asyncio.get_running_loop().time() >= deadline,
@@ -2552,7 +2855,8 @@ async def guarded_completion(
                     output_released=emitted,
                 )
                 terminal = (
-                    control.state != "open"
+                    scope.inference_invocation is not None
+                    or control.state != "open"
                     or emitted
                     or not automatic
                     or index + 1 >= len(candidates)
@@ -2567,10 +2871,15 @@ async def guarded_completion(
                     output_released=emitted,
                 )
                 if terminal:
+                    if scope.inference_invocation is not None:
+                        scope.inference_invocation.call_failed = True
                     raise classified.as_unavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
                     ) from None
             finally:
+                primary_error = sys.exception()
+                if not completed and scope.inference_invocation is not None:
+                    scope.inference_invocation.call_failed = True
                 hold = scope.outstanding.get(_hold_key(reservation))
                 if hold is not None:
                     # Publish the intended amount without yielding so scope exit
@@ -2581,17 +2890,29 @@ async def guarded_completion(
                         if completed and settlement is not None
                         else _estimated_usage(generation_id)
                     )
-                    await scope.close_stream(hold)
-                await scope.settle(
-                    reservation,
-                    settlement[0] if completed and settlement is not None else bound,
-                    usage=(
-                        settlement[1]
-                        if completed and settlement is not None
-                        else _estimated_usage(generation_id)
-                    ),
-                    path="stream_end",
-                )
+                try:
+                    if hold is not None:
+                        await scope.close_stream(hold)
+                    if (
+                        scope.inference_invocation is None
+                        or scope.inference_invocation.uncertainty is None
+                    ):
+                        await scope.settle(
+                            reservation,
+                            settlement[0] if completed and settlement is not None else bound,
+                            usage=(
+                                settlement[1]
+                                if completed and settlement is not None
+                                else _estimated_usage(generation_id)
+                            ),
+                            path="stream_end",
+                        )
+                except BaseException as cleanup_error:
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(
+                        f"Stream cleanup failed ({type(cleanup_error).__name__})"
+                    )
             if not failed:
                 return
             index, response, reservation = await first_response(index + 1)
