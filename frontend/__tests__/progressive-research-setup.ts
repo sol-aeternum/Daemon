@@ -23,6 +23,9 @@ type DeliveryTranscripts = {
   source_incomplete: CompletedTranscript;
   failed: TerminalTranscript;
   cancelled: TerminalTranscript;
+  uncertain_write: TerminalTranscript;
+  uncertain_cancel: TerminalTranscript;
+  uncertain_periodic: TerminalTranscript;
 };
 
 declare module 'vitest' {

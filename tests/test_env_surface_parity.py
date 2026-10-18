@@ -285,7 +285,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:8",
-            "frontend/__tests__/progressive-research-setup.ts:54",
+            "frontend/__tests__/progressive-research-setup.ts:57",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:222",
         ),
@@ -299,7 +299,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:7",
-            "frontend/__tests__/progressive-research-setup.ts:53",
+            "frontend/__tests__/progressive-research-setup.ts:56",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:221",
         ),
@@ -313,7 +313,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:11",
-            "frontend/__tests__/progressive-research-setup.ts:43",
+            "frontend/__tests__/progressive-research-setup.ts:46",
             "frontend/e2e/renderer-crash.ts:215",
         ),
         reason=(
@@ -355,7 +355,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:9",
-            "frontend/__tests__/progressive-research-setup.ts:55",
+            "frontend/__tests__/progressive-research-setup.ts:58",
         ),
         reason=(
             "owner-approved test-only clean child-process environment preserves the caller's "
@@ -365,17 +365,17 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     ),
     "TMP": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/__tests__/progressive-research-setup.ts:56",),
+        sources=("frontend/__tests__/progressive-research-setup.ts:59",),
         reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
     ),
     "TEMP": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/__tests__/progressive-research-setup.ts:57",),
+        sources=("frontend/__tests__/progressive-research-setup.ts:60",),
         reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
     ),
     "PYTHONPYCACHEPREFIX": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/__tests__/progressive-research-setup.ts:58",),
+        sources=("frontend/__tests__/progressive-research-setup.ts:61",),
         reason="test-only backend transcript subprocess retains task-owned Python bytecode storage; not application configuration",
     ),
     "NEXT_PUBLIC_API_BASE_URL": NonFieldConsumer(

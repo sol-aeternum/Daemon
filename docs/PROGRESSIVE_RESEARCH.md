@@ -105,10 +105,15 @@ before recording/forwarding the continuing tool call or resuming its executor.
 - The barrier writes **content only**, never complete status or another message.
   Failed/refused/missing-writer persistence stops before the pending tool metadata,
   tool-call frame or invocation. Cancellation propagates through existing paths.
-- Existing best-effort periodic writes and request-bound behavior stay unchanged.
-  Existing finally/terminalization may attempt a further cleanup write after an
-  error; no local barrier-retry loop is added. Current whole-attempt recovery may
-  repeat read/inference work. This is not remote producer-stop or no-respend proof.
+- In the combined #542 tree, any uncertain durable periodic or barrier mutation
+  closes attempt admission. There is no second store write, provider/tool dispatch
+  or terminal acknowledgement authorized by a missing response; cancellation
+  inside an admitted write remains indeterminate too. The daemon's generic
+  finally path cannot reopen the durable sink. Request-bound memory writes remain
+  best-effort and are tested with a separate legacy writer, not `AttemptSink`.
+  A later coherent snapshot does not prove the uncertain write's caller received
+  acknowledgement. Current whole-attempt recovery may repeat read/inference work;
+  this is not remote producer-stop or no-respend proof.
 
 This is persistence **before continuing the next tool**, not atomic persistence
 before the first live token is displayed, and not an independently resumable research
@@ -159,13 +164,20 @@ seams. Research checkpoint/resume is deferred slice 2
   executor, AttemptSink and observer with synthetic storage/admission/transports.
   Split prefix inside the throttle interval, full running snapshot before a gated
   read, matching sequence, one row, unchanged-section no-op, periodic failure,
-  barrier failure/refusal/cancel/missing writer, request-bound compatibility,
-  duplicate live prefix deltas, explicit correction and existing terminal outcomes.
+   barrier uncertainty/refusal/in-write cancellation/missing writer, request-bound
+   compatibility, duplicate live prefix deltas, explicit correction and existing
+   terminal outcomes. Synthetic accepted input uses the real original-origin
+   classifier; every fake worker mutation checks the complete bound Claim before
+   effects, including worker and original origin. This models post-authentication
+   data, not SQL fencing or authentication itself. Unknown write outcomes are
+   distinct from separately acknowledged execution failure and Stop outside a write.
 - `frontend/__tests__/progressive-research-delivery.test.ts`: invokes that actual
   Python path in the task-local environment without a server, then feeds its emitted
   observer SSE through the production Next bridge and AI SDK client reducer. Checks
   active early text (no false finish), reconnect without duplicate text/execution,
-  visible correction, source limits and actual failed/cancelled status rendering.
+   visible correction, source limits and actual acknowledged failed/cancelled status
+   rendering. Additional unknown-write/cancel/periodic snapshots deliberately detach
+   without invented terminal frames or waiting for a terminal that was not committed.
 - `tests/test_answer_controls.py` and native stream regressions: historical canonical
   bytes/digests, explicit-pair identity, validation before dispatch, synthetic durable
   forwarding/conflict mapping and real worker prompt reconstruction. The delivery

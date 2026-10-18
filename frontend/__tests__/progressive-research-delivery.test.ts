@@ -12,7 +12,7 @@ import {
 // Real Python runner -> daemon -> completion/executor -> AttemptSink -> observer
 // feeds the actual Next bridge and AI SDK client reducer. No servers, sockets,
 // database, Redis instance, provider transport or stored golden SSE transcript.
-// Global setup freshly produces all four transcripts before worker contention,
+// Global setup freshly produces acknowledged and uncertain transcripts before worker contention,
 // bounded by the same 10s setup deadline. Missing setup cannot fall back to a cache.
 
 async function bridge(frames: string[], taskId: string) {
@@ -125,6 +125,34 @@ describe('progressive research backend-to-client delivery', () => {
       expect(
         getDaemonDataEvents([result.message]).some(
           (event) => event.type === 'task' && event.status === 'completed',
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('keeps uncertain writes and in-write cancellation nonterminal without claiming a failed or cancelled task', async () => {
+    for (const key of [
+      'uncertain_write',
+      'uncertain_cancel',
+      'uncertain_periodic',
+    ] as const) {
+      const transcript = transcripts[key];
+      expect(transcript.status).toMatch(
+        /^task_(observation|transition)_indeterminate$/,
+      );
+      const result = await bridge(transcript.frames, transcript.task_id);
+      expect(getDaemonMessageText(result.message)).toBe(transcript.final);
+      expect(result.errors).toHaveLength(1); // Deliberately detached, not a terminal ACK.
+      expect(result.chunks.some((chunk) => chunk.type === 'finish')).toBe(
+        false,
+      );
+      const tasks = getDaemonDataEvents([result.message]).filter(
+        (event) => event.type === 'task',
+      );
+      expect(tasks.some((event) => event.status === 'running')).toBe(true);
+      expect(
+        tasks.some((event) =>
+          ['completed', 'failed', 'cancelled'].includes(event.status ?? ''),
         ),
       ).toBe(false);
     }

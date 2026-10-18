@@ -3,12 +3,16 @@
 import asyncio
 from collections.abc import AsyncGenerator
 import json
-from typing import cast
+from dataclasses import replace
+from typing import Any, cast
+import uuid
 
 import pytest
 
 from orchestrator.tasks import observe, runner
-from orchestrator.tasks.states import TaskStatus
+from orchestrator.tasks._origin import OriginalTaskOrigin
+from orchestrator.services.account_control.transaction import ObservationBlocked
+from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.tasks.store import TaskStore
 from tests.progressive_research_support import (
     Delivery,
@@ -17,6 +21,8 @@ from tests.progressive_research_support import (
     PREFIX,
     PREFIX_PARTS,
     transcript,
+    terminal_transcript,
+    uncertain_transcript,
 )
 
 
@@ -60,7 +66,7 @@ async def test_one_flush_per_changed_section_and_periodic_sequence_is_consumed()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["exception", "refused", "cancel"])
+@pytest.mark.parametrize("failure", ["exception", "ack_lost", "refused", "cancel"])
 async def test_barrier_failure_never_forwards_or_executes_pending_tool(failure):
     delivery = Delivery(failure)
     task = asyncio.create_task(delivery.run())
@@ -79,15 +85,39 @@ async def test_barrier_failure_never_forwards_or_executes_pending_tool(failure):
             for event in delivery.store.events
         )
         assert delivery.state.result is None
-        # The existing cleanup may save the prefix again but cannot run the tool.
+        # The runner may not attempt another mutation after an unknown response.
+        attempts = delivery.store.mutations.copy()
         outcome = await runner._resolve(cast(TaskStore, delivery.store), delivery.state)
-        assert (
-            outcome == {"exception": "failed", "refused": "fenced", "cancel": "cancelled"}[failure]
-        )
-        if failure != "refused":
-            frames = [runner._parse_frame(f) for f in await delivery.observation()]
-            assert frames[-1][1]["data"]["status"] == (
-                "cancelled" if failure == "cancel" else "error"
+        assert delivery.store.mutations == attempts
+        assert len(delivery.store.partial_attempts) == 2
+        assert not delivery.store.final_fields
+        assert delivery.store.current.status is TaskStatus.RUNNING
+        assert [
+            message["text"]
+            for _, message in delivery.redis.published
+            if message.get("t") == "delta"
+        ] == PREFIX_PARTS
+        if failure == "refused":
+            assert outcome == "fenced" and delivery.state.blocked is None
+        else:
+            assert outcome == (
+                "task_transition_indeterminate"
+                if failure == "cancel"
+                else "task_observation_indeterminate"
+            )
+            assert delivery.state.blocked == outcome and delivery.state.phase == "closed"
+            with pytest.raises(ObservationBlocked):
+                await runner.AttemptSink(
+                    cast(TaskStore, delivery.store), delivery.state
+                ).update_message(content="forbidden second write")
+            assert delivery.store.mutations == attempts
+            frames = [
+                runner._parse_frame(f) for f in await delivery.observation(snapshot_only=True)
+            ]
+            assert all(kind not in {"done", "final", "error"} for kind, _ in frames)
+            assert frames[0][1]["data"]["status"] == "running"
+            assert delivery.store.current.content == (
+                PREFIX if failure == "ack_lost" else PREFIX_PARTS[0]
             )
     finally:
         delivery.store.release_barrier.set()
@@ -115,22 +145,113 @@ async def test_request_bound_path_does_not_add_a_mandatory_flush():
 
 
 @pytest.mark.asyncio
-async def test_periodic_failure_is_best_effort_but_dirty_section_is_flushed():
+async def test_periodic_uncertainty_closes_admission_without_second_write_or_provider():
     delivery = Delivery("periodic")
     task = asyncio.create_task(delivery.run())
     delivery.state.execution = task
     try:
-        await asyncio.wait_for(delivery.read.started.wait(), 5)
-        assert delivery.store.periodic_failed
-        assert delivery.store.writes == [(PREFIX, 2)]
-        delivery.read.release.set()
         await asyncio.wait_for(task, 5)
-        assert delivery.state.result is TaskStatus.COMPLETED
+        assert delivery.store.periodic_failed
+        assert delivery.store.partial_attempts == [(PREFIX_PARTS[0], 1)]
+        assert delivery.store.writes == [] and delivery.store.current.content == ""
+        assert delivery.read.calls == 0 and delivery.calls == 2
+        assert delivery.state.blocked == "task_observation_indeterminate"
+        assert delivery.state.phase == "closed" and delivery.state.result is None
+        assert [
+            message["text"]
+            for _, message in delivery.redis.published
+            if message.get("t") == "delta"
+        ] == [PREFIX_PARTS[0]]
+        attempts = delivery.store.mutations.copy()
+        publications = delivery.redis.published.copy()
+        assert (
+            await runner._resolve(cast(TaskStore, delivery.store), delivery.state)
+            == delivery.state.blocked
+        )
+        assert delivery.store.mutations == attempts and delivery.redis.published == publications
+        assert not any(
+            event.kind == "tool_call" and event.payload["name"] == "web_fetch"
+            for event in delivery.store.events
+        )
     finally:
         delivery.read.release.set()
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+async def test_acknowledged_terminals_are_distinct_from_unknown_writes(status):
+    result = await terminal_transcript(status)
+    assert result["status"] == status and result["final"] == PREFIX
+    frames = [runner._parse_frame(frame) for frame in result["frames"]]
+    assert frames[-1][0] == "done"
+    assert frames[-1][1]["data"]["status"] == ("error" if status == "failed" else "cancelled")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["exception", "cancel", "periodic"])
+async def test_unknown_transcripts_stop_at_snapshot_without_invented_terminal(failure):
+    result = await uncertain_transcript(failure)
+    assert result["status"] in {"task_observation_indeterminate", "task_transition_indeterminate"}
+    frames = [runner._parse_frame(frame) for frame in result["frames"]]
+    assert frames[0][1]["data"]["status"] == "running"
+    assert all(kind not in {"done", "final", "error"} for kind, _ in frames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("worker_id", "foreign-worker"),
+        ("user_id", uuid.UUID(int=99)),
+        ("task_id", uuid.UUID(int=99)),
+        ("epoch", 99),
+        ("conversation_id", uuid.UUID(int=99)),
+        ("user_message_id", uuid.UUID(int=99)),
+        ("result_message_id", uuid.UUID(int=99)),
+        ("origin", None),
+        ("origin", OriginalTaskOrigin(uuid.UUID(int=2), 8)),
+        ("origin", OriginalTaskOrigin(uuid.UUID(int=99), 7)),
+    ],
+)
+@pytest.mark.parametrize(
+    "method",
+    [
+        "write_partial",
+        "complete",
+        "record_event",
+        "acknowledge_cancel",
+        "fail_attempt",
+        "record_compute_scope",
+        "begin_execution",
+    ],
+)
+async def test_synthetic_mutations_validate_full_original_binding_before_effects(
+    field, value, method
+):
+    delivery = Delivery()
+    foreign = replace(delivery.claim, **{field: value})
+    kwargs: dict[str, Any] = {"binding": foreign}
+    args = [delivery.claim.task_id, delivery.claim.epoch]
+    if method == "write_partial":
+        kwargs.update(content=PREFIX, delta_seq=2)
+    elif method == "complete":
+        kwargs.update(content=PREFIX)
+    elif method == "record_event":
+        args.append("tool_call")
+    elif method in {"record_compute_scope", "begin_execution"}:
+        args.append(uuid.UUID(int=6))
+        if method == "begin_execution":
+            kwargs["prompt_version"] = "synthetic"
+    elif method == "fail_attempt":
+        kwargs.update(cause=RetryCause.TERMINAL_ERROR, error_code="synthetic")
+    before = delivery.store.current
+    with pytest.raises(AssertionError):
+        await getattr(delivery.store, method)(*args, **kwargs)
+    assert delivery.store.mutations == [method]
+    assert delivery.store.current == before and delivery.store.events == delivery.store.writes == []
 
 
 @pytest.mark.asyncio

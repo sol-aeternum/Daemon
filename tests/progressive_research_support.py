@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import ExitStack, asynccontextmanager
+from copy import deepcopy
 from dataclasses import replace
 import json
 from types import SimpleNamespace
@@ -20,7 +21,12 @@ from orchestrator import daemon
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 from orchestrator.tasks import observe, runner
-from orchestrator.tasks.states import TaskStatus, decide_after_attempt
+from orchestrator.tasks._origin import (
+    OriginalTaskOrigin,
+    TaskOriginContext,
+    _classify_task_origin,
+)
+from orchestrator.tasks.states import RetryCause, TaskStatus, decide_after_attempt
 from orchestrator.tasks.store import Claim, LeaseLost, TaskEvent, TaskSnapshot, TaskStore
 from orchestrator.tools.registry import Tool, ToolRegistry
 from tests.durable_tasks_support import FakeRedis
@@ -44,7 +50,10 @@ class DeliveryStore:
 
     def __init__(self, claim: Claim, failure: str):
         self.claim = claim
+        self.expected_binding = deepcopy(claim)
         self.failure = failure
+        self.mutations: list[str] = []
+        self.partial_attempts: list[tuple[str, int]] = []
         self.events: list[TaskEvent] = []
         self.writes: list[tuple[str, int]] = []
         self.final_fields: dict[str, Any] = {}
@@ -66,14 +75,22 @@ class DeliveryStore:
             False,
         )
 
-    async def record_compute_scope(self, *args, **kwargs):
-        pass
-
-    async def begin_execution(self, *args, **kwargs):
-        pass
-
-    async def write_partial(self, task_id, epoch, *, content, delta_seq):
+    def check_binding(self, method: str, task_id, epoch, binding: Claim):
+        # Record even rejected attempts. Do not conceal a second runner write by
+        # making this fake enforce the runner's own closed-admission latch.
+        self.mutations.append(method)
         assert (task_id, epoch) == (self.claim.task_id, self.claim.epoch)
+        assert binding == self.expected_binding
+
+    async def record_compute_scope(self, task_id, epoch, scope_id, *, binding: Claim):
+        self.check_binding("record_compute_scope", task_id, epoch, binding)
+
+    async def begin_execution(self, task_id, epoch, scope_id, *, prompt_version, binding: Claim):
+        self.check_binding("begin_execution", task_id, epoch, binding)
+
+    async def write_partial(self, task_id, epoch, *, content, delta_seq, binding: Claim):
+        self.check_binding("write_partial", task_id, epoch, binding)
+        self.partial_attempts.append((content, delta_seq))
         if self.failure == "periodic" and content == PREFIX_PARTS[0] and not self.periodic_failed:
             self.periodic_failed = True
             raise RuntimeError("synthetic periodic persistence failure")
@@ -82,6 +99,11 @@ class DeliveryStore:
             self.failed_once = True
             if self.failure == "exception":
                 raise RuntimeError("synthetic persistence failure")
+            if self.failure == "ack_lost":
+                # The test knows a physical effect, but the caller got no ACK.
+                # A later coherent snapshot is NOT authority to reopen admission.
+                self.current = replace(self.current, content=content, content_delta_seq=delta_seq)
+                raise RuntimeError("synthetic write applied but acknowledgement unavailable")
             if self.failure == "refused":
                 raise LeaseLost("synthetic lease refusal")
             if self.failure == "cancel":
@@ -89,15 +111,16 @@ class DeliveryStore:
         self.writes.append((content, delta_seq))
         self.current = replace(self.current, content=content, content_delta_seq=delta_seq)
 
-    async def complete(self, task_id, epoch, *, content, message_fields):
-        assert (task_id, epoch) == (self.claim.task_id, self.claim.epoch)
-        self.final_fields = message_fields
+    async def complete(self, task_id, epoch, *, content, message_fields=None, binding: Claim):
+        self.check_binding("complete", task_id, epoch, binding)
+        self.final_fields = message_fields or {}
         self.current = replace(self.current, status=TaskStatus.COMPLETED, content=content)
         return TaskStatus.COMPLETED
 
-    async def record_event(self, task_id, epoch, kind, payload):
+    async def record_event(self, task_id, epoch, kind, payload=None, *, binding: Claim):
+        self.check_binding("record_event", task_id, epoch, binding)
         seq = len(self.events) + 1
-        self.events.append(TaskEvent(seq, kind, payload))
+        self.events.append(TaskEvent(seq, kind, payload or {}))
         self.current = replace(self.current, event_seq=seq)
         return seq
 
@@ -108,23 +131,54 @@ class DeliveryStore:
     async def events_since(self, user_id, task_id, *, after_seq, limit):
         return [event for event in self.events if event.seq > after_seq][:limit]
 
-    async def fail_attempt(self, task_id, epoch, **kwargs):
+    async def fail_attempt(self, task_id, epoch, *, cause: RetryCause, error_code, binding: Claim):
+        self.check_binding("fail_attempt", task_id, epoch, binding)
         # Reuse the actual pure disposition rules; SQL/financial behavior is not
         # qualified by this synthetic final-attempt fixture.
         result = decide_after_attempt(
             attempt_count=self.claim.attempt_count,
             max_attempts=self.claim.max_attempts,
             material_started=False,
-            **kwargs,
+            cause=cause,
+            error_code=error_code,
         )
         self.current = replace(
             self.current, status=result.status, terminal_code=result.terminal_code
         )
         return result.status
 
-    async def acknowledge_cancel(self, task_id, epoch):
+    async def acknowledge_cancel(self, task_id, epoch, *, binding: Claim):
+        self.check_binding("acknowledge_cancel", task_id, epoch, binding)
         self.current = replace(self.current, status=TaskStatus.CANCELLED, cancel_requested=True)
         return TaskStatus.CANCELLED
+
+
+class LegacyMessageWriter:
+    """Request-bound memory-writer double, deliberately NOT a durable AttemptSink."""
+
+    def __init__(self, store: DeliveryStore, state: runner.AttemptState):
+        self.store = store
+        self.state = state
+
+    async def insert_message(self, **kwargs):
+        return {"id": self.state.claim.result_message_id}
+
+    async def update_message(self, message_id=None, *, content="", status=None, **fields):
+        claim = self.state.claim
+        assert message_id == claim.result_message_id
+        if status == "complete":
+            await self.store.complete(
+                claim.task_id, claim.epoch, content=content, message_fields=fields, binding=claim
+            )
+        else:
+            await self.store.write_partial(
+                claim.task_id,
+                claim.epoch,
+                content=content,
+                delta_seq=self.state.delta_seq,
+                binding=claim,
+            )
+        return {"id": claim.result_message_id}
 
 
 class Read(Tool):
@@ -178,20 +232,34 @@ class Delivery:
         durable: bool = True,
         missing_writer: bool = False,
     ):
+        owner = uuid.UUID(int=2)
+        task_input = {
+            "message": "Briefly research the launch date and distinguish testimony from fact.",
+            "answer_detail": "brief",
+            "research_effort": "research",
+            "origin_account_id": str(owner),
+            "origin_account_generation": 7,
+            "summary_origin_account_id": str(owner),
+            "summary_origin_account_generation": 7,
+        }
+        # Synthetic already-authenticated accepted input, not an authentication
+        # or SQL-fencing qualification. Never recapture a current generation.
+        origin = _classify_task_origin(
+            json.dumps(task_input), input_version=1, context=TaskOriginContext(owner)
+        )
+        assert isinstance(origin, OriginalTaskOrigin)
         self.claim = Claim(
-            uuid.UUID(int=1),
-            1,
-            uuid.UUID(int=2),
-            uuid.UUID(int=3),
-            uuid.UUID(int=4),
-            uuid.UUID(int=5),
-            2,
-            2,
-            {
-                "message": "Briefly research the launch date and distinguish testimony from fact.",
-                "answer_detail": "brief",
-                "research_effort": "research",
-            },
+            task_id=uuid.UUID(int=1),
+            epoch=1,
+            user_id=owner,
+            conversation_id=uuid.UUID(int=3),
+            user_message_id=uuid.UUID(int=4),
+            result_message_id=uuid.UUID(int=5),
+            attempt_count=2,
+            max_attempts=2,
+            task_input=task_input,
+            worker_id="synthetic-delivery-worker",
+            origin=origin,
         )
         self.store = DeliveryStore(self.claim, failure)
         self.state = runner.AttemptState(self.claim)
@@ -337,7 +405,7 @@ class Delivery:
             else:
                 # Legacy request-bound writes stay best-effort. Use the same
                 # synthetic row writer, but deliberately no message_sink.
-                writer = runner.AttemptSink(cast(TaskStore, self.store), self.state)
+                writer = LegacyMessageWriter(self.store, self.state)
                 async for frame in daemon.stream_sse_chat(
                     settings=cast(Settings, settings),
                     provider_config=config,
@@ -354,7 +422,7 @@ class Delivery:
                     if runner._parse_frame(frame)[0] == "token":
                         self.state.delta_seq += 1
 
-    async def observation(self, *, partial: bool = False):
+    async def observation(self, *, partial: bool = False, snapshot_only: bool = False):
         frames = []
         stream = observe.observe_task(
             cast(TaskStore, self.store),
@@ -366,7 +434,12 @@ class Delivery:
         try:
             async for frame in stream:
                 frames.append(frame)
-                if partial and runner._parse_frame(frame)[0] == "token":
+                kind = runner._parse_frame(frame)[0]
+                if partial and kind == "token":
+                    break
+                if snapshot_only and (
+                    kind == "token" or (not self.store.current.content and kind == "conversation")
+                ):
                     break
         finally:
             await cast(AsyncGenerator[str, None], stream).aclose()
@@ -404,7 +477,7 @@ async def transcript(source_fails: bool = False):
         await asyncio.gather(task, return_exceptions=True)
 
 
-async def terminal_transcript(failure: str):
+async def uncertain_transcript(failure: str):
     delivery = Delivery(failure)
     task = asyncio.create_task(delivery.run())
     delivery.state.execution = task
@@ -415,11 +488,11 @@ async def terminal_transcript(failure: str):
             runner._interrupt(delivery.state, task)
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
         outcome = await runner._resolve(cast(TaskStore, delivery.store), delivery.state)
-        assert delivery.read.calls == 0
+        assert delivery.read.calls == 0 and delivery.state.blocked is not None
         return {
             "task_id": str(delivery.claim.task_id),
             "final": delivery.store.current.content,
-            "frames": await delivery.observation(),
+            "frames": await delivery.observation(snapshot_only=True),
             "status": outcome,
         }
     finally:
@@ -429,13 +502,65 @@ async def terminal_transcript(failure: str):
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def terminal_transcript(status: str):
+    delivery = Delivery()
+    if status == "failed":
+        # Separate known execution failure, NOT recovery from an uncertain write.
+        # The actual runner sink acknowledges useful text, then the owner sees
+        # an execution error outside mutation and resolves the final attempt.
+        delivery.state.delta_seq = 2
+        await runner.AttemptSink(cast(TaskStore, delivery.store), delivery.state).update_message(
+            content=PREFIX
+        )
+        delivery.state.executing = True
+
+        async def execution():
+            raise RuntimeError("synthetic known execution failure outside mutation")
+
+        try:
+            await execution()
+        except RuntimeError as error:
+            delivery.state.error = error
+    else:
+        assert status == "cancelled"
+        task = asyncio.create_task(delivery.run())
+        delivery.state.execution = task
+        try:
+            await asyncio.wait_for(delivery.read.started.wait(), 5)
+            assert not delivery.state.write_lock.locked()
+            assert delivery.store.current.content == PREFIX
+            delivery.state.cancel_requested = True
+            runner._interrupt(delivery.state, task)
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        finally:
+            delivery.read.release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert delivery.state.blocked is None
+    outcome = await runner._resolve(cast(TaskStore, delivery.store), delivery.state)
+    assert outcome == status
+    assert delivery.store.mutations[-1] == (
+        "fail_attempt" if status == "failed" else "acknowledge_cancel"
+    )
+    return {
+        "task_id": str(delivery.claim.task_id),
+        "final": delivery.store.current.content,
+        "frames": await delivery.observation(),
+        "status": outcome,
+    }
+
+
 async def client_transcripts():
     # Serial patch scopes: no concurrent fake model contexts or inference.
     return {
         "completed": await transcript(),
         "source_incomplete": await transcript(True),
-        "failed": await terminal_transcript("exception"),
-        "cancelled": await terminal_transcript("cancel"),
+        "failed": await terminal_transcript("failed"),
+        "cancelled": await terminal_transcript("cancelled"),
+        "uncertain_write": await uncertain_transcript("exception"),
+        "uncertain_cancel": await uncertain_transcript("cancel"),
+        "uncertain_periodic": await uncertain_transcript("periodic"),
     }
 
 
