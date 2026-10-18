@@ -66,6 +66,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/CONTEXTUAL_HOME_IMPLEMENTATION.md` | N/A | Product/Engineering | ungated-reference | Approved conversation-only contextual home contract, dated implementation/review evidence and release limitations; runtime authority remains in code and gated checks |
 | `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved continuity architecture (6 October 2026); slice 1 implemented behind `DURABLE_CHAT_ENABLED` (off); enabling is gated by #477 |
 | `docs/DURABLE_CHAT_CLOSEOUT.md` | N/A | Engineering | raw-log | #477 acceptance reconciliation and disposable restart proof; not deployment or enablement clearance |
+| `docs/PROGRESSIVE_RESEARCH.md` | N/A | Engineering/Product | ungated-reference | Owner-approved append-only researched-answer slice with pre-tool persistence and optional per-turn detail/research controls preserving legacy identity; deterministic backend-to-client coverage, checkpoint resume deferred, no enablement or real-model quality claim |
 | `docs/TASK_ORIGIN_CLASSIFIER.md` | N/A | Engineering | ungated-reference | Owner-approved S0 private pure task-origin classifier and passive contracts; synthetic source/tests only, uncalled by runtime; no provenance, authority or disposition |
 | `docs/COMPUTE_METADATA.md` | T1 | Engineering/Operator | gated | Owner-approved storage-only uncalled `orchestrator/compute_metadata.py`, migration 048 and source tests; no execution authority, deployment or #477 enablement clearance |
 | `docs/ATTEMPT_LIFECYCLE.md` | T1 | Engineering/Operator | gated | Source-only four-operation attempt control, migration 049, uncalled attempt-qualified financial admission/recovery and source tests; retention/restore and runtime qualification remain release gates |
@@ -83,6 +84,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `frontend/PWA_CHECKLIST.md` | N/A | Engineering | raw-log | Build environment report |
 | `docs/BRACES_SECURITY_MAINTENANCE.md` | N/A | Engineering | ungated-reference | Temporary vendored dependency lineage, mandatory security checks and maintenance/retirement contract; not deployment authority |
 | `docs/CI_PYTEST_DIAGNOSTICS.md` | N/A | Engineering | ungated-reference | Bounded backend CI diagnostics and synthetic regression contract; not an established root cause or resolution of #454 |
+| `docs/OWNED_TEST_FIXTURES.md` | N/A | Engineering | ungated-reference | #541 synthetic owned Redis and cache-browser prerequisite; fixture source/tests and current gate evidence govern implementation, not runtime qualification |
 | `README.md` | N/A | Engineering | ungated-reference | Project overview |
 | `QUICKSTART.md` | N/A | Engineering | ungated-reference | Setup instructions |
 | `AGENTS.md` | N/A | Engineering | ungated-reference | Agent behavior rules |

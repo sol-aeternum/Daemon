@@ -73,6 +73,13 @@ jobs:
       - name: Python dependency audit
         run: uv run pip-audit
 
+      - name: Provision pinned search Redis image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform=linux/amd64 docker.io/library/redis@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
+          uv run python -m tests.search_redis_image
+
       - name: Pytest
         # The runner's 20-minute suite deadline leaves room for artifact upload;
         # this step and the job retain separate fallback cancellation bounds.
@@ -130,12 +137,6 @@ jobs:
       - name: Frontend dependency audit
         run: npm run audit:ci
 
-      - name: Vitest
-        run: npm run test:run
-
-      - name: Install Chromium for browser regressions
-        run: npx playwright install --with-deps chromium
-
       - name: Set up uv for HTTP-cache isolation fixture
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -147,6 +148,18 @@ jobs:
         env:
           UV_PROJECT_ENVIRONMENT: .uv-venv
         run: uv sync --locked
+
+      - name: Vitest
+        run: npm run test:run
+
+      - name: Install Chromium for browser regressions
+        run: npx playwright install --with-deps chromium
+
+      - name: Refuse foreign cache fixture endpoints
+        working-directory: .
+        env:
+          UV_PROJECT_ENVIRONMENT: .uv-venv
+        run: uv run pytest -q frontend/e2e/cache_fixture_ownership.py
 
       - name: Browser HTTP-cache isolation regression
         run: npx playwright test --config playwright.cache.config.ts

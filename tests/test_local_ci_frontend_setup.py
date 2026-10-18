@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import os
+import fnmatch
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 def run_frontend_runner(
-    tmp_path: Path, *, fail_sync: bool = False, override: bool = False, list_only: bool = False
+    tmp_path: Path,
+    *,
+    fail_sync: bool = False,
+    fail_ownership: bool = False,
+    override: bool = False,
+    list_only: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     root = tmp_path / "checkout"
     scripts = root / "scripts"
@@ -33,6 +40,11 @@ def run_frontend_runner(
         + 'if [ "$*" = "sync --locked" ]; then\n'
         + ("exit 7\n" if fail_sync else f"mkdir -p {shlex.quote(str(environment / 'bin'))}\n")
         + "fi\n"
+        + (
+            'if [ "$*" = "run pytest -q frontend/e2e/cache_fixture_ownership.py" ]; then exit 8; fi\n'
+            if fail_ownership
+            else ""
+        )
     )
     npx = common + f"test -d {shlex.quote(str(environment / 'bin'))}\n"
     for name, body in {"uv": uv, "npm": common, "npx": npx}.items():
@@ -66,7 +78,14 @@ def test_frontend_only_schedules_locked_python_before_browser(
     assert result.returncode == 0, result.stdout + result.stderr
     assert commands.count("uv sync --locked") == 1
     browser = "npx playwright test --config playwright.cache.config.ts"
-    assert commands.index("uv sync --locked") < commands.index(browser)
+    ownership = "uv run pytest -q frontend/e2e/cache_fixture_ownership.py"
+    assert commands.count(ownership) == 1
+    assert commands.index("uv sync --locked") < commands.index("npm --prefix frontend run test:run")
+    assert commands.index("npm --prefix frontend run test:run") < commands.index(ownership)
+    assert commands.index(
+        "npm ci --prefix frontend --no-audit --no-fund --prefer-offline"
+    ) < commands.index(ownership)
+    assert commands.index("uv sync --locked") < commands.index(ownership) < commands.index(browser)
 
 
 def test_failed_locked_setup_is_blocking(tmp_path: Path) -> None:
@@ -81,3 +100,32 @@ def test_list_does_not_install_python(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert commands == []
     assert "uv sync --locked" in result.stdout
+
+
+def test_ownership_refusal_is_blocking(tmp_path: Path) -> None:
+    result, commands = run_frontend_runner(tmp_path, fail_ownership=True)
+    assert result.returncode == 1
+    assert "uv run pytest -q frontend/e2e/cache_fixture_ownership.py" in commands
+    assert "frontend/cache-fixture-ownership (exit=8)" in result.stdout
+
+
+def test_collision_checks_are_explicit_frontend_gate_not_backend_collection(pytestconfig) -> None:
+    root = Path(__file__).resolve().parents[1]
+    module = root / "frontend/e2e/cache_fixture_ownership.py"
+    assert module.is_file()
+    assert not (root / "tests/test_cache_fixture_ownership.py").exists()
+    assert not any(
+        fnmatch.fnmatch(module.name, pattern) for pattern in pytestconfig.getini("python_files")
+    )
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["frontend"]["steps"]
+    names = [step["name"] for step in steps]
+    check = names.index("Refuse foreign cache fixture endpoints")
+    assert names.index("Install frontend dependencies") < check
+    assert names.index("Install locked cache fixture backend") < check
+    assert names.index("Install locked cache fixture backend") < names.index("Vitest") < check
+    assert check < names.index("Browser HTTP-cache isolation regression")
+    assert steps[check]["run"] == "uv run pytest -q frontend/e2e/cache_fixture_ownership.py"
+    assert steps[check]["working-directory"] == "."
+    assert steps[check]["env"]["UV_PROJECT_ENVIRONMENT"] == ".uv-venv"
+    assert not steps[check].get("continue-on-error", False)

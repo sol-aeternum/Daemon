@@ -4,10 +4,18 @@ import { useEffect, useRef, useState } from 'react';
 import { Mic, Paperclip, Send, X } from 'lucide-react';
 import { ModelSelector } from './ModelSelector';
 import { StopButton } from './StopButton';
+import {
+  DEFAULT_ANSWER_CONTROLS,
+  type AnswerControls,
+  type AnswerDetail,
+  type ResearchEffort,
+} from '../lib/answerControls';
 
 const MAX_TEXTAREA_HEIGHT = 200;
 
 interface ChatInputBarProps {
+  controls?: AnswerControls;
+  onControlsChange?: (controls: AnswerControls) => void;
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
   /* Microphone props are retained in the prop API for compatibility;
@@ -42,6 +50,8 @@ export function ChatInputBar({
   attachments = [],
   onAttachFiles,
   onRemoveAttachment,
+  controls = DEFAULT_ANSWER_CONTROLS,
+  onControlsChange,
 }: ChatInputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -214,6 +224,44 @@ export function ChatInputBar({
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {onControlsChange && (
+          <div className="flex flex-wrap gap-3 px-3 pt-2 text-xs text-[var(--color-text-secondary)]">
+            <label className="flex items-center gap-1">
+              Answer detail
+              <select
+                className="min-h-touch rounded bg-[var(--color-bg-primary)] px-2"
+                value={controls.answer_detail ?? 'balanced'}
+                onChange={(event) =>
+                  onControlsChange({
+                    ...controls,
+                    answer_detail: event.target.value as AnswerDetail,
+                  })
+                }
+              >
+                <option value="brief">Brief</option>
+                <option value="balanced">Balanced</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              Research effort
+              <select
+                className="min-h-touch rounded bg-[var(--color-bg-primary)] px-2"
+                value={controls.research_effort ?? 'auto'}
+                onChange={(event) =>
+                  onControlsChange({
+                    ...controls,
+                    research_effort: event.target.value as ResearchEffort,
+                  })
+                }
+              >
+                <option value="auto">Auto</option>
+                <option value="research">Research</option>
+              </select>
+            </label>
           </div>
         )}
 

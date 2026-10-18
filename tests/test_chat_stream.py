@@ -88,6 +88,56 @@ async def test_health_endpoint(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["answer_detail", "research_effort"])
+@pytest.mark.parametrize("invalid", ["", "Balanced", "RESEARCH", 0, False, [], {}])
+async def test_native_controls_invalid_before_execution(client, monkeypatch, field, invalid):
+    dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
+    monkeypatch.setattr("orchestrator.main._durable_chat", dispatch)
+    monkeypatch.setattr(daemon_module, "completion_with_tools", dispatch)
+    response = await client.post("/chat", json={"message": "hello", field: invalid})
+    assert response.status_code == 422
+    dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {},
+        {"answer_detail": None, "research_effort": None},
+        {"answer_detail": "brief", "research_effort": "research"},
+        {"answer_detail": "detailed", "research_effort": "auto"},
+    ],
+)
+async def test_native_request_bound_prompt_receives_independent_controls(
+    client, monkeypatch, controls
+):
+    from orchestrator.answer_controls import answer_control_instructions
+
+    monkeypatch.setenv("MOCK_LLM", "false")
+    get_settings.cache_clear()
+    seen = []
+
+    async def completion(*args, **kwargs):
+        seen.append(kwargs)
+        yield {"type": "content_delta", "content": "supported finding"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", completion)
+    response = await client.post("/chat", json={"message": "hello", **controls})
+    assert response.status_code == 200
+    assert len(seen) == 1
+    prompt = seen[0]["messages"][0]["content"]
+    instructions = answer_control_instructions(**controls)
+    if instructions:
+        assert instructions in prompt
+    else:
+        assert "Answer detail:" not in prompt
+        assert "Research effort:" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_providers_endpoint_mock_mode(client, monkeypatch):
     """Test the providers endpoint in mock mode."""
     monkeypatch.setenv("MOCK_LLM", "true")
@@ -228,7 +278,9 @@ async def test_chat_stream_handles_tool_pipeline_error_gracefully(client, monkey
     assert "event: tool_result" in body
     assert "http_request" in body
     assert '"synthetic":true' in body
-    assert "I hit a tool error and will continue" in body
+    assert "Further work stopped after an execution error" in body
+    assert "available findings may be incomplete" in body
+    assert "will continue" not in body
     assert "event: final" in body
     assert "event: done" in body
     assert "event: error" not in body

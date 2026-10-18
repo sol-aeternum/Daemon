@@ -1,9 +1,8 @@
 """Shared search pacing: parsing, atomic Redis admission and bounded refusal.
 
 Unit tests cover the pure pieces (scope keys, strict header parsing, status
-cooldown mapping). Integration tests run against the local Redis container
-with an isolated random namespace per test and are skipped when it is
-unreachable. No test contacts a search provider.
+cooldown mapping). Integration tests require a fresh owned network-none Redis,
+with an isolated random namespace per test. No test contacts a search provider.
 """
 
 from __future__ import annotations
@@ -27,9 +26,6 @@ from orchestrator.services.search_pacing import (
     parse_rate_headers,
 )
 
-REDIS_DSN = "redis://localhost:6379/0"
-CONNECT_TIMEOUT_S = 2.0
-
 BRAVE_WINDOWS: tuple[tuple[int, float], ...] = ((1, 1.0), (15000, 2592000.0))
 BRAVE_HEADERS = {
     "X-RateLimit-Limit": "1, 15000",
@@ -41,19 +37,6 @@ BRAVE_HEADERS = {
 
 def _unique_namespace() -> str:
     return f"{pacing.DEFAULT_NAMESPACE}:test:{uuid.uuid4().hex}"
-
-
-async def _connect() -> Any:
-    from redis.asyncio import Redis
-
-    client = Redis.from_url(
-        REDIS_DSN,
-        decode_responses=True,
-        socket_connect_timeout=CONNECT_TIMEOUT_S,
-        socket_timeout=CONNECT_TIMEOUT_S,
-    )
-    await client.ping()
-    return client
 
 
 # --------------------------------------------------------------------------- #
@@ -203,11 +186,8 @@ def test_status_cooldown_mapping_is_closed_vocabulary() -> None:
 # integration: real Redis, isolated random namespace
 # --------------------------------------------------------------------------- #
 @pytest_asyncio.fixture
-async def redis_client() -> AsyncIterator[Any]:
-    try:
-        client = await asyncio.wait_for(_connect(), timeout=CONNECT_TIMEOUT_S)
-    except Exception:
-        pytest.skip("local Redis (localhost:6379) is not reachable")
+async def redis_client(owned_search_redis) -> AsyncIterator[Any]:
+    client = await owned_search_redis.connect()
     try:
         yield client
     finally:

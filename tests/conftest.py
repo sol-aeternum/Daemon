@@ -53,6 +53,19 @@ def _clear_settings_cache():
     get_settings.cache_clear()
 
 
+@pytest.fixture(scope="session")
+def owned_search_redis(tmp_path_factory):
+    from tests.owned_search_redis import OwnedSearchRedis
+
+    root = Path(os.environ.get("OPENCODE_WORK_TEST_DIR", str(tmp_path_factory.getbasetemp())))
+    fixture = OwnedSearchRedis(root, PROJECT_ROOT.name)
+    try:
+        fixture.start()
+        yield fixture
+    finally:
+        fixture.close()
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--compute-metadata-postgres",

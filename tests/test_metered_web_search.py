@@ -1992,22 +1992,11 @@ async def test_local_transport_setup_failure_before_mark_settles_zero(
 @pytest.mark.asyncio
 async def test_delayed_account_reservation_does_not_bunch_final_http_sends(
     monkeypatch: pytest.MonkeyPatch,
+    owned_search_redis,
 ) -> None:
     """Discriminate real Redis grants from earlier account-reservation timing."""
-    from redis.asyncio import Redis
-
     _approved_policy(monkeypatch)
-    client = Redis.from_url(
-        "redis://localhost:6379/0",
-        decode_responses=True,
-        socket_connect_timeout=1.0,
-        socket_timeout=1.0,
-    )
-    try:
-        await asyncio.wait_for(client.ping(), timeout=1)
-    except Exception:
-        await client.aclose()
-        pytest.skip("local Redis (localhost:6379) is not reachable")
+    client = await owned_search_redis.connect()
     namespace = f"daemon:search-pacing:send-test:{uuid.uuid4().hex}"
     blocked = asyncio.Event()
     release = asyncio.Event()

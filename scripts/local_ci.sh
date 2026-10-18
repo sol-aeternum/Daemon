@@ -21,7 +21,7 @@
 # Notes:
 #   - The script changes to the repository root before doing anything.
 #   - For frontend gates, `npm ci` is included as a first-class gate.
-#   - The HTTP-cache fixture also needs locked Python dependencies, including
+#   - The cross-language and HTTP-cache fixtures need locked Python dependencies, including
 #     for a frontend-only run on a fresh checkout.
 #   - Frontend `npm run build` may regenerate `frontend/next-env.d.ts`
 #     and PWA service-worker artifacts; this regeneration is expected, not a gate failure.
@@ -71,8 +71,9 @@ frontend|type-check|blocking|npm --prefix frontend run type-check
 frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
 frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
-frontend|test-run|blocking|npm --prefix frontend run test:run
 frontend|cache-fixture-python|blocking|uv sync --locked
+frontend|test-run|blocking|npm --prefix frontend run test:run
+frontend|cache-fixture-ownership|blocking|uv run pytest -q frontend/e2e/cache_fixture_ownership.py
 frontend|http-cache-browser|blocking|(cd frontend && npx playwright test --config playwright.cache.config.ts)
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py
