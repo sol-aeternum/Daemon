@@ -15,7 +15,8 @@ origin. Duplicate acceptance never creates coverage or adopts legacy tasks.
 Execution requires an explicitly injected `InferenceRecovery`, authenticated
 original origin and existing full 049 identity. Missing coverage, collaborator,
 schema or required observations refuses instead of choosing the legacy path.
-Default HTTP and worker constructors do not provide these collaborators.
+Default HTTP and worker constructors do not provide these collaborators. The
+explicit isolated-host factory described below is not called by either startup.
 
 Explicit or inherited compute coverage also requires the existing shared invocation
 before reconciliation or admission. Missing/crossed account, financial scope,
@@ -136,6 +137,58 @@ are created. The trusted acceptor needs narrow coverage-column INSERT; the worke
 must lack it and all direct marker/048/049 table/column privileges or owner/helper
 membership. Fixture pools use separated non-owner principals. UUIDs and Python
 preflight do not authenticate end users or sandbox an adversarial tasks-DML holder.
+
+### Explicit isolated-host composition (source only)
+
+`orchestrator/tasks/composition.py:qualify_task_composition` accepts externally
+owned pools, encryption and settings, never DSNs or credential factories. Its
+default returns no bundle with no I/O; contradictory/off, partial, same-pool,
+cross-database and unsafe-principal configurations refuse. The trusted synthetic
+host must create both pools from its one owned endpoint/database. Observed catalog
+identity is an additional negative check, not cross-cluster or restore attestation.
+The factory does not create/close pools, provision roles, alter grants, migrate,
+start jobs or introduce an environment switch. Normal startup remains uncomposed.
+
+Both actual caller connections must pass capability/schema/ACL checks **before**
+either unchanged J1 barrier runs: the existing barrier can initialize its binding.
+The factory checks protected object shapes, constraint presence/validation, definer
+signatures/search paths, current/default ACL exposure and the immutable witness
+trigger; reviewed migrations remain the supported creators, not arbitrary manual
+DBA changes. Missing/unsafe evidence refuses; there is no repair or elevated fallback.
+No bundle is published on failed/cancelled qualification. The host retains its own
+pool ownership and partial-startup unwind; no new remote-cleanup guarantee is made.
+
+The HTTP bundle separates A's NEW acceptor from W's owner-qualified task control
+and observation store. Whole binding checks precede NEW acceptance. A rechecks its
+exact four-column coverage INSERT and denied protected capabilities on the actual
+acceptance transaction connection, before content mutations. Replay still precedes
+NEW origin admission and creates no coverage. Current principal checks reject
+SESSION_USER/CURRENT_USER substitution, privileged/owner/helper capabilities and
+cross-principal membership, including NOINHERIT. Startup success is not a permit.
+
+The worker receives a distinct W-only binding: no A pool/store is carried into
+its context. TaskStore, MemoryStore/encryption, recovery and compute/accounting
+pool identities are pinned; missing/crossed context refuses before runner/sweep
+effects. W's existing per-operation preflights/live SQL gates remain; composed
+wake-up writers and empty-candidate sweep discovery also check the actual caller
+connection. P1 embedding and P2 original-hold settlement algorithms are unchanged.
+Abandoned closure remains an explicit independent call, not new default cron work.
+
+`tests/test_task_composition_postgres.py` exercises the actual authenticated HTTP
+acceptance/Stop, worker, financial SQL, independent sweep, ordinary cloud answers
+and `get_time` tools with scripted SDK transport and owned PostgreSQL/Redis. It
+includes current-connection ACL/principal failures, partial bindings, same/crossed
+pools, J1 initial-binding ordering and post-dispatch quarantine/original funded-hold
+recovery. Scripted remote continuation is not real-provider cessation evidence.
+Opt-in PostgreSQL skips are not qualification; final-state gates and independent
+changed-logic review remain required. Default non-composition inventory admits only
+the exact factory construction/import sites, never arbitrary callers or startup.
+
+OFF adds no composition effects but does not disable existing ordinary chat/tools
+or previously accepted jobs, prove no earlier activation, detect a rolled-back DB,
+or offer a new operational rollback route. Coverage/first-dispatch evidence is not
+cleared. Production principals, deployed pool binding, restore/retention, general
+deletion/output fencing and #477 enablement remain unqualified and unauthorized.
 
 The uncomposed abandoned consumer takes at most 32 controls per pass and shares one
 absolute cooperative two-second budget across discovery, acquisition, checks,

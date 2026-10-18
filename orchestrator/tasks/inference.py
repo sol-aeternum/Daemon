@@ -36,6 +36,73 @@ _FUNCTIONS = (
     "attempt_lifecycle_abandoned_page(uuid)",
     "attempt_lifecycle_close_abandoned(jsonb,uuid)",
 )
+# Caller-side acceptor checks are separate from the incompatible worker predicate.
+# Four-column INSERT is not a capability to read or alter the dispatch witness.
+ACCEPTOR_ROLE = """SELECT
+ CURRENT_USER = SESSION_USER
+ AND pg_catalog.has_schema_privilege(CURRENT_USER,'public','USAGE')
+ AND NOT pg_catalog.has_schema_privilege(CURRENT_USER,'public','CREATE')
+ AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_roles r WHERE
+   (r.rolsuper OR r.rolcreaterole OR r.rolbypassrls OR r.rolname IN
+    ('pg_execute_server_program','pg_read_server_files','pg_write_server_files'))
+   AND pg_catalog.pg_has_role(CURRENT_USER,r.oid,'MEMBER'))
+ AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname='public'
+   AND pg_catalog.pg_has_role(CURRENT_USER,n.nspowner,'MEMBER'))
+ AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid=ANY(ARRAY[
+   'public.compute_scope_metadata'::regclass,'public.compute_reservation_metadata'::regclass,
+   'public.attempt_lifecycle_control'::regclass,'public.attempt_lifecycle_commands'::regclass,
+   'public.task_inference_recovery'::regclass]) AND
+   (pg_catalog.pg_has_role(CURRENT_USER,c.relowner,'MEMBER') OR
+    pg_catalog.has_table_privilege(CURRENT_USER,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+    OR (c.relname<>'task_inference_recovery' AND
+      pg_catalog.has_any_column_privilege(CURRENT_USER,c.oid,'SELECT,INSERT,UPDATE,REFERENCES'))))
+ AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a
+   WHERE a.attrelid='public.task_inference_recovery'::regclass AND a.attnum>0 AND NOT a.attisdropped
+   AND (pg_catalog.has_column_privilege(CURRENT_USER,a.attrelid,a.attnum,'SELECT,UPDATE,REFERENCES')
+     OR pg_catalog.has_column_privilege(CURRENT_USER,a.attrelid,a.attnum,'INSERT WITH GRANT OPTION')
+     OR pg_catalog.has_column_privilege(CURRENT_USER,a.attrelid,a.attnum,'INSERT') IS DISTINCT FROM
+        (a.attname IN ('task_id','account_id','account_generation','protocol_version'))))
+ AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND (p.proname LIKE 'compute_metadata_%'
+    OR p.proname LIKE 'attempt_lifecycle_%' OR p.proname LIKE 'task_inference_%')
+   AND (pg_catalog.pg_has_role(CURRENT_USER,p.proowner,'MEMBER')
+     OR pg_catalog.has_function_privilege(CURRENT_USER,p.oid,'EXECUTE')))
+"""
+
+
+async def check_principal(conn: Any, expected: str | None, other: str | None) -> None:
+    """Check the acquired login, not a role label or cached startup permit."""
+    if (
+        await conn.fetchval(
+            "SELECT CURRENT_USER=SESSION_USER AND ($1::text IS NULL OR CURRENT_USER=$1) "
+            "AND pg_catalog.current_schemas(false)=ARRAY['public']::name[] "
+            "AND NOT pg_catalog.has_schema_privilege(CURRENT_USER,'public','CREATE') "
+            "AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_database d "
+            "WHERE d.datname=pg_catalog.current_database() "
+            "AND pg_catalog.pg_has_role(CURRENT_USER,d.datdba,'MEMBER')) "
+            "AND ($2::text IS NULL OR NOT pg_catalog.pg_has_role(CURRENT_USER,$2,'MEMBER')) "
+            "AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' "
+            "AND (p.proname LIKE 'compute_metadata_%' OR p.proname LIKE 'attempt_lifecycle_%' "
+            "OR p.proname LIKE 'task_inference_%') AND "
+            "pg_catalog.has_function_privilege(CURRENT_USER,p.oid,'EXECUTE WITH GRANT OPTION'))",
+            expected,
+            other,
+        )
+        is not True
+    ):
+        raise ObservationBlocked("inference_principal_refused")
+
+
+async def acceptor_preflight(
+    conn: Any, *, expected: str | None = None, other: str | None = None
+) -> None:
+    require_effect()
+    await check_principal(conn, expected, other)
+    if await conn.fetchval(ACCEPTOR_ROLE) is not True:
+        raise ObservationBlocked("inference_acceptor_refused")
+
+
 ROLE_PRECONDITION = (
     f"SELECT ({LIFECYCLE_ROLE}) AND ({METADATA_ROLE.strip().removesuffix(';')}) AND "
     "NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c "
@@ -87,9 +154,12 @@ class InferenceRecovery:
     def __init__(self, pool: Any) -> None:
         self.pool = pool
         self.after_id: UUID | None = None
+        self.principals: tuple[str, str] | None = None
 
     async def preflight(self, conn: Any) -> None:
         require_effect()
+        if self.principals is not None:
+            await check_principal(conn, *self.principals)
         if await conn.fetchval(ROLE_PRECONDITION) is not True:
             raise ObservationBlocked("inference_principal_refused")
 

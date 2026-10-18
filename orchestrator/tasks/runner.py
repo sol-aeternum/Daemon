@@ -1047,6 +1047,9 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
 
 
 async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
+    from orchestrator.tasks.composition import validate_worker_composition
+
+    validate_worker_composition(ctx)
     store = ctx.get("task_store")
     if isinstance(store, TaskStore) and store._inference is not None:
         token = invocation.set(InferenceInvocation())
@@ -1189,6 +1192,9 @@ async def _settle_quarantined_holds(store: TaskStore, pool: Any) -> None:
 
 async def sweep_tasks(ctx: dict[str, Any]) -> int:
     """arq cron: wake tasks whose wake-up was lost or whose lease expired."""
+    from orchestrator.tasks.composition import validate_worker_composition
+
+    validate_worker_composition(ctx)
     store: TaskStore | None = ctx.get("task_store")
     # Refuse inherited execution even before ordinary wake-up effects. Never clear
     # an uncertain execution latch to manufacture an independent accounting pass.

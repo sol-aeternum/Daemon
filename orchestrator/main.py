@@ -139,6 +139,7 @@ from orchestrator.routes.tasks import (
     observer_authorizer,
     router as tasks_router,
     task_store,
+    task_acceptor,
 )
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.tasks.inputs import RequestFingerprint, chat_request_fingerprint
@@ -2204,7 +2205,8 @@ async def _durable_chat(
     conversation bound to a contextual-home suggestion). Acceptance fails
     closed: without a durable record nothing is executed.
     """
-    store = task_store(app_state)
+    store = task_acceptor(app_state)
+    control = task_store(app_state)
     memory = app_state.memory_store
     assert memory is not None  # task_store() refuses without it
     idempotency_key = request.headers.get(IDEMPOTENCY_HEADER)
@@ -2300,7 +2302,7 @@ async def _durable_chat(
     if accepted.created and app_state.redis is not None:
         # Latency only: the dispatch sweep recovers a lost or failed wake-up.
         try:
-            wake_seq = await store.mark_woken(accepted.task_id)
+            wake_seq = await control.mark_woken(accepted.task_id)
             await enqueue_account_job(
                 app_state.redis,
                 "run_chat_task",
@@ -2329,7 +2331,7 @@ async def _durable_chat(
                 logger.warning("Failed to enqueue title generation")
 
     return _observe_task_response(
-        store, app_state, auth, accepted.task_id, request_id, settings, request
+        control, app_state, auth, accepted.task_id, request_id, settings, request
     )
 
 

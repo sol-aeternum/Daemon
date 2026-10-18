@@ -1256,10 +1256,25 @@ async def test_lease_loss_seen_after_the_attempts_own_commit_keeps_its_outcome(
     completion commit, before the worker records the result, must not fence
     it. The committed status (cancel and suspension precedence included) is
     the outcome, and success-only follow-ups run exactly when it completed."""
+    # #552: this case requires a *post-commit* observation. A pre-commit
+    # suspension observation legitimately stops the heartbeat, so waiting for
+    # another observation after it would manufacture a persistence timeout.
+    observation_lock = asyncio.Lock()
+    observe = env.tasks.observe_attempt
+    holding_observation = False
+
+    async def observe_after_commit(*args: Any, **kwargs: Any) -> Any:
+        async with observation_lock:
+            return await observe(*args, **kwargs)
+
+    monkeypatch.setattr(env.tasks, "observe_attempt", observe_after_commit)
     race = _HeldCompletion(env, monkeypatch)
     accepted = await accept_task(env)
 
     async def before() -> None:
+        nonlocal holding_observation
+        await observation_lock.acquire()
+        holding_observation = True
         if won == "cancel":
             await env.tasks.request_cancel(env.alice, accepted.task_id)
         elif won == "suspension":
@@ -1269,12 +1284,22 @@ async def test_lease_loss_seen_after_the_attempts_own_commit_keeps_its_outcome(
                 env.alice,
             )
 
+    async def after() -> None:
+        nonlocal holding_observation
+        holding_observation = False
+        observation_lock.release()
+        await race.until_lease_lost()
+
     race.before = before
-    race.after = race.until_lease_lost
+    race.after = after
     redis = FakeRedis()
-    result = await asyncio.wait_for(
-        runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
-    )
+    try:
+        result = await asyncio.wait_for(
+            runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
+        )
+    finally:
+        if holding_observation:
+            observation_lock.release()
 
     assert race.lease_lost.is_set() and [s.value for s in race.committed] == [outcome]
     assert result == outcome
@@ -1286,6 +1311,50 @@ async def test_lease_loss_seen_after_the_attempts_own_commit_keeps_its_outcome(
     # A suspended account's result is never published.
     assert (snapshot.content == MOCK_TEXT) is (won is None)
     assert redis.published[-1][1] == {"t": "terminal", "gen": 1}
+
+
+@pytest.mark.asyncio
+async def test_suspension_seen_before_completion_commit_keeps_committed_failure(
+    env: Env, mock_llm: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The other #552 ordering: refusal stops observation before our own commit."""
+    suspension_seen = asyncio.Event()
+    observe = env.tasks.observe_attempt
+
+    async def observe_suspension(*args: Any, **kwargs: Any) -> Any:
+        beat = await observe(*args, **kwargs)
+        if beat.refusal == "account_suspended":
+            suspension_seen.set()
+        return beat
+
+    monkeypatch.setattr(env.tasks, "observe_attempt", observe_suspension)
+    race = _HeldCompletion(env, monkeypatch)
+    accepted = await accept_task(env)
+
+    async def before() -> None:
+        await env.pool.execute(
+            "INSERT INTO entitlement_accounts (user_id, status) VALUES ($1, 'suspended') "
+            "ON CONFLICT (user_id) DO UPDATE SET status = 'suspended'",
+            env.alice,
+        )
+        await asyncio.wait_for(suspension_seen.wait(), 5)
+
+    race.before = before
+    redis = FakeRedis()
+    result = await asyncio.wait_for(
+        runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
+    )
+    assert suspension_seen.is_set() and race.interrupt_ran.is_set()
+    assert not race.lease_lost.is_set()
+    assert [s.value for s in race.committed] == ["failed"]
+    assert result == await _status(env, accepted.task_id) == "failed"
+    assert await _attempt_outcomes(env, accepted.task_id) == ["failed_terminal"]
+    assert "extract_memories" not in _enqueued(redis)
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None and snapshot.content != MOCK_TEXT
+    assert redis.published[-1][1] == {"t": "terminal", "gen": 1}
+    assert "Failed to persist final message" not in caplog.text
+    assert "Failed to terminalize assistant message" not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -753,6 +753,13 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
         ("orchestrator.services.account_control.transaction", "control_transaction"),
     },
+    # Explicit isolated composition/selectors use refusal only, never J1b APIs.
+    "orchestrator/tasks/composition.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/routes/tasks.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
     "orchestrator/tasks/store.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
@@ -905,6 +912,14 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         (
             "orchestrator/unapproved_writer.py",
             "from orchestrator.services.account_control.transaction import ObservationBlocked",
+        ),
+        (
+            "orchestrator/tasks/composition.py",
+            "from orchestrator.services.account_control.transaction import control_transaction",
+        ),
+        (
+            "orchestrator/routes/tasks.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
         ),
     ],
 )

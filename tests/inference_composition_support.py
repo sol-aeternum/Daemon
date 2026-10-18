@@ -19,6 +19,37 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
         tree = ast.parse(source)
         nodes = list(ast.walk(tree))
         aliases = {}
+        factory = next(
+            (
+                n
+                for n in tree.body
+                if isinstance(n, ast.AsyncFunctionDef) and n.name == "qualify_task_composition"
+            ),
+            None,
+        )
+        factory_nodes = (
+            set(map(id, ast.walk(factory)))
+            if (path == "orchestrator/tasks/composition.py" and factory is not None)
+            else set()
+        )
+
+        def factory_constructor(node, target):
+            if id(node) not in factory_nodes:
+                return False
+            args = [ast.unparse(a) for a in node.args]
+            keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+            if target.endswith("InferenceRecovery"):
+                return args == ["worker_pool"] and not keywords
+            if target.endswith("TaskStore"):
+                return (
+                    args
+                    == ["acceptor_pool", "encryption", "MemoryStore(acceptor_pool, encryption)"]
+                    and keywords == {"cover_new_inference": "True"}
+                ) or (
+                    args == ["worker_pool", "encryption", "MemoryStore(worker_pool, encryption)"]
+                    and keywords == {"inference_recovery": "recovery"}
+                )
+            return False
 
         def name(node):
             if isinstance(node, ast.Name):
@@ -36,6 +67,37 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             return ""
 
         for node in nodes:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Attribute) and target.attr in (
+                        "_composition",
+                        "_task_composition",
+                        "task_composition",
+                    ):
+                        default = (
+                            path in ("orchestrator/tasks/store.py", "orchestrator/memory/store.py")
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"
+                            and isinstance(node.value, ast.Constant)
+                            and node.value.value is None
+                        )
+                        factory_binding = (
+                            id(node) in factory_nodes
+                            and ast.unparse(target)
+                            in (
+                                "acceptor._composition",
+                                "tasks._composition",
+                                "acceptor._memory._task_composition",
+                                "tasks._memory._task_composition",
+                            )
+                            and isinstance(node.value, ast.Name)
+                            and node.value.id in ("bundle", "worker")
+                        )
+                        if not default and not factory_binding:
+                            violations.append(
+                                f"{path}:{node.lineno}:unapproved composition binding"
+                            )
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and path not in ADMITTED:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 if any(
@@ -113,10 +175,18 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and node.module == "orchestrator.tasks.inference"
                     and {item.name for item in node.names} <= {"CODE", "NOTICE"}
                 )
+                factory_import = (
+                    path == "orchestrator/tasks/composition.py"
+                    and isinstance(node, ast.ImportFrom)
+                    and node.module == "orchestrator.tasks.inference"
+                    and {item.name for item in node.names}
+                    == {"InferenceRecovery", "acceptor_preflight"}
+                )
                 if (
                     any("orchestrator.tasks.inference" in m for m in modules)
                     and path not in ADMITTED
                     and not notice_only
+                    and not factory_import
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved importer")
                 if (
@@ -129,20 +199,34 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if not isinstance(node, ast.Call):
                 continue
             target = name(node.func)
-            if path not in ADMITTED and any(
-                keyword.arg in ("inference_recovery", "cover_new_inference")
-                for keyword in node.keywords
+            admitted_call = factory_constructor(node, target)
+            if (
+                path not in ADMITTED
+                and any(
+                    keyword.arg in ("inference_recovery", "cover_new_inference")
+                    for keyword in node.keywords
+                )
+                and not admitted_call
             ):
                 violations.append(f"{path}:{node.lineno}:collaborator injection")
-            if target.endswith(".InferenceRecovery") or target == "InferenceRecovery":
+            if (
+                target.endswith(".InferenceRecovery") or target == "InferenceRecovery"
+            ) and not admitted_call:
                 violations.append(f"{path}:{node.lineno}:consumer construction")
             if target.endswith(".TaskStore") or target == "TaskStore":
-                if (
+                if not admitted_call and (
                     len(node.args) != 3
                     or node.keywords
                     or any(isinstance(a, ast.Starred) for a in node.args)
                 ):
                     violations.append(f"{path}:{node.lineno}:task composition")
+            if target.endswith(".qualify_task_composition") or target == "qualify_task_composition":
+                violations.append(f"{path}:{node.lineno}:factory activation")
+            if (
+                target.endswith((".TaskComposition", ".WorkerComposition"))
+                and id(node) not in factory_nodes
+            ):
+                violations.append(f"{path}:{node.lineno}:bundle construction")
             if target.endswith(".abandoned_pass"):
                 violations.append(f"{path}:{node.lineno}:consumer invocation")
             if (
@@ -155,7 +239,14 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if (
                 target == "setattr"
                 and len(node.args) >= 2
-                and name(node.args[1]) in ("_inference", "_cover_new_inference")
+                and name(node.args[1])
+                in (
+                    "_inference",
+                    "_cover_new_inference",
+                    "_composition",
+                    "_task_composition",
+                    "task_composition",
+                )
                 and path not in ADMITTED
             ):
                 violations.append(f"{path}:{node.lineno}:consumer installation")

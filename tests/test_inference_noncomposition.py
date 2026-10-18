@@ -49,6 +49,9 @@ def test_production_inventory_and_disabled_constructor_defaults():
         "setattr(store, '_inference', collaborator)",
         "store._inference = collaborator",
         "compose(inference_recovery=collaborator)",
+        "from orchestrator.tasks.composition import qualify_task_composition as Q\nQ(enabled=True)",
+        "state.task_composition = bundle",
+        "setattr(memory, '_task_composition', bundle)",
     ],
 )
 @pytest.mark.parametrize(

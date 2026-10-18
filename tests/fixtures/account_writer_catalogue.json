@@ -4618,6 +4618,17 @@
     },
     {
       "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_preflight",
+      "kind": "sql_named",
+      "fingerprint": "0a25ed238853f962",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Catalog-only acceptor privilege predicate contains SQL privilege names; retained as an unresolved conservative scanner candidate, not a data mutation or complete writer fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
       "qualname": "InferenceRecovery._owned",
       "kind": "sql_unresolvable",
       "fingerprint": "aaaef6d08df24ee4",
@@ -5027,7 +5038,7 @@
       "owner_source": "orchestrator.tasks.store",
       "qualname": "TaskStore.due_for_wakeup",
       "kind": "sql_inline",
-      "fingerprint": "3bbf381c06e7880b",
+      "fingerprint": "ccaa33affb68746d",
       "tables": [
         "tasks"
       ],
@@ -5092,7 +5103,7 @@
       "owner_source": "orchestrator.tasks.store",
       "qualname": "TaskStore.mark_woken",
       "kind": "sql_inline",
-      "fingerprint": "1d1e3e55fef28223",
+      "fingerprint": "7f0d268be8b95434",
       "tables": [
         "tasks"
       ],

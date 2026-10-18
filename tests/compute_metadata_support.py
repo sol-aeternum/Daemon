@@ -182,7 +182,11 @@ class Cluster:
 
 
 class Bridge:
-    """Server EOF ends the bridge; exact stdin child is killed AND reaped."""
+    """Either EOF ends the relay; both exact pump children are killed and reaped.
+
+    A crashed client sends no PostgreSQL Terminate frame. Waiting only for server
+    EOF then retains its TCP session and transaction locks indefinitely.
+    """
 
     def __init__(self, cluster, path):
         self.cluster, self.path = cluster, path
@@ -206,7 +210,10 @@ class Bridge:
                     "bash",
                     "-c",
                     "exec 3<>/dev/tcp/127.0.0.1/5432; exec 4<&0; "
-                    'cat <&4 >&3 & child=$!; cat <&3; kill "$child" 2>/dev/null; wait "$child"; exit 0',
+                    "cat <&4 >&3 & up=$!; cat <&3 & down=$!; "
+                    'wait -n "$up" "$down"; '
+                    'kill "$up" "$down" 2>/dev/null; '
+                    'wait "$up" "$down" 2>/dev/null; exec 3<&-; exec 3>&-; exit 0',
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
