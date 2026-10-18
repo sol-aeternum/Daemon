@@ -18,6 +18,8 @@ import logging
 import os
 import socket
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,14 +32,27 @@ from orchestrator.compute_runtime import (
 from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
-from orchestrator.tasks.store import Claim, ExecutionRefused, LeaseLost, TaskStore
+from orchestrator.tasks.store import (
+    Claim,
+    EffectRefused,
+    ExecutionRefused,
+    LeaseLost,
+    TaskControlled,
+    TaskStore,
+)
+from orchestrator.services.account_control.transaction import ObservationBlocked
 from orchestrator.redis_jobs import enqueue_account_job
 
 logger = logging.getLogger(__name__)
 
-#: Lease length and heartbeat cadence (database clock; §5).
+#: Lease length (database clock) and local heartbeat scheduling cadence (§5).
 LEASE_S = 45.0
 HEARTBEAT_S = 10.0
+#: Whole renewal/probe I/O cap, independently clipped by the remaining local
+#: lease. Cadence overrides do NOT change this cap. This includes acquisition,
+#: validation, statement preparation, COMMIT acknowledgement and native release;
+#: cancellation/cleanup is cooperative, not a new lease or cleanup grace.
+HEARTBEAT_IO_TIMEOUT_S = 10.0
 #: Margin kept between the local lease estimate and the database's lease.
 LEASE_SAFETY_S = 5.0
 #: How long a cancelled or suspended attempt may take to stop at its next
@@ -71,6 +86,7 @@ _COMMITTED_MESSAGE_STATUS = {
     TaskStatus.COMPLETED: "complete",
     TaskStatus.CANCELLED: "cancelled",
     TaskStatus.FAILED: "error",
+    TaskStatus.NEEDS_ATTENTION: "error",
 }
 #: Message states that never feed back into a model's history.
 _HISTORY_EXCLUDED = ["streaming", "error", "cancelled"]
@@ -86,7 +102,7 @@ def live_channel(task_id: uuid.UUID) -> str:
 class AttemptState:
     claim: Claim
     #: Local, conservative lease expiry (event-loop clock).
-    lease_deadline: float = 0.0
+    lease_deadline: float = float("inf")
     delta_seq: int = 0
     cancel_requested: bool = False
     account_suspended: bool = False
@@ -110,10 +126,78 @@ class AttemptState:
     error: BaseException | None = None
     publish_failures: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
+    blocked: str | None = None
+    permission_refusal: str | None = None
+    heartbeat: asyncio.Task[Any] | None = None
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    phase: str = "idle"
 
     @property
     def stopping(self) -> bool:
-        return self.cancel_requested or self.account_suspended or self.fenced
+        return (
+            self.cancel_requested
+            or self.account_suspended
+            or self.fenced
+            or self.blocked is not None
+            or self.permission_refusal is not None
+        )
+
+
+def _halt_writes(state: AttemptState, code: str) -> None:
+    # Synchronous latch before any cleanup await; do not resolve/settle this result.
+    state.blocked = code
+    state.phase = "closed"
+    if state.heartbeat is not None and state.heartbeat is not asyncio.current_task():
+        state.heartbeat.cancel()
+
+
+@asynccontextmanager
+async def _mutation(state: AttemptState, *, final: bool = False) -> AsyncIterator[None]:
+    """Serialized writes; independent supervisor never waits on this gate.
+
+    Close admission before releasing the gate on any uncertain return. No await
+    between admission and the caller's write; the DB still rechecks all authority.
+    """
+    remaining = state.lease_deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise LeaseLost("lease lost")
+    try:
+        async with asyncio.timeout(remaining):
+            await state.write_lock.acquire()
+    except (asyncio.CancelledError, TimeoutError):
+        _halt_writes(state, "task_observation_indeterminate")
+        raise
+    try:
+        if state.blocked is not None:
+            raise ObservationBlocked(state.blocked)
+        if state.result is not None or state.fenced:
+            raise LeaseLost("lease lost")
+        if asyncio.get_running_loop().time() >= state.lease_deadline:
+            raise LeaseLost("lease lost")
+        state.phase = "completing" if final else "mutating"
+        state.completing = final
+        try:
+            yield
+            if state.blocked is not None:
+                raise ObservationBlocked(state.blocked)
+        except (LeaseLost, EffectRefused, ExecutionRefused):
+            raise
+        except ObservationBlocked as blocked:
+            _halt_writes(state, blocked.code)
+            if isinstance(blocked, TaskControlled):
+                state.result = blocked.status
+            raise
+        except asyncio.CancelledError:
+            _halt_writes(state, "task_transition_indeterminate")
+            raise
+        except Exception:
+            _halt_writes(state, "task_observation_indeterminate")
+            raise
+    finally:
+        state.completing = False
+        if state.blocked is None:
+            state.phase = "acknowledged" if state.result is not None else "idle"
+        state.write_lock.release()
 
 
 class AttemptSink:
@@ -139,7 +223,29 @@ class AttemptSink:
         metadata: dict[str, Any] | None = None,
         **fields: Any,
     ) -> dict[str, Any] | None:
+        async with _mutation(self._state, final=status == "complete"):
+            return await self._update_message(
+                message_id, content=content, status=status, metadata=metadata, **fields
+            )
+
+    async def _update_message(
+        self,
+        message_id: Any = None,
+        *,
+        content: str | None = None,
+        status: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **fields: Any,
+    ) -> dict[str, Any] | None:
         claim = self._state.claim
+        if self._state.blocked is not None:
+            raise ObservationBlocked(self._state.blocked)
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            # The engine's finally may call its sink after cancellation was
+            # delivered. Do not start new SQL there or replace that cancellation.
+            # A known Stop is resolved separately by the uncancelled owner runner.
+            return None
         try:
             if status == "complete":
                 message_fields = {key: value for key, value in fields.items() if value is not None}
@@ -165,18 +271,33 @@ class AttemptSink:
                 return {**self._row(), "status": _COMMITTED_MESSAGE_STATUS[self._state.result]}
             if content is not None:
                 await self._store.write_partial(
-                    claim.task_id, claim.epoch, content=content, delta_seq=self._state.delta_seq
+                    claim.task_id,
+                    claim.epoch,
+                    content=content,
+                    delta_seq=self._state.delta_seq,
+                    binding=claim,
                 )
             if status is not None:
                 # cancelled / error: the runner applies the task-level outcome.
                 self._state.requested_terminal = status
             return self._row()
+        except ObservationBlocked as blocked:
+            _halt_writes(self._state, blocked.code)
+            if isinstance(blocked, TaskControlled):
+                self._state.result = blocked.status
+            raise
+        except asyncio.CancelledError:
+            _halt_writes(self._state, "task_transition_indeterminate")
+            raise
         except LeaseLost:
             # Stop the whole attempt now: a provider call between frames would
             # otherwise run on beside the recovery attempt.
             _fence_lost(self._state)
             self._state.fenced = True
             return None
+        except Exception as error:
+            _halt_writes(self._state, "task_observation_indeterminate")
+            raise ObservationBlocked() from error
 
     async def _complete(self, content: str, message_fields: dict[str, Any]) -> TaskStatus:
         """Commit the result; the attempt's own stops wait until it settles.
@@ -194,10 +315,27 @@ class AttemptSink:
                 state.claim.epoch,
                 content=content,
                 message_fields=message_fields,
+                binding=state.claim,
             )
-        except BaseException:
+            # A valid own commit receipt survives a concurrent observation halt.
+            # Retaining it is not renewed mutation authority: keep admission
+            # closed and raise below so the engine skips success-only follow-ups.
+            # Unknown COMMIT / unavailable return never reaches this assignment.
+            state.result = status
+            if state.blocked is not None:
+                raise ObservationBlocked(state.blocked)
+        except LeaseLost:
             state.completing = False
             _apply_deferred_stop(state)
+            raise
+        except BaseException:
+            state.completing = False
+            # The store records commit ambiguity; no second Stop/error write is
+            # authorized by a missing response, including ACK then release loss.
+            # Preserve a more specific store outcome in the outer admission gate.
+            if state.blocked is None:
+                _halt_writes(state, "task_observation_indeterminate")
+            state.deferred_stop = None
             raise
         state.completing = False
         state.deferred_stop = None
@@ -237,6 +375,9 @@ def _guard_tools(registry: Any, store: TaskStore, state: AttemptState) -> None:
         claim.epoch,
         lambda: _fence_lost(state),
         lambda reason: _operation_refused(state, reason),
+        binding=claim,
+        admission=lambda: _mutation(state),
+        may_act=lambda: not state.stopping,
     )
     fetch = registry.get("web_fetch")
     if fetch is not None and hasattr(fetch, "refresh_guard"):
@@ -280,6 +421,17 @@ class _TaskRefreshGuard:
             except ExecutionRefused as refused:
                 _operation_refused(self._state, refused.reason)
                 raise
+            except ObservationBlocked as blocked:
+                # The snapshot tool converts exceptions to ordinary error results.
+                # Close admission synchronously before it can continue a round.
+                _operation_refused(self._state, blocked.code)
+                raise
+            except Exception:
+                # Includes content-guard/protocol and DB failures. This hook has
+                # no independent control-exit authority; do not infer an effect
+                # or retry from a failed observation in the caller's transaction.
+                _operation_refused(self._state, "task_observation_indeterminate")
+                raise
 
         return publish
 
@@ -292,7 +444,9 @@ def _operation_refused(state: AttemptState, reason: str) -> None:
     elif reason == "account_suspended":
         state.account_suspended = True
     else:
-        return  # too little lease left: the heartbeat decides
+        if reason == "lease_margin":
+            return  # too little lease left: the heartbeat decides
+        _halt_writes(state, reason)
     if state.execution is not None:
         _interrupt(state, state.execution)
 
@@ -330,40 +484,73 @@ async def _heartbeat(store: TaskStore, state: AttemptState, execution: asyncio.T
     """
     claim = state.claim
     loop = asyncio.get_running_loop()
-    while not state.fenced:
+    while not state.fenced and state.blocked is None:
         remaining = state.lease_deadline - loop.time()
         if remaining <= 0:
             break
         await asyncio.sleep(min(HEARTBEAT_S, remaining))
-        if state.result is not None:
+        if state.result is not None or state.blocked is not None:
             # This attempt committed its outcome; the lease ended with it and
             # post-completion work must not be cancelled as if fenced.
             return
         remaining = state.lease_deadline - loop.time()
         if remaining <= 0:
             break
-        requested_at = loop.time()
+        renewed = False
+        requested_at: float | None = None
         try:
-            beat = await asyncio.wait_for(
-                store.heartbeat(claim.task_id, claim.epoch, lease_s=LEASE_S),
-                timeout=min(HEARTBEAT_S, remaining),
-            )
+            if state.write_lock.locked() or state.completing or state.stopping:
+                beat = await asyncio.wait_for(
+                    store.observe_attempt(claim), timeout=min(HEARTBEAT_IO_TIMEOUT_S, remaining)
+                )
+            else:
+                async with _mutation(state):
+                    # Admission may have waited. Neither its old budget nor an
+                    # observation extends the lease; use a fresh request timestamp.
+                    requested_at = loop.time()
+                    remaining = state.lease_deadline - requested_at
+                    if remaining <= 0:
+                        raise LeaseLost("lease lost")
+                    beat = await asyncio.wait_for(
+                        store.heartbeat(claim.task_id, claim.epoch, lease_s=LEASE_S, binding=claim),
+                        timeout=min(HEARTBEAT_IO_TIMEOUT_S, remaining),
+                    )
+                    renewed = True
+        except ObservationBlocked as blocked:
+            _halt_writes(state, blocked.code)
+            if isinstance(blocked, TaskControlled):
+                state.result = blocked.status
+            _interrupt(state, execution)
+            return
         except LeaseLost:
             if state.result is not None:
                 return
             _stop_fenced(state, execution)
             return
         except Exception:
-            # A missed beat is tolerable while the lease is still ours; the
-            # loop re-checks the deadline before waiting again.
-            logger.warning("Task heartbeat failed (task_id=%s)", claim.task_id, exc_info=True)
-            continue
-        state.lease_deadline = requested_at + LEASE_S - LEASE_SAFETY_S
+            # Even a timeout can hide a COMMIT. Do not send a replacement
+            # renewal or allow generic _resolve to rewrite an unknown result.
+            _halt_writes(state, "task_observation_indeterminate")
+            _interrupt(state, execution)
+            return
+        if state.blocked is not None or state.result is not None:
+            return
+        if (
+            renewed
+            and requested_at is not None
+            and not beat.cancel_requested
+            and beat.refusal is None
+        ):
+            state.lease_deadline = requested_at + LEASE_S - LEASE_SAFETY_S
         was_stopping = state.cancel_requested or state.account_suspended
         if beat.cancel_requested:
             state.cancel_requested = True
         if beat.account_suspended:
             state.account_suspended = True
+        if beat.refusal is not None:
+            state.permission_refusal = state.permission_refusal or beat.refusal
+            _interrupt(state, execution)
+            return
         if not was_stopping and (state.cancel_requested or state.account_suspended):
             loop.call_later(STOP_GRACE_S, _interrupt, state, execution)
     if state.result is None and not state.fenced:
@@ -550,7 +737,13 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
     ):
         scope_id = current_scope().scope_id
         try:
-            await store.record_compute_scope(claim.task_id, claim.epoch, scope_id)
+            async with _mutation(state):
+                await store.record_compute_scope(
+                    claim.task_id, claim.epoch, scope_id, binding=claim
+                )
+        except ObservationBlocked as blocked:
+            _halt_writes(state, blocked.code)
+            raise
         except ExecutionRefused as refused:
             # Stopped before preparation, which may call a provider.
             if refused.reason == "account_suspended":
@@ -566,12 +759,17 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
         )
         try:
-            await store.begin_execution(
-                claim.task_id,
-                claim.epoch,
-                scope_id,
-                prompt_version=str(DAEMON_PROMPT_VERSION),
-            )
+            async with _mutation(state):
+                await store.begin_execution(
+                    claim.task_id,
+                    claim.epoch,
+                    scope_id,
+                    prompt_version=str(DAEMON_PROMPT_VERSION),
+                    binding=claim,
+                )
+        except ObservationBlocked as blocked:
+            _halt_writes(state, blocked.code)
+            raise
         except ExecutionRefused as refused:
             # Stopped between the claim and inference: no provider call.
             if refused.reason == "account_suspended":
@@ -605,6 +803,8 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             summary_generation=summary_generation,
         )
         async for frame in frames:
+            if state.blocked is not None:
+                break
             event, envelope = _parse_frame(frame)
             raw_data = envelope.get("data")
             data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
@@ -646,16 +846,14 @@ async def _record_progress(
         evidence = (
             await _progress_evidence(store, state, data or {}) if event == "tool_result" else {}
         )
-        return await store.record_event(
-            state.claim.task_id,
-            state.claim.epoch,
-            event,
-            {
-                "name": str(name or "tool")[:100],
-                "epoch": state.claim.epoch,
-                **evidence,
-            },
-        )
+        async with _mutation(state):
+            return await store.record_event(
+                state.claim.task_id,
+                state.claim.epoch,
+                event,
+                {"name": str(name or "tool")[:100], "epoch": state.claim.epoch, **evidence},
+                binding=state.claim,
+            )
     except LeaseLost:
         # Fenced: stop now (the cancel lands at the next await), as the sink
         # and the effect fence do.
@@ -710,14 +908,26 @@ def _classify(exc: BaseException) -> tuple[RetryCause, str]:
 
 async def _resolve(store: TaskStore, state: AttemptState) -> str:
     claim = state.claim
+    if state.blocked is not None:
+        return state.result.value if state.result is not None else state.blocked
     if state.result is not None:
         return state.result.value
     if state.fenced:
         return "fenced"
     try:
+        refusal = "account_suspended" if state.account_suspended else state.permission_refusal
+        if refusal is not None:
+            return (
+                await store.finish_refusal(
+                    claim.task_id,
+                    claim.epoch,
+                    binding=claim,
+                    reason=refusal,
+                )
+            ).value
         # Suspension wins over a cancel (the store rechecks it either way).
         if state.cancel_requested and not state.account_suspended:
-            return (await store.acknowledge_cancel(claim.task_id, claim.epoch)).value
+            return (await store.acknowledge_cancel(claim.task_id, claim.epoch, binding=claim)).value
         if state.account_suspended:
             cause, code = RetryCause.TERMINAL_ERROR, "account_suspended"
         elif state.error is not None and not state.executing:
@@ -734,6 +944,7 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
                     reason=reason,
                     max_wait_s=ADMISSION_WAIT_S,
                     before_dispatch=True,
+                    binding=claim,
                 ):
                     return TaskStatus.QUEUED.value
                 # Waited too long: end honestly rather than retry uncounted forever.
@@ -746,14 +957,22 @@ async def _resolve(store: TaskStore, state: AttemptState) -> str:
                 delay_s=DEFER_S,
                 reason=code,
                 max_wait_s=ADMISSION_WAIT_S,
+                binding=claim,
             ):
                 return TaskStatus.QUEUED.value
         else:
             # The engine ended without publishing a result (an internal error
             # it reported in-stream, or an unexpected early stop).
             cause, code = RetryCause.RETRYABLE_ERROR, "internal_error"
-        status = await store.fail_attempt(claim.task_id, claim.epoch, cause=cause, error_code=code)
+        status = await store.fail_attempt(
+            claim.task_id, claim.epoch, cause=cause, error_code=code, binding=claim
+        )
         return status.value
+    except ObservationBlocked as blocked:
+        _halt_writes(state, blocked.code)
+        if isinstance(blocked, TaskControlled):
+            state.result = blocked.status
+        return blocked.code
     except LeaseLost:
         return "fenced"
 
@@ -768,7 +987,10 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     # The lease runs from when the claim was requested, not from when this
     # worker got round to executing.
     lease_deadline = loop.time() + LEASE_S - LEASE_SAFETY_S
-    claim = await store.claim(uuid.UUID(task_id), worker_id=WORKER_ID, lease_s=LEASE_S)
+    try:
+        claim = await store.claim(uuid.UUID(task_id), worker_id=WORKER_ID, lease_s=LEASE_S)
+    except ObservationBlocked as blocked:
+        return blocked.status.value if isinstance(blocked, TaskControlled) else blocked.code
     if claim is None:
         # The claim may have ended the task (a lost attempt that needs
         # attention, exhausted its attempts or was cancelled): free the dead
@@ -788,7 +1010,11 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         logger.warning("Could not settle a lost attempt's holds; deferring", exc_info=True)
         try:
             await store.defer_claim(
-                claim.task_id, claim.epoch, delay_s=DEFER_S, reason="recovery_pending"
+                claim.task_id,
+                claim.epoch,
+                delay_s=DEFER_S,
+                reason="recovery_pending",
+                binding=claim,
             )
         except Exception:
             # The database is unavailable for this write too. Nothing executed,
@@ -804,6 +1030,7 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     execution = asyncio.create_task(_execute(ctx, store, state))
     state.execution = execution
     heartbeat = asyncio.create_task(_heartbeat(store, state, execution))
+    state.heartbeat = heartbeat
     try:
         await execution
     except asyncio.CancelledError:
@@ -813,6 +1040,10 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         ):
             # Worker shutdown: the lease expires and a later claim recovers.
             raise
+    except ObservationBlocked as blocked:
+        _halt_writes(state, blocked.code)
+        if isinstance(blocked, TaskControlled):
+            state.result = blocked.status
     except Exception as exc:
         state.error = exc
         if compute_error(exc) is None:
@@ -822,7 +1053,8 @@ async def run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await heartbeat
     outcome = await _resolve(store, state)
-    await _publish(ctx.get("redis"), state, {"t": "terminal", "gen": claim.epoch})
+    if state.blocked is None or state.result is not None:
+        await _publish(ctx.get("redis"), state, {"t": "terminal", "gen": claim.epoch})
     return outcome
 
 

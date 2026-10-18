@@ -95,7 +95,12 @@ async def database() -> AsyncIterator[tuple[asyncpg.Pool, uuid.UUID]]:
             await conn.execute("CREATE TABLE users (id UUID PRIMARY KEY)")
             await conn.execute("INSERT INTO users (id) VALUES ($1)", user_id)
             migrations = Path(__file__).resolve().parents[1] / "migrations"
-            for name in ("039_entitlements_commercial.sql", "042_reservation_routing_labels.sql"):
+            for name in (
+                "039_entitlements_commercial.sql",
+                "042_reservation_routing_labels.sql",
+                "046_deletion_journal_markers.sql",
+                "047_account_control_persistence.sql",
+            ):
                 await conn.execute((migrations / name).read_text())
             await seed_entitlement(conn, user_id)
         yield pool, user_id
@@ -563,9 +568,11 @@ async def test_operator_reinstates_account_suspended_by_overrun(database):
     with pytest.raises(AccountSuspended):
         await service.reserve(user, 0, operation="chat")
     with pytest.raises(ValueError):
-        await service.reinstate(user, reason="  ")
-    assert await service.reinstate(user, reason="quote fixed in route policy")
-    assert not await service.reinstate(user, reason="already active")
+        await service.reinstate(user, reason="  ", expected_generation=0)
+    assert await service.reinstate(
+        user, reason="quote fixed in route policy", expected_generation=0
+    )
+    assert not await service.reinstate(user, reason="already active", expected_generation=0)
     await service.release(await service.reserve(user, 0, operation="chat"))
 
 

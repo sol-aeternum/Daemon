@@ -232,11 +232,30 @@ async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
     job = asyncio.create_task(runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)))
     while len(_deltas(redis, accepted.task_id)) < 3:
         await asyncio.sleep(0.01)
+    committed = await env.pool.fetchval(
+        "SELECT content FROM messages WHERE id=$1", accepted.result_message_id
+    )
+    archive = await env.pool.fetchval(
+        "SELECT partial_ciphertext FROM task_attempts WHERE task_id=$1", accepted.task_id
+    )
     await env.tasks.request_cancel(env.alice, accepted.task_id)
     assert await asyncio.wait_for(job, timeout=10) == "cancelled"
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None and snapshot.status is TaskStatus.CANCELLED
-    assert snapshot.content == "".join(CHUNKS[:3])  # the partial answer is kept
+    assert snapshot.content == env.tasks._enc.decrypt(committed)
+    assert snapshot.content != "".join(CHUNKS[:3])  # live unsaved tail is NOT copied by Stop
+    assert (
+        await env.pool.fetchval(
+            "SELECT content FROM messages WHERE id=$1", accepted.result_message_id
+        )
+        == committed
+    )
+    assert (
+        await env.pool.fetchval(
+            "SELECT partial_ciphertext FROM task_attempts WHERE task_id=$1", accepted.task_id
+        )
+        == archive
+    )
 
 
 @pytest.mark.asyncio
@@ -254,7 +273,9 @@ async def test_stale_attempt_is_fenced_and_never_publishes(
     takeover = await env.tasks.claim(accepted.task_id, worker_id="other", lease_s=LEASE_S)
     assert takeover is not None and takeover.epoch == 2
     assert await asyncio.wait_for(stale, timeout=10) == "fenced"
-    await env.tasks.complete(accepted.task_id, takeover.epoch, content="from attempt 2")
+    await env.tasks.complete(
+        accepted.task_id, takeover.epoch, content="from attempt 2", binding=takeover
+    )
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None and snapshot.content == "from attempt 2"
     assert snapshot.content_generation == 2
@@ -346,7 +367,7 @@ def test_guard_wraps_only_material_tools():
         name = "web_search"
 
     registry.register(_Read())
-    guard_registry(registry, store=None, task_id=uuid.uuid4(), epoch=1)  # type: ignore[arg-type]
+    guard_registry(registry, store=None, task_id=uuid.uuid4(), epoch=1, binding=None)  # type: ignore[arg-type]
     assert isinstance(registry.get("notification_send"), FencedTool)
     assert not isinstance(registry.get("web_search"), FencedTool)
 
@@ -357,7 +378,7 @@ async def test_material_tool_is_recorded_then_retry_stops_at_needs_attention(env
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
     inner = _CountingTool()
-    fenced = FencedTool(inner, env.tasks, accepted.task_id, claim.epoch)
+    fenced = FencedTool(inner, env.tasks, accepted.task_id, claim.epoch, binding=claim)
     await fenced.execute(topic="alerts", message="secret body")
     assert inner.calls == 1
     op = await env.pool.fetchrow("SELECT * FROM task_operations WHERE task_id = $1", claim.task_id)
@@ -381,7 +402,7 @@ async def test_superseded_attempt_never_runs_material_tool(env: Env):
     inner = _CountingTool()
     lost: list[bool] = []
     result = await FencedTool(
-        inner, env.tasks, accepted.task_id, stale.epoch, lambda: lost.append(True)
+        inner, env.tasks, accepted.task_id, stale.epoch, lambda: lost.append(True), binding=stale
     ).execute()
     assert inner.calls == 0 and json.loads(result)["success"] is False
     assert await env.pool.fetchval("SELECT count(*) FROM task_operations") == 0
@@ -445,7 +466,7 @@ async def test_lost_attempts_hold_is_settled_before_a_one_slot_account_recovers(
     service = EntitlementService(env.pool)
     lost_scope = uuid.uuid4()
     hold = await service.reserve(env.alice, 1000, operation="chat", scope_id=lost_scope)
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, lost_scope)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, lost_scope, binding=first)
     # The free plan allows one concurrent operation: the dead hold blocks the next.
     with pytest.raises(LimitExceeded) as refused:
         await service.reserve(env.alice, 1000, operation="chat", scope_id=uuid.uuid4())
@@ -488,7 +509,7 @@ async def test_failed_hold_settlement_defers_without_consuming_an_attempt(
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4(), binding=first)
     await expire_lease(env, accepted.task_id)
 
     real_settle = runner.settle_lost_attempt_holds
@@ -540,7 +561,10 @@ async def test_unrenewable_lease_stops_execution(
     redis = FakeRedis()
     loop = asyncio.get_running_loop()
     started = loop.time()
-    assert await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)) == "fenced"
+    assert (
+        await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id))
+        == "task_observation_indeterminate"
+    )
     assert loop.time() - started < 1.5  # stopped near the lease, not after 3s of output
     assert len(_deltas(redis, accepted.task_id)) < 30
 
@@ -584,6 +608,9 @@ async def test_execution_stops_at_the_lease_deadline_whatever_renewal_does(
     monkeypatch.setattr(runner, "LEASE_S", 0.6)
     monkeypatch.setattr(runner, "LEASE_SAFETY_S", 0.1)
     monkeypatch.setattr(runner, "HEARTBEAT_S", 0.2)
+    # This negative exercises a hanging renewal's original short I/O budget as
+    # well as expiry; cadence no longer implicitly sets that budget.
+    monkeypatch.setattr(runner, "HEARTBEAT_IO_TIMEOUT_S", 0.2)
     output_times: list[float] = []
 
     async def long_completion(**_kwargs: Any):
@@ -605,7 +632,10 @@ async def test_execution_stops_at_the_lease_deadline_whatever_renewal_does(
     accepted = await accept_task(env)
     loop = asyncio.get_running_loop()
     started = loop.time()
-    assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "fenced"
+    assert (
+        await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id))
+        == "task_observation_indeterminate"
+    )
     deadline = started + 0.6 - 0.1
     assert output_times and max(output_times) <= deadline + 0.15
 
@@ -643,7 +673,7 @@ async def test_outage_during_recovery_does_not_consume_the_retry(
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4(), binding=first)
     await expire_lease(env, accepted.task_id)  # attempt 1 (of 2) executed and was lost
 
     async def unavailable(*_args: Any, **_kwargs: Any) -> Any:
@@ -832,9 +862,14 @@ async def test_holds_are_settled_when_the_claim_ends_the_task(env: Env, mock_llm
     hold = await EntitlementService(env.pool).reserve(
         env.alice, 1000, operation="chat", scope_id=scope
     )
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, scope)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, scope, binding=first)
     await env.tasks.begin_operation(
-        accepted.task_id, first.epoch, tool_name="notify", target=None, min_lease_margin_s=1
+        accepted.task_id,
+        first.epoch,
+        tool_name="notify",
+        target=None,
+        min_lease_margin_s=1,
+        binding=first,
     )
     await expire_lease(env, accepted.task_id)  # the worker died mid-operation
     assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == "skipped"
@@ -932,10 +967,12 @@ async def test_a_refused_operation_stops_the_attempt(env: Env):
     await env.tasks.request_cancel(env.alice, accepted.task_id)
     reasons: list[str] = []
     inner = _CountingTool()
-    await FencedTool(
-        inner, env.tasks, accepted.task_id, claim.epoch, None, reasons.append
+    result = await FencedTool(
+        inner, env.tasks, accepted.task_id, claim.epoch, None, reasons.append, binding=claim
     ).execute()
-    assert inner.calls == 0 and reasons == ["cancel_requested"]
+    assert json.loads(result)["performed"] is False
+    assert inner.calls == 0 and reasons == ["task_controlled"]
+    assert await _status(env, accepted.task_id) == "cancelled"
 
     state = runner.AttemptState(claim=claim)
     state.execution = asyncio.create_task(asyncio.Event().wait())
@@ -973,7 +1010,9 @@ async def test_tool_results_are_recorded_honestly(
     accepted = await accept_task(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await FencedTool(_ReportingTool(), env.tasks, accepted.task_id, claim.epoch).execute()
+    await FencedTool(
+        _ReportingTool(), env.tasks, accepted.task_id, claim.epoch, binding=claim
+    ).execute()
     assert (
         await env.pool.fetchval(
             "SELECT outcome FROM task_operations WHERE task_id = $1", accepted.task_id
@@ -1016,8 +1055,10 @@ async def test_a_regenerated_answer_discloses_the_interruption(env: Env, mock_ll
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
-    await env.tasks.write_partial(accepted.task_id, first.epoch, content="Half", delta_seq=1)
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4(), binding=first)
+    await env.tasks.write_partial(
+        accepted.task_id, first.epoch, content="Half", delta_seq=1, binding=first
+    )
     await expire_lease(env, accepted.task_id)  # the worker died mid-answer
     assert await runner.run_chat_task(_ctx(env, FakeRedis()), str(accepted.task_id)) == (
         "completed"
@@ -1037,17 +1078,28 @@ async def test_interruption_is_disclosed_even_if_the_next_attempt_never_executes
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4())
+    await env.tasks.begin_execution(accepted.task_id, first.epoch, uuid.uuid4(), binding=first)
     await expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None
+    prior_metadata = await env.pool.fetchval(
+        "SELECT metadata FROM messages WHERE id=$1", accepted.result_message_id
+    )
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    await env.tasks.acknowledge_cancel(accepted.task_id, second.epoch)
+    await env.tasks.acknowledge_cancel(accepted.task_id, second.epoch, binding=second)
     metadata = await env.pool.fetchval(
         "SELECT metadata FROM messages WHERE id = $1", accepted.result_message_id
     )
     metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
-    assert metadata["regenerated_after_interruption"] == 1
+    prior_metadata = (
+        json.loads(prior_metadata) if isinstance(prior_metadata, str) else prior_metadata
+    )
+    assert metadata.get("regenerated_after_interruption") == prior_metadata.get(
+        "regenerated_after_interruption"
+    )
+    assert (
+        metadata["terminal_reason"] == "cancelled" and metadata["material_effect_possible"] is True
+    )
 
 
 @pytest.mark.asyncio
@@ -1129,7 +1181,7 @@ class _HeldCompletion:
         self.before: Any = None
         self.after: Any = None
         complete = self.real_complete = env.tasks.complete
-        heartbeat = env.tasks.heartbeat
+        observe = env.tasks.observe_attempt
         interrupt = runner._interrupt
 
         async def held_complete(*args: Any, **kwargs: Any) -> TaskStatus:
@@ -1149,9 +1201,9 @@ class _HeldCompletion:
                 await after()
             return status
 
-        async def observed_heartbeat(*args: Any, **kwargs: Any) -> Any:
+        async def observed_attempt(*args: Any, **kwargs: Any) -> Any:
             try:
-                beat = await heartbeat(*args, **kwargs)
+                beat = await observe(*args, **kwargs)
             except runner.LeaseLost:
                 self.lease_lost.set()
                 raise
@@ -1164,7 +1216,7 @@ class _HeldCompletion:
             self.interrupt_ran.set()
 
         monkeypatch.setattr(env.tasks, "complete", held_complete)
-        monkeypatch.setattr(env.tasks, "heartbeat", observed_heartbeat)
+        monkeypatch.setattr(env.tasks, "observe_attempt", observed_attempt)
         monkeypatch.setattr(runner, "_interrupt", observed_interrupt)
         monkeypatch.setattr(runner, "HEARTBEAT_S", 0.05)
 
@@ -1232,7 +1284,7 @@ async def test_lease_loss_seen_after_the_attempts_own_commit_keeps_its_outcome(
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
     # A suspended account's result is never published.
-    assert (snapshot.content == MOCK_TEXT) is (won != "suspension")
+    assert (snapshot.content == MOCK_TEXT) is (won is None)
     assert redis.published[-1][1] == {"t": "terminal", "gen": 1}
 
 
@@ -1246,7 +1298,7 @@ async def test_a_stop_interrupt_due_after_the_attempts_own_commit_keeps_its_outc
     monkeypatch.setattr(runner, "STOP_GRACE_S", 0.05)
     race = _HeldCompletion(env, monkeypatch)
     accepted = await accept_task(env)
-    interrupt, heartbeat = runner._interrupt, env.tasks.heartbeat
+    interrupt, observe = runner._interrupt, env.tasks.observe_attempt
     loop = asyncio.get_running_loop()
 
     def interrupt_after_commit(*args: Any) -> None:
@@ -1260,10 +1312,10 @@ async def test_a_stop_interrupt_due_after_the_attempts_own_commit_keeps_its_outc
         # Keep the heartbeat's lease-loss path out of this window.
         if race.cancel_seen.is_set():
             await race.interrupt_ran.wait()
-        return await heartbeat(*args, **kwargs)
+        return await observe(*args, **kwargs)
 
     monkeypatch.setattr(runner, "_interrupt", interrupt_after_commit)
-    monkeypatch.setattr(env.tasks, "heartbeat", no_beat_until_interrupted)
+    monkeypatch.setattr(env.tasks, "observe_attempt", no_beat_until_interrupted)
 
     async def before() -> None:
         await env.tasks.request_cancel(env.alice, accepted.task_id)
@@ -1300,19 +1352,34 @@ async def test_genuine_lease_loss_during_completion_still_fences(
         completing.set()
         await lost.wait()
 
+    real_supervisor = runner._heartbeat
+
+    async def supervisor_after_final(*args: Any, **kwargs: Any) -> None:
+        # Isolate this ordering proof from unrelated pre-final renewals. The
+        # actual mutation gate/completing phase is already held when signalled.
+        await completing.wait()
+        await real_supervisor(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_heartbeat", supervisor_after_final)
     race.before = before
     redis = FakeRedis()
     job = asyncio.create_task(runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)))
-    await asyncio.wait_for(completing.wait(), 10)
-    # The stale worker paused past its lease, just before its commit.
-    await expire_lease(env, accepted.task_id)
-    if lost_to == "another_attempt":
-        takeover = await env.tasks.claim(accepted.task_id, worker_id="other", lease_s=LEASE_S)
-        assert takeover is not None and takeover.epoch == 2
-        await race.real_complete(accepted.task_id, takeover.epoch, content="from attempt 2")
-    await race.until_lease_lost()
-    lost.set()
-    result = await asyncio.wait_for(job, 10)
+    try:
+        await asyncio.wait_for(completing.wait(), 10)
+        # The stale worker paused past its lease, just before its commit.
+        await expire_lease(env, accepted.task_id)
+        if lost_to == "another_attempt":
+            takeover = await env.tasks.claim(accepted.task_id, worker_id="other", lease_s=LEASE_S)
+            assert takeover is not None and takeover.epoch == 2
+            await race.real_complete(
+                accepted.task_id, takeover.epoch, content="from attempt 2", binding=takeover
+            )
+        await race.until_lease_lost()
+        lost.set()
+        result = await asyncio.wait_for(job, 10)
+    finally:
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
 
     assert result == "fenced"
     assert race.committed == []  # this attempt committed nothing
@@ -1332,7 +1399,10 @@ async def test_genuine_lease_loss_during_completion_still_fences(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stop", "outcome", "attempt"),
-    [("fenced", "fenced", "running"), ("interrupted", "cancelled", "cancelled")],
+    [
+        ("fenced", "task_observation_indeterminate", "running"),
+        ("interrupted", "task_observation_indeterminate", "running"),
+    ],
 )
 async def test_a_stop_deferred_by_a_failed_completion_is_applied_at_once(
     env: Env,
@@ -1365,11 +1435,19 @@ async def test_a_stop_deferred_by_a_failed_completion_is_applied_at_once(
         runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
     )
 
-    assert race.calls == ["ConnectionError", "CancelledError"]
+    assert race.calls == ["ConnectionError"]  # no second Stop/content write from unknown result
     assert result == outcome
     assert race.committed == []
     assert "extract_memories" not in _enqueued(redis)
     assert await _attempt_outcomes(env, accepted.task_id) == [attempt]
+    assert not any(payload["t"] == "terminal" for _, payload in redis.published)
+    assert (
+        await env.pool.fetchval(
+            "SELECT count(*) FROM task_events WHERE task_id=$1 AND kind='finished'",
+            accepted.task_id,
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -1383,10 +1461,6 @@ async def test_a_local_lease_deadline_reached_during_the_own_commit_waits_for_it
     # A 2 s local estimate; the database lease stays LEASE_S.
     monkeypatch.setattr(runner, "LEASE_SAFETY_S", runner.LEASE_S - 2.0)
 
-    async def unconfirmed(*_args: Any, **_kwargs: Any) -> Any:
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(env.tasks, "heartbeat", unconfirmed)
     accepted = await accept_task(env)
 
     async def before() -> None:

@@ -1344,6 +1344,7 @@ class MemoryStore:
                   AND user_id = (SELECT user_id FROM conversations WHERE id = $1)
                   AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[]))
                        OR metadata->>'terminal_reason' = $5
+                       OR metadata->'material_effect_possible' = 'true'::jsonb
                        OR (jsonb_typeof(metadata->'uncertain_tools') = 'array'
                            AND metadata->'uncertain_tools' <> '[]'::jsonb))
                   AND ($4::uuid IS NULL OR created_at <= (
@@ -1362,6 +1363,27 @@ class MemoryStore:
         results = []
         for r in rows:
             d = dict(r)
+            metadata = d.get("metadata") or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if (
+                exclude_status
+                and d.get("status") in exclude_status
+                and metadata.get("material_effect_possible") is True
+            ):
+                # Control-only refusals never need old body/trace decryption.
+                d["content"] = (
+                    "This request stopped; available evidence cannot rule out an external action. "
+                    "Do not repeat it automatically; inspect the recorded task operations first."
+                )
+                d["reasoning_text"] = None
+                d["advisor_traces"] = []
+                d["tool_calls"] = []
+                d["tool_results"] = []
+                results.append(_normalize_message(d))
+                continue
             d["content"] = self._enc.decrypt(d["content"])
             if d.get("reasoning_text") is not None:
                 d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])

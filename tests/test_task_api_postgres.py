@@ -406,7 +406,7 @@ async def test_cancel_endpoint_queued_then_finished(api: Api):
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
     # Whether or not the wake-up was enqueued before the client left, the
     # cancelled task never runs.
-    assert await api.run_worker() in ([], ["skipped"])
+    assert await api.run_worker() in ([], ["task_already_terminal"])
     assert await api.env.pool.fetchval("SELECT count(*) FROM task_attempts") == 0
     again = await api.client.post(f"/tasks/{task_id}/cancel")
     assert again.status_code == 409
@@ -457,7 +457,7 @@ async def test_accepted_key_replays_after_the_flag_is_switched_off(
     accepted = await _submit(api, key="before-rollback")
     claim = await api.env.tasks.claim(uuid.UUID(accepted["id"]), worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await api.env.tasks.complete(claim.task_id, claim.epoch, content="first run")
+    await api.env.tasks.complete(claim.task_id, claim.epoch, content="first run", binding=claim)
     monkeypatch.setenv("DURABLE_CHAT_ENABLED", "false")
     get_settings.cache_clear()
     async with asyncio.timeout(10):
@@ -508,18 +508,24 @@ async def test_retry_while_attached_replaces_text_and_drops_stale_frames(
     for seq, text in enumerate(["The first ", "attempt was ", "rather long."], start=1):
         await publish({"t": "delta", "gen": first.epoch, "seq": seq, "text": text})
     await env.tasks.write_partial(
-        accepted.task_id, first.epoch, content="The first attempt was rather long.", delta_seq=3
+        accepted.task_id,
+        first.epoch,
+        content="The first attempt was rather long.",
+        delta_seq=3,
+        binding=first,
     )
     await asyncio.sleep(0.2)
     await expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None
     # Attempt 2 regenerates a shorter, different answer; attempt-1 frames arrive late.
-    await env.tasks.write_partial(accepted.task_id, second.epoch, content="Short.", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, second.epoch, content="Short.", delta_seq=1, binding=second
+    )
     await publish({"t": "delta", "gen": second.epoch, "seq": 1, "text": "Short."})
     await publish({"t": "delta", "gen": first.epoch, "seq": 4, "text": " STALE"})
     await publish({"t": "frame", "gen": first.epoch, "frame": "event: tool_call\ndata: {}\n\n"})
-    await env.tasks.complete(accepted.task_id, second.epoch, content="Short.")
+    await env.tasks.complete(accepted.task_id, second.epoch, content="Short.", binding=second)
     await publish({"t": "terminal", "gen": second.epoch})
     await asyncio.wait_for(observer, timeout=10)
 
@@ -548,9 +554,13 @@ async def test_observer_without_live_updates_still_reaches_the_result(
             frames.append(frame)
 
     observer = asyncio.create_task(consume())
-    await env.tasks.write_partial(accepted.task_id, claim.epoch, content="Partial", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, claim.epoch, content="Partial", delta_seq=1, binding=claim
+    )
     await asyncio.sleep(0.2)
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="Partial and complete.")
+    await env.tasks.complete(
+        accepted.task_id, claim.epoch, content="Partial and complete.", binding=claim
+    )
     await asyncio.wait_for(observer, timeout=10)
     events = _events("".join(frames))
     assert _displayed(events) == "Partial and complete."
@@ -569,6 +579,7 @@ async def test_needs_attention_is_reported_honestly(env: Env, monkeypatch: pytes
         tool_name="notification_send",
         target=None,
         min_lease_margin_s=1,
+        binding=claim,
     )
     await expire_lease(env, accepted.task_id)
     assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
@@ -618,6 +629,7 @@ async def test_task_view_shows_uncertain_operation_evidence(api: Api):
         tool_name="notification_send",
         target={"tool": "notification_send", "topic": "alerts"},
         min_lease_margin_s=1,
+        binding=claim,
     )
     await expire_lease(api.env, task_id)
     assert await api.env.tasks.claim(task_id, worker_id="w2", lease_s=LEASE_S) is None
@@ -647,7 +659,9 @@ async def test_live_deltas_follow_a_new_generation_with_lower_sequence(
     channel = runner.live_channel(accepted.task_id)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.write_partial(accepted.task_id, first.epoch, content="old" * 40, delta_seq=100)
+    await env.tasks.write_partial(
+        accepted.task_id, first.epoch, content="old" * 40, delta_seq=100, binding=first
+    )
     frames: list[str] = []
 
     async def consume() -> None:
@@ -670,8 +684,10 @@ async def test_live_deltas_follow_a_new_generation_with_lower_sequence(
         await asyncio.sleep(0.05)
     # Still running: the live view already shows attempt 2's text.
     assert _displayed(_events("".join(frames))) == "abc"
-    await env.tasks.write_partial(accepted.task_id, second.epoch, content="abc", delta_seq=3)
-    await env.tasks.complete(accepted.task_id, second.epoch, content="abc")
+    await env.tasks.write_partial(
+        accepted.task_id, second.epoch, content="abc", delta_seq=3, binding=second
+    )
+    await env.tasks.complete(accepted.task_id, second.epoch, content="abc", binding=second)
     await asyncio.wait_for(observer, timeout=10)
     assert _displayed(_events("".join(frames))) == "abc"
 
@@ -697,7 +713,7 @@ async def test_deleting_a_conversation_never_strands_a_running_task(api: Api):
     assert view["status"] == "running" and view["cancel_requested"] is True
 
     # Once the worker stops, deletion proceeds and takes the task with it.
-    await api.env.tasks.acknowledge_cancel(task_id, claim.epoch)
+    await api.env.tasks.acknowledge_cancel(task_id, claim.epoch, binding=claim)
     assert (await api.client.delete(f"/conversations/{conversation_id}")).status_code == 200
     assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
 
@@ -709,7 +725,7 @@ async def test_deleting_a_conversation_cancels_a_queued_task(api: Api):
     assert response.status_code == 200
     assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
     # A late wake-up for the deleted task finds nothing to run.
-    assert await api.run_worker() in ([], ["skipped"])
+    assert await api.run_worker() in ([], ["task_not_owned"])
 
 
 @pytest.mark.asyncio
@@ -733,7 +749,9 @@ async def test_only_transient_failures_are_advertised_as_retryable(
         await expire_lease(env, accepted.task_id)
         assert await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S) is None
     else:
-        await env.tasks.fail_attempt(accepted.task_id, claim.epoch, cause=cause, error_code=code)
+        await env.tasks.fail_attempt(
+            accepted.task_id, claim.epoch, cause=cause, error_code=code, binding=claim
+        )
     frames = [
         frame
         async for frame in observe_task(
@@ -839,7 +857,9 @@ async def test_client_without_reset_support_is_told_to_reload(
     accepted = await accept_task(env)
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
-    await env.tasks.write_partial(accepted.task_id, first.epoch, content="attempt one", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, first.epoch, content="attempt one", delta_seq=1, binding=first
+    )
     frames: list[str] = []
 
     async def consume() -> None:
@@ -853,7 +873,9 @@ async def test_client_without_reset_support_is_told_to_reload(
     await expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None
-    await env.tasks.write_partial(accepted.task_id, second.epoch, content="two", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, second.epoch, content="two", delta_seq=1, binding=second
+    )
     await asyncio.wait_for(observer, timeout=5)
     events = _events("".join(frames))
     assert _displayed(events) == "attempt one"  # never "attempt onetwo"
@@ -900,7 +922,7 @@ async def test_failed_live_subscription_releases_its_connection(env: Env):
     accepted = await accept_task(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.complete(accepted.task_id, claim.epoch, content="done")
+    await env.tasks.complete(accepted.task_id, claim.epoch, content="done", binding=claim)
     frames = [
         frame
         async for frame in observe_task(
@@ -919,9 +941,11 @@ async def test_terminal_snapshot_replaces_uncommitted_live_text(env: Env):
     accepted = await accept_task(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.write_partial(accepted.task_id, claim.epoch, content="Kept", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, claim.epoch, content="Kept", delta_seq=1, binding=claim
+    )
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch)
+    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch, binding=claim)
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None and snapshot.content == "Kept"
     view = _Observation("conv", "req", supports_reset=True)
@@ -941,9 +965,11 @@ async def test_client_without_reset_is_told_to_reopen_when_terminal_text_differs
     accepted = await accept_task(env)
     claim = await env.tasks.claim(accepted.task_id, worker_id="w", lease_s=LEASE_S)
     assert claim is not None
-    await env.tasks.write_partial(accepted.task_id, claim.epoch, content="Kept", delta_seq=1)
+    await env.tasks.write_partial(
+        accepted.task_id, claim.epoch, content="Kept", delta_seq=1, binding=claim
+    )
     await env.tasks.request_cancel(env.alice, accepted.task_id)
-    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch)
+    await env.tasks.acknowledge_cancel(accepted.task_id, claim.epoch, binding=claim)
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
     assert snapshot is not None
     view = _Observation("conv", "req", supports_reset=False)
@@ -999,13 +1025,21 @@ async def test_reattaching_replays_the_current_attempts_tool_progress(env: Env):
     first = await env.tasks.claim(accepted.task_id, worker_id="w1", lease_s=LEASE_S)
     assert first is not None
     await env.tasks.record_event(
-        accepted.task_id, first.epoch, "tool_call", {"name": "old_tool", "epoch": first.epoch}
+        accepted.task_id,
+        first.epoch,
+        "tool_call",
+        {"name": "old_tool", "epoch": first.epoch},
+        binding=first,
     )
     await expire_lease(env, accepted.task_id)
     second = await env.tasks.claim(accepted.task_id, worker_id="w2", lease_s=LEASE_S)
     assert second is not None
     seq = await env.tasks.record_event(
-        accepted.task_id, second.epoch, "tool_call", {"name": "web_search", "epoch": second.epoch}
+        accepted.task_id,
+        second.epoch,
+        "tool_call",
+        {"name": "web_search", "epoch": second.epoch},
+        binding=second,
     )
     redis = FakeRedis()
     channel = runner.live_channel(accepted.task_id)
@@ -1025,7 +1059,7 @@ async def test_reattaching_replays_the_current_attempts_tool_progress(env: Env):
         channel, json.dumps({"t": "frame", "gen": second.epoch, "frame": live, "seq": seq})
     )
     await asyncio.sleep(0.2)
-    await env.tasks.complete(accepted.task_id, second.epoch, content="done")
+    await env.tasks.complete(accepted.task_id, second.epoch, content="done", binding=second)
     await asyncio.wait_for(observer, timeout=10)
     calls = [d for e, d in _events("".join(frames)) if e == "tool_call"]
     assert [c["data"]["name"] for c in calls] == ["web_search"]
