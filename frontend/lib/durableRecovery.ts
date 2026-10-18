@@ -4,11 +4,13 @@ import {
   TERMINAL_TASK_STATUSES,
   type DaemonMessage,
 } from './chatMessages';
+import type { AnswerControls } from './answerControls';
 
 /** Files of the latest submitted turn and the conversation they were sent to. */
 export type LastTurn = {
   conversationId: string | null;
   attachments: unknown[];
+  controls?: AnswerControls;
   /**
    * The submission key the turn was sent under (#477): a reconnect or retry
    * must re-send this exact turn by its key, never another conversation's

@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from orchestrator.answer_controls import AnswerDetail, ResearchEffort
+
 #: Version of the accepted-input schema stored in ``tasks.input_ciphertext``.
 CHAT_INPUT_VERSION = 1
 #: Domain separation for the request fingerprint HMAC.
@@ -44,24 +46,30 @@ def chat_request_fingerprint(
     metadata: dict[str, Any] | None,
     disable_memory_write: bool,
     content_parts: list[dict[str, Any]] | None = None,
+    answer_detail: AnswerDetail | None = None,
+    research_effort: ResearchEffort | None = None,
 ) -> RequestFingerprint:
     """Keyed fingerprint of what a submission asks for (see ``chat_request_hash``)."""
     if not key:
         raise ValueError("request fingerprint key is required")
-    canonical = canonical_json(
-        {
-            "conversation_id": str(conversation_id) if conversation_id is not None else None,
-            "message": message,
-            "attachments": attachments or [],
-            "model": model or "auto",
-            "provider": provider,
-            "metadata": metadata or {},
-            "disable_memory_write": bool(disable_memory_write),
-            # Structured parts of the latest user message (images and the like)
-            # are part of the request even when its text is unchanged.
-            "content_parts": content_parts or [],
-        }
-    )
+    accepted = {
+        "conversation_id": str(conversation_id) if conversation_id is not None else None,
+        "message": message,
+        "attachments": attachments or [],
+        "model": model or "auto",
+        "provider": provider,
+        "metadata": metadata or {},
+        "disable_memory_write": bool(disable_memory_write),
+        # Structured parts of the latest user message (images and the like)
+        # are part of the request even when its text is unchanged.
+        "content_parts": content_parts or [],
+    }
+    # Missing/null must preserve historical canonical bytes and replay identity.
+    if answer_detail is not None:
+        accepted["answer_detail"] = answer_detail
+    if research_effort is not None:
+        accepted["research_effort"] = research_effort
+    canonical = canonical_json(accepted)
     digest = hmac.new(
         key.encode("utf-8"),
         _REQUEST_HASH_DOMAIN + canonical.encode("utf-8"),
@@ -81,6 +89,8 @@ def chat_request_hash(
     metadata: dict[str, Any] | None,
     disable_memory_write: bool,
     content_parts: list[dict[str, Any]] | None = None,
+    answer_detail: AnswerDetail | None = None,
+    research_effort: ResearchEffort | None = None,
 ) -> str:
     """Keyed fingerprint (HMAC-SHA-256) of what a submission *asks for*.
 
@@ -100,4 +110,6 @@ def chat_request_hash(
         metadata=metadata,
         disable_memory_write=disable_memory_write,
         content_parts=content_parts,
+        answer_detail=answer_detail,
+        research_effort=research_effort,
     ).digest

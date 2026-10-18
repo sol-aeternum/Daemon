@@ -80,6 +80,8 @@ def test_frontend_only_schedules_locked_python_before_browser(
     browser = "npx playwright test --config playwright.cache.config.ts"
     ownership = "uv run pytest -q frontend/e2e/cache_fixture_ownership.py"
     assert commands.count(ownership) == 1
+    assert commands.index("uv sync --locked") < commands.index("npm --prefix frontend run test:run")
+    assert commands.index("npm --prefix frontend run test:run") < commands.index(ownership)
     assert commands.index(
         "npm ci --prefix frontend --no-audit --no-fund --prefer-offline"
     ) < commands.index(ownership)
@@ -121,6 +123,7 @@ def test_collision_checks_are_explicit_frontend_gate_not_backend_collection(pyte
     check = names.index("Refuse foreign cache fixture endpoints")
     assert names.index("Install frontend dependencies") < check
     assert names.index("Install locked cache fixture backend") < check
+    assert names.index("Install locked cache fixture backend") < names.index("Vitest") < check
     assert check < names.index("Browser HTTP-cache isolation regression")
     assert steps[check]["run"] == "uv run pytest -q frontend/e2e/cache_fixture_ownership.py"
     assert steps[check]["working-directory"] == "."

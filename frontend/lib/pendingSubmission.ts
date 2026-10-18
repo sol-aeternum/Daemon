@@ -38,6 +38,8 @@ export type SubmissionMeta = {
   /** The model and provider it was sent with, replayed on a resend. */
   model: unknown;
   provider: unknown;
+  answer_detail?: unknown;
+  research_effort?: unknown;
 };
 
 export type PendingSubmission = SubmissionMeta & {

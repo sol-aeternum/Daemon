@@ -22,6 +22,7 @@ import {
   type AttachmentStore,
   type PersistedAttachment,
 } from '../lib/draftPersistence';
+import { DEFAULT_ANSWER_CONTROLS } from '../lib/answerControls';
 
 class MemoryAttachmentStore implements AttachmentStore {
   records = new Map<string, File>();
@@ -97,6 +98,186 @@ function sendFrom(conversationId: string | null, key: string) {
 }
 
 describe('held submissions (#476: the key lives on the draft)', () => {
+  it.each([false, true])(
+    'does not reattach or clear an edited-back control draft (promote=%s)',
+    (promote) => {
+      const hook = renderHook(
+        ({ id }: { id: string | null }) => useChatDraft(id),
+        { initialProps: { id: null as string | null } },
+      );
+      act(() => hook.result.current.setInput('Check the evidence'));
+      const controls = {
+        answer_detail: 'brief',
+        research_effort: 'research',
+      } as const;
+      act(() => hook.result.current.setControls(controls));
+      const files = hook.result.current.pendingAttachments;
+      const receipt = hook.result.current.captureSubmission(
+        'Check the evidence',
+        files,
+      );
+      act(() =>
+        hook.result.current.setControls({
+          ...controls,
+          answer_detail: 'detailed',
+        }),
+      );
+      act(() => hook.result.current.setControls(controls));
+      act(() =>
+        hook.result.current.holdSubmission(
+          'old-controls',
+          receipt.input,
+          files,
+          receipt,
+        ),
+      );
+      expect(hook.result.current.restoredKey).toBeUndefined();
+      expect(heldSubmission('old-controls')?.controls).toEqual(controls);
+      if (promote) {
+        act(() => {
+          hook.result.current.transferToConversation('promoted');
+        });
+        hook.rerender({ id: 'promoted' });
+      }
+      act(() => acceptSubmission('old-controls'));
+      act(() => hook.result.current.clearSubmission(receipt));
+      expect(hook.result.current.input).toBe('Check the evidence');
+      expect(hook.result.current.controls).toEqual(controls);
+    },
+  );
+
+  it('detaches on real edits, retains old evidence, and treats same-value selection as a no-op', () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => result.current.setInput('Question'));
+    const receipt = result.current.captureSubmission(
+      'Question',
+      result.current.pendingAttachments,
+    );
+    act(() =>
+      result.current.holdSubmission(
+        'original',
+        receipt.input,
+        receipt.pendingAttachments,
+        receipt,
+      ),
+    );
+    act(() => result.current.setControls({ ...DEFAULT_ANSWER_CONTROLS }));
+    expect(result.current.restoredKey).toBe('original');
+    act(() =>
+      result.current.setControls({
+        answer_detail: 'brief',
+        research_effort: 'research',
+      }),
+    );
+    expect(result.current.restoredKey).toBeUndefined();
+    expect(heldSubmission('original')).toBeDefined();
+    act(() =>
+      result.current.holdSubmission(
+        'original',
+        receipt.input,
+        receipt.pendingAttachments,
+        result.current.captureSubmission(
+          receipt.input,
+          receipt.pendingAttachments,
+        ),
+      ),
+    );
+    expect(heldSubmission('original')?.controls).toEqual(
+      DEFAULT_ANSWER_CONTROLS,
+    );
+    act(() => result.current.clearSubmission(receipt));
+    expect(result.current.input).toBe('Question');
+  });
+
+  it.each([
+    {},
+    { answer_detail: null, research_effort: null },
+    { answer_detail: 'brief' as const },
+    { research_effort: 'research' as const },
+  ])(
+    'preserves exact legacy held controls across reload and defaults only the next new turn: %j',
+    async (controls) => {
+      const hook = renderHook(() => useChatDraft('conv-a'));
+      act(() => {
+        hook.result.current.setControls(controls);
+        hook.result.current.setInput('Historical');
+      });
+      const receipt = hook.result.current.captureSubmission(
+        'Historical',
+        [],
+        controls,
+      );
+      act(() =>
+        hook.result.current.holdSubmission('legacy', 'Historical', [], receipt),
+      );
+      hook.unmount();
+      await act(() => reloadChatDraftsForTests());
+      const fresh = renderHook(() => useChatDraft('conv-a'));
+      expect(fresh.result.current.controls).toEqual(controls);
+      expect(fresh.result.current.restoredKey).toBe('legacy');
+      expect(
+        fresh.result.current.captureSubmission('Historical', []).controls,
+      ).toEqual(controls);
+      expect(heldResendStatus('legacy', 'Historical', [], controls)).toBe(
+        'resend',
+      );
+      act(() => acceptSubmission('legacy'));
+      expect(fresh.result.current.controls).toEqual(DEFAULT_ANSWER_CONTROLS);
+      expect(
+        fresh.result.current.captureSubmission('Next turn', []).controls,
+      ).toEqual(DEFAULT_ANSWER_CONTROLS);
+    },
+  );
+
+  it('restores held values rather than newer picker values', () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => {
+      result.current.setControls({ answer_detail: 'brief' });
+      result.current.setInput('Question');
+    });
+    act(() => result.current.holdSubmission('held', 'Question', []));
+    act(() => {
+      result.current.setInput('');
+      result.current.setControls({
+        answer_detail: 'detailed',
+        research_effort: 'auto',
+      });
+    });
+    act(() => {
+      restoreHeldSubmission('held');
+    });
+    expect(result.current.controls).toEqual({ answer_detail: 'brief' });
+    expect(
+      heldResendStatus('held', 'Question', [], { answer_detail: 'detailed' }),
+    ).toBe('incomplete');
+  });
+
+  it('materializes new defaults on hold without invalidating its receipt', () => {
+    const { result } = renderHook(() => useChatDraft('conv-a'));
+    act(() => {
+      result.current.setControls({});
+      result.current.setInput('Old unsent draft');
+    });
+    const receipt = result.current.captureSubmission(
+      'Old unsent draft',
+      result.current.pendingAttachments,
+    );
+    expect(receipt.controls).toEqual(DEFAULT_ANSWER_CONTROLS);
+    act(() =>
+      result.current.holdSubmission(
+        'new-turn',
+        receipt.input,
+        receipt.pendingAttachments,
+        receipt,
+      ),
+    );
+    expect(
+      heldResendStatus('new-turn', receipt.input, [], result.current.controls),
+    ).toBe('resend');
+    act(() => result.current.clearSubmission(receipt));
+    expect(result.current.input).toBe('');
+  });
+
   it('match a resend only when text and attachments are unchanged', () => {
     const { attachments } = sendFrom('conv-a', 'key-1');
     const held = latestHeldSubmission('conv-a');
@@ -318,7 +499,13 @@ describe('held submissions (#476: the key lives on the draft)', () => {
       JSON.stringify({
         v: 1,
         epoch: saved.epoch,
-        held: saved.held,
+        held: saved.held.map(
+          ({
+            answer_detail: _detail,
+            research_effort: _effort,
+            ...record
+          }: Record<string, unknown>) => record,
+        ),
         drafts: [
           {
             conversationId: 'conv-a',
@@ -407,6 +594,7 @@ describe('held submissions under the persistence cap (#477)', () => {
         input: 'Big request',
         attachmentIds: ['big-1', 'big-2', 'big-3', 'big-4'],
         attachmentCount: 4,
+        ...DEFAULT_ANSWER_CONTROLS,
       },
     ]);
 

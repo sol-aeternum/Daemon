@@ -285,6 +285,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:8",
+            "frontend/__tests__/progressive-research-setup.ts:57",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:222",
         ),
@@ -298,6 +299,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:7",
+            "frontend/__tests__/progressive-research-setup.ts:56",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:221",
         ),
@@ -311,6 +313,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:11",
+            "frontend/__tests__/progressive-research-setup.ts:46",
             "frontend/e2e/renderer-crash.ts:215",
         ),
         reason=(
@@ -350,12 +353,30 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     ),
     "TMPDIR": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/e2e/cache-fixture-environment.mjs:9",),
+        sources=(
+            "frontend/e2e/cache-fixture-environment.mjs:9",
+            "frontend/__tests__/progressive-research-setup.ts:58",
+        ),
         reason=(
             "owner-approved test-only clean child-process environment preserves the caller's "
             "task-private temporary directory. Standard process control, not an application "
-            "deployment knob; only this shared fixture launch site is covered"
+            "deployment knob; only these exact fixture launch sites are covered"
         ),
+    ),
+    "TMP": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/__tests__/progressive-research-setup.ts:59",),
+        reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
+    ),
+    "TEMP": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/__tests__/progressive-research-setup.ts:60",),
+        reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
+    ),
+    "PYTHONPYCACHEPREFIX": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/__tests__/progressive-research-setup.ts:61",),
+        reason="test-only backend transcript subprocess retains task-owned Python bytecode storage; not application configuration",
     ),
     "NEXT_PUBLIC_API_BASE_URL": NonFieldConsumer(
         kind="frontend-source",
@@ -1988,7 +2009,17 @@ def test_diagnostic_named_exceptions_do_not_cover_other_sites(name: str) -> None
 
 
 @pytest.mark.parametrize(
-    "name", ["HOME", "PATH", "UV_PROJECT_ENVIRONMENT", "TMPDIR", "NODE_OPTIONS"]
+    "name",
+    [
+        "HOME",
+        "PATH",
+        "UV_PROJECT_ENVIRONMENT",
+        "TMPDIR",
+        "NODE_OPTIONS",
+        "TMP",
+        "TEMP",
+        "PYTHONPYCACHEPREFIX",
+    ],
 )
 @pytest.mark.parametrize(
     "new_site",
@@ -2057,6 +2088,9 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
         "HOME",
         "PATH",
         "TMPDIR",
+        "TMP",
+        "TEMP",
+        "PYTHONPYCACHEPREFIX",
         "UV_PROJECT_ENVIRONMENT",
         "NEXT_PUBLIC_API_BASE_URL",
         "DEBUG",
@@ -2067,6 +2101,9 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
         "HOME",
         "PATH",
         "TMPDIR",
+        "TMP",
+        "TEMP",
+        "PYTHONPYCACHEPREFIX",
         "UV_PROJECT_ENVIRONMENT",
         "NEXT_PUBLIC_API_URL",
         "DAEMON_INTERNAL_API_URL",

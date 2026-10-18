@@ -175,6 +175,8 @@ export async function POST(req: Request) {
     suggestion_id,
     idempotency_key,
     client_features,
+    answer_detail,
+    research_effort,
   } = await req.json();
 
   const { createUIMessageStream, createUIMessageStreamResponse } =
@@ -252,6 +254,8 @@ export async function POST(req: Request) {
           attachments: Array.isArray(attachments) ? attachments : [],
           metadata: metadata && typeof metadata === 'object' ? metadata : null,
           ...(suggestion_id ? { suggestion_id } : {}),
+          answer_detail,
+          research_effort,
         }),
       });
       break;

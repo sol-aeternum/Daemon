@@ -264,7 +264,7 @@ describe('chat drafts survive a reload of the same tab', () => {
     expect(store.records.size).toBe(0);
   });
 
-  it('saves only conversation keys, text and attachment IDs as text', () => {
+  it('saves only conversation keys, text, per-turn controls and attachment IDs as text', () => {
     const hook = renderHook(() => useChatDraft('chat'));
     act(() => {
       hook.result.current.setInput('plain');
@@ -281,7 +281,13 @@ describe('chat drafts survive a reload of the same tab', () => {
       'v',
     ]);
     expect(saved.drafts).toEqual([
-      { conversationId: 'chat', input: 'plain', attachmentIds: ['a1'] },
+      {
+        conversationId: 'chat',
+        input: 'plain',
+        attachmentIds: ['a1'],
+        answer_detail: 'balanced',
+        research_effort: 'auto',
+      },
     ]);
     expect(JSON.stringify(saved)).not.toContain('secret contents');
     expect(JSON.stringify(saved)).not.toContain('test-account');

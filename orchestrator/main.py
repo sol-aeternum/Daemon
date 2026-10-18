@@ -2250,6 +2250,10 @@ async def _durable_chat(
         "trusted_spawn_context": _build_trusted_spawn_context(auth.user_id, payload.metadata),
         "request_id": request_id,
     }
+    if payload.answer_detail is not None:
+        task_input["answer_detail"] = payload.answer_detail
+    if payload.research_effort is not None:
+        task_input["research_effort"] = payload.research_effort
     fingerprint = _durable_request_fingerprint(payload, settings, conversation_uuid, user_message)
     try:
         accepted = await store.accept(
@@ -2409,6 +2413,8 @@ def _durable_request_fingerprint(
             if isinstance(content, list)
             else None
         ),
+        answer_detail=payload.answer_detail,
+        research_effort=payload.research_effort,
     )
 
 
@@ -2982,7 +2988,9 @@ async def chat(
                 logger.warning("Memory injection failed, using base prompt")
         if skills_block and skills_block not in prompt:
             prompt = f"{prompt.rstrip()}\n\n{skills_block}"
-        return prompt
+        from orchestrator.answer_controls import append_answer_controls
+
+        return append_answer_controls(prompt, payload.answer_detail, payload.research_effort)
 
     async def is_disconnected() -> bool:
         return await request.is_disconnected()

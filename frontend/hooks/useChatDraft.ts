@@ -10,6 +10,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { getAuthGeneration, subscribeAuthGeneration } from '@/lib/auth';
 import {
   clearChatDraftSubmission,
+  captureChatDraftSubmission,
   clearSubmittedChatDraft,
   getChatDraft,
   holdSubmission,
@@ -17,11 +18,13 @@ import {
   resetChatDraft,
   setChatDraftAttachments,
   setChatDraftInput,
+  setChatDraftControls,
   subscribeChatDrafts,
   transferChatDraft,
   type DraftAttachment,
   type ChatDraftSubmission,
 } from '@/lib/chatDrafts';
+import type { AnswerControls } from '@/lib/answerControls';
 
 const getServerGeneration = () => 0;
 const getServerDraft = () => getChatDraft(null, -1);
@@ -51,6 +54,9 @@ function createBinding(
     },
     setInput,
     setPendingAttachments,
+    setControls: (controls: AnswerControls) => {
+      if (canWrite()) setChatDraftControls(scope, controls);
+    },
     resetDraft: () => {
       if (canWrite()) resetChatDraft(scope);
     },
@@ -60,7 +66,9 @@ function createBinding(
     captureSubmission: (
       input: string,
       pendingAttachments: DraftAttachment[],
-    ): ChatDraftSubmission => ({ scope, input, pendingAttachments }),
+      controls?: AnswerControls,
+    ): ChatDraftSubmission =>
+      captureChatDraftSubmission(scope, input, pendingAttachments, controls),
     clearSubmission: (submission: ChatDraftSubmission) => {
       if (canWrite()) clearChatDraftSubmission(scope, submission);
     },
@@ -69,8 +77,9 @@ function createBinding(
       key: string,
       input: string,
       attachments: DraftAttachment[],
+      receipt?: ChatDraftSubmission,
     ) => {
-      if (canWrite()) holdSubmission(scope, key, input, attachments);
+      if (canWrite()) holdSubmission(scope, key, input, attachments, receipt);
     },
     transferToConversation: (assignedId: string) =>
       canWrite() && transferChatDraft(scope, assignedId),
@@ -106,6 +115,8 @@ export function useChatDraft(conversationId: string | null) {
     input: draft.input,
     pendingAttachments: draft.pendingAttachments,
     restoredKey: draft.restoredKey,
+    controls: draft.controls,
+    setControls: binding.setControls,
     setInput: binding.setInput,
     setPendingAttachments: binding.setPendingAttachments,
     resetDraft: binding.resetDraft,
