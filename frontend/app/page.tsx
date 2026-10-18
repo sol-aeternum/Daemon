@@ -14,6 +14,11 @@ import {
   type LastTurn,
 } from '../lib/durableRecovery';
 import {
+  hasUnresolvedInference,
+  INFERENCE_INTERRUPTED_NOTICE,
+  INFERENCE_NEW_REQUEST_WARNING,
+} from '../lib/chatMessages';
+import {
   finishedSubmissionKeys,
   pendingSubmission,
   promotePendingSubmission,
@@ -841,7 +846,17 @@ function ChatContent() {
     });
   }, [stopChat, setMessages]);
   const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
+  const inferenceOverlapRisk =
+    messages.some(hasUnresolvedInference) ||
+    (currentConversation?.messages.some(hasUnresolvedInference) ?? false) ||
+    Boolean(error?.message.includes(INFERENCE_INTERRUPTED_NOTICE));
   const reload = () => {
+    if (inferenceOverlapRisk) {
+      showError(
+        `${INFERENCE_INTERRUPTED_NOTICE} ${INFERENCE_NEW_REQUEST_WARNING}`,
+      );
+      return;
+    }
     const conversationId = currentId || latestConversationIdRef.current || null;
     // Retrying an unresolved turn resends it under its own key (a replay if
     // the backend already accepted it); a settled turn regenerates anew.
@@ -1901,6 +1916,14 @@ function ChatContent() {
 
   const chatComposer = (
     <form onSubmit={handleSubmit} className="mx-auto w-full max-w-3xl">
+      {inferenceOverlapRisk && (
+        <p
+          role="status"
+          className="px-4 py-2 text-sm text-[var(--color-text-secondary)]"
+        >
+          {INFERENCE_NEW_REQUEST_WARNING}
+        </p>
+      )}
       <ChatInputBar
         selectedModel={activeModel}
         controls={draft.controls}

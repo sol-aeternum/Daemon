@@ -2,8 +2,10 @@
 
 This is internal source infrastructure, not a runtime feature or deployment
 approval. The implementation is `orchestrator/compute_metadata.py` and
-`migrations/048_compute_metadata.sql`. Nothing in runtime imports or calls the
-store. #477 remains open; `DURABLE_CHAT_ENABLED` activation is not authorized.
+`migrations/048_compute_metadata.sql`. The source-only
+[inference quarantine](INFERENCE_QUARANTINE.md) composes its SQL operations in
+explicit fixtures; production startup does not construct that consumer. #477 remains
+open; `DURABLE_CHAT_ENABLED` activation is not authorized.
 
 ## Storage and trust boundary
 

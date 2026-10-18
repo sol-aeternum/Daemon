@@ -249,6 +249,12 @@
       "ownership_path": "root:users <- conversations <- messages <- tasks <- task_operations | root:users <- conversations <- tasks <- task_operations | root:users <- messages <- tasks <- task_operations | root:users <- tasks <- task_operations",
       "rationale": "Mixed content/control or incomplete ownership attribution; separate path-specific classification/integration required. Uncovered."
     },
+    "task_inference_recovery": {
+      "category": "control",
+      "owner_source": "migrations/050_task_inference_recovery.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks <- task_inference_recovery | root:users <- conversations <- tasks <- task_inference_recovery | root:users <- messages <- tasks <- task_inference_recovery | root:users <- tasks <- task_inference_recovery",
+      "rationale": "Source-only generation-bound possible-dispatch control metadata; task FK dependencies retained, not content or reusable send authority. No production composition, general account fence or disposition/restore clearance. Uncovered."
+    },
     "tasks": {
       "category": "deferred",
       "owner_source": "migrations/044_durable_tasks.sql",
@@ -404,6 +410,9 @@
     "task_attempts": [
       "tasks"
     ],
+    "task_inference_recovery": [
+      "tasks"
+    ],
     "task_events": [
       "tasks"
     ],
@@ -472,6 +481,7 @@
     "skill_projections": "root:skill_projections",
     "system_state": "root:system_state",
     "task_attempts": "root:users <- conversations <- messages <- tasks <- task_attempts | root:users <- conversations <- tasks <- task_attempts | root:users <- messages <- tasks <- task_attempts | root:users <- tasks <- task_attempts",
+    "task_inference_recovery": "root:users <- conversations <- messages <- tasks <- task_inference_recovery | root:users <- conversations <- tasks <- task_inference_recovery | root:users <- messages <- tasks <- task_inference_recovery | root:users <- tasks <- task_inference_recovery",
     "task_events": "root:users <- conversations <- messages <- tasks <- task_events | root:users <- conversations <- tasks <- task_events | root:users <- messages <- tasks <- task_events | root:users <- tasks <- task_events",
     "task_operations": "root:users <- conversations <- messages <- tasks <- task_operations | root:users <- conversations <- tasks <- task_operations | root:users <- messages <- tasks <- task_operations | root:users <- tasks <- task_operations",
     "tasks": "root:users <- conversations <- messages <- tasks | root:users <- conversations <- tasks | root:users <- messages <- tasks | root:users <- tasks",
@@ -4605,6 +4615,63 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
+      "qualname": "InferenceRecovery._owned",
+      "kind": "sql_unresolvable",
+      "fingerprint": "aaaef6d08df24ee4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Caller-supplied SQL executed through fetchval; unresolved scanner candidate, not proof of complete caller fencing. Source-only inference quarantine; uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
+      "qualname": "InferenceRecovery.preflight",
+      "kind": "sql_unresolvable",
+      "fingerprint": "f600f60971c2232a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Role-precondition fetchval retained as an unresolved scanner candidate, not a proven data mutation or general runtime fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.runner",
+      "qualname": "run_chat_task",
+      "kind": "store_write",
+      "fingerprint": "af48871980ea5c2a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "ContextVar.set for the invocation owner is a conservative store-write scanner candidate, not proven persistence or account-fence coverage. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._accept_once",
+      "kind": "sql_inline",
+      "fingerprint": "c923936b4e2707e9",
+      "tables": [
+        "task_inference_recovery"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Explicitly injected NEW acceptance inserts a generation-bound recovery marker on its acceptance transaction. Control inventory only; no production wiring, reusable send permission or general writer-fence claim. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.store",
+      "qualname": "TaskStore._close_inference",
+      "kind": "sql_dynamic",
+      "fingerprint": "5e592ee3dac77b38",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Dynamic lease SELECT retained as an unresolved scanner candidate, not proof of a data mutation or complete caller fencing. Uncovered."
     },
     {
       "owner_source": "orchestrator.tasks.store",

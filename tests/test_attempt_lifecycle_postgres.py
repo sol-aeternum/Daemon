@@ -19,6 +19,7 @@ import pytest_asyncio
 from orchestrator import attempt_lifecycle as lc
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.services.account_control.guard import capture_generation
 from orchestrator.services.account_control.store import account_lock_key
 from orchestrator.tasks.store import TaskStore
 from tests.compute_metadata_support import (
@@ -69,31 +70,8 @@ async def db(metadata_cluster):
 
 async def seed(db, owner, *, account=None):
     account = account or await db.account(owner)
-    conversation, user_message, result_message, task, scope, metadata = [uuid4() for _ in range(6)]
+    scope, metadata = uuid4(), uuid4()
     enc = ContentEncryption(Fernet.generate_key().decode())
-    await owner.execute(
-        "INSERT INTO conversations(id,user_id,pipeline) VALUES($1,$2,'cloud')",
-        conversation,
-        account,
-    )
-    await owner.execute(
-        "INSERT INTO messages(id,conversation_id,user_id,role,content) VALUES($1,$3,$4,'user',$5),($2,$3,$4,'assistant',$5)",
-        user_message,
-        result_message,
-        conversation,
-        account,
-        enc.encrypt("synthetic"),
-    )
-    await owner.execute(
-        "INSERT INTO tasks(id,user_id,conversation_id,user_message_id,result_message_id,input_ciphertext,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7)",
-        task,
-        account,
-        conversation,
-        user_message,
-        result_message,
-        enc.encrypt("{}"),
-        "0" * 64,
-    )
     # Existing writer methods, not copied SQL. Owner pool only for synthetic setup.
     pool = await asyncpg.create_pool(
         host=str(db.host),
@@ -107,15 +85,67 @@ async def seed(db, owner, *, account=None):
     memory = MemoryStore(pool, enc)
     tasks = TaskStore(pool, enc, memory)
     try:
-        claim = await tasks.claim(task, worker_id="fixture", lease_s=45)
+        # The same real capture/guarded acceptance used by chat creates and seals
+        # the original origin; an invented JSON origin is not claim authority.
+        capture = await capture_generation(owner, account)
+        accepted = await tasks.accept(
+            user_id=account,
+            conversation_id=None,
+            new_conversation_title="fixture",
+            pipeline="cloud",
+            user_message="synthetic",
+            task_input={"message": "synthetic"},
+            request_hash="0" * 64,
+            idempotency_key=str(uuid4()),
+            assistant_model=None,
+            captured_generation=capture,
+        )
+        claim = await tasks.claim(accepted.task_id, worker_id="fixture", lease_s=45)
         assert claim is not None
-        await tasks.record_compute_scope(task, claim.epoch, scope, binding=claim)
+        await tasks.record_compute_scope(accepted.task_id, claim.epoch, scope, binding=claim)
         await owner.execute("SELECT public.compute_metadata_create_scope($1,$2)", account, metadata)
-        ident = lc.AttemptIdentity(uuid4(), account, 0, task, claim.epoch, scope, metadata, uuid4())
-        return ident, conversation, pool, tasks, memory
+        ident = lc.AttemptIdentity(
+            uuid4(),
+            account,
+            capture.generation,
+            accepted.task_id,
+            claim.epoch,
+            scope,
+            metadata,
+            uuid4(),
+        )
+        return ident, accepted.conversation_id, pool, tasks, memory
     except BaseException:
         await pool.close()
         raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generation", [0, 3])
+async def test_seed_uses_real_acceptance_and_authenticated_original_origin(db, generation):
+    async with db.connection() as owner:
+        account = await db.account(owner)
+        await owner.execute(
+            "UPDATE entitlement_accounts SET content_generation=$2 WHERE user_id=$1",
+            account,
+            generation,
+        )
+        ident, conversation, writer_pool, tasks, _ = await seed(db, owner, account=account)
+        try:
+            row = await owner.fetchrow("SELECT * FROM tasks WHERE id=$1", ident.task_id)
+            original = tasks._origin(row)
+            assert original.account_id == account and original.generation == generation
+            assert ident.generation == generation and row["conversation_id"] == conversation
+            assert row["status"] == "running" and row["lease_epoch"] == ident.epoch
+            assert (
+                await owner.fetchval(
+                    "SELECT count(*) FROM task_events WHERE task_id=$1 AND kind='accepted'",
+                    ident.task_id,
+                )
+                == 1
+            )
+        finally:
+            await writer_pool.close()
 
 
 async def raw(conn, op, ident, cmd=None, why="requested"):

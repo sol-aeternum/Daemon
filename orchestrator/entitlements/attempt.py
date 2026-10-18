@@ -16,6 +16,7 @@ import asyncpg.pool
 import asyncpg.transaction
 
 from orchestrator.attempt_lifecycle import AttemptIdentity, LifecycleError, assert_open
+from orchestrator.tasks._invocation import block, require_effect
 from orchestrator.entitlements.errors import (
     AttemptReservationUnavailable,
     EntitlementsError,
@@ -57,6 +58,7 @@ class _AttemptTransaction:
         self.termination_failed = False
 
     def remaining(self) -> float:
+        require_effect()
         remaining = self.deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             raise TimeoutError
@@ -157,6 +159,8 @@ class _AttemptTransaction:
             self.terminate()
 
     def error(self, exc: BaseException) -> BaseException:
+        if self.commit_attempted or not self.rollback_acknowledged or self.phase == "release":
+            block("attempt_reservation_unavailable")
         acknowledged = self.original_acknowledged if self.recovery else self.commit_acknowledged
         if isinstance(exc, asyncio.CancelledError):
             exc.reservation_identity = self.identity  # type: ignore[attr-defined]

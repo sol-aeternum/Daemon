@@ -319,12 +319,14 @@ def test_runtime_import_isolation_with_discriminating_controls(monkeypatch):
     ]:
         assert imports_metadata(text)
     root = Path(__file__).resolve().parents[1]
-    assert not [
-        str(p)
+    # Only the owner-approved, explicitly injected quarantine adapter may compose
+    # this boundary. Production constructor non-composition has its own regression.
+    assert [
+        p.relative_to(root).as_posix()
         for base in ("orchestrator", "providers", "scripts")
         for p in (root / base).rglob("*.py")
         if p.name != "compute_metadata.py" and imports_metadata(p.read_text())
-    ]
+    ] == ["orchestrator/tasks/inference.py"]
 
     def forbidden(*args, **kwargs):
         pytest.fail("import/construction initiated I/O")

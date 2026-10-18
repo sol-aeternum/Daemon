@@ -26,8 +26,10 @@ The original origin is encrypted input. These SQL functions cannot authenticate
 that origin: the future trusted caller must establish its provenance before
 registration, after claim/record_compute_scope and before reservation or outbound
 work. An existing live row is not proof of prospective origin. This primitive
-neither adopts legacy attempts nor enables any caller to do so; no runtime caller
-exists. Historical/singleton missing-entitlement disposition remains blocked.
+neither adopts legacy attempts nor enables any caller to do so. The source-only
+[inference quarantine](INFERENCE_QUARANTINE.md) explicitly injects fixture callers;
+production startup remains unwired. Historical/singleton missing-entitlement
+disposition remains blocked.
 
 ## Exactly four operations
 
@@ -70,8 +72,9 @@ Missing-account close/readback keeps advisory serialization, exact binding and n
 new identity. Existing `_relock` and metadata missing-account exceptions are NOT
 absence oracles. No SHARE-to-UPDATE upgrade; no conversation/user/financial locks.
 
-Existing claim/cancel are task-first; TaskStore deletion is conversation-first;
-MemoryStore deletion directly cascades. These writers remain unchanged. Do NOT
+Legacy claim/cancel remain task-first; covered fixture claim/cancel and terminal
+writers enter lifecycle-first ordering. TaskStore deletion remains conversation-first;
+MemoryStore deletion directly cascades. Do NOT
 call the new operations from a transaction already holding those content locks.
 Cross-order lock timeout/deadlock is refusal, never retry or success. Function-local
 250ms lock_timeout restores caller settings. Standalone adapters add statement,
@@ -93,7 +96,8 @@ requests cancellation; MemoryStore may delete it. Subsequent gate refuses for
 either cancellation or missing task. Account/task removal may orphan control
 identifiers, not manufacture authority or certify erasure. Dead producers may
 leave OPEN records: lease/liveness checks refuse them; bounded abandoned-record
-closure/reconciliation is a later prerequisite before runtime use.
+closure is fixture-injected by the additive quarantine slice, not production
+startup. Retention/restore/principal readiness still gates runtime use.
 
 ## Principal and privilege boundary
 

@@ -86,6 +86,8 @@ export function normalizeDaemonMessage(
  * reasons are left alone.
  */
 const TASK_TERMINAL_NOTICES: Record<string, string> = {
+  inference_dispatch_unresolved:
+    'This response was interrupted. Daemon will not restart it automatically because the provider may still be working or charging. Any saved partial answer is incomplete.',
   uncertain_effect:
     'This request was interrupted after an action that may already have happened. Check before retrying.',
   interrupted: 'This request was interrupted and could not be completed.',
@@ -118,6 +120,21 @@ const TASK_TERMINAL_NOTICES: Record<string, string> = {
 
 const TASK_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const CANCELLED_PARTIAL_NOTICE = 'Stopped before the answer was finished.';
+
+export const INFERENCE_INTERRUPTED_NOTICE =
+  TASK_TERMINAL_NOTICES.inference_dispatch_unresolved;
+export const INFERENCE_NEW_REQUEST_WARNING =
+  'Starting a new request may overlap with provider work or charges from the interrupted response. This does not resume the earlier request.';
+const INFERENCE_STOP_NOTICE =
+  'Daemon stopped local work; provider activity or charges may continue.';
+
+/** A saved server disposition, not a provider-stopped or release certificate. */
+export function hasUnresolvedInference(message: DaemonMessage): boolean {
+  return (
+    message.metadata?.terminal_reason === 'inference_dispatch_unresolved' ||
+    message.metadata?.inference_dispatch_possible === true
+  );
+}
 
 const REGENERATED_NOTICE = 'This answer was regenerated after an interruption.';
 
@@ -171,6 +188,11 @@ function withTaskNotice(
   // which are left alone.
   if (typeof code !== 'string' || !TASK_CODE.test(code))
     return content ? withRegeneration(content) : content;
+  if (code === 'cancelled' && metadata.inference_dispatch_possible === true) {
+    return content
+      ? `${content}\n\n${INFERENCE_STOP_NOTICE} Any saved partial answer is incomplete.`
+      : INFERENCE_STOP_NOTICE;
+  }
   const notice =
     TASK_TERMINAL_NOTICES[code] ??
     `This request could not be completed (${code.replace(/_/g, ' ')}).`;

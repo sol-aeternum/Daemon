@@ -265,6 +265,37 @@ describe('#477 submission reliability closeout', () => {
     state.refresh.mockResolvedValue(runningConversation(false));
     state.send.mockResolvedValue(undefined);
   });
+  it('warns before a deliberate new request after quarantine and never resumes the old task', async () => {
+    const conversation = runningConversation(false);
+    state.conversation = {
+      ...conversation,
+      messages: [
+        conversation.messages[0],
+        {
+          ...conversation.messages[1],
+          metadata: { terminal_reason: 'inference_dispatch_unresolved' },
+        },
+      ],
+    };
+    render(<ChatPage />);
+    expect(
+      await screen.findByText(
+        /Starting a new request may overlap with provider work or charges/,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(state.send).not.toHaveBeenCalled();
+    expect(state.regenerate).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Composer' }), {
+      target: { value: 'A deliberately new request' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body.idempotency_key).toBeTypeOf(
+      'string',
+    );
+    expect(state.regenerate).not.toHaveBeenCalled();
+  });
   function pending(key: string, scope: string | null = 'conv-1', age = 61_000) {
     registerSubmission(
       key,

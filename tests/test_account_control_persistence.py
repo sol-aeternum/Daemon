@@ -741,6 +741,18 @@ TITLE_GUARD_IMPORTS = {
     "orchestrator/tasks/fence.py": {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
     },
+    # Source-only inference quarantine: exact fail-closed/owned-transaction seams.
+    # No request/phase API access, production composition or general writer fence.
+    "orchestrator/compute_runtime.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/tasks/_invocation.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/tasks/inference.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+        ("orchestrator.services.account_control.transaction", "control_transaction"),
+    },
     "orchestrator/tasks/store.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
@@ -877,6 +889,22 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         (
             "orchestrator/unapproved_writer.py",
             "from orchestrator.services.account_control.transaction import control_transaction",
+        ),
+        (
+            "orchestrator/compute_runtime.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/tasks/_invocation.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/tasks/inference.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/unapproved_writer.py",
+            "from orchestrator.services.account_control.transaction import ObservationBlocked",
         ),
     ],
 )
