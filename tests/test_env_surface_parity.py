@@ -284,7 +284,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "HOME": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:26",
+            "frontend/e2e/cache-fixture-environment.mjs:8",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:222",
         ),
@@ -297,7 +297,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "PATH": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:25",
+            "frontend/e2e/cache-fixture-environment.mjs:7",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:221",
         ),
@@ -310,7 +310,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "UV_PROJECT_ENVIRONMENT": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/e2e/cache-fixture-server.mjs:49",
+            "frontend/e2e/cache-fixture-environment.mjs:11",
             "frontend/e2e/renderer-crash.ts:215",
         ),
         reason=(
@@ -339,7 +339,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/scripts/authenticated-browser.mjs:986",
-            "frontend/e2e/cache-fixture-server.mjs:28",
+            "frontend/e2e/cache-fixture-environment.mjs:10",
         ),
         reason=(
             "diagnostic refusal guard still rejects Node injection options; the owner-approved "
@@ -350,11 +350,11 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     ),
     "TMPDIR": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/e2e/cache-fixture-server.mjs:27",),
+        sources=("frontend/e2e/cache-fixture-environment.mjs:9",),
         reason=(
             "owner-approved test-only clean child-process environment preserves the caller's "
             "task-private temporary directory. Standard process control, not an application "
-            "deployment knob; only this exact fixture launch site is covered"
+            "deployment knob; only this shared fixture launch site is covered"
         ),
     ),
     "NEXT_PUBLIC_API_BASE_URL": NonFieldConsumer(
