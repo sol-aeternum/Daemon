@@ -185,6 +185,21 @@ seams. Research checkpoint/resume is deferred slice 2
 - Frontend controls composer/proxy, held-draft, transport and page regressions:
   independent selectors, explicit defaults, null/absence replay, reload, immutable
   control-edit receipts and delayed file serialization, including changed-back edits.
+- `frontend/e2e/chat-discoverability.spec.ts`: synthetic ordinary-turn browser
+  coverage for all six detail/effort pairs (including untouched Balanced + Auto),
+  outgoing request fields and draft-safe independent selection. The 375/768/1440px
+  navigation cases check composer bounds, model-menu and settings-return draft
+  preservation alongside the existing settings geometry assertions; the desktop
+  header shortcut also checks draft/control retention through in-app settings
+  sections. These are assertion targets, not blanket suite/release qualification.
+  Council is separate: `/council` submission and the existing synthetic interview
+  render are compatibility coverage, not a commitment to its current architecture
+  or a replacement for the future agent-spine tool direction (#490).
+  Next's idle development indicator is disabled so it cannot intercept application
+  navigation; the real-browser negative control injects an uncaught error, checks
+  the browser error channel and opens its still-visible Next error dialog. Other
+  unexpected page errors fail the fixture. CSP is unchanged; blocked development
+  styles remain observable console evidence, not a production-style qualification.
 
 No stored golden transcript substitutes for the backend in the cross-language test.
 Vitest global setup generates fresh transcripts once before concurrent test workers,
