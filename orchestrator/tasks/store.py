@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
@@ -43,6 +43,7 @@ from orchestrator.tasks.inference import (
     CODE as INFERENCE_UNRESOLVED,
     InferenceRecovery,
     RecoveryObservation,
+    acceptor_preflight,
 )
 from orchestrator.tasks.states import (
     ACTIVE_STATUSES,
@@ -51,6 +52,9 @@ from orchestrator.tasks.states import (
     decide_after_attempt,
     retry_backoff_s,
 )
+
+if TYPE_CHECKING:
+    from orchestrator.tasks.composition import TaskComposition, WorkerComposition
 
 #: Account suspension stops running work (§11); checked at heartbeat, before
 #: material effects and before publication.
@@ -273,6 +277,7 @@ class TaskStore:
         # these collaborators. Acceptor INSERT and worker EXECUTE use different roles.
         self._inference = inference_recovery
         self._cover_new_inference = cover_new_inference
+        self._composition: TaskComposition | WorkerComposition | None = None
         # Fairness only, independent of abandoned-pass lifecycle observation.
         self._quarantine_hold_after: tuple[uuid.UUID, uuid.UUID] | None = None
 
@@ -922,6 +927,12 @@ class TaskStore:
                 or account_id != user_id
             ):
                 raise WriteGuardRefusal("invalid_capture")
+            if self._composition is not None:
+                from orchestrator.tasks.composition import TaskComposition
+
+                if not self._cover_new_inference or type(self._composition) is not TaskComposition:
+                    raise ObservationBlocked("inference_acceptor_refused")
+                await self._composition.preflight()
             sealed_input = {
                 **task_input,
                 "origin_account_id": str(account_id),
@@ -943,6 +954,15 @@ class TaskStore:
                 conn.transaction(isolation="read_committed"),
                 guard_content_write(conn, captured_generation),
             ):
+                if self._cover_new_inference:
+                    binding = self._composition
+                    if binding is not None:
+                        binding.validate()
+                    await acceptor_preflight(
+                        conn,
+                        expected=binding.acceptor_role if binding else None,
+                        other=binding.worker_role if binding else None,
+                    )
                 if conversation_id is None:
                     conversation = await self._memory.create_conversation(
                         user_id=user_id, pipeline=pipeline, title=new_conversation_title, conn=conn
@@ -1089,6 +1109,12 @@ class TaskStore:
         request_hash: str,
         request_canonical: str | None = None,
     ) -> AcceptedTask | None:
+        # Canonical replay can refresh a rotated digest below. Validate wiring
+        # before that possible write, without imposing NEW origin/admission.
+        if self._composition is not getattr(self._memory, "_task_composition", None):
+            raise ObservationBlocked("inference_composition_refused")
+        if self._composition is not None:
+            self._composition.validate()
         row = await self._pool.fetchrow(
             "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
             user_id,
@@ -1119,21 +1145,38 @@ class TaskStore:
     # Dispatch
     # ------------------------------------------------------------------ #
 
+    @asynccontextmanager
+    async def _composed_writer(self) -> AsyncIterator[Any]:
+        if self._composition is None:
+            yield self._pool
+            return
+        self._composition.validate()
+        if self._inference is None:
+            raise ObservationBlocked("inference_principal_refused")
+        async with control_transaction(self._pool) as conn:
+            await self._inference.preflight(conn)
+            yield conn
+
     async def mark_woken(self, task_id: uuid.UUID) -> int:
         """Record a wake-up about to be enqueued; returns its sequence for the job id."""
-        return int(
-            await self._pool.fetchval(
-                "UPDATE tasks SET wake_seq = wake_seq + 1, last_wake_at = now() "
-                "WHERE id = $1 RETURNING wake_seq",
-                task_id,
+        async with self._composed_writer() as conn:
+            return int(
+                await conn.fetchval(
+                    "UPDATE tasks SET wake_seq = wake_seq + 1, last_wake_at = now() "
+                    "WHERE id = $1 RETURNING wake_seq",
+                    task_id,
+                )
             )
-        )
 
     async def _quarantine_hold_candidates(self) -> list[tuple[uuid.UUID, uuid.UUID]]:
         """Bounded circular page; no locks retained across financial settlement."""
         require_effect()
         after = self._quarantine_hold_after
         async with control_transaction(self._pool) as conn:
+            if self._composition is not None:
+                self._composition.validate()
+                assert self._inference is not None
+                await self._inference.preflight(conn)
             await conn.execute(
                 "SET LOCAL lock_timeout='250ms'; SET LOCAL statement_timeout='1000ms'"
             )
@@ -1206,8 +1249,9 @@ class TaskStore:
         not flooded with duplicates; duplicates would be harmless, since the
         claim decides ownership.
         """
-        rows = await self._pool.fetch(
-            """
+        async with self._composed_writer() as conn:
+            rows = await conn.fetch(
+                """
             WITH due AS (
                 SELECT id FROM tasks
                 WHERE ((status = 'queued' AND next_wakeup_at <= now())
@@ -1222,9 +1266,9 @@ class TaskStore:
             FROM due WHERE t.id = due.id
             RETURNING t.id, t.wake_seq, t.user_id
             """,
-            limit,
-            rewake_after_s,
-        )
+                limit,
+                rewake_after_s,
+            )
         return [(row["id"], int(row["wake_seq"]), row["user_id"]) for row in rows]
 
     # ------------------------------------------------------------------ #

@@ -6,6 +6,7 @@ import copy
 from dataclasses import replace
 import importlib.util
 import json
+import re
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -27,6 +28,68 @@ def imports_lifecycle(text):
         )
         for n in ast.walk(ast.parse(text))
     )
+
+
+def assert_composition_catalogue_only(text):
+    """Exact factory may inspect names/types, not import or invoke lifecycle APIs."""
+    assert not imports_lifecycle(text)
+    identifiers = {
+        "attempt_lifecycle_control",
+        "attempt_lifecycle_commands",
+        "attempt_lifecycle_identity",
+        "attempt_lifecycle_lock",
+        "attempt_lifecycle_live",
+        "attempt_lifecycle_readback",
+        "attempt_lifecycle_register",
+        "attempt_lifecycle_assert_open",
+        "attempt_lifecycle_close",
+        "attempt_lifecycle_abandoned_page",
+        "attempt_lifecycle_close_abandoned",
+        "public.attempt_lifecycle_control",
+        "FOREIGN KEY (lifecycle_id) REFERENCES attempt_lifecycle_control(id)",
+    }
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            assert "attempt_lifecycle" not in (node.id if isinstance(node, ast.Name) else node.attr)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+        ):
+            assert not any(
+                isinstance(a, ast.Constant)
+                and isinstance(a.value, str)
+                and "attempt_lifecycle" in a.value
+                for a in node.args
+            )
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        value = node.value
+        if "attempt_lifecycle" not in value or value in identifiers:
+            continue
+        # Only the two read-only pg_catalog predicates may contain the name
+        # prefix. Any actual public function SQL, dynamic import or new name fails.
+        assert value.startswith("SELECT ") and "FROM pg_catalog." in value
+        assert re.findall(r"attempt_lifecycle\w*", value) == ["attempt_lifecycle_"]
+        assert "'attempt_lifecycle_%'" in value
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "from orchestrator.attempt_lifecycle import assert_open",
+        "__import__('orchestrator.attempt_lifecycle')",
+        "conn.execute('SELECT public.attempt_lifecycle_register($1,$2)')",
+        "adapter.attempt_lifecycle_register(value)",
+        "getattr(adapter, 'attempt_lifecycle_register')(value)",
+    ],
+)
+def test_composition_catalogue_exception_does_not_allow_lifecycle_activation(extra):
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "orchestrator/tasks/composition.py").read_text()
+    assert_composition_catalogue_only(source)
+    with pytest.raises(AssertionError):
+        assert_composition_catalogue_only(source + "\n" + extra)
 
 
 def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
@@ -62,7 +125,10 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                 )
                 continue
             assert not imports_lifecycle(text), str(path)
-            assert "attempt_lifecycle_" not in text, str(path)
+            if path.relative_to(root).as_posix() == "orchestrator/tasks/composition.py":
+                assert_composition_catalogue_only(text)
+            else:
+                assert "attempt_lifecycle_" not in text, str(path)
             assert not any(
                 isinstance(n, ast.Attribute)
                 and n.attr in {"reserve_for_attempt", "recover_attempt_reservation"}

@@ -37,7 +37,7 @@ async def db(metadata_cluster):
     cluster = metadata_cluster
     name = "md_" + uuid4().hex
     cluster.prepare(name)
-    resource = cluster.resource / ("m-" + uuid4().hex[:6])
+    resource = cluster.resource / uuid4().hex[:6]
     resource.mkdir(mode=0o700)
     assert len(os.fsencode(resource / ".s.PGSQL.5432")) < 108
     bridge = Bridge(cluster, resource / ".s.PGSQL.5432")

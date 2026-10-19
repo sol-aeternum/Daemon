@@ -23,6 +23,8 @@ from orchestrator.daemon import new_request_id, stream_with_keepalives
 from orchestrator.request_id import get_request_id
 from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
+from orchestrator.tasks.composition import TaskComposition
+from orchestrator.services.account_control.transaction import ObservationBlocked
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -135,10 +137,27 @@ def observer_authorizer(
 
 
 def task_store(app_state: AppState) -> TaskStore:
+    bundle = getattr(app_state, "task_composition", None)
+    if bundle is None and getattr(app_state.memory_store, "_task_composition", None) is not None:
+        raise HTTPException(status_code=503, detail="Task composition unavailable")
+    if bundle is not None:
+        try:
+            if type(bundle) is not TaskComposition:
+                raise ObservationBlocked("inference_composition_refused")
+            bundle.validate_http(app_state)
+            return bundle.tasks
+        except ObservationBlocked:
+            raise HTTPException(status_code=503, detail="Task composition unavailable") from None
     if app_state.db_pool is None or app_state.memory_store is None:
         raise HTTPException(status_code=503, detail="Task store unavailable")
     memory = app_state.memory_store
     return TaskStore(app_state.db_pool, memory.encryption, memory)
+
+
+def task_acceptor(app_state: AppState) -> TaskStore:
+    control = task_store(app_state)  # Entire bundle before NEW acceptance effects.
+    bundle = getattr(app_state, "task_composition", None)
+    return bundle.acceptor if bundle is not None else control
 
 
 def task_out(snapshot: TaskSnapshot) -> TaskOut:

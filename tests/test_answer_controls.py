@@ -96,6 +96,7 @@ async def test_durable_acceptance_forwards_controls_and_existing_conflict(monkey
         return accepted
 
     store = SimpleNamespace(accept=accept)
+    monkeypatch.setattr(main, "task_acceptor", lambda _: store)
     monkeypatch.setattr(main, "task_store", lambda _: store)
     monkeypatch.setattr(main, "validate_and_get_pepper", lambda _: "fictional-key")
     monkeypatch.setattr(main, "_observe_task_response", lambda *args: accepted)

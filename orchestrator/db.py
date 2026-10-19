@@ -13,6 +13,7 @@ from orchestrator.redis_account import validate_redis_account_key
 from db.video_credits import VideoCreditsDAL
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.tasks.composition import TaskComposition
 from orchestrator.services.deletion_journal.barrier import (
     configured_journal,
     require_recovery_barrier,
@@ -31,6 +32,8 @@ class AppState:
     video_credits_dal: VideoCreditsDAL | None = field(default=None)
     # Legacy compatibility only. First-boot setup token hashes live in system_state.
     setup_token_hash: str | None = field(default=None)
+    # Explicit isolated-host injection only. Normal startup leaves this absent.
+    task_composition: TaskComposition | None = field(default=None)
 
 
 async def init_app_state(settings: Settings) -> AppState:

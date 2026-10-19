@@ -67,7 +67,7 @@ async def db(metadata_cluster):
         database=name,
         role="md_owner",
     )
-    resource = cluster.resource / ("q-" + uuid4().hex[:6])
+    resource = cluster.resource / uuid4().hex[:6]
     resource.mkdir(mode=0o700)
     assert len(os.fsencode(resource / ".s.PGSQL.5432")) < 108
     bridge = Bridge(cluster, resource / ".s.PGSQL.5432")
@@ -606,7 +606,16 @@ async def test_acceptance_insert_failure_is_atomic_and_replay_never_backfills(db
                 "SELECT (SELECT count(*) FROM tasks) AS tasks,(SELECT count(*) FROM messages) AS messages,(SELECT count(*) FROM conversations) AS conversations"
             )
             await owner.execute(
-                "REVOKE INSERT(task_id,account_id,account_generation,protocol_version) ON task_inference_recovery FROM md_acceptor"
+                # Revoke AFTER the acquired-connection preflight, at the real
+                # INSERT boundary. Keep proving rollback of staged content,
+                # rather than merely testing the new early capability refusal.
+                "CREATE FUNCTION revoke_coverage_on_accept() RETURNS trigger "
+                "LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ "
+                "BEGIN REVOKE INSERT(task_id,account_id,account_generation,protocol_version) "
+                "ON public.task_inference_recovery FROM md_acceptor; RETURN NEW; END $$; "
+                "REVOKE ALL ON FUNCTION revoke_coverage_on_accept() FROM PUBLIC; "
+                "CREATE TRIGGER revoke_coverage_on_accept AFTER INSERT ON tasks "
+                "FOR EACH ROW EXECUTE FUNCTION revoke_coverage_on_accept()"
             )
             options.update(
                 idempotency_key=str(uuid4()),

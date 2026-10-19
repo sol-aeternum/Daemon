@@ -91,6 +91,8 @@ class MemoryStore:
     def __init__(self, db_pool: asyncpg.Pool, encryption: ContentEncryption) -> None:
         self._pool = db_pool
         self._enc = encryption
+        # Only the explicit isolated task factory binds this; defaults stay inert.
+        self._task_composition: object | None = None
 
     @property
     def encryption(self) -> ContentEncryption:
