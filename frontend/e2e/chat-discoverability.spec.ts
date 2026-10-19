@@ -1,5 +1,29 @@
 import { readFileSync } from 'node:fs';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test as base, type Page } from '@playwright/test';
+
+const test = base.extend<{ runtimeErrors: Error[] }>({
+  runtimeErrors: [
+    async ({ page }, use, testInfo) => {
+      const errors: Error[] = [];
+      const consoleMessages: string[] = [];
+      const onError = (error: Error) => errors.push(error);
+      page.on('pageerror', onError);
+      page.on('console', (message) => {
+        if (['error', 'warning'].includes(message.type())) {
+          consoleMessages.push(message.text());
+        }
+      });
+      await use(errors);
+      await testInfo.attach('browser-console.json', {
+        body: JSON.stringify(consoleMessages, null, 2),
+        contentType: 'application/json',
+      });
+      page.off('pageerror', onError);
+      expect(errors.map((error) => error.message)).toEqual([]);
+    },
+    { auto: true },
+  ],
+});
 
 const conversation = {
   id: 'conversation-1',
@@ -65,7 +89,47 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test('Deliberate submits the Council command and opens its interview without consuming the draft', async ({
+test('the development fixture keeps uncaught runtime errors observable', async ({
+  page,
+  runtimeErrors,
+}, testInfo) => {
+  await page.setViewportSize({ width: 375, height: 1100 });
+  await page.goto('/settings/profile?from=conversation-1');
+  await expect(page.getByRole('link', { name: '← Chat' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Open Next.js Dev Tools', exact: true }),
+  ).toHaveCount(0);
+
+  const failure = page.waitForEvent('pageerror');
+  await page.evaluate(() => {
+    setTimeout(() => {
+      throw new Error('J490 synthetic runtime observability');
+    }, 0);
+  });
+  expect((await failure).message).toBe('J490 synthetic runtime observability');
+  const issues = page.getByRole('button', {
+    name: 'Open issues overlay',
+    exact: true,
+  });
+  await expect(issues).toBeVisible();
+  await issues.click();
+  const dialog = page.locator('[data-nextjs-dialog]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('J490 synthetic runtime observability');
+  await page.screenshot({
+    path: testInfo.outputPath('runtime-error-visible-375.png'),
+    fullPage: true,
+  });
+  // Consume only this explicitly injected error. Every other pageerror observed
+  // during the test still fails the automatic fixture.
+  expect(runtimeErrors).toHaveLength(1);
+  expect(runtimeErrors.shift()?.message).toBe(
+    'J490 synthetic runtime observability',
+  );
+});
+
+// Compatibility only: this does not prescribe Council's future agent-tool UX.
+test('the /council compatibility command opens the existing interview', async ({
   page,
 }) => {
   const submitted: unknown[] = [];
@@ -97,8 +161,8 @@ test('Deliberate submits the Council command and opens its interview without con
   });
   await page.goto('/?id=conversation-1');
   const composer = page.locator('textarea');
-  await composer.fill('Keep this draft');
-  await page.getByRole('button', { name: /Deliberate/ }).click();
+  await composer.fill('/council');
+  await page.getByRole('button', { name: 'Send message' }).click();
   await expect(
     page.getByText('Council Configuration', { exact: true }),
   ).toBeVisible();
@@ -109,8 +173,87 @@ test('Deliberate submits the Council command and opens its interview without con
   expect(payload.messages.at(-1)?.parts).toEqual([
     { type: 'text', text: '/council' },
   ]);
-  await expect(composer).toHaveValue('Keep this draft');
+  await expect(composer).toHaveValue('');
 });
+
+for (const answerDetail of ['balanced', 'brief', 'detailed']) {
+  for (const researchEffort of ['auto', 'research']) {
+    test(`ordinary turn submits ${answerDetail} + ${researchEffort} independently`, async ({
+      page,
+    }, testInfo) => {
+      const submitted: unknown[] = [];
+      await page.route('**/api/chat', async (route) => {
+        submitted.push(route.request().postDataJSON());
+        const chunks = [
+          { type: 'start', messageId: 'ordinary-reply' },
+          { type: 'text-start', id: 'reply-text' },
+          { type: 'text-delta', id: 'reply-text', delta: 'Synthetic answer' },
+          { type: 'text-end', id: 'reply-text' },
+          { type: 'finish' },
+        ];
+        await route.fulfill({
+          contentType: 'text/event-stream',
+          headers: { 'x-vercel-ai-ui-message-stream': 'v1' },
+          body:
+            chunks
+              .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+              .join('') + 'data: [DONE]\n\n',
+        });
+      });
+      await page.goto('/?id=conversation-1');
+      const detail = page.getByRole('combobox', { name: 'Answer detail' });
+      const effort = page.getByRole('combobox', { name: 'Research effort' });
+      const composer = page.getByRole('textbox', { name: 'Message Daemon' });
+      await expect(detail).toHaveValue('balanced');
+      await expect(effort).toHaveValue('auto');
+      await composer.fill('Compare these fictional options');
+
+      // The default case submits untouched controls, not reselected defaults.
+      if (answerDetail !== 'balanced' || researchEffort !== 'auto') {
+        await effort.selectOption('research');
+        await expect(detail).toHaveValue('balanced');
+        await detail.selectOption('detailed');
+        await expect(effort).toHaveValue('research');
+        await effort.selectOption('auto');
+        await expect(detail).toHaveValue('detailed');
+        await detail.selectOption('brief');
+        await expect(effort).toHaveValue('auto');
+        await detail.selectOption(answerDetail);
+        await effort.selectOption(researchEffort);
+      }
+      await expect(detail).toHaveValue(answerDetail);
+      await expect(effort).toHaveValue(researchEffort);
+      await expect(composer).toHaveValue('Compare these fictional options');
+      expect(submitted).toHaveLength(0);
+
+      const requestPromise = page.waitForRequest('**/api/chat');
+      await page.getByRole('button', { name: 'Send message' }).click();
+      const payload = (await requestPromise).postDataJSON();
+      expect(payload).toMatchObject({
+        id: 'conversation-1',
+        model: 'auto',
+        attachments: [],
+        answer_detail: answerDetail,
+        research_effort: researchEffort,
+      });
+      expect(payload.messages.at(-1)).toMatchObject({
+        role: 'user',
+        parts: [{ type: 'text', text: 'Compare these fictional options' }],
+      });
+      await expect(
+        page.getByText('Synthetic answer', { exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      await expect(composer).toHaveValue('');
+      await expect(detail).toHaveValue('balanced');
+      await expect(effort).toHaveValue('auto');
+      await testInfo.attach('ordinary-request.json', {
+        body: JSON.stringify(payload, null, 2),
+        contentType: 'application/json',
+      });
+    });
+  }
+}
 
 test('header settings shortcut preserves the conversation across sections and back to chat', async ({
   page,
@@ -120,6 +263,12 @@ test('header settings shortcut preserves the conversation across sections and ba
   await expect(
     page.getByRole('heading', { name: 'Planning', exact: true }),
   ).toBeVisible();
+  const composer = page.getByRole('textbox', { name: 'Message Daemon' });
+  const detail = page.getByRole('combobox', { name: 'Answer detail' });
+  const effort = page.getByRole('combobox', { name: 'Research effort' });
+  await composer.fill('Keep this draft across settings sections');
+  await detail.selectOption('brief');
+  await effort.selectOption('research');
   await page.getByRole('button', { name: 'Open settings' }).click();
   await expect(page).toHaveURL(/\/settings\/profile\?from=conversation-1$/);
   await page
@@ -129,15 +278,93 @@ test('header settings shortcut preserves the conversation across sections and ba
   await expect(page).toHaveURL(/\/settings\/appearance\?from=conversation-1$/);
   await page.getByRole('link', { name: '← Chat' }).click();
   await expect(page).toHaveURL(/\/\?id=conversation-1$/);
+  await expect(composer).toHaveValue(
+    'Keep this draft across settings sections',
+  );
+  await expect(detail).toHaveValue('brief');
+  await expect(effort).toHaveValue('research');
 });
 
 for (const width of [375, 768, 1440]) {
   test(`navigation fits at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 1100 });
     await page.goto('/?id=conversation-1');
-    await expect(
-      page.getByRole('button', { name: /Deliberate/ }),
-    ).toBeVisible();
+    const detail = page.getByRole('combobox', { name: 'Answer detail' });
+    const effort = page.getByRole('combobox', { name: 'Research effort' });
+    const composer = page.getByRole('textbox', { name: 'Message Daemon' });
+    const send = page.getByRole('button', { name: 'Send message' });
+    await expect(detail).toHaveValue('balanced');
+    await expect(effort).toHaveValue('auto');
+    await composer.fill('Keep this draft across menus and settings');
+    await detail.selectOption('brief');
+    await expect(effort).toHaveValue('auto');
+    await effort.selectOption('research');
+    await expect(detail).toHaveValue('brief');
+    await detail.selectOption('detailed');
+    await expect(effort).toHaveValue('research');
+    await effort.selectOption('auto');
+    await expect(detail).toHaveValue('detailed');
+    await effort.selectOption('research');
+    await expect(composer).toHaveValue(
+      'Keep this draft across menus and settings',
+    );
+
+    const modelMenu = page.getByRole('button', {
+      name: 'Model: Auto',
+      exact: true,
+    });
+    await modelMenu.click();
+    await expect(modelMenu).toHaveAttribute('aria-expanded', 'true');
+    await page
+      .getByRole('button', { name: /Smart routing based on your message/ })
+      .click();
+    await expect(modelMenu).toHaveAttribute('aria-expanded', 'false');
+    await expect(detail).toHaveValue('detailed');
+    await expect(effort).toHaveValue('research');
+    await expect(composer).toHaveValue(
+      'Keep this draft across menus and settings',
+    );
+
+    const composerBounds = [];
+    for (const control of [detail, effort, composer, send]) {
+      await expect(control).toBeVisible();
+      await expect(control).toBeEnabled();
+      await expect(control).toBeInViewport({ ratio: 1 });
+      // Check native pointer actionability without submitting the unsent draft.
+      await control.click({ trial: true });
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.width).toBeGreaterThan(0);
+      expect(box!.height).toBeGreaterThanOrEqual(
+        control === composer ? 24 : 44,
+      );
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+      expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(1100);
+      composerBounds.push(box!);
+    }
+    // Neither selector may cover the other, the draft field or Send.
+    for (let i = 0; i < composerBounds.length; i++) {
+      for (const other of composerBounds.slice(i + 1)) {
+        const box = composerBounds[i];
+        expect(
+          box.x + box.width <= other.x ||
+            other.x + other.width <= box.x ||
+            box.y + box.height <= other.y ||
+            other.y + other.height <= box.y,
+        ).toBe(true);
+      }
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await testInfo.attach(`composer-bounds-${width}.json`, {
+      body: JSON.stringify(composerBounds, null, 2),
+      contentType: 'application/json',
+    });
     await expect(
       page.getByRole('button', { name: 'Open settings' }),
     ).toBeVisible({ visible: width >= 768 });
@@ -176,6 +403,50 @@ for (const width of [375, 768, 1440]) {
       path: testInfo.outputPath(`settings-${width}.png`),
       fullPage: true,
     });
+    await testInfo.attach('settings-hit-test.json', {
+      body: JSON.stringify(
+        await page.evaluate(() => {
+          const link = Array.from(document.querySelectorAll('a')).find(
+            (element) => element.textContent?.trim() === '← Chat',
+          )!;
+          const bounds = link.getBoundingClientRect();
+          const center = {
+            x: bounds.x + bounds.width / 2,
+            y: bounds.y + bounds.height / 2,
+          };
+          const portal = document.querySelector('nextjs-portal');
+          const shadow = portal?.shadowRoot;
+          const badge = shadow?.querySelector('[data-nextjs-dev-tools-button]');
+          return {
+            link: bounds.toJSON(),
+            center,
+            hit: document.elementFromPoint(center.x, center.y)?.outerHTML,
+            portal: portal?.getBoundingClientRect().toJSON(),
+            badge: badge?.getBoundingClientRect().toJSON(),
+            badgeLabel: badge?.getAttribute('aria-label'),
+            errorDialogs: shadow?.querySelectorAll('[data-nextjs-dialog]')
+              .length,
+            styles: Array.from(shadow?.querySelectorAll('style') ?? []).map(
+              (style) => ({
+                nonce: style.nonce,
+                hasSheet: style.sheet !== null,
+                css: style.textContent,
+              }),
+            ),
+          };
+        }),
+        null,
+        2,
+      ),
+      contentType: 'application/json',
+    });
+    await page.getByRole('link', { name: '← Chat' }).click();
+    await expect(page).toHaveURL(/\/\?id=conversation-1$/);
+    await expect(composer).toHaveValue(
+      'Keep this draft across menus and settings',
+    );
+    await expect(detail).toHaveValue('detailed');
+    await expect(effort).toHaveValue('research');
   });
 }
 
