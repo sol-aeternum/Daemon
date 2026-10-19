@@ -35,3 +35,33 @@ themes, including label sizes, touch sizing, overflow, and screenshot baselines.
 Browser output is retained in the CI `browser-regressions` artifact. Review
 intentional visual changes before updating baselines with
 `npm run test:browser -- --project=design-tokens --update-snapshots` on Linux.
+
+The design-token fixture uses synthetic nested profile preferences (Alex, empty
+instructions, personal suggestions explicitly off), empty memories, and an explicit
+unavailable embedding configuration from `/status`. Missing/failed status stays
+unknown; static eligibility stays unverified. A deliberate JSON 404 for
+`/api/entitlements` preserves the conservative **Plan unavailable** fallback without
+a live account or plan dependency. The initial `/home-suggestions` read explicitly
+returns disabled, consistent with the saved suggestions-off preference.
+
+Capture checks require loaded fixture content/fonts/images, the fixed browser
+clock, 1440×1000/DPR1, en-US/UTC, the requested theme, stable geometry, zero scroll
+offsets, and no idle DevTools badge or runtime-error overlay. Profile and memory
+retain the original **top of the nested main scroller**: `fullPage` does not expand
+that scroller. Their offscreen controls are checked in the DOM, not claimed as
+pixel coverage. Additional scrolled-state references require separate approval.
+
+`design-token-capture.ts` attaches raw console/network/runtime diagnostics and fails
+unexpected page errors, console errors and request/HTTP failures before capture
+and again at teardown. Known development diagnostics remain recorded: exact
+source/message/style-hash matches for the already-observed Next DevTools CSP
+violations, and the same-request Chromium `ERR_ABORTED` after an acknowledged
+synthetic cache-clear 204 (reproduced by a standalone headers-only fetch control).
+These are not CSP repairs or production/browser-equivalence claims. New errors,
+application CSP errors, or failed cache-clear acknowledgements are not exempt.
+The only other expected HTTP errors are the explicit fixture 404 and the dedicated
+status-error case's 503. No pageerror is consumed, and no CSS hides error UI.
+
+Reference PNG replacements are not part of fixture/capture qualification. Retain
+the failing full-image comparisons and review their pixels separately; a passing
+fixture check is not a green visual gate or approval to update snapshots.
