@@ -42,6 +42,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Observe hosted cgroup interfaces (diagnostic only)
+        # This diagnostic cannot grant ownership or replace any required gate.
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 -- hosted-cgroup-observation
+          set -C
+          status=0
+          timeout --signal=TERM --kill-after=5s 60s \
+            /usr/bin/python3 -I -S -B scripts/observe_hosted_cgroup.py \
+            > hosted-cgroup-observation/report.json || status=$?
+          if [ "$status" -ne 2 ]; then
+            echo "Hosted observation failed its diagnostic contract (status=$status)."
+            exit 1
+          fi
+          /usr/bin/python3 -I -S -B -c 'import json, sys; d = json.load(open(sys.argv[1])); assert d.get("kind") == "read_only_observation" and d.get("ownership_proven") is False and d.get("admission_granted") is False and type(d.get("observation_complete")) is bool; print("Read-only observation complete" if d["observation_complete"] else "Read-only observation INCOMPLETE; no capability conclusion"); print("Ownership and admission remain unproven.")' hosted-cgroup-observation/report.json
+
       - name: Set up uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
@@ -99,6 +119,7 @@ jobs:
           path: |
             pytest-diagnostics/pytest.log
             pytest-diagnostics/pytest-results.xml
+            hosted-cgroup-observation/report.json
           if-no-files-found: warn
           retention-days: 7
 
