@@ -63,7 +63,7 @@ from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.evaluate import (
     BENCHMARK_ANSWER_MODEL,
     BENCHMARK_JUDGE_MODEL,
-    BENCHMARK_OPENAI_ENDPOINT_SLUG,
+    BENCHMARK_ANSWER_ENDPOINT_SLUG,
     BENCHMARK_SEED,
     CATEGORY_MAP,
     CHECKPOINT_FILENAME,
@@ -925,7 +925,7 @@ class LongMemEvalFactRunner:
                 "answer": {
                     "model": answer_model,
                     "benchmark_mode": self.benchmark_mode,
-                    "endpoint_slug": BENCHMARK_OPENAI_ENDPOINT_SLUG
+                    "endpoint_slug": BENCHMARK_ANSWER_ENDPOINT_SLUG
                     if self.benchmark_mode
                     else None,
                     "temperature": 0.0 if self.benchmark_mode else 0.7,

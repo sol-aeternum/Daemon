@@ -28,11 +28,11 @@
       "prompt_sha256": "d290210a8a62bf63b506651d0ee46938c7c03848bc9cbd8a4708f1dfaf0627fd",
       "benchmark_mode": {
         "model": "openrouter/openai/gpt-4o-2024-08-06",
-        "endpoint_slug": "openai",
+        "endpoint_slug": "azure",
         "temperature": 0.0,
         "seed": 42,
         "extra_body_provider_order": [
-          "openai"
+          "azure"
         ],
         "extra_body_allow_fallbacks": false
       }
@@ -44,11 +44,11 @@
       "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
       "benchmark_mode": {
         "model": "openrouter/openai/gpt-4o-2024-08-06",
-        "endpoint_slug": "openai",
+        "endpoint_slug": "azure",
         "temperature": 0.0,
         "seed": 42,
         "extra_body_provider_order": [
-          "openai"
+          "azure"
         ],
         "extra_body_allow_fallbacks": false
       }

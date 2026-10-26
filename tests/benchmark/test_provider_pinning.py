@@ -375,7 +375,7 @@ class TestEvaluateExtraBodyContract:
 
         litellm_kwargs = litellm_mock.call_args_list[0].kwargs
         assert "extra_body" in litellm_kwargs
-        assert litellm_kwargs["extra_body"]["provider"]["order"] == ["openai"]
+        assert litellm_kwargs["extra_body"]["provider"]["order"] == ["azure"]
         assert litellm_kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
 
     @pytest.mark.asyncio
@@ -403,7 +403,7 @@ class TestEvaluateExtraBodyContract:
 
         litellm_kwargs = litellm_mock.call_args_list[0].kwargs
         assert "extra_body" in litellm_kwargs
-        assert litellm_kwargs["extra_body"]["provider"]["order"] == ["openai"]
+        assert litellm_kwargs["extra_body"]["provider"]["order"] == ["azure"]
         assert litellm_kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
 
     @pytest.mark.asyncio

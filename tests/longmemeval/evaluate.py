@@ -105,7 +105,9 @@ JUDGE_MAX_TOKENS = 256
 BENCHMARK_SEED = 42
 BENCHMARK_ANSWER_MODEL = "openrouter/openai/gpt-4o-2024-08-06"
 BENCHMARK_JUDGE_MODEL = "openrouter/openai/gpt-4o-2024-08-06"
-BENCHMARK_OPENAI_ENDPOINT_SLUG = "openai"
+# Azure serves the same gpt-4o snapshot; the account's ZDR guardrail removes
+# OpenAI's own endpoint, and fallbacks stay off.
+BENCHMARK_ANSWER_ENDPOINT_SLUG = "azure"
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +285,7 @@ async def _call_llm_with_provider_config(
         call_params["seed"] = BENCHMARK_SEED
         call_params["extra_body"] = {
             "provider": {
-                "order": [BENCHMARK_OPENAI_ENDPOINT_SLUG],
+                "order": [BENCHMARK_ANSWER_ENDPOINT_SLUG],
                 "allow_fallbacks": False,
             }
         }
