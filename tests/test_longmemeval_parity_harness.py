@@ -303,6 +303,15 @@ class BenchRuntime:
             AsyncMock(return_value={"extraction_models": {"luna": 2}, "memory_embeddings": {}}),
         )
         monkeypatch.setattr(target, "summarize_compute_spend", AsyncMock(return_value={}))
+        self.attestation_stop = AsyncMock()
+        self.approved_routes = ["luna-azure-eu"]
+        monkeypatch.setattr(
+            target,
+            "start_route_attestation",
+            AsyncMock(return_value={"routes": 1, "attested": 1, "revoked": 0, "check_failed": 0}),
+        )
+        monkeypatch.setattr(target.attestation, "stop", self.attestation_stop)
+        monkeypatch.setattr(target, "approved_profile_routes", lambda profile: self.approved_routes)
 
         def fake_account_compute(pool: Any, user_id: Any, **kwargs: Any) -> Any:
             self.scopes.append(kwargs)
@@ -556,6 +565,59 @@ async def test_retry_failed_sessions_rolls_back_and_reingests(
     assert runtime.rollbacks == [{CONV_B}]
     checkpoint = json.loads(runner.checkpoint_path.read_text())
     assert checkpoint["phases"]["ingest"]["results"][KEY_B]["conversation_id"] == new_conv
+
+
+@pytest.mark.asyncio
+async def test_ingest_refuses_without_an_approved_extraction_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runtime = BenchRuntime(monkeypatch)
+    runtime.approved_routes = []
+    fake_ingest = AsyncMock()
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(RuntimeError, match="No approved inference route"):
+        await runner.ingest()
+    fake_ingest.assert_not_awaited()
+    runtime.attestation_stop.assert_awaited()
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["route_attestations"][0]["attested"] == 1
+    assert manifest["invocations"][-1]["outcome"] == "failed:RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_ingest_stops_after_consecutive_extraction_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions = [[{"role": "user", "content": f"fact number {i}"}] for i in range(8)]
+    dataset = [
+        {
+            "question_id": "q1",
+            "question": "?",
+            "answer": "a",
+            "question_type": "multi-session",
+            "haystack_session_ids": [f"s-{i}" for i in range(8)],
+            "haystack_sessions": sessions,
+        }
+    ]
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(json.dumps(dataset))
+    runner = _runner(tmp_path, dataset_path)
+    BenchRuntime(monkeypatch)
+    calls: list[str] = []
+
+    async def failing_ingest(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["session_id"])
+        return {"session_id": kwargs["session_id"], "status": "extraction_failed"}
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", failing_ingest)
+    with pytest.raises(RuntimeError, match="consecutive sessions failed"):
+        await runner.ingest()
+    assert len(calls) == fact_harness.INGEST_FAILURE_BREAKER
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["status"] == "failed"
+    assert len(checkpoint["phases"]["ingest"]["results"]) == fact_harness.INGEST_FAILURE_BREAKER
 
 
 # --------------------------------------------------------------- evaluate-only rerun

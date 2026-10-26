@@ -71,6 +71,12 @@ systemd-inhibit --what=sleep:idle:handle-lid-switch --who=longmemeval --why="ben
     --output-dir "$RUN/ingest"
 ```
 
+Each phase first runs the production ZDR route attestation (backend and worker do the same at
+startup: two public OpenRouter listings, recorded in the benchmark database). Without it every
+monitored route fails closed. Ingest refuses to start if the `background` profile has no admitted
+route, and stops after 5 consecutive failed sessions. The manifest records `route_attestations`
+and `routes.extraction.approved_route_ids`.
+
 Detach with `C-b d` and reattach with `tmux attach -t lme`. `systemd-inhibit` keeps the machine
 awake while the command runs; on AC power you may still want to disable lid-close suspend in your
 desktop settings. Everything the run needs to resume is under `--output-dir`.
@@ -85,10 +91,9 @@ desktop settings. Everything the run needs to resume is under `--output-dir`.
 
 Resume by re-running **the same command** in the same checkout. On resume:
 
-- **Ingest.** A session's conversation id is checkpointed before its messages are written. Any
-  benchmark conversation the checkpoint doesn't reference as complete (at most one, from the
-  interrupted session) is rolled back (its memories, extraction log and conversation), then
-  re-ingested. More than one unexplained conversation means the database wasn't built by this
+- **Ingest.** Each session is checkpointed after it finishes. Any benchmark conversation the
+  checkpoint doesn't reference (at most one: the session that was in flight) is rolled back (its
+  memories, extraction log and conversation), and that session is re-ingested. More than one unexplained conversation means the database wasn't built by this
   checkpoint, and the run refuses. Restore the matching snapshot or start a fresh output
   directory. Rollbacks are recorded in `ingest_rollbacks`. Dedup merges or supersessions an
   interrupted session already applied to other sessions' memories are not undone.

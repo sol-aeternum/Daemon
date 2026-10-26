@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import asyncpg
 
+from orchestrator import model_routing, routing_log
 from orchestrator.compute_runtime import account_compute
 from orchestrator.config import get_settings
 from orchestrator.eval.bench_db import (
@@ -45,6 +46,8 @@ from orchestrator.eval.run_manifest import (
     save_manifest,
     source_sha256,
 )
+from orchestrator.entitlements import attestation
+from orchestrator.entitlements.policy import load_inference_policy
 from orchestrator.memory import injection
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.injection import (
@@ -261,6 +264,34 @@ def memory_formatter_identity() -> dict[str, Any]:
         ),
         "output_sha256": _sha256_text(_run_prompt_builder_for_hash()),
     }
+
+
+async def start_route_attestation(pool: Any) -> dict[str, int]:
+    """Attest monitored inference routes the way backend and worker do at startup.
+
+    Without this every monitored route fails closed (``zdr_attestation_unknown``).
+    One synchronous check runs first so admission is settled before the first
+    model call instead of racing the loop ``attestation.start`` spawns; that loop
+    then keeps refreshing and re-checking exactly as in production.
+    """
+    try:
+        routing_log.initialize_vocabulary()
+    except Exception:
+        logger.warning("Routing log vocabulary unavailable; labels fail closed")
+    counts = await attestation.check_once(pool)
+    await attestation.start(pool)
+    return counts
+
+
+def approved_profile_routes(profile: str) -> list[str]:
+    """Route ids currently admitted for a routing profile's shortlist."""
+    policy = load_inference_policy()
+    models = {candidate.model for candidate in model_routing.profile_candidates(profile) or ()}
+    return sorted(
+        route.route_id
+        for route in policy.routes.values()
+        if route.model in models and route.is_approved(policy.requirements)
+    )
 
 
 def build_longmemeval_pinned_config(settings: Any) -> dict[str, Any]:
@@ -617,6 +648,9 @@ def is_completed_result(result: object) -> bool:
 
 
 EXTRACTION_PROFILE = "background"
+# Consecutive sessions whose extraction failed before ingest stops: a broken
+# route or credential would otherwise mark the whole corpus failed.
+INGEST_FAILURE_BREAKER = 5
 EVALUATE_OPERATION = "chat"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -908,9 +942,15 @@ class LongMemEvalFactRunner:
         started = time.monotonic()
         outcome = "failed"
         pool: Any = None
+        attestation_started = False
         try:
             pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=2, max_size=10)
             await assert_benchmark_database(pool, settings.database_url)
+            attestation_started = True
+            attestation_counts = await start_route_attestation(pool)
+            manifest.setdefault("route_attestations", []).append(
+                {"at": utc_now_iso(), "phase": phase, **attestation_counts}
+            )
             encryption = ContentEncryption(settings.daemon_encryption_key)
             store = MemoryStore(db_pool=pool, encryption=encryption)
             user_id = await create_test_user(pool)
@@ -940,6 +980,8 @@ class LongMemEvalFactRunner:
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)
                 self._close_manifest(manifest, outcome, elapsed)
             finally:
+                if attestation_started:
+                    await attestation.stop()
                 if pool is not None:
                     await pool.close()
 
@@ -1026,6 +1068,15 @@ class LongMemEvalFactRunner:
                 processed,
             )
 
+            approved = approved_profile_routes(EXTRACTION_PROFILE)
+            manifest["routes"]["extraction"]["approved_route_ids"] = approved
+            if not approved:
+                raise RuntimeError(
+                    f"No approved inference route for the {EXTRACTION_PROFILE!r} profile "
+                    "(check route attestation in the run manifest); refusing to ingest"
+                )
+            consecutive_failures = 0
+
             def extraction_scope() -> Any:
                 return account_compute(
                     pool,
@@ -1084,6 +1135,14 @@ class LongMemEvalFactRunner:
                 ingest_phase["completed_count"] = processed
                 ingest_phase["updated_at"] = utc_now_iso()
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                consecutive_failures = (
+                    0 if result.get("status") == "complete" else consecutive_failures + 1
+                )
+                if consecutive_failures >= INGEST_FAILURE_BREAKER:
+                    raise RuntimeError(
+                        f"{consecutive_failures} consecutive sessions failed extraction; "
+                        "stopping. Fix the cause, then resume with --retry-failed-sessions"
+                    )
 
             mark_phase_completed(
                 checkpoint,

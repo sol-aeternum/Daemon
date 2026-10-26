@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -196,9 +197,11 @@ async def summarize_ingest_routes(pool: Any, user_id: uuid.UUID) -> dict[str, An
 
 
 async def summarize_compute_spend(
-    pool: Any, user_id: uuid.UUID, since: str | None
+    pool: Any, user_id: uuid.UUID, since: str | datetime | None
 ) -> dict[str, Any]:
     """Account-ledger spend and token usage for guarded calls since ``since`` (ISO-8601)."""
+    if isinstance(since, str):
+        since = datetime.fromisoformat(since)
     rows = await pool.fetch(
         "SELECT coalesce(model, '<none>') AS model, operation, count(*) AS calls, "
         "coalesce(sum(actual_microusd), 0) AS actual_microusd, "
