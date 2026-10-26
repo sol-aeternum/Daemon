@@ -40,6 +40,38 @@ const call: ChatEvent = {
 };
 
 describe('material operation live/archive projection', () => {
+  it('does not resurrect a reset archive when late full data arrives', () => {
+    const hook = renderHook(
+      ({ data }) => useEventArchive({ data, isLoading: true }),
+      { initialProps: { data: [call, summary] } },
+    );
+    act(() => hook.result.current.archiveCurrentEvents('old'));
+    act(() => hook.result.current.resetArchive());
+    hook.rerender({ data: [full] });
+    expect(hook.result.current.getEventsForMessage('old', false)).toEqual([]);
+  });
+
+  it.each([
+    { task_id: '33333333-3333-4333-8333-333333333333' },
+    { content_generation: 2 },
+    { operation_id: '44444444-4444-4444-8444-444444444444' },
+    { name: 'different-tool' },
+    { outcome: 'failed' },
+  ])(
+    'does not enrich an archive with conflicting operation metadata %j',
+    (difference) => {
+      const hook = renderHook(
+        ({ data }) => useEventArchive({ data, isLoading: true }),
+        { initialProps: { data: [call, summary] } },
+      );
+      act(() => hook.result.current.archiveCurrentEvents('owned'));
+      hook.rerender({ data: [{ ...full, ...difference } as ChatEvent] });
+      expect(hook.result.current.getEventsForMessage('owned', false)).toEqual([
+        call,
+        summary,
+      ]);
+    },
+  );
   it('enriches the same operation across observer requests without duplicate results', () => {
     const reattached = { ...full, request_id: 'reattached' } as ChatEvent;
     const { result, rerender } = renderHook(

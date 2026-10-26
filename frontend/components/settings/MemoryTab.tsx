@@ -163,36 +163,45 @@ export default function MemoryTab() {
   );
 
   // Fetch memory count on mount
-  const fetchMemoryStats = useCallback(async () => {
-    try {
+  const fetchMemoryStats = useCallback(() => {
+    const read = async () => {
       const headers = await getAuthHeaders();
       const [activeResponse, allResponse] = await Promise.all([
         fetchWithFallback('/memories?limit=1&status=active', { headers }),
         fetchWithFallback('/memories?limit=1&status=all', { headers }),
       ]);
       if (!activeResponse.ok || !allResponse.ok) {
-        setActionStatus('error');
-        setActionMessage(
-          'Failed to load memories. Please verify API connectivity.',
-        );
-        setStats(null);
-        return;
+        return null;
       }
-      setStats({
+      return {
         active: parseMemoryPage(await activeResponse.json()).total,
         all: parseMemoryPage(await allResponse.json()).total,
+      };
+    };
+    return read()
+      .then((result) => {
+        if (result === null) {
+          setActionStatus('error');
+          setActionMessage(
+            'Failed to load memories. Please verify API connectivity.',
+          );
+          setStats(null);
+        } else {
+          setStats(result);
+        }
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setActionStatus('error');
+          setActionMessage('Memory request timed out. Please retry.');
+        } else {
+          setActionStatus('error');
+          setActionMessage('Failed to load memories. Please retry.');
+        }
+      })
+      .finally(() => {
+        setIsLoading(false);
       });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionStatus('error');
-        setActionMessage('Memory request timed out. Please retry.');
-      } else {
-        setActionStatus('error');
-        setActionMessage('Failed to load memories. Please retry.');
-      }
-    } finally {
-      setIsLoading(false);
-    }
   }, [fetchWithFallback, getAuthHeaders]);
 
   useEffect(() => {
@@ -204,10 +213,9 @@ export default function MemoryTab() {
   // the capability unknown; this never marks it ready. A sign-in change
   // clears the previous account's payload immediately and nothing from a
   // stale response is ever applied to the new state.
-  const fetchEmbeddingStatus = useCallback(async () => {
+  const readEmbeddingStatus = useCallback(() => {
     const generation = getAuthGeneration();
-    setEmbeddingStatusState('loading');
-    try {
+    const read = async () => {
       const headers = await getAuthHeaders();
       if (generation !== getAuthGeneration()) return;
       const response = await fetchWithFallback('/status', { headers });
@@ -216,25 +224,37 @@ export default function MemoryTab() {
         // The account changed while the request ran; drop it entirely.
         return;
       }
-      if (!response.ok) {
+      return { response, payload };
+    };
+    return read()
+      .then((result) => {
+        if (!result || generation !== getAuthGeneration()) return;
+        const { response, payload } = result;
+        if (!response.ok) {
+          setEmbeddingStatus(null);
+          setEmbeddingStatusState('error');
+          return;
+        }
+        setEmbeddingStatus(payload);
+        setEmbeddingStatusState('loaded');
+      })
+      .catch(() => {
+        if (generation !== getAuthGeneration()) {
+          return;
+        }
         setEmbeddingStatus(null);
         setEmbeddingStatusState('error');
-        return;
-      }
-      setEmbeddingStatus(payload);
-      setEmbeddingStatusState('loaded');
-    } catch {
-      if (generation !== getAuthGeneration()) {
-        return;
-      }
-      setEmbeddingStatus(null);
-      setEmbeddingStatusState('error');
-    }
+      });
   }, [fetchWithFallback, getAuthHeaders]);
 
+  const fetchEmbeddingStatus = useCallback(() => {
+    setEmbeddingStatusState('loading');
+    return readEmbeddingStatus();
+  }, [readEmbeddingStatus]);
+
   useEffect(() => {
-    void fetchEmbeddingStatus();
-  }, [fetchEmbeddingStatus]);
+    void readEmbeddingStatus();
+  }, [readEmbeddingStatus]);
 
   // Handle filter changes from MemoryFilters
   const handleFilterChange = useCallback(

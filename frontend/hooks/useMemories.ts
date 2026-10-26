@@ -354,7 +354,7 @@ export function parseCorrectedMemory(body: unknown, id: string): Memory | null {
 
 export function useMemories() {
   const [memories, setMemories] = useState<Memory[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [total, setTotal] = useState(0);
@@ -476,14 +476,22 @@ export function useMemories() {
   const dirtySeq = useRef(0);
   const cleanSeq = useRef(0);
 
-  const beginForeground = (kind: 'fetch' | 'loadMore') => {
+  const claimForeground = useCallback((kind: 'fetch' | 'loadMore') => {
     const request = ++listRequest.current;
     foreground.current = request;
     foregroundKind.current = kind;
-    setLoading(true);
-    setError(null);
     return request;
-  };
+  }, []);
+
+  const beginForeground = useCallback(
+    (kind: 'fetch' | 'loadMore') => {
+      const request = claimForeground(kind);
+      setLoading(true);
+      setError(null);
+      return request;
+    },
+    [claimForeground],
+  );
 
   /** Only the current foreground request settles loading. */
   const settleForeground = (request: number) => {
@@ -567,35 +575,51 @@ export function useMemories() {
     [requestPage],
   );
 
-  /** Apply filters (or reapply the current ones) from the first page. */
-  const fetchMemories = useCallback(
-    async (params: FetchMemoriesParams = {}) => {
+  /** Claim the first-page read synchronously, before authentication can wait. */
+  const readFirstPage = useCallback(
+    (params: FetchMemoriesParams = {}, onStart?: () => void) => {
       const { limit: _limit, offset: _offset, ...filters } = params;
       if (Object.keys(params).length > 0) {
         filtersRef.current = { status: 'active', ...filters };
       }
-      const request = beginForeground('fetch');
+      const request = claimForeground('fetch');
+      // Event presentation runs synchronously after the request owns the view.
+      // Initial effects already render loading and supply no startup publisher.
+      onStart?.();
       const generation = getAuthGeneration();
       const current = filtersRef.current;
-      try {
-        const seq = dirtySeq.current;
-        const page = await requestPage(current, 0, MEMORY_PAGE_SIZE);
-        if (
-          request !== listRequest.current ||
-          generation !== getAuthGeneration()
-        )
-          return;
-        publish(page.memories, page);
-        cleanSeq.current = Math.max(cleanSeq.current, seq);
-      } catch (err) {
-        if (request !== listRequest.current) return;
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        settleForeground(request);
-      }
+      const seq = dirtySeq.current;
+      return requestPage(current, 0, MEMORY_PAGE_SIZE)
+        .then((page) => {
+          if (
+            request !== listRequest.current ||
+            generation !== getAuthGeneration()
+          )
+            return;
+          publish(page.memories, page);
+          cleanSeq.current = Math.max(cleanSeq.current, seq);
+        })
+        .catch((err: unknown) => {
+          if (request !== listRequest.current) return;
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          setError(err instanceof Error ? err.message : 'Unknown error');
+        })
+        .finally(() => {
+          settleForeground(request);
+        });
     },
-    [publish, requestPage],
+    [claimForeground, publish, requestPage],
+  );
+
+  /** Event-driven filter/retry reads also publish their startup presentation. */
+  const fetchMemories = useCallback(
+    (params: FetchMemoriesParams = {}) => {
+      return readFirstPage(params, () => {
+        setLoading(true);
+        setError(null);
+      });
+    },
+    [readFirstPage],
   );
 
   /** Append the next page for the current filters. */
@@ -639,7 +663,7 @@ export function useMemories() {
     } finally {
       settleForeground(request);
     }
-  }, [publish, readSpan, requestPage]);
+  }, [beginForeground, publish, readSpan, requestPage]);
 
   /**
    * Re-read the span already loaded (at least one page) for the current
@@ -866,10 +890,10 @@ export function useMemories() {
 
   // Initial fetch and polling every 30 seconds
   useEffect(() => {
-    void fetchMemories();
+    void readFirstPage();
     const interval = setInterval(() => void refreshMemories(), 30000);
     return () => clearInterval(interval);
-  }, [fetchMemories, refreshMemories]);
+  }, [readFirstPage, refreshMemories]);
 
   /** Save a memory written by the person; the server may merge a duplicate. */
   const createMemory = useCallback(

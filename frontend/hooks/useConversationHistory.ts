@@ -230,30 +230,34 @@ export function useConversationHistory() {
     [apiCandidates],
   );
 
-  const fetchConversations = useCallback(async () => {
-    try {
-      const response = await apiFetch('/conversations?limit=100', {
-        headers: await getAuthHeaders(),
-      });
-      if (!response.ok) {
-        setConversations([]);
-        return;
-      }
-      const data = await response.json();
-      const conversationsArray: ApiConversation[] = data.conversations || [];
+  const fetchConversations = useCallback(() => {
+    const read = async (): Promise<Conversation[] | undefined> => {
+      try {
+        const response = await apiFetch('/conversations?limit=100', {
+          headers: await getAuthHeaders(),
+        });
+        if (!response.ok) {
+          return [];
+        }
+        const data = await response.json();
+        const conversationsArray: ApiConversation[] = data.conversations || [];
 
-      const formattedConversations: Conversation[] =
-        conversationsArray.map(toConversation);
+        const formattedConversations: Conversation[] =
+          conversationsArray.map(toConversation);
 
-      setConversations(formattedConversations);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        return;
+        return formattedConversations;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        return [];
       }
-      setConversations([]);
-    } finally {
-      setIsLoaded(true);
-    }
+    };
+    return read()
+      .then((rows) => {
+        if (rows !== undefined) setConversations(rows);
+      })
+      .finally(() => setIsLoaded(true));
   }, [apiFetch, getAuthHeaders]);
 
   const runSearch = useCallback(
@@ -303,11 +307,19 @@ export function useConversationHistory() {
     [apiFetch, getAuthHeaders],
   );
 
+  const normalizedSearchQuery = searchQuery.trim().slice(0, MAX_SEARCH_LENGTH);
+  const [observedSearchQuery, setObservedSearchQuery] = useState(
+    normalizedSearchQuery,
+  );
+  if (observedSearchQuery !== normalizedSearchQuery) {
+    setObservedSearchQuery(normalizedSearchQuery);
+    if (!normalizedSearchQuery) setSearch(IDLE_SEARCH);
+  }
+
   useEffect(() => {
-    const query = searchQuery.trim().slice(0, MAX_SEARCH_LENGTH);
+    const query = normalizedSearchQuery;
     if (!query) {
       searchRequest.current += 1;
-      setSearch(IDLE_SEARCH);
       return;
     }
     const timer = setTimeout(
@@ -315,7 +327,7 @@ export function useConversationHistory() {
       SEARCH_DEBOUNCE_MS,
     );
     return () => clearTimeout(timer);
-  }, [searchQuery, runSearch]);
+  }, [searchQuery, normalizedSearchQuery, runSearch]);
 
   const loadMoreSearch = useCallback(() => {
     if (search.status !== 'ready' || !search.hasMore) return;
@@ -565,10 +577,21 @@ export function useConversationHistory() {
     'permanent' | 'exhausted' | null
   >(null);
 
+  const [observedSelection, setObservedSelection] = useState({
+    id: currentId,
+    load: fetchConversationLoad,
+  });
+  if (
+    observedSelection.id !== currentId ||
+    observedSelection.load !== fetchConversationLoad
+  ) {
+    setObservedSelection({ id: currentId, load: fetchConversationLoad });
+    setConversationLoadFailure(null);
+    if (!currentId) setCurrentConversation(null);
+  }
+
   useEffect(() => {
     if (!currentId) {
-      setCurrentConversation(null);
-      setConversationLoadFailure(null);
       return;
     }
 
@@ -576,7 +599,6 @@ export function useConversationHistory() {
     // open conversation with the one the user left.
     let stale = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
-    setConversationLoadFailure(null);
     // A failed load is retried: the open conversation must not stay unloaded
     // (its composer is held until its server state, and any task, is known).
     const fetchConversationDetails = async (attempt: number) => {

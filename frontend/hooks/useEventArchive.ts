@@ -58,6 +58,37 @@ function eventKey(event: ChatEvent): string {
   return `json:${JSON.stringify(event)}`;
 }
 
+/** Persist only full updates to operations already owned by an archive. */
+function enrichArchives(
+  previous: Record<string, ArchivedEventData>,
+  events: ChatEvent[],
+): Record<string, ArchivedEventData> {
+  let updated: typeof previous | undefined;
+  for (const [messageId, archive] of Object.entries(previous)) {
+    const updates = events.flatMap((event) => {
+      const key = materialOperationKey(event);
+      const saved =
+        key === undefined
+          ? undefined
+          : archive.events.find((entry) => materialOperationKey(entry) === key);
+      return event.type === 'tool_result' &&
+        event.payload_state === 'full' &&
+        saved !== undefined
+        ? [{ ...event, request_id: saved.request_id }]
+        : [];
+    });
+    const enriched = normalizeChatEvents([...archive.events, ...updates]);
+    if (
+      enriched.length !== archive.events.length ||
+      enriched.some((event, index) => event !== archive.events[index])
+    ) {
+      updated ??= { ...previous };
+      updated[messageId] = { ...archive, events: enriched };
+    }
+  }
+  return updated ?? previous;
+}
+
 export function useEventArchive({
   data,
   isLoading,
@@ -80,42 +111,14 @@ export function useEventArchive({
     flattenedData.filter((x): x is ChatEvent => isChatEvent(x)),
   );
 
+  // A finish callback can archive before React reflects the final data. This
+  // pure, idempotent adjustment persists enrichment without resurrecting resets.
+  const enrichedArchives = enrichArchives(archivedEvents, events);
+  if (enrichedArchives !== archivedEvents) setArchivedEvents(enrichedArchives);
+
   // Sync events to ref and track request_id
   useEffect(() => {
     eventsRef.current = events;
-
-    // A finish callback may archive before React has reflected the final data
-    // update. Enrich only already-archived scoped operations, never append a
-    // different task/generation or resurrect it across resetArchive. A new
-    // observer request can enrich the same operation after reconnect.
-    setArchivedEvents((previous) => {
-      let updated: typeof previous | undefined;
-      for (const [messageId, archive] of Object.entries(previous)) {
-        const updates = events.flatMap((event) => {
-          const key = materialOperationKey(event);
-          const saved =
-            key === undefined
-              ? undefined
-              : archive.events.find(
-                  (entry) => materialOperationKey(entry) === key,
-                );
-          return event.type === 'tool_result' &&
-            event.payload_state === 'full' &&
-            saved !== undefined
-            ? [{ ...event, request_id: saved.request_id }]
-            : [];
-        });
-        const enriched = normalizeChatEvents([...archive.events, ...updates]);
-        if (
-          enriched.length !== archive.events.length ||
-          enriched.some((event, index) => event !== archive.events[index])
-        ) {
-          updated ??= { ...previous };
-          updated[messageId] = { ...archive, events: enriched };
-        }
-      }
-      return updated ?? previous;
-    });
 
     // Find latest request_id
     let latestRequestId: string | null = null;

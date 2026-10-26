@@ -104,6 +104,13 @@ export default function SkillsTab() {
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [showFilters, setShowFilters] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [previousSelectedId, setPreviousSelectedId] = useState(selectedId);
+  if (previousSelectedId !== selectedId) {
+    setPreviousSelectedId(selectedId);
+    setIsLoadingList(true);
+    if (selectedId) setIsLoadingDetail(true);
+    else setDraft(EMPTY_DETAIL);
+  }
 
   const getAuthHeaders = useCallback(async (): Promise<HeadersInit> => {
     const header = await ensureAuthHeader();
@@ -168,84 +175,99 @@ export default function SkillsTab() {
     }
   };
 
-  const fetchSkills = useCallback(async () => {
-    setIsLoadingList(true);
-    try {
-      const response = await fetchWithTimeout('/skills', {
-        headers: await getAuthHeaders(),
-      });
-      if (!response.ok) {
-        setSkills([]);
-        setActionMessage(
-          'error',
-          'Failed to load skills. Please verify API connectivity.',
-        );
-        return;
-      }
-      const data = (await response.json()) as { skills: SkillSummary[] };
-      setSkills(data.skills || []);
-
-      if (!selectedId && data.skills.length > 0) {
-        setSelectedId(data.skills[0].id);
-      }
-      if (selectedId && !data.skills.some((skill) => skill.id === selectedId)) {
-        setSelectedId(data.skills[0]?.id || null);
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Skills request timed out. Please retry.');
-      } else {
-        setActionMessage('error', 'Failed to load skills.');
-      }
-    } finally {
-      setIsLoadingList(false);
-    }
-  }, [fetchWithTimeout, getAuthHeaders, selectedId]);
-
-  const fetchSkillDetail = useCallback(
-    async (skillId: string) => {
-      setIsLoadingDetail(true);
-      try {
-        const response = await fetchWithTimeout(`/skills/${skillId}`, {
-          headers: await getAuthHeaders(),
-        });
+  const loadSkills = useCallback(() => {
+    return getAuthHeaders()
+      .then((headers) => fetchWithTimeout('/skills', { headers }))
+      .then(async (response) => {
         if (!response.ok) {
-          const detail = await getErrorDetail(
-            response,
-            'Failed to load selected skill.',
-          );
-          setActionMessage('error', detail);
-          return;
-        }
-        const data = (await response.json()) as SkillDetail;
-        setDraft(data);
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
+          setSkills([]);
           setActionMessage(
             'error',
-            'Skill detail request timed out. Please retry.',
+            'Failed to load skills. Please verify API connectivity.',
           );
-        } else {
-          setActionMessage('error', 'Failed to load selected skill.');
+          return;
         }
-      } finally {
-        setIsLoadingDetail(false);
-      }
+        const data = (await response.json()) as { skills: SkillSummary[] };
+        setSkills(data.skills || []);
+
+        if (!selectedId && data.skills.length > 0) {
+          setSelectedId(data.skills[0].id);
+        }
+        if (
+          selectedId &&
+          !data.skills.some((skill) => skill.id === selectedId)
+        ) {
+          setSelectedId(data.skills[0]?.id || null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setActionMessage('error', 'Skills request timed out. Please retry.');
+        } else {
+          setActionMessage('error', 'Failed to load skills.');
+        }
+      })
+      .finally(() => {
+        setIsLoadingList(false);
+      });
+  }, [fetchWithTimeout, getAuthHeaders, selectedId]);
+
+  const fetchSkills = useCallback(() => {
+    setIsLoadingList(true);
+    return loadSkills();
+  }, [loadSkills]);
+
+  const loadSkillDetail = useCallback(
+    (skillId: string) => {
+      return getAuthHeaders()
+        .then((headers) => fetchWithTimeout(`/skills/${skillId}`, { headers }))
+        .then(async (response) => {
+          if (!response.ok) {
+            const detail = await getErrorDetail(
+              response,
+              'Failed to load selected skill.',
+            );
+            setActionMessage('error', detail);
+            return;
+          }
+          const data = (await response.json()) as SkillDetail;
+          setDraft(data);
+        })
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            setActionMessage(
+              'error',
+              'Skill detail request timed out. Please retry.',
+            );
+          } else {
+            setActionMessage('error', 'Failed to load selected skill.');
+          }
+        })
+        .finally(() => {
+          setIsLoadingDetail(false);
+        });
     },
     [fetchWithTimeout, getAuthHeaders],
   );
 
+  const fetchSkillDetail = useCallback(
+    (skillId: string) => {
+      setIsLoadingDetail(true);
+      return loadSkillDetail(skillId);
+    },
+    [loadSkillDetail],
+  );
+
   useEffect(() => {
-    fetchSkills();
-  }, [fetchSkills]);
+    void loadSkills();
+  }, [loadSkills]);
 
   useEffect(() => {
     if (!selectedId) {
-      setDraft(EMPTY_DETAIL);
       return;
     }
-    fetchSkillDetail(selectedId);
-  }, [fetchSkillDetail, selectedId]);
+    void loadSkillDetail(selectedId);
+  }, [loadSkillDetail, selectedId]);
 
   const filteredSkills = useMemo(() => {
     return skills.filter((skill) => {

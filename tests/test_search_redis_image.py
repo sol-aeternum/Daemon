@@ -109,7 +109,7 @@ def provision_step():
 def test_backend_provisioning_contract_and_order():
     job = workflow()["jobs"]["backend"]
     names = [s["name"] for s in job["steps"]]
-    assert job["runs-on"] == "ubuntu-latest"
+    assert job["runs-on"] == "ubuntu-24.04"  # GNU timeout pin, see #571
     assert set(job["services"]) == {"tasks-postgres"}
     assert "permissions" not in job and "permissions" not in workflow()
     assert names.index("Sync backend dependencies") < names.index("Python dependency audit")

@@ -9,7 +9,9 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import type { DaemonMessage } from '../lib/chatMessages';
+import type { ChatTransport } from 'ai';
 import * as auth from '../lib/auth';
+import { ensureBrowserCacheCleared } from '../lib/browserCache';
 import {
   getChatDraft,
   openChatDraft,
@@ -23,6 +25,12 @@ const state = vi.hoisted(() => ({
   replace: vi.fn(),
   currentId: null as string | null,
   setMessages: null as null | ((messages: DaemonMessage[]) => void),
+  transport: null as ChatTransport<DaemonMessage> | null,
+  stopView: null as {
+    conversationId: string | null;
+    stoppedMessageIds: Set<string>;
+    stopGeneration: () => void;
+  } | null,
 }));
 const candidate = {
   id: 'candidate',
@@ -38,7 +46,8 @@ vi.mock('next/navigation', () => ({
 vi.mock('@ai-sdk/react', async () => {
   const { useState } = await import('react');
   return {
-    useChat: () => {
+    useChat: (options: { transport: ChatTransport<DaemonMessage> }) => {
+      state.transport = options.transport;
       const [messages, setMessages] = useState<DaemonMessage[]>([]);
       state.setMessages = setMessages;
       return {
@@ -48,6 +57,21 @@ vi.mock('@ai-sdk/react', async () => {
         stop: state.stop,
         status: 'ready',
       };
+    },
+  };
+});
+vi.mock('../hooks/useStopGeneration', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../hooks/useStopGeneration')>();
+  return {
+    ...actual,
+    useStopGeneration: (
+      options: Parameters<typeof actual.useStopGeneration>[0],
+    ) => {
+      const result = actual.useStopGeneration(options);
+      // Observe the page's real Stop hook composition, not a replacement model.
+      state.stopView = { ...result, conversationId: options.conversationId };
+      return result;
     },
   };
 });
@@ -148,6 +172,8 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', storage);
   vi.clearAllMocks();
   state.currentId = null;
+  state.transport = null;
+  state.stopView = null;
   // Real auth/coordinator modules need usable nonsecret shared metadata and a
   // qualified navigator (FIFO Web Locks fixture) before manual token binding.
   installAuthCookieTestEnvironment(storage);
@@ -158,9 +184,153 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('page suggestion activation and draft isolation', () => {
+  it.each(
+    [null, 'existing-empty-chat'].flatMap((origin) =>
+      ['before-assignment', 'after-assignment-before-route', 'after-route'].map(
+        (phase) => ({ origin, phase }),
+      ),
+    ),
+  )(
+    'keeps suggestion Stop ownership from $origin at $phase through route promotion and navigation',
+    async ({ origin, phase }) => {
+      state.currentId = origin;
+      const generation = auth.getAuthGeneration();
+      const draft = openChatDraft(origin, generation);
+      setChatDraftInput(draft, 'Unrelated origin draft');
+      const view = render(<ChatPage />);
+      fireEvent.click(screen.getByRole('button', { name: 'Plan the release' }));
+      expect(state.send).toHaveBeenCalledOnce();
+      const partial: DaemonMessage = {
+        id: 'suggestion-partial',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Partial suggestion answer' }],
+      };
+      act(() => state.setMessages?.([partial]));
+      expect(state.stopView?.conversationId).toBeNull();
+      if (phase === 'before-assignment') {
+        act(() => state.stopView?.stopGeneration());
+        expect(state.stopView?.stoppedMessageIds.has(partial.id)).toBe(true);
+      }
+      act(() =>
+        state.setMessages?.([
+          {
+            ...partial,
+            parts: [
+              ...partial.parts,
+              {
+                type: 'data-event',
+                data: {
+                  type: 'conversation',
+                  conversation_id: 'suggestion-destination',
+                },
+              } as never,
+            ],
+          },
+        ]),
+      );
+      await waitFor(() =>
+        expect(state.replace).toHaveBeenCalledWith(
+          '/?id=suggestion-destination',
+        ),
+      );
+      // The router is deliberately held: assignment must already own Stop.
+      expect(state.currentId).toBe(origin);
+      expect(state.stopView?.conversationId).toBeNull();
+      if (phase === 'after-assignment-before-route')
+        act(() => state.stopView?.stopGeneration());
+      if (phase !== 'after-route')
+        expect(state.stopView?.stoppedMessageIds.has(partial.id)).toBe(true);
+      state.currentId = 'suggestion-destination';
+      view.rerender(<ChatPage />);
+      expect(state.stopView?.conversationId).toBe('suggestion-destination');
+      if (phase === 'after-route') act(() => state.stopView?.stopGeneration());
+      expect(state.stopView?.stoppedMessageIds.has(partial.id)).toBe(true);
+      expect(state.stop).toHaveBeenCalledOnce();
+      state.currentId = 'unrelated-conversation';
+      view.rerender(<ChatPage />);
+      expect(state.stopView?.stoppedMessageIds.has(partial.id)).toBe(false);
+      state.currentId = 'suggestion-destination';
+      view.rerender(<ChatPage />);
+      expect(state.stopView?.stoppedMessageIds.has(partial.id)).toBe(true);
+      expect(getChatDraft(origin, generation).input).toBe(
+        'Unrelated origin draft',
+      );
+      expect(getChatDraft('suggestion-destination', generation).input).toBe('');
+    },
+  );
+
+  it('uses the real SDK transport request path without executing fetch during render', async () => {
+    // Manual token binding invalidates readiness. Exercise the real barrier's
+    // qualified acknowledgement before testing the separate chat request path.
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', '');
+    const clearCache = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 204,
+          headers: { 'Cache-Control': 'no-store' },
+        }),
+    );
+    vi.stubGlobal('fetch', clearCache);
+    expect(auth.getAuthHeader()).toBeNull();
+    await ensureBrowserCacheCleared();
+    expect(clearCache).toHaveBeenCalledExactlyOnceWith(
+      '/api/v1/auth/cache/clear',
+      expect.objectContaining({ method: 'POST', cache: 'no-store' }),
+    );
+    expect(auth.getAuthHeader()).toBe('Bearer fixture');
+    const request = vi.fn(
+      async () =>
+        new Response(
+          'data: {"type":"start","messageId":"response"}\n\ndata: [DONE]\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+    );
+    vi.stubGlobal('fetch', request);
+    const view = render(<ChatPage />);
+    const transport = state.transport!;
+    expect(transport).toBeTruthy();
+    expect(request).not.toHaveBeenCalled();
+    view.rerender(<ChatPage />);
+    expect(state.transport).toBe(transport);
+    const controller = new AbortController();
+    let stream!: ReadableStream;
+    await act(async () => {
+      stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'sdk-chat',
+        messageId: undefined,
+        messages: [
+          {
+            id: 'user',
+            role: 'user',
+            parts: [{ type: 'text', text: 'synthetic request' }],
+          },
+        ],
+        abortSignal: controller.signal,
+      });
+    });
+    expect(request).toHaveBeenCalledOnce();
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe('/api/chat');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get('Authorization')).toBe(
+      'Bearer fixture',
+    );
+    expect(init?.signal).toBe(controller.signal);
+    const body = JSON.parse(String(init?.body));
+    expect(body.messages[0].parts[0].text).toBe('synthetic request');
+    const reader = stream.getReader();
+    expect((await reader.read()).value).toMatchObject({
+      type: 'start',
+      messageId: 'response',
+    });
+    await reader.cancel();
+  });
   it.each([null, 'existing-empty-chat'])(
     'does not submit or transfer unrelated text/files from %s',
     async (id) => {

@@ -53,30 +53,29 @@ interface UseAuthenticatedImageUrlResult {
   error: boolean;
 }
 
+function initialMediaView(rawUrl: string | null | undefined) {
+  const protectedUrl = rawUrl ? getProtectedMediaUrl(rawUrl) : null;
+  return {
+    rawUrl,
+    displayUrl: rawUrl && !protectedUrl ? rawUrl : null,
+    loading: Boolean(protectedUrl),
+    error: false,
+  };
+}
+
 export function useAuthenticatedImageUrl(
   rawUrl: string | null | undefined,
 ): UseAuthenticatedImageUrlResult {
-  const [displayUrl, setDisplayUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
+  const [view, setView] = useState(() => initialMediaView(rawUrl));
+  if (view.rawUrl !== rawUrl) setView(initialMediaView(rawUrl));
 
   useEffect(() => {
-    if (!rawUrl) {
-      setDisplayUrl(null);
-      setLoading(false);
-      setError(false);
-      return;
-    }
+    if (!rawUrl) return;
 
     const protectedUrl = getProtectedMediaUrl(rawUrl);
     const fullUrl = protectedUrl ?? rawUrl;
 
-    if (!protectedUrl) {
-      setDisplayUrl(fullUrl);
-      setLoading(false);
-      setError(false);
-      return;
-    }
+    if (!protectedUrl) return;
 
     let revoked = false;
     const generation = getAuthGeneration();
@@ -94,15 +93,10 @@ export function useAuthenticatedImageUrl(
     const unsubscribe = subscribeAuthGeneration(() => {
       if (generation === getAuthGeneration()) return;
       revoke();
-      setDisplayUrl(null);
-      setLoading(false);
-      setError(false);
+      setView({ rawUrl, displayUrl: null, loading: false, error: false });
       // A retained URL does not authorize a new account's request. Stay empty
       // until a URL change or remount starts a new lifetime-qualified effect.
     });
-    setLoading(true);
-    setError(false);
-    setDisplayUrl(null);
 
     async function loadBlob() {
       try {
@@ -124,12 +118,15 @@ export function useAuthenticatedImageUrl(
         const blob = await res.blob();
         if (!isCurrent()) return;
         objectUrl = URL.createObjectURL(blob);
-        setDisplayUrl(objectUrl);
-        setLoading(false);
+        setView({
+          rawUrl,
+          displayUrl: objectUrl,
+          loading: false,
+          error: false,
+        });
       } catch {
         if (isCurrent()) {
-          setError(true);
-          setLoading(false);
+          setView({ rawUrl, displayUrl: null, loading: false, error: true });
         }
       }
     }
@@ -142,5 +139,9 @@ export function useAuthenticatedImageUrl(
     };
   }, [rawUrl]);
 
-  return { displayUrl, loading, error };
+  return {
+    displayUrl: view.displayUrl,
+    loading: view.loading,
+    error: view.error,
+  };
 }

@@ -208,3 +208,34 @@ it('keeps external media outside protected-media fetching and revocation', () =>
   hook.unmount();
   expect(URL.revokeObjectURL).not.toHaveBeenCalled();
 });
+
+it('keeps an accepted owned URL across completion rerenders, then releases it only on a URL transition', async () => {
+  vi.mocked(fetch).mockImplementation(
+    async () => new Response(new Blob(['fictional bytes'])),
+  );
+  const hook = renderHook(({ url }) => useAuthenticatedImageUrl(url), {
+    initialProps: { url: '/generated-images/a.png' as string | null },
+  });
+  await waitFor(() =>
+    expect(hook.result.current.displayUrl).toBe('blob:fictional-A'),
+  );
+  hook.rerender({ url: '/generated-images/a.png' });
+  hook.rerender({ url: '/generated-images/a.png' });
+  expect(fetch).toHaveBeenCalledOnce();
+  expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+  hook.rerender({ url: 'https://example.invalid/borrowed.png' });
+  expect(hook.result.current.displayUrl).toBe(
+    'https://example.invalid/borrowed.png',
+  );
+  expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(
+    'blob:fictional-A',
+  );
+  hook.rerender({ url: null });
+  expect(hook.result.current).toEqual({
+    displayUrl: null,
+    loading: false,
+    error: false,
+  });
+  hook.unmount();
+  expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+});
