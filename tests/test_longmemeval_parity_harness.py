@@ -31,6 +31,8 @@ from tests.longmemeval.ingest import build_corpus_key
 BENCH_DSN = "postgresql://bench:bench@127.0.0.1:55432/daemon_lme_bench"
 USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 FP_INGEST = {"sha256": "a" * 64, "tables": {}}
+FP_PRE_SESSION = {"sha256": "p" * 64, "tables": {}}
+RUN_ID = "0" * 32
 
 
 # ------------------------------------------------------------------------- guard
@@ -89,6 +91,7 @@ def _settings(dsn: str = BENCH_DSN) -> SimpleNamespace:
         embedding_dimensions=1024,
         daemon_inference_policy=None,
         daemon_model_routing=None,
+        embedding_route_id="",
     )
 
 
@@ -241,6 +244,7 @@ def _write_dataset(tmp_path: Path) -> Path:
 def _ingested_checkpoint(dataset_path: Path, *, fingerprint: dict[str, Any] | None = None) -> dict:
     return {
         "version": CHECKPOINT_VERSION,
+        "run_id": RUN_ID,
         "dataset_path": str(dataset_path),
         "dataset_sha256": durable_io.file_sha256(dataset_path),
         "phases": {
@@ -277,12 +281,15 @@ class BenchRuntime:
     ) -> None:
         self.rollbacks: list[set[str]] = []
         self.fingerprints = list(fingerprints or [FP_INGEST])
-        self.git = {"sha": git_sha, "dirty": False}
+        # What the memory tables hash to after a rollback (exact by default).
+        self.cross_session_fingerprint = FP_PRE_SESSION
+        self.git = {"sha": git_sha, "dirty": False, "code_sha256": "c" * 64}
         self.scopes: list[dict[str, Any]] = []
+        self.settings = _settings()
         pool = MagicMock()
         pool.close = AsyncMock()
         target = fact_harness
-        monkeypatch.setattr(target, "get_settings", lambda: _settings())
+        monkeypatch.setattr(target, "get_settings", lambda: self.settings)
         monkeypatch.setattr(target.asyncpg, "create_pool", AsyncMock(return_value=pool))
         monkeypatch.setattr(target, "ContentEncryption", lambda key: object())
         monkeypatch.setattr(target, "MemoryStore", lambda db_pool, encryption: MagicMock())
@@ -324,7 +331,9 @@ class BenchRuntime:
         self.rollbacks.append(set(ids))
         return {"conversations": len(ids), "memories": 3, "memory_extraction_log": 1}
 
-    async def _fingerprint(self, pool: Any, user_id: Any) -> dict[str, Any]:
+    async def _fingerprint(self, pool: Any, user_id: Any, *, tables: Any = None) -> dict[str, Any]:
+        if tables is not None:
+            return self.cross_session_fingerprint
         return self.fingerprints.pop(0) if len(self.fingerprints) > 1 else self.fingerprints[0]
 
 
@@ -338,6 +347,7 @@ def _result(question_id: str, judgment: str = "correct", **extra: Any) -> dict[s
         "judgment": judgment,
         "retrieval_mode": "lexical",
         "answer_usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        "run_id": RUN_ID,
         **extra,
     }
 
@@ -459,13 +469,21 @@ async def test_run_interruptible_turns_signals_into_a_stop_request() -> None:
 
 
 # ------------------------------------------------------------------ ingest resume
-def _ingest_checkpoint(dataset_path: Path, results: dict[str, Any]) -> dict[str, Any]:
+def _ingest_checkpoint(
+    dataset_path: Path, results: dict[str, Any], *, pending: str | None = None
+) -> dict[str, Any]:
     checkpoint = _ingested_checkpoint(dataset_path)
     checkpoint["phases"]["ingest"] = {
         "status": "interrupted",
         "started_at": "2026-10-26T00:00:00+00:00",
         "results": results,
     }
+    if pending is not None:
+        checkpoint["phases"]["ingest"]["pending_session"] = {
+            "corpus_key": pending,
+            "started_at": "2026-10-26T00:05:00+00:00",
+            "state_fingerprint": FP_PRE_SESSION,
+        }
     return checkpoint
 
 
@@ -481,6 +499,7 @@ async def test_ingest_rolls_back_interrupted_session_before_resuming(
             _ingest_checkpoint(
                 dataset_path,
                 {KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"}},
+                pending=KEY_B,
             )
         )
     )
@@ -510,7 +529,48 @@ async def test_ingest_rolls_back_interrupted_session_before_resuming(
     assert len(ingest_phase["results"]) == 2
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
     assert manifest["ingest_rollbacks"][0]["orphan_conversations"] == 1
+    assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is True
+    assert "pending_session" not in ingest_phase
+    assert manifest["baseline_qualified"] is True
     assert manifest["routes"]["extraction"]["observed_models"] == {"luna": 2}
+
+
+@pytest.mark.asyncio
+async def test_ingest_refuses_when_rollback_cannot_restore_the_pre_session_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(
+        json.dumps(
+            _ingest_checkpoint(
+                dataset_path,
+                {KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"}},
+                pending=KEY_B,
+            )
+        )
+    )
+    runtime = BenchRuntime(monkeypatch, conversations={CONV_A, str(uuid.uuid4())})
+    # The interrupted session superseded session A's memory: deleting its own
+    # rows leaves that change behind.
+    runtime.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
+    fake_ingest = AsyncMock()
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(RuntimeError, match="cannot restore the pre-session state"):
+        await runner.ingest()
+    fake_ingest.assert_not_awaited()
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is False
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["pending_session"]["corpus_key"] == KEY_B
+
+    # The refusal persists: a plain resume never "repairs" the altered state.
+    runtime_again = BenchRuntime(monkeypatch, conversations={CONV_A})
+    runtime_again.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
+    with pytest.raises(RuntimeError, match="cannot restore the pre-session state"):
+        await _runner(tmp_path, dataset_path).ingest()
+    fake_ingest.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -565,6 +625,9 @@ async def test_retry_failed_sessions_rolls_back_and_reingests(
     assert runtime.rollbacks == [{CONV_B}]
     checkpoint = json.loads(runner.checkpoint_path.read_text())
     assert checkpoint["phases"]["ingest"]["results"][KEY_B]["conversation_id"] == new_conv
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["baseline_qualified"] is False
+    assert manifest["disqualifications"] == ["retried_failed_sessions"]
 
 
 @pytest.mark.asyncio
@@ -749,7 +812,14 @@ async def test_manifest_pins_run_identity(tmp_path: Path, monkeypatch: pytest.Mo
     await runner.evaluate()
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
 
-    assert manifest["git"] == {"sha": "abc", "dirty": False}
+    assert manifest["git"] == {"sha": "abc", "dirty": False, "code_sha256": "c" * 64}
+    assert manifest["run_id"] == RUN_ID
+    assert manifest["baseline_qualified"] is True
+    assert manifest["effective_config"]["harness"]["benchmark_mode"] is True
+    assert "embedding_route_id" in manifest["effective_config"]["settings"]
+    assert "daemon_encryption_key" not in manifest["effective_config"]["settings"]
+    assert manifest["phases"]["evaluate"]["active_seconds"] >= 0
+    assert "last_progress_at" in manifest["invocations"][0]
     assert manifest["substrate"] == "fact"
     assert manifest["config_pin"]["sha256"] == durable_io.file_sha256(
         fact_harness.BENCHMARK_CONFIG_PIN_PATH
@@ -788,12 +858,224 @@ async def test_resume_on_different_code_is_refused_unless_allowed(
     )
     await runner.evaluate()
 
-    runtime.git = {"sha": "def", "dirty": False}
+    runtime.git = {"sha": "def", "dirty": False, "code_sha256": "c" * 64}
     with pytest.raises(ManifestPinError, match="pinned to abc"):
         await _runner(tmp_path, dataset_path).evaluate()
     await _runner(tmp_path, dataset_path, allow_code_change=True).evaluate()
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
     assert manifest["code_pin_changes"][0]["changes"] == ["git sha abc -> def"]
+    assert manifest["baseline_qualified"] is False
+    assert manifest["disqualifications"] == ["code_changed_mid_run"]
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)  # nosec B603 B607
+
+
+def test_code_pin_detects_a_second_uncommitted_edit_at_the_same_sha(tmp_path: Path) -> None:
+    from orchestrator.eval.run_manifest import check_code_pin, git_state
+
+    repo = tmp_path / "repo"
+    (repo / "orchestrator").mkdir(parents=True)
+    module = repo / "orchestrator" / "retrieval.py"
+    module.write_text("LIMIT = 5\n")
+    _git(repo, "init", "-q")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+
+    clean = git_state(repo)
+    module.write_text("LIMIT = 6\n")
+    dirty_a = git_state(repo)
+    module.write_text("LIMIT = 7\n")
+    dirty_b = git_state(repo)
+    assert dirty_a["sha"] == dirty_b["sha"] == clean["sha"]
+    assert dirty_a["dirty"] is dirty_b["dirty"] is True
+    assert len({clean["code_sha256"], dirty_a["code_sha256"], dirty_b["code_sha256"]}) == 3
+    with pytest.raises(ManifestPinError, match="code content"):
+        check_code_pin({"git": dirty_a}, dirty_b, allow_change=False)
+
+    # A new untracked module counts; run outputs outside the code paths do not.
+    module.write_text("LIMIT = 7\n")
+    (repo / "orchestrator" / "new_helper.py").write_text("X = 1\n")
+    assert git_state(repo)["code_sha256"] != dirty_b["code_sha256"]
+    (repo / "orchestrator" / "new_helper.py").unlink()
+    (repo / "results.jsonl").write_text("{}\n")
+    assert git_state(repo)["code_sha256"] == dirty_b["code_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_resume_with_only_an_environment_config_change_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    stop = StopController()
+    runner = _runner(tmp_path, dataset_path, stop=stop)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    runtime = BenchRuntime(monkeypatch)
+    runtime.settings.embedding_route_id = "azure-openrouter-small-1024"
+
+    async def fake_eval(**kwargs: Any) -> dict[str, Any]:
+        stop.request(signal.SIGTERM)
+        return _result(kwargs["question_id"])
+
+    monkeypatch.setattr(fact_harness, "evaluate_single_parity", fake_eval)
+    with pytest.raises(HarnessInterrupted):
+        await runner.evaluate()
+
+    # Same code, same database; only EMBEDDING_ROUTE_ID is unset now.
+    runtime.settings.embedding_route_id = ""
+    evaluate_mock = AsyncMock()
+    monkeypatch.setattr(fact_harness, "evaluate_single_parity", evaluate_mock)
+    with pytest.raises(ManifestPinError, match="settings.embedding_route_id"):
+        await _runner(tmp_path, dataset_path).evaluate()
+    evaluate_mock.assert_not_awaited()
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert list(checkpoint["phases"]["evaluate"]["results"]) == ["q1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("foreign_run_id", [None, "f" * 32])
+async def test_results_from_another_run_are_never_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_run_id: str | None
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    rows = [_result("q1", run_id=foreign_run_id), _result("q2", run_id=foreign_run_id)]
+    if foreign_run_id is None:
+        rows = [{k: v for k, v in row.items() if k != "run_id"} for row in rows]  # legacy file
+    runner.output_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    BenchRuntime(monkeypatch)
+    evaluate_mock = AsyncMock()
+    monkeypatch.setattr(fact_harness, "evaluate_single_parity", evaluate_mock)
+    with pytest.raises(RuntimeError, match="from another run"):
+        await runner.evaluate()
+    evaluate_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reset_then_reingest_in_the_same_directory_reuses_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    BenchRuntime(monkeypatch)
+    monkeypatch.setattr(
+        fact_harness,
+        "evaluate_single_parity",
+        AsyncMock(side_effect=lambda **k: _result(k["question_id"])),
+    )
+    await runner.evaluate()
+    assert runner.output_path.read_text().count("question_id") == 2
+
+    # reset_canonical_benchmark removes only the checkpoint; results and manifest stay.
+    runner.checkpoint_path.unlink()
+    BenchRuntime(monkeypatch)
+    fake_ingest = AsyncMock(
+        side_effect=lambda **k: {
+            "session_id": k["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+    )
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(ManifestPinError, match="belongs to a different run"):
+        await _runner(tmp_path, dataset_path).ingest()
+    fake_ingest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_killed_invocation_is_closed_from_its_last_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    BenchRuntime(monkeypatch)
+    monkeypatch.setattr(
+        fact_harness,
+        "evaluate_single_parity",
+        AsyncMock(side_effect=lambda **k: _result(k["question_id"])),
+    )
+    await runner.evaluate()
+    manifest_path = runner.output_path.parent / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["invocations"].append(
+        {
+            "phase": "evaluate",
+            "started_at": "2026-10-26T01:00:00+00:00",
+            "last_progress_at": "2026-10-26T01:02:30+00:00",
+            "outcome": "running",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
+    await _runner(tmp_path, dataset_path).evaluate()
+    killed = json.loads(manifest_path.read_text())["invocations"][1]
+    assert killed["outcome"] == "killed"
+    assert killed["ended_at"] == "2026-10-26T01:02:30+00:00"
+    assert killed["active_seconds"] == 150.0
+
+
+@pytest.mark.asyncio
+async def test_reassert_handlers_takes_signals_back_from_a_library() -> None:
+    async def body(controller: StopController) -> None:
+        loop = asyncio.get_running_loop()
+        swallowed: list[int] = []
+        # What arq's Worker() does on import inside a running loop.
+        loop.add_signal_handler(signal.SIGTERM, lambda: swallowed.append(1))
+        controller.reassert_handlers()
+        os.kill(os.getpid(), signal.SIGTERM)
+        for _ in range(50):
+            if controller.requested:
+                break
+            await asyncio.sleep(0.01)
+        assert swallowed == []
+        controller.raise_if_requested()
+
+    result, controller = await run_interruptible(body)
+    assert result is None
+    assert controller.signal_name == "SIGTERM"
+
+
+@pytest.mark.asyncio
+async def test_ingest_reasserts_signal_handlers_after_importing_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    stop = StopController()
+    reasserted: list[bool] = []
+    monkeypatch.setattr(stop, "reassert_handlers", lambda: reasserted.append(True))
+    runner = _runner(tmp_path, dataset_path, stop=stop)
+    BenchRuntime(monkeypatch)
+    imported: list[str] = []
+    real_import = fact_harness.importlib.import_module
+
+    def tracking_import(name: str) -> Any:
+        imported.append(name)
+        return real_import(name)
+
+    monkeypatch.setattr(fact_harness.importlib, "import_module", tracking_import)
+    monkeypatch.setattr(
+        fact_harness,
+        "ingest_session_parity",
+        AsyncMock(
+            side_effect=lambda **k: {
+                "session_id": k["session_id"],
+                "conversation_id": str(uuid.uuid4()),
+                "status": "complete",
+            }
+        ),
+    )
+    await runner.ingest()
+    assert imported == ["orchestrator.worker.jobs"]
+    assert reasserted == [True]
 
 
 def test_score_reports_strict_accuracy_and_category_counts(tmp_path: Path) -> None:

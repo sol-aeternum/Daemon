@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib
 import inspect
 import json
 import logging
@@ -22,6 +23,7 @@ from orchestrator.auth_pepper import initialize_development_pepper, validate_pep
 from orchestrator.compute_runtime import account_compute
 from orchestrator.config import get_settings
 from orchestrator.eval.bench_db import (
+    CROSS_SESSION_TABLES,
     assert_benchmark_database,
     check_benchmark_dsn,
     ensure_benchmark_account,
@@ -42,6 +44,7 @@ from orchestrator.eval.run_manifest import (
     MANIFEST_FILENAME,
     check_code_pin,
     git_state,
+    ManifestPinError,
     load_manifest,
     optional_file_sha256,
     save_manifest,
@@ -708,6 +711,64 @@ def _embedding_route_description() -> dict[str, Any]:
     }
 
 
+# Settings fields never hashed into the effective config: credentials, peppers
+# and DSNs (the database is pinned by fingerprints instead).
+_CONFIG_EXCLUDED_MARKERS: tuple[str, ...] = (
+    "key",
+    "secret",
+    "token",
+    "password",
+    "pepper",
+    "database_url",
+    "dsn",
+)
+
+
+def _short_hash(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def effective_config(harness: dict[str, Any]) -> dict[str, Any]:
+    """Everything outside the code that decides what a phase computes.
+
+    Non-secret settings are recorded as per-field hashes, so a refusal can name
+    what changed (``EMBEDDING_ROUTE_ID``, dedup thresholds, …) without
+    publishing values; policy/routing/pin files by content hash.
+    """
+    settings = get_settings()
+    dumped = settings.model_dump(mode="json") if hasattr(settings, "model_dump") else vars(settings)
+    fields = {
+        name: _short_hash(value)
+        for name, value in sorted(dumped.items())
+        if not any(marker in name.lower() for marker in _CONFIG_EXCLUDED_MARKERS)
+    }
+    files = {
+        "inference_policy": _policy_source("inference_policy").get("sha256"),
+        "model_routing": _policy_source("model_routing").get("sha256"),
+        "config_pin": optional_file_sha256(BENCHMARK_CONFIG_PIN_PATH),
+    }
+    body = {"settings": fields, "files": files, "harness": harness}
+    return {"sha256": _short_hash(body), **body}
+
+
+def config_changes(recorded: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    changes: list[str] = []
+    for section in ("settings", "files", "harness"):
+        before = recorded.get(section) or {}
+        after = current.get(section) or {}
+        for name in sorted(set(before) | set(after)):
+            if before.get(name) != after.get(name):
+                changes.append(f"{section}.{name}")
+    return changes
+
+
+def _seconds_between(start: str | None, end: str | None) -> float:
+    if not start or not end:
+        return 0.0
+    return max(0.0, (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())
+
+
 def _tally(values: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -771,6 +832,9 @@ class LongMemEvalFactRunner:
                 "dataset with a different sha256"
             )
         checkpoint["dataset_sha256"] = dataset_sha256 or recorded_sha256
+        # Binds the manifest and every result row to this checkpoint; rows or a
+        # manifest from another run (or a reset) are refused, never adopted.
+        checkpoint.setdefault("run_id", uuid.uuid4().hex)
         settings = get_settings()
         pinned_authority = json.loads(BENCHMARK_CONFIG_PIN_PATH.read_text())
         live_authority = build_longmemeval_pinned_config(settings=settings)
@@ -840,6 +904,10 @@ class LongMemEvalFactRunner:
         judge_model = BENCHMARK_JUDGE_MODEL if self.benchmark_mode else "openrouter/openai/gpt-4o"
         return {
             "created_at": utc_now_iso(),
+            "run_id": checkpoint["run_id"],
+            "baseline_qualified": True,
+            "disqualifications": [],
+            "effective_config": effective_config(self._harness_config()),
             "benchmark_name": BENCHMARK_NAME,
             "substrate": BENCHMARK_SUBSTRATE,
             "git": git_state(_REPO_ROOT),
@@ -886,6 +954,22 @@ class LongMemEvalFactRunner:
             "phases": {},
         }
 
+    def _harness_config(self) -> dict[str, Any]:
+        return {
+            "benchmark_mode": self.benchmark_mode,
+            "force_retrieval_logging": self.force_retrieval_logging,
+            "limit": self.limit,
+            "extraction_profile": EXTRACTION_PROFILE,
+            "evaluate_operation": EVALUATE_OPERATION,
+        }
+
+    @staticmethod
+    def _disqualify(manifest: dict[str, Any], reason: str) -> None:
+        reasons = manifest.setdefault("disqualifications", [])
+        if reason not in reasons:
+            reasons.append(reason)
+        manifest["baseline_qualified"] = False
+
     def _open_manifest(self, phase: PhaseName, checkpoint: dict[str, Any]) -> dict[str, Any]:
         path = self.resolved_manifest_path()
         manifest = load_manifest(path)
@@ -893,11 +977,27 @@ class LongMemEvalFactRunner:
         if manifest is None:
             manifest = self._new_manifest(checkpoint)
         else:
+            if manifest.get("run_id") != checkpoint.get("run_id"):
+                raise ManifestPinError(
+                    f"{path} belongs to a different run than {self.checkpoint_path} "
+                    "(for example after a reset). Use a fresh --output-dir."
+                )
+            changed = config_changes(
+                manifest.get("effective_config") or {},
+                effective_config(self._harness_config()),
+            )
+            if changed:
+                raise ManifestPinError(
+                    "Refusing to resume with a different configuration: "
+                    f"{', '.join(changed)} changed since this run started. "
+                    "Start a fresh --output-dir for a different configuration."
+                )
             changes = check_code_pin(
                 manifest, git_state(_REPO_ROOT), allow_change=self.allow_code_change
             )
             if changes:
                 manifest.setdefault("code_pin_changes", []).append({"at": now, "changes": changes})
+                self._disqualify(manifest, "code_changed_mid_run")
             formatter = memory_formatter_identity()
             if formatter != manifest.get("memory_formatter"):
                 manifest.setdefault("formatter_changes", []).append(
@@ -911,7 +1011,19 @@ class LongMemEvalFactRunner:
                 "sha256": optional_file_sha256(self.ingest_snapshot),
                 "recorded_at": now,
             }
+        if self.allow_state_mismatch:
+            self._disqualify(manifest, "allow_state_mismatch")
         invocations = manifest.setdefault("invocations", [])
+        for previous in invocations:
+            if previous.get("outcome") == "running":
+                # Killed without an exit record (SIGKILL, power loss): close it
+                # at its last recorded progress.
+                last = previous.get("last_progress_at") or previous.get("started_at")
+                previous["outcome"] = "killed"
+                previous["ended_at"] = last
+                previous["active_seconds"] = round(
+                    _seconds_between(previous.get("started_at"), last), 1
+                )
         invocations.append(
             {
                 "phase": phase,
@@ -923,6 +1035,23 @@ class LongMemEvalFactRunner:
         )
         save_manifest(path, manifest)
         return manifest
+
+    @staticmethod
+    def _phase_active_seconds(manifest: dict[str, Any], phase: str) -> float:
+        """Active time across every invocation of a phase, including the open one."""
+        total = 0.0
+        for invocation in manifest.get("invocations", []):
+            if invocation.get("phase") != phase:
+                continue
+            if invocation.get("outcome") == "running":
+                total += _seconds_between(invocation.get("started_at"), utc_now_iso())
+            else:
+                total += float(invocation.get("active_seconds") or 0.0)
+        return round(total, 1)
+
+    def _heartbeat(self, manifest: dict[str, Any]) -> None:
+        manifest["invocations"][-1]["last_progress_at"] = utc_now_iso()
+        save_manifest(self.resolved_manifest_path(), manifest)
 
     def _close_manifest(
         self, manifest: dict[str, Any], outcome: str, active_seconds: float
@@ -993,15 +1122,22 @@ class LongMemEvalFactRunner:
                     await pool.close()
 
     # ---------------------------------------------------------------- ingest
-    async def _reconcile_orphans(
+    async def _reconcile_interrupted_session(
         self,
         pool: Any,
         user_id: uuid.UUID,
+        ingest_phase: dict[str, Any],
         ingest_results: dict[str, dict[str, Any]],
         manifest: dict[str, Any],
-        *,
-        allowed_orphans: int,
     ) -> None:
+        """Undo an interrupted session exactly, or refuse to continue.
+
+        Before each session the checkpoint records ``pending_session`` with a
+        fingerprint of the memory tables. Deleting the interrupted session's own
+        rows must restore that fingerprint; if extraction had already merged into
+        or superseded an earlier session's memory, it cannot, and the ingest
+        refuses until a snapshot is restored (the refusal persists across resumes).
+        """
         referenced = {
             str(result["conversation_id"])
             for result in ingest_results.values()
@@ -1009,30 +1145,46 @@ class LongMemEvalFactRunner:
         }
         present = await list_benchmark_conversation_ids(pool, user_id)
         orphans = present - referenced
-        if not orphans:
+        pending = ingest_phase.get("pending_session")
+        if pending is None:
+            if orphans:
+                raise RuntimeError(
+                    f"Benchmark database holds {len(orphans)} conversation(s) this checkpoint "
+                    "does not reference and no interrupted session is recorded. It was not "
+                    "built by this checkpoint: restore the matching snapshot or reset."
+                )
             return
-        if len(orphans) > allowed_orphans:
+        if len(orphans) > 1:
             raise RuntimeError(
-                f"Benchmark database holds {len(orphans)} conversations this checkpoint does not "
-                f"reference (at most {allowed_orphans} expected from an interrupted session). "
-                "It was not built by this checkpoint: restore the matching snapshot or reset."
+                f"Benchmark database holds {len(orphans)} unreferenced conversations; at most "
+                "one (the interrupted session) is expected. Restore the matching snapshot."
             )
         counts = await rollback_orphan_conversations(pool, user_id, orphans)
-        logger.warning(
-            "[ingest] Rolled back %s interrupted session conversation(s): %s",
-            len(orphans),
-            counts,
-        )
+        after = await fingerprint_benchmark_state(pool, user_id, tables=CROSS_SESSION_TABLES)
+        exact = after["sha256"] == pending["state_fingerprint"]["sha256"]
         manifest.setdefault("ingest_rollbacks", []).append(
             {
                 "at": utc_now_iso(),
+                "corpus_key": pending.get("corpus_key"),
                 "orphan_conversations": len(orphans),
                 **counts,
-                "note": "Rows written by interrupted sessions were deleted before re-ingest. "
-                "Dedup merges or supersessions they applied to other sessions' memories persist.",
+                "restored_pre_session_state": exact,
             }
         )
         save_manifest(self.resolved_manifest_path(), manifest)
+        if not exact:
+            raise RuntimeError(
+                "The interrupted session changed memories outside its own conversation "
+                "(dedup merge or supersession), so deleting its rows cannot restore the "
+                "pre-session state. Restore the latest ingest snapshot "
+                "(bench_db.sh restore) and its checkpoint, or start a fresh ingest."
+            )
+        logger.warning(
+            "[ingest] Rolled back interrupted session %s exactly: %s",
+            pending.get("corpus_key"),
+            counts,
+        )
+        ingest_phase.pop("pending_session", None)
 
     async def ingest(self) -> list[dict[str, Any]]:
         if self.from_ingest is not None:
@@ -1046,23 +1198,39 @@ class LongMemEvalFactRunner:
 
         async with self._phase("ingest", checkpoint) as (pool, store, manifest, user_id):
             existing_results = build_corpus_results_lookup(checkpoint)
-            retried = 0
+            # Settle an interrupted session before anything else touches the DB.
+            await self._reconcile_interrupted_session(
+                pool,
+                user_id,
+                ingest_phase,
+                existing_results,
+                manifest,
+            )
+            save_runner_checkpoint(self.checkpoint_path, checkpoint)
             if self.retry_failed_sessions:
-                failed_keys = [
-                    key
+                failed = {
+                    key: result
                     for key, result in existing_results.items()
                     if result.get("status") != "complete"
-                ]
-                for key in failed_keys:
-                    existing_results.pop(key)
-                retried = len(failed_keys)
-                if retried:
+                }
+                if failed:
+                    # A failed session may have written part of its facts (and
+                    # merged into earlier ones) before failing; deleting it is
+                    # not an exact rollback, so the run stops being a baseline.
+                    conversations = {
+                        str(r["conversation_id"])
+                        for r in failed.values()
+                        if r.get("conversation_id")
+                    }
+                    counts = await rollback_orphan_conversations(pool, user_id, conversations)
+                    for key in failed:
+                        existing_results.pop(key)
                     manifest.setdefault("ingest_retries", []).append(
-                        {"at": utc_now_iso(), "sessions": retried}
+                        {"at": utc_now_iso(), "sessions": len(failed), **counts}
                     )
-            await self._reconcile_orphans(
-                pool, user_id, existing_results, manifest, allowed_orphans=1 + retried
-            )
+                    self._disqualify(manifest, "retried_failed_sessions")
+                    save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                    save_manifest(self.resolved_manifest_path(), manifest)
 
             total_sessions = corpus_plan.unique_normalized_contents
             processed = len(existing_results)
@@ -1074,6 +1242,13 @@ class LongMemEvalFactRunner:
                 total_sessions,
                 processed,
             )
+
+            # The production chunker lives in orchestrator.worker, whose package
+            # import constructs arq's Worker; arq installs its own SIGINT/SIGTERM
+            # handlers on the running loop. Import it now and take them back.
+            importlib.import_module("orchestrator.worker.jobs")
+            if self.stop is not None:
+                self.stop.reassert_handlers()
 
             approved = approved_profile_routes(EXTRACTION_PROFILE)
             manifest["routes"]["extraction"]["approved_route_ids"] = approved
@@ -1106,6 +1281,14 @@ class LongMemEvalFactRunner:
                     corpus_session.canonical_session_id,
                     len(corpus_session.raw_session_ids),
                 )
+                ingest_phase["pending_session"] = {
+                    "corpus_key": corpus_session.corpus_key,
+                    "started_at": utc_now_iso(),
+                    "state_fingerprint": await fingerprint_benchmark_state(
+                        pool, user_id, tables=CROSS_SESSION_TABLES
+                    ),
+                }
+                save_runner_checkpoint(self.checkpoint_path, checkpoint)
                 created: list[uuid.UUID] = []
 
                 async def remember(conversation_id: uuid.UUID) -> None:
@@ -1138,17 +1321,20 @@ class LongMemEvalFactRunner:
                 result["raw_session_ids"] = list(corpus_session.raw_session_ids)
                 result["ingested_at"] = utc_now_iso()
                 existing_results[corpus_session.corpus_key] = result
+                ingest_phase.pop("pending_session", None)
                 processed = len(existing_results)
                 ingest_phase["completed_count"] = processed
                 ingest_phase["updated_at"] = utc_now_iso()
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                self._heartbeat(manifest)
                 consecutive_failures = (
                     0 if result.get("status") == "complete" else consecutive_failures + 1
                 )
                 if consecutive_failures >= INGEST_FAILURE_BREAKER:
                     raise RuntimeError(
                         f"{consecutive_failures} consecutive sessions failed extraction; "
-                        "stopping. Fix the cause, then resume with --retry-failed-sessions"
+                        "stopping. Fix the cause, then resume with --retry-failed-sessions "
+                        "(the run is then no longer baseline-qualified)"
                     )
 
             mark_phase_completed(
@@ -1166,6 +1352,7 @@ class LongMemEvalFactRunner:
             manifest["routes"]["extraction"]["observed_models"] = routes["extraction_models"]
             manifest["phases"]["ingest"] = {
                 "completed_at": utc_now_iso(),
+                "active_seconds": self._phase_active_seconds(manifest, "ingest"),
                 "sessions": len(checkpoint["phases"]["ingest"]["results"]),
                 "status_counts": statuses,
                 "state_fingerprint": fingerprint,
@@ -1193,6 +1380,13 @@ class LongMemEvalFactRunner:
         """
         results: dict[str, dict[str, Any]] = checkpoint["phases"]["evaluate"]["results"]
         file_rows = read_jsonl_records(self.output_path)
+        foreign = [row for row in file_rows if row.get("run_id") != checkpoint["run_id"]]
+        if foreign:
+            raise RuntimeError(
+                f"{self.output_path} holds {len(foreign)} result row(s) from another run (or a "
+                "legacy harness). They are never adopted: move the file away or use a fresh "
+                "--output-dir."
+            )
         from_file: dict[str, dict[str, Any]] = {}
         duplicates = 0
         for row in file_rows:
@@ -1321,6 +1515,7 @@ class LongMemEvalFactRunner:
                     }
                 result["attempt"] = attempt
                 result["evaluated_at"] = utc_now_iso()
+                result["run_id"] = checkpoint["run_id"]
                 append_jsonl_record(self.output_path, result)
                 completed_results[question_id] = result
                 evaluate_phase["completed_count"] = sum(
@@ -1328,6 +1523,7 @@ class LongMemEvalFactRunner:
                 )
                 evaluate_phase["updated_at"] = utc_now_iso()
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                self._heartbeat(manifest)
 
             ordered_results_list = [
                 completed_results[qid] for qid in question_order if qid in completed_results
@@ -1347,6 +1543,7 @@ class LongMemEvalFactRunner:
             spend = await summarize_compute_spend(pool, user_id, evaluate_phase.get("started_at"))
             manifest["phases"]["evaluate"] = {
                 "completed_at": utc_now_iso(),
+                "active_seconds": self._phase_active_seconds(manifest, "evaluate"),
                 "questions": len(ordered_results_list),
                 "errored": len(errored),
                 "state_matches_ingest_at_start": state_matches,
@@ -1381,6 +1578,10 @@ class LongMemEvalFactRunner:
             results = ordered_results(evaluate_results)
         elif self.output_path.exists():
             results = read_jsonl_records(self.output_path, repair=False)
+            if any(row.get("run_id") != checkpoint.get("run_id") for row in results):
+                raise RuntimeError(
+                    f"{self.output_path} holds results from another run; refusing to score them"
+                )
         else:
             raise FileNotFoundError(
                 "No evaluation results available to score. Run the evaluate phase first "
@@ -1406,6 +1607,7 @@ class LongMemEvalFactRunner:
                 "score_path": str(self.score_path),
                 "score_sha256": file_sha256(self.score_path),
                 "strict_accuracy": payload["strict_accuracy"],
+                "baseline_qualified": manifest.get("baseline_qualified", False),
                 "result_count": payload["result_count"],
                 "error_count": payload["error_count"],
             }

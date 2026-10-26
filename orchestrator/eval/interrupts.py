@@ -32,6 +32,12 @@ class StopController:
     def __init__(self) -> None:
         self.signal_name: str | None = None
         self.signal_number: int | None = None
+        self._install: Callable[[], None] | None = None
+
+    def reassert_handlers(self) -> None:
+        """Re-install the harness's handlers after a library replaced them."""
+        if self._install is not None:
+            self._install()
 
     @property
     def requested(self) -> bool:
@@ -70,12 +76,18 @@ async def run_interruptible(
         task.cancel()
 
     installed: list[signal.Signals] = []
-    for sig in HANDLED_SIGNALS:
-        try:
-            loop.add_signal_handler(sig, on_signal, int(sig))
-            installed.append(sig)
-        except (NotImplementedError, RuntimeError, ValueError):
-            pass
+
+    def install() -> None:
+        for sig in HANDLED_SIGNALS:
+            try:
+                loop.add_signal_handler(sig, on_signal, int(sig))
+            except (NotImplementedError, RuntimeError, ValueError):
+                continue
+            if sig not in installed:
+                installed.append(sig)
+
+    install()
+    controller._install = install
     try:
         try:
             return await task, controller
@@ -86,5 +98,6 @@ async def run_interruptible(
                 return None, controller
             raise
     finally:
+        controller._install = None
         for sig in installed:
             loop.remove_signal_handler(sig)

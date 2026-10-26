@@ -15,7 +15,10 @@ LongMemEval_S run for any public claim.
 2. `phases.evaluate.status == "completed"` and `phases.score.error_count == 0`.
 3. `state_matches_ingest_at_start` and `state_unchanged_by_evaluate` are both `true`.
    `--allow-state-mismatch` was not used.
-4. No `code_pin_changes`. A resumed run that crossed SHAs is invalid.
+4. `baseline_qualified == true` and `disqualifications` is empty in every phase's manifest: no
+   `code_pin_changes` (SHA or code content), no `--allow-state-mismatch`, no
+   `--retry-failed-sessions`. Every `ingest_rollbacks[]` entry has
+   `restored_pre_session_state: true`.
 5. `phases.evaluate.retrieval_modes` has a single key, and it matches the declared mode
    (`embedding:<model>` or `lexical`).
 6. No category scores 0. Overall accuracy is not below 5% or above 95%. Either result triggers

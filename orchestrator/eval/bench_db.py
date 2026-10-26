@@ -34,6 +34,12 @@ FINGERPRINT_TABLES: tuple[tuple[str, str], ...] = (
     ("memory_extraction_log", "user_id"),
     ("entities", "user_id"),
 )
+# What one session's extraction can change outside its own conversation (dedup
+# merges, supersessions, entity rows). Messages are excluded: a session only
+# writes its own, and they cascade with its conversation.
+CROSS_SESSION_TABLES: tuple[tuple[str, str], ...] = tuple(
+    item for item in FINGERPRINT_TABLES if item[0] != "messages"
+)
 
 
 class BenchmarkDatabaseGuardError(RuntimeError):
@@ -104,26 +110,34 @@ async def ensure_benchmark_account(pool: Any, user_id: uuid.UUID) -> None:
     )
 
 
-async def fingerprint_benchmark_state(pool: Any, user_id: uuid.UUID) -> dict[str, Any]:
+async def fingerprint_benchmark_state(
+    pool: Any,
+    user_id: uuid.UUID,
+    *,
+    tables: tuple[tuple[str, str], ...] = FINGERPRINT_TABLES,
+) -> dict[str, Any]:
     """Content hash of every row evaluation can read for the benchmark user.
 
     Equal fingerprints before and after a phase prove the phase did not change
     retrieval or ranking inputs (access counts, timestamps, trust, status).
+    ``tables`` must be drawn from :data:`FINGERPRINT_TABLES`.
     """
-    tables: dict[str, dict[str, Any]] = {}
-    for table, owner_column in FINGERPRINT_TABLES:
+    if not set(tables) <= set(FINGERPRINT_TABLES):
+        raise ValueError("fingerprint tables must come from FINGERPRINT_TABLES")
+    digests: dict[str, dict[str, Any]] = {}
+    for table, owner_column in tables:
         row = await pool.fetchrow(
             f"SELECT count(*) AS rows, "  # nosec B608 - fixed identifiers from FINGERPRINT_TABLES
             f"md5(coalesce(string_agg(md5(t::text), '' ORDER BY t.id), '')) AS digest "
             f"FROM {table} t WHERE t.{owner_column} = $1",
             user_id,
         )
-        tables[table] = {
+        digests[table] = {
             "rows": int(row["rows"]) if row is not None else 0,
             "md5": str(row["digest"]) if row is not None else "",
         }
-    combined = hashlib.sha256(json.dumps(tables, sort_keys=True).encode("utf-8")).hexdigest()
-    return {"sha256": combined, "tables": tables}
+    combined = hashlib.sha256(json.dumps(digests, sort_keys=True).encode("utf-8")).hexdigest()
+    return {"sha256": combined, "tables": digests}
 
 
 async def list_benchmark_conversation_ids(pool: Any, user_id: uuid.UUID) -> set[str]:
@@ -138,8 +152,9 @@ async def rollback_orphan_conversations(
 
     Memories and extraction logs reference conversations with ON DELETE SET
     NULL, so they are deleted explicitly before the conversation (messages
-    cascade). Dedup merges or supersessions that an orphan applied to memories
-    of *other* sessions cannot be undone here; callers record the rollback.
+    cascade). Dedup merges or supersessions applied to memories of *other*
+    sessions are not undone here: callers must verify the result (see
+    ``LongMemEvalFactRunner._reconcile_interrupted_session``).
     """
     if not conversation_ids:
         return {"conversations": 0, "memories": 0, "memory_extraction_log": 0}

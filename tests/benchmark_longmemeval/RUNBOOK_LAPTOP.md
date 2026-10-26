@@ -14,10 +14,16 @@ estimate first.
   database carries the marker comment `daemon-longmemeval-benchmark-v1`
   (`orchestrator/eval/bench_db.py`). `bench_db.sh run` always supplies the benchmark DSN. Never set
   the marker on any other database, and never point the harness at production `.env` values.
-- **One checkout per run.** A run is pinned to the git SHA recorded in its `run_manifest.json`.
-  Resuming on a different SHA (or a dirty tree that changed) is refused unless you pass
-  `--allow-code-change`, which records the change in the manifest. Never `git pull` or rebase the
-  run's checkout while a run is in progress; use a dedicated worktree.
+- **One checkout per run.** A run is pinned to the git SHA *and* a hash of the code content
+  (`git.code_sha256`: uncommitted and untracked changes under `orchestrator/`, `providers/`,
+  `config/`, `migrations/`, the harness and the lockfiles) recorded in its `run_manifest.json`.
+  Resuming with either changed is refused. `--allow-code-change` overrides the refusal, but
+  records `code_changed_mid_run` and marks the run `baseline_qualified: false`. Never `git pull`
+  or rebase the run's checkout while a run is in progress; use a dedicated worktree.
+- **One configuration per run.** The manifest records `effective_config`: hashes of every
+  non-secret `Settings` field, the inference policy, model routing, the config pin and the harness
+  options. Resuming with any of them changed (for example a different `EMBEDDING_ROUTE_ID`) is
+  refused with no override. Start a fresh `--output-dir` instead.
 - **Results live outside the repo** until the run is finished. Copy in only what you would publish
   (step 9).
 
@@ -91,20 +97,30 @@ desktop settings. Everything the run needs to resume is under `--output-dir`.
 
 Resume by re-running **the same command** in the same checkout. On resume:
 
-- **Ingest.** Each session is checkpointed after it finishes. Any benchmark conversation the
-  checkpoint doesn't reference (at most one: the session that was in flight) is rolled back (its
-  memories, extraction log and conversation), and that session is re-ingested. More than one unexplained conversation means the database wasn't built by this
-  checkpoint, and the run refuses. Restore the matching snapshot or start a fresh output
-  directory. Rollbacks are recorded in `ingest_rollbacks`. Dedup merges or supersessions an
-  interrupted session already applied to other sessions' memories are not undone.
-- **Evaluate.** Each result is appended to `longmemeval_results.jsonl` and fsynced before the
-  checkpoint is saved. Resume adopts results that reached the file, drops a torn trailing line and
-  duplicates, and never re-asks a completed question (`results_reconciliations`). Questions that
-  errored are retried.
+- **Ingest.** Each session is checkpointed after it finishes. Before a session starts, the
+  checkpoint records it as `pending_session` together with a fingerprint of the benchmark user's
+  memory state outside that session. On resume, the in-flight session's conversation, memories and
+  extraction log are deleted, and the fingerprint is taken again:
+  - It matches: the rollback is exact (`ingest_rollbacks[].restored_pre_session_state: true`), and
+    the session is re-ingested.
+  - It differs: the interrupted session had already changed another session's memories (a dedup
+    merge or supersession). The harness refuses to resume and keeps `pending_session`. Restore the
+    last snapshot that matches this checkpoint, or start a fresh output directory and database.
+  - An unexplained conversation with no `pending_session`, or more than one, means the database
+    wasn't built by this checkpoint, and the run refuses.
+- **Evaluate.** Each result carries the run's `run_id` and is appended to
+  `longmemeval_results.jsonl` and fsynced before the checkpoint is saved. Resume adopts results of
+  this run that reached the file, drops a torn trailing line and duplicates, and never re-asks a
+  completed question (`results_reconciliations`). Rows from another run (or without a `run_id`)
+  are refused, never adopted, so a reused output directory can't mix runs. Questions that errored
+  are retried.
 - `--retry-failed-sessions` (ingest) rolls back and re-ingests sessions whose extraction failed.
+  It marks the run `baseline_qualified: false` (`retried_failed_sessions`).
 
 Each invocation is logged in `run_manifest.json` (`invocations[]`: start, end, outcome,
-`resumed`, active seconds).
+`resumed`, active seconds). An invocation that never closed (SIGKILL, power loss) is closed as
+`killed` at its last recorded progress when the next one starts. `baseline_qualified` and
+`disqualifications[]` record anything that keeps the run from counting as a baseline.
 
 Stop the database only after the harness has exited: `bench_db.sh down` (the volume is kept).
 After a reboot: `bench_db.sh up`, then resume.
