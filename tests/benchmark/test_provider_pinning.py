@@ -11,6 +11,7 @@ from typing import Any
 from tests.longmemeval.evaluate import (
     BenchmarkProviderError,
     _call_llm_with_provider_config,
+    last_benchmark_fingerprint,
     reset_benchmark_tracking,
 )
 
@@ -130,6 +131,37 @@ class TestEvaluateProviderFailFast:
                 bm_call_key="answer",
             )
         assert "provider outage on second call" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_benchmark_fingerprint_drift_is_recorded_not_raised(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The pinned endpoint rotates fingerprints; each call's is recorded instead."""
+        responses = iter(
+            [
+                MockResponseWithMetadata(
+                    content="a", model="openai/gpt-4o-2024-08-06", system_fingerprint="fp_one"
+                ),
+                MockResponseWithMetadata(
+                    content="b", model="openai/gpt-4o-2024-08-06", system_fingerprint="fp_two"
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            "litellm.acompletion", AsyncMock(side_effect=lambda **_: next(responses))
+        )
+
+        for expected in ("fp_one", "fp_two"):
+            result = await _call_llm_with_provider_config(
+                model="openrouter/openai/gpt-4o",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.0,
+                max_tokens=10,
+                bm_call_key="judge",
+            )
+            assert result is not None
+            assert last_benchmark_fingerprint("judge") == expected
 
 
 class MockResponseWithMetadata:

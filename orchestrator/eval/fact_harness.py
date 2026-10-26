@@ -69,7 +69,6 @@ from tests.longmemeval.evaluate import (
     CHECKPOINT_FILENAME,
     RESULTS_FILENAME,
     evaluate_single_parity,
-    get_benchmark_tracking,
     print_results,
     score_accuracy,
 )
@@ -1553,7 +1552,12 @@ class LongMemEvalFactRunner:
                 ),
                 "answer_usage": _sum_usage(ordered_results_list, "answer_usage"),
                 "judge_usage": _sum_usage(ordered_results_list, "judge_usage"),
-                "provider_fingerprints": get_benchmark_tracking(),
+                "provider_fingerprints": {
+                    call: _tally(
+                        [str(row.get(f"{call}_fingerprint")) for row in ordered_results_list]
+                    )
+                    for call in ("answer", "judge")
+                },
                 "compute_spend": spend,
             }
             if fingerprint_start["sha256"] != fingerprint_end["sha256"]:

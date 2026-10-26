@@ -347,6 +347,8 @@ def _result(question_id: str, judgment: str = "correct", **extra: Any) -> dict[s
         "judgment": judgment,
         "retrieval_mode": "lexical",
         "answer_usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        "answer_fingerprint": "fp_a",
+        "judge_fingerprint": "fp_j",
         "run_id": RUN_ID,
         **extra,
     }
@@ -839,6 +841,10 @@ async def test_manifest_pins_run_identity(tmp_path: Path, monkeypatch: pytest.Mo
         "prompt_tokens": 20,
         "completion_tokens": 4,
     }
+    assert manifest["phases"]["evaluate"]["provider_fingerprints"] == {
+        "answer": {"fp_a": 2},
+        "judge": {"fp_j": 2},
+    }
     assert manifest["invocations"][0]["phase"] == "evaluate"
     assert manifest["invocations"][0]["outcome"] == "completed"
 
@@ -1190,10 +1196,13 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
     async def fake_llm(**kwargs: Any) -> Any:
         calls.append(kwargs)
         content = "Miso" if kwargs["bm_call_key"] == "answer" else "CORRECT\nMatches."
-        return {
+        response = {
             "choices": [{"message": {"content": content}}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 3, "total_tokens": 103},
+            "system_fingerprint": f"fp_{kwargs['bm_call_key']}",
         }
+        evaluate._capture_benchmark_metadata(response, key=kwargs["bm_call_key"])
+        return response
 
     monkeypatch.setattr(evaluate, "gather_memory_context_inputs", fake_gather)
     monkeypatch.setattr(evaluate, "_call_llm_with_provider_config", fake_llm)
@@ -1227,3 +1236,4 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
     assert result["retrieval_mode"] == "lexical"
     assert result["answer_usage"]["prompt_tokens"] == 100
     assert result["judge_usage"]["completion_tokens"] == 3
+    assert (result["answer_fingerprint"], result["judge_fingerprint"]) == ("fp_answer", "fp_judge")

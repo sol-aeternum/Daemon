@@ -30,6 +30,10 @@ LongMemEval_S run for any public claim.
 - these are identical: dataset `sha256`, `config_pin.sha256` (or the PR explains the pin change),
   answer and judge routes (model, temperature, seed, provider), the embedding mode, and the
   `parity_exceptions` ids;
+- both report `phases.evaluate.provider_fingerprints`. The pinned Azure endpoint rotates
+  `system_fingerprint` across serving nodes, so identical fingerprints are not required. The
+  distribution is recorded so that a shift in serving backend shows up next to the scores, and the
+  *F* noise measurement below already includes this variance;
 - `memory_formatter.output_sha256` is identical, *unless* the change under test is the formatter
   itself, in which case that is the declared difference.
 

@@ -116,10 +116,6 @@ class BenchmarkProviderError(RuntimeError):
     """Provider or transport failure in LongMemEval benchmark mode."""
 
 
-class BenchmarkSamplingError(RuntimeError):
-    """Non-deterministic LongMemEval benchmark metadata was detected."""
-
-
 _BM_METADATA: dict[str, dict[str, str | None]] = {}
 
 
@@ -129,6 +125,11 @@ def reset_benchmark_tracking() -> None:
 
 def get_benchmark_tracking() -> dict[str, dict[str, str | None]]:
     return {key: dict(value) for key, value in _BM_METADATA.items()}
+
+
+def last_benchmark_fingerprint(key: str) -> str | None:
+    """Fingerprint of the latest successful benchmark-mode call for ``key``."""
+    return _BM_METADATA.get(key, {}).get("fingerprint")
 
 
 def resolve_output_paths(
@@ -230,19 +231,9 @@ def _capture_benchmark_metadata(response_data: Any, *, key: str) -> None:
     normalized_fingerprint = fingerprint if isinstance(fingerprint, str) else None
     normalized_model = model if isinstance(model, str) else None
 
-    previous = _BM_METADATA.get(key)
-    if previous is not None:
-        previous_fingerprint = previous.get("fingerprint")
-        if (
-            previous_fingerprint
-            and normalized_fingerprint
-            and previous_fingerprint != normalized_fingerprint
-        ):
-            raise BenchmarkSamplingError(
-                f"Benchmark fingerprint drift in {key}: "
-                f"expected {previous_fingerprint!r}, got {normalized_fingerprint!r}"
-            )
-
+    # Recorded, not enforced: the pinned endpoint rotates system_fingerprint
+    # across serving nodes, so each result row carries its own and the
+    # manifest reports the distribution.
     _BM_METADATA[key] = {
         "fingerprint": normalized_fingerprint,
         "model": normalized_model,
@@ -637,12 +628,14 @@ async def evaluate_single_parity(
         )
     messages = build_parity_answer_messages(question_text, memory_context)
     hypothesis, answer_usage = await _answer_with_messages(messages, benchmark_mode=benchmark_mode)
+    answer_fingerprint = last_benchmark_fingerprint("answer") if benchmark_mode else None
     judgment, judge_usage = await _judge_with_usage(
         question_text,
         hypothesis,
         reference,
         benchmark_mode=benchmark_mode,
     )
+    judge_fingerprint = last_benchmark_fingerprint("judge") if benchmark_mode else None
     return {
         "question_id": question_id,
         "question": question_text,
@@ -659,6 +652,8 @@ async def evaluate_single_parity(
         "system_prompt_sha256": _sha256_text(messages[0]["content"]),
         "answer_usage": answer_usage,
         "judge_usage": judge_usage,
+        "answer_fingerprint": answer_fingerprint,
+        "judge_fingerprint": judge_fingerprint,
     }
 
 
