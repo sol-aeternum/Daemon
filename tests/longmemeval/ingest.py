@@ -22,6 +22,8 @@ import os
 import sys
 import tempfile
 import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,7 @@ import asyncpg
 
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.extraction import process_extraction
+from orchestrator.memory.extraction import messages_to_extraction_text, process_extraction
 from orchestrator.memory.store import MemoryStore
 
 DATASET_URL = (
@@ -318,6 +320,116 @@ async def ingest_session(
     }
 
 
+ScopeFactory = Callable[[], AbstractAsyncContextManager[Any]]
+
+
+async def ingest_session_parity(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    session_id: str,
+    messages: list[dict[str, Any]],
+    session_index: int,
+    *,
+    scope_factory: ScopeFactory,
+    on_conversation_created: Callable[[uuid.UUID], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    """Ingest one session the way the production extraction worker does.
+
+    Messages are persisted, then split losslessly by the worker's own
+    ``_chunk_messages_for_extraction`` (bounded at ``MAX_EXTRACTION_INPUT_CHARS``)
+    and each chunk is extracted inside the account compute scope the worker
+    uses. ``process_extraction`` awaits its own ``log_extraction`` write, so its
+    return value is the completion barrier; no polling is needed.
+    """
+    from orchestrator.worker.jobs import _chunk_messages_for_extraction
+
+    conversation = await store.create_conversation(
+        user_id=user_id,
+        pipeline="cloud",
+        title=f"LongMemEval Session {session_index}: {session_id[:16]}",
+    )
+    conversation_id = conversation["id"]
+    if on_conversation_created is not None:
+        await on_conversation_created(conversation_id)
+
+    parsed: list[dict[str, Any]] = []
+    raw: list[dict[str, Any]] = []
+    for msg_idx, msg in enumerate(messages):
+        role = str(msg.get("role", "user"))
+        content = msg.get("content", "")
+        if not content:
+            continue
+        row = await store.insert_message(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            role=role,
+            content=content,
+            status="complete",
+            metadata={
+                "source": "longmemeval",
+                "session_id": session_id,
+                "msg_idx": msg_idx,
+            },
+        )
+        parsed.append({"role": role, "content": content})
+        raw.append(
+            {
+                "id": row.get("id") if isinstance(row, dict) else None,
+                "role": role,
+                "content": content,
+                "created_at": row.get("created_at") if isinstance(row, dict) else None,
+            }
+        )
+
+    chunks = _chunk_messages_for_extraction(parsed, raw) if parsed else []  # type: ignore[arg-type]
+    chunk_results: list[dict[str, Any]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        text = messages_to_extraction_text(chunk["messages"])
+        if not text:
+            continue
+        cursor_message = chunk["raw_messages"][-1]
+        advances_cursor = bool(chunk["advances_cursor"])
+        observed_at = cursor_message.get("created_at") if advances_cursor else None
+        message_id = cursor_message.get("id") if advances_cursor else None
+        try:
+            async with scope_factory():
+                success, new_memories, _continuation = await process_extraction(
+                    store=store,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    text=text,
+                    last_message_observed_at=observed_at,
+                    last_message_id=str(message_id) if message_id is not None else None,
+                    chunk_index=chunk_index,
+                    cursor_checkpoint=advances_cursor,
+                )
+        except Exception as exc:
+            # Provider/store exceptions can carry conversation text; keep only the type.
+            chunk_results.append(
+                {"chunk_index": chunk_index, "success": False, "error": type(exc).__name__}
+            )
+            continue
+        chunk_results.append(
+            {
+                "chunk_index": chunk_index,
+                "success": bool(success),
+                "memories": len(new_memories),
+            }
+        )
+
+    failed = [result for result in chunk_results if not result["success"]]
+    return {
+        "session_id": session_id,
+        "conversation_id": str(conversation_id),
+        "message_count": len(parsed),
+        "chunk_count": len(chunk_results),
+        "chunks_failed": len(failed),
+        "memories_created": sum(int(result.get("memories", 0)) for result in chunk_results),
+        "chunk_errors": sorted({str(result["error"]) for result in failed if "error" in result}),
+        "status": "complete" if not failed else "extraction_failed",
+    }
+
+
 async def run_ingestion(
     limit: int | None = None,
     cleanup: bool = False,
@@ -330,6 +442,9 @@ async def run_ingestion(
     if not settings.daemon_encryption_key:
         raise RuntimeError("DAEMON_ENCRYPTION_KEY not configured")
 
+    from orchestrator.eval.bench_db import assert_benchmark_database, check_benchmark_dsn
+
+    check_benchmark_dsn(settings.database_url)
     pool = await asyncpg.create_pool(
         dsn=settings.database_url,
         min_size=2,
@@ -337,6 +452,8 @@ async def run_ingestion(
     )
 
     try:
+        # Destructive (--cleanup deletes the benchmark user): benchmark databases only.
+        await assert_benchmark_database(pool, settings.database_url)
         encryption = ContentEncryption(settings.daemon_encryption_key)
         store = MemoryStore(db_pool=pool, encryption=encryption)
 

@@ -90,7 +90,7 @@ def test_runner_load_checkpoint_emits_effective_benchmark_config(
         "checkpoint_path": str(runner.checkpoint_path),
         "score_path": str(runner.score_path),
         "force_retrieval_logging": True,
-        "benchmark_mode": False,
+        "benchmark_mode": True,
     }
     assert effective_config["pinned_authority"] == json.loads(BENCHMARK_CONFIG_PIN_PATH.read_text())
     assert checkpoint["benchmark_config_drift_warnings"] == []

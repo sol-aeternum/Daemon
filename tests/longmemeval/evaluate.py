@@ -34,15 +34,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 from orchestrator.memory.embedding import embed_query
 from orchestrator.config import get_settings
+from orchestrator.memory.injection import (
+    MemoryContextInputs,
+    compose_system_prompt,
+    gather_memory_context_inputs,
+    render_memory_context,
+)
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.ingest import DATASET_PATH as DEFAULT_DATASET_PATH
@@ -356,6 +365,19 @@ async def judge_answer(
     reference: str,
     benchmark_mode: bool = False,
 ) -> str:
+    judgment, _usage = await _judge_with_usage(
+        question_text, hypothesis, reference, benchmark_mode=benchmark_mode
+    )
+    return judgment
+
+
+async def _judge_with_usage(
+    question_text: str,
+    hypothesis: str,
+    reference: str,
+    *,
+    benchmark_mode: bool,
+) -> tuple[str, dict[str, int]]:
     prompt = f"""You are judging whether an AI assistant's answer is factually correct.
 
 Question: {question_text}
@@ -381,27 +403,28 @@ Then a one-sentence explanation on the second line."""
     )
 
     if response is None:
-        return "incorrect"
+        return "incorrect", {}
+    usage = _usage_from_response(response)
 
     content = _extract_content(response).strip()
     first_line = content.split("\n")[0].strip().upper()
 
     if first_line == "CORRECT":
-        return "correct"
+        return "correct", usage
     elif first_line == "PARTIAL":
-        return "partially_correct"
+        return "partially_correct", usage
     elif first_line == "INCORRECT":
-        return "incorrect"
+        return "incorrect", usage
 
     content_lower = content.lower()
     if "incorrect" in content_lower:
-        return "incorrect"
+        return "incorrect", usage
     elif "partial" in content_lower:
-        return "partially_correct"
+        return "partially_correct", usage
     elif "correct" in content_lower:
-        return "correct"
+        return "correct", usage
     else:
-        return "incorrect"
+        return "incorrect", usage
 
 
 async def answer_with_llm(
@@ -498,6 +521,145 @@ async def evaluate_single(
     }
 
 
+# --- Production-parity answer path (fact substrate) ---------------------------
+#
+# The fact harness measures the memory prompt surface production builds: the
+# same gather/render pair as ``build_memory_context()`` and the same
+# ``compose_system_prompt()`` as ``assemble_system_prompt()``. Remaining
+# differences from a production chat turn are listed in
+# ``orchestrator.eval.fact_harness.PARITY_EXCEPTIONS`` and copied into every
+# run manifest. The legacy single-message path above stays for the chunk lane.
+
+PARITY_PIPELINE = "cloud"  # ingest creates cloud conversations
+PARITY_RETRIEVAL_TRIGGER = "longmemeval"  # retrieval_log label only; not a ranking input
+
+ScopeFactory = Callable[[], AbstractAsyncContextManager[Any]]
+
+
+async def build_parity_memory_context(
+    store: MemoryStore,
+    *,
+    user_id: uuid.UUID,
+    question_text: str,
+    allowed_source_conversation_ids: list[uuid.UUID] | None,
+    log_retrieval: bool = False,
+) -> tuple[str, MemoryContextInputs]:
+    """Gather and render the memory block exactly as production does for a turn.
+
+    The question stands in for the latest user message. Evaluation is read-only:
+    trust recording and access touches are disabled.
+    """
+    inputs = await gather_memory_context_inputs(
+        store,
+        user_id=user_id,
+        pipeline=PARITY_PIPELINE,
+        query_text=question_text,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
+        record_side_effects=False,
+        log_retrieval=log_retrieval,
+        retrieval_triggered_by=PARITY_RETRIEVAL_TRIGGER,
+    )
+    return render_memory_context(inputs), inputs
+
+
+def build_parity_answer_messages(question_text: str, memory_context: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": compose_system_prompt(memory_context)},
+        {"role": "user", "content": question_text},
+    ]
+
+
+def _usage_from_response(response: Any) -> dict[str, int]:
+    usage: Any = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if usage is None:
+        return {}
+    if not isinstance(usage, dict):
+        model_dump = getattr(usage, "model_dump", None)
+        usage = model_dump() if callable(model_dump) else dict(getattr(usage, "__dict__", {}))
+    return {
+        key: int(usage[key])
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if isinstance(usage.get(key), int)
+    }
+
+
+async def _answer_with_messages(
+    messages: list[dict[str, str]],
+    *,
+    benchmark_mode: bool,
+) -> tuple[str, dict[str, int]]:
+    response = await _call_llm_with_provider_config(
+        model=ANSWER_MODEL,
+        messages=messages,
+        temperature=ANSWER_TEMPERATURE,
+        max_tokens=ANSWER_MAX_TOKENS,
+        bm_call_key="answer" if benchmark_mode else None,
+    )
+    if response is None:
+        return "", {}
+    return parse_answer(_extract_content(response)), _usage_from_response(response)
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+async def evaluate_single_parity(
+    store: MemoryStore,
+    question_id: str,
+    question_text: str,
+    reference: str,
+    category: str,
+    *,
+    allowed_source_conversation_ids: list[uuid.UUID] | None,
+    log_retrieval: bool = False,
+    user_id: uuid.UUID = TEST_USER_ID,
+    benchmark_mode: bool = True,
+    scope_factory: ScopeFactory | None = None,
+) -> dict[str, Any]:
+    """Evaluate one question through the production memory prompt surface.
+
+    ``scope_factory`` opens the account compute scope a production chat turn
+    runs in; only the qualified embedding route needs it.
+    """
+    scope = scope_factory() if scope_factory is not None else nullcontext()
+    async with scope:
+        memory_context, inputs = await build_parity_memory_context(
+            store,
+            user_id=user_id,
+            question_text=question_text,
+            allowed_source_conversation_ids=allowed_source_conversation_ids,
+            log_retrieval=log_retrieval,
+        )
+    messages = build_parity_answer_messages(question_text, memory_context)
+    hypothesis, answer_usage = await _answer_with_messages(messages, benchmark_mode=benchmark_mode)
+    judgment, judge_usage = await _judge_with_usage(
+        question_text,
+        hypothesis,
+        reference,
+        benchmark_mode=benchmark_mode,
+    )
+    return {
+        "question_id": question_id,
+        "question": question_text,
+        "reference": reference,
+        "hypothesis": hypothesis,
+        "category": category,
+        "judgment": judgment,
+        "memories_used": len(inputs.retrieved),
+        "l0_used": len(inputs.l0_memories),
+        "summaries_used": len(inputs.summaries),
+        "retrieval_mode": inputs.retrieval_mode,
+        "memory_context": memory_context,
+        "memory_context_sha256": _sha256_text(memory_context),
+        "system_prompt_sha256": _sha256_text(messages[0]["content"]),
+        "answer_usage": answer_usage,
+        "judge_usage": judge_usage,
+    }
+
+
 def score_accuracy(results: list[dict[str, Any]]) -> dict[str, float]:
     category_scores: dict[str, dict[str, int]] = {
         cat: {"correct": 0, "total": 0} for cat in ACCURACY_CATEGORIES
@@ -569,6 +731,9 @@ async def run_evaluation(
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL not set")
 
+    from orchestrator.eval.bench_db import assert_benchmark_database, check_benchmark_dsn
+
+    check_benchmark_dsn(settings.database_url)
     # Create pool directly
     pool = await asyncpg.create_pool(
         dsn=settings.database_url,
@@ -577,6 +742,7 @@ async def run_evaluation(
     )
 
     try:
+        await assert_benchmark_database(pool, settings.database_url)
         encryption = ContentEncryption(settings.daemon_encryption_key)
         store = MemoryStore(pool, encryption)
 

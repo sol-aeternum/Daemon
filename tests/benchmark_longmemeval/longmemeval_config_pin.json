@@ -25,7 +25,7 @@
       "legacy_fallback_message_roles": [
         "user"
       ],
-      "prompt_sha256": "946c5b14964f0309857d499bb0a8e9ec4d4194f4ff69fb00514dc80b3a49568c",
+      "prompt_sha256": "d290210a8a62bf63b506651d0ee46938c7c03848bc9cbd8a4708f1dfaf0627fd",
       "benchmark_mode": {
         "model": "openrouter/openai/gpt-4o-2024-08-06",
         "endpoint_slug": "openai",
@@ -93,7 +93,7 @@
       "results_filename": "longmemeval_results.jsonl",
       "checkpoint_filename": "longmemeval_checkpoint.json",
       "score_filename": "longmemeval_score.json",
-      "checkpoint_version": 2
+      "checkpoint_version": 3
     },
     "benchmark_user": {
       "user_id": "12345678-1234-5678-1234-567812345678",

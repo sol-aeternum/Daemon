@@ -10,11 +10,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from orchestrator.eval.fact_harness import (
+    CHECKPOINT_VERSION,
     LongMemEvalFactRunner,
     load_dataset,
     load_runner_checkpoint,
 )
 from tests.longmemeval.ingest import build_corpus_key
+
+
+@pytest.fixture(autouse=True)
+def _marked_database_for_reset_tests(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reset-behaviour tests run against fake pools; the guard has its own tests."""
+    if request.node.name.startswith("test_reset_canonical_benchmark"):
+        monkeypatch.setattr("orchestrator.eval.fact_harness.assert_benchmark_database", AsyncMock())
 
 
 def write_dataset(path: Path, payload: list[dict[str, Any]]) -> None:
@@ -36,11 +46,53 @@ def make_runner(
 
 def fake_harness_settings() -> SimpleNamespace:
     return SimpleNamespace(
-        database_url="postgresql://daemon:daemon@postgres/daemon",
+        database_url="postgresql://bench:bench@127.0.0.1:55432/daemon_lme_bench",
         daemon_encryption_key="test-key",
         embedding_query_model="voyage-4-lite",
         embedding_dimensions=2048,
+        daemon_inference_policy=None,
+        daemon_model_routing=None,
     )
+
+
+FAKE_FINGERPRINT = {"sha256": "f" * 64, "tables": {}}
+
+
+def patch_bench_runtime(
+    monkeypatch: pytest.MonkeyPatch, *, conversations: set[str] | None = None
+) -> dict[str, Any]:
+    """Stub the benchmark-database side of the runner (guard, account, state reads)."""
+    calls: dict[str, Any] = {"rollbacks": []}
+    target = "orchestrator.eval.fact_harness"
+    monkeypatch.setattr(f"{target}.check_benchmark_dsn", lambda dsn: "daemon_lme_bench")
+    monkeypatch.setattr(f"{target}.assert_benchmark_database", AsyncMock())
+    monkeypatch.setattr(f"{target}.ensure_benchmark_account", AsyncMock())
+    monkeypatch.setattr(
+        f"{target}.fingerprint_benchmark_state", AsyncMock(return_value=FAKE_FINGERPRINT)
+    )
+    monkeypatch.setattr(
+        f"{target}.list_benchmark_conversation_ids",
+        AsyncMock(return_value=set(conversations or set())),
+    )
+
+    async def fake_rollback(pool: Any, user_id: Any, ids: set[str]) -> dict[str, int]:
+        calls["rollbacks"].append(set(ids))
+        return {"conversations": len(ids), "memories": 0, "memory_extraction_log": 0}
+
+    monkeypatch.setattr(f"{target}.rollback_orphan_conversations", fake_rollback)
+    monkeypatch.setattr(
+        f"{target}.summarize_ingest_routes",
+        AsyncMock(return_value={"extraction_models": {}, "memory_embeddings": {}}),
+    )
+    monkeypatch.setattr(
+        f"{target}.summarize_compute_spend", AsyncMock(return_value={"by_model": []})
+    )
+    monkeypatch.setattr(f"{target}.git_state", lambda root=None: {"sha": "abc", "dirty": False})
+    monkeypatch.setattr(
+        f"{target}.create_test_user",
+        AsyncMock(return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")),
+    )
+    return calls
 
 
 def test_load_dataset_rejects_missing_path(tmp_path: Path) -> None:
@@ -64,7 +116,7 @@ def test_load_runner_checkpoint_rejects_dataset_mismatch(tmp_path: Path) -> None
         json.dumps(
             {
                 "dataset_path": str(tmp_path / "other.json"),
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "phases": {
                     "ingest": {"results": {}},
                     "evaluate": {"results": {}},
@@ -96,7 +148,10 @@ def test_load_runner_checkpoint_rejects_legacy_checkpoint_version(
         )
     )
 
-    with pytest.raises(ValueError, match="corpus-first LongMemEval harness requires version 2"):
+    with pytest.raises(
+        ValueError,
+        match=f"production-parity LongMemEval harness requires version {CHECKPOINT_VERSION}",
+    ):
         load_runner_checkpoint(checkpoint_path, dataset_path=tmp_path / "dataset.json")
 
 
@@ -132,7 +187,7 @@ async def test_ingest_resumes_from_checkpoint(
     runner.checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(dataset_path),
                 "phases": {
                     "ingest": {
@@ -165,11 +220,13 @@ async def test_ingest_resumes_from_checkpoint(
         "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
     monkeypatch.setattr(
-        "orchestrator.eval.fact_harness.create_test_user", AsyncMock(return_value="user-id")
+        "orchestrator.eval.fact_harness.create_test_user",
+        AsyncMock(return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")),
     )
 
+    patch_bench_runtime(monkeypatch)
     ingest_session_mock = AsyncMock(return_value={"session_id": "session-2", "status": "complete"})
-    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session", ingest_session_mock)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session_parity", ingest_session_mock)
 
     results = await runner.ingest()
 
@@ -216,10 +273,11 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
     runner.checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(dataset_path),
                 "phases": {
                     "ingest": {
+                        "status": "completed",
                         "results": {
                             shared_key: {
                                 "corpus_key": shared_key,
@@ -227,7 +285,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
                                 "conversation_id": shared_conversation_id,
                                 "status": "complete",
                             }
-                        }
+                        },
                     },
                     "evaluate": {
                         "results": {
@@ -256,7 +314,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
     )
     monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.fact_harness.MemoryStore", lambda pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
 
     evaluate_single_mock = AsyncMock(
@@ -270,7 +328,10 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
             "memories_used": 1,
         }
     )
-    monkeypatch.setattr("orchestrator.eval.fact_harness.evaluate_single", evaluate_single_mock)
+    patch_bench_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.evaluate_single_parity", evaluate_single_mock
+    )
 
     results = await runner.evaluate()
 
@@ -333,7 +394,8 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
         "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
     monkeypatch.setattr(
-        "orchestrator.eval.fact_harness.create_test_user", AsyncMock(return_value="user-id")
+        "orchestrator.eval.fact_harness.create_test_user",
+        AsyncMock(return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")),
     )
 
     async def fake_ingest_session(**kwargs: Any) -> dict[str, Any]:
@@ -356,8 +418,11 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
             "memories_used": 1,
         }
 
-    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session", fake_ingest_session)
-    monkeypatch.setattr("orchestrator.eval.fact_harness.evaluate_single", fake_evaluate_single)
+    patch_bench_runtime(monkeypatch)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session_parity", fake_ingest_session)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.evaluate_single_parity", fake_evaluate_single
+    )
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
     )
@@ -384,7 +449,7 @@ def test_score_uses_checkpoint_results_and_writes_summary(
     runner.checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(dataset_path),
                 "phases": {
                     "ingest": {"results": {}},
@@ -449,7 +514,7 @@ def test_load_runner_checkpoint_missing_phases_get_defaults(tmp_path: Path) -> N
     checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(tmp_path / "dataset.json"),
             }
         )
@@ -476,7 +541,7 @@ def test_load_runner_checkpoint_preserves_existing_results_on_missing_phases(
     checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(tmp_path / "dataset.json"),
                 "phases": {
                     "ingest": {
@@ -512,7 +577,7 @@ def test_score_falls_back_to_jsonl_when_evaluate_results_empty(
     runner.checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(dataset_path),
                 "phases": {
                     "ingest": {
@@ -570,7 +635,7 @@ def test_score_raises_when_no_results_available(tmp_path: Path) -> None:
     runner.checkpoint_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": CHECKPOINT_VERSION,
                 "dataset_path": str(dataset_path),
                 "phases": {
                     "ingest": {
@@ -821,3 +886,31 @@ def test_legacy_runner_module_path_exports_fact_harness_aliases() -> None:
     assert LongMemEvalRunner is _Fact
     assert LongMemEvalFactRunner is _Fact
     assert reset_canonical_benchmark is _reset
+
+
+@pytest.mark.asyncio
+async def test_reset_refuses_unmarked_database_before_any_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.eval.bench_db import BenchmarkDatabaseGuardError
+    from orchestrator.eval.fact_harness import reset_canonical_benchmark
+
+    class ProductionLikePool:
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        async def fetchrow(self, query: str, *_args: object) -> dict[str, object]:
+            return {"name": "daemon", "marker": None}
+
+        async def execute(self, query: str, *_args: object) -> str:
+            self.executed.append(query)
+            return "DELETE 1"
+
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.get_settings",
+        lambda: SimpleNamespace(database_url="postgresql://u:p@127.0.0.1:5432/daemon"),
+    )
+    pool = ProductionLikePool()
+    with pytest.raises(BenchmarkDatabaseGuardError):
+        await reset_canonical_benchmark(cast(Any, pool), None)
+    assert pool.executed == []
