@@ -169,6 +169,137 @@ async function waitForGoogleButton(): Promise<HTMLElement> {
 }
 
 describe('AuthLanding — hosted Google-first login', () => {
+  it('keeps the latest A setup after client A-B-A even when older challenges settle late', async () => {
+    installGoogleMock();
+    type Started = Awaited<ReturnType<typeof startGoogleSignIn>>;
+    let resolveA!: (value: Started) => void;
+    let resolveB!: (value: Started) => void;
+    mockedStartGoogle
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveA = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveB = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'latest-A',
+        nonce: 'latest-A-nonce',
+      });
+    const config = (clientId: string) =>
+      hostedConfig({ google: { enabled: true, clientId } });
+    const view = render(
+      <AuthLanding mode="hosted" runtimeConfig={config('client-A')} />,
+    );
+    await waitFor(() => expect(mockedStartGoogle).toHaveBeenCalledTimes(1));
+    view.rerender(
+      <AuthLanding mode="hosted" runtimeConfig={config('client-B')} />,
+    );
+    await waitFor(() => expect(mockedStartGoogle).toHaveBeenCalledTimes(2));
+    view.rerender(
+      <AuthLanding mode="hosted" runtimeConfig={config('client-A')} />,
+    );
+    await waitFor(() => expect(mockGoogleInitialize).toHaveBeenCalledTimes(1));
+    expect(mockGoogleInitialize).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        client_id: 'client-A',
+        nonce: 'latest-A-nonce',
+      }),
+    );
+    const latestCallback = capturedGoogleCallback;
+    await act(async () => {
+      resolveA({
+        success: true,
+        challengeId: 'obsolete-A',
+        nonce: 'obsolete-A-nonce',
+      });
+      resolveB({ success: false, error: 'obsolete-B-error' });
+    });
+    expect(mockGoogleInitialize).toHaveBeenCalledTimes(1);
+    expect(mockGoogleRenderButton).toHaveBeenCalledTimes(1);
+    expect(capturedGoogleCallback).toBe(latestCallback);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('fake-google-iframe')).toBeTruthy();
+    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('rejects stale Google callbacks and completion across client A-B-A while permitting the replacement A', async () => {
+    installGoogleMock();
+    type Completed = Awaited<ReturnType<typeof completeGoogleSignIn>>;
+    let resolveOld!: (value: Completed) => void;
+    mockedCompleteGoogle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    mockedStartGoogle
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'old-A',
+        nonce: 'old-A-nonce',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'B',
+        nonce: 'B-nonce',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'new-A',
+        nonce: 'new-A-nonce',
+      });
+    const config = (clientId: string) =>
+      hostedConfig({ google: { enabled: true, clientId } });
+    const view = render(
+      <AuthLanding mode="hosted" runtimeConfig={config('client-A')} />,
+    );
+    await waitForGoogleButton();
+    const oldA = capturedGoogleCallback;
+    act(() => oldA?.({ credential: 'fictional-old-A' }));
+    expect(mockedCompleteGoogle).toHaveBeenCalledTimes(1);
+    const oldSignal = mockedCompleteGoogle.mock.calls[0][5]!;
+    expect(oldSignal.aborted).toBe(false);
+    view.rerender(
+      <AuthLanding mode="hosted" runtimeConfig={config('client-B')} />,
+    );
+    await waitFor(() => expect(mockGoogleInitialize).toHaveBeenCalledTimes(2));
+    expect(oldSignal.aborted).toBe(true);
+    const oldB = capturedGoogleCallback;
+    view.rerender(
+      <AuthLanding mode="hosted" runtimeConfig={config('client-A')} />,
+    );
+    await waitFor(() => expect(mockGoogleInitialize).toHaveBeenCalledTimes(3));
+    const newA = capturedGoogleCallback;
+    await act(async () => {
+      oldA?.({ credential: 'fictional-late-old-A' });
+      oldB?.({ credential: 'fictional-late-B' });
+      resolveOld({ success: true });
+    });
+    expect(mockedCompleteGoogle).toHaveBeenCalledTimes(1);
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('fake-google-iframe')).toBeTruthy();
+    await act(async () => newA?.({ credential: 'fictional-new-A' }));
+    expect(mockedCompleteGoogle).toHaveBeenCalledTimes(2);
+    expect(mockedCompleteGoogle).toHaveBeenLastCalledWith(
+      'new-A',
+      'new-A-nonce',
+      'fictional-new-A',
+      'temporary',
+      undefined,
+      expect.any(AbortSignal),
+    );
+    await waitFor(() => expect(mockPush).toHaveBeenCalledExactlyOnceWith('/'));
+  });
+
   it('renders the official GIS button with a server nonce and defaults to a temporary session', async () => {
     installGoogleMock();
     mockSearchParams = new URLSearchParams('invite=invite-secret');

@@ -40,6 +40,8 @@ No change is complete until these pass. Run them locally; CI runs the same comma
 **Frontend** (`frontend/`):
 - `npm ci`
 - `npm run security:braces` — vendored `braces` integrity and regressions (`docs/BRACES_SECURITY_MAINTENANCE.md`)
+- `npm run test:hmr` — exact Next dev-module integrity and deterministic protocol controls
+- `npm run test:hmr:browser` — separate eight-case synthetic HMR screen; the unchanged default browser inventory remains a separate gate (`docs/NEXT_HMR_MAINTENANCE.md`)
 - `npm run type-check` — Next 16 `build` does not type-check
 - `npm run lint` — eslint (`next lint` was removed in Next 16)
 - `npm run format:check`

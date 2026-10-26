@@ -16,10 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # pyrightconfig.json points basedpyright at .uv-venv (the audit-mandated
-      # project environment). uv must create/use the same directory in CI or
-      # basedpyright exits 3 with "venv .uv-venv subdirectory not found".
-      UV_PROJECT_ENVIRONMENT: .uv-venv
+      # Match pyrightconfig.json and tool.basedpyright in pyproject.toml.
+      # Name alignment does not supply a hosted ownership bootstrap.
+      UV_PROJECT_ENVIRONMENT: .venv
     services:
       # Disposable database for the durable-task race and fencing tests
       # (docs/DURABLE_REQUEST_DESIGN.md §12 decision 10). Only
@@ -88,7 +87,7 @@ jobs:
           # Dump pending asyncio tasks before the 120s faulthandler watchdog (#454).
           DAEMON_PYTEST_ASYNCIO_DUMP_S: "90"
           TASKS_TEST_DATABASE_URL: postgresql://tasks:tasks-ci-only@127.0.0.1:5432/tasks_test
-        run: bash scripts/run_backend_pytest.sh
+        run: uv run python scripts/run_hosted_backend_pytest.py
 
       - name: Upload backend pytest diagnostics
         if: always()
@@ -99,6 +98,7 @@ jobs:
           path: |
             pytest-diagnostics/pytest.log
             pytest-diagnostics/pytest-results.xml
+            pytest-diagnostics/hosted-closure.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -124,6 +124,9 @@ jobs:
 
       - name: Vendored braces integrity and security regressions
         run: npm run security:braces
+
+      - name: Guarded HMR integrity and protocol controls
+        run: npm run test:hmr
 
       - name: Type check
         run: npm run type-check
@@ -162,7 +165,10 @@ jobs:
         run: uv run pytest -q frontend/e2e/cache_fixture_ownership.py
 
       - name: Browser HTTP-cache isolation regression
-        run: npx playwright test --config playwright.cache.config.ts
+        run: npm run test:browser:cache
+
+      - name: Synthetic Webpack HMR browser regressions
+        run: npm run test:hmr:browser
 
       - name: Browser regression inventory
         continue-on-error: true

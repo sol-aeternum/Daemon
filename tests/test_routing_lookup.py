@@ -26,7 +26,7 @@ import pytest
 
 from orchestrator import model_routing
 from orchestrator.entitlements.errors import PolicyError
-from test_compute_runtime import routing_document
+from tests.test_compute_runtime import routing_document
 
 LUNA = "openrouter/openai/gpt-6-luna"
 SOL = "openrouter/openai/gpt-6.1-sol"

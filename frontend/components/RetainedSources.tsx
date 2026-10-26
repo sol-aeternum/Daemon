@@ -79,7 +79,7 @@ function RetainedSourcesInner({ conversationId, generation }: InnerProps) {
     'loading',
   );
   const [notice, setNotice] = useState<string | null>(null);
-  const [running, setRunning] = useState<RunningOp>(null);
+  const [running, setRunning] = useState<RunningOp>('list');
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [needsReconcile, setNeedsReconcile] = useState(false);
 
@@ -141,8 +141,8 @@ function RetainedSourcesInner({ conversationId, generation }: InnerProps) {
     }
   }, [confirmId]);
 
-  const load = useCallback(
-    async (targetOffset: number): Promise<void> => {
+  const claimList = useCallback(
+    (targetOffset: number) => {
       if (opAbortRef.current || listAbortRef.current || runningRef.current)
         return; // busy guard: no concurrent operations
       const controller = new AbortController();
@@ -152,12 +152,8 @@ function RetainedSourcesInner({ conversationId, generation }: InnerProps) {
         timedOut = true;
         controller.abort();
       }, LIST_TIMEOUT_MS);
-      setRunningSafe('list');
-      setConfirmId(null);
-      setNotice(null);
-      setStatus('loading');
-      setPage(null);
-      try {
+      runningRef.current = 'list';
+      const read = async () => {
         const authHeader = await awaitSnapshotOperation(
           ensureAuthHeader(),
           controller.signal,
@@ -224,29 +220,48 @@ function RetainedSourcesInner({ conversationId, generation }: InnerProps) {
         setNeedsReconcile(false);
         setOffset(targetOffset);
         setStatus('ready');
-      } catch {
-        if (!current() || (controller.signal.aborted && !timedOut)) return; // external abort (unmount/auth change): leave state alone
-        if (mountedRef.current) {
-          setStatus('error');
-          setPage(null);
-        }
-      } finally {
-        clearTimeout(timer);
-        if (listAbortRef.current === controller) {
-          listAbortRef.current = null;
-          setRunningSafe(null);
-        }
-      }
+      };
+      return () =>
+        read()
+          .catch(() => {
+            if (!current() || (controller.signal.aborted && !timedOut)) return; // external abort (unmount/auth change): leave state alone
+            if (mountedRef.current) {
+              setStatus('error');
+              setPage(null);
+            }
+          })
+          .finally(() => {
+            clearTimeout(timer);
+            if (listAbortRef.current === controller) {
+              listAbortRef.current = null;
+              setRunningSafe(null);
+            }
+          });
     },
     [conversationId, current, setRunningSafe],
   );
 
+  const load = useCallback(
+    (targetOffset: number): Promise<void> => {
+      const read = claimList(targetOffset);
+      if (!read) return Promise.resolve();
+      setRunningSafe('list');
+      setConfirmId(null);
+      setNotice(null);
+      setStatus('loading');
+      setPage(null);
+      return read();
+    },
+    [claimList, setRunningSafe],
+  );
+
   useEffect(() => {
-    void load(0);
+    const read = claimList(0);
+    void read?.();
     return () => {
       listAbortRef.current?.abort();
     };
-  }, [load]);
+  }, [claimList]);
 
   const confirmRemove = useCallback(
     async (row: SnapshotRow): Promise<void> => {

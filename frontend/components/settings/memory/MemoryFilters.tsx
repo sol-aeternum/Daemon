@@ -38,42 +38,39 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedSource, setSelectedSource] = useState<string>('All');
   const [selectedStatus, setSelectedStatus] = useState<string>('Active');
-  // The list already loads with these defaults; re-emitting them on mount
-  // would reset it to page one and discard an early "Load more".
-  const initialRun = useRef(true);
+  // The parent owns the initial load. Effect replay/callback identity changes
+  // must not reapply unchanged defaults and discard an early "Load more".
+  const lastEmitted = useRef(JSON.stringify({ status: 'active' }));
+  const callback = useRef(onFilterChange);
+  useEffect(() => {
+    callback.current = onFilterChange;
+  }, [onFilterChange]);
 
   // Debounced search
   useEffect(() => {
-    if (initialRun.current) {
-      initialRun.current = false;
-      return;
+    const filters: FilterState = {};
+
+    if (searchQuery.trim()) {
+      filters.search = searchQuery.trim();
     }
+    if (selectedCategory !== 'All') {
+      filters.category = selectedCategory.toLowerCase();
+    }
+    const source = SOURCE_VALUES[selectedSource];
+    if (source) {
+      filters.source_type = source;
+    }
+    filters.status = selectedStatus.toLowerCase();
+
+    const signature = JSON.stringify(filters);
+    if (signature === lastEmitted.current) return;
     const timer = setTimeout(() => {
-      const filters: FilterState = {};
-
-      if (searchQuery.trim()) {
-        filters.search = searchQuery.trim();
-      }
-      if (selectedCategory !== 'All') {
-        filters.category = selectedCategory.toLowerCase();
-      }
-      const source = SOURCE_VALUES[selectedSource];
-      if (source) {
-        filters.source_type = source;
-      }
-      filters.status = selectedStatus.toLowerCase();
-
-      onFilterChange(filters);
+      lastEmitted.current = signature;
+      callback.current(filters);
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [
-    searchQuery,
-    selectedCategory,
-    selectedSource,
-    selectedStatus,
-    onFilterChange,
-  ]);
+  }, [searchQuery, selectedCategory, selectedSource, selectedStatus]);
 
   const handleSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {

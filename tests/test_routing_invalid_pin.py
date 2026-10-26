@@ -3,7 +3,7 @@
 import pytest
 
 from orchestrator.compute_runtime import ComputeUnavailable, choose_route, guarded_completion
-from test_model_routing import LUNA, dispatch_fixture, named_route
+from tests.test_model_routing import LUNA, dispatch_fixture, named_route
 
 
 @pytest.mark.parametrize("model", ["   ", "openrouter/", "///"])

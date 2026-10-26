@@ -26,8 +26,8 @@ from orchestrator.entitlements.receipts import (
     reconcile_receipts,
 )
 from orchestrator.entitlements.service import EntitlementService
-from test_compute_runtime import _route
-from test_model_routing import FLASH, accepted_single, dispatch_fixture, named_route
+from tests.test_compute_runtime import _route
+from tests.test_model_routing import FLASH, accepted_single, dispatch_fixture, named_route
 
 NOW = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
 ENDPOINT = "https://openrouter.ai/api/v1"

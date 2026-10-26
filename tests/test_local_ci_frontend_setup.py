@@ -31,7 +31,7 @@ def run_frontend_runner(
     tools = tmp_path / "tools"
     tools.mkdir()
     log = tmp_path / "commands"
-    environment = tmp_path / "explicit-env" if override else root / ".uv-venv"
+    environment = tmp_path / "explicit-env" if override else root / ".venv"
     # Only test-owned tool stubs run. The browser stub fails on a pristine checkout
     # unless the real runner scheduled locked Python setup before that gate.
     common = f'printf \'%s\\n\' "$(basename "$0") $*" >> {shlex.quote(str(log))}\n'
@@ -77,13 +77,14 @@ def test_frontend_only_schedules_locked_python_before_browser(
     result, commands = run_frontend_runner(tmp_path, override=override)
     assert result.returncode == 0, result.stdout + result.stderr
     assert commands.count("uv sync --locked") == 1
-    browser = "npx playwright test --config playwright.cache.config.ts"
+    browser = "npm --prefix frontend run test:browser:cache"
     ownership = "uv run pytest -q frontend/e2e/cache_fixture_ownership.py"
     assert commands.count(ownership) == 1
+    assert commands.count(browser) == 1
     assert commands.index("uv sync --locked") < commands.index("npm --prefix frontend run test:run")
     assert commands.index("npm --prefix frontend run test:run") < commands.index(ownership)
     assert commands.index(
-        "npm ci --prefix frontend --no-audit --no-fund --prefer-offline"
+        "npm ci --prefix frontend --no-audit --no-fund --offline"
     ) < commands.index(ownership)
     assert commands.index("uv sync --locked") < commands.index(ownership) < commands.index(browser)
 

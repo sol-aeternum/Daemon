@@ -55,7 +55,7 @@ from orchestrator.memory.titles import (
     IncompleteTitleResponse,
     generate_conversation_title,
 )
-from test_model_routing import GLM, LUNA, dispatch_fixture, last_kwargs, named_route
+from tests.test_model_routing import GLM, LUNA, dispatch_fixture, last_kwargs, named_route
 
 
 class CompletenessResponse:

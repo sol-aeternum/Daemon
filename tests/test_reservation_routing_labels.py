@@ -16,7 +16,7 @@ import pytest_asyncio
 from orchestrator import compute_runtime as runtime
 from orchestrator import model_routing
 from orchestrator.entitlements.service import EntitlementService
-from test_model_routing import LUNA, dispatch_fixture, named_route
+from tests.test_model_routing import LUNA, dispatch_fixture, named_route
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 MIGRATION = MIGRATIONS / "042_reservation_routing_labels.sql"

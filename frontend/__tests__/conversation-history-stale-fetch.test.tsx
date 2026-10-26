@@ -173,3 +173,35 @@ it.each([403, 404])(
     }
   },
 );
+
+it('drops a permanent selected-load failure across Home and a fresh A lookup', async () => {
+  let calls = 0;
+  const held = deferred();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      if (!String(input).endsWith('/conversations/conv-a')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ conversations: [] })),
+        );
+      }
+      calls++;
+      return calls === 1
+        ? Promise.resolve(new Response('missing', { status: 404 }))
+        : held.promise;
+    }),
+  );
+  state.search = 'id=conv-a';
+  const view = render(<OpenConversation />);
+  await screen.findByText('failure:permanent');
+  state.search = '';
+  view.rerender(<OpenConversation />);
+  expect(screen.getByText('failure:none')).toBeTruthy();
+  expect(screen.getByText('open:none')).toBeTruthy();
+  state.search = 'id=conv-a';
+  view.rerender(<OpenConversation />);
+  expect(screen.getByText('failure:none')).toBeTruthy();
+  await vi.waitFor(() => expect(calls).toBe(2));
+  await act(async () => held.resolve(conversation('conv-a')));
+  await screen.findByText('open:conv-a');
+});

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import subprocess
 from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -63,8 +64,37 @@ ALLOWLIST = frozenset(
 # the documented function will fail the gate.
 FUNCTION_ALLOWLIST: dict[str, frozenset[str]] = {
     "orchestrator/database_url.py": frozenset({"resolve_database_url"}),
+    # Standalone bootstrap reads and actual service-environment authentication;
+    # importing application Settings here would change the launch boundary.
+    "scripts/run_managed_backend_pytest.py": frozenset({"main"}),
+    "scripts/run_hosted_backend_pytest.py": frozenset({"main", "validate_manager"}),
 }
+LOCAL_HISTORICAL_PYTHON = frozenset(
+    {
+        "bc14-maintenance-20261023/transaction.py",
+        "bc14-maintenance-20261023/preserved-before-branch-amendment-20261023/transaction.py",
+        "bc14-maintenance-20261023/preserved-before-observer-amendment-20261023/transaction.py",
+    }
+)
 ENVIRON_READ_METHODS = frozenset({"copy", "get", "items", "keys", "values"})
+
+
+def _direct_operational_body(node: ast.AST) -> bool:
+    """Keep nested definition expressions, lambda/class scopes outside exceptions.
+
+    General alias resolution evaluates defaults/decorators in the parent scope;
+    that evaluation rule must not expand an operational body exception.
+    """
+    child = node
+    parent = getattr(child, "parent", None)
+    while parent is not None:
+        if isinstance(parent, (ast.Lambda, ast.ClassDef)):
+            return False
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return child in parent.body
+        child = parent
+        parent = getattr(child, "parent", None)
+    return False
 
 
 def _enclosing_function(node: ast.AST) -> ast.AST | None:
@@ -1239,7 +1269,15 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                     # so two same-named methods in different enclosing
                     # classes resolve to distinct allowlist keys.
                     func_qname = _qualified_function_name(node)
-                    if func_qname is not None and func_qname in module_allowlist:
+                    operational = rel in {
+                        "scripts/run_managed_backend_pytest.py",
+                        "scripts/run_hosted_backend_pytest.py",
+                    }
+                    if (
+                        func_qname is not None
+                        and func_qname in module_allowlist
+                        and (not operational or _direct_operational_body(node))
+                    ):
                         continue
                 aliases = _aliases_for(node)
                 if isinstance(node, ast.Call):
@@ -1444,19 +1482,148 @@ def test_ast_gate_scans_every_backend_package() -> None:
     for required in ("orchestrator", "providers", "scripts", "config", "db", "council", "backend"):
         assert required in scanned, f"backend package `{required}/` is not covered by the gate"
 
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "--cached", "-z"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("utf-8")
+        .split("\0")
+    )
+    _assert_package_coverage(REPO_ROOT, scanned, set(tracked))
+
+
+def _assert_package_coverage(root: pathlib.Path, scanned: set[str], tracked: set[str]) -> None:
+    assert not tracked.intersection(LOCAL_HISTORICAL_PYTHON), "Historical evidence must not ship"
+
     # Every top-level directory that contains Python and is not test/tooling
     # scaffolding must be in SCAN_DIRS, so a newly added backend package
     # cannot silently escape the gate.
     ignored = {"tests", "migrations", "frontend", "docs", ".venv", "node_modules"}
-    for child in REPO_ROOT.iterdir():
+    for child in root.iterdir():
+        if child.name == "bc14-maintenance-20261023":
+            assert not child.is_symlink() and child.is_dir(), "Historical root substitution"
+            for path in child.rglob("*"):
+                assert not path.is_symlink(), "Historical evidence symlink substitution"
+                if path.suffix in {".py", ".pyi"}:
+                    assert path.is_file(), "Historical Python must be a regular file"
+                    assert path.relative_to(root).as_posix() in LOCAL_HISTORICAL_PYTHON, (
+                        "Unclassified Python in historical evidence"
+                    )
+            continue
         if not child.is_dir() or child.name.startswith(".") or child.name in ignored:
             continue
-        if not any(child.rglob("*.py")):
+        if not any(path.suffix in {".py", ".pyi"} for path in child.rglob("*")):
             continue
         assert child.name in scanned, (
             f"top-level package `{child.name}/` contains Python but is not in SCAN_DIRS; "
             "add it to the gate or to the ignored set with a rationale"
         )
+
+
+def test_operational_exception_scopes_are_exact() -> None:
+    assert FUNCTION_ALLOWLIST == {
+        "orchestrator/database_url.py": frozenset({"resolve_database_url"}),
+        "scripts/run_managed_backend_pytest.py": frozenset({"main"}),
+        "scripts/run_hosted_backend_pytest.py": frozenset({"main", "validate_manager"}),
+    }
+
+
+def test_operational_exceptions_do_not_escape_qualified_bodies(tmp_path, monkeypatch) -> None:
+    import sys
+
+    mod = sys.modules[__name__]
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for filename, allowed in (
+        ("run_managed_backend_pytest.py", {"main"}),
+        ("run_hosted_backend_pytest.py", {"main", "validate_manager"}),
+    ):
+        lines = ["import os", 'module = os.getenv("MODULE")']
+        expected = {2}
+        for name in ("main", "validate_manager", "sibling"):
+            lines += [
+                '@decorate(os.getenv("DECORATOR"))',
+                f'def {name}(arg=os.getenv("DEFAULT")):',
+            ]
+            expected.update({len(lines) - 1, len(lines)})
+            lines += ['    value = os.getenv("BODY")']
+            if name not in allowed:
+                expected.add(len(lines))
+            lines += [
+                '    @decorate(os.getenv("NESTED_DECORATOR"))',
+                '    def nested(arg=os.getenv("NESTED_DEFAULT")):',
+            ]
+            expected.update({len(lines) - 1, len(lines)})
+            lines += ['        return os.getenv("NESTED")']
+            expected.add(len(lines))
+            lines += ['    anonymous = lambda: os.getenv("LAMBDA")']
+            expected.add(len(lines))
+            lines += ['    defaulted = lambda arg=os.getenv("LAMBDA_DEFAULT"): arg']
+            expected.add(len(lines))
+            lines += ["    class Nested:", '        value = os.getenv("CLASS_BODY")']
+            expected.add(len(lines))
+        lines += ["class Other:", "    def main(self):", '        return os.getenv("METHOD")']
+        expected.add(len(lines))
+        path = scripts / filename
+        path.write_text("\n".join(lines) + "\n")
+        monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(mod, "SCAN_DIRS", (scripts,))
+        found = {line for source, line, _ in mod._scan_for_direct_env_access() if source == path}
+        assert found == expected
+
+
+def test_historical_boundary_accepts_absence_and_exact_untracked_files(tmp_path) -> None:
+    from tests.test_type_source_boundary import LOCAL_EVIDENCE
+
+    assert LOCAL_HISTORICAL_PYTHON == LOCAL_EVIDENCE
+    _assert_package_coverage(tmp_path, set(), set())
+    for name in LOCAL_HISTORICAL_PYTHON:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# retained synthetic evidence\n")
+    _assert_package_coverage(tmp_path, set(), set())
+
+
+def test_historical_boundary_rejects_tracked_extra_and_substituted_sources(tmp_path) -> None:
+    import pytest
+
+    root = tmp_path / "bc14-maintenance-20261023"
+    root.mkdir()
+    for name in LOCAL_HISTORICAL_PYTHON:
+        with pytest.raises(AssertionError, match="must not ship"):
+            _assert_package_coverage(tmp_path, set(), {name})
+    for suffix in (".py", ".pyi"):
+        extra = root / ("new" + suffix)
+        extra.write_text("# not historical\n")
+        with pytest.raises(AssertionError, match="Unclassified"):
+            _assert_package_coverage(tmp_path, set(), set())
+        extra.unlink()
+    link = root / "transaction.py"
+    link.symlink_to(tmp_path / "absent")
+    with pytest.raises(AssertionError, match="symlink"):
+        _assert_package_coverage(tmp_path, set(), set())
+    link.unlink()
+    link.mkdir()
+    with pytest.raises(AssertionError, match="regular file"):
+        _assert_package_coverage(tmp_path, set(), set())
+    link.rmdir()
+    root.rmdir()
+    root.symlink_to(tmp_path / "absent", target_is_directory=True)
+    with pytest.raises(AssertionError, match="root substitution"):
+        _assert_package_coverage(tmp_path, set(), set())
+
+
+def test_new_production_package_is_not_historical_evidence(tmp_path) -> None:
+    import pytest
+
+    package = tmp_path / "new_product_package"
+    package.mkdir()
+    (package / "new.pyi").write_text("value: str\n")
+    with pytest.raises(AssertionError, match="not in SCAN_DIRS"):
+        _assert_package_coverage(tmp_path, set(), set())
 
 
 def test_ast_gate_resolves_aliases_per_function_scope(tmp_path, monkeypatch) -> None:

@@ -1,6 +1,7 @@
 {
+  "include": ["orchestrator", "providers", "scripts", "tests", "tts", "backend", "config", "council", "db", "frontend/e2e", "test_preserve.py", "test_subagents.py"],
   "venvPath": ".",
-  "venv": ".uv-venv",
+  "venv": ".venv",
   "typeCheckingMode": "standard",
   "baselineFile": ".basedpyright/baseline.json"
 }

@@ -51,12 +51,6 @@ export function HomeSuggestionsPreference() {
       active.current === owner &&
       !owner.signal.aborted &&
       lifetime === getAuthGeneration();
-    setView((previous) => ({
-      generation: lifetime,
-      enabled: previous.generation === lifetime ? previous.enabled : null,
-      pending: true,
-      unconfirmed: false,
-    }));
 
     // Bound auth refresh, response headers and JSON parsing as well as fetch.
     const request = async (method: 'GET' | 'PATCH') => {
@@ -120,43 +114,45 @@ export function HomeSuggestionsPreference() {
       }
     };
 
-    try {
-      const result = await request(enabled === undefined ? 'GET' : 'PATCH');
-      if (current())
-        setView({
-          generation: lifetime,
-          enabled: result,
-          pending: false,
-          unconfirmed: false,
-        });
-    } catch {
-      if (!current()) return;
-      // A failed write may have committed. Keep retry-off even if the stored
-      // flag reads false: Redis synchronization was not acknowledged.
-      setView({
-        generation: lifetime,
-        enabled: null,
-        pending: enabled !== undefined,
-        unconfirmed: enabled !== undefined,
-      });
-      if (enabled !== undefined) {
-        let result: Preference = null;
-        try {
-          result = await request('GET');
-        } catch {
-          /* Remain unknown. */
-        }
+    return request(enabled === undefined ? 'GET' : 'PATCH')
+      .then((result) => {
         if (current())
           setView({
             generation: lifetime,
             enabled: result,
             pending: false,
-            unconfirmed: true,
+            unconfirmed: false,
           });
-      }
-    } finally {
-      if (active.current === owner) active.current = null;
-    }
+      })
+      .catch(async () => {
+        if (!current()) return;
+        // A failed write may have committed. Keep retry-off even if the stored
+        // flag reads false: Redis synchronization was not acknowledged.
+        setView({
+          generation: lifetime,
+          enabled: null,
+          pending: enabled !== undefined,
+          unconfirmed: enabled !== undefined,
+        });
+        if (enabled !== undefined) {
+          let result: Preference = null;
+          try {
+            result = await request('GET');
+          } catch {
+            /* Remain unknown. */
+          }
+          if (current())
+            setView({
+              generation: lifetime,
+              enabled: result,
+              pending: false,
+              unconfirmed: true,
+            });
+        }
+      })
+      .finally(() => {
+        if (active.current === owner) active.current = null;
+      });
   }, []);
 
   useEffect(() => {
@@ -199,6 +195,14 @@ export function HomeSuggestionsPreference() {
         disabled={scoped.pending}
         className="min-h-touch rounded-md border border-border-primary px-3 py-2 text-sm text-text-primary disabled:opacity-50"
         onClick={() => {
+          if (active.current) return;
+          const lifetime = getAuthGeneration();
+          setView((previous) => ({
+            generation: lifetime,
+            enabled: previous.generation === lifetime ? previous.enabled : null,
+            pending: true,
+            unconfirmed: false,
+          }));
           void run(scoped.enabled === false && !scoped.unconfirmed);
         }}
       >

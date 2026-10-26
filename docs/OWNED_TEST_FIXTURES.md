@@ -104,6 +104,24 @@ manifests or make unmerged/uncertain tasks eligible for disposal.
 
 ## Commands and boundaries
 
+Local CI separates cache-only installs from online vulnerability audits. Its main
+`npm ci --prefix frontend --no-audit --no-fund --offline` retains native lifecycle
+script policy. The local braces gate invokes
+`npm --prefix frontend run security:braces:offline`: its test-only install retains `--ignore-scripts` and
+adds `--offline --no-audit --no-fund`. Missing or corrupt cached packages must fail
+that install, not fall back to downloads. Hosted CI still calls `security:braces`,
+whose nested install keeps the original `npm ci --prefix vendor/braces-test-tools
+--ignore-scripts` policy; the main-lock cache need not contain those test tools.
+All other regression and explicit audit steps are identical in both braces
+commands; gate order and blocking severity are unchanged. Explicit audits require non-fix
+`npm audit --offline=false --registry=https://registry.npmjs.org --audit-level=high`
+(with the existing braces-tools prefix where applicable). These must be genuine
+online advisory queries, not offline-cache passes or claims of a verified remote
+audit; query failures and high-severity findings remain blocking. Launch eligibility,
+including credentials and unrelated
+npm updater requests, must be established separately; these flags grant no extra
+network access or gate waiver.
+
 Run through the registered task's `opencode-work run TASK --` wrapper:
 
 ```sh

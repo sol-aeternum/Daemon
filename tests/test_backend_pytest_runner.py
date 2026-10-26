@@ -6,8 +6,11 @@ written into pytest temporary directories. There is no network access, no
 production probing, no credential use, and the synthetic children never import
 the repository conftest or .env: each case dir carries its own minimal
 ``pytest.ini``, is passed to pytest explicitly, and runs with a stripped
-environment. Subprocess bounds make sure a defective runner can never hang
-the outer suite, and timed-out process groups are SIGKILLed before asserting.
+environment. The managed entry uses an original bootstrap/private-channel
+handoff and one dedicated subreaper per invocation. Trusted same-UID programme
+coordination is assumed; deliberate/buggy external cgroup migration is NOT excluded.
+Missing managed handoff fails before launch. Rescue never produces a normal pass.
+Local repair; managed qualification and final independent review are tracked separately.
 Most contract tests substitute an offline uv shim while retaining real pytest;
 fractional deadlines use a controlled sleeper to avoid pytest startup timing.
 """
@@ -17,7 +20,6 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -26,6 +28,8 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
+
+from tests import backend_pytest_supervisor as supervisor
 
 # The runner and its tests are Linux/GNU-coreutils only by design.
 pytestmark = pytest.mark.skipif(
@@ -145,7 +149,8 @@ def test_synthetic_signal_resistant_child() -> None:
     ignore_abrt = (
         "import os,signal,time;"
         "signal.signal(signal.SIGABRT, signal.SIG_IGN);"
-        "open(os.environ['{PID_MARKER_VAR}'], 'w').write(str(os.getpid()));"
+        "p=os.environ['{PID_MARKER_VAR}'];"
+        "open(p, 'x').write('started:'+os.path.basename(p)+'\\\\n');"
         "time.sleep(120)"
     )
     child = subprocess.Popen([sys.executable, "-c", ignore_abrt])
@@ -261,7 +266,7 @@ def _write_fractional_deadline_tools(tmp: Path) -> Path:
     """Record decimal forwarding and stall without paying pytest startup cost.
 
     The real GNU timeout still supervises the production pipeline. Its uv
-    substitute ignores ABRT and records its own pid before execing a sleeper,
+    substitute ignores ABRT and records positive same-run startup before execing a sleeper,
     so the test also verifies that kill-after removes the timed process.
     Python abort/collection stacks remain covered by the real-uv tests below.
     """
@@ -272,7 +277,8 @@ def _write_fractional_deadline_tools(tmp: Path) -> Path:
     uv.write_text(
         "#!/usr/bin/env bash\n"
         "trap '' ABRT\n"
-        f'printf "%s\\n" "$$" > "${PID_MARKER_VAR}"\n'
+        "set -o noclobber\n"
+        f'printf "started:%s\\n" "${{{PID_MARKER_VAR}##*/}}" > "${PID_MARKER_VAR}"\n'
         "exec sleep 60\n",
         encoding="utf-8",
     )
@@ -298,48 +304,14 @@ def _run_runner(
     cwd: Path,
     env: Mapping[str, str],
     bound_seconds: float,
-) -> subprocess.CompletedProcess[str]:
-    """Run the wrapper inside its own session, bounded in wall time.
-
-    On a harness-bound overrun the whole process group (wrapper, GNU timeout,
-    pytest, everything spawned inside) is SIGKILLed so the outer suite can
-    never be left with strays.
-    """
+    startup: supervisor.StartupMarker | None = None,
+) -> supervisor.Result:
+    """Exact original command; no implicit ordinary-process fallback or skip."""
 
     cmd = ["/usr/bin/bash", str(RUNNER_SCRIPT), *args]
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        env=dict(env),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    return supervisor.run_runner(
+        cmd, cwd=cwd, env=env, bound_seconds=bound_seconds, startup=startup
     )
-    try:
-        out, err = proc.communicate(timeout=bound_seconds)
-    except subprocess.TimeoutExpired:
-        # GNU timeout creates a separate process group within our session.
-        # Kill every group in this synthetic session, not just the wrapper's.
-        groups = set()
-        for entry in Path("/proc").iterdir():
-            if entry.name.isdecimal():
-                try:
-                    if os.getsid(int(entry.name)) == proc.pid:
-                        groups.add(os.getpgid(int(entry.name)))
-                except ProcessLookupError:
-                    pass
-        for group in groups:
-            try:
-                os.killpg(group, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        proc.communicate(timeout=10)
-        raise AssertionError(
-            f"runner exceeded the harness bound ({bound_seconds}s); its process "
-            f"group was SIGKILLed. cwd={cwd} args={args}"
-        )
-    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def _assert_exact_artifacts(artifact_dir: Path, expected: set[str]) -> None:
@@ -395,24 +367,10 @@ def _junit_failures(xml_path: Path) -> int:
     return int(root.attrib.get("failures", "0"))
 
 
-def _await_pid_death(pid: int, deadline_seconds: float) -> None:
-    """Poll until ``pid`` is gone; fail the test early if it still lives."""
-
-    deadline = time.monotonic() + deadline_seconds
-    while time.monotonic() < deadline:
-        try:
-            if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
-                return  # dead, awaiting reaping by the host's init
-        except FileNotFoundError:
-            return
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        except PermissionError:
-            return  # process exists but is not ours; treat as gone for us
-        time.sleep(0.1)
-    pytest.fail(f"child pid {pid} was still alive {deadline_seconds}s after the run")
+def _assert_started_and_tree_closed(
+    marker: supervisor.StartupMarker, result: supervisor.Result
+) -> None:
+    supervisor.assert_startup_and_normal_closure(marker, result, PID_MARKER_VAR)
 
 
 def _restricted_bin(tmp: Path, missing: str) -> dict[str, str]:
@@ -671,7 +629,8 @@ def test_contract_pins_flags_and_inline_env(tmp_path: Path) -> None:
 def test_fractional_deadlines_enforced_offline(tmp_path: Path) -> None:
     bin_dir = _write_fractional_deadline_tools(tmp_path)
     artifacts = tmp_path / "artifact"
-    pid_marker = tmp_path / "sleeper_pid.txt"
+    startup = supervisor.StartupMarker.fresh(tmp_path, "sleeper")
+    pid_marker = startup.path
     timeout_argv = tmp_path / "timeout_argv.txt"
     env = _synthetic_env(tmp_path, fake_uv_dir=bin_dir)
     env[PID_MARKER_VAR] = str(pid_marker)
@@ -691,6 +650,7 @@ def test_fractional_deadlines_enforced_offline(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
         bound_seconds=30,
+        startup=startup,
     )
     elapsed = time.monotonic() - started
     assert proc.returncode == 137
@@ -705,8 +665,8 @@ def test_fractional_deadlines_enforced_offline(tmp_path: Path) -> None:
         "bash",
         "-c",
     ]
-    assert pid_marker.exists(), "timed sleeper never recorded its pid"
-    _await_pid_death(int(pid_marker.read_text(encoding="utf-8").strip()), deadline_seconds=5)
+    assert pid_marker.exists(), "timed sleeper never recorded same-run startup"
+    _assert_started_and_tree_closed(startup, proc)
     _assert_exact_artifacts(artifacts, {LOG_NAME})
     _assert_log_contains(
         artifacts / LOG_NAME,
@@ -846,7 +806,8 @@ def test_signal_resistant_child_is_force_killed(tmp_path: Path, resistant_parent
         )
     case_dir = _write_case(tmp_path, "force-kill-case", body)
     artifacts = tmp_path / "artifact"
-    pid_marker = tmp_path / "child_pid.txt"
+    startup = supervisor.StartupMarker.fresh(tmp_path, "resistant-child")
+    pid_marker = startup.path
     env = _synthetic_env(tmp_path, forward_uv_project_environment=True)
     env[PID_MARKER_VAR] = str(pid_marker)
     started = time.monotonic()
@@ -867,6 +828,7 @@ def test_signal_resistant_child_is_force_killed(tmp_path: Path, resistant_parent
         cwd=REPO_ROOT,
         env=env,
         bound_seconds=45,
+        startup=startup,
     )
     elapsed = time.monotonic() - started
     assert proc.returncode == 137
@@ -880,9 +842,8 @@ def test_signal_resistant_child_is_force_killed(tmp_path: Path, resistant_parent
     )
     _log_has_no_env_dump(artifacts / LOG_NAME)
     _assert_no_core_files(tmp_path)
-    assert pid_marker.exists(), "signal-resistant child never recorded its pid"
-    child_pid = int(pid_marker.read_text(encoding="utf-8").strip())
-    _await_pid_death(child_pid, deadline_seconds=5)
+    assert pid_marker.exists(), "signal-resistant child never recorded same-run startup"
+    _assert_started_and_tree_closed(startup, proc)
 
 
 # ---- artifact surface and special paths ------------------------------------------
@@ -938,3 +899,332 @@ def test_missing_junit_xml_fails_six(tmp_path: Path) -> None:
     _assert_exact_artifacts(artifacts, {LOG_NAME})
     assert "JUnit XML is missing" in proc.stderr
     assert (artifacts / LOG_NAME).exists()
+
+
+# Source-only regressions. Concrete-port mocks below NEVER grant host authority.
+# Trusted same-UID/non-migrating scope is explicit; these are not kernel-exclusion tests.
+
+
+def test_missing_lifetime_provider_fails_before_any_launch(tmp_path, monkeypatch):
+    # Historical regression name retained; the concrete seam is now the original
+    # managed private handoff, not a fictional lifetime-exclusive provider.
+    launches = []
+
+    def forbidden_launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        raise AssertionError("unexpected child launch")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden_launch)
+    monkeypatch.setattr(supervisor.os, "fork", forbidden_launch)
+    monkeypatch.setattr(supervisor, "_client", None)
+    monkeypatch.delenv(supervisor.CHANNEL, raising=False)
+    with pytest.raises(
+        supervisor.SupervisionFailure, match="missing original.*runner NOT launched"
+    ):
+        _run_runner(["--help"], cwd=tmp_path, env={"PATH": "/usr/bin:/bin"}, bound_seconds=1)
+    assert launches == []
+
+
+def _model_request(tmp_path, *, nonce="a" * 32, deadline=40):
+    return supervisor.Request(
+        ("/usr/bin/bash", "runner", "--help"),
+        str(tmp_path),
+        (("PATH", "/usr/bin:/bin"),),
+        nonce,
+        deadline,
+    )
+
+
+def _model_domain():
+    return supervisor.Domain(
+        "/sys/fs/cgroup/fictional-own.scope/backend-pytest-" + "a" * 32,
+        (-101, -102, -103, -104),
+        [[0, 0, 0, 0, 0]] * 4,
+    )
+
+
+def _all_facts():
+    return {
+        name: True
+        for name in ["direct_reaped", "no_children", "domain_empty", "stdout_eof", "stderr_eof"]
+    }
+
+
+def _model_context(source):
+    # Pure model value: no registration/FS lookup and no host authority.
+    base = source.parent.parent
+    home = base.parent.parent.parent
+    return supervisor.InvocationContext(
+        source.name,
+        "ses_Model",
+        "c" * 32,
+        str(source),
+        str(base / "resources" / source.name),
+        str(base / "evidence" / source.name),
+        str(home / ".local/state/opencode-work/owned-manifests" / (source.name + ".json")),
+        str(source / ".venv/bin/python"),
+    )
+
+
+def test_waitpid_zero_and_echild_cannot_discover_or_prove_live_tree(tmp_path, monkeypatch):
+    _model_request(tmp_path)
+    collector = supervisor.Collector(supervisor.CapturedChild(123, -124, -125, -126))
+    monkeypatch.setattr(supervisor.os, "waitpid", lambda pid, flags: (0, 0))
+    collector.reap()
+    assert not collector.no_children
+    assert collector.direct_status is None
+    assert not supervisor.complete(collector.facts(True))
+
+    def echild(pid, flags):
+        raise ChildProcessError("synthetic empty wait set")
+
+    monkeypatch.setattr(supervisor.os, "waitpid", echild)
+    with pytest.raises(supervisor.SupervisionFailure, match="ECHILD without original direct reap"):
+        collector.reap()
+    assert collector.no_children
+    assert not supervisor.complete(collector.facts(True))  # no direct reap or EOF
+
+
+@pytest.mark.parametrize("missing", ["direct", "children", "domain", "stdout", "stderr"])
+def test_normal_closure_needs_each_independent_fact(tmp_path, monkeypatch, missing):
+    _model_request(tmp_path)
+    collector = supervisor.Collector(supervisor.CapturedChild(123, -124, -125, -126))
+    collector.direct_status = None if missing == "direct" else 0
+    collector.no_children = missing != "children"
+    collector.eofs = {"stdout", "stderr"} - (
+        {missing} if missing in {"stdout", "stderr"} else set()
+    )
+    assert not supervisor.complete(collector.facts(missing != "domain"))
+
+
+def test_registration_failure_preserves_failure_without_unbound_signal(tmp_path, monkeypatch):
+    def no_registration(*args):
+        raise OSError("synthetic pre-exec registration failure")
+
+    effects = []
+    monkeypatch.setattr(supervisor, "create_domain", no_registration)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: effects.append(args))
+    monkeypatch.setattr(supervisor.signal, "pidfd_send_signal", lambda *args: effects.append(args))
+    retained = []
+    with pytest.raises(OSError, match="registration failure"):
+        supervisor.manager_one(
+            None,
+            -101,
+            "/fictional-own.scope",
+            _model_request(tmp_path),
+            retained,
+            _model_context(tmp_path / ".local/share/opencode-work/worktrees/model-task"),
+        )
+    assert effects == []
+    assert retained == []
+
+
+def _worker_ports(tmp_path, monkeypatch, *, bad_ack=False, overrun=False, detection_time=40.0):
+    """Exercise concrete worker/rescue/emit callsites, with NO usable native FDs."""
+    source = tmp_path / ".local/share/opencode-work/worktrees/model-task"
+    monkeypatch.setattr(supervisor, "__file__", str(source / "tests/backend_pytest_supervisor.py"))
+    request = _model_request(tmp_path)
+    domain = _model_domain()
+    clock = [1.0]
+    sends, phases, kills, emitted = [], [], [], []
+
+    class Channel:
+        def getsockopt(self, *args):
+            return supervisor.struct.pack("3i", 4242, supervisor.os.getuid(), 1000)
+
+        def close(self):
+            pass
+
+    control, startup = Channel(), Channel()
+    setup = {
+        "request": request.wire(),
+        "manager_pid": 4242,
+        "group": "/fictional-own.scope",
+        "path": domain.path,
+        "fds": list(domain.fds),
+        "identities": domain.identities,
+        **supervisor.context_frame(_model_context(source)),
+    }
+
+    def receive(channel, nonce, seq, deadline):
+        if channel is control:
+            return {"kind": "setup", "data": setup} if seq == 0 else {"kind": "launch", "data": {}}
+        return {"kind": "wrong" if bad_ack else "placed", "data": {"path": domain.path}}
+
+    def reaped(collector):
+        collector.direct_status = 137
+        collector.no_children = True
+        collector.eofs = {"stdout", "stderr"}
+
+    def collect(domain, request, collector, control, deadline, *, rescue):
+        phases.append((deadline, rescue))
+        if overrun and not rescue:
+            clock[0] = detection_time
+            raise TimeoutError("synthetic original harness overrun")
+        reaped(collector)
+        return _all_facts()
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(supervisor.os, "getppid", lambda: 4242)
+    monkeypatch.setattr(supervisor, "self_group", lambda: "/fictional-own.scope")
+    monkeypatch.setattr(supervisor, "subreaper", lambda: None)
+    monkeypatch.setattr(supervisor, "request_from", lambda data, nonce: request)
+    monkeypatch.setattr(supervisor.Domain, "check", lambda self: None)
+    monkeypatch.setattr(supervisor.Domain, "populated", lambda self: False)
+    monkeypatch.setattr(
+        supervisor.Domain, "kill_owned", lambda self, deadline: kills.append(deadline)
+    )
+    monkeypatch.setattr(supervisor, "receive", receive)
+    monkeypatch.setattr(supervisor, "send", lambda *args: sends.append(args[2:]))
+    monkeypatch.setattr(
+        supervisor,
+        "fork_parked",
+        lambda *args: (supervisor.CapturedChild(123, -124, -125, -126), startup),
+    )
+    monkeypatch.setattr(supervisor.Collector, "reap", reaped)
+    monkeypatch.setattr(supervisor, "collect", collect)
+    monkeypatch.setattr(supervisor, "emit", lambda *args: emitted.append(args))
+    code = supervisor.worker(control, request.nonce, request.deadline)
+    return code, sends, phases, kills, emitted
+
+
+def test_overrun_uses_one_rescue_deadline_and_never_returns_pass(tmp_path, monkeypatch):
+    code, sends, phases, kills, emitted = _worker_ports(tmp_path, monkeypatch, overrun=True)
+    assert code == 1
+    assert phases == [(40, False), (50.0, True)]
+    final, deadline, seq = emitted[0][3:]
+    assert not final["ok"] and final["rescue_used"]
+    assert final["accounting"]["accounted"]
+    assert deadline == final["end"] == 50.0 and seq == 2
+    assert any(item[1] == "rescue-start" and item[-1] == 50.0 for item in sends)
+    assert kills == []  # this model supplied an empty domain, not authority to kill
+
+
+def test_observed_preexec_exit_never_signals_and_missing_eof_still_fails(tmp_path, monkeypatch):
+    domain = _model_domain()
+    collector = supervisor.Collector(supervisor.CapturedChild(123, -124, -125, -126))
+    signals = []
+
+    def reaped(collector):
+        collector.direct_status = 0
+        collector.no_children = True
+
+    def missing_eof(*args, **kwargs):
+        raise supervisor.SupervisionFailure("synthetic missing original stderr EOF")
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 1)
+    monkeypatch.setattr(supervisor.Collector, "reap", reaped)
+    monkeypatch.setattr(supervisor.Domain, "check", lambda self: None)
+    monkeypatch.setattr(supervisor.Domain, "populated", lambda self: False)
+    monkeypatch.setattr(supervisor, "collect", missing_eof)
+    monkeypatch.setattr(supervisor.signal, "pidfd_send_signal", lambda *args: signals.append(args))
+    with pytest.raises(supervisor.SupervisionFailure, match="missing original stderr EOF"):
+        supervisor.rescue(domain, _model_request(tmp_path), collector, None, False, 11)
+    assert signals == []
+
+
+def test_strictly_late_detection_keeps_original_rescue_ceiling(tmp_path, monkeypatch):
+    code, sends, phases, kills, emitted = _worker_ports(
+        tmp_path, monkeypatch, overrun=True, detection_time=40.1
+    )
+    assert code == 1
+    assert phases == [(40, False), (50.0, True)]
+    final, deadline, seq = emitted[0][3:]
+    assert deadline == final["end"] == 50.0  # not50.1
+    assert not final["ok"] and final["rescue_used"]
+    assert final["accounting"]["accounted"]
+    assert any(item[1] == "rescue-start" and item[-1] == 50.0 for item in sends)
+    assert seq == 2 and kills == []
+
+
+def test_foreign_marker_or_rescue_receipt_cannot_claim_no_strays(tmp_path):
+    marker = supervisor.StartupMarker(tmp_path / "not-read", "b" * 32)
+    request = _model_request(tmp_path)
+    proof = supervisor.Closure(request, 137, _all_facts(), False)
+    result = supervisor.Result(request.argv, 137, "", "", proof)
+    with pytest.raises(supervisor.SupervisionFailure, match="same-run pre-rescue"):
+        _assert_started_and_tree_closed(marker, result)  # rejects BEFORE any marker read
+    same_run = supervisor.Request(
+        request.argv,
+        request.cwd,
+        ((PID_MARKER_VAR, str(marker.path)),),
+        marker.nonce,
+        request.deadline,
+    )
+    rescued = supervisor.Closure(same_run, 137, _all_facts(), True)
+    result = supervisor.Result(same_run.argv, 137, "", "", rescued)
+    with pytest.raises(supervisor.SupervisionFailure, match="same-run pre-rescue"):
+        _assert_started_and_tree_closed(marker, result)
+
+
+def test_fixture_preserves_exact_inner_argv_env_cwd_and_original_bound(tmp_path, monkeypatch):
+    observed = []
+    original_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "PYTEST_ADDOPTS": ""}
+
+    def capture(argv, *, cwd, env, bound_seconds, startup):
+        observed.append((argv, cwd, dict(env), bound_seconds, startup))
+        return "synthetic-not-a-native-result"
+
+    monkeypatch.setattr(supervisor, "run_runner", capture)
+    result = _run_runner(
+        ["--suite-timeout", "0.5", "--kill-after", "0.5"],
+        cwd=tmp_path,
+        env=original_env,
+        bound_seconds=30,
+    )
+    assert observed == [
+        (
+            ["/usr/bin/bash", str(RUNNER_SCRIPT), "--suite-timeout", "0.5", "--kill-after", "0.5"],
+            tmp_path,
+            original_env,
+            30,
+            None,
+        )
+    ]
+    assert original_env == {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "PYTEST_ADDOPTS": ""}
+    assert result == "synthetic-not-a-native-result"
+
+
+def test_bad_startup_ack_never_releases_production_exec(tmp_path, monkeypatch):
+    code, sends, phases, kills, emitted = _worker_ports(tmp_path, monkeypatch, bad_ack=True)
+    assert code == 1
+    assert not any(item[1] == "exec" for item in sends)
+    assert phases == [(11.0, True)]
+    assert not emitted[0][3]["ok"]
+
+
+@pytest.mark.parametrize(
+    "raw,flags",
+    [
+        (b"", 0),
+        (b"x" * (supervisor.MAX_PACKET + 1), 0),
+        (b"{}", supervisor.socket.MSG_TRUNC),
+        (b'{"v":1,"v":1}', 0),
+        (b'{"v":1,"nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","seq":0,"kind":"x","data":NaN}', 0),
+    ],
+)
+def test_bounded_private_frames_reject_eof_truncation_duplicates_and_nonfinite(raw, flags):
+    with pytest.raises((supervisor.SupervisionFailure, ValueError)):
+        supervisor.decode_packet(raw, flags)
+
+
+def test_private_sequence_and_nonce_are_bound_before_consumption(monkeypatch):
+    class Channel:
+        def recvmsg(self, size):
+            raw = supervisor.json.dumps(
+                {"v": 1, "nonce": "b" * 32, "seq": 7, "kind": "final", "data": {}}
+            ).encode()
+            return raw, [], 0, None
+
+    channel = Channel()
+    monkeypatch.setattr(supervisor.select, "select", lambda *args: ([channel], [], []))
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 1)
+    with pytest.raises(supervisor.SupervisionFailure, match="foreign/replayed/out-of-sequence"):
+        supervisor.receive(channel, "a" * 32, 0, 2)
+
+
+def test_trusted_same_uid_limit_is_not_a_kernel_exclusion_claim():
+    doc = supervisor.__doc__
+    assert doc is not None
+    assert "Deliberate/buggy external migration" in doc
+    assert "No kernel lifetime exclusion" in doc

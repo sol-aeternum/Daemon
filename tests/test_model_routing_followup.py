@@ -123,7 +123,7 @@ def test_request_effort_is_omitted_by_default_and_explicit_presets(
 def test_active_preset_is_rejected_and_isolated_catalog_has_empty_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from test_compute_runtime import routing_document
+    from tests.test_compute_runtime import routing_document
 
     # This historical experiment keeps its old exact candidates. Its isolation
     # contract must not depend on which models today's deployment still lists.

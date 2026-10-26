@@ -9,8 +9,14 @@ import pytest
 
 from orchestrator import compute_runtime as runtime
 from orchestrator import model_routing
-from test_compute_runtime import _route, routing_document
-from test_model_routing import FLASH, accepted_single, dispatch_fixture, last_kwargs, named_route
+from tests.test_compute_runtime import _route, routing_document
+from tests.test_model_routing import (
+    FLASH,
+    accepted_single,
+    dispatch_fixture,
+    last_kwargs,
+    named_route,
+)
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 

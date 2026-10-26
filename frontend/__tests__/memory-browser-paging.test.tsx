@@ -9,7 +9,9 @@ import {
   within,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import MemoryTab from '../components/settings/MemoryTab';
+import MemoryFilters from '../components/settings/memory/MemoryFilters';
 import {
   MEMORY_PAGE_SIZE,
   parseMemoryPage,
@@ -144,6 +146,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -168,6 +171,183 @@ describe('memory list response validation', () => {
 });
 
 describe('Memory Browser paging (#249)', () => {
+  for (const strict of [false, true]) {
+    for (const finishPageFirst of [false, true]) {
+      it(`replay discriminator: ${strict ? 'StrictMode' : 'plain mount'}, page21 ${finishPageFirst ? 'before' : 'after'} debounce remains settled`, async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        let releasePage!: () => void;
+        const pageResponse = new Promise<void>((resolve) => {
+          releasePage = resolve;
+        });
+        gate = (params) =>
+          params.get('offset') === '20' ? pageResponse : undefined;
+        try {
+          await act(async () => {
+            render(
+              strict ? (
+                <StrictMode>
+                  <MemoryTab />
+                </StrictMode>
+              ) : (
+                <MemoryTab />
+              ),
+            );
+          });
+          expect(screen.getByText('Showing 20 of 21 memories')).toBeTruthy();
+          const initialReads = listRequests.length;
+          await act(async () => {
+            fireEvent.click(
+              screen.getByRole('button', { name: 'Load more (1 remaining)' }),
+            );
+          });
+          expect(
+            listRequests.slice(initialReads).map((p) => p.get('offset')),
+          ).toEqual(['20']);
+          if (finishPageFirst) {
+            await act(async () => {
+              releasePage();
+            });
+            expect(screen.getAllByText('Memory number 21')).toHaveLength(1);
+          }
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(300);
+          });
+          if (!finishPageFirst)
+            await act(async () => {
+              releasePage();
+            });
+          // Actual MemoryTab + real hook + real filters; only HTTP is deferred.
+          expect(screen.getAllByText('Memory number 21')).toHaveLength(1);
+          expect(screen.getByText('Showing 21 of 21 memories')).toBeTruthy();
+          expect(
+            screen.queryByRole('button', { name: /Load more/ }),
+          ).toBeNull();
+          expect(
+            listRequests.slice(initialReads).map((p) => p.get('offset')),
+          ).toEqual(['20']);
+        } finally {
+          await act(async () => {
+            releasePage();
+          });
+        }
+      });
+    }
+  }
+
+  it('replay discriminator: unchanged filters never emit; genuine edits use300ms and latest callback', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const first = vi.fn(),
+      latest = vi.fn();
+    const view = render(
+      <StrictMode>
+        <MemoryFilters onFilterChange={first} />
+      </StrictMode>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(first).not.toHaveBeenCalled();
+    const idle = vi.fn();
+    view.rerender(
+      <StrictMode>
+        <MemoryFilters onFilterChange={idle} />
+      </StrictMode>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(idle).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search memories' }), {
+      target: { value: '  query  ' },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    view.rerender(
+      <StrictMode>
+        <MemoryFilters onFilterChange={latest} />
+      </StrictMode>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(99);
+    });
+    expect(latest).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(latest.mock.calls).toEqual([
+      [{ search: 'query', status: 'active' }],
+    ]);
+    expect(first).not.toHaveBeenCalled();
+    expect(idle).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search memories' }), {
+      target: { value: 'query ' },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(latest).toHaveBeenCalledTimes(1);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search memories' }), {
+      target: { value: '' },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(latest.mock.calls.at(-1)).toEqual([{ status: 'active' }]);
+  });
+
+  it('semantic filters preserve category/source/status resets, return to defaults and debounce cleanup', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const changed = vi.fn();
+    const view = render(
+      <StrictMode>
+        <MemoryFilters onFilterChange={changed} />
+      </StrictMode>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Preference' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(299);
+    });
+    expect(changed).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(changed.mock.calls.at(-1)).toEqual([
+      { category: 'preference', status: 'active' },
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: 'Added by you' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'All' })[2]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(changed.mock.calls.at(-1)).toEqual([
+      { category: 'preference', source_type: 'user_created', status: 'all' },
+    ]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'All' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'All' })[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Active' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(changed.mock.calls.at(-1)).toEqual([{ status: 'active' }]);
+    expect(changed).toHaveBeenCalledTimes(3);
+    // Editing then returning to the already emitted value within the debounce
+    // must not emit an intermediate reset. Unmount must cancel a real edit too.
+    const search = screen.getByRole('textbox', { name: 'Search memories' });
+    fireEvent.change(search, { target: { value: 'temporary' } });
+    fireEvent.change(search, { target: { value: '' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(changed).toHaveBeenCalledTimes(3);
+    fireEvent.change(search, { target: { value: 'cancel-on-unmount' } });
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(changed).toHaveBeenCalledTimes(3);
+  });
+
   // The full Memory tab is slow to render under jsdom.
   it(
     'shows the true total and reaches every memory exactly once',

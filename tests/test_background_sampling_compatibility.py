@@ -72,7 +72,13 @@ from orchestrator.memory.titles import (
     TITLE_TEMPERATURE,
     generate_conversation_title,
 )
-from test_model_routing import LUNA, PRODUCTION_ROUTING, dispatch_fixture, last_kwargs, named_route
+from tests.test_model_routing import (
+    LUNA,
+    PRODUCTION_ROUTING,
+    dispatch_fixture,
+    last_kwargs,
+    named_route,
+)
 
 #: The demanding candidate the reasoning profile dispatches for a contradiction
 #: check. Its temperature support preserves the reasoning workload contract.

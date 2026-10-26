@@ -33,9 +33,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT" || { echo "local_ci: cannot cd to $REPO_ROOT" >&2; exit 2; }
 
-# Keep uv's project environment aligned with pyrightconfig.json and CI while
-# preserving an explicit caller override for shared or externally managed envs.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-.uv-venv}"
+# Align uv's default with both basedpyright selectors and CI. Explicit overrides
+# remain exported; the pytest adapter refuses a type-environment mismatch.
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-.venv}"
 
 # colors only when stdout is a tty, so logs piped to files stay plain
 if [[ -t 1 ]]; then
@@ -64,9 +64,10 @@ backend|basedpyright|blocking|uv run basedpyright --level error
 backend|bandit-high|blocking|uv run bandit -r orchestrator providers scripts tests -lll
 backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
 backend|pip-audit|blocking|uv run pip-audit
-backend|pytest|blocking|PYTHONPATH=. uv run pytest -q
-frontend|npm-ci|blocking|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
-frontend|braces-security|blocking|npm --prefix frontend run security:braces
+backend|pytest|blocking|python -I -S -B scripts/run_managed_backend_pytest.py -q
+frontend|npm-ci|blocking|npm ci --prefix frontend --no-audit --no-fund --offline
+frontend|braces-security|blocking|npm --prefix frontend run security:braces:offline
+frontend|hmr-protocol|blocking|npm --prefix frontend run test:hmr
 frontend|type-check|blocking|npm --prefix frontend run type-check
 frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
@@ -74,7 +75,8 @@ frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
 frontend|cache-fixture-python|blocking|uv sync --locked
 frontend|test-run|blocking|npm --prefix frontend run test:run
 frontend|cache-fixture-ownership|blocking|uv run pytest -q frontend/e2e/cache_fixture_ownership.py
-frontend|http-cache-browser|blocking|(cd frontend && npx playwright test --config playwright.cache.config.ts)
+frontend|http-cache-browser|blocking|npm --prefix frontend run test:browser:cache
+frontend|hmr-browser|blocking|npm --prefix frontend run test:hmr:browser
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py
 aggregate|pre-commit|blocking|uv run pre-commit run --all-files

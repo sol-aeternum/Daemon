@@ -26,6 +26,7 @@ export default defineConfig([
       'next-env.d.ts',
       // Immutable upstream-derived bytes checked by mandatory security:braces.
       'vendor/braces/**',
+      '.hmr-runs/**',
     ],
   },
 ]);

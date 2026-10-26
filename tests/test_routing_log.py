@@ -18,8 +18,8 @@ from orchestrator import compute_runtime as runtime
 from orchestrator import model_routing, routing_log
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.models import ReservationStatus
-from test_model_override import client  # noqa: F401  (pytest fixture)
-from test_model_routing import (
+from tests.test_model_override import client  # noqa: F401  (pytest fixture)
+from tests.test_model_routing import (
     DEEPSEEK,
     FLASH,
     TrackedStream,

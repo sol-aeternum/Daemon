@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -117,10 +119,10 @@ def test_local_ci_security_policy_matches_workflow() -> None:
 
 @pytest.mark.parametrize(
     ("inherited_environment", "expected_environment"),
-    [(None, ".uv-venv"), ("", ".uv-venv"), ("custom venv", "custom venv")],
+    [(None, ".venv"), ("", ".venv"), ("custom venv", "custom venv")],
     ids=["unset", "empty", "explicit-override"],
 )
-def test_local_ci_uses_basedpyright_project_environment(
+def test_local_ci_exports_default_or_override_without_redirecting_type_environment(
     tmp_path: Path,
     inherited_environment: str | None,
     expected_environment: str,
@@ -129,8 +131,16 @@ def test_local_ci_uses_basedpyright_project_environment(
     scripts.mkdir()
     runner = scripts / "local_ci.sh"
     shutil.copyfile(LOCAL_CI, runner)
+    # This fixture checks shell export/aggregation, not real ownership bootstrap.
+    # The actual adapter is covered separately; never launch it from fake source.
+    (scripts / "run_managed_backend_pytest.py").write_text(
+        "import os\n"
+        "with open(os.environ['GATE_ENV_LOG'], 'a', encoding='utf-8') as stream:\n"
+        "    stream.write('managed-pytest\\t' + os.environ.get('UV_PROJECT_ENVIRONMENT', '') + '\\n')\n",
+        encoding="utf-8",
+    )
 
-    # Run the real CLI in isolation. Only uv is replaced with an observer;
+    # Run the real CLI in isolation. uv and the pytest adapter are observers;
     # no package-manager command or actual quality gate can run via this PATH.
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -168,6 +178,37 @@ def test_local_ci_uses_basedpyright_project_environment(
     )
     observed = [value for _, value in invocations]
     assert all(value == expected_environment for value in observed), observed
+    assert [command for command, _ in invocations].count("managed-pytest") == 1
+
+
+def test_all_four_backend_environment_selectors_and_type_gate_strength_are_aligned() -> None:
+    pyright = json.loads((REPO_ROOT / "pyrightconfig.json").read_text(encoding="utf-8"))
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    basedpyright = project["tool"]["basedpyright"]
+    local_ci = LOCAL_CI.read_text(encoding="utf-8")
+    workflow = _load_ci_workflow()
+    assert pyright["venv"] == basedpyright["venv"] == ".venv"
+    assert 'export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-.venv}"' in local_ci
+    assert workflow["jobs"]["backend"]["env"]["UV_PROJECT_ENVIRONMENT"] == ".venv"
+    assert pyright["venvPath"] == basedpyright["venvPath"] == "."
+    assert pyright["typeCheckingMode"] == basedpyright["typeCheckingMode"] == "standard"
+    assert pyright["baselineFile"] == basedpyright["baselineFile"] == ".basedpyright/baseline.json"
+    assert project["tool"]["ruff"]["include"] == [
+        "orchestrator/**/*.py",
+        "providers/**/*.py",
+        "scripts/**/*.py",
+        "tests/**/*.py",
+        "tts/**/*.py",
+    ]
+    steps = {(job, name): step for job, name, step in _iter_job_steps(workflow)}
+    assert (
+        steps[("backend", "Basedpyright error gate")]["run"] == "uv run basedpyright --level error"
+    )
+    assert "backend|basedpyright|blocking|uv run basedpyright --level error" in local_ci
+    # Name alignment only: no guessed hosted bootstrap or hidden fixture skip.
+    assert (
+        steps[("backend", "Pytest")]["run"] == "uv run python scripts/run_hosted_backend_pytest.py"
+    )
 
 
 def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
@@ -206,7 +247,7 @@ def test_backend_pytest_diagnostics_have_bounded_execution_and_narrow_upload() -
 
     assert backend["timeout-minutes"] == 30
     assert pytest_step["timeout-minutes"] == 25
-    assert pytest_step["run"] == "bash scripts/run_backend_pytest.sh"
+    assert pytest_step["run"] == "uv run python scripts/run_hosted_backend_pytest.py"
     assert steps.index(pytest_step) < steps.index(upload)
     assert upload["if"] == "always()"
     assert upload["timeout-minutes"] == 3
@@ -214,6 +255,7 @@ def test_backend_pytest_diagnostics_have_bounded_execution_and_narrow_upload() -
     assert upload["with"]["path"].splitlines() == [
         "pytest-diagnostics/pytest.log",
         "pytest-diagnostics/pytest-results.xml",
+        "pytest-diagnostics/hosted-closure.json",
     ]
     assert upload["with"]["if-no-files-found"] == "warn"
     assert upload["with"]["retention-days"] == 7

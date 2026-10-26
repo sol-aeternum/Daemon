@@ -18,7 +18,7 @@ from orchestrator import compute_runtime as runtime
 from orchestrator import model_routing
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.errors import PolicyError
-from test_compute_runtime import _qualified_policy, _route, routing_document
+from tests.test_compute_runtime import _qualified_policy, _route, routing_document
 
 FLASH = "openrouter/z-ai/glm-5.3-flash"
 GLM = "openrouter/z-ai/glm-5.3"
