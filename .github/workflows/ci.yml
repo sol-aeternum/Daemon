@@ -13,7 +13,9 @@ concurrency:
 jobs:
   backend:
     name: Backend gates
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-26.04 ships uutils timeout, which breaks the GNU
+    # kill-after contract scripts/run_backend_pytest.sh relies on (#571).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       # pyrightconfig.json points basedpyright at .uv-venv (the audit-mandated
