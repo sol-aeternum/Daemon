@@ -157,6 +157,11 @@ tests/benchmark_longmemeval/bench_db.sh restore "$RUN/ingest.dump"
 fingerprint differs from the ingest's. `--allow-state-mismatch` overrides this, is recorded, and
 makes the results non-comparable.
 
+An evaluate-only run inherits the source ingest's qualification from its `run_manifest.json`
+(`ingest_source.baseline_qualified` and its `disqualifications`). If the source is disqualified, or its
+manifest is missing or belongs to another run, the evaluate run is marked `baseline_qualified: false`
+(`source_ingest_not_qualified`). It still runs, so the results can be used for diagnosis.
+
 ## 7. Score and compare
 
 ```sh

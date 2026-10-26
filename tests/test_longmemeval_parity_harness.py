@@ -687,11 +687,15 @@ async def test_ingest_stops_after_consecutive_extraction_failures(
 
 
 # --------------------------------------------------------------- evaluate-only rerun
-def _source_run(tmp_path: Path, dataset_path: Path) -> Path:
+def _source_run(tmp_path: Path, dataset_path: Path, *, manifest: bool = True) -> Path:
     source_dir = tmp_path / "ingest_run"
     source_dir.mkdir()
     checkpoint_path = source_dir / "longmemeval_checkpoint.json"
     checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    if manifest:
+        (source_dir / "run_manifest.json").write_text(
+            json.dumps({"run_id": RUN_ID, "baseline_qualified": True, "disqualifications": []})
+        )
     return checkpoint_path
 
 
@@ -729,8 +733,83 @@ async def test_from_ingest_evaluates_without_reingesting_and_records_source(
     assert manifest["phases"]["evaluate"]["state_matches_ingest_at_start"] is True
     assert manifest["phases"]["evaluate"]["state_unchanged_by_evaluate"] is True
     assert manifest["phases"]["score"]["strict_accuracy"] == 1.0
+    assert manifest["ingest_source"]["baseline_qualified"] is True
+    assert manifest["baseline_qualified"] is True
     with pytest.raises(ValueError, match="evaluate-only"):
         await runner.ingest()
+
+
+async def _evaluate_from(
+    tmp_path: Path, dataset_path: Path, source: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    runner = _runner(tmp_path, dataset_path, output_dir=tmp_path / "eval", from_ingest=source)
+
+    async def fake_eval(**kwargs: Any) -> dict[str, Any]:
+        return _result(kwargs["question_id"])
+
+    monkeypatch.setattr(fact_harness, "evaluate_single_parity", fake_eval)
+    await runner.evaluate()
+    runner.score()
+    return json.loads((tmp_path / "eval/run_manifest.json").read_text())
+
+
+@pytest.mark.asyncio
+async def test_evaluate_from_a_retried_ingest_stays_disqualified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    ingest = _runner(tmp_path, dataset_path, retry_failed_sessions=True)
+    ingest.checkpoint_path.parent.mkdir(parents=True)
+    ingest.checkpoint_path.write_text(
+        json.dumps(
+            _ingest_checkpoint(
+                dataset_path,
+                {
+                    KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"},
+                    KEY_B: {
+                        "corpus_key": KEY_B,
+                        "conversation_id": CONV_B,
+                        "status": "extraction_failed",
+                    },
+                },
+            )
+        )
+    )
+    BenchRuntime(monkeypatch, conversations={CONV_A, CONV_B})
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    await ingest.ingest()
+
+    manifest = await _evaluate_from(tmp_path, dataset_path, ingest.checkpoint_path, monkeypatch)
+
+    assert manifest["ingest_source"]["baseline_qualified"] is False
+    assert manifest["ingest_source"]["disqualifications"] == ["retried_failed_sessions"]
+    assert manifest["baseline_qualified"] is False
+    assert manifest["disqualifications"] == ["source_ingest_not_qualified"]
+    assert manifest["phases"]["score"]["baseline_qualified"] is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_from_an_unverifiable_ingest_is_not_qualified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    source = _source_run(tmp_path, dataset_path, manifest=False)
+    BenchRuntime(monkeypatch)
+
+    manifest = await _evaluate_from(tmp_path, dataset_path, source, monkeypatch)
+
+    assert manifest["ingest_source"]["baseline_qualified"] is None
+    assert manifest["ingest_source"]["disqualifications"] == ["source_manifest_missing"]
+    assert manifest["baseline_qualified"] is False
+    assert manifest["disqualifications"] == ["source_ingest_not_qualified"]
 
 
 @pytest.mark.asyncio

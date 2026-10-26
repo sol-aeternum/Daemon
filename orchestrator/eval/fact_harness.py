@@ -768,6 +768,23 @@ def _seconds_between(start: str | None, end: str | None) -> float:
     return max(0.0, (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())
 
 
+def _source_qualification(manifest_path: Path, source_run_id: Any) -> dict[str, Any]:
+    """Qualification of a --from-ingest source run; ``None`` when it can't be verified."""
+    try:
+        manifest = load_manifest(manifest_path)
+    except (OSError, ValueError):
+        manifest = None
+    if manifest is None:
+        return {"baseline_qualified": None, "disqualifications": ["source_manifest_missing"]}
+    if source_run_id is None or manifest.get("run_id") != source_run_id:
+        return {"baseline_qualified": None, "disqualifications": ["source_manifest_other_run"]}
+    return {
+        "baseline_qualified": manifest.get("baseline_qualified") is True,
+        "disqualifications": list(manifest.get("disqualifications") or []),
+        "git": manifest.get("git"),
+    }
+
+
 def _tally(values: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -886,6 +903,7 @@ class LongMemEvalFactRunner:
             "manifest_path": str(source_manifest) if source_manifest.is_file() else None,
             "manifest_sha256": optional_file_sha256(source_manifest),
             "state_fingerprint": ingest_copy.get("state_fingerprint"),
+            **_source_qualification(source_manifest, source.get("run_id")),
         }
 
     @staticmethod
@@ -1012,6 +1030,10 @@ class LongMemEvalFactRunner:
             }
         if self.allow_state_mismatch:
             self._disqualify(manifest, "allow_state_mismatch")
+        ingest_source = checkpoint.get("ingest_source")
+        if ingest_source is not None and ingest_source.get("baseline_qualified") is not True:
+            # An unqualified or unverifiable corpus stays unqualified downstream.
+            self._disqualify(manifest, "source_ingest_not_qualified")
         invocations = manifest.setdefault("invocations", [])
         for previous in invocations:
             if previous.get("outcome") == "running":

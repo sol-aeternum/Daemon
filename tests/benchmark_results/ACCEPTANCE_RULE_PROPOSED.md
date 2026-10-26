@@ -18,7 +18,8 @@ LongMemEval_S run for any public claim.
 4. `baseline_qualified == true` and `disqualifications` is empty in every phase's manifest: no
    `code_pin_changes` (SHA or code content), no `--allow-state-mismatch`, no
    `--retry-failed-sessions`. Every `ingest_rollbacks[]` entry has
-   `restored_pre_session_state: true`.
+   `restored_pre_session_state: true`. An evaluate-only run also needs
+   `ingest_source.baseline_qualified == true`.
 5. `phases.evaluate.retrieval_modes` has a single key, and it matches the declared mode
    (`embedding:<model>` or `lexical`).
 6. No category scores 0. Overall accuracy is not below 5% or above 95%. Either result triggers
