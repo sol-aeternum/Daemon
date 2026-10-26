@@ -18,6 +18,7 @@ from typing import Any, Literal
 import asyncpg
 
 from orchestrator import model_routing, routing_log
+from orchestrator.auth_pepper import initialize_development_pepper, validate_pepper_config
 from orchestrator.compute_runtime import account_compute
 from orchestrator.config import get_settings
 from orchestrator.eval.bench_db import (
@@ -266,18 +267,24 @@ def memory_formatter_identity() -> dict[str, Any]:
     }
 
 
-async def start_route_attestation(pool: Any) -> dict[str, int]:
-    """Attest monitored inference routes the way backend and worker do at startup.
+async def prepare_service_runtime(settings: Any, pool: Any) -> dict[str, int]:
+    """Process startup the worker performs before handling jobs; returns attestation counts.
 
-    Without this every monitored route fails closed (``zdr_attestation_unknown``).
-    One synchronous check runs first so admission is settled before the first
-    model call instead of racing the loop ``attestation.start`` spawns; that loop
-    then keeps refreshing and re-checking exactly as in production.
+    * Routing-log vocabulary, as the service launcher initialises it.
+    * Auth pepper: validated up front (``MemoryStore`` needs it for keyed hashes)
+      and the development DB-shared pepper loaded, as worker startup does.
+    * ZDR route attestation. Without it every monitored route fails closed
+      (``zdr_attestation_unknown``). One synchronous check runs first so admission
+      is settled before the first model call instead of racing the loop
+      ``attestation.start`` spawns; that loop then refreshes and re-checks exactly
+      as in production.
     """
     try:
         routing_log.initialize_vocabulary()
     except Exception:
         logger.warning("Routing log vocabulary unavailable; labels fail closed")
+    validate_pepper_config(settings)
+    await initialize_development_pepper(settings, pool)
     counts = await attestation.check_once(pool)
     await attestation.start(pool)
     return counts
@@ -947,7 +954,7 @@ class LongMemEvalFactRunner:
             pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=2, max_size=10)
             await assert_benchmark_database(pool, settings.database_url)
             attestation_started = True
-            attestation_counts = await start_route_attestation(pool)
+            attestation_counts = await prepare_service_runtime(settings, pool)
             manifest.setdefault("route_attestations", []).append(
                 {"at": utc_now_iso(), "phase": phase, **attestation_counts}
             )

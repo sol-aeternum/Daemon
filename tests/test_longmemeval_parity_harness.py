@@ -307,7 +307,7 @@ class BenchRuntime:
         self.approved_routes = ["luna-azure-eu"]
         monkeypatch.setattr(
             target,
-            "start_route_attestation",
+            "prepare_service_runtime",
             AsyncMock(return_value={"routes": 1, "attested": 1, "revoked": 0, "check_failed": 0}),
         )
         monkeypatch.setattr(target.attestation, "stop", self.attestation_stop)

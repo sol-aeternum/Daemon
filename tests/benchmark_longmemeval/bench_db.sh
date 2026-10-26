@@ -24,6 +24,7 @@ DB_MARKER="daemon-longmemeval-benchmark-v1"
 BENCH_DSN="postgresql://bench:bench@127.0.0.1:55432/${DB_NAME}"
 BENCH_HOME="${LME_BENCH_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/daemon-lme-bench}"
 KEY_FILE="$BENCH_HOME/encryption.key"
+PEPPER_FILE="$BENCH_HOME/auth.pepper"
 
 die() { echo "bench_db: $*" >&2; exit 1; }
 
@@ -39,6 +40,10 @@ ensure_key() {
       'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())') >"$KEY_FILE"
     chmod 600 "$KEY_FILE"
     echo "bench_db: generated a benchmark-only encryption key at $KEY_FILE" >&2
+  fi
+  if [[ ! -s "$PEPPER_FILE" ]]; then
+    (umask 077 && python3 -c 'import secrets; print(secrets.token_urlsafe(32))' >"$PEPPER_FILE")
+    echo "bench_db: generated a benchmark-only auth pepper at $PEPPER_FILE" >&2
   fi
 }
 
@@ -65,11 +70,12 @@ cmd_run() {
   [[ "${1:-}" == "--" ]] && shift
   [[ $# -gt 0 ]] || die "usage: bench_db.sh run -- CMD..."
   [[ -n "${OPENROUTER_API_KEY:-}" ]] || die "OPENROUTER_API_KEY must be set in the environment"
-  [[ -s "$KEY_FILE" ]] || die "no benchmark encryption key; run 'bench_db.sh init' first"
+  [[ -s "$KEY_FILE" && -s "$PEPPER_FILE" ]] || die "no benchmark key or pepper; run 'bench_db.sh init' first"
   [[ ! -e "$REPO/.env" ]] || die "$REPO/.env exists; run the benchmark from a checkout without one"
   cd "$REPO"
   DATABASE_URL="$BENCH_DSN" \
     DAEMON_ENCRYPTION_KEY="$(cat "$KEY_FILE")" \
+    DAEMON_AUTH_PEPPER="$(cat "$PEPPER_FILE")" \
     DAEMON_INFERENCE_POLICY="config/inference_policy.production.json" \
     PYTHONPATH="$REPO" \
     exec "$@"

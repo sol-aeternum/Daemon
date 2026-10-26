@@ -34,9 +34,9 @@ tests/benchmark_longmemeval/bench_db.sh status          # expect marker=daemon-l
 
 The stack (`compose.bench.yml`) is its own Compose project, volume (`daemon_lme_bench_pgdata`),
 database and port; it shares nothing with `docker-compose.yml`. `init` also creates a
-benchmark-only Fernet key at `~/.local/share/daemon-lme-bench/encryption.key` (override the
-directory with `LME_BENCH_HOME`). Keep that key: snapshots are unreadable without it. Never commit
-it.
+benchmark-only Fernet key (`encryption.key`) and auth pepper (`auth.pepper`) in
+`~/.local/share/daemon-lme-bench/` (override with `LME_BENCH_HOME`). Keep both: snapshots are
+unreadable without the key, and stored keyed hashes depend on the pepper. Never commit them.
 
 `bench_db.sh run` refuses to start if the checkout has a `.env`, because `Settings` would read it.
 
@@ -47,7 +47,7 @@ export OPENROUTER_API_KEY=...        # bash/zsh;  fish: set -gx OPENROUTER_API_K
 ```
 
 Export only the provider key. Do not source a production `.env`. `bench_db.sh run` sets
-`DATABASE_URL`, `DAEMON_ENCRYPTION_KEY`, `PYTHONPATH` and
+`DATABASE_URL`, `DAEMON_ENCRYPTION_KEY`, `DAEMON_AUTH_PEPPER`, `PYTHONPATH` and
 `DAEMON_INFERENCE_POLICY=config/inference_policy.production.json`.
 
 | Mode | Set | Effect |
@@ -71,8 +71,8 @@ systemd-inhibit --what=sleep:idle:handle-lid-switch --who=longmemeval --why="ben
     --output-dir "$RUN/ingest"
 ```
 
-Each phase first runs the production ZDR route attestation (backend and worker do the same at
-startup: two public OpenRouter listings, recorded in the benchmark database). Without it every
+Each phase first repeats the worker's startup: it validates the auth pepper and runs the
+production ZDR route attestation (backend and worker do the same at startup: two public OpenRouter listings, recorded in the benchmark database). Without it every
 monitored route fails closed. Ingest refuses to start if the `background` profile has no admitted
 route, and stops after 5 consecutive failed sessions. The manifest records `route_attestations`
 and `routes.extraction.approved_route_ids`.
