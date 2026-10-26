@@ -442,6 +442,7 @@ async def test_stop_request_finishes_in_flight_question_then_resumes(
     manifest_path = runner.output_path.parent / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text())
     assert manifest["invocations"][-1]["outcome"] == "interrupted:SIGTERM"
+    assert manifest["invocations"][-1]["resumed"] is False
 
     resumed = _runner(tmp_path, dataset_path)
     results = await resumed.evaluate()

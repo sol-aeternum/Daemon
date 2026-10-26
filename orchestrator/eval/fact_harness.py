@@ -1024,14 +1024,11 @@ class LongMemEvalFactRunner:
                 previous["active_seconds"] = round(
                     _seconds_between(previous.get("started_at"), last), 1
                 )
+        # The phase is already marked started by now, so only an earlier
+        # invocation of it says this one resumes.
+        resumed = any(previous.get("phase") == phase for previous in invocations)
         invocations.append(
-            {
-                "phase": phase,
-                "started_at": now,
-                "resumed": bool(checkpoint["phases"][phase].get("started_at"))
-                and checkpoint["phases"][phase].get("status") != "pending",
-                "outcome": "running",
-            }
+            {"phase": phase, "started_at": now, "resumed": resumed, "outcome": "running"}
         )
         save_manifest(path, manifest)
         return manifest
