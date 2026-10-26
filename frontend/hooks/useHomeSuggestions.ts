@@ -89,8 +89,12 @@ function mapHttpFailure(
  */
 export function useHomeSuggestions() {
   const generation = useAuthGeneration();
-  const stateGenerationRef = useRef(generation);
-  const [state, setState] = useState<HookState>(INITIAL_STATE);
+  const [stateGeneration, setStateGeneration] = useState(generation);
+  const [state, setState] = useState<HookState>(() =>
+    getAccessToken() || getAuthGeneration() === 0
+      ? { ...INITIAL_STATE, status: 'loading' }
+      : INITIAL_STATE,
+  );
   // Session-local only: a reload shows rows again, no server row changes
   // and nothing is written to browser storage.
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
@@ -145,165 +149,186 @@ export function useHomeSuggestions() {
   );
 
   /** One GET /home-suggestions read. Returns true when still generating. */
-  const loadOnce = useCallback(async (): Promise<boolean> => {
-    const generationAtRequest = getAuthGeneration();
-    // A fresh tab starts at generation zero with no in-memory token: permit
-    // existing cookie-session restoration via ensureAuthHeader. Revoked sign-in
-    // lifetimes are nonzero and must not initiate a fresh read after logout.
-    if (!getAccessToken() && generationAtRequest !== 0) return false;
-    const request = ++requestIdRef.current;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setState((previous) => {
-      if (previous.status === 'ready') return previous;
-      return { status: 'loading', suggestions: [], message: null };
-    });
-    try {
-      const header = await ensureAuthHeader();
-      if (!header && isCurrent(request, generationAtRequest)) {
-        setState({
-          status: 'unavailable',
-          suggestions: [],
-          message: 'Sign in to load suggestions.',
-        });
-      }
-      if (
-        !header ||
-        generationAtRequest !== getAuthGeneration() ||
-        controller.signal.aborted ||
-        request !== requestIdRef.current
-      ) {
-        return false;
-      }
-      const response = await fetch(HOME_SUGGESTIONS_ENDPOINTS.list, {
-        method: 'GET',
-        headers: { Authorization: header },
-        // Never serve cached private suggestion payloads from an HTTP cache.
-        cache: 'no-store',
-        credentials: 'include',
-        signal: controller.signal,
-      });
-      let body: unknown = null;
-      try {
-        body = await response.json();
-      } catch {
-        body = null;
-      }
-      if (!isCurrent(request, generationAtRequest)) return false;
-      if (!response.ok) {
-        const mapped = mapHttpFailure(response.status, null);
-        setState({
-          status: mapped.status,
-          suggestions: [],
-          message: mapped.message,
-        });
-        return false;
-      }
-      const parsed = parseHomeSuggestionsBody(body);
-      if (!parsed) {
-        setState({
-          status: 'unavailable',
-          suggestions: [],
-          message: 'Suggestions sent an unexpected response.',
-        });
-        return false;
-      }
-      if (parsed.enabled === false || parsed.status === 'disabled') {
-        setState({
-          status: 'disabled',
-          suggestions: [],
-          message: parsed.message,
-        });
-        return false;
-      }
-      if (parsed.status === 'generating') {
-        setState({
-          status: 'generating',
-          suggestions: [],
-          message: parsed.message,
-        });
-        return true;
-      }
-      if (parsed.status === 'error' || parsed.status === 'unavailable') {
-        setState({
-          status: parsed.status,
-          suggestions: [],
-          message: parsed.message,
-        });
-        return false;
-      }
-      const live = dropExpiredSuggestions(parsed.suggestions);
-      setState({
-        status:
-          parsed.status === 'expired' ||
-          (parsed.suggestions.length > 0 && live.length === 0)
-            ? 'expired'
-            : live.length === 0
-              ? 'empty'
-              : 'ready',
-        suggestions: live,
-        message: parsed.message,
-      });
-      return false;
-    } catch (error) {
-      if (
-        controller.signal.aborted ||
-        !isCurrent(request, generationAtRequest)
-      ) {
-        return false;
-      }
-      setState({
-        status: 'error',
-        suggestions: [],
-        message:
-          error instanceof DOMException && error.name === 'AbortError'
-            ? 'Suggestions took too long to load. Try again.'
-            : NETWORK_FAILURE_MESSAGE,
-      });
-      return false;
-    } finally {
-      stopIfStale(request, generationAtRequest, controller);
-    }
-  }, [isCurrent, stopIfStale]);
-
-  const schedulePoll = useCallback(() => {
-    const generationAtPoll = getAuthGeneration();
-    if (!getAccessToken()) return;
-    if (pollAttemptRef.current >= POLL_ATTEMPTS_MAX) {
-      setState({
-        status: 'unavailable',
-        suggestions: [],
-        message:
-          'Suggestions are taking longer than expected. Refresh to try again.',
-      });
-      return;
-    }
-    const attempt = pollAttemptRef.current;
-    pollAttemptRef.current = attempt + 1;
-    const delay = POLL_DELAYS_MS[Math.min(attempt, POLL_DELAYS_MS.length - 1)];
-    pollTimerRef.current = window.setTimeout(() => {
-      pollTimerRef.current = null;
-      void loadOnce().then((stillGenerating) => {
-        if (
-          stillGenerating &&
-          pollTimerRef.current === null &&
-          getAuthGeneration() === generationAtPoll
-        ) {
-          schedulePoll();
+  const loadOnce = useCallback(
+    async (onStart?: () => void): Promise<boolean> => {
+      const generationAtRequest = getAuthGeneration();
+      // A fresh tab starts at generation zero with no in-memory token: permit
+      // existing cookie-session restoration via ensureAuthHeader. Revoked sign-in
+      // lifetimes are nonzero and must not initiate a fresh read after logout.
+      if (!getAccessToken() && generationAtRequest !== 0) return false;
+      const request = ++requestIdRef.current;
+      const controller = new AbortController();
+      abortRef.current = controller;
+      onStart?.();
+      const read = async () => {
+        const header = await ensureAuthHeader();
+        if (!header && isCurrent(request, generationAtRequest)) {
+          setState({
+            status: 'unavailable',
+            suggestions: [],
+            message: 'Sign in to load suggestions.',
+          });
         }
-      });
-    }, delay);
-  }, [loadOnce]);
+        if (
+          !header ||
+          generationAtRequest !== getAuthGeneration() ||
+          controller.signal.aborted ||
+          request !== requestIdRef.current
+        ) {
+          return false;
+        }
+        const response = await fetch(HOME_SUGGESTIONS_ENDPOINTS.list, {
+          method: 'GET',
+          headers: { Authorization: header },
+          // Never serve cached private suggestion payloads from an HTTP cache.
+          cache: 'no-store',
+          credentials: 'include',
+          signal: controller.signal,
+        });
+        let body: unknown = null;
+        try {
+          body = await response.json();
+        } catch {
+          body = null;
+        }
+        if (!isCurrent(request, generationAtRequest)) return false;
+        if (!response.ok) {
+          const mapped = mapHttpFailure(response.status, null);
+          setState({
+            status: mapped.status,
+            suggestions: [],
+            message: mapped.message,
+          });
+          return false;
+        }
+        const parsed = parseHomeSuggestionsBody(body);
+        if (!parsed) {
+          setState({
+            status: 'unavailable',
+            suggestions: [],
+            message: 'Suggestions sent an unexpected response.',
+          });
+          return false;
+        }
+        if (parsed.enabled === false || parsed.status === 'disabled') {
+          setState({
+            status: 'disabled',
+            suggestions: [],
+            message: parsed.message,
+          });
+          return false;
+        }
+        if (parsed.status === 'generating') {
+          setState({
+            status: 'generating',
+            suggestions: [],
+            message: parsed.message,
+          });
+          return true;
+        }
+        if (parsed.status === 'error' || parsed.status === 'unavailable') {
+          setState({
+            status: parsed.status,
+            suggestions: [],
+            message: parsed.message,
+          });
+          return false;
+        }
+        const live = dropExpiredSuggestions(parsed.suggestions);
+        setState({
+          status:
+            parsed.status === 'expired' ||
+            (parsed.suggestions.length > 0 && live.length === 0)
+              ? 'expired'
+              : live.length === 0
+                ? 'empty'
+                : 'ready',
+          suggestions: live,
+          message: parsed.message,
+        });
+        return false;
+      };
+      return read()
+        .catch((error: unknown) => {
+          if (
+            controller.signal.aborted ||
+            !isCurrent(request, generationAtRequest)
+          ) {
+            return false;
+          }
+          setState({
+            status: 'error',
+            suggestions: [],
+            message:
+              error instanceof DOMException && error.name === 'AbortError'
+                ? 'Suggestions took too long to load. Try again.'
+                : NETWORK_FAILURE_MESSAGE,
+          });
+          return false;
+        })
+        .finally(() => {
+          stopIfStale(request, generationAtRequest, controller);
+        });
+    },
+    [isCurrent, stopIfStale],
+  );
+
+  // Only events/poll callbacks publish a new loading state. The owned read
+  // invokes this synchronously after claiming its request/controller lifetime.
+  const publishLoading = useCallback(() => {
+    setState((previous) =>
+      previous.status === 'ready'
+        ? previous
+        : { status: 'loading', suggestions: [], message: null },
+    );
+  }, []);
+  const loadRead = useCallback(
+    () => loadOnce(publishLoading),
+    [loadOnce, publishLoading],
+  );
+
+  const schedulePoll = useCallback(
+    function scheduleNextPoll() {
+      const generationAtPoll = getAuthGeneration();
+      if (!getAccessToken()) return;
+      if (pollAttemptRef.current >= POLL_ATTEMPTS_MAX) {
+        setState({
+          status: 'unavailable',
+          suggestions: [],
+          message:
+            'Suggestions are taking longer than expected. Refresh to try again.',
+        });
+        return;
+      }
+      const attempt = pollAttemptRef.current;
+      pollAttemptRef.current = attempt + 1;
+      const delay =
+        POLL_DELAYS_MS[Math.min(attempt, POLL_DELAYS_MS.length - 1)];
+      pollTimerRef.current = window.setTimeout(() => {
+        pollTimerRef.current = null;
+        void loadRead().then((stillGenerating) => {
+          if (
+            stillGenerating &&
+            pollTimerRef.current === null &&
+            getAuthGeneration() === generationAtPoll
+          ) {
+            scheduleNextPoll();
+          }
+        });
+      }, delay);
+    },
+    [loadRead],
+  );
 
   /** View-triggered load: one GET, then bounded polling while generating. */
   const load = useCallback(async () => {
     settleChain();
-    const stillGenerating = await loadOnce();
+    const stillGenerating = await loadRead();
     if (stillGenerating && pollTimerRef.current === null) {
       pollAttemptRef.current = 0;
       schedulePoll();
     }
-  }, [loadOnce, schedulePoll, settleChain]);
+  }, [loadRead, schedulePoll, settleChain]);
 
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
 
@@ -388,7 +413,7 @@ export function useHomeSuggestions() {
           schedulePoll();
           break;
         case 'unchanged':
-          await loadOnce();
+          await loadRead();
           break;
         case 'disabled':
           setState({
@@ -423,7 +448,7 @@ export function useHomeSuggestions() {
     } finally {
       stopIfStale(request, generationAtRequest, controller);
     }
-  }, [isCurrent, loadOnce, schedulePoll, settleChain, stopIfStale]);
+  }, [isCurrent, loadRead, schedulePoll, settleChain, stopIfStale]);
 
   useEffect(() => {
     refreshRef.current = refresh;
@@ -645,8 +670,13 @@ export function useHomeSuggestions() {
     () =>
       subscribeAuthGeneration(() => {
         settleChain();
-        stateGenerationRef.current = getAuthGeneration();
-        setState(INITIAL_STATE);
+        const nextGeneration = getAuthGeneration();
+        setStateGeneration(nextGeneration);
+        setState(
+          getAccessToken() || nextGeneration === 0
+            ? { ...INITIAL_STATE, status: 'loading' }
+            : INITIAL_STATE,
+        );
         preferencePendingRef.current = false;
         setPreferencePending(false);
         setDismissedIds(new Set());
@@ -659,7 +689,6 @@ export function useHomeSuggestions() {
   useEffect(() => {
     if (!getAccessToken() && generation !== 0) {
       settleChain();
-      setState(INITIAL_STATE);
       return undefined;
     }
     settleChain();
@@ -696,8 +725,7 @@ export function useHomeSuggestions() {
   }, [state.suggestions]);
 
   // Mask synchronously on the first render after revocation, before effects.
-  const scopedState =
-    stateGenerationRef.current === generation ? state : INITIAL_STATE;
+  const scopedState = stateGeneration === generation ? state : INITIAL_STATE;
   const serverSuggestions = dropExpiredSuggestions(scopedState.suggestions);
 
   const view: HomeSuggestionsViewState = {

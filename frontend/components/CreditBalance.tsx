@@ -39,35 +39,29 @@ export function CreditBalance({
   refreshInterval,
 }: CreditBalanceProps) {
   const [balance, setBalance] = useState<number | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(Boolean(userId));
+  const [error, setError] = useState<string | null>(
+    userId ? null : 'Missing user ID',
+  );
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mountedRef = useRef(true);
 
   const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
   const effectiveRefreshInterval =
     refreshInterval ?? DEFAULT_REFRESH_INTERVAL_MS;
+  const [previousUserId, setPreviousUserId] = useState(userId);
+  if (previousUserId !== userId) {
+    setPreviousUserId(userId);
+    setIsLoading(Boolean(userId));
+    setError(userId ? null : 'Missing user ID');
+    if (!userId) setBalance(null);
+  }
 
-  const fetchBalance = useCallback(
-    async (silent = false) => {
-      if (!userId) {
-        if (mountedRef.current) {
-          setBalance(null);
-          setError('Missing user ID');
-          setIsLoading(false);
-        }
-        return;
-      }
-
-      if (mountedRef.current) {
-        if (silent) {
-          setIsRefreshing(true);
-        } else {
-          setIsLoading(true);
-        }
-        setError(null);
-      }
-
+  const loadBalance = useCallback(() => {
+    async function requestBalance(): Promise<
+      { value: number } | { error: unknown } | null
+    > {
+      if (!userId) return null;
       const query = new URLSearchParams({ user_id: userId });
       const proxyPath = `/api/video-credits/balance?${query.toString()}`;
       const directPath = `/video-credits/balance?${query.toString()}`;
@@ -99,33 +93,55 @@ export function CreditBalance({
           const data = (await response.json()) as BalanceResponse;
           const value = typeof data.balance === 'number' ? data.balance : 0;
 
-          if (mountedRef.current) {
-            setBalance(value);
-            setError(null);
-          }
-          return;
+          return { value };
         } catch (fetchError) {
           lastError = fetchError;
-          if (index === candidates.length - 1 && mountedRef.current) {
-            setError(
-              fetchError instanceof Error
-                ? fetchError.message
-                : 'Failed to fetch balance',
-            );
-          }
         }
       }
+      return { error: lastError };
+    }
 
-      if (mountedRef.current && lastError) {
-        setBalance((previous) => (previous === null ? 0 : previous));
+    return requestBalance().then((result) => {
+      if (!mountedRef.current || !result) return;
+      if ('value' in result) {
+        setBalance(result.value);
+        setError(null);
+      } else {
+        setError(
+          result.error instanceof Error
+            ? result.error.message
+            : 'Failed to fetch balance',
+        );
+        if (result.error) {
+          setBalance((previous) => (previous === null ? 0 : previous));
+        }
       }
+    });
+  }, [apiBaseUrl, userId]);
+
+  const fetchBalance = useCallback(
+    (silent = false) => {
+      if (!userId) {
+        if (mountedRef.current) {
+          setBalance(null);
+          setError('Missing user ID');
+          setIsLoading(false);
+        }
+        return loadBalance();
+      }
+      if (mountedRef.current) {
+        if (silent) setIsRefreshing(true);
+        else setIsLoading(true);
+        setError(null);
+      }
+      return loadBalance();
     },
-    [apiBaseUrl, userId],
+    [loadBalance, userId],
   );
 
   useEffect(() => {
     mountedRef.current = true;
-    void fetchBalance(false).finally(() => {
+    void loadBalance().finally(() => {
       if (mountedRef.current) {
         setIsLoading(false);
         setIsRefreshing(false);
@@ -135,7 +151,7 @@ export function CreditBalance({
     return () => {
       mountedRef.current = false;
     };
-  }, [fetchBalance]);
+  }, [loadBalance]);
 
   useEffect(() => {
     if (effectiveRefreshInterval <= 0) {

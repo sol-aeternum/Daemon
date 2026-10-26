@@ -43,7 +43,7 @@ import { ChatHeaderActions } from '../components/ChatHeaderActions';
 import { ChatActivityStatus } from '../components/ChatActivityStatus';
 import { ChatInputBar } from '../components/ChatInputBar';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport } from 'ai';
+import { DefaultChatTransport, type ChatTransport } from 'ai';
 import {
   useState,
   useRef,
@@ -576,6 +576,17 @@ function ChatContent() {
     });
   };
   const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
+  const [suggestionStopScope, setSuggestionStopScope] = useState<{
+    generation: number;
+    originRoute: string | null;
+  } | null>(null);
+  if (
+    suggestionStopScope &&
+    (suggestionStopScope.generation !== authGeneration ||
+      suggestionStopScope.originRoute !== (currentId ?? null))
+  ) {
+    setSuggestionStopScope(null);
+  }
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
     new Set(),
@@ -634,27 +645,40 @@ function ChatContent() {
     return normalizeThinkingText(rawContent);
   };
 
-  const chatTransport = useMemo(
-    () =>
-      new DefaultChatTransport<DaemonMessage>({
-        api: '/api/chat',
-        fetch: (requestInput, init) =>
-          chatTransportFetch(requestInput, init, {
-            model: activeModel,
-            conversationId: currentId || null,
-            onGeneration: (generation) => {
-              chatRequestGenerationRef.current = generation;
-            },
-            onSubmissionKey: (key, conversationId) => {
-              activeSubmissionKeyRef.current = key;
-              // The conversation the request was queued in, not the route
-              // now: the user may have navigated while the key was made.
-              activeSubmissionScopeRef.current = conversationId;
-            },
-          }),
+  const fetchChat = useCallback(
+    (
+      requestInput: Parameters<typeof chatTransportFetch>[0],
+      init?: RequestInit,
+    ) =>
+      chatTransportFetch(requestInput, init, {
+        model: activeModel,
+        conversationId: currentId || null,
+        onGeneration: (generation) => {
+          chatRequestGenerationRef.current = generation;
+        },
+        onSubmissionKey: (key, conversationId) => {
+          activeSubmissionKeyRef.current = key;
+          // The conversation the request was queued in, not the route
+          // now: the user may have navigated while the key was made.
+          activeSubmissionScopeRef.current = conversationId;
+        },
       }),
     [activeModel, currentId],
   );
+  const chatTransport = useMemo<ChatTransport<DaemonMessage>>(() => {
+    // The SDK constructor only stores options. Instantiate it at request time
+    // through its public interface, where the captured ref callbacks may run.
+    // No imperative callback is passed to an unknown constructor during render.
+    const transport = () =>
+      new DefaultChatTransport<DaemonMessage>({
+        api: '/api/chat',
+        fetch: fetchChat,
+      });
+    return {
+      sendMessages: (options) => transport().sendMessages(options),
+      reconnectToStream: (options) => transport().reconnectToStream(options),
+    };
+  }, [fetchChat]);
 
   // Keep the SDK chat instance stable while the backend promotes a new chat
   // from a null ID to its persisted conversation ID mid-stream. Conversation
@@ -752,7 +776,9 @@ function ChatContent() {
       setConnectionStatus('disconnected');
     },
   });
-  setChatMessagesRef.current = setMessages;
+  useLayoutEffect(() => {
+    setChatMessagesRef.current = setMessages;
+  }, [setMessages]);
 
   const isLoading = status === 'submitted' || status === 'streaming';
   // Leaving the conversation whose durable task this client is streaming
@@ -840,6 +866,7 @@ function ChatContent() {
     return subscribeAuthGeneration(() => {
       if (!suggestionSubmissionRef.current) return;
       suggestionSubmissionRef.current = null;
+      setSuggestionStopScope(null);
       stopChat();
       setMessages([]);
       setIsSubmittingSuggestion(false);
@@ -1145,6 +1172,7 @@ function ChatContent() {
     if (!content) return;
 
     suggestionSubmissionRef.current = null;
+    setSuggestionStopScope(null);
     const conversationScope =
       currentId || latestConversationIdRef.current || null;
     // The exact failed turn's submission key travels with its files (#477):
@@ -1498,9 +1526,9 @@ function ChatContent() {
     messages,
     stop: stopChat,
     archiveEvents: archiveCurrentEvents,
-    conversationId: suggestionSubmissionRef.current
-      ? latestConversationIdRef.current
-      : (currentId ?? null),
+    // Until the route promotes the suggestion, the existing Stop hook owns the
+    // SSE-assigned destination; render never reads its imperative dispatch refs.
+    conversationId: suggestionStopScope ? null : (currentId ?? null),
     beforeStop,
     onStopResolved: handleStopResolved,
   });
@@ -1572,6 +1600,7 @@ function ChatContent() {
   const handleNewChat = async () => {
     if (isSubmittingSuggestion || isLoading) return;
     suggestionSubmissionRef.current = null;
+    setSuggestionStopScope(null);
     clearAssignedConversationId();
     resetChatDraft(openChatDraft(null, getAuthGeneration()));
     const generation = getAuthGeneration();
@@ -1593,6 +1622,7 @@ function ChatContent() {
     // No composer receipt, file serialisation, draft reset or draft transfer.
     // The backend alone creates the destination after revalidating the source.
     suggestionSubmissionRef.current = { generation, messageId, pending: true };
+    setSuggestionStopScope({ generation, originRoute: currentId ?? null });
     lastTurnRef.current = null;
     chatRequestGenerationRef.current = generation;
     latestConversationIdRef.current = null;

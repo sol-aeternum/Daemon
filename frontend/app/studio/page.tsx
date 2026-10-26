@@ -179,8 +179,10 @@ function VideoModeControls({ userId }: { userId: string }) {
   const [videoProvider, setVideoProvider] = useState<VideoProvider>('xai');
   const [klingModel, setKlingModel] = useState<KlingModel>('kling-o3-pro');
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
-  const [isEstimating, setIsEstimating] = useState(false);
-  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const [isEstimating, setIsEstimating] = useState(Boolean(userId));
+  const [estimateError, setEstimateError] = useState<string | null>(
+    userId ? null : 'Missing user ID',
+  );
   const [estimate, setEstimate] = useState<{
     required: number;
     balance: number;
@@ -190,77 +192,98 @@ function VideoModeControls({ userId }: { userId: string }) {
 
   const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
 
-  const loadEstimate = useCallback(async () => {
-    if (!userId) {
-      setEstimateError('Missing user ID');
-      return;
-    }
+  const estimateInputs = [
+    duration,
+    userId,
+    videoProvider,
+    klingModel,
+    audioEnabled,
+  ] as const;
+  const [previousEstimateInputs, setPreviousEstimateInputs] =
+    useState(estimateInputs);
+  if (
+    estimateInputs.some(
+      (value, index) => value !== previousEstimateInputs[index],
+    )
+  ) {
+    setPreviousEstimateInputs(estimateInputs);
+    if (userId) setIsEstimating(true);
+    setEstimateError(userId ? null : 'Missing user ID');
+  }
 
-    setIsEstimating(true);
-    setEstimateError(null);
+  const loadEstimate = useCallback(() => {
+    if (!userId) return;
+    async function requestEstimate() {
+      // No client-asserted plan: the server derives pricing and eligibility from
+      // the authenticated account.
+      const query = new URLSearchParams({
+        duration: String(duration),
+        user_id: userId,
+        provider: videoProvider,
+      });
+      if (videoProvider === 'kling') {
+        query.set('kling_model', klingModel);
+        query.set('audio_enabled', String(audioEnabled));
+      }
+      const proxyPath = `/api/video-credits/estimate?${query.toString()}`;
+      const directPath = `/video-credits/estimate?${query.toString()}`;
+      const candidates = apiBaseUrl
+        ? [proxyPath, `${apiBaseUrl}${directPath}`, directPath]
+        : [proxyPath, directPath];
 
-    // No client-asserted plan: the server derives pricing and eligibility from
-    // the authenticated account.
-    const query = new URLSearchParams({
-      duration: String(duration),
-      user_id: userId,
-      provider: videoProvider,
-    });
-    if (videoProvider === 'kling') {
-      query.set('kling_model', klingModel);
-      query.set('audio_enabled', String(audioEnabled));
-    }
-    const proxyPath = `/api/video-credits/estimate?${query.toString()}`;
-    const directPath = `/video-credits/estimate?${query.toString()}`;
-    const candidates = apiBaseUrl
-      ? [proxyPath, `${apiBaseUrl}${directPath}`, directPath]
-      : [proxyPath, directPath];
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        try {
+          const response = await fetch(candidate, {
+            headers: {
+              ...(await getAuthHeaders()),
+            },
+            cache: 'no-store',
+          });
 
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index];
-      try {
-        const response = await fetch(candidate, {
-          headers: {
-            ...(await getAuthHeaders()),
-          },
-          cache: 'no-store',
-        });
+          if (response.status === 404 && index < candidates.length - 1) {
+            continue;
+          }
 
-        if (response.status === 404 && index < candidates.length - 1) {
-          continue;
-        }
+          if (!response.ok) {
+            throw new Error(`Estimate failed (${response.status})`);
+          }
 
-        if (!response.ok) {
-          throw new Error(`Estimate failed (${response.status})`);
-        }
-
-        const payload = (await response.json()) as EstimateResponse;
-        setEstimate({
-          required:
-            typeof payload.credits_required === 'number'
-              ? payload.credits_required
-              : 0,
-          balance:
-            typeof payload.current_balance === 'number'
-              ? payload.current_balance
-              : 0,
-          sufficient: Boolean(payload.sufficient),
-        });
-        setEstimateError(null);
-        setIsEstimating(false);
-        return;
-      } catch (error) {
-        if (index === candidates.length - 1) {
-          setEstimateError(
-            error instanceof Error
-              ? error.message
-              : 'Failed to estimate video cost',
-          );
+          const payload = (await response.json()) as EstimateResponse;
+          return {
+            required:
+              typeof payload.credits_required === 'number'
+                ? payload.credits_required
+                : 0,
+            balance:
+              typeof payload.current_balance === 'number'
+                ? payload.current_balance
+                : 0,
+            sufficient: Boolean(payload.sufficient),
+          };
+        } catch (error) {
+          if (index === candidates.length - 1) {
+            throw error;
+          }
         }
       }
+      throw new Error('Failed to estimate video cost');
     }
-
-    setIsEstimating(false);
+    return requestEstimate()
+      .then((result) => {
+        setEstimate(result);
+        setEstimateError(null);
+      })
+      .catch((error: unknown) => {
+        setEstimateError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to estimate video cost',
+        );
+      })
+      .finally(() => {
+        setIsEstimating(false);
+      });
   }, [apiBaseUrl, duration, userId, videoProvider, klingModel, audioEnabled]);
 
   useEffect(() => {
@@ -466,6 +489,12 @@ function VideoModeControls({ userId }: { userId: string }) {
               <button
                 type="button"
                 onClick={() => {
+                  if (!userId) {
+                    setEstimateError('Missing user ID');
+                    return;
+                  }
+                  setIsEstimating(true);
+                  setEstimateError(null);
                   void loadEstimate();
                 }}
                 className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"

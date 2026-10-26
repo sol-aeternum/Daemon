@@ -273,6 +273,30 @@ export default function AuthLanding({
     : '';
   const emailEnabled = isHosted ? runtimeConfig?.email.enabled === true : false;
 
+  // Presentation follows the exact setup inputs; credential ownership and SDK
+  // teardown remain effect/event-owned below, never render side effects.
+  const googleScope = [
+    googleClientId,
+    googleRetryToken,
+    inviteToken,
+    isChecking,
+    isHosted,
+    runtimeConfigLoading,
+    waitForReadiness,
+  ];
+  const [observedGoogleScope, setObservedGoogleScope] = useState(googleScope);
+  if (
+    googleScope.some((value, index) => value !== observedGoogleScope[index])
+  ) {
+    setObservedGoogleScope(googleScope);
+    setGoogleStatus(
+      isHosted && googleClientId && !isChecking && !runtimeConfigLoading
+        ? 'loading'
+        : 'idle',
+    );
+    setGoogleError(null);
+  }
+
   useEffect(() => {
     routerPushRef.current = router.push;
   }, [router]);
@@ -353,8 +377,6 @@ export default function AuthLanding({
     if (!isHosted || !googleClientId || isChecking || runtimeConfigLoading) {
       googleGenerationRef.current += 1;
       googleButtonHostRef.current?.replaceChildren();
-      setGoogleStatus('idle');
-      setGoogleError(null);
       return;
     }
 
@@ -366,176 +388,170 @@ export default function AuthLanding({
     let challengeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     let completionController = new AbortController();
 
-    setGoogleStatus('loading');
-    setGoogleError(null);
     googleButtonHostRef.current?.replaceChildren();
 
     async function prepareGoogleButton() {
-      try {
-        // Load the official client before asking the backend for a nonce. A
-        // blocked script must not leave an apparently usable button that can
-        // never complete, and it avoids creating an unused server challenge.
-        const google = await withTimeout(
-          loadGoogleIdentityServices(),
-          GOOGLE_SCRIPT_LOAD_TIMEOUT_MS,
-          'Google sign-in timed out while loading.',
-        );
-        loadedGoogle = google;
-        if (cancelled || generation !== googleGenerationRef.current) return;
+      // Load the official client before asking the backend for a nonce. A
+      // blocked script must not leave an apparently usable button that can
+      // never complete, and it avoids creating an unused server challenge.
+      const google = await withTimeout(
+        loadGoogleIdentityServices(),
+        GOOGLE_SCRIPT_LOAD_TIMEOUT_MS,
+        'Google sign-in timed out while loading.',
+      );
+      loadedGoogle = google;
+      if (cancelled || generation !== googleGenerationRef.current) return;
 
-        const startResult = await withTimeout(
-          startGoogleSignIn(),
-          GOOGLE_CHALLENGE_TIMEOUT_MS,
-          'Google sign-in challenge timed out.',
-        );
-        if (cancelled || generation !== googleGenerationRef.current) return;
+      const startResult = await withTimeout(
+        startGoogleSignIn(),
+        GOOGLE_CHALLENGE_TIMEOUT_MS,
+        'Google sign-in challenge timed out.',
+      );
+      if (cancelled || generation !== googleGenerationRef.current) return;
 
+      if (
+        !startResult.success ||
+        !startResult.challengeId ||
+        !startResult.nonce
+      ) {
+        setGoogleStatus('error');
+        setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      const challengeId = startResult.challengeId;
+      const nonce = startResult.nonce;
+      const callback = (response: GoogleCredentialResponse) => {
+        // Google can dispatch a callback after a retry or after the user
+        // navigates away. Only the challenge that owns the currently rendered
+        // button may complete a session.
         if (
-          !startResult.success ||
-          !startResult.challengeId ||
-          !startResult.nonce
+          cancelled ||
+          generation !== googleGenerationRef.current ||
+          completionStarted
         ) {
-          setGoogleStatus('error');
-          setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
           return;
         }
 
-        const challengeId = startResult.challengeId;
-        const nonce = startResult.nonce;
-        const callback = (response: GoogleCredentialResponse) => {
-          // Google can dispatch a callback after a retry or after the user
-          // navigates away. Only the challenge that owns the currently rendered
-          // button may complete a session.
-          if (
-            cancelled ||
-            generation !== googleGenerationRef.current ||
-            completionStarted
-          ) {
-            return;
-          }
-
-          const credential = response?.credential;
-          if (!credential) {
-            googleButtonHostRef.current?.replaceChildren();
-            setGoogleStatus('error');
-            setGoogleError(GOOGLE_CANCELLED_MESSAGE);
-            return;
-          }
-
-          completionStarted = true;
-          const action = beginCredentialAction();
-          completionController = action.controller;
+        const credential = response?.credential;
+        if (!credential) {
           googleButtonHostRef.current?.replaceChildren();
-          setGoogleStatus('completing');
-          const completion = completeGoogleSignIn(
-            challengeId,
-            nonce,
-            credential,
-            keepSignedInRef.current ? 'private' : 'temporary',
-            inviteToken,
-            completionController.signal,
-          );
-          // Starting this intent advances the lifetime synchronously. Capture
-          // its lifetime, not the one it just superseded.
-          const authGeneration = getAuthGeneration();
-          void withTimeout(
-            completion,
-            GOOGLE_COMPLETION_TIMEOUT_MS,
-            'Google sign-in completion timed out.',
-            () => completionController.abort(),
-          )
-            .then(async (result) => {
-              if (
-                cancelled ||
-                !action.current() ||
-                generation !== googleGenerationRef.current ||
-                !isAuthResultCurrent(result)
-              ) {
-                return;
-              }
-              if (result.success) {
-                if (
-                  await waitForReadiness(result, completionController.signal)
-                ) {
-                  if (
-                    !cancelled &&
-                    action.current() &&
-                    isAuthResultCurrent(result)
-                  )
-                    routerPushRef.current('/');
-                }
-                return;
-              }
-              setGoogleStatus('error');
-              setGoogleError(result.error || GOOGLE_UNAVAILABLE_MESSAGE);
-            })
-            .catch(() => {
-              if (
-                cancelled ||
-                !action.current() ||
-                generation !== googleGenerationRef.current ||
-                authGeneration !== getAuthGeneration()
-              ) {
-                return;
-              }
-              setGoogleStatus('error');
-              setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
-            });
-        };
-
-        google.accounts.id.initialize({
-          client_id: googleClientId,
-          nonce,
-          callback,
-          // The rendered button is an explicit user action. Do not enable One
-          // Tap or auto-selection as a prerequisite for hosted login.
-          auto_select: false,
-          cancel_on_tap_outside: false,
-        });
-
-        const host = buttonHost;
-        if (!host) {
-          throw new Error('Google sign-in button host is unavailable.');
+          setGoogleStatus('error');
+          setGoogleError(GOOGLE_CANCELLED_MESSAGE);
+          return;
         }
-        host.replaceChildren();
-        google.accounts.id.renderButton(host, {
-          type: 'standard',
-          theme: 'outline',
-          size: 'large',
-          text: 'continue_with',
-          shape: 'pill',
-          width: Math.min(400, host.clientWidth || 400),
-          logo_alignment: 'left',
-        });
-        if (cancelled || generation !== googleGenerationRef.current) return;
-        setGoogleStatus('ready');
 
-        if (startResult.expiresAt) {
-          const refreshInMs = Math.max(
-            startResult.expiresAt * 1000 -
-              Date.now() -
-              GOOGLE_CHALLENGE_REFRESH_MARGIN_MS,
-            GOOGLE_CHALLENGE_REFRESH_MIN_MS,
-          );
-          challengeRefreshTimer = setTimeout(() => {
+        completionStarted = true;
+        const action = beginCredentialAction();
+        completionController = action.controller;
+        googleButtonHostRef.current?.replaceChildren();
+        setGoogleStatus('completing');
+        const completion = completeGoogleSignIn(
+          challengeId,
+          nonce,
+          credential,
+          keepSignedInRef.current ? 'private' : 'temporary',
+          inviteToken,
+          completionController.signal,
+        );
+        // Starting this intent advances the lifetime synchronously. Capture
+        // its lifetime, not the one it just superseded.
+        const authGeneration = getAuthGeneration();
+        void withTimeout(
+          completion,
+          GOOGLE_COMPLETION_TIMEOUT_MS,
+          'Google sign-in completion timed out.',
+          () => completionController.abort(),
+        )
+          .then(async (result) => {
             if (
               cancelled ||
-              completionStarted ||
-              generation !== googleGenerationRef.current
+              !action.current() ||
+              generation !== googleGenerationRef.current ||
+              !isAuthResultCurrent(result)
             ) {
               return;
             }
-            setGoogleRetryToken((value) => value + 1);
-          }, refreshInMs);
-        }
-      } catch {
-        if (cancelled || generation !== googleGenerationRef.current) return;
-        setGoogleStatus('error');
-        setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+            if (result.success) {
+              if (await waitForReadiness(result, completionController.signal)) {
+                if (
+                  !cancelled &&
+                  action.current() &&
+                  isAuthResultCurrent(result)
+                )
+                  routerPushRef.current('/');
+              }
+              return;
+            }
+            setGoogleStatus('error');
+            setGoogleError(result.error || GOOGLE_UNAVAILABLE_MESSAGE);
+          })
+          .catch(() => {
+            if (
+              cancelled ||
+              !action.current() ||
+              generation !== googleGenerationRef.current ||
+              authGeneration !== getAuthGeneration()
+            ) {
+              return;
+            }
+            setGoogleStatus('error');
+            setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+          });
+      };
+
+      google.accounts.id.initialize({
+        client_id: googleClientId,
+        nonce,
+        callback,
+        // The rendered button is an explicit user action. Do not enable One
+        // Tap or auto-selection as a prerequisite for hosted login.
+        auto_select: false,
+        cancel_on_tap_outside: false,
+      });
+
+      const host = buttonHost;
+      if (!host) {
+        throw new Error('Google sign-in button host is unavailable.');
+      }
+      host.replaceChildren();
+      google.accounts.id.renderButton(host, {
+        type: 'standard',
+        theme: 'outline',
+        size: 'large',
+        text: 'continue_with',
+        shape: 'pill',
+        width: Math.min(400, host.clientWidth || 400),
+        logo_alignment: 'left',
+      });
+      if (cancelled || generation !== googleGenerationRef.current) return;
+      setGoogleStatus('ready');
+
+      if (startResult.expiresAt) {
+        const refreshInMs = Math.max(
+          startResult.expiresAt * 1000 -
+            Date.now() -
+            GOOGLE_CHALLENGE_REFRESH_MARGIN_MS,
+          GOOGLE_CHALLENGE_REFRESH_MIN_MS,
+        );
+        challengeRefreshTimer = setTimeout(() => {
+          if (
+            cancelled ||
+            completionStarted ||
+            generation !== googleGenerationRef.current
+          ) {
+            return;
+          }
+          setGoogleRetryToken((value) => value + 1);
+        }, refreshInMs);
       }
     }
 
-    void prepareGoogleButton();
+    void prepareGoogleButton().catch(() => {
+      if (cancelled || generation !== googleGenerationRef.current) return;
+      setGoogleStatus('error');
+      setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+    });
 
     return () => {
       cancelled = true;

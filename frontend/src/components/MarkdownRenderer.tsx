@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -87,12 +88,17 @@ const isInteractiveHtmlPreNode = (node: unknown): boolean => {
   return isInteractiveHtmlClassName(getClassNameValue(rawClassName));
 };
 
-export default function MarkdownRenderer({
+// Cache only the pure parse/render subtree for this mounted instance. Primitive
+// snapshots include every source field/order, so fresh equivalent source arrays
+// can reuse work without a text-only comparator freezing changed provenance.
+const MarkdownContent = memo(function MarkdownContent({
   content,
-  compact = false,
-  className = '',
-  sources,
-}: MarkdownRendererProps) {
+  sourceData,
+}: {
+  content: string;
+  sourceData: string;
+}) {
+  const sources = JSON.parse(sourceData) as ToolSource[];
   // Host lowercase; path/query compared verbatim (case-sensitive), hash
   // ignored on both sides per canonicalUrlKey.
   const sourceByUrl = (() => {
@@ -110,12 +116,96 @@ export default function MarkdownRenderer({
     return key ? (sourceByUrl.get(key) ?? null) : null;
   };
 
-  // Base prose classes - compact uses prose-sm, full uses standard prose
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={{
+        a: ({ node, href, children, ...props }) => {
+          void node;
+          const matched = findSource(href);
+          if (matched) {
+            return (
+              <CitationPill href={href!} domain={matched.domain}>
+                {children}
+              </CitationPill>
+            );
+          }
+          return (
+            <a {...props} href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          );
+        },
+        code: ({ node, className, children, ...props }) => {
+          const match = /language-(\w+)/.exec(className || '');
+          const isInline = !match && !className;
+          const normalizedClassName = (className || '').toLowerCase();
+
+          if (isInteractiveHtmlClassName(normalizedClassName)) {
+            return (
+              <InlineArtifact
+                htmlContent={String(children).trim()}
+                title="Interactive Artifact"
+              />
+            );
+          }
+
+          if (isInline) {
+            return (
+              <code
+                className="px-1.5 py-0.5 bg-[var(--color-bg-tertiary)] rounded text-sm font-mono"
+                {...props}
+              >
+                {children}
+              </code>
+            );
+          }
+
+          return (
+            <code className={`${className} block overflow-x-auto`} {...props}>
+              {children}
+            </code>
+          );
+        },
+        pre: ({ node, ...props }) => {
+          if (isInteractiveHtmlPreNode(node)) {
+            return <>{props.children}</>;
+          }
+
+          return (
+            <pre
+              {...props}
+              className="overflow-x-auto my-2 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-primary)]"
+            />
+          );
+        },
+        table: ({ node, ...props }) => (
+          <div className="overflow-x-auto my-2">
+            <table
+              {...props}
+              className="min-w-full divide-y divide-[var(--color-border-primary)]"
+            />
+          </div>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+
+export default function MarkdownRenderer({
+  content,
+  compact = false,
+  className = '',
+  sources,
+}: MarkdownRendererProps) {
+  // Styles stay live independently of parsing. Child-owned state/context updates
+  // (for example InlineArtifact controls/theme) are not blocked by React.memo.
   const proseClasses = compact
     ? 'prose prose-sm max-w-none'
     : 'prose max-w-none';
-
-  // Theme color classes using CSS variables
   const themeClasses = `
     text-[var(--color-text-primary)]
     prose-headings:text-[var(--color-text-primary)]
@@ -128,89 +218,12 @@ export default function MarkdownRenderer({
     prose-hr:border-[var(--color-border-primary)]
     prose-blockquote:text-[var(--color-text-secondary)]
   `;
-
   return (
     <div className={`${proseClasses} ${themeClasses} ${className}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={{
-          a: ({ node, href, children, ...props }) => {
-            void node;
-            const matched = findSource(href);
-            if (matched) {
-              return (
-                <CitationPill href={href!} domain={matched.domain}>
-                  {children}
-                </CitationPill>
-              );
-            }
-            return (
-              <a
-                {...props}
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {children}
-              </a>
-            );
-          },
-          code: ({ node, className, children, ...props }) => {
-            const match = /language-(\w+)/.exec(className || '');
-            const isInline = !match && !className;
-            const normalizedClassName = (className || '').toLowerCase();
-
-            if (isInteractiveHtmlClassName(normalizedClassName)) {
-              return (
-                <InlineArtifact
-                  htmlContent={String(children).trim()}
-                  title="Interactive Artifact"
-                />
-              );
-            }
-
-            if (isInline) {
-              return (
-                <code
-                  className="px-1.5 py-0.5 bg-[var(--color-bg-tertiary)] rounded text-sm font-mono"
-                  {...props}
-                >
-                  {children}
-                </code>
-              );
-            }
-
-            return (
-              <code className={`${className} block overflow-x-auto`} {...props}>
-                {children}
-              </code>
-            );
-          },
-          pre: ({ node, ...props }) => {
-            if (isInteractiveHtmlPreNode(node)) {
-              return <>{props.children}</>;
-            }
-
-            return (
-              <pre
-                {...props}
-                className="overflow-x-auto my-2 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-primary)]"
-              />
-            );
-          },
-          table: ({ node, ...props }) => (
-            <div className="overflow-x-auto my-2">
-              <table
-                {...props}
-                className="min-w-full divide-y divide-[var(--color-border-primary)]"
-              />
-            </div>
-          ),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+      <MarkdownContent
+        content={content}
+        sourceData={JSON.stringify(sources || [])}
+      />
     </div>
   );
 }

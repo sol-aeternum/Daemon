@@ -246,6 +246,17 @@ and errors. Missing/old-server status remains unknown, never green Ready. See
 `docs/MEMORY_EMBEDDING_SCREEN.md` for the separately authorized fictional screen;
 its results do not qualify or activate a private-memory provider.
 
+Memory Browser filter notifications follow semantic changes, not effect setup:
+`MemoryFilters` leaves the initial/default load with its parent and debounces real
+filter edits for 300 ms. Development effect replay, unchanged normalized search
+and callback-identity changes must not reset an early paginated list. Returning
+to defaults after a genuine filter change still resets it. The paging regression
+in `frontend/__tests__/memory-browser-paging.test.tsx` exercises the real tab/hook
+under StrictMode with deferred page responses; request/auth-generation, polling
+and mutation guards in `useMemories` remain unchanged.
+An emitted filter is not a fetch-success acknowledgment; list retry/refresh
+ownership remains with the hook, not the filter notification component.
+
 ### 3. Storage
 
 `MemoryStore.insert_memory()` / `supersede_memory()` in `store.py`:
