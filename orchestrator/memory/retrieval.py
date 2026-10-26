@@ -434,12 +434,15 @@ async def retrieve_memories_for_text(
     storage_embedding_model: str | None = None,
     query_embedding_model: str | None = None,
     allow_query_embedding: bool = True,
+    touch_results: bool = True,
 ) -> list[dict[str, object]]:
     """Canonical text-query retrieval contract.
 
     This is the shared path for prompt injection, memory_read/memory_reflect
     style queries, and LongMemEval benchmark runs. Callers that already have an
     embedding may pass it to preserve their existing timeout/error handling.
+    ``touch_results=False`` skips the access-count/last-accessed update, which
+    feeds later ranking; only read-only evaluation passes it.
     """
 
     start_time = time.monotonic()
@@ -583,14 +586,15 @@ async def retrieve_memories_for_text(
                 str(item.get("id")),
             ),
         )[:limit]
-        _schedule_memory_touches(
-            store,
-            [
-                cast(uuid.UUID, memory["id"])
-                for memory in ranked
-                if isinstance(memory.get("id"), uuid.UUID)
-            ],
-        )
+        if touch_results:
+            _schedule_memory_touches(
+                store,
+                [
+                    cast(uuid.UUID, memory["id"])
+                    for memory in ranked
+                    if isinstance(memory.get("id"), uuid.UUID)
+                ],
+            )
 
     l0_included = False
     if (
