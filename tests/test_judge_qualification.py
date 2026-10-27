@@ -419,7 +419,7 @@ def test_sanitized_receipt_has_no_headers_keys_or_secret():
 
 
 SDK_METADATA = Path(__file__).parent / "fixtures/judge_sdk_capabilities.json"
-SDK_METADATA_SHA256 = "e6435552686f0894d83fba10180e6f7ae78b7311c603b9c6354ec7f200a9fe15"
+SDK_METADATA_SHA256 = "c6da820e6cdc63221e68c9fb2db23464a08636e57d54bb8520b673ea34c82157"
 
 
 def reviewed_sdk_metadata(path=SDK_METADATA, *, installed_version=None):
