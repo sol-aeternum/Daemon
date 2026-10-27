@@ -3,11 +3,17 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrator.memory.embedding import EmbeddingVector, EmbeddingVectorResult
+from orchestrator.memory import embedding_adapter
+from orchestrator.memory.embedding import (
+    EmbeddingConfigurationError,
+    EmbeddingVector,
+    EmbeddingVectorResult,
+)
 from orchestrator.memory.retrieval import retrieve_memories, retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
@@ -404,6 +410,93 @@ async def test_retrieve_memories_for_text_filters_vector_model(mock_store):
     assert mock_store.search_memories_bm25.call_args.kwargs["embedding_models"] == [
         "openai:text-embedding-3-small"
     ]
+
+
+def _no_route() -> Any:
+    """Pin the no-route configuration the way an emptied selector leaves it."""
+    return (
+        patch("orchestrator.memory.embedding.get_selected_embedding_route_id", return_value=""),
+        patch("orchestrator.memory.retrieval.get_selected_embedding_route_id", return_value=""),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["embedded", "denied"])
+async def test_unset_route_keeps_its_rows_lexically_discoverable(mock_store, query):
+    # Rows written while the qualified route was selected carry its storage
+    # identity. Unsetting the route must not hide them from lexical search (#578).
+    route_row = {
+        "id": uuid.uuid4(),
+        "content": "User is reading The Seven Husbands of Evelyn Hugo",
+        "bm25_score": 1.0,
+        "embedding_model": embedding_adapter.STORAGE_MODEL,
+        "confidence": 0.9,
+        "access_count": 0,
+        "last_accessed_at": datetime.now(timezone.utc),
+        "category": "fact",
+        "source_type": "extracted",
+        "trust_score": 0.5,
+    }
+
+    async def lexical(**kwargs: Any) -> list[dict[str, Any]]:
+        return [route_row] if route_row["embedding_model"] in kwargs["embedding_models"] else []
+
+    mock_store.search_memories_bm25.side_effect = lexical
+    embed = (
+        AsyncMock(return_value=[_embedding_result("voyage-4-large")])
+        if query == "embedded"
+        else AsyncMock(side_effect=EmbeddingConfigurationError("no provider"))
+    )
+    no_route_embedding, no_route_retrieval = _no_route()
+    with (
+        no_route_embedding,
+        no_route_retrieval,
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=(),
+        ),
+        patch("orchestrator.memory.retrieval.embed_query_for_configured_storage_models", new=embed),
+    ):
+        memories = await retrieve_memories_for_text(
+            mock_store, "What book am I reading?", user_id=uuid.uuid4()
+        )
+
+    assert [memory["id"] for memory in memories] == [route_row["id"]]
+    spaces = mock_store.search_memories_bm25.call_args.kwargs["embedding_models"]
+    assert spaces[0] == "voyage-4-large"
+    assert embedding_adapter.STORAGE_MODEL in spaces
+    if query == "embedded":
+        # Vectors are still only compared within the query's own space.
+        assert mock_store.search_memories.call_args.kwargs["embedding_model"] == "voyage-4-large"
+
+
+@pytest.mark.asyncio
+async def test_unset_route_fallback_space_keeps_its_own_lexical_pass(mock_store):
+    old_model = "openrouter:voyageai/voyage-4-large"
+    mock_store.has_memories_with_embedding_model.return_value = True
+    embed = AsyncMock(
+        return_value=[_embedding_result("voyage-4-large"), _embedding_result(old_model)]
+    )
+    no_route_embedding, no_route_retrieval = _no_route()
+    with (
+        no_route_embedding,
+        no_route_retrieval,
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=(old_model,),
+        ),
+        patch("orchestrator.memory.retrieval.embed_query_for_configured_storage_models", new=embed),
+    ):
+        await retrieve_memories_for_text(mock_store, "test query", user_id=uuid.uuid4())
+
+    primary, fallback = (
+        call.kwargs["embedding_models"] for call in mock_store.search_memories_bm25.await_args_list
+    )
+    assert primary[0] == "voyage-4-large"
+    assert embedding_adapter.STORAGE_MODEL in primary
+    # The fallback space is searched once, in its own pass, as before.
+    assert old_model not in primary
+    assert fallback == [old_model]
 
 
 @pytest.mark.asyncio
