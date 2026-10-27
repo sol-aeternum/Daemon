@@ -116,8 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument(
             "--retry-failed-sessions",
             action="store_true",
-            help="Re-ingest a failed session even when its rollback is inexact (or one "
-            "recorded as failed); the run is then no longer baseline-qualified.",
+            help="Roll back and re-ingest sessions recorded as failed; the run is then no "
+            "longer baseline-qualified.",
         )
         subparser.add_argument(
             "--concurrency",

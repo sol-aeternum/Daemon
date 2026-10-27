@@ -118,8 +118,12 @@ Resume by re-running **the same command** in the same checkout. On resume:
   - It matches: the rollback is exact (`ingest_rollbacks[].restored_pre_session_state: true`), and
     the session is re-ingested.
   - It differs: the interrupted session had already changed another session's memories (a dedup
-    merge or supersession). The harness refuses to resume and keeps the pending entry. Restore the
-    last snapshot that matches this checkpoint, or start a fresh output directory and database.
+    merge or supersession). That question is rebuilt instead: its user's memory state is wiped (the
+    user, entitlement account and spend ledger stay), its checkpointed sessions are dropped, and
+    the question is re-ingested from its first session (`question_rebuilds[]`). A user's memory
+    comes only from its own question's sessions, so this is exact and the run stays a baseline.
+    Only that question's sessions are paid for again. If the wipe leaves rows behind, the run
+    refuses.
   - A user with an unexplained conversation and no pending session, or more than one, means the
     database wasn't built by this checkpoint, and the run refuses.
   - A session that doesn't complete (an exception, or an `extraction_failed` result) is handled
@@ -127,16 +131,17 @@ Resume by re-running **the same command** in the same checkout. On resume:
     `failure` (types and counts only, also listed in `ingest_failures`), and the run stops once the
     other questions finish their in-flight session. Resume rolls it back like a killed session and
     retries it (`ingest_rollbacks[].after_failure: true`), so a transient provider error doesn't
-    cost the baseline. If its partial facts had already changed other memories, resume refuses as
-    above.
+    cost the baseline. If its partial facts had already changed other memories, the question is
+    rebuilt as above.
 - **Evaluate.** Each result carries the run's `run_id` and is appended to
   `longmemeval_results.jsonl` and fsynced before the checkpoint is saved. Resume adopts results of
   this run that reached the file, drops a torn trailing line and duplicates, and never re-asks a
   completed question (`results_reconciliations`). Rows from another run (or without a `run_id`)
   are refused, never adopted, so a reused output directory can't mix runs. Questions that errored
   are retried.
-- `--retry-failed-sessions` (ingest) re-ingests a failed session even when that refusal applies,
-  and marks the run `baseline_qualified: false` (`retried_failed_sessions`).
+- `--retry-failed-sessions` (ingest) rolls back and re-ingests sessions recorded as failed (only
+  older checkpoints record them). It marks the run `baseline_qualified: false`
+  (`retried_failed_sessions`).
 
 Each invocation is logged in `run_manifest.json` (`invocations[]`: start, end, outcome,
 `resumed`, active seconds). An invocation that never closed (SIGKILL, power loss) is closed as

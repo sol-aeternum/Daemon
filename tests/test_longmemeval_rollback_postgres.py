@@ -3,7 +3,8 @@
 Deleting an interrupted session's own rows is an exact rollback only when its
 extraction changed nothing else. When it already superseded an earlier
 session's memory (``supersede_memory`` closes the old row via ``valid_to``), the
-harness must refuse to resume instead of baselining the altered state.
+harness must not baseline the altered state: it wipes that question's user and
+rebuilds the question from its first session, leaving every other user alone.
 
 Requires ``TASKS_TEST_DATABASE_URL`` (CI provides it); skips otherwise.
 """
@@ -92,10 +93,19 @@ async def test_rollback_of_a_self_contained_session_restores_the_pre_session_sta
 
 
 @pytest.mark.asyncio
-async def test_rollback_after_superseding_an_earlier_memory_is_refused(
+async def test_rollback_after_superseding_an_earlier_memory_rebuilds_only_that_user(
     env: Env, tmp_path: Path
 ) -> None:
     results, memory_id = await _checkpointed_session(env)
+    other = await env.memory.create_conversation(user_id=env.bob, title="another question")
+    await env.memory.insert_memory(
+        user_id=env.bob,
+        content="User plays the cello",
+        category="fact",
+        source_type="extracted",
+        source_conversation_id=other["id"],
+    )
+    bob_before = await fingerprint_benchmark_state(env.pool, env.bob)
     pending = await _pending(env)
     orphan = await env.memory.create_conversation(user_id=env.alice, title="session B")
     await env.memory.supersede_memory(
@@ -108,12 +118,15 @@ async def test_rollback_after_superseding_an_earlier_memory_is_refused(
     )
     manifest: dict[str, Any] = {}
 
-    with pytest.raises(RuntimeError, match="cannot restore the pre-session state"):
-        await _runner(tmp_path)._reconcile_interrupted_session(
-            env.pool, _stream(env), pending, results, manifest
-        )
+    await _runner(tmp_path)._reconcile_interrupted_session(
+        env.pool, _stream(env), pending, results, manifest
+    )
 
     assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is False
-    assert pending["q1"]["corpus_key"] == "key-b"
-    closed = await env.pool.fetchval("SELECT valid_to FROM memories WHERE id = $1", memory_id)
-    assert closed is not None  # the earlier session's memory stays superseded
+    assert manifest["question_rebuilds"][0]["sessions_discarded"] == 1
+    assert pending == {}
+    assert results == {}
+    alice_after = await fingerprint_benchmark_state(env.pool, env.alice)
+    assert all(digest["rows"] == 0 for digest in alice_after["tables"].values())
+    assert await env.pool.fetchval("SELECT count(*) FROM users WHERE id = $1", env.alice) == 1
+    assert await fingerprint_benchmark_state(env.pool, env.bob) == bob_before

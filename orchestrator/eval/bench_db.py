@@ -234,6 +234,27 @@ async def rollback_orphan_conversations(
     return counts
 
 
+async def wipe_benchmark_user(
+    pool: Any, user_id: uuid.UUID, statements: Sequence[tuple[str, str]]
+) -> dict[str, int]:
+    """Delete one benchmark user's memory state in a single transaction.
+
+    ``statements`` are ``(table, "DELETE ... WHERE user_id = $1")`` pairs (the
+    harness passes its per-user reset statements). The user row, entitlement
+    account and compute ledger stay, so spend remains accounted.
+    """
+    counts: dict[str, int] = {}
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for table, statement in statements:
+                status = await conn.execute(statement, user_id)
+                try:
+                    counts[table] = int(str(status).split()[-1])
+                except (ValueError, IndexError):
+                    counts[table] = 0
+    return counts
+
+
 async def summarize_ingest_routes(pool: Any, user_ids: Sequence[uuid.UUID]) -> dict[str, Any]:
     """Which extraction models served the ingest and how memories were embedded."""
     extraction_rows = await pool.fetch(

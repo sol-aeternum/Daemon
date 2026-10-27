@@ -36,6 +36,7 @@ from orchestrator.eval.bench_db import (
     rollback_orphan_conversations,
     summarize_compute_spend,
     summarize_ingest_routes,
+    wipe_benchmark_user,
 )
 from orchestrator.eval.durable_io import (
     atomic_write_json,
@@ -1257,14 +1258,14 @@ class LongMemEvalFactRunner:
         ingest_results: dict[str, dict[str, Any]],
         manifest: dict[str, Any],
     ) -> None:
-        """Undo a question's interrupted session exactly, or refuse to continue.
+        """Undo a question's interrupted session exactly.
 
         Before each session the checkpoint records it in ``pending_sessions``
         with a fingerprint of that question's user. Deleting the interrupted
-        session's own rows must restore that fingerprint; if extraction had
-        already merged into or superseded an earlier session's memory, it cannot,
-        and the ingest refuses until a snapshot is restored (the refusal persists
-        across resumes). No other stream ever writes to this user.
+        session's own rows must restore that fingerprint. If extraction had
+        already merged into or superseded an earlier session's memory, it
+        cannot; the question is then rebuilt from its first session instead
+        (see ``_rebuild_question``). No other stream ever writes to this user.
         """
         referenced = {
             str(result["conversation_id"])
@@ -1304,31 +1305,12 @@ class LongMemEvalFactRunner:
                 "restored_pre_session_state": exact,
             }
         )
-        if not exact and after_failure and self.retry_failed_sessions:
-            # The failed session's partial facts had already merged into other
-            # memories; re-ingesting on top is allowed only as a non-baseline run.
-            self._disqualify(manifest, "retried_failed_sessions")
-            save_manifest(self.resolved_manifest_path(), manifest)
-            logger.warning(
-                "[ingest] Retrying failed session %s of %s over an inexact rollback",
-                pending.get("corpus_key"),
-                stream.question_id,
-            )
-            pending_sessions.pop(stream.question_id, None)
-            return
         save_manifest(self.resolved_manifest_path(), manifest)
         if not exact:
-            raise RuntimeError(
-                f"The interrupted session of {stream.question_id} changed memories outside "
-                "its own conversation (dedup merge or supersession), so deleting its rows "
-                "cannot restore the pre-session state. Restore the latest ingest snapshot "
-                "(bench_db.sh restore) and its checkpoint, or start a fresh ingest"
-                + (
-                    "; --retry-failed-sessions re-ingests it anyway as a non-baseline run."
-                    if after_failure
-                    else "."
-                )
+            await self._rebuild_question(
+                pool, stream, pending_sessions, ingest_results, manifest, pending
             )
+            return
         logger.warning(
             "[ingest] Rolled back interrupted session %s of %s exactly: %s",
             pending.get("corpus_key"),
@@ -1336,6 +1318,61 @@ class LongMemEvalFactRunner:
             counts,
         )
         pending_sessions.pop(stream.question_id, None)
+
+    async def _rebuild_question(
+        self,
+        pool: Any,
+        stream: QuestionStream,
+        pending_sessions: dict[str, dict[str, Any]],
+        ingest_results: dict[str, dict[str, Any]],
+        manifest: dict[str, Any],
+        pending: dict[str, Any],
+    ) -> None:
+        """Wipe one question's user and re-ingest the question from its first session.
+
+        The interrupted session's partial facts changed earlier memories of this
+        user, so its rollback was inexact. The user's memory is built only from
+        its own question's sessions, so an empty user is exactly its state before
+        the first session: rebuilding keeps the run a baseline, and costs only
+        this question's sessions. The database is wiped before the checkpoint
+        forgets the question, so a crash in between just rebuilds again.
+        """
+        deleted = await wipe_benchmark_user(pool, stream.user_id, CANONICAL_RESET_STATEMENTS)
+        remaining = await fingerprint_benchmark_state(pool, stream.user_id)
+        leftover = {
+            table: digest["rows"] for table, digest in remaining["tables"].items() if digest["rows"]
+        }
+        if leftover:
+            raise RuntimeError(
+                f"Rebuilding {stream.question_id} left rows behind ({leftover}); refusing to "
+                "continue. Restore the matching snapshot or start a fresh ingest."
+            )
+        discarded = [
+            key
+            for key, result in ingest_results.items()
+            if result.get("question_id") == stream.question_id
+        ]
+        for key in discarded:
+            ingest_results.pop(key)
+        pending_sessions.pop(stream.question_id, None)
+        manifest.setdefault("question_rebuilds", []).append(
+            {
+                "at": utc_now_iso(),
+                "question_id": stream.question_id,
+                "trigger_corpus_key": pending.get("corpus_key"),
+                "after_failure": "failure" in pending,
+                "sessions_discarded": len(discarded),
+                "deleted": deleted,
+            }
+        )
+        save_manifest(self.resolved_manifest_path(), manifest)
+        logger.warning(
+            "[ingest] Rollback of %s was inexact; rebuilding %s from its first session "
+            "(%s checkpointed sessions discarded)",
+            pending.get("corpus_key"),
+            stream.question_id,
+            len(discarded),
+        )
 
     async def _retry_failed_sessions(
         self,
@@ -1381,8 +1418,8 @@ class LongMemEvalFactRunner:
         not recorded as a result, its pending entry (and pre-session
         fingerprint) stays, and the stream raises so the run stops after the
         other streams finish their in-flight session. Resume rolls it back
-        exactly and re-ingests it, or refuses if the failed session's partial
-        facts had already changed other memories.
+        exactly and re-ingests it, or rebuilds the question if the failed
+        session's partial facts had already changed other memories.
         """
         ingest_phase = checkpoint["phases"]["ingest"]
         results: dict[str, dict[str, Any]] = ingest_phase["results"]

@@ -308,6 +308,7 @@ class BenchRuntime:
         self.conversations = {user: set(ids) for user, ids in (conversations or {}).items()}
         self.users: list[uuid.UUID] = []
         self.rollbacks: list[tuple[uuid.UUID, set[str]]] = []
+        self.wipes: list[uuid.UUID] = []
         self.fingerprints = list(fingerprints or [FP_INGEST])
         # What the memory tables hash to after a rollback (exact by default).
         self.cross_session_fingerprint = FP_PRE_SESSION
@@ -326,6 +327,7 @@ class BenchRuntime:
         monkeypatch.setattr(target, "git_state", lambda root=None: dict(self.git))
         monkeypatch.setattr(target, "list_benchmark_conversation_ids", self._conversations)
         monkeypatch.setattr(target, "rollback_orphan_conversations", self._rollback)
+        monkeypatch.setattr(target, "wipe_benchmark_user", self._wipe)
         monkeypatch.setattr(target, "fingerprint_benchmark_state", self._user_fingerprint)
         monkeypatch.setattr(target, "fingerprint_benchmark_users", self._fingerprint)
         monkeypatch.setattr(
@@ -361,6 +363,11 @@ class BenchRuntime:
         self.rollbacks.append((user_id, set(ids)))
         self.conversations.get(user_id, set()).difference_update(ids)
         return {"conversations": len(ids), "memories": 3, "memory_extraction_log": 1}
+
+    async def _wipe(self, pool: Any, user_id: uuid.UUID, statements: Any) -> dict[str, int]:
+        self.wipes.append(user_id)
+        removed = len(self.conversations.pop(user_id, set()))
+        return {"conversations": removed, "memories": 7}
 
     async def _user_fingerprint(
         self, pool: Any, user_id: uuid.UUID, *, tables: Any = None
@@ -596,7 +603,7 @@ async def test_ingest_rolls_back_interrupted_session_before_resuming(
 
 
 @pytest.mark.asyncio
-async def test_ingest_refuses_when_rollback_cannot_restore_the_pre_session_state(
+async def test_inexact_rollback_rebuilds_only_that_question_from_its_first_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset_path = _write_dataset(tmp_path)
@@ -621,24 +628,74 @@ async def test_ingest_refuses_when_rollback_cannot_restore_the_pre_session_state
     # The interrupted session superseded session A's memory: deleting its own
     # rows leaves that change behind.
     runtime.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
-    fake_ingest = AsyncMock()
+    ingested: list[tuple[str, uuid.UUID]] = []
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        ingested.append((kwargs["session_id"], kwargs["user_id"]))
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+
     monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
-    with pytest.raises(RuntimeError, match="cannot restore the pre-session state"):
-        await runner.ingest()
-    fake_ingest.assert_not_awaited()
+    await runner.ingest()
+
+    # Only q2's user is wiped, and q2 is re-ingested from its first session.
+    assert runtime.wipes == [USER_Q2]
+    assert ingested == [("s-a", USER_Q2), ("s-b", USER_Q2)]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "completed"
+    assert ingest_phase["pending_sessions"] == {}
+    assert ingest_phase["results"][_key("q1", KEY_A)] == _ingest_result("q1", KEY_A, CONV_Q1_A)
+    assert ingest_phase["results"][_key("q2", KEY_A)]["conversation_id"] != CONV_Q2_A
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
     assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is False
-    checkpoint = json.loads(runner.checkpoint_path.read_text())
-    assert checkpoint["phases"]["ingest"]["pending_sessions"]["q2"]["corpus_key"] == KEY_B
+    rebuild = manifest["question_rebuilds"][0]
+    assert rebuild["question_id"] == "q2"
+    assert rebuild["trigger_corpus_key"] == KEY_B
+    assert rebuild["sessions_discarded"] == 1
+    assert rebuild["after_failure"] is False
+    assert manifest["baseline_qualified"] is True
 
-    # The refusal persists: a plain resume never "repairs" the altered state.
-    runtime_again = BenchRuntime(
-        monkeypatch, conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A}}
+
+@pytest.mark.asyncio
+async def test_rebuild_refuses_when_the_wipe_leaves_rows_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(
+        json.dumps(
+            _ingest_checkpoint(
+                dataset_path,
+                {
+                    _key("q1", KEY_A): _ingest_result("q1", KEY_A, CONV_Q1_A),
+                    _key("q2", KEY_A): _ingest_result("q2", KEY_A, CONV_Q2_A),
+                },
+                pending={"q2": KEY_B},
+            )
+        )
     )
-    runtime_again.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
-    with pytest.raises(RuntimeError, match="cannot restore the pre-session state"):
-        await _runner(tmp_path, dataset_path).ingest()
+    runtime = BenchRuntime(
+        monkeypatch,
+        conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A, str(uuid.uuid4())}},
+    )
+    runtime.cross_session_fingerprint = {
+        "sha256": "d" * 64,
+        "tables": {"memories": {"rows": 2, "md5": "x"}},
+    }
+    fake_ingest = AsyncMock()
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(RuntimeError, match="left rows behind"):
+        await runner.ingest()
     fake_ingest.assert_not_awaited()
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    # The checkpoint still holds the question, so a later resume tries again.
+    assert checkpoint["phases"]["ingest"]["pending_sessions"]["q2"]["corpus_key"] == KEY_B
+    assert _key("q2", KEY_A) in checkpoint["phases"]["ingest"]["results"]
 
 
 @pytest.mark.asyncio
@@ -1031,29 +1088,35 @@ async def test_a_failed_session_stops_the_run_and_resume_retries_it_exactly(
 
 
 @pytest.mark.asyncio
-async def test_a_failed_session_with_an_inexact_rollback_needs_retry_and_disqualifies(
+async def test_a_failed_session_with_an_inexact_rollback_rebuilds_the_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset_path = _single_question(tmp_path, sessions=2)
     runner = _runner(tmp_path, dataset_path)
     runtime = BenchRuntime(monkeypatch)
-    monkeypatch.setattr(
-        fact_harness, "ingest_session_parity", _ingest_into(runtime, fail={"s-1": "returned"})
-    )
+    calls: list[str] = []
+    fake = _ingest_into(runtime, fail={"s-1": "returned"})
+
+    async def recording(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["session_id"])
+        return await fake(**kwargs)
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", recording)
     with pytest.raises(fact_harness.IngestSessionFailed):
         await runner.ingest()
 
     # The failed session's partial facts superseded an earlier memory.
     runtime.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
-    with pytest.raises(RuntimeError, match="--retry-failed-sessions re-ingests it anyway"):
-        await _runner(tmp_path, dataset_path).ingest()
+    await _runner(tmp_path, dataset_path).ingest()
 
-    await _runner(tmp_path, dataset_path, retry_failed_sessions=True).ingest()
+    assert calls == ["s-0", "s-1", "s-0", "s-1"]
+    assert runtime.wipes == [bench_db.question_user_id("q1")]
     checkpoint = json.loads(runner.checkpoint_path.read_text())
     assert checkpoint["phases"]["ingest"]["status"] == "completed"
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
-    assert manifest["baseline_qualified"] is False
-    assert manifest["disqualifications"] == ["retried_failed_sessions"]
+    assert manifest["question_rebuilds"][0]["after_failure"] is True
+    assert manifest["baseline_qualified"] is True
+    assert manifest["disqualifications"] == []
 
 
 @pytest.mark.asyncio
