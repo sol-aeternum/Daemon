@@ -462,14 +462,23 @@ async def test_unset_route_keeps_its_rows_lexically_discoverable(mock_store, que
         )
 
     assert [memory["id"] for memory in memories] == [route_row["id"]]
-    # A whole question matches on any of its terms (#580).
-    assert mock_store.search_memories_bm25.call_args.kwargs["match_any_term"] is True
-    spaces = mock_store.search_memories_bm25.call_args.kwargs["embedding_models"]
-    assert spaces[0] == "voyage-4-large"
-    assert embedding_adapter.STORAGE_MODEL in spaces
+    searches = [
+        (call.kwargs["embedding_models"], call.kwargs["match_any_term"])
+        for call in mock_store.search_memories_bm25.await_args_list
+    ]
     if query == "embedded":
-        # Vectors are still only compared within the query's own space.
+        # Vectors are still only compared within the query's own space, and
+        # that space keeps the calibrated all-terms match. The route's rows are
+        # out of the vector's reach, so they match on any term (#580).
         assert mock_store.search_memories.call_args.kwargs["embedding_model"] == "voyage-4-large"
+        (own, own_any), (others, others_any) = searches
+        assert (own, own_any) == (["voyage-4-large"], False)
+        assert embedding_adapter.STORAGE_MODEL in others and others_any is True
+    else:
+        # No query vector reaches anything: one any-term search over every space.
+        ((spaces, match_any_term),) = searches
+        assert spaces[0] == "voyage-4-large"
+        assert embedding_adapter.STORAGE_MODEL in spaces and match_any_term is True
 
 
 @pytest.mark.asyncio
@@ -491,14 +500,47 @@ async def test_unset_route_fallback_space_keeps_its_own_lexical_pass(mock_store)
     ):
         await retrieve_memories_for_text(mock_store, "test query", user_id=uuid.uuid4())
 
-    primary, fallback = (
-        call.kwargs["embedding_models"] for call in mock_store.search_memories_bm25.await_args_list
+    own, others, fallback = (
+        (call.kwargs["embedding_models"], call.kwargs["match_any_term"])
+        for call in mock_store.search_memories_bm25.await_args_list
     )
-    assert primary[0] == "voyage-4-large"
-    assert embedding_adapter.STORAGE_MODEL in primary
+    assert own == (["voyage-4-large"], False)
+    assert embedding_adapter.STORAGE_MODEL in others[0] and others[1] is True
     # The fallback space is searched once, in its own pass, as before.
-    assert old_model not in primary
-    assert fallback == [old_model]
+    assert old_model not in own[0] + others[0]
+    assert fallback == ([old_model], False)
+
+
+@pytest.mark.asyncio
+async def test_route_selected_retrieval_keeps_all_terms_for_reachable_rows(mock_store):
+    # With the route selected its query vector reaches the rows it wrote, so
+    # their lexical match stays all-terms: hybrid ranking is unchanged (#580).
+    route_result = _embedding_result(embedding_adapter.STORAGE_MODEL)
+    with (
+        patch(
+            "orchestrator.memory.embedding.get_selected_embedding_route_id",
+            return_value="azure-openrouter-small-1024",
+        ),
+        patch(
+            "orchestrator.memory.retrieval.get_selected_embedding_route_id",
+            return_value="azure-openrouter-small-1024",
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=AsyncMock(return_value=[route_result]),
+        ),
+    ):
+        await retrieve_memories_for_text(
+            mock_store, "test query", user_id=uuid.uuid4(), include_local=False
+        )
+
+    own, others = (
+        (call.kwargs["embedding_models"], call.kwargs["match_any_term"])
+        for call in mock_store.search_memories_bm25.await_args_list
+    )
+    assert own == ([embedding_adapter.STORAGE_MODEL], False)
+    # Older spaces have no vector the route's query can reach.
+    assert "voyage-4-large" in others[0] and others[1] is True
 
 
 @pytest.mark.asyncio

@@ -189,6 +189,21 @@ def _bm25_storage_models(storage_model: str) -> list[str]:
     )
 
 
+def _bm25_queries(storage_model: str, *, has_query_vector: bool) -> list[tuple[list[str], bool]]:
+    """BM25 searches for one retrieval pass, as ``(spaces, match_any_term)``.
+
+    Rows the query vector can reach are ranked hybrid, with the all-terms match
+    the hybrid weights were calibrated on. Rows it cannot reach (no query
+    vector, or another storage space) are only findable lexically, so a whole
+    question matches them on any of its terms (#580).
+    """
+    spaces = _bm25_storage_models(storage_model)
+    if not has_query_vector:
+        return [(spaces, True)]
+    others = [space for space in spaces if space != storage_model]
+    return [([storage_model], False), *([(others, True)] if others else [])]
+
+
 async def _available_fallback_storage_models(
     store: MemoryStore,
     user_id: uuid.UUID,
@@ -904,23 +919,34 @@ async def retrieve_memories(
 
     bm25_candidates: list[dict[str, object]] = []
     if normalized_query:
-        bm25_candidates = cast(
-            list[dict[str, object]],
-            await store.search_memories_bm25(
-                user_id=effective_user_id,
-                query=normalized_query,
-                limit=vector_limit,
-                include_local=effective_include_local,
-                include_historical=effective_include_historical,
-                memory_slot=normalized_slot,
-                include_dream_observations=include_dream_observations,
-                source_conversation_ids=allowed_source_conversation_ids,
-                embedding_models=_bm25_storage_models(effective_embedding_model),
-                # Queries are whole questions or turns; requiring every term
-                # almost never matches a stored fact (#580).
-                match_any_term=True,
-            ),
-        )
+        bm25_by_id: dict[str, dict[str, object]] = {}
+        for spaces, match_any_term in _bm25_queries(
+            effective_embedding_model, has_query_vector=bool(query_embedding)
+        ):
+            rows = cast(
+                list[dict[str, object]],
+                await store.search_memories_bm25(
+                    user_id=effective_user_id,
+                    query=normalized_query,
+                    limit=vector_limit,
+                    include_local=effective_include_local,
+                    include_historical=effective_include_historical,
+                    memory_slot=normalized_slot,
+                    include_dream_observations=include_dream_observations,
+                    source_conversation_ids=allowed_source_conversation_ids,
+                    embedding_models=spaces,
+                    match_any_term=match_any_term,
+                ),
+            )
+            for row in rows:
+                # Unembedded rows match both searches; keep the stronger rank.
+                key = str(row.get("id", ""))
+                previous = bm25_by_id.get(key)
+                if previous is None or _as_float(row.get("bm25_score"), 0.0) > _as_float(
+                    previous.get("bm25_score"), 0.0
+                ):
+                    bm25_by_id[key] = row
+        bm25_candidates = list(bm25_by_id.values())
 
     candidate_map: dict[str, dict[str, object]] = {}
 
