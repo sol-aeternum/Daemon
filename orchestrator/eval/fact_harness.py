@@ -516,6 +516,10 @@ class QuestionStream:
     reordered: bool  # the dataset listed these sessions out of date order
 
 
+class IngestSessionFailed(RuntimeError):
+    """A session didn't complete; it stays pending so resume rolls it back and retries."""
+
+
 def _parse_haystack_date(value: Any) -> datetime | None:
     """LongMemEval dates look like ``2023/05/20 (Sat) 02:21``."""
     if not isinstance(value, str):
@@ -758,9 +762,6 @@ def is_completed_result(result: object) -> bool:
 
 
 EXTRACTION_PROFILE = "background"
-# Consecutive sessions whose extraction failed before ingest stops: a broken
-# route or credential would otherwise mark the whole corpus failed.
-INGEST_FAILURE_BREAKER = 5
 EVALUATE_OPERATION = "chat"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -1291,23 +1292,42 @@ class LongMemEvalFactRunner:
         counts = await rollback_orphan_conversations(pool, stream.user_id, orphans)
         after = await fingerprint_benchmark_state(pool, stream.user_id, tables=CROSS_SESSION_TABLES)
         exact = after["sha256"] == pending["state_fingerprint"]["sha256"]
+        after_failure = "failure" in pending
         manifest.setdefault("ingest_rollbacks", []).append(
             {
                 "at": utc_now_iso(),
                 "question_id": stream.question_id,
                 "corpus_key": pending.get("corpus_key"),
+                "after_failure": after_failure,
                 "orphan_conversations": len(orphans),
                 **counts,
                 "restored_pre_session_state": exact,
             }
         )
+        if not exact and after_failure and self.retry_failed_sessions:
+            # The failed session's partial facts had already merged into other
+            # memories; re-ingesting on top is allowed only as a non-baseline run.
+            self._disqualify(manifest, "retried_failed_sessions")
+            save_manifest(self.resolved_manifest_path(), manifest)
+            logger.warning(
+                "[ingest] Retrying failed session %s of %s over an inexact rollback",
+                pending.get("corpus_key"),
+                stream.question_id,
+            )
+            pending_sessions.pop(stream.question_id, None)
+            return
         save_manifest(self.resolved_manifest_path(), manifest)
         if not exact:
             raise RuntimeError(
                 f"The interrupted session of {stream.question_id} changed memories outside "
                 "its own conversation (dedup merge or supersession), so deleting its rows "
                 "cannot restore the pre-session state. Restore the latest ingest snapshot "
-                "(bench_db.sh restore) and its checkpoint, or start a fresh ingest."
+                "(bench_db.sh restore) and its checkpoint, or start a fresh ingest"
+                + (
+                    "; --retry-failed-sessions re-ingests it anyway as a non-baseline run."
+                    if after_failure
+                    else "."
+                )
             )
         logger.warning(
             "[ingest] Rolled back interrupted session %s of %s exactly: %s",
@@ -1353,10 +1373,17 @@ class LongMemEvalFactRunner:
         stream: QuestionStream,
         checkpoint: dict[str, Any],
         manifest: dict[str, Any],
-        failures: dict[str, int],
         halted: Callable[[], bool],
     ) -> None:
-        """Ingest one question's remaining sessions in order, one at a time."""
+        """Ingest one question's remaining sessions in order, one at a time.
+
+        A session that doesn't complete is treated like an interruption: it is
+        not recorded as a result, its pending entry (and pre-session
+        fingerprint) stays, and the stream raises so the run stops after the
+        other streams finish their in-flight session. Resume rolls it back
+        exactly and re-ingests it, or refuses if the failed session's partial
+        facts had already changed other memories.
+        """
         ingest_phase = checkpoint["phases"]["ingest"]
         results: dict[str, dict[str, Any]] = ingest_phase["results"]
         pending: dict[str, dict[str, Any]] = ingest_phase["pending_sessions"]
@@ -1422,6 +1449,27 @@ class LongMemEvalFactRunner:
                 if created:
                     result["conversation_id"] = str(created[0])
 
+            if result.get("status") != "complete":
+                # Keep only types and counts: errors can carry conversation text.
+                failure = {
+                    "at": utc_now_iso(),
+                    "session_id": session.session_id,
+                    "status": result.get("status"),
+                    "error": result.get("error"),
+                    "chunks_failed": result.get("chunks_failed"),
+                    "chunk_errors": result.get("chunk_errors"),
+                }
+                pending[stream.question_id]["failure"] = failure
+                manifest.setdefault("ingest_failures", []).append(
+                    {"question_id": stream.question_id, "corpus_key": session.corpus_key, **failure}
+                )
+                save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                save_manifest(self.resolved_manifest_path(), manifest)
+                raise IngestSessionFailed(
+                    f"Session {session.session_id} of {stream.question_id} did not complete "
+                    f"({result.get('status')}); stopping. Resume to roll it back and retry it."
+                )
+
             result["question_id"] = stream.question_id
             result["user_id"] = str(stream.user_id)
             result["corpus_key"] = session.corpus_key
@@ -1433,15 +1481,6 @@ class LongMemEvalFactRunner:
             ingest_phase["updated_at"] = utc_now_iso()
             save_runner_checkpoint(self.checkpoint_path, checkpoint)
             self._heartbeat(manifest)
-            failures["consecutive"] = (
-                0 if result.get("status") == "complete" else failures["consecutive"] + 1
-            )
-            if failures["consecutive"] >= INGEST_FAILURE_BREAKER:
-                raise RuntimeError(
-                    f"{failures['consecutive']} consecutive sessions failed extraction; "
-                    "stopping. Fix the cause, then resume with --retry-failed-sessions "
-                    "(the run is then no longer baseline-qualified)"
-                )
 
     async def ingest(self) -> list[dict[str, Any]]:
         if self.from_ingest is not None:
@@ -1502,7 +1541,6 @@ class LongMemEvalFactRunner:
                     for session in stream.sessions
                 )
             )
-            failures = {"consecutive": 0}
             errors: list[Exception] = []
 
             async def worker() -> None:
@@ -1515,7 +1553,6 @@ class LongMemEvalFactRunner:
                             stream,
                             checkpoint,
                             manifest,
-                            failures,
                             lambda: bool(errors),
                         )
                     except Exception as exc:

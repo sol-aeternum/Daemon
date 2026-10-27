@@ -116,14 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument(
             "--retry-failed-sessions",
             action="store_true",
-            help="Roll back and re-ingest sessions whose extraction failed.",
+            help="Re-ingest a failed session even when its rollback is inexact (or one "
+            "recorded as failed); the run is then no longer baseline-qualified.",
         )
         subparser.add_argument(
             "--concurrency",
             type=parse_positive_int,
             default=1,
             help="Questions ingested side by side (default 1). Each question has its own "
-            "benchmark user and ingests one session at a time, so results don't depend on it.",
+            "benchmark user and ingests one session at a time, so N changes no user's "
+            "session order or dedup candidates; provider nondeterminism still applies.",
         )
     evaluate_parser.add_argument(
         "--from-ingest",

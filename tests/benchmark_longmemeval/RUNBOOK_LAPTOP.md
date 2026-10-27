@@ -93,7 +93,7 @@ systemd-inhibit --what=sleep:idle:handle-lid-switch --who=longmemeval --why="ben
 Each phase first repeats the worker's startup: it validates the auth pepper and runs the
 production ZDR route attestation (backend and worker do the same at startup: two public OpenRouter listings, recorded in the benchmark database). Without it every
 monitored route fails closed. Ingest refuses to start if the `background` profile has no admitted
-route, and stops after 5 consecutive failed sessions. The manifest records `route_attestations`
+route, and stops at the first session that doesn't complete (§4). The manifest records `route_attestations`
 and `routes.extraction.approved_route_ids`.
 
 Detach with `C-b d` and reattach with `tmux attach -t lme`. `systemd-inhibit` keeps the machine
@@ -122,16 +122,21 @@ Resume by re-running **the same command** in the same checkout. On resume:
     last snapshot that matches this checkpoint, or start a fresh output directory and database.
   - A user with an unexplained conversation and no pending session, or more than one, means the
     database wasn't built by this checkpoint, and the run refuses.
-  - A session that raises in one question stops the run. The other questions finish their
-    in-flight session first, so the checkpoint is resumable.
+  - A session that doesn't complete (an exception, or an `extraction_failed` result) is handled
+    like an interruption. It is not recorded as a result. It stays in `pending_sessions` with its
+    `failure` (types and counts only, also listed in `ingest_failures`), and the run stops once the
+    other questions finish their in-flight session. Resume rolls it back like a killed session and
+    retries it (`ingest_rollbacks[].after_failure: true`), so a transient provider error doesn't
+    cost the baseline. If its partial facts had already changed other memories, resume refuses as
+    above.
 - **Evaluate.** Each result carries the run's `run_id` and is appended to
   `longmemeval_results.jsonl` and fsynced before the checkpoint is saved. Resume adopts results of
   this run that reached the file, drops a torn trailing line and duplicates, and never re-asks a
   completed question (`results_reconciliations`). Rows from another run (or without a `run_id`)
   are refused, never adopted, so a reused output directory can't mix runs. Questions that errored
   are retried.
-- `--retry-failed-sessions` (ingest) rolls back and re-ingests sessions whose extraction failed.
-  It marks the run `baseline_qualified: false` (`retried_failed_sessions`).
+- `--retry-failed-sessions` (ingest) re-ingests a failed session even when that refusal applies,
+  and marks the run `baseline_qualified: false` (`retried_failed_sessions`).
 
 Each invocation is logged in `run_manifest.json` (`invocations[]`: start, end, outcome,
 `resumed`, active seconds). An invocation that never closed (SIGKILL, power loss) is closed as

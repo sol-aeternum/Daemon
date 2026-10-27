@@ -718,40 +718,6 @@ async def test_ingest_refuses_without_an_approved_extraction_route(
     assert manifest["invocations"][-1]["outcome"] == "failed:RuntimeError"
 
 
-@pytest.mark.asyncio
-async def test_ingest_stops_after_consecutive_extraction_failures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    sessions = [[{"role": "user", "content": f"fact number {i}"}] for i in range(8)]
-    dataset = [
-        {
-            "question_id": "q1",
-            "question": "?",
-            "answer": "a",
-            "question_type": "multi-session",
-            "haystack_session_ids": [f"s-{i}" for i in range(8)],
-            "haystack_sessions": sessions,
-        }
-    ]
-    dataset_path = tmp_path / "dataset.json"
-    dataset_path.write_text(json.dumps(dataset))
-    runner = _runner(tmp_path, dataset_path)
-    BenchRuntime(monkeypatch)
-    calls: list[str] = []
-
-    async def failing_ingest(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs["session_id"])
-        return {"session_id": kwargs["session_id"], "status": "extraction_failed"}
-
-    monkeypatch.setattr(fact_harness, "ingest_session_parity", failing_ingest)
-    with pytest.raises(RuntimeError, match="consecutive sessions failed"):
-        await runner.ingest()
-    assert len(calls) == fact_harness.INGEST_FAILURE_BREAKER
-    checkpoint = json.loads(runner.checkpoint_path.read_text())
-    assert checkpoint["phases"]["ingest"]["status"] == "failed"
-    assert len(checkpoint["phases"]["ingest"]["results"]) == fact_harness.INGEST_FAILURE_BREAKER
-
-
 # ------------------------------------------------------- per-question users
 def _dated_entry(question_id: str, sessions: list[tuple[str, str | None]]) -> dict[str, Any]:
     """A question whose haystack holds ``(text, haystack_date)`` sessions in dataset order."""
@@ -971,6 +937,171 @@ async def test_a_failing_stream_lets_siblings_finish_their_session_and_stays_res
     failed.set()
     await _runner(tmp_path, dataset_path, concurrency=2).ingest()
     assert sorted(calls[2:]) == ["q0-fact-0-1", "q1-fact-1-1"]
+
+
+def _single_question(tmp_path: Path, sessions: int) -> Path:
+    dataset = [
+        {
+            "question_id": "q1",
+            "question": "?",
+            "answer": "a",
+            "question_type": "multi-session",
+            "haystack_session_ids": [f"s-{i}" for i in range(sessions)],
+            "haystack_sessions": [
+                [{"role": "user", "content": f"fact number {i}"}] for i in range(sessions)
+            ],
+        }
+    ]
+    path = tmp_path / "dataset.json"
+    path.write_text(json.dumps(dataset))
+    return path
+
+
+def _ingest_into(runtime: BenchRuntime, fail: dict[str, str] | None = None) -> Any:
+    """A fake session ingest that creates a conversation in the runtime's DB.
+
+    ``fail`` maps a session id to how it fails once: "returned" (extraction_failed
+    result) or "raised" (an exception after the conversation exists).
+    """
+    pending_failures = dict(fail or {})
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        conversation = str(uuid.uuid4())
+        runtime.conversations.setdefault(kwargs["user_id"], set()).add(conversation)
+        await kwargs["on_conversation_created"](uuid.UUID(conversation))
+        mode = pending_failures.pop(kwargs["session_id"], None)
+        if mode == "raised":
+            raise ConnectionError("provider down")
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": conversation,
+            "status": "extraction_failed" if mode == "returned" else "complete",
+            "chunks_failed": 1 if mode == "returned" else 0,
+            "chunk_errors": ["Timeout"] if mode == "returned" else [],
+        }
+
+    return fake_ingest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["returned", "raised"])
+async def test_a_failed_session_stops_the_run_and_resume_retries_it_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    dataset_path = _single_question(tmp_path, sessions=3)
+    runner = _runner(tmp_path, dataset_path)
+    runtime = BenchRuntime(monkeypatch)
+    calls: list[str] = []
+    fake = _ingest_into(runtime, fail={"s-1": mode})
+
+    async def recording(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["session_id"])
+        return await fake(**kwargs)
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", recording)
+    with pytest.raises(fact_harness.IngestSessionFailed):
+        await runner.ingest()
+
+    assert calls == ["s-0", "s-1"]  # nothing after the failed session
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "failed"
+    assert [result["session_id"] for result in ingest_phase["results"].values()] == ["s-0"]
+    failure = ingest_phase["pending_sessions"]["q1"]["failure"]
+    assert failure["session_id"] == "s-1"
+    assert failure["status"] == ("extraction_failed" if mode == "returned" else "error")
+    manifest_path = runner.output_path.parent / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["ingest_failures"][0]["question_id"] == "q1"
+
+    # A plain resume rolls the failed session back exactly and re-ingests it.
+    await _runner(tmp_path, dataset_path).ingest()
+    assert calls == ["s-0", "s-1", "s-1", "s-2"]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "completed"
+    assert ingest_phase["pending_sessions"] == {}
+    assert {result["status"] for result in ingest_phase["results"].values()} == {"complete"}
+    manifest = json.loads(manifest_path.read_text())
+    rollback = manifest["ingest_rollbacks"][0]
+    assert rollback["after_failure"] is True
+    assert rollback["restored_pre_session_state"] is True
+    assert rollback["orphan_conversations"] == 1
+    assert manifest["baseline_qualified"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_session_with_an_inexact_rollback_needs_retry_and_disqualifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _single_question(tmp_path, sessions=2)
+    runner = _runner(tmp_path, dataset_path)
+    runtime = BenchRuntime(monkeypatch)
+    monkeypatch.setattr(
+        fact_harness, "ingest_session_parity", _ingest_into(runtime, fail={"s-1": "returned"})
+    )
+    with pytest.raises(fact_harness.IngestSessionFailed):
+        await runner.ingest()
+
+    # The failed session's partial facts superseded an earlier memory.
+    runtime.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
+    with pytest.raises(RuntimeError, match="--retry-failed-sessions re-ingests it anyway"):
+        await _runner(tmp_path, dataset_path).ingest()
+
+    await _runner(tmp_path, dataset_path, retry_failed_sessions=True).ingest()
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["status"] == "completed"
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["baseline_qualified"] is False
+    assert manifest["disqualifications"] == ["retried_failed_sessions"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["returned", "raised"])
+async def test_a_failing_question_is_never_masked_by_a_healthy_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    dataset_path = _many_questions(tmp_path, count=2, sessions=4)
+    runner = _runner(tmp_path, dataset_path, concurrency=2)
+    runtime = BenchRuntime(monkeypatch)
+    fake = _ingest_into(runtime, fail={"q0-fact-0-1": mode})
+    q0 = bench_db.question_user_id("q0")
+    failing_started = asyncio.Event()
+    calls: list[str] = []
+
+    async def interleaved(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["session_id"])
+        if kwargs["session_id"] == "q0-fact-0-1":
+            failing_started.set()
+        elif kwargs["user_id"] != q0 and kwargs["session_id"] != "q1-fact-1-0":
+            # The healthy sibling is mid-session when q0 fails.
+            await failing_started.wait()
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
+        return await fake(**kwargs)
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", interleaved)
+    with pytest.raises(fact_harness.IngestSessionFailed):
+        await runner.ingest()
+
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    recorded = {result["session_id"] for result in ingest_phase["results"].values()}
+    started_after_failure = calls[calls.index("q0-fact-0-1") + 1 :]
+    # Only the sibling's session already in flight may start after the failure;
+    # it finishes and is saved, and nothing else starts.
+    assert len(started_after_failure) <= 1
+    assert set(started_after_failure) <= recorded
+    assert "q0-fact-0-1" not in recorded
+    assert "q0-fact-0-2" not in calls
+    assert ingest_phase["status"] == "failed"
+    assert set(ingest_phase["pending_sessions"]) == {"q0"}
+
+    await _runner(tmp_path, dataset_path, concurrency=2).ingest()
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["completed_count"] == 8
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["baseline_qualified"] is True
 
 
 # --------------------------------------------------------------- evaluate-only rerun
