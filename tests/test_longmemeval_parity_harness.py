@@ -699,6 +699,97 @@ async def test_rebuild_refuses_when_the_wipe_leaves_rows_behind(
 
 
 @pytest.mark.asyncio
+async def test_death_after_the_wipe_commits_rebuilds_again_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(
+        json.dumps(
+            _ingest_checkpoint(
+                dataset_path,
+                {
+                    _key("q1", KEY_A): _ingest_result("q1", KEY_A, CONV_Q1_A),
+                    _key("q2", KEY_A): _ingest_result("q2", KEY_A, CONV_Q2_A),
+                },
+                pending={"q2": KEY_B},
+            )
+        )
+    )
+    runtime = BenchRuntime(
+        monkeypatch,
+        conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A, str(uuid.uuid4())}},
+    )
+    # An empty user never matches the state before session B.
+    runtime.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
+
+    class Died(BaseException):
+        pass
+
+    # A SIGKILL: nothing reaches disk after the wipe, not even the shutdown save.
+    real_save_manifest = fact_harness.save_manifest
+    real_save_checkpoint = fact_harness.save_runner_checkpoint
+    dead = False
+
+    def die_after_the_wipe(path: Any, manifest: dict[str, Any]) -> None:
+        nonlocal dead
+        if dead:
+            return
+        if runtime.wipes and "question_rebuilds" in manifest:
+            dead = True
+            raise Died
+        real_save_manifest(path, manifest)
+
+    def save_checkpoint_unless_dead(path: Any, checkpoint: dict[str, Any]) -> None:
+        if not dead:
+            real_save_checkpoint(path, checkpoint)
+
+    monkeypatch.setattr(fact_harness, "save_manifest", die_after_the_wipe)
+    monkeypatch.setattr(fact_harness, "save_runner_checkpoint", save_checkpoint_unless_dead)
+    fake_ingest = AsyncMock()
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(Died):
+        await runner.ingest()
+    fake_ingest.assert_not_awaited()
+    # The wipe committed, but the checkpoint still points at the wiped conversations.
+    assert runtime.wipes == [USER_Q2]
+    assert USER_Q2 not in runtime.conversations
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["pending_sessions"]["q2"]["corpus_key"] == KEY_B
+    assert _key("q2", KEY_A) in checkpoint["phases"]["ingest"]["results"]
+
+    monkeypatch.setattr(fact_harness, "save_manifest", real_save_manifest)
+    monkeypatch.setattr(fact_harness, "save_runner_checkpoint", real_save_checkpoint)
+    ingested: list[tuple[str, uuid.UUID]] = []
+
+    async def fake_resume_ingest(**kwargs: Any) -> dict[str, Any]:
+        ingested.append((kwargs["session_id"], kwargs["user_id"]))
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_resume_ingest)
+    await _runner(tmp_path, dataset_path).ingest()
+
+    # Resume finds no orphan, cannot match the pre-session state, and rebuilds again.
+    assert runtime.wipes == [USER_Q2, USER_Q2]
+    assert ingested == [("s-a", USER_Q2), ("s-b", USER_Q2)]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "completed"
+    assert ingest_phase["pending_sessions"] == {}
+    assert ingest_phase["results"][_key("q1", KEY_A)] == _ingest_result("q1", KEY_A, CONV_Q1_A)
+    assert ingest_phase["results"][_key("q2", KEY_A)]["conversation_id"] != CONV_Q2_A
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["question_rebuilds"][-1]["question_id"] == "q2"
+    assert manifest["question_rebuilds"][-1]["sessions_discarded"] == 1
+    assert manifest["baseline_qualified"] is True
+
+
+@pytest.mark.asyncio
 async def test_ingest_refuses_database_not_built_by_this_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
