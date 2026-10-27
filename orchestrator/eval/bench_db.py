@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -40,6 +41,15 @@ FINGERPRINT_TABLES: tuple[tuple[str, str], ...] = (
 CROSS_SESSION_TABLES: tuple[tuple[str, str], ...] = tuple(
     item for item in FINGERPRINT_TABLES if item[0] != "messages"
 )
+
+# Each question's haystack is ingested into its own benchmark user. The id is
+# derived from the question id, so a resume or a restored snapshot maps every
+# question back to the same user.
+BENCHMARK_USER_NAMESPACE = uuid.UUID("ef9c86b2-45be-514c-94af-224bf6b9ef34")
+
+
+def question_user_id(question_id: str) -> uuid.UUID:
+    return uuid.uuid5(BENCHMARK_USER_NAMESPACE, f"longmemeval:{question_id}")
 
 
 class BenchmarkDatabaseGuardError(RuntimeError):
@@ -110,6 +120,18 @@ async def ensure_benchmark_account(pool: Any, user_id: uuid.UUID) -> None:
     )
 
 
+async def ensure_benchmark_user(pool: Any, user_id: uuid.UUID) -> None:
+    """Create a per-question benchmark user and its account (idempotent). Call after the guard."""
+    await pool.execute(
+        "INSERT INTO users (id, email, name, username, preferences, created_at, updated_at) "
+        "VALUES ($1, $2, $3, $3, '{}'::jsonb, NOW(), NOW()) ON CONFLICT (id) DO NOTHING",
+        user_id,
+        f"longmemeval+{user_id.hex}@daemon.test",
+        f"longmemeval-{user_id.hex}",
+    )
+    await ensure_benchmark_account(pool, user_id)
+
+
 async def fingerprint_benchmark_state(
     pool: Any,
     user_id: uuid.UUID,
@@ -138,6 +160,28 @@ async def fingerprint_benchmark_state(
         }
     combined = hashlib.sha256(json.dumps(digests, sort_keys=True).encode("utf-8")).hexdigest()
     return {"sha256": combined, "tables": digests}
+
+
+async def fingerprint_benchmark_users(
+    pool: Any,
+    user_ids: Sequence[uuid.UUID],
+    *,
+    tables: tuple[tuple[str, str], ...] = FINGERPRINT_TABLES,
+) -> dict[str, Any]:
+    """One fingerprint over every benchmark user (per-user fingerprints, combined)."""
+    per_user: dict[str, dict[str, Any]] = {}
+    for user_id in sorted(set(user_ids), key=str):
+        per_user[str(user_id)] = await fingerprint_benchmark_state(pool, user_id, tables=tables)
+    rows = {
+        table: sum(int(fp["tables"][table]["rows"]) for fp in per_user.values())
+        for table, _owner in tables
+    }
+    combined = hashlib.sha256(
+        json.dumps({user: fp["sha256"] for user, fp in per_user.items()}, sort_keys=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return {"sha256": combined, "users": len(per_user), "rows": rows}
 
 
 async def list_benchmark_conversation_ids(pool: Any, user_id: uuid.UUID) -> set[str]:
@@ -190,17 +234,18 @@ async def rollback_orphan_conversations(
     return counts
 
 
-async def summarize_ingest_routes(pool: Any, user_id: uuid.UUID) -> dict[str, Any]:
+async def summarize_ingest_routes(pool: Any, user_ids: Sequence[uuid.UUID]) -> dict[str, Any]:
     """Which extraction models served the ingest and how memories were embedded."""
     extraction_rows = await pool.fetch(
         "SELECT coalesce(model_used, '<none>') AS model, count(*) AS calls "
-        "FROM memory_extraction_log WHERE user_id = $1 GROUP BY 1 ORDER BY 1",
-        user_id,
+        "FROM memory_extraction_log WHERE user_id = ANY($1::uuid[]) GROUP BY 1 ORDER BY 1",
+        list(user_ids),
     )
     embedding_rows = await pool.fetch(
         "SELECT coalesce(embedding_model, '<none>') AS model, count(*) AS memories, "
-        "count(embedding) AS embedded FROM memories WHERE user_id = $1 GROUP BY 1 ORDER BY 1",
-        user_id,
+        "count(embedding) AS embedded FROM memories WHERE user_id = ANY($1::uuid[]) "
+        "GROUP BY 1 ORDER BY 1",
+        list(user_ids),
     )
     return {
         "extraction_models": {str(r["model"]): int(r["calls"]) for r in extraction_rows},
@@ -212,7 +257,7 @@ async def summarize_ingest_routes(pool: Any, user_id: uuid.UUID) -> dict[str, An
 
 
 async def summarize_compute_spend(
-    pool: Any, user_id: uuid.UUID, since: str | datetime | None
+    pool: Any, user_ids: Sequence[uuid.UUID], since: str | datetime | None
 ) -> dict[str, Any]:
     """Account-ledger spend and token usage for guarded calls since ``since`` (ISO-8601)."""
     if isinstance(since, str):
@@ -224,9 +269,10 @@ async def summarize_compute_spend(
         "coalesce(sum((usage->>'output_tokens')::bigint), 0) AS output_tokens, "
         "count(*) FILTER (WHERE status = 'open') AS open_reservations "
         "FROM entitlement_reservations "
-        "WHERE user_id = $1 AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz) "
+        "WHERE user_id = ANY($1::uuid[]) "
+        "AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz) "
         "GROUP BY 1, 2 ORDER BY 1, 2",
-        user_id,
+        list(user_ids),
         since,
     )
     return {

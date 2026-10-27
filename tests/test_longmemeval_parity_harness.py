@@ -129,7 +129,7 @@ async def test_runner_refuses_unmarked_database_before_any_write(
     create_user = AsyncMock()
     monkeypatch.setattr(fact_harness, "get_settings", lambda: _settings())
     monkeypatch.setattr(fact_harness.asyncpg, "create_pool", AsyncMock(return_value=pool))
-    monkeypatch.setattr(fact_harness, "create_test_user", create_user)
+    monkeypatch.setattr(fact_harness, "ensure_benchmark_user", create_user)
     monkeypatch.setattr(fact_harness, "git_state", lambda root=None: {"sha": "abc", "dirty": False})
     with pytest.raises(BenchmarkDatabaseGuardError):
         await runner.ingest()
@@ -212,8 +212,37 @@ SESSION_A = [{"role": "user", "content": "I adopted a cat named Miso"}]
 SESSION_B = [{"role": "user", "content": "I fly out of Adelaide"}]
 KEY_A = build_corpus_key(SESSION_A)
 KEY_B = build_corpus_key(SESSION_B)
-CONV_A = str(uuid.uuid4())
-CONV_B = str(uuid.uuid4())
+USER_Q1 = bench_db.question_user_id("q1")
+USER_Q2 = bench_db.question_user_id("q2")
+CONV_Q1_A = str(uuid.uuid4())
+CONV_Q2_A = str(uuid.uuid4())
+CONV_Q2_B = str(uuid.uuid4())
+
+
+def _key(question_id: str, corpus_key: str) -> str:
+    return fact_harness.ingest_result_key(question_id, corpus_key)
+
+
+def _ingest_result(
+    question_id: str, corpus_key: str, conversation_id: str, status: str = "complete"
+) -> dict[str, Any]:
+    return {
+        "question_id": question_id,
+        "user_id": str(bench_db.question_user_id(question_id)),
+        "corpus_key": corpus_key,
+        "conversation_id": conversation_id,
+        "status": status,
+    }
+
+
+def _full_ingest() -> dict[str, dict[str, Any]]:
+    """q1's user holds session A; q2's user holds its own copies of A and B."""
+    return {
+        _key("q1", KEY_A): _ingest_result("q1", KEY_A, CONV_Q1_A),
+        _key("q2", KEY_A): _ingest_result("q2", KEY_A, CONV_Q2_A),
+        _key("q2", KEY_B): _ingest_result("q2", KEY_B, CONV_Q2_B),
+    }
+
 
 DATASET = [
     {
@@ -251,10 +280,7 @@ def _ingested_checkpoint(dataset_path: Path, *, fingerprint: dict[str, Any] | No
             "ingest": {
                 "status": "completed",
                 "started_at": "2026-10-26T00:00:00+00:00",
-                "results": {
-                    KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"},
-                    KEY_B: {"corpus_key": KEY_B, "conversation_id": CONV_B, "status": "complete"},
-                },
+                "results": _full_ingest(),
                 "state_fingerprint": fingerprint or FP_INGEST,
             },
             "evaluate": {"results": {}},
@@ -275,11 +301,13 @@ class BenchRuntime:
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
-        conversations: set[str] | None = None,
+        conversations: dict[uuid.UUID, set[str]] | None = None,
         fingerprints: list[dict[str, Any]] | None = None,
         git_sha: str = "abc",
     ) -> None:
-        self.rollbacks: list[set[str]] = []
+        self.conversations = {user: set(ids) for user, ids in (conversations or {}).items()}
+        self.users: list[uuid.UUID] = []
+        self.rollbacks: list[tuple[uuid.UUID, set[str]]] = []
         self.fingerprints = list(fingerprints or [FP_INGEST])
         # What the memory tables hash to after a rollback (exact by default).
         self.cross_session_fingerprint = FP_PRE_SESSION
@@ -294,16 +322,12 @@ class BenchRuntime:
         monkeypatch.setattr(target, "ContentEncryption", lambda key: object())
         monkeypatch.setattr(target, "MemoryStore", lambda db_pool, encryption: MagicMock())
         monkeypatch.setattr(target, "assert_benchmark_database", AsyncMock())
-        monkeypatch.setattr(target, "create_test_user", AsyncMock(return_value=USER_ID))
-        monkeypatch.setattr(target, "ensure_benchmark_account", AsyncMock())
+        monkeypatch.setattr(target, "ensure_benchmark_user", self._ensure_user)
         monkeypatch.setattr(target, "git_state", lambda root=None: dict(self.git))
-        monkeypatch.setattr(
-            target,
-            "list_benchmark_conversation_ids",
-            AsyncMock(return_value=set(conversations or set())),
-        )
+        monkeypatch.setattr(target, "list_benchmark_conversation_ids", self._conversations)
         monkeypatch.setattr(target, "rollback_orphan_conversations", self._rollback)
-        monkeypatch.setattr(target, "fingerprint_benchmark_state", self._fingerprint)
+        monkeypatch.setattr(target, "fingerprint_benchmark_state", self._user_fingerprint)
+        monkeypatch.setattr(target, "fingerprint_benchmark_users", self._fingerprint)
         monkeypatch.setattr(
             target,
             "summarize_ingest_routes",
@@ -327,13 +351,24 @@ class BenchRuntime:
         monkeypatch.setattr(target, "account_compute", fake_account_compute)
         monkeypatch.setattr(target, "print_results", lambda results, accuracy: None)
 
-    async def _rollback(self, pool: Any, user_id: Any, ids: set[str]) -> dict[str, int]:
-        self.rollbacks.append(set(ids))
+    async def _ensure_user(self, pool: Any, user_id: uuid.UUID) -> None:
+        self.users.append(user_id)
+
+    async def _conversations(self, pool: Any, user_id: uuid.UUID) -> set[str]:
+        return set(self.conversations.get(user_id, set()))
+
+    async def _rollback(self, pool: Any, user_id: uuid.UUID, ids: set[str]) -> dict[str, int]:
+        self.rollbacks.append((user_id, set(ids)))
+        self.conversations.get(user_id, set()).difference_update(ids)
         return {"conversations": len(ids), "memories": 3, "memory_extraction_log": 1}
 
-    async def _fingerprint(self, pool: Any, user_id: Any, *, tables: Any = None) -> dict[str, Any]:
-        if tables is not None:
-            return self.cross_session_fingerprint
+    async def _user_fingerprint(
+        self, pool: Any, user_id: uuid.UUID, *, tables: Any = None
+    ) -> dict[str, Any]:
+        """One user's memory state before a session / after its rollback."""
+        return self.cross_session_fingerprint
+
+    async def _fingerprint(self, pool: Any, user_ids: Any, *, tables: Any = None) -> dict[str, Any]:
         return self.fingerprints.pop(0) if len(self.fingerprints) > 1 else self.fingerprints[0]
 
 
@@ -473,20 +508,26 @@ async def test_run_interruptible_turns_signals_into_a_stop_request() -> None:
 
 # ------------------------------------------------------------------ ingest resume
 def _ingest_checkpoint(
-    dataset_path: Path, results: dict[str, Any], *, pending: str | None = None
+    dataset_path: Path,
+    results: dict[str, Any],
+    *,
+    pending: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """``pending`` maps a question id to the corpus key it had in flight."""
     checkpoint = _ingested_checkpoint(dataset_path)
     checkpoint["phases"]["ingest"] = {
         "status": "interrupted",
         "started_at": "2026-10-26T00:00:00+00:00",
         "results": results,
+        "pending_sessions": {
+            question_id: {
+                "corpus_key": corpus_key,
+                "started_at": "2026-10-26T00:05:00+00:00",
+                "state_fingerprint": FP_PRE_SESSION,
+            }
+            for question_id, corpus_key in (pending or {}).items()
+        },
     }
-    if pending is not None:
-        checkpoint["phases"]["ingest"]["pending_session"] = {
-            "corpus_key": pending,
-            "started_at": "2026-10-26T00:05:00+00:00",
-            "state_fingerprint": FP_PRE_SESSION,
-        }
     return checkpoint
 
 
@@ -501,27 +542,36 @@ async def test_ingest_rolls_back_interrupted_session_before_resuming(
         json.dumps(
             _ingest_checkpoint(
                 dataset_path,
-                {KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"}},
-                pending=KEY_B,
+                {
+                    _key("q1", KEY_A): _ingest_result("q1", KEY_A, CONV_Q1_A),
+                    _key("q2", KEY_A): _ingest_result("q2", KEY_A, CONV_Q2_A),
+                },
+                pending={"q2": KEY_B},
             )
         )
     )
     orphan = str(uuid.uuid4())
-    runtime = BenchRuntime(monkeypatch, conversations={CONV_A, orphan})
-    ingested: list[str] = []
+    runtime = BenchRuntime(
+        monkeypatch, conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A, orphan}}
+    )
+    ingested: list[tuple[str, uuid.UUID]] = []
 
     async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
-        ingested.append(kwargs["session_id"])
-        await kwargs["on_conversation_created"](uuid.UUID(CONV_B))
+        ingested.append((kwargs["session_id"], kwargs["user_id"]))
+        await kwargs["on_conversation_created"](uuid.UUID(CONV_Q2_B))
         async with kwargs["scope_factory"]():
             pass
-        return {"session_id": kwargs["session_id"], "conversation_id": CONV_B, "status": "complete"}
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": CONV_Q2_B,
+            "status": "complete",
+        }
 
     monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
     await runner.ingest()
 
-    assert runtime.rollbacks == [{orphan}]
-    assert ingested == ["s-b"]
+    assert runtime.rollbacks == [(USER_Q2, {orphan})]
+    assert ingested == [("s-b", USER_Q2)]
     assert runtime.scopes == [
         {"operation": "agent", "auto_route": True, "background": True, "profile": "background"}
     ]
@@ -529,11 +579,18 @@ async def test_ingest_rolls_back_interrupted_session_before_resuming(
     ingest_phase = checkpoint["phases"]["ingest"]
     assert ingest_phase["status"] == "completed"
     assert ingest_phase["state_fingerprint"] == FP_INGEST
-    assert len(ingest_phase["results"]) == 2
+    assert ingest_phase["results"] == {
+        **_full_ingest(),
+        _key("q2", KEY_B): {
+            **ingest_phase["results"][_key("q2", KEY_B)],
+            **_ingest_result("q2", KEY_B, CONV_Q2_B),
+        },
+    }
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["ingest_rollbacks"][0]["question_id"] == "q2"
     assert manifest["ingest_rollbacks"][0]["orphan_conversations"] == 1
     assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is True
-    assert "pending_session" not in ingest_phase
+    assert ingest_phase["pending_sessions"] == {}
     assert manifest["baseline_qualified"] is True
     assert manifest["routes"]["extraction"]["observed_models"] == {"luna": 2}
 
@@ -549,12 +606,18 @@ async def test_ingest_refuses_when_rollback_cannot_restore_the_pre_session_state
         json.dumps(
             _ingest_checkpoint(
                 dataset_path,
-                {KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"}},
-                pending=KEY_B,
+                {
+                    _key("q1", KEY_A): _ingest_result("q1", KEY_A, CONV_Q1_A),
+                    _key("q2", KEY_A): _ingest_result("q2", KEY_A, CONV_Q2_A),
+                },
+                pending={"q2": KEY_B},
             )
         )
     )
-    runtime = BenchRuntime(monkeypatch, conversations={CONV_A, str(uuid.uuid4())})
+    runtime = BenchRuntime(
+        monkeypatch,
+        conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A, str(uuid.uuid4())}},
+    )
     # The interrupted session superseded session A's memory: deleting its own
     # rows leaves that change behind.
     runtime.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
@@ -566,10 +629,12 @@ async def test_ingest_refuses_when_rollback_cannot_restore_the_pre_session_state
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
     assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is False
     checkpoint = json.loads(runner.checkpoint_path.read_text())
-    assert checkpoint["phases"]["ingest"]["pending_session"]["corpus_key"] == KEY_B
+    assert checkpoint["phases"]["ingest"]["pending_sessions"]["q2"]["corpus_key"] == KEY_B
 
     # The refusal persists: a plain resume never "repairs" the altered state.
-    runtime_again = BenchRuntime(monkeypatch, conversations={CONV_A})
+    runtime_again = BenchRuntime(
+        monkeypatch, conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A}}
+    )
     runtime_again.cross_session_fingerprint = {"sha256": "d" * 64, "tables": {}}
     with pytest.raises(RuntimeError, match="cannot restore the pre-session state"):
         await _runner(tmp_path, dataset_path).ingest()
@@ -582,7 +647,7 @@ async def test_ingest_refuses_database_not_built_by_this_checkpoint(
 ) -> None:
     dataset_path = _write_dataset(tmp_path)
     runner = _runner(tmp_path, dataset_path)
-    runtime = BenchRuntime(monkeypatch, conversations={str(uuid.uuid4()), str(uuid.uuid4())})
+    runtime = BenchRuntime(monkeypatch, conversations={USER_Q2: {str(uuid.uuid4())}})
     fake_ingest = AsyncMock()
     monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
     with pytest.raises(RuntimeError, match="not built by this checkpoint"):
@@ -603,17 +668,17 @@ async def test_retry_failed_sessions_rolls_back_and_reingests(
             _ingest_checkpoint(
                 dataset_path,
                 {
-                    KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"},
-                    KEY_B: {
-                        "corpus_key": KEY_B,
-                        "conversation_id": CONV_B,
-                        "status": "extraction_failed",
-                    },
+                    **_full_ingest(),
+                    _key("q2", KEY_B): _ingest_result(
+                        "q2", KEY_B, CONV_Q2_B, status="extraction_failed"
+                    ),
                 },
             )
         )
     )
-    runtime = BenchRuntime(monkeypatch, conversations={CONV_A, CONV_B})
+    runtime = BenchRuntime(
+        monkeypatch, conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A, CONV_Q2_B}}
+    )
     new_conv = str(uuid.uuid4())
 
     async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
@@ -625,9 +690,10 @@ async def test_retry_failed_sessions_rolls_back_and_reingests(
 
     monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
     await runner.ingest()
-    assert runtime.rollbacks == [{CONV_B}]
+    assert runtime.rollbacks == [(USER_Q2, {CONV_Q2_B})]
     checkpoint = json.loads(runner.checkpoint_path.read_text())
-    assert checkpoint["phases"]["ingest"]["results"][KEY_B]["conversation_id"] == new_conv
+    retried = checkpoint["phases"]["ingest"]["results"][_key("q2", KEY_B)]
+    assert retried["conversation_id"] == new_conv
     manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
     assert manifest["baseline_qualified"] is False
     assert manifest["disqualifications"] == ["retried_failed_sessions"]
@@ -686,6 +752,227 @@ async def test_ingest_stops_after_consecutive_extraction_failures(
     assert len(checkpoint["phases"]["ingest"]["results"]) == fact_harness.INGEST_FAILURE_BREAKER
 
 
+# ------------------------------------------------------- per-question users
+def _dated_entry(question_id: str, sessions: list[tuple[str, str | None]]) -> dict[str, Any]:
+    """A question whose haystack holds ``(text, haystack_date)`` sessions in dataset order."""
+    return {
+        "question_id": question_id,
+        "question": "?",
+        "answer": "a",
+        "question_type": "multi-session",
+        "haystack_session_ids": [f"{question_id}-{text}" for text, _ in sessions],
+        "haystack_sessions": [[{"role": "user", "content": text}] for text, _ in sessions],
+        "haystack_dates": [date for _, date in sessions],
+    }
+
+
+def test_question_streams_ingest_in_haystack_date_order() -> None:
+    (stream,) = fact_harness.build_question_streams(
+        [
+            _dated_entry(
+                "q1",
+                [
+                    ("late", "2023/05/30 (Tue) 09:00"),
+                    ("early", "2023/05/20 (Sat) 02:21"),
+                    ("same-day-first", "2023/05/25 (Thu) 10:00"),
+                    ("same-day-second", "2023/05/25 (Thu) 10:00"),
+                ],
+            )
+        ]
+    )
+    assert [session.session_id for session in stream.sessions] == [
+        "q1-early",
+        "q1-same-day-first",
+        "q1-same-day-second",
+        "q1-late",
+    ]
+    assert stream.reordered is True
+    assert stream.user_id == bench_db.question_user_id("q1")
+
+
+def test_question_streams_keep_dataset_order_when_a_date_does_not_parse() -> None:
+    (stream,) = fact_harness.build_question_streams(
+        [_dated_entry("q1", [("b", "2023/05/30 (Tue) 09:00"), ("a", "sometime")])]
+    )
+    assert [session.session_id for session in stream.sessions] == ["q1-b", "q1-a"]
+    assert stream.reordered is False
+
+
+def test_question_streams_ingest_a_repeated_session_once_at_its_earliest_date() -> None:
+    (stream,) = fact_harness.build_question_streams(
+        [
+            _dated_entry(
+                "q1",
+                [
+                    ("x", "2023/05/30 (Tue) 09:00"),
+                    ("y", "2023/05/21 (Sun) 09:00"),
+                    ("x", "2023/05/20 (Sat) 09:00"),
+                ],
+            )
+        ]
+    )
+    assert [session.haystack_date for session in stream.sessions] == [
+        "2023/05/20 (Sat) 09:00",
+        "2023/05/21 (Sun) 09:00",
+    ]
+
+
+def test_question_users_are_deterministic_and_distinct() -> None:
+    assert bench_db.question_user_id("q1") == bench_db.question_user_id("q1")
+    assert bench_db.question_user_id("q1") != bench_db.question_user_id("q2")
+    assert bench_db.question_user_id("q1").version == 5
+
+
+def _many_questions(tmp_path: Path, count: int, sessions: int) -> Path:
+    dataset = [
+        _dated_entry(
+            f"q{n}",
+            [(f"fact-{n}-{i}", f"2023/05/{10 + i:02d} (Wed) 09:00") for i in range(sessions)],
+        )
+        for n in range(count)
+    ]
+    path = tmp_path / "dataset.json"
+    path.write_text(json.dumps(dataset))
+    return path
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ingest_runs_one_session_per_user_and_n_overall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _many_questions(tmp_path, count=5, sessions=3)
+    runner = _runner(tmp_path, dataset_path, concurrency=3)
+    runtime = BenchRuntime(monkeypatch)
+    in_flight: dict[uuid.UUID, int] = {}
+    peak = {"overall": 0, "per_user": 0}
+    order: dict[uuid.UUID, list[str]] = {}
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        user = kwargs["user_id"]
+        in_flight[user] = in_flight.get(user, 0) + 1
+        peak["per_user"] = max(peak["per_user"], in_flight[user])
+        peak["overall"] = max(peak["overall"], sum(in_flight.values()))
+        await asyncio.sleep(0.01)
+        in_flight[user] -= 1
+        order.setdefault(user, []).append(kwargs["session_id"])
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    await runner.ingest()
+
+    assert peak == {"overall": 3, "per_user": 1}
+    assert sorted(runtime.users) == sorted(bench_db.question_user_id(f"q{n}") for n in range(5))
+    for n in range(5):
+        assert order[bench_db.question_user_id(f"q{n}")] == [f"q{n}-fact-{n}-{i}" for i in range(3)]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["completed_count"] == 15
+    assert checkpoint["phases"]["ingest"]["pending_sessions"] == {}
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["invocations"][-1]["concurrency"] == 3
+    assert manifest["phases"]["ingest"]["questions"] == 5
+
+
+@pytest.mark.asyncio
+async def test_stop_during_concurrent_ingest_finishes_in_flight_sessions_then_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _many_questions(tmp_path, count=4, sessions=2)
+    stop = StopController()
+    runner = _runner(tmp_path, dataset_path, concurrency=2, stop=stop)
+    BenchRuntime(monkeypatch)
+    started: list[str] = []
+    finished: list[str] = []
+    release = asyncio.Event()
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        started.append(kwargs["session_id"])
+        if len(started) == 2:
+            stop.request(signal.SIGTERM)  # arrives while two sessions are in flight
+            release.set()
+        await release.wait()
+        finished.append(kwargs["session_id"])
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(HarnessInterrupted):
+        await runner.ingest()
+
+    assert sorted(finished) == sorted(started) == ["q0-fact-0-0", "q1-fact-1-0"]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "interrupted"
+    assert len(ingest_phase["results"]) == 2
+    assert ingest_phase["pending_sessions"] == {}
+
+    started.clear()
+    release.set()
+    await _runner(tmp_path, dataset_path, concurrency=2).ingest()
+    assert len(started) == 6
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["ingest"]["completed_count"] == 8
+
+
+@pytest.mark.asyncio
+async def test_a_failing_stream_lets_siblings_finish_their_session_and_stays_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _many_questions(tmp_path, count=2, sessions=2)
+    runner = _runner(tmp_path, dataset_path, concurrency=2)
+    runtime = BenchRuntime(monkeypatch)
+    q0 = bench_db.question_user_id("q0")
+    failed = asyncio.Event()
+    fingerprints = {"q0": 0}
+    calls: list[str] = []
+
+    async def flaky_fingerprint(pool: Any, user_id: uuid.UUID, *, tables: Any = None) -> Any:
+        if user_id == q0:
+            fingerprints["q0"] += 1
+            if fingerprints["q0"] == 2:  # before q0's second session
+                failed.set()
+                raise ConnectionError("database went away")
+        return runtime.cross_session_fingerprint
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["session_id"])
+        if kwargs["user_id"] == q0:
+            await asyncio.sleep(0.01)  # lets q1's session start
+        else:
+            await failed.wait()  # still in flight when q0's stream fails
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": str(uuid.uuid4()),
+            "status": "complete",
+        }
+
+    monkeypatch.setattr(fact_harness, "fingerprint_benchmark_state", flaky_fingerprint)
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    with pytest.raises(ConnectionError):
+        await runner.ingest()
+
+    assert calls == ["q0-fact-0-0", "q1-fact-1-0"]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "failed"
+    assert {result["session_id"] for result in ingest_phase["results"].values()} == {
+        "q0-fact-0-0",
+        "q1-fact-1-0",
+    }
+    assert ingest_phase["pending_sessions"] == {}
+
+    monkeypatch.setattr(fact_harness, "fingerprint_benchmark_state", runtime._user_fingerprint)
+    failed.set()
+    await _runner(tmp_path, dataset_path, concurrency=2).ingest()
+    assert sorted(calls[2:]) == ["q0-fact-0-1", "q1-fact-1-1"]
+
+
 # --------------------------------------------------------------- evaluate-only rerun
 def _source_run(tmp_path: Path, dataset_path: Path, *, manifest: bool = True) -> Path:
     source_dir = tmp_path / "ingest_run"
@@ -718,8 +1005,13 @@ async def test_from_ingest_evaluates_without_reingesting_and_records_source(
     ingest_mock = AsyncMock()
     monkeypatch.setattr(fact_harness, "ingest_session_parity", ingest_mock)
 
+    asked: dict[str, uuid.UUID] = {}
+
     async def fake_eval(**kwargs: Any) -> dict[str, Any]:
-        assert kwargs["allowed_source_conversation_ids"]
+        # Each question's user holds only its own haystack, so retrieval is
+        # never narrowed to a conversation allow-list.
+        assert kwargs["allowed_source_conversation_ids"] is None
+        asked[kwargs["question_id"]] = kwargs["user_id"]
         return _result(kwargs["question_id"])
 
     monkeypatch.setattr(fact_harness, "evaluate_single_parity", fake_eval)
@@ -727,6 +1019,7 @@ async def test_from_ingest_evaluates_without_reingesting_and_records_source(
     runner.score()
 
     ingest_mock.assert_not_awaited()
+    assert asked == {"q1": USER_Q1, "q2": USER_Q2}
     manifest = json.loads((tmp_path / "eval_a/run_manifest.json").read_text())
     assert manifest["ingest_source"]["checkpoint_sha256"] == durable_io.file_sha256(source)
     assert manifest["ingest_snapshot"]["sha256"] == durable_io.file_sha256(snapshot)
@@ -765,17 +1058,15 @@ async def test_evaluate_from_a_retried_ingest_stays_disqualified(
             _ingest_checkpoint(
                 dataset_path,
                 {
-                    KEY_A: {"corpus_key": KEY_A, "conversation_id": CONV_A, "status": "complete"},
-                    KEY_B: {
-                        "corpus_key": KEY_B,
-                        "conversation_id": CONV_B,
-                        "status": "extraction_failed",
-                    },
+                    **_full_ingest(),
+                    _key("q2", KEY_B): _ingest_result(
+                        "q2", KEY_B, CONV_Q2_B, status="extraction_failed"
+                    ),
                 },
             )
         )
     )
-    BenchRuntime(monkeypatch, conversations={CONV_A, CONV_B})
+    BenchRuntime(monkeypatch, conversations={USER_Q1: {CONV_Q1_A}, USER_Q2: {CONV_Q2_A, CONV_Q2_B}})
 
     async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
         return {

@@ -118,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Roll back and re-ingest sessions whose extraction failed.",
         )
+        subparser.add_argument(
+            "--concurrency",
+            type=parse_positive_int,
+            default=1,
+            help="Questions ingested side by side (default 1). Each question has its own "
+            "benchmark user and ingests one session at a time, so results don't depend on it.",
+        )
     evaluate_parser.add_argument(
         "--from-ingest",
         type=Path,
@@ -159,6 +166,7 @@ def _build_runner(args: argparse.Namespace, stop: StopController | None) -> Long
         retry_failed_sessions=getattr(args, "retry_failed_sessions", False),
         allow_code_change=getattr(args, "allow_code_change", False),
         allow_state_mismatch=getattr(args, "allow_state_mismatch", False),
+        concurrency=getattr(args, "concurrency", 1),
         stop=stop,
     )
 

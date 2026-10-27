@@ -9,7 +9,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections import deque
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -23,12 +24,15 @@ from orchestrator.auth_pepper import initialize_development_pepper, validate_pep
 from orchestrator.compute_runtime import account_compute
 from orchestrator.config import get_settings
 from orchestrator.eval.bench_db import (
+    BENCHMARK_USER_NAMESPACE,
     CROSS_SESSION_TABLES,
     assert_benchmark_database,
     check_benchmark_dsn,
-    ensure_benchmark_account,
+    ensure_benchmark_user,
     fingerprint_benchmark_state,
+    fingerprint_benchmark_users,
     list_benchmark_conversation_ids,
+    question_user_id,
     rollback_orphan_conversations,
     summarize_compute_spend,
     summarize_ingest_routes,
@@ -75,8 +79,8 @@ from tests.longmemeval.evaluate import (
 from tests.longmemeval.ingest import (
     CorpusPlan,
     TEST_USER_ID,
+    build_corpus_key,
     build_corpus_plan,
-    create_test_user,
     ingest_session_parity,
     normalize_question_id,
 )
@@ -86,9 +90,9 @@ logger = logging.getLogger(__name__)
 PhaseName = Literal["ingest", "evaluate", "score"]
 
 SCORE_FILENAME = "longmemeval_score.json"
-# v3: production-parity prompt surface, chunked account-scoped ingest and
-# durable results. v2 checkpoints hold legacy-prompt results and must not mix.
-CHECKPOINT_VERSION = 3
+# v4: one benchmark user per question, sessions in haystack-date order, results
+# keyed by question and session. v3 (one shared user) and older must not mix.
+CHECKPOINT_VERSION = 4
 DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")
 BENCHMARK_NAME = "longmemeval_fact"
 BENCHMARK_SUBSTRATE = "fact"
@@ -110,12 +114,12 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
         "impact": "Same normalisation and retrieval call; no prior turns in the query.",
     },
     {
-        "id": "haystack_scope",
-        "difference": "Retrieval, L0 and summaries are scoped to the question's haystack "
-        "conversations (allowed_source_conversation_ids); production reads all of a user's "
-        "memories.",
-        "impact": "Required because 50 questions share one benchmark user. L0/summary "
-        "scoping filters after the store's limit.",
+        "id": "benchmark_users",
+        "difference": "Each question's haystack is ingested into its own benchmark user, in "
+        "haystack-date order; a session shared by several questions is ingested once per "
+        "question.",
+        "impact": "Each user's memory holds one history, as in production and LongMemEval; "
+        "retrieval reads all of that user's memories, unscoped.",
     },
     {
         "id": "read_only_evaluate",
@@ -494,6 +498,95 @@ def resolve_question_conversation_ids(
     return conversation_ids
 
 
+@dataclass(frozen=True, slots=True)
+class QuestionSession:
+    corpus_key: str
+    session_id: str
+    messages: list[dict[str, Any]]
+    haystack_date: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionStream:
+    """One question's haystack: its own benchmark user and sessions in ingest order."""
+
+    question_id: str
+    user_id: uuid.UUID
+    sessions: tuple[QuestionSession, ...]
+    reordered: bool  # the dataset listed these sessions out of date order
+
+
+def _parse_haystack_date(value: Any) -> datetime | None:
+    """LongMemEval dates look like ``2023/05/20 (Sat) 02:21``."""
+    if not isinstance(value, str):
+        return None
+    date_part, _, rest = value.partition(" (")
+    time_part = rest.partition(") ")[2]
+    try:
+        return datetime.strptime(f"{date_part} {time_part}".strip(), "%Y/%m/%d %H:%M")
+    except ValueError:
+        return None
+
+
+def build_question_streams(dataset: list[dict[str, Any]]) -> tuple[QuestionStream, ...]:
+    """Per-question ingest plans, sessions stable-sorted by haystack date.
+
+    A question whose dates don't all parse keeps the dataset order. A session
+    repeated within one question is ingested once, at its earliest position.
+    """
+    streams: list[QuestionStream] = []
+    for idx, entry in enumerate(dataset):
+        question_id = normalize_question_id(entry, idx)
+        raw_sessions = entry.get("haystack_sessions") or []
+        raw_ids = entry.get("haystack_session_ids") or []
+        raw_dates = entry.get("haystack_dates") or []
+        sessions = [
+            QuestionSession(
+                corpus_key=build_corpus_key(messages),
+                session_id=str(raw_ids[pos]) if pos < len(raw_ids) else f"{question_id}_{pos}",
+                messages=messages,
+                haystack_date=raw_dates[pos] if pos < len(raw_dates) else None,
+            )
+            for pos, messages in enumerate(raw_sessions)
+            if isinstance(messages, list)
+        ]
+        dates = [_parse_haystack_date(session.haystack_date) for session in sessions]
+        order = list(range(len(sessions)))
+        if sessions and all(date is not None for date in dates):
+            order.sort(key=lambda pos: (dates[pos], pos))
+        ordered = [sessions[pos] for pos in order]
+        seen: set[str] = set()
+        unique = []
+        for session in ordered:
+            if session.corpus_key not in seen:
+                seen.add(session.corpus_key)
+                unique.append(session)
+        streams.append(
+            QuestionStream(
+                question_id=question_id,
+                user_id=question_user_id(question_id),
+                sessions=tuple(unique),
+                reordered=order != sorted(order),
+            )
+        )
+    return tuple(streams)
+
+
+def ingest_result_key(question_id: str, corpus_key: str) -> str:
+    return f"{question_id}:{corpus_key}"
+
+
+def _benchmark_users_record(streams: tuple[QuestionStream, ...]) -> dict[str, Any]:
+    return {
+        "per": "question",
+        "namespace": str(BENCHMARK_USER_NAMESPACE),
+        "count": len(streams),
+        "sessions": sum(len(stream.sessions) for stream in streams),
+        "session_order": "haystack_date",
+        "reordered_questions": [stream.question_id for stream in streams if stream.reordered],
+    }
+
+
 @dataclass(slots=True)
 class ResetSummary:
     success: bool
@@ -595,7 +688,9 @@ async def reset_canonical_benchmark(
     *,
     cleanup_redis: bool = False,
 ) -> ResetSummary:
-    """Reset the fact-substrate canonical benchmark state for the canonical test user.
+    """Reset the fact-substrate canonical benchmark state for every benchmark user.
+
+    That is the legacy shared test user plus every per-question user.
 
     Raises ``BenchmarkDatabaseGuardError`` unless the pool is connected to a
     marked benchmark database.
@@ -616,10 +711,16 @@ async def reset_canonical_benchmark(
     redis_keys_deleted = 0
     try:
         checkpoint_reset = _reset_checkpoint_file(checkpoint_path)
+        question_users = await pool.fetch(
+            "SELECT id FROM users WHERE email LIKE 'longmemeval+%@daemon.test'"
+        )
+        user_ids = [TEST_USER_ID, *(row["id"] for row in question_users or [])]
 
         for table, statement in CANONICAL_RESET_STATEMENTS:
-            result = await pool.execute(statement, TEST_USER_ID)
-            deleted = int(str(result).split()[-1]) if isinstance(result, str) else 0
+            deleted = 0
+            for user_id in user_ids:
+                result = await pool.execute(statement, user_id)
+                deleted += int(str(result).split()[-1]) if isinstance(result, str) else 0
             tables_cleared[table] = deleted
             total += deleted
     except Exception as exc:
@@ -824,6 +925,9 @@ class LongMemEvalFactRunner:
     retry_failed_sessions: bool = False
     allow_code_change: bool = False
     allow_state_mismatch: bool = False
+    # Question streams ingested side by side. Never changes results: no user ever
+    # has two sessions in flight. Not part of the effective config.
+    concurrency: int = 1
     stop: StopController | None = None
     manifest_path: Path | None = None
 
@@ -1049,7 +1153,13 @@ class LongMemEvalFactRunner:
         # invocation of it says this one resumes.
         resumed = any(previous.get("phase") == phase for previous in invocations)
         invocations.append(
-            {"phase": phase, "started_at": now, "resumed": resumed, "outcome": "running"}
+            {
+                "phase": phase,
+                "started_at": now,
+                "resumed": resumed,
+                "outcome": "running",
+                "concurrency": self.concurrency,
+            }
         )
         save_manifest(path, manifest)
         return manifest
@@ -1084,7 +1194,7 @@ class LongMemEvalFactRunner:
     @asynccontextmanager
     async def _phase(
         self, phase: PhaseName, checkpoint: dict[str, Any]
-    ) -> AsyncIterator[tuple[Any, MemoryStore, dict[str, Any], uuid.UUID]]:
+    ) -> AsyncIterator[tuple[Any, MemoryStore, dict[str, Any]]]:
         settings = get_settings()
         if not settings.database_url:
             raise RuntimeError("DATABASE_URL not configured")
@@ -1098,7 +1208,9 @@ class LongMemEvalFactRunner:
         pool: Any = None
         attestation_started = False
         try:
-            pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=2, max_size=10)
+            pool = await asyncpg.create_pool(
+                dsn=settings.database_url, min_size=2, max_size=max(10, 4 * self.concurrency + 2)
+            )
             await assert_benchmark_database(pool, settings.database_url)
             attestation_started = True
             attestation_counts = await prepare_service_runtime(settings, pool)
@@ -1107,11 +1219,7 @@ class LongMemEvalFactRunner:
             )
             encryption = ContentEncryption(settings.daemon_encryption_key)
             store = MemoryStore(db_pool=pool, encryption=encryption)
-            user_id = await create_test_user(pool)
-            if not isinstance(user_id, uuid.UUID):
-                user_id = TEST_USER_ID
-            await ensure_benchmark_account(pool, user_id)
-            yield pool, store, manifest, user_id
+            yield pool, store, manifest
             outcome = "completed"
         except asyncio.CancelledError:
             outcome = "abandoned"
@@ -1143,46 +1251,50 @@ class LongMemEvalFactRunner:
     async def _reconcile_interrupted_session(
         self,
         pool: Any,
-        user_id: uuid.UUID,
-        ingest_phase: dict[str, Any],
+        stream: QuestionStream,
+        pending_sessions: dict[str, dict[str, Any]],
         ingest_results: dict[str, dict[str, Any]],
         manifest: dict[str, Any],
     ) -> None:
-        """Undo an interrupted session exactly, or refuse to continue.
+        """Undo a question's interrupted session exactly, or refuse to continue.
 
-        Before each session the checkpoint records ``pending_session`` with a
-        fingerprint of the memory tables. Deleting the interrupted session's own
-        rows must restore that fingerprint; if extraction had already merged into
-        or superseded an earlier session's memory, it cannot, and the ingest
-        refuses until a snapshot is restored (the refusal persists across resumes).
+        Before each session the checkpoint records it in ``pending_sessions``
+        with a fingerprint of that question's user. Deleting the interrupted
+        session's own rows must restore that fingerprint; if extraction had
+        already merged into or superseded an earlier session's memory, it cannot,
+        and the ingest refuses until a snapshot is restored (the refusal persists
+        across resumes). No other stream ever writes to this user.
         """
         referenced = {
             str(result["conversation_id"])
             for result in ingest_results.values()
-            if result.get("conversation_id")
+            if result.get("question_id") == stream.question_id and result.get("conversation_id")
         }
-        present = await list_benchmark_conversation_ids(pool, user_id)
+        present = await list_benchmark_conversation_ids(pool, stream.user_id)
         orphans = present - referenced
-        pending = ingest_phase.get("pending_session")
+        pending = pending_sessions.get(stream.question_id)
         if pending is None:
             if orphans:
                 raise RuntimeError(
-                    f"Benchmark database holds {len(orphans)} conversation(s) this checkpoint "
-                    "does not reference and no interrupted session is recorded. It was not "
-                    "built by this checkpoint: restore the matching snapshot or reset."
+                    f"Benchmark user for {stream.question_id} holds {len(orphans)} "
+                    "conversation(s) this checkpoint does not reference and no interrupted "
+                    "session is recorded. It was not built by this checkpoint: restore the "
+                    "matching snapshot or reset."
                 )
             return
         if len(orphans) > 1:
             raise RuntimeError(
-                f"Benchmark database holds {len(orphans)} unreferenced conversations; at most "
-                "one (the interrupted session) is expected. Restore the matching snapshot."
+                f"Benchmark user for {stream.question_id} holds {len(orphans)} unreferenced "
+                "conversations; at most one (the interrupted session) is expected. Restore "
+                "the matching snapshot."
             )
-        counts = await rollback_orphan_conversations(pool, user_id, orphans)
-        after = await fingerprint_benchmark_state(pool, user_id, tables=CROSS_SESSION_TABLES)
+        counts = await rollback_orphan_conversations(pool, stream.user_id, orphans)
+        after = await fingerprint_benchmark_state(pool, stream.user_id, tables=CROSS_SESSION_TABLES)
         exact = after["sha256"] == pending["state_fingerprint"]["sha256"]
         manifest.setdefault("ingest_rollbacks", []).append(
             {
                 "at": utc_now_iso(),
+                "question_id": stream.question_id,
                 "corpus_key": pending.get("corpus_key"),
                 "orphan_conversations": len(orphans),
                 **counts,
@@ -1192,73 +1304,179 @@ class LongMemEvalFactRunner:
         save_manifest(self.resolved_manifest_path(), manifest)
         if not exact:
             raise RuntimeError(
-                "The interrupted session changed memories outside its own conversation "
-                "(dedup merge or supersession), so deleting its rows cannot restore the "
-                "pre-session state. Restore the latest ingest snapshot "
+                f"The interrupted session of {stream.question_id} changed memories outside "
+                "its own conversation (dedup merge or supersession), so deleting its rows "
+                "cannot restore the pre-session state. Restore the latest ingest snapshot "
                 "(bench_db.sh restore) and its checkpoint, or start a fresh ingest."
             )
         logger.warning(
-            "[ingest] Rolled back interrupted session %s exactly: %s",
+            "[ingest] Rolled back interrupted session %s of %s exactly: %s",
             pending.get("corpus_key"),
+            stream.question_id,
             counts,
         )
-        ingest_phase.pop("pending_session", None)
+        pending_sessions.pop(stream.question_id, None)
+
+    async def _retry_failed_sessions(
+        self,
+        pool: Any,
+        checkpoint: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> None:
+        results: dict[str, dict[str, Any]] = checkpoint["phases"]["ingest"]["results"]
+        failed = [key for key, result in results.items() if result.get("status") != "complete"]
+        if not failed:
+            return
+        # A failed session may have written part of its facts (and merged into
+        # earlier ones) before failing; deleting it is not an exact rollback, so
+        # the run stops being a baseline.
+        counts = {"conversations": 0, "memories": 0, "memory_extraction_log": 0}
+        for key in failed:
+            result = results.pop(key)
+            if result.get("conversation_id") and result.get("user_id"):
+                removed = await rollback_orphan_conversations(
+                    pool, uuid.UUID(result["user_id"]), {str(result["conversation_id"])}
+                )
+                for name, value in removed.items():
+                    counts[name] = counts.get(name, 0) + value
+        manifest.setdefault("ingest_retries", []).append(
+            {"at": utc_now_iso(), "sessions": len(failed), **counts}
+        )
+        self._disqualify(manifest, "retried_failed_sessions")
+        save_runner_checkpoint(self.checkpoint_path, checkpoint)
+        save_manifest(self.resolved_manifest_path(), manifest)
+
+    async def _ingest_stream(
+        self,
+        pool: Any,
+        store: MemoryStore,
+        stream: QuestionStream,
+        checkpoint: dict[str, Any],
+        manifest: dict[str, Any],
+        failures: dict[str, int],
+        halted: Callable[[], bool],
+    ) -> None:
+        """Ingest one question's remaining sessions in order, one at a time."""
+        ingest_phase = checkpoint["phases"]["ingest"]
+        results: dict[str, dict[str, Any]] = ingest_phase["results"]
+        pending: dict[str, dict[str, Any]] = ingest_phase["pending_sessions"]
+
+        def extraction_scope() -> Any:
+            return account_compute(
+                pool,
+                stream.user_id,
+                operation="agent",
+                auto_route=True,
+                background=True,
+                profile=EXTRACTION_PROFILE,
+            )
+
+        for position, session in enumerate(stream.sessions):
+            key = ingest_result_key(stream.question_id, session.corpus_key)
+            if key in results:
+                continue
+            if halted():
+                return  # another stream stopped the run; this one stays resumable
+            self._check_stop()
+            logger.info(
+                "[ingest] %s [%s/%s] %s ingesting (%s/%s sessions overall)",
+                stream.question_id,
+                position + 1,
+                len(stream.sessions),
+                session.session_id,
+                len(results) + 1,
+                ingest_phase.get("total_sessions"),
+            )
+            pending[stream.question_id] = {
+                "corpus_key": session.corpus_key,
+                "started_at": utc_now_iso(),
+                "state_fingerprint": await fingerprint_benchmark_state(
+                    pool, stream.user_id, tables=CROSS_SESSION_TABLES
+                ),
+            }
+            save_runner_checkpoint(self.checkpoint_path, checkpoint)
+            created: list[uuid.UUID] = []
+
+            async def remember(conversation_id: uuid.UUID) -> None:
+                created.append(conversation_id)
+
+            try:
+                result: dict[str, Any] = await ingest_session_parity(
+                    store=store,
+                    user_id=stream.user_id,
+                    session_id=session.session_id,
+                    messages=session.messages,
+                    session_index=position,
+                    scope_factory=extraction_scope,
+                    on_conversation_created=remember,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[ingest] Session %s of %s failed", session.session_id, stream.question_id
+                )
+                result = {
+                    "session_id": session.session_id,
+                    "status": "error",
+                    "error": type(exc).__name__,
+                }
+                if created:
+                    result["conversation_id"] = str(created[0])
+
+            result["question_id"] = stream.question_id
+            result["user_id"] = str(stream.user_id)
+            result["corpus_key"] = session.corpus_key
+            result["haystack_date"] = session.haystack_date
+            result["ingested_at"] = utc_now_iso()
+            results[key] = result
+            pending.pop(stream.question_id, None)
+            ingest_phase["completed_count"] = len(results)
+            ingest_phase["updated_at"] = utc_now_iso()
+            save_runner_checkpoint(self.checkpoint_path, checkpoint)
+            self._heartbeat(manifest)
+            failures["consecutive"] = (
+                0 if result.get("status") == "complete" else failures["consecutive"] + 1
+            )
+            if failures["consecutive"] >= INGEST_FAILURE_BREAKER:
+                raise RuntimeError(
+                    f"{failures['consecutive']} consecutive sessions failed extraction; "
+                    "stopping. Fix the cause, then resume with --retry-failed-sessions "
+                    "(the run is then no longer baseline-qualified)"
+                )
 
     async def ingest(self) -> list[dict[str, Any]]:
         if self.from_ingest is not None:
             raise ValueError("--from-ingest runs are evaluate-only; run ingest without it")
         self._preflight_database_guard()
         dataset = self.load_dataset()
-        corpus_plan = build_corpus_plan(dataset)
+        streams = build_question_streams(dataset)
+        user_ids = [stream.user_id for stream in streams]
         checkpoint = self.load_checkpoint()
         ingest_phase = mark_phase_started(checkpoint, "ingest")
+        ingest_phase["total_sessions"] = sum(len(stream.sessions) for stream in streams)
+        pending_sessions = ingest_phase.setdefault("pending_sessions", {})
         save_runner_checkpoint(self.checkpoint_path, checkpoint)
 
-        async with self._phase("ingest", checkpoint) as (pool, store, manifest, user_id):
-            existing_results = build_corpus_results_lookup(checkpoint)
-            # Settle an interrupted session before anything else touches the DB.
-            await self._reconcile_interrupted_session(
-                pool,
-                user_id,
-                ingest_phase,
-                existing_results,
-                manifest,
-            )
+        async with self._phase("ingest", checkpoint) as (pool, store, manifest):
+            manifest["benchmark_users"] = _benchmark_users_record(streams)
+            for stream in streams:
+                await ensure_benchmark_user(pool, stream.user_id)
+            results: dict[str, dict[str, Any]] = ingest_phase["results"]
+            # Settle interrupted sessions before anything else touches the DB.
+            for stream in streams:
+                await self._reconcile_interrupted_session(
+                    pool, stream, pending_sessions, results, manifest
+                )
             save_runner_checkpoint(self.checkpoint_path, checkpoint)
             if self.retry_failed_sessions:
-                failed = {
-                    key: result
-                    for key, result in existing_results.items()
-                    if result.get("status") != "complete"
-                }
-                if failed:
-                    # A failed session may have written part of its facts (and
-                    # merged into earlier ones) before failing; deleting it is
-                    # not an exact rollback, so the run stops being a baseline.
-                    conversations = {
-                        str(r["conversation_id"])
-                        for r in failed.values()
-                        if r.get("conversation_id")
-                    }
-                    counts = await rollback_orphan_conversations(pool, user_id, conversations)
-                    for key in failed:
-                        existing_results.pop(key)
-                    manifest.setdefault("ingest_retries", []).append(
-                        {"at": utc_now_iso(), "sessions": len(failed), **counts}
-                    )
-                    self._disqualify(manifest, "retried_failed_sessions")
-                    save_runner_checkpoint(self.checkpoint_path, checkpoint)
-                    save_manifest(self.resolved_manifest_path(), manifest)
+                await self._retry_failed_sessions(pool, checkpoint, manifest)
 
-            total_sessions = corpus_plan.unique_normalized_contents
-            processed = len(existing_results)
             logger.info(
-                "[ingest] Starting LongMemEval ingestion for %s dataset entries (%s haystack refs, %s unique session ids, %s unique normalized sessions, %s already checkpointed)",
-                len(dataset),
-                corpus_plan.total_haystack_refs,
-                corpus_plan.unique_session_ids,
-                total_sessions,
-                processed,
+                "[ingest] Starting LongMemEval ingestion: %s questions, %s sessions "
+                "(%s already checkpointed), concurrency %s",
+                len(streams),
+                ingest_phase["total_sessions"],
+                len(results),
+                self.concurrency,
             )
 
             # The production chunker lives in orchestrator.worker, whose package
@@ -1275,104 +1493,53 @@ class LongMemEvalFactRunner:
                     f"No approved inference route for the {EXTRACTION_PROFILE!r} profile "
                     "(check route attestation in the run manifest); refusing to ingest"
                 )
-            consecutive_failures = 0
 
-            def extraction_scope() -> Any:
-                return account_compute(
-                    pool,
-                    user_id,
-                    operation="agent",
-                    auto_route=True,
-                    background=True,
-                    profile=EXTRACTION_PROFILE,
+            todo = deque(
+                stream
+                for stream in streams
+                if any(
+                    ingest_result_key(stream.question_id, session.corpus_key) not in results
+                    for session in stream.sessions
                 )
-
-            for session_index, corpus_session in enumerate(corpus_plan.corpus_sessions):
-                if corpus_session.corpus_key in existing_results:
-                    continue
-                self._check_stop()
-
-                logger.info(
-                    "[ingest] [%s/%s] %s ingesting (%s raw ids)",
-                    processed + 1,
-                    total_sessions,
-                    corpus_session.canonical_session_id,
-                    len(corpus_session.raw_session_ids),
-                )
-                ingest_phase["pending_session"] = {
-                    "corpus_key": corpus_session.corpus_key,
-                    "started_at": utc_now_iso(),
-                    "state_fingerprint": await fingerprint_benchmark_state(
-                        pool, user_id, tables=CROSS_SESSION_TABLES
-                    ),
-                }
-                save_runner_checkpoint(self.checkpoint_path, checkpoint)
-                created: list[uuid.UUID] = []
-
-                async def remember(conversation_id: uuid.UUID) -> None:
-                    created.append(conversation_id)
-
-                try:
-                    result: dict[str, Any] = await ingest_session_parity(
-                        store=store,
-                        user_id=user_id,
-                        session_id=corpus_session.canonical_session_id,
-                        messages=corpus_session.messages,
-                        session_index=session_index,
-                        scope_factory=extraction_scope,
-                        on_conversation_created=remember,
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "[ingest] Session %s failed",
-                        corpus_session.canonical_session_id,
-                    )
-                    result = {
-                        "session_id": corpus_session.canonical_session_id,
-                        "status": "error",
-                        "error": type(exc).__name__,
-                    }
-                    if created:
-                        result["conversation_id"] = str(created[0])
-
-                result["corpus_key"] = corpus_session.corpus_key
-                result["raw_session_ids"] = list(corpus_session.raw_session_ids)
-                result["ingested_at"] = utc_now_iso()
-                existing_results[corpus_session.corpus_key] = result
-                ingest_phase.pop("pending_session", None)
-                processed = len(existing_results)
-                ingest_phase["completed_count"] = processed
-                ingest_phase["updated_at"] = utc_now_iso()
-                save_runner_checkpoint(self.checkpoint_path, checkpoint)
-                self._heartbeat(manifest)
-                consecutive_failures = (
-                    0 if result.get("status") == "complete" else consecutive_failures + 1
-                )
-                if consecutive_failures >= INGEST_FAILURE_BREAKER:
-                    raise RuntimeError(
-                        f"{consecutive_failures} consecutive sessions failed extraction; "
-                        "stopping. Fix the cause, then resume with --retry-failed-sessions "
-                        "(the run is then no longer baseline-qualified)"
-                    )
-
-            mark_phase_completed(
-                checkpoint,
-                "ingest",
-                completed_count=len(checkpoint["phases"]["ingest"]["results"]),
             )
-            fingerprint = await fingerprint_benchmark_state(pool, user_id)
+            failures = {"consecutive": 0}
+            errors: list[Exception] = []
+
+            async def worker() -> None:
+                while todo and not errors:
+                    stream = todo.popleft()
+                    try:
+                        await self._ingest_stream(
+                            pool,
+                            store,
+                            stream,
+                            checkpoint,
+                            manifest,
+                            failures,
+                            lambda: bool(errors),
+                        )
+                    except Exception as exc:
+                        # Siblings finish their in-flight session, then stop.
+                        errors.append(exc)
+
+            await asyncio.gather(
+                *(worker() for _ in range(max(1, min(self.concurrency, len(todo)))))
+            )
+            if errors:
+                raise errors[0]
+
+            mark_phase_completed(checkpoint, "ingest", completed_count=len(results))
+            fingerprint = await fingerprint_benchmark_users(pool, user_ids)
             ingest_phase["state_fingerprint"] = fingerprint
-            routes = await summarize_ingest_routes(pool, user_id)
-            spend = await summarize_compute_spend(pool, user_id, ingest_phase.get("started_at"))
-            statuses = _tally(
-                [str(r.get("status")) for r in checkpoint["phases"]["ingest"]["results"].values()]
-            )
+            routes = await summarize_ingest_routes(pool, user_ids)
+            spend = await summarize_compute_spend(pool, user_ids, ingest_phase.get("started_at"))
             manifest["routes"]["extraction"]["observed_models"] = routes["extraction_models"]
             manifest["phases"]["ingest"] = {
                 "completed_at": utc_now_iso(),
                 "active_seconds": self._phase_active_seconds(manifest, "ingest"),
-                "sessions": len(checkpoint["phases"]["ingest"]["results"]),
-                "status_counts": statuses,
+                "questions": len(streams),
+                "sessions": len(results),
+                "status_counts": _tally([str(r.get("status")) for r in results.values()]),
                 "state_fingerprint": fingerprint,
                 "memory_embeddings": routes["memory_embeddings"],
                 "compute_spend": spend,
@@ -1441,7 +1608,8 @@ class LongMemEvalFactRunner:
     async def evaluate(self) -> list[dict[str, Any]]:
         self._preflight_database_guard()
         dataset = self.load_dataset()
-        corpus_plan = build_corpus_plan(dataset)
+        streams = {stream.question_id: stream for stream in build_question_streams(dataset)}
+        user_ids = [stream.user_id for stream in streams.values()]
         checkpoint = self.load_checkpoint()
         self._seed_from_ingest(checkpoint)
         if checkpoint["phases"]["ingest"].get("status") != "completed":
@@ -1452,8 +1620,9 @@ class LongMemEvalFactRunner:
         save_runner_checkpoint(self.checkpoint_path, checkpoint)
         question_order = build_question_order(dataset)
 
-        async with self._phase("evaluate", checkpoint) as (pool, store, manifest, user_id):
-            fingerprint_start = await fingerprint_benchmark_state(pool, user_id)
+        async with self._phase("evaluate", checkpoint) as (pool, store, manifest):
+            manifest["benchmark_users"] = _benchmark_users_record(tuple(streams.values()))
+            fingerprint_start = await fingerprint_benchmark_users(pool, user_ids)
             expected = checkpoint["phases"]["ingest"].get("state_fingerprint")
             state_matches = (
                 expected is None or expected.get("sha256") == fingerprint_start["sha256"]
@@ -1469,7 +1638,7 @@ class LongMemEvalFactRunner:
             save_runner_checkpoint(self.checkpoint_path, checkpoint)
 
             completed_results: dict[str, dict[str, Any]] = evaluate_phase["results"]
-            ingest_results = build_corpus_results_lookup(checkpoint)
+            ingest_results: dict[str, dict[str, Any]] = checkpoint["phases"]["ingest"]["results"]
             if self.force_retrieval_logging:
                 logger.info("[evaluate] LongMemEval benchmark forcing retrieval logging ON")
             logger.info(
@@ -1477,9 +1646,6 @@ class LongMemEvalFactRunner:
                 len(question_order),
                 sum(1 for row in completed_results.values() if is_completed_result(row)),
             )
-
-            def chat_scope() -> Any:
-                return account_compute(pool, user_id, operation=EVALUATE_OPERATION)
 
             for idx, entry in enumerate(dataset):
                 question_id = question_order[idx]
@@ -1500,23 +1666,35 @@ class LongMemEvalFactRunner:
                     question_id,
                     attempt,
                 )
+                stream = streams[question_id]
                 try:
-                    corpus_keys = resolve_question_corpus_refs(corpus_plan, question_id)
-                    conversation_ids = resolve_question_conversation_ids(
-                        ingest_results,
-                        corpus_keys,
-                    )
+                    missing = [
+                        session.corpus_key
+                        for session in stream.sessions
+                        if not (
+                            ingest_results.get(ingest_result_key(question_id, session.corpus_key))
+                            or {}
+                        ).get("conversation_id")
+                    ]
+                    if missing:
+                        raise RuntimeError(
+                            f"Missing ingested sessions for {question_id}: {', '.join(missing)}"
+                        )
+
+                    def chat_scope(user_id: uuid.UUID = stream.user_id) -> Any:
+                        return account_compute(pool, user_id, operation=EVALUATE_OPERATION)
+
+                    # The question's own user holds only its haystack, so
+                    # retrieval reads all of that user's memories, as production does.
                     result = await evaluate_single_parity(
                         store=store,
                         question_id=question_id,
                         question_text=question_text,
                         reference=reference,
                         category=category,
-                        allowed_source_conversation_ids=[
-                            uuid.UUID(value) for value in conversation_ids
-                        ],
+                        allowed_source_conversation_ids=None,
                         log_retrieval=self.force_retrieval_logging,
-                        user_id=user_id,
+                        user_id=stream.user_id,
                         benchmark_mode=self.benchmark_mode,
                         scope_factory=chat_scope,
                     )
@@ -1550,7 +1728,7 @@ class LongMemEvalFactRunner:
             if len(question_ids) != len(set(question_ids)):
                 raise RuntimeError("Duplicate question results after evaluation")
             atomic_write_jsonl(self.output_path, ordered_results_list)
-            fingerprint_end = await fingerprint_benchmark_state(pool, user_id)
+            fingerprint_end = await fingerprint_benchmark_users(pool, user_ids)
             errored = [row for row in ordered_results_list if not is_completed_result(row)]
             mark_phase_completed(
                 checkpoint,
@@ -1558,7 +1736,7 @@ class LongMemEvalFactRunner:
                 completed_count=len(ordered_results_list) - len(errored),
             )
             evaluate_phase["error_count"] = len(errored)
-            spend = await summarize_compute_spend(pool, user_id, evaluate_phase.get("started_at"))
+            spend = await summarize_compute_spend(pool, user_ids, evaluate_phase.get("started_at"))
             manifest["phases"]["evaluate"] = {
                 "completed_at": utc_now_iso(),
                 "active_seconds": self._phase_active_seconds(manifest, "evaluate"),

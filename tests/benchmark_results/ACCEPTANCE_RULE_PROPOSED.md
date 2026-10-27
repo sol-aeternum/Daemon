@@ -38,6 +38,9 @@ LongMemEval_S run for any public claim.
 - `memory_formatter.output_sha256` is identical, *unless* the change under test is the formatter
   itself, in which case that is the declared difference.
 
+Runs from checkpoint v3 (one shared user, `haystack_scope`) and v4 (per-question users,
+`benchmark_users`) differ in their `parity_exceptions` ids and are never compared.
+
 Never compare against the historical 10.4%, 67.8% or 81.1% figures. They came from a harness that
 did not build the production prompt.
 
