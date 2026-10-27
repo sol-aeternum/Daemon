@@ -1219,6 +1219,9 @@ class LongMemEvalFactRunner:
             manifest.setdefault("route_attestations", []).append(
                 {"at": utc_now_iso(), "phase": phase, **attestation_counts}
             )
+            # Route approval rests on the attestations just recorded, so the
+            # description taken when the manifest was created reads "unapproved".
+            manifest["embedding"] = _embedding_route_description()
             encryption = ContentEncryption(settings.daemon_encryption_key)
             store = MemoryStore(db_pool=pool, encryption=encryption)
             yield pool, store, manifest

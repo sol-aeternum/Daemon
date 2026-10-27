@@ -1505,6 +1505,45 @@ async def test_manifest_pins_run_identity(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_manifest_describes_the_embedding_route_after_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    BenchRuntime(monkeypatch)
+    attested = False
+
+    async def attest(settings: Any, pool: Any) -> dict[str, int]:
+        nonlocal attested
+        attested = True
+        return {"routes": 1, "attested": 1, "revoked": 0, "check_failed": 0}
+
+    def describe() -> dict[str, Any]:
+        # Approval depends on attestation, as describe_embedding_configuration's does.
+        return {
+            "route_id": "r",
+            "mode": "qualified_route",
+            "configuration": "eligible" if attested else "unavailable",
+            "reason_codes": [] if attested else ["route_unapproved"],
+        }
+
+    monkeypatch.setattr(fact_harness, "prepare_service_runtime", attest)
+    monkeypatch.setattr(fact_harness, "_embedding_route_description", describe)
+    monkeypatch.setattr(
+        fact_harness,
+        "evaluate_single_parity",
+        AsyncMock(side_effect=lambda **k: _result(k["question_id"])),
+    )
+    await runner.evaluate()
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+
+    assert manifest["embedding"]["configuration"] == "eligible"
+    assert manifest["embedding"]["reason_codes"] == []
+
+
+@pytest.mark.asyncio
 async def test_resume_on_different_code_is_refused_unless_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
