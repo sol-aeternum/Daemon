@@ -462,6 +462,8 @@ async def test_unset_route_keeps_its_rows_lexically_discoverable(mock_store, que
         )
 
     assert [memory["id"] for memory in memories] == [route_row["id"]]
+    # A whole question matches on any of its terms (#580).
+    assert mock_store.search_memories_bm25.call_args.kwargs["match_any_term"] is True
     spaces = mock_store.search_memories_bm25.call_args.kwargs["embedding_models"]
     assert spaces[0] == "voyage-4-large"
     assert embedding_adapter.STORAGE_MODEL in spaces

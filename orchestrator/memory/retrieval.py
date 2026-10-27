@@ -916,6 +916,9 @@ async def retrieve_memories(
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
                 embedding_models=_bm25_storage_models(effective_embedding_model),
+                # Queries are whole questions or turns; requiring every term
+                # almost never matches a stored fact (#580).
+                match_any_term=True,
             ),
         )
 
