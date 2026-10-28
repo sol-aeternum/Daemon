@@ -9,6 +9,18 @@
     "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
+    "artifact_output_jobs": {
+      "category": "content",
+      "owner_source": "migrations/051_artifact_output_reservations.sql",
+      "ownership_path": "root:users <- artifact_output_jobs",
+      "rationale": "Uncalled account-owned output identity reservations; original generation and historical task IDs. Explicit reset/purge inventory, not namespace/publication or completed account fencing. Uncovered."
+    },
+    "artifact_output_intents": {
+      "category": "content",
+      "owner_source": "migrations/051_artifact_output_reservations.sql",
+      "ownership_path": "root:users <- artifact_output_jobs <- artifact_output_intents",
+      "rationale": "Uncalled immutable identity and encrypted descriptor reservations through account-qualified job FK; no task/chat cascade. Reset must erase this content. No storage admission/publication or runtime fence claim. Uncovered."
+    },
     "attempt_lifecycle_commands": {
       "category": "control",
       "owner_source": "migrations/049_attempt_lifecycle.sql",
@@ -299,6 +311,12 @@
     }
   },
   "fk_edges": {
+    "artifact_output_jobs": [
+      "users"
+    ],
+    "artifact_output_intents": [
+      "artifact_output_jobs"
+    ],
     "attempt_lifecycle_commands": [
       "attempt_lifecycle_control"
     ],
@@ -443,6 +461,8 @@
     ]
   },
   "ownership_paths": {
+    "artifact_output_jobs": "root:users <- artifact_output_jobs",
+    "artifact_output_intents": "root:users <- artifact_output_jobs <- artifact_output_intents",
     "attempt_lifecycle_commands": "root:attempt_lifecycle_control <- attempt_lifecycle_commands",
     "attempt_lifecycle_control": "root:attempt_lifecycle_control",
     "account_deletions": "root:deletion_journal_binding <- account_deletions",
@@ -493,6 +513,18 @@
     "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots"
   },
   "writer_sites": [
+    {
+      "owner_source": "orchestrator.artifact_reservations",
+      "qualname": "OutputReservations._call",
+      "kind": "sql_unresolvable",
+      "line_hint": 334,
+      "fingerprint": "20d9473230545006",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled reservation privilege predicate. Scanner does not prove SQL-definer effects; explicit migration functions register/reserve insert account content and remain runtime-uncovered. No namespace/publication authority."
+    },
     {
       "owner_source": "orchestrator.artifact_staging",
       "qualname": "_Handles.close",

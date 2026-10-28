@@ -28,6 +28,21 @@ def test_namespace_adapter_leaves_previous_migrations_exact():
     assert migration_sql_for_schema(path, "tasks_test_" + uuid4().hex) == path.read_text()
 
 
+def test_output_reservation_namespace_adapter_keeps_grantee_and_search_path_exact():
+    schema = "tasks_test_" + uuid4().hex
+    sql = migration_sql_for_schema(MIGRATIONS / "051_artifact_output_reservations.sql", schema)
+    assert "public." not in sql
+    assert f"REFERENCES {schema}.users(id)" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert f"'{schema}.artifact_output_jobs'::regclass" in sql
+    assert "SET search_path=pg_catalog" in sql
+    assert (
+        f"REVOKE ALL ON {schema}.artifact_output_jobs,{schema}.artifact_output_intents FROM PUBLIC"
+        in sql
+    )
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+
+
 @pytest.mark.parametrize(
     ("prefix", "schema"),
     [
