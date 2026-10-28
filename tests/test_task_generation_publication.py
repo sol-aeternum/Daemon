@@ -164,13 +164,24 @@ async def test_actual_worker_sink_sql_and_authoritative_snapshot(env: Env, mock_
     assert env.tasks._open(saved)["origin_account_generation"] == generation
 
 
+@pytest.mark.parametrize("straddle", [False, True], ids=["read_after_commit", "read_straddles"])
 async def test_own_completion_receipt_is_not_replaced_by_failed_observation(
-    env: Env, mock_llm, monkeypatch
+    env: Env, mock_llm, monkeypatch, straddle
 ):
-    """#518 receipt precedence: read failure occurs AFTER real SQL ACK, before return."""
+    """#518 receipt precedence: read failure occurs AFTER real SQL ACK, before return.
+
+    Barriers fix the read's order against the held commit (#577): it either
+    starts after the commit, or starts before it and reads once it landed.
+    """
     race = worker_tests._HeldCompletion(env, monkeypatch)
     accepted = await accept_task(env)
     failed_read = asyncio.Event()
+    committed = asyncio.Event()
+    parked = asyncio.Event()
+    idle = asyncio.Event()
+    idle.set()
+    window = False
+    in_flight = 0
     real_observe = env.tasks.observe_attempt
     real_resolve = runner._resolve
     redis = FakeRedis()
@@ -185,20 +196,62 @@ async def test_own_completion_receipt_is_not_replaced_by_failed_observation(
         return await real_resolve(store, state)
 
     async def observe(binding):
+        nonlocal in_flight
+        straddling = counted = False
+        if window and not race.committed:
+            # The commit is held open: park this read across it, or start it
+            # only once the commit landed.
+            straddling = straddle
+            if straddling:
+                parked.set()
+            await committed.wait()
+        elif not race.committed:
+            counted = True
+            in_flight += 1
+            idle.clear()
+        try:
+            if straddling or not race.committed:
+                beat = await real_observe(binding)
+            else:
+                beat = None
+        except runner.LeaseLost:
+            # A read that started before the commit can return after it and
+            # see the lease that commit ended; the heartbeat would then stop
+            # before any read fails. Fail every read that ends after it (#577).
+            if not race.committed:
+                raise
+            beat = None
+        finally:
+            if counted:
+                in_flight -= 1
+                if in_flight == 0:
+                    idle.set()
         if race.committed:
             failed_read.set()
             raise OSError("synthetic read-only observation failure after own SQL commit")
-        return await real_observe(binding)
+        return beat
+
+    async def before():
+        nonlocal window
+        window = True
+        # A read already running when the commit starts would straddle it by chance.
+        await asyncio.wait_for(idle.wait(), 5)
+        if straddle:
+            await asyncio.wait_for(parked.wait(), 5)
 
     async def after():
+        committed.set()
         await asyncio.wait_for(failed_read.wait(), 5)
 
     monkeypatch.setattr(env.tasks, "observe_attempt", observe)
     monkeypatch.setattr(runner, "_resolve", resolve)
+    race.before = before
     race.after = after
     result = await asyncio.wait_for(
         runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)), 10
     )
+    # Only the straddling read reached the database after the commit.
+    assert race.lease_lost.is_set() is straddle
     assert failed_read.is_set() and race.committed == [TaskStatus.COMPLETED]
     assert race.calls == ["completed"]  # no replacement content/control transaction
     snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
