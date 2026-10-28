@@ -25,14 +25,14 @@
       "legacy_fallback_message_roles": [
         "user"
       ],
-      "prompt_sha256": "946c5b14964f0309857d499bb0a8e9ec4d4194f4ff69fb00514dc80b3a49568c",
+      "prompt_sha256": "d290210a8a62bf63b506651d0ee46938c7c03848bc9cbd8a4708f1dfaf0627fd",
       "benchmark_mode": {
         "model": "openrouter/openai/gpt-4o-2024-08-06",
-        "endpoint_slug": "openai",
+        "endpoint_slug": "azure",
         "temperature": 0.0,
         "seed": 42,
         "extra_body_provider_order": [
-          "openai"
+          "azure"
         ],
         "extra_body_allow_fallbacks": false
       }
@@ -44,11 +44,11 @@
       "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
       "benchmark_mode": {
         "model": "openrouter/openai/gpt-4o-2024-08-06",
-        "endpoint_slug": "openai",
+        "endpoint_slug": "azure",
         "temperature": 0.0,
         "seed": 42,
         "extra_body_provider_order": [
-          "openai"
+          "azure"
         ],
         "extra_body_allow_fallbacks": false
       }
@@ -93,11 +93,13 @@
       "results_filename": "longmemeval_results.jsonl",
       "checkpoint_filename": "longmemeval_checkpoint.json",
       "score_filename": "longmemeval_score.json",
-      "checkpoint_version": 2
+      "checkpoint_version": 4
     },
     "benchmark_user": {
-      "user_id": "12345678-1234-5678-1234-567812345678",
-      "email": "longmemeval@daemon.test"
+      "per": "question",
+      "user_id": "uuid5(ef9c86b2-45be-514c-94af-224bf6b9ef34, 'longmemeval:<question_id>')",
+      "email": "longmemeval+<user_id hex>@daemon.test",
+      "session_order": "haystack_date"
     },
     "corpus_plan": {
       "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",

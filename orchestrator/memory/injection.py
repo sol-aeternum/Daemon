@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
@@ -167,39 +168,22 @@ def format_preferences_block(preferences: dict[str, object]) -> str:
     return "Communication preferences:\n" + "\n".join(lines)
 
 
-async def build_memory_context(
-    store: MemoryStore,
-    conversation_id: uuid.UUID,
-    max_tokens: int = DEFAULT_MAX_TOKENS,
-) -> str:
-    conversation = await store.get_conversation(conversation_id)
-    if not conversation:
-        return ""
+@dataclass(frozen=True, slots=True)
+class MemoryContextInputs:
+    """Everything ``render_memory_context`` needs, already gathered and filtered.
 
-    user_id = conversation.get("user_id")
-    if not isinstance(user_id, uuid.UUID):
-        return ""
+    ``retrieval_mode`` is gather metadata for callers that report it (the
+    LongMemEval harness); rendering ignores it.
+    """
 
-    include_local = str(conversation.get("pipeline") or "").strip().lower() == "local"
-    if get_selected_embedding_route_id() and conversation.get("pipeline") not in ("cloud", "local"):
-        return ""  # Unknown source permissions cannot authorize context processing.
+    l0_memories: list[dict[str, object]] = field(default_factory=list)
+    retrieved: list[dict[str, object]] = field(default_factory=list)
+    summaries: list[dict[str, object]] = field(default_factory=list)
+    retrieval_mode: str = "none"
 
-    l0_memories = await store.get_l0_memories(user_id, include_local=include_local)
-    if not include_local:
-        l0_memories = [row for row in l0_memories if row.get("local_only") is False]
-    l0_block = _format_l0_block(l0_memories)
 
-    if estimate_tokens(l0_block) > L0_TOKEN_BUDGET:
-        l0_lines = l0_block.split("\n")
-        while estimate_tokens("\n".join(l0_lines)) > L0_TOKEN_BUDGET and len(l0_lines) > 1:
-            l0_lines.pop()
-        l0_block = "\n".join(l0_lines)
-
+def _derive_query_text(recent_messages: list[dict[str, Any]]) -> str:
     query_text = ""
-    recent_messages = await store.get_recent_messages(conversation_id, limit=20)
-
-    recent_messages = [strip_reasoning_fields_from_message(m) for m in recent_messages]
-
     for message in reversed(recent_messages):
         if str(message.get("role") or "").lower() == "user":
             query_text = _normalize_content(message.get("content"))
@@ -208,8 +192,57 @@ async def build_memory_context(
 
     if not query_text and recent_messages:
         query_text = _normalize_content(recent_messages[-1].get("content"))
+    return query_text
+
+
+def _in_scope(row: dict[str, object], allowed: frozenset[uuid.UUID] | None) -> bool:
+    return allowed is None or row.get("source_conversation_id") in allowed
+
+
+async def gather_memory_context_inputs(
+    store: MemoryStore,
+    *,
+    user_id: uuid.UUID,
+    pipeline: object,
+    conversation_id: uuid.UUID | None = None,
+    query_text: str | None = None,
+    allowed_source_conversation_ids: list[uuid.UUID] | None = None,
+    record_side_effects: bool = True,
+    log_retrieval: bool = False,
+    retrieval_triggered_by: str | None = None,
+) -> MemoryContextInputs:
+    """Read L0 memories, retrieved memories and summaries for one prompt.
+
+    Production passes ``conversation_id`` and lets the query come from the
+    conversation's recent messages. The LongMemEval harness passes an explicit
+    ``query_text``, scopes every source to the question's haystack with
+    ``allowed_source_conversation_ids`` and disables ``record_side_effects``
+    (trust recording and memory access touches) so evaluation never changes
+    ranking state. The production defaults are unchanged.
+    """
+    include_local = str(pipeline or "").strip().lower() == "local"
+    allowed = (
+        frozenset(allowed_source_conversation_ids)
+        if allowed_source_conversation_ids is not None
+        else None
+    )
+
+    l0_memories = await store.get_l0_memories(user_id, include_local=include_local)
+    if not include_local:
+        l0_memories = [row for row in l0_memories if row.get("local_only") is False]
+    l0_memories = [row for row in l0_memories if _in_scope(row, allowed)]
+
+    if query_text is None:
+        recent_messages: list[dict[str, Any]] = []
+        if conversation_id is not None:
+            recent_messages = await store.get_recent_messages(conversation_id, limit=20)
+        recent_messages = [strip_reasoning_fields_from_message(m) for m in recent_messages]
+        query_text = _derive_query_text(recent_messages)
+    else:
+        query_text = _normalize_content(query_text)
 
     retrieved: list[dict[str, object]] = []
+    retrieval_mode = "none"
     summaries_task = asyncio.create_task(
         store.get_recent_summaries(user_id, limit=MAX_SUMMARY_ITEMS, include_local=include_local)
     )
@@ -217,7 +250,7 @@ async def build_memory_context(
     if query_text:
         try:
             try:
-                if get_selected_embedding_route_id() and conversation.get("pipeline") != "cloud":
+                if get_selected_embedding_route_id() and pipeline != "cloud":
                     raise EmbeddingConfigurationError(
                         "Local or unknown-locality conversation cannot be cloud embedded"
                     )
@@ -226,6 +259,20 @@ async def build_memory_context(
                 )
             except EmbeddingConfigurationError:
                 query_result = None
+            retrieval_mode = (
+                f"embedding:{query_result.storage_model}" if query_result is not None else "lexical"
+            )
+            retrieval_kwargs: dict[str, Any] = {}
+            if not record_side_effects:
+                retrieval_kwargs["touch_results"] = False
+            if allowed_source_conversation_ids is not None:
+                retrieval_kwargs["allowed_source_conversation_ids"] = (
+                    allowed_source_conversation_ids
+                )
+            if log_retrieval:
+                retrieval_kwargs["log_retrieval"] = True
+            if retrieval_triggered_by is not None:
+                retrieval_kwargs["retrieval_triggered_by"] = retrieval_triggered_by
             retrieved = await retrieve_memories_for_text(
                 store=store,
                 query_text=query_text,
@@ -237,10 +284,11 @@ async def build_memory_context(
                 if query_result is not None
                 else None,
                 query_embedding_model=query_result.model if query_result is not None else None,
+                **retrieval_kwargs,
             )
 
             # Record retrieved memory IDs for trust signal tracking
-            if retrieved:
+            if retrieved and record_side_effects and conversation_id is not None:
                 try:
                     ts_module = _lazy_import_trust_signals()
                     if ts_module:
@@ -256,13 +304,40 @@ async def build_memory_context(
         except Exception as error:
             raise_if_embedding_accounting_error(error)
             retrieved = []
+            retrieval_mode = "failed"
 
     summaries = await summaries_task
     if not include_local:
         summaries = [row for row in summaries if row.get("local_only") is False]
+    summaries = [row for row in summaries if _in_scope(row, allowed)]
+
+    return MemoryContextInputs(
+        l0_memories=l0_memories,
+        retrieved=retrieved,
+        summaries=summaries,
+        retrieval_mode=retrieval_mode,
+    )
+
+
+def render_memory_context(
+    inputs: MemoryContextInputs,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> str:
+    """Render gathered inputs into the fenced memory block. Pure and deterministic.
+
+    This is the single memory prompt formatter: production chat, durable task
+    turns and the LongMemEval harness all call it.
+    """
+    l0_block = _format_l0_block(inputs.l0_memories)
+
+    if estimate_tokens(l0_block) > L0_TOKEN_BUDGET:
+        l0_lines = l0_block.split("\n")
+        while estimate_tokens("\n".join(l0_lines)) > L0_TOKEN_BUDGET and len(l0_lines) > 1:
+            l0_lines.pop()
+        l0_block = "\n".join(l0_lines)
 
     memory_lines: list[str] = []
-    for memory in retrieved[:MAX_MEMORY_ITEMS]:
+    for memory in inputs.retrieved[:MAX_MEMORY_ITEMS]:
         category = str(memory.get("category") or "fact").strip().lower()
         label = (
             category.title()
@@ -276,7 +351,7 @@ async def build_memory_context(
             memory_lines.append(f"- {label}: {text}")
 
     summary_lines: list[str] = []
-    for summary in summaries[:MAX_SUMMARY_ITEMS]:
+    for summary in inputs.summaries[:MAX_SUMMARY_ITEMS]:
         text = _normalize_content(summary.get("content"))
         if text:
             summary_lines.append(f"- Session: {text}")
@@ -340,13 +415,36 @@ async def build_memory_context(
     return f'<memory_records trust="user_data">\n{raw_block}\n</memory_records>'
 
 
-async def assemble_system_prompt(
+async def build_memory_context(
+    store: MemoryStore,
+    conversation_id: uuid.UUID,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> str:
+    conversation = await store.get_conversation(conversation_id)
+    if not conversation:
+        return ""
+
+    user_id = conversation.get("user_id")
+    if not isinstance(user_id, uuid.UUID):
+        return ""
+
+    pipeline = conversation.get("pipeline")
+    if get_selected_embedding_route_id() and pipeline not in ("cloud", "local"):
+        return ""  # Unknown source permissions cannot authorize context processing.
+
+    inputs = await gather_memory_context_inputs(
+        store,
+        user_id=user_id,
+        pipeline=pipeline,
+        conversation_id=conversation_id,
+    )
+    return render_memory_context(inputs, max_tokens)
+
+
+def compose_system_prompt(
     memory_context: str,
     preferences_block: str | None = None,
-    conversation_id: uuid.UUID | None = None,
 ) -> str:
-    del conversation_id
-
     parts = [DAEMON_SYSTEM_PROMPT.strip()]
 
     prefs = (preferences_block or "").strip()
@@ -366,6 +464,15 @@ async def assemble_system_prompt(
         )
 
     return assembled
+
+
+async def assemble_system_prompt(
+    memory_context: str,
+    preferences_block: str | None = None,
+    conversation_id: uuid.UUID | None = None,
+) -> str:
+    del conversation_id
+    return compose_system_prompt(memory_context, preferences_block)
 
 
 # Re-export get_l0_memories for backward compatibility / QA testing
