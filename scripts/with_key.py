@@ -25,6 +25,27 @@ KEY_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ASSIGNMENT = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)")
 INLINE_COMMENT = re.compile(r"\s+#")
 DOUBLE_QUOTED_ESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t"}
+# `git rev-parse --local-env-vars`: inherited from a hook or another repo's shell,
+# these override `git -C` and would select some other checkout's .env.
+GIT_REPOSITORY_SELECTORS = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+)
 
 
 class WithKeyError(Exception):
@@ -75,7 +96,14 @@ def read_keys(env_file: Path, keys: Iterable[str]) -> dict[str, str]:
 
 
 def default_env_file() -> Path:
-    """The .env beside the main checkout's .git, from any worktree of the repo."""
+    """The .env beside the main checkout's .git, from any worktree of the repo.
+
+    Resolved from this script's own location; only the lookup drops inherited
+    repository selectors, the command still gets the caller's environment.
+    """
+    lookup_env = {
+        key: value for key, value in os.environ.items() if key not in GIT_REPOSITORY_SELECTORS
+    }
     try:
         common_dir = subprocess.run(
             [
@@ -88,6 +116,7 @@ def default_env_file() -> Path:
             ],
             capture_output=True,
             text=True,
+            env=lookup_env,
             check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:

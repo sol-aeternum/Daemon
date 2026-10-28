@@ -191,8 +191,35 @@ def test_script_rejects_malformed_invocations(args: list[str]) -> None:
     assert "usage: with_key.py" in result.stderr
 
 
+DECOY = "sk-decoy-from-another-repository"
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
-def test_worktree_reads_the_main_checkout_env(tmp_path: Path) -> None:
+def test_repository_selectors_cover_gits_own_list() -> None:
+    listed = subprocess.run(
+        ["git", "rev-parse", "--local-env-vars"],
+        capture_output=True,
+        text=True,
+        env=clean_environment(),
+        check=True,
+    ).stdout.split()
+
+    assert listed
+    assert set(listed) <= with_key.GIT_REPOSITORY_SELECTORS
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        [],
+        ["GIT_DIR"],
+        ["GIT_COMMON_DIR"],
+        ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"],
+    ],
+    ids=lambda names: "+".join(names) or "clean",
+)
+def test_worktree_reads_the_main_checkout_env(tmp_path: Path, inherited: list[str]) -> None:
     git_env = clean_environment(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
     def git(*args: str, cwd: Path) -> None:
@@ -215,18 +242,39 @@ def test_worktree_reads_the_main_checkout_env(tmp_path: Path) -> None:
     script.parent.mkdir()
     shutil.copyfile(SCRIPT, script)
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    # An unrelated repository selected by the calling shell, as in a hook.
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    git("init", "-q", cwd=decoy)
+    write_env(decoy / ".env", f"OPENROUTER_API_KEY={DECOY}\n")
+    selectors = {
+        "GIT_DIR": decoy / ".git",
+        "GIT_COMMON_DIR": decoy / ".git",
+        "GIT_WORK_TREE": decoy,
+    }
+    caller_env = {**git_env, **{name: str(selectors[name]) for name in inherited}}
 
     # Run the copy directly, from an unrelated cwd, to cover the shebang and
     # resolution from the script's own location.
     result = subprocess.run(
-        [str(script), "OPENROUTER_API_KEY", "--", "printenv", "OPENROUTER_API_KEY"],
+        [
+            str(script),
+            "OPENROUTER_API_KEY",
+            "--",
+            "sh",
+            "-c",
+            'printf "%s|%s\\n" "$OPENROUTER_API_KEY" "${GIT_DIR-}"',
+        ],
         capture_output=True,
         text=True,
-        env=git_env,
+        env=caller_env,
         cwd=tmp_path,
         check=False,
     )
 
     assert not (worktree / ".env").exists()
     assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{SECRET}\n"
+    # The key comes from the script's own repository; the command still sees
+    # the caller's environment unchanged.
+    assert result.stdout == f"{SECRET}|{caller_env.get('GIT_DIR', '')}\n"
+    assert DECOY not in result.stdout + result.stderr
