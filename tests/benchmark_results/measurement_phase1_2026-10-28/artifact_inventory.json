@@ -1,0 +1,127 @@
+[
+  {
+    "path": "generic_a2_1/run_manifest.json",
+    "sha256": "300b86164aaf6f340a4f579622b3845e01e19d1c468c859e7eced7dc9b7648c6",
+    "bytes": 1974
+  },
+  {
+    "path": "generic_a2_1/longmemeval_results.jsonl",
+    "sha256": "f30736a8b7d6c39b0c534d0b25c64132f978c75166b811553d879f20b142502e",
+    "bytes": 57062
+  },
+  {
+    "path": "generic_a2_1/dual_judge_score.json",
+    "sha256": "9c76d49cce5cd368bfb04743f4a3d977f39a6082bc316eb2d26047167c195e87",
+    "bytes": 1517
+  },
+  {
+    "path": "generic_a_1/run_manifest.json",
+    "sha256": "c4f8c5e9af1fa259861b2940607422b4bf6f8e3cdc39c51fc2fb41494b64767f",
+    "bytes": 1973
+  },
+  {
+    "path": "generic_a_1/longmemeval_results.jsonl",
+    "sha256": "b8d535916e53b15eef195558bd0ad1a1b5c53f287970f68967c9be035e5e6783",
+    "bytes": 56795
+  },
+  {
+    "path": "generic_a_1/dual_judge_score.json",
+    "sha256": "9c76d49cce5cd368bfb04743f4a3d977f39a6082bc316eb2d26047167c195e87",
+    "bytes": 1517
+  },
+  {
+    "path": "generic_b_1/run_manifest.json",
+    "sha256": "0b706a6e1f1c293999f0a5cb0bf0fe35e78deb31c5df0cf7541fdfe558f649a8",
+    "bytes": 2043
+  },
+  {
+    "path": "generic_b_1/longmemeval_results.jsonl",
+    "sha256": "6df8b835d8673bd16fc67ca928a052878ce3829b398d70d5f522dee7da57c8e0",
+    "bytes": 40966
+  },
+  {
+    "path": "official_a2_1/run_manifest.json",
+    "sha256": "52b1741dc3511af6524fa417352e75a0b839718793a69b9dc4659373d7ead186",
+    "bytes": 2022
+  },
+  {
+    "path": "official_a2_1/longmemeval_results.jsonl",
+    "sha256": "44e1993cf75c2ba443ae3e347a768936b339620cc27350b673f2e1d242607073",
+    "bytes": 53688
+  },
+  {
+    "path": "official_a2_1/dual_judge_score.json",
+    "sha256": "d2c13c488aedc7178b27ac2b10880858ff90a55d90d4d0a8b97e59de19b340f9",
+    "bytes": 1756
+  },
+  {
+    "path": "official_a_1/run_manifest.json",
+    "sha256": "895c76dc3168bd4c35b496a60a689ea4250abf6f18cb5cd1c50696f640d935de",
+    "bytes": 2013
+  },
+  {
+    "path": "official_a_1/longmemeval_results.jsonl",
+    "sha256": "2e24a07a4b800e30f5742a708ef1b7533fc612c5e442a85365c54d36fe6434b7",
+    "bytes": 53588
+  },
+  {
+    "path": "official_a_1/dual_judge_score.json",
+    "sha256": "9111dda594a62874ec57ef81526d31dfe93b8dae2c1e3b8f8ec61be5e1e05567",
+    "bytes": 1812
+  },
+  {
+    "path": "official_a_2/run_manifest.json",
+    "sha256": "cacf7bf8de0d26da52dfec8cab45a21a8f2a9ed09a79bdff881648f7750b21cc",
+    "bytes": 2021
+  },
+  {
+    "path": "official_a_2/longmemeval_results.jsonl",
+    "sha256": "fc30b70544112d310bd68cdabf12f8561d595eb04d45110ef0cb6741cc656374",
+    "bytes": 53586
+  },
+  {
+    "path": "official_a_2/dual_judge_score.json",
+    "sha256": "a0996236c79b54f35a266d91e920170b33fb4fb7292e4b81356fb01e8ba1492b",
+    "bytes": 1812
+  },
+  {
+    "path": "official_a_3/run_manifest.json",
+    "sha256": "201792a2e2840bfb116a61a81a08e1176cf73c674cfa4ebdf21350f3b12a3207",
+    "bytes": 2021
+  },
+  {
+    "path": "official_a_3/longmemeval_results.jsonl",
+    "sha256": "d77e20510398f25bb446610b599baa84d8adf6097ba6477c956472de355c97bd",
+    "bytes": 53588
+  },
+  {
+    "path": "official_a_3/dual_judge_score.json",
+    "sha256": "923b6fe6d6608e1742731ce8d767439dac3240f509829137bee3ff127d81c378",
+    "bytes": 1741
+  },
+  {
+    "path": "official_b_1/run_manifest.json",
+    "sha256": "8556f2fdfa11290ed05fe0f42122d772e13de14d5539b6c6f771cff2cc2f3c43",
+    "bytes": 2021
+  },
+  {
+    "path": "official_b_1/longmemeval_results.jsonl",
+    "sha256": "465cd9e502a0b77066a8223b15d16faa0bc4ec4b8915b90ad0934b464d7bc14c",
+    "bytes": 55551
+  },
+  {
+    "path": "official_b_1/dual_judge_score.json",
+    "sha256": "39552a3b56b4eda8243943b8db9ed05542b974aaff0a5a7c17144ecfe9c6d4bc",
+    "bytes": 1698
+  },
+  {
+    "path": "phase1-execution-ledger.json",
+    "sha256": "cc43b962422c559e2cbe8c918b046630c824202599af59485aff0179badfc706",
+    "bytes": 2726
+  },
+  {
+    "path": "phase1-partial-summary.json",
+    "sha256": "35fcb786f8e52c746aa9d851b1821c47abd2c8532e8eb2122bbcd957f87aed85",
+    "bytes": 7913
+  }
+]

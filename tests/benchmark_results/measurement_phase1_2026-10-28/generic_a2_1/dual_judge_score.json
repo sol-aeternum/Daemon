@@ -1,0 +1,79 @@
+{
+  "official": {
+    "total": 50,
+    "judged": 0,
+    "correct": 0,
+    "strict_accuracy": null,
+    "missing": 50
+  },
+  "official_by_category": {
+    "IE-assistant": {
+      "total": 9,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 9
+    },
+    "IE-preference": {
+      "total": 3,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 3
+    },
+    "IE-user": {
+      "total": 9,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 9
+    },
+    "KU": {
+      "total": 9,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 9
+    },
+    "MR": {
+      "total": 10,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 10
+    },
+    "TR": {
+      "total": 10,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 10
+    }
+  },
+  "abstention_subset": {
+    "overlaps_original_categories": true,
+    "generic": {
+      "total": 5,
+      "judged": 5,
+      "correct": 1,
+      "strict_accuracy": 0.2,
+      "missing": 0
+    },
+    "official": {
+      "total": 5,
+      "judged": 0,
+      "correct": 0,
+      "strict_accuracy": null,
+      "missing": 5
+    }
+  },
+  "paired": {
+    "total": 0,
+    "strict_disagreements": 0,
+    "strict_disagreement_rate": null,
+    "strict_disagreement_ids": [],
+    "three_way_table": {}
+  },
+  "official_unexpected_output_count": 0,
+  "official_length_finish_count": 0
+}
