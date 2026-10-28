@@ -219,6 +219,42 @@ is substituted for those later acceptance gates.
 | 5 | Accepted-input references and deterministic document-output registration; lost acknowledgement, duplicate submits/completions and interrupted publication. |
 | 6 | Native two-client UI plus encrypted replay adapter; account-switch/cache, unsupported-version and local-control tests asserting zero generation calls. |
 
+### Increment 2a — uncalled envelope codec
+
+The owner approved splitting increment 2 on 28 October 2026: first the bounded
+in-memory codec, then staging/private links, then publication qualification with
+the separately approved registry transaction authority. No mock callback or
+caller-created receipt substitutes for a committed publication record.
+
+`orchestrator/artifact_envelope.py` provides `ArtifactBinding` and
+`ArtifactEnvelopeCodec`, with an explicitly injected initialized Fernet cipher.
+The v1 authenticated plaintext is canonical ASCII JSON (sorted keys, compact
+separators), with exactly `format`, `account_id`, `resource_id`, `version_id`,
+`generation`, `representation` and `content`. The format is
+`daemon-artifact-envelope-v1`; content uses canonical standard base64. IDs are
+1–128 ASCII alphanumeric/underscore/hyphen characters, generation is an exact
+integer from zero through signed 64-bit maximum, and representation is one of
+`submitted_image`, `submitted_text`, `generated_file`. Metadata-only resources
+have no content envelope. These internal validation limits do not establish a
+registry schema or external API.
+
+Decoded content is capped at 8 MiB; plaintext envelope size is capped at the
+maximum base64 content length plus 1,024 bytes. A derived Fernet token bound is
+checked before decryption. Full-object authentication precedes JSON/content
+parsing and return; duplicate fields, unknown fields and noncanonical encodings
+are rejected. Errors use `invalid_artifact_envelope` without parser details.
+Whole-object copies remain in process memory; there is no secure-erasure claim.
+Concurrent-call limits and deployment memory capacity still need qualification.
+
+The codec has no runtime callers, filesystem, settings lookup, logs, publication
+state or implicit key management. Expected bindings must come from a separately
+authorized registry lookup: matching caller-supplied IDs is not authorization,
+generation freshness, uniqueness, media validation or proof of publication.
+Synthetic tests in `tests/test_artifact_envelope.py` cover binding substitution,
+corruption/wrong-key/format errors and allocation boundaries. They do not qualify
+S1 staging, crash recovery, commit uncertainty, namespace retirement or reads.
+Catalog status remains **Not started**; the rest of increment 2 is outstanding.
+
 Smallest eventual end-to-end: A submits one PNG; fixture worker publishes CSV;
 A closes; another authenticated client for A reopens the same inputs and pinned
 CSV bytes; B is denied on every read variant. CSV version two never changes the
