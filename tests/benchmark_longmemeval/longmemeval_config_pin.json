@@ -93,11 +93,13 @@
       "results_filename": "longmemeval_results.jsonl",
       "checkpoint_filename": "longmemeval_checkpoint.json",
       "score_filename": "longmemeval_score.json",
-      "checkpoint_version": 3
+      "checkpoint_version": 4
     },
     "benchmark_user": {
-      "user_id": "12345678-1234-5678-1234-567812345678",
-      "email": "longmemeval@daemon.test"
+      "per": "question",
+      "user_id": "uuid5(ef9c86b2-45be-514c-94af-224bf6b9ef34, 'longmemeval:<question_id>')",
+      "email": "longmemeval+<user_id hex>@daemon.test",
+      "session_order": "haystack_date"
     },
     "corpus_plan": {
       "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",

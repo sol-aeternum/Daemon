@@ -9,13 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from orchestrator.eval.bench_db import question_user_id
 from orchestrator.eval.fact_harness import (
     CHECKPOINT_VERSION,
     LongMemEvalFactRunner,
     load_dataset,
     load_runner_checkpoint,
 )
-from tests.longmemeval.ingest import build_corpus_key
+from tests.longmemeval.ingest import TEST_USER_ID, build_corpus_key
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +67,7 @@ def patch_bench_runtime(
     target = "orchestrator.eval.fact_harness"
     monkeypatch.setattr(f"{target}.check_benchmark_dsn", lambda dsn: "daemon_lme_bench")
     monkeypatch.setattr(f"{target}.assert_benchmark_database", AsyncMock())
-    monkeypatch.setattr(f"{target}.ensure_benchmark_account", AsyncMock())
+    monkeypatch.setattr(f"{target}.ensure_benchmark_user", AsyncMock())
     monkeypatch.setattr(
         f"{target}.prepare_service_runtime", AsyncMock(return_value={"routes": 1, "attested": 1})
     )
@@ -74,6 +75,9 @@ def patch_bench_runtime(
     monkeypatch.setattr(f"{target}.approved_profile_routes", lambda profile: ["luna-azure-eu"])
     monkeypatch.setattr(
         f"{target}.fingerprint_benchmark_state", AsyncMock(return_value=FAKE_FINGERPRINT)
+    )
+    monkeypatch.setattr(
+        f"{target}.fingerprint_benchmark_users", AsyncMock(return_value=FAKE_FINGERPRINT)
     )
     monkeypatch.setattr(
         f"{target}.list_benchmark_conversation_ids",
@@ -93,10 +97,6 @@ def patch_bench_runtime(
         f"{target}.summarize_compute_spend", AsyncMock(return_value={"by_model": []})
     )
     monkeypatch.setattr(f"{target}.git_state", lambda root=None: {"sha": "abc", "dirty": False})
-    monkeypatch.setattr(
-        f"{target}.create_test_user",
-        AsyncMock(return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")),
-    )
     return calls
 
 
@@ -161,7 +161,7 @@ def test_load_runner_checkpoint_rejects_legacy_checkpoint_version(
 
 
 @pytest.mark.asyncio
-async def test_ingest_resumes_from_checkpoint(
+async def test_ingest_resumes_from_checkpoint_per_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     shared_session = [{"role": "user", "content": "first"}]
@@ -197,7 +197,8 @@ async def test_ingest_resumes_from_checkpoint(
                 "phases": {
                     "ingest": {
                         "results": {
-                            shared_key: {
+                            f"q1:{shared_key}": {
+                                "question_id": "q1",
                                 "corpus_key": shared_key,
                                 "session_id": "session-1",
                                 "status": "complete",
@@ -224,24 +225,36 @@ async def test_ingest_resumes_from_checkpoint(
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.fact_harness.create_test_user",
-        AsyncMock(return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")),
-    )
 
     patch_bench_runtime(monkeypatch)
-    ingest_session_mock = AsyncMock(return_value={"session_id": "session-2", "status": "complete"})
+
+    async def fake_ingest_session(**kwargs: Any) -> dict[str, Any]:
+        return {"session_id": kwargs["session_id"], "status": "complete"}
+
+    ingest_session_mock = AsyncMock(side_effect=fake_ingest_session)
     monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session_parity", ingest_session_mock)
 
     results = await runner.ingest()
 
-    assert ingest_session_mock.await_count == 1
-    assert ingest_session_mock.await_args_list[0].kwargs["session_id"] == "session-2"
-    assert len(results) == 2
-    assert {result["corpus_key"] for result in results} == {shared_key, second_key}
+    # q1 resumes after its checkpointed session; q2's user gets its own copy of
+    # the (whitespace-normalised) shared session.
+    calls = [
+        (call.kwargs["session_id"], call.kwargs["user_id"])
+        for call in ingest_session_mock.await_args_list
+    ]
+    assert calls == [
+        ("session-2", question_user_id("q1")),
+        ("session-3", question_user_id("q2")),
+    ]
+    assert len(results) == 3
+    assert {(result["question_id"], result["corpus_key"]) for result in results} == {
+        ("q1", shared_key),
+        ("q1", second_key),
+        ("q2", shared_key),
+    }
 
     checkpoint_payload = json.loads(runner.checkpoint_path.read_text())
-    assert checkpoint_payload["phases"]["ingest"]["completed_count"] == 2
+    assert checkpoint_payload["phases"]["ingest"]["completed_count"] == 3
     assert checkpoint_payload["phases"]["ingest"]["status"] == "completed"
 
 
@@ -284,12 +297,14 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
                     "ingest": {
                         "status": "completed",
                         "results": {
-                            shared_key: {
+                            f"{qid}:{shared_key}": {
+                                "question_id": qid,
                                 "corpus_key": shared_key,
-                                "session_id": "session-1",
+                                "session_id": session_id,
                                 "conversation_id": shared_conversation_id,
                                 "status": "complete",
                             }
+                            for qid, session_id in (("q1", "session-1"), ("q2", "session-2"))
                         },
                     },
                     "evaluate": {
@@ -341,10 +356,10 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
     results = await runner.evaluate()
 
     assert evaluate_single_mock.await_count == 1
-    assert evaluate_single_mock.await_args_list[0].kwargs["question_id"] == "q2"
-    assert evaluate_single_mock.await_args_list[0].kwargs["allowed_source_conversation_ids"] == [
-        uuid.UUID(shared_conversation_id)
-    ]
+    asked = evaluate_single_mock.await_args_list[0].kwargs
+    assert asked["question_id"] == "q2"
+    assert asked["user_id"] == question_user_id("q2")
+    assert asked["allowed_source_conversation_ids"] is None
     assert [result["question_id"] for result in results] == ["q1", "q2"]
     assert runner.output_path.exists()
     assert len(runner.output_path.read_text().splitlines()) == 2
@@ -355,7 +370,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
 
 
 @pytest.mark.asyncio
-async def test_run_reuses_shared_corpus_across_multiple_questions(
+async def test_run_ingests_a_shared_session_once_per_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     shared_session = [{"role": "user", "content": "shared history"}]
@@ -383,7 +398,7 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
 
     conversation_id = str(uuid.uuid4())
     ingest_calls: list[str] = []
-    evaluate_scopes: list[list[uuid.UUID]] = []
+    evaluate_scopes: list[tuple[uuid.UUID, Any]] = []
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
@@ -398,10 +413,6 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.fact_harness.create_test_user",
-        AsyncMock(return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")),
-    )
 
     async def fake_ingest_session(**kwargs: Any) -> dict[str, Any]:
         ingest_calls.append(kwargs["session_id"])
@@ -412,7 +423,7 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
         }
 
     async def fake_evaluate_single(**kwargs: Any) -> dict[str, Any]:
-        evaluate_scopes.append(kwargs["allowed_source_conversation_ids"])
+        evaluate_scopes.append((kwargs["user_id"], kwargs["allowed_source_conversation_ids"]))
         return {
             "question_id": kwargs["question_id"],
             "question": kwargs["question_text"],
@@ -434,12 +445,12 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
 
     payload = await runner.run()
 
-    assert ingest_calls == ["session-a"]
+    assert ingest_calls == ["session-a", "session-b"]
     assert evaluate_scopes == [
-        [uuid.UUID(conversation_id)],
-        [uuid.UUID(conversation_id)],
+        (question_user_id("q1"), None),
+        (question_user_id("q2"), None),
     ]
-    assert len(payload["ingest"]) == 1
+    assert len(payload["ingest"]) == 2
     assert [result["question_id"] for result in payload["evaluate"]] == ["q1", "q2"]
     assert payload["score"]["result_count"] == 2
 
@@ -672,12 +683,19 @@ async def test_reset_canonical_benchmark_removes_checkpoint_and_reports_reset(
     checkpoint_path = tmp_path / "longmemeval_checkpoint.json"
     checkpoint_path.write_text(json.dumps({"version": 2}))
 
+    question_users = [question_user_id("q1"), question_user_id("q2")]
+
     class FakePool:
         def __init__(self) -> None:
             self.queries: list[str] = []
+            self.cleared: set[object] = set()
 
-        async def execute(self, query: str, *_args: object) -> str:
+        async def fetch(self, _query: str, *_args: object) -> list[dict[str, Any]]:
+            return [{"id": user_id} for user_id in question_users]
+
+        async def execute(self, query: str, *args: object) -> str:
             self.queries.append(query)
+            self.cleared.add(args[0])
             return "DELETE 2"
 
     pool = FakePool()
@@ -686,14 +704,16 @@ async def test_reset_canonical_benchmark_removes_checkpoint_and_reports_reset(
 
     assert summary.success is True
     assert summary.error is None
-    assert summary.total_rows_deleted == 2 * len(CANONICAL_RESET_TABLES)
+    # The legacy shared user and every per-question user are cleared.
+    assert pool.cleared == {TEST_USER_ID, *question_users}
+    assert summary.total_rows_deleted == 2 * 3 * len(CANONICAL_RESET_TABLES)
     assert summary.checkpoint_reset == {
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_existed": True,
         "checkpoint_removed": True,
     }
     assert not checkpoint_path.exists()
-    assert len(pool.queries) == len(CANONICAL_RESET_TABLES)
+    assert len(pool.queries) == 3 * len(CANONICAL_RESET_TABLES)
 
 
 @pytest.mark.asyncio
@@ -705,6 +725,9 @@ async def test_reset_canonical_benchmark_reports_missing_checkpoint(
     checkpoint_path = tmp_path / "missing_checkpoint.json"
 
     class FakePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         async def execute(self, _query: str, *_args: object) -> str:
             return "DELETE 0"
 
@@ -736,6 +759,9 @@ async def test_reset_canonical_benchmark_redis_cleanup_default_off(
     monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
 
     class FakePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         async def execute(self, _query: str, *_args: object) -> str:
             return "DELETE 1"
 
@@ -760,6 +786,9 @@ async def test_reset_canonical_benchmark_redis_cleanup_when_enabled(
     monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
 
     class FakePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         async def execute(self, _query: str, *_args: object) -> str:
             return "DELETE 2"
 
@@ -784,6 +813,9 @@ async def test_reset_canonical_benchmark_redis_failure_does_not_fail_reset(
     monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
 
     class FakePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         async def execute(self, _query: str, *_args: object) -> str:
             return "DELETE 3"
 
@@ -811,6 +843,9 @@ async def test_reset_canonical_benchmark_redis_not_attempted_when_disabled(
     monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
 
     class FakePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         async def execute(self, _query: str, *_args: object) -> str:
             return "DELETE 1"
 
@@ -830,6 +865,9 @@ async def test_reset_canonical_benchmark_checkpoint_reset_default_is_empty_dict(
     from orchestrator.eval.fact_harness import reset_canonical_benchmark
 
     class FakePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         async def execute(self, _query: str, *_args: object) -> str:
             return "DELETE 1"
 
@@ -901,6 +939,9 @@ async def test_reset_refuses_unmarked_database_before_any_delete(
     from orchestrator.eval.fact_harness import reset_canonical_benchmark
 
     class ProductionLikePool:
+        async def fetch(self, _query: str, *_args: object) -> list[Any]:
+            return []
+
         def __init__(self) -> None:
             self.executed: list[str] = []
 

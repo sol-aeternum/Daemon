@@ -26,10 +26,12 @@ tests/benchmark_longmemeval/bench_db.sh run -- \
 ```
 
 Entrypoint: `orchestrator/eval/longmemeval.py` → `LongMemEvalRunner` in `orchestrator/eval/runner.py` →
-`tests/longmemeval/ingest.py`. Uses the shared fixed benchmark user
-`longmemeval@daemon.test` / `12345678-1234-5678-1234-567812345678`. Ingestion runs full
-`process_extraction()` → dedup → store pipeline per corpus session. Retrieval is scoped to the
-question's checkpoint-derived `allowed_source_conversation_ids`.
+`tests/longmemeval/ingest.py`. Each question gets its own benchmark user
+(`orchestrator/eval/bench_db.py` `question_user_id`, email `longmemeval+<hex>@daemon.test`), and its
+haystack sessions are ingested into that user in `haystack_dates` order. Ingestion runs the full
+production chunker → `process_extraction()` → dedup → store pipeline per session. Retrieval reads
+all of the question's user's memories, unscoped, as production does. `--concurrency N` ingests N
+questions side by side (see `RUNBOOK_LAPTOP.md` §3).
 
 **The canonical lane is the ONLY valid path for any claim about extraction fidelity, dedup behavior,
 or entity-linking correctness.** The fast lane bypasses all of those stages.
@@ -159,8 +161,10 @@ PYTHONPATH=. python -c "from tests.longmemeval.ingest import ensure_dataset; imp
 
 ### Canonical shared-user cleanup (REQUIRED before each fresh run)
 
-The canonical lane shares one benchmark user across all runs. Persistent state leaks between runs
-unless cleanup is run explicitly. See `ISOLATION_AUDIT.md` §Canonical lane audit and
+The legacy `tests.longmemeval.ingest` path shares one benchmark user across all runs. Persistent
+state leaks between runs unless cleanup is run explicitly. The fact harness
+(`python -m orchestrator.eval.longmemeval`) runs only against the marked benchmark database, and
+its `reset` clears the legacy user and every per-question `longmemeval+…@daemon.test` user. See `ISOLATION_AUDIT.md` §Canonical lane audit and
 `TEARDOWN_AUDIT.md` §Canonical lane snapshots.
 
 ```bash

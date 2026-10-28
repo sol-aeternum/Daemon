@@ -79,6 +79,11 @@ The PR describes the changes. In short:
 
 ## 3. Parity exceptions
 
+These are the exceptions of the smoke runs in §4 (checkpoint v3). From checkpoint v4 on,
+`haystack_scope` is replaced by `benchmark_users`: each question is ingested into its own user, in
+haystack-date order, and retrieval is unscoped. The dev-subset baseline is measured on v4, so its
+numbers are not comparable with this smoke.
+
 Recorded verbatim in every `run_manifest.json` (`parity_exceptions`), from
 `orchestrator/eval/fact_harness.py` `PARITY_EXCEPTIONS`.
 

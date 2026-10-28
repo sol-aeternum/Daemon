@@ -116,7 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument(
             "--retry-failed-sessions",
             action="store_true",
-            help="Roll back and re-ingest sessions whose extraction failed.",
+            help="Roll back and re-ingest sessions recorded as failed; the run is then no "
+            "longer baseline-qualified.",
+        )
+        subparser.add_argument(
+            "--concurrency",
+            type=parse_positive_int,
+            default=1,
+            help="Questions ingested side by side (default 1). Each question has its own "
+            "benchmark user and ingests one session at a time, so N changes no user's "
+            "session order or dedup candidates; provider nondeterminism still applies.",
         )
     evaluate_parser.add_argument(
         "--from-ingest",
@@ -159,6 +168,7 @@ def _build_runner(args: argparse.Namespace, stop: StopController | None) -> Long
         retry_failed_sessions=getattr(args, "retry_failed_sessions", False),
         allow_code_change=getattr(args, "allow_code_change", False),
         allow_state_mismatch=getattr(args, "allow_state_mismatch", False),
+        concurrency=getattr(args, "concurrency", 1),
         stop=stop,
     )
 

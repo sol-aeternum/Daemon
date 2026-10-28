@@ -1182,6 +1182,19 @@
     },
     {
       "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "ensure_benchmark_user",
+      "kind": "sql_inline",
+      "fingerprint": "a618d9b8c9c8d309",
+      "tables": [
+        "users"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Benchmark-only: creates a LongMemEval per-question user (longmemeval+<hex>@daemon.test) in the marked daemon_lme_bench database after assert_benchmark_database; never reached by production. No runtime account fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
       "qualname": "fingerprint_benchmark_state",
       "kind": "sql_dynamic",
       "fingerprint": "886b4ca9084ec35a",
@@ -1229,6 +1242,17 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Benchmark-only LongMemEval resume rollback of interrupted-session rows; runs only after assert_benchmark_database accepts the marked daemon_lme_bench database. Not a production path; no runtime account fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "wipe_benchmark_user",
+      "kind": "sql_unresolvable",
+      "fingerprint": "c4f3dc8c38e6569a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only LongMemEval question rebuild: executes the harness's fixed per-user reset DELETE statements for one per-question user in the marked daemon_lme_bench database, reached only from ingest after assert_benchmark_database; the scanner cannot resolve the passed statements. Not a production path; no runtime account fence. Uncovered."
     },
     {
       "owner_source": "orchestrator.eval.chunk_harness",
@@ -1771,7 +1795,7 @@
       "owner_source": "orchestrator.eval.fact_harness",
       "qualname": "reset_canonical_benchmark",
       "kind": "sql_unresolvable",
-      "fingerprint": "e003a1c0a5261828",
+      "fingerprint": "29221bdd6284e9c6",
       "tables": [],
       "unknown": true,
       "uncovered": true,

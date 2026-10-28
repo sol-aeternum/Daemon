@@ -9,7 +9,7 @@ estimate first.
 
 ## 0. Rules
 
-- **Benchmark database only.** The harness deletes everything the benchmark user owns. It refuses
+- **Benchmark database only.** The harness deletes everything the benchmark users own. It refuses
   to start unless `DATABASE_URL` names a database starting with `daemon_lme_bench` *and* that
   database carries the marker comment `daemon-longmemeval-benchmark-v1`
   (`orchestrator/eval/bench_db.py`). `bench_db.sh run` always supplies the benchmark DSN. Never set
@@ -67,6 +67,18 @@ manifest records which mode each phase actually used (`embedding`, `phases.evalu
 
 ## 3. Start a phase that survives the laptop
 
+Each question is ingested into its **own benchmark user**: `uuid5(BENCHMARK_USER_NAMESPACE,
+"longmemeval:<question_id>")`, email `longmemeval+<hex>@daemon.test`. That user's memory holds
+only that question's haystack, as LongMemEval intends and as one production account holds one
+history. A session that appears in several questions' haystacks is ingested once per question.
+Within a question the sessions go in `haystack_dates` order (stable; dataset order if any date
+doesn't parse). The manifest records it under `benchmark_users`: questions, sessions, and how many
+questions were reordered.
+
+Because users never share memory, `--concurrency N` ingests N questions side by side without
+changing what any one user sees. Each user still ingests one session at a time. The default is 1.
+Use the smoke test (§8) to check the provider tolerates N before a long run.
+
 ```sh
 RUN=~/.local/share/daemon-lme-bench/runs/$(date +%F)-$(git rev-parse --short HEAD)
 tmux new -s lme
@@ -74,13 +86,14 @@ systemd-inhibit --what=sleep:idle:handle-lid-switch --who=longmemeval --why="ben
   tests/benchmark_longmemeval/bench_db.sh run -- \
   uv run --locked python -m orchestrator.eval.longmemeval ingest \
     --dataset tests/benchmark_longmemeval/fixtures/dev_subset.json \
+    --concurrency 8 \
     --output-dir "$RUN/ingest"
 ```
 
 Each phase first repeats the worker's startup: it validates the auth pepper and runs the
 production ZDR route attestation (backend and worker do the same at startup: two public OpenRouter listings, recorded in the benchmark database). Without it every
 monitored route fails closed. Ingest refuses to start if the `background` profile has no admitted
-route, and stops after 5 consecutive failed sessions. The manifest records `route_attestations`
+route, and stops at the first session that doesn't complete (§4). The manifest records `route_attestations`
 and `routes.extraction.approved_route_ids`.
 
 Detach with `C-b d` and reattach with `tmux attach -t lme`. `systemd-inhibit` keeps the machine
@@ -91,31 +104,44 @@ desktop settings. Everything the run needs to resume is under `--output-dir`.
 
 | What happened | What the harness does |
 |---|---|
-| `Ctrl-C` / `SIGTERM` / `SIGHUP` once | Finishes the in-flight session or question, saves, exits 130/143/129 |
+| `Ctrl-C` / `SIGTERM` / `SIGHUP` once | Finishes the in-flight sessions (one per running question) or question, saves, exits 130/143/129 |
 | The same signal twice | Abandons the in-flight item at once and saves |
 | `SIGKILL`, crash, power loss, suspend that killed the process | Nothing on exit. Every completed item is already on disk |
 
 Resume by re-running **the same command** in the same checkout. On resume:
 
 - **Ingest.** Each session is checkpointed after it finishes. Before a session starts, the
-  checkpoint records it as `pending_session` together with a fingerprint of the benchmark user's
-  memory state outside that session. On resume, the in-flight session's conversation, memories and
-  extraction log are deleted, and the fingerprint is taken again:
+  checkpoint records it in `pending_sessions[<question_id>]` together with a fingerprint of that
+  question's user. With `--concurrency N` up to N questions can have a pending session. On resume,
+  each in-flight session's conversation, memories and extraction log are deleted, and that user's
+  fingerprint is taken again:
   - It matches: the rollback is exact (`ingest_rollbacks[].restored_pre_session_state: true`), and
     the session is re-ingested.
   - It differs: the interrupted session had already changed another session's memories (a dedup
-    merge or supersession). The harness refuses to resume and keeps `pending_session`. Restore the
-    last snapshot that matches this checkpoint, or start a fresh output directory and database.
-  - An unexplained conversation with no `pending_session`, or more than one, means the database
-    wasn't built by this checkpoint, and the run refuses.
+    merge or supersession). That question is rebuilt instead: its user's memory state is wiped (the
+    user, entitlement account and spend ledger stay), its checkpointed sessions are dropped, and
+    the question is re-ingested from its first session (`question_rebuilds[]`). A user's memory
+    comes only from its own question's sessions, so this is exact and the run stays a baseline.
+    Only that question's sessions are paid for again. If the wipe leaves rows behind, the run
+    refuses.
+  - A user with an unexplained conversation and no pending session, or more than one, means the
+    database wasn't built by this checkpoint, and the run refuses.
+  - A session that doesn't complete (an exception, or an `extraction_failed` result) is handled
+    like an interruption. It is not recorded as a result. It stays in `pending_sessions` with its
+    `failure` (types and counts only, also listed in `ingest_failures`), and the run stops once the
+    other questions finish their in-flight session. Resume rolls it back like a killed session and
+    retries it (`ingest_rollbacks[].after_failure: true`), so a transient provider error doesn't
+    cost the baseline. If its partial facts had already changed other memories, the question is
+    rebuilt as above.
 - **Evaluate.** Each result carries the run's `run_id` and is appended to
   `longmemeval_results.jsonl` and fsynced before the checkpoint is saved. Resume adopts results of
   this run that reached the file, drops a torn trailing line and duplicates, and never re-asks a
   completed question (`results_reconciliations`). Rows from another run (or without a `run_id`)
   are refused, never adopted, so a reused output directory can't mix runs. Questions that errored
   are retried.
-- `--retry-failed-sessions` (ingest) rolls back and re-ingests sessions whose extraction failed.
-  It marks the run `baseline_qualified: false` (`retried_failed_sessions`).
+- `--retry-failed-sessions` (ingest) rolls back and re-ingests sessions recorded as failed (only
+  older checkpoints record them). It marks the run `baseline_qualified: false`
+  (`retried_failed_sessions`).
 
 Each invocation is logged in `run_manifest.json` (`invocations[]`: start, end, outcome,
 `resumed`, active seconds). An invocation that never closed (SIGKILL, power loss) is closed as
@@ -179,9 +205,11 @@ question ids. Spend comes from the benchmark account's own ledger (`phases.*.com
 
 ## 8. Smoke test (no approval needed)
 
-Use `--limit 3` with a separate `--output-dir`. To exercise resume, `kill -9` the process mid-ingest
-and mid-evaluate, re-run the same command, and check `ingest_rollbacks`,
-`results_reconciliations` and `invocations` in the manifest.
+Use `--limit 3 --concurrency 3` with a separate `--output-dir`. To exercise resume, `kill -9` the
+process mid-ingest and mid-evaluate, re-run the same command, and check `ingest_rollbacks` (one
+per question that had a session in flight), `results_reconciliations` and `invocations` in the
+manifest. Check the log for provider 429s or failed chunks before you pick `--concurrency` for a
+long run.
 
 ## 9. What to commit
 
