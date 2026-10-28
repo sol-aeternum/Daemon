@@ -1,6 +1,8 @@
 # LongMemEval Phase 1 — measurement, not tuning
 
-Status: **partially measured; stopped on an unclassified provider failure**.
+Status: **planned measurements complete after owner-authorized residual recovery;
+metric and acceptance-rule decisions not ratified**. PR creation remains subject
+to the required final gated wrapper; no merge authorization is implied.
 No production memory change, primary-metric choice, acceptance-rule ratification,
 ingest or holdout evaluation is included. Interpret interim findings **under proposed rule**.
 Phase 0 holdout PR: [#587](https://github.com/sol-aeternum/Daemon/pull/587), owner-authorized
@@ -94,15 +96,16 @@ claim exact billed cost when provider billing evidence is unavailable.
 | Plan | Calls | Reserved USD | Actual execution |
 |---|---:|---:|---|
 | Official A/A2/B + two more official A passes | 250 | 0.6023600 | 250 responses returned |
-| Generic A/A2/B | 150 | 0.9571700 | 136 responses; 1 uncertain request; 13 unattempted |
-| Saved-A paired reader caps, including both judges | 6 | 0.0491650 | Not run |
-| Total planned | 406 | **1.6086950** | 386 returned judge responses; diagnostic not started |
+| Generic A/A2/B (original plan) | 150 | 0.9571700 | 150 responses after fresh recovery; 1 additional original request remains uncertain |
+| Saved-A paired reader caps, including both judges | 6 | 0.0491650 | 6 responses returned |
+| Total originally planned | 406 | **1.6086950** | 406 responses returned; 407 requests attempted including the unknown original |
 
-Actual held cumulative reservation is **$1.5595300**; the diagnostic's $0.0491650
-remains only planned, not initiated. Returned usage gives a **$0.2636950**
-undiscounted quoted-rate estimate. Actual billing and the failed request's usage
-are unknown; retain the failed batch's entire reservation rather than treating
-missing usage as free. See the cumulative ledger in `tuning_pass_2026-10-28.md`.
+The original sequence held **$1.5595300**, with returned usage estimated at
+**$0.2636950** before recovery. Including the authorized residual and completed cap
+diagnostic, the final reservation is **$1.7019050**, and the returned-usage estimate
+is **$0.3030775**. Actual billing and the original failed request's usage remain
+unknown; the original failed batch's entire reservation stays held. See the
+cumulative ledger in `tuning_pass_2026-10-28.md` and final recovery results below.
 
 The cumulative evaluate-only authorization is $10. Every ingest and any spend
 beyond $10 require an estimate and owner approval. No ingest or final holdout
@@ -153,7 +156,7 @@ through every paid call. Rebased full gates passed again in 404 seconds: backend
 cache-browser 30. A prelaunch lock refusal on the first batch created no manifest
 or scope; only after observing the exact lock unheld was a changed-state launch made.
 
-## Partial results — not an acceptance decision
+## Initial partial results — preserved history, not an acceptance decision
 
 Raw dev-only outputs, finish reasons, fingerprints, usage, original manifests and
 hash inventory are retained in [`measurement_phase1_2026-10-28/`](measurement_phase1_2026-10-28/).
@@ -198,7 +201,7 @@ above. There is no retrieval/reader change behind the metric difference.
   are only case/punctuation variants of yes/no. The additive unexpected-output count
   counts `Yes.`/`No.` as non-exact tokens; it is not evidence of semantic parse failure.
 
-## Stopped failure and remaining work
+## Original stopped failure — preserved history
 
 Generic B completed 36 calls, then stopped on the request for `c5e8278d` at
 2026-10-28T08:22:49Z. Its manifest retains that pending ID and the whole reservation.
@@ -206,15 +209,15 @@ Only `BenchmarkProviderError` and standard LiteLLM help text survived sanitizati
 the underlying exception class/status was discarded. **No timeout, rate limit,
 authentication, quota, insufficient-funds or billing cause is established.**
 The diagnostic gap is filed as [#595](https://github.com/sol-aeternum/Daemon/issues/595).
-The call may or may not have executed/billed. No automatic/manual replay, fallback,
-debug tracing, account lookup or additional paid call was attempted after failure.
-The original sequence and all receipts remain retained; the reader-cap diagnostic
-was not reached. No new canonical evaluation, snapshot restore or ingest occurred.
+The call may or may not have executed/billed. No replay, fallback, debug tracing or
+account lookup was used to resolve it. The sequence and all receipts remain retained;
+the original sequence did not reach the reader-cap diagnostic. Subsequent new calls
+were separately reconciled and owner-authorized as recorded below. No new canonical
+evaluation, snapshot restore or ingest occurred.
 
-Remaining: safely reconcile the uncertain call, establish an admitted residual plan
-for the 14 missing B outcomes, run the approved paired reader-cap diagnostic, and
-complete final result/PR gates. Phase 1 is **not complete**; primary metric and
-acceptance-rule decisions are not yet requested as though all measurements passed.
+At this checkpoint the 14 missing B outcomes and reader-cap diagnostic remained
+incomplete. The final section below supersedes this checkpoint's coverage status,
+not its immutable receipts or the original request's unknown outcome.
 
 ### Partial-evidence verification
 
@@ -226,7 +229,7 @@ normal finish, raw output and nonnegative token-usage fields; the copied artifac
 hashes preserve the original records. A fresh scoped read-only review of the new
 report and aggregate evidence found no material defects. It used the disclosed
 same-family OpenAI fallback and did not inspect raw payloads or execute checks.
-These checks verify the partial report, not the missing B outcomes or billing.
+These checks verified the partial report, not the then-missing B outcomes or billing.
 
 ## Owner-authorized residual reconciliation
 
@@ -253,12 +256,100 @@ Generic prompt/scoring and all reader/judge route/sampling pins are unchanged.
 
 The 14-row residual reservation is **$0.0932100**, and the cap diagnostic remains
 **$0.0491650**. Including the full old reservation, the carried-plus-planned amount
-is **$1.7019050**, below the $10 authorization. No new calls have yet run under
-this recovery plan. Targeted offline tests: **151 passed**; types: zero errors and
+is **$1.7019050**, below the $10 authorization. Targeted offline tests:
+**151 passed**; types: zero errors and
 warnings. Fresh scoped read-only review found no defects (disclosed same-family
 OpenAI fallback, not a diversity claim). Full managed gates passed in 472 seconds:
 backend 7,223 passed / 1,265 skipped / 14 warnings / 16 subtests; frontend 1,473
 tests; cache-browser 30. All blocking gates passed before paid recovery.
+
+## Final recovery results and decision boundary
+
+Recovery code was committed as `cf62a34d9eeaee53bc6eb7d9f43303ae639a79e2` before
+the fresh residual and diagnostic ran. A launch-pin typo was refused before ledger,
+output directory or provider calls; the read-back exact SHA was then supplied.
+All 14 residual judgments and all six diagnostic calls completed. The original
+36 generic-B rows are byte-preserved, and their IDs are disjoint from the 14 new
+rows; together they cover exactly the frozen 50-question B arm. Only `c5e8278d`
+is marked as a new replacement for the unknown original request. The original
+failed manifest is still stopped/pending and is never rewritten as successful.
+
+### Complete paired judge scores
+
+| Arm | Historical generic | Fresh generic | Official first pass | Fresh-generic/official agreement |
+|---|---:|---:|---:|---:|
+| A | 30/50 (60%) | 30/50 (60%) | 34/50 (68%) | 46/50 (92%) |
+| A2 | 31/50 (62%) | 31/50 (62%) | 34/50 (68%) | 47/50 (94%) |
+| B (assembled verified prefix + fresh residual) | 6/50 (12%) | 7/50 (14%) | 5/50 (10%) | 48/50 (96%) |
+
+| Category (count) | Generic A | Official A | Generic A2 | Official A2 | Generic B | Official B |
+|---|---:|---:|---:|---:|---:|---:|
+| IE-user (9) | 9 | 9 | 9 | 9 | 1 | 0 |
+| IE-assistant (9) | 5 | 6 | 5 | 6 | 3 | 3 |
+| IE-preference (3) | 0 | 1 | 1 | 1 | 0 | 0 |
+| KU (9) | 5 | 6 | 5 | 6 | 2 | 1 |
+| MR (10) | 6 | 7 | 6 | 7 | 0 | 0 |
+| TR (10) | 5 | 5 | 5 | 5 | 1 | 1 |
+| Abstention subset (5, overlapping) | 1 | 2 | 1 | 2 | 2 | 2 |
+
+Cells are correct-answer counts. Full paired three-way tables and disagreement IDs
+are in `phase1-final-summary.json`. B's fresh generic strict change from history is
+one question, `852ce960`, in the original completed prefix—not the replacement.
+No full-arm judge disagreement exceeds 20%. No memory candidate, category-regression
+acceptance decision or validated production accuracy gain is inferred from these
+different metrics. B still has summary context; its category zeros remain a known
+baseline limitation, not a newly accepted candidate under the unratified rule.
+
+Official A repeat scores remain **34, 34, 33 / 50**, with pairwise flips **0, 1, 1**
+on preference question `75f70248`. Official first-pass A/A2 have zero paired strict
+flips; fresh generic A/A2 preserve the historical one-question difference. Saved-
+hypothesis rejudging measures judge variability: it does **not** replace the proposed
+rule's two full canonical evaluate-only reruns for measuring candidate noise *F*.
+
+### Saved-context reader-cap diagnostic
+
+| Cap | Prompt tokens | Completion tokens | Finish | Generic | Official |
+|---|---:|---:|---|---|---|
+| 256 | 2,418 | 256 | `length` | partially correct | incorrect |
+| 1024 | 2,418 | 334 | `stop` | partially correct | incorrect |
+
+The two calls use the identical saved A context and shared composed system prompt;
+their recorded context/system hashes match. This directly demonstrates truncation
+in the **new 256-token diagnostic call**, not an invented historical finish reason.
+Increasing the cap allowed the answer to terminate normally but produced **no strict
+gain under either judge**. This single saved-context test neither changes the
+canonical 256-token baseline nor authorizes a production cap change. Raw new answers,
+both judge outputs, call receipts and usage are retained in `reader_cap_a_1/`.
+
+### Final cost/coverage reconciliation
+
+- Original official/generic returned responses: **386**; new residual judgments:
+  **14**; diagnostic: **2 reader + 4 judge** responses.
+- Total: **406 returned responses** (404 judge, 2 reader) from **407 attempted
+  requests**, including the original one with unknown outcome. No ingest calls.
+- Residual quoted-rate estimate: **$0.0153575**; diagnostic: **$0.0240250**;
+  cumulative returned-usage estimate: **$0.3030775**. These are not billing receipts.
+- Cumulative conservative reservation: **$1.7019050**, retaining the failed batch
+  in full. Actual billed cost and the unknown request's charge remain unknown.
+- All expected outcomes are observed only because the owner explicitly authorized
+  a new replacement, not because the original request was proved unexecuted.
+
+The final recovery ledger, reconciliation record and raw artifacts are retained
+alongside the initial stopped ledger; `artifact_inventory.json` hashes both phases.
+The diagnostic fix addresses future classification (#595), not retrospective cause.
+
+**Pause for owner decisions after final report/PR gates:** recommend the official
+category-aware judge as the primary metric, with unchanged generic strict scoring
+as a secondary/regression series. This is a recommendation only. Ratify the primary
+metric and `ACCEPTANCE_RULE_PROPOSED.md` (including the baseline/noise interpretation)
+before Phase 2 DB-backed triage or Phase 3 tuning. No such work has started.
+
+The final scoped read-only synthesis review found one stale diagnostic-status
+sentence in the progress ledger; the primary corrected it and clarified both
+execution SHAs. No metric math, artifacts or recovery logic changed. Review used
+the disclosed same-family OpenAI fallback; original failure outcome/billing remains
+unknown. Final result validation checks all 402 result rows (400 rejudged hypotheses
+plus two diagnostic answers) against dev IDs/references and verifies artifact hashes.
 
 After the measurement results, **stop for owner decisions** on primary metric and
 `ACCEPTANCE_RULE_PROPOSED.md`. No DB-backed Phase 2 failure triage or Phase 3 tuning
