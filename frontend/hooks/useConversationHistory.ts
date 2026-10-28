@@ -6,9 +6,31 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
+import {
+  getAuthHeader,
+  refreshIfNeeded,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
+import { useAuthGeneration } from './useAuthGeneration';
+import {
+  MessageHistory,
+  type MessageHistorySnapshot,
+} from '@/lib/messageHistory';
+import {
+  ConversationPager,
+  type ConversationPaging,
+} from '@/lib/conversationPager';
+import { HistoryScope, readScopedHistory } from '@/lib/historyScope';
+import {
+  compareConversationBoundary,
+  parseConversationHistoryPage,
+  parseMessageHistoryPage,
+  type ConversationHistoryRow,
+} from '@/lib/historyPages';
 import {
   type DaemonMessage,
   normalizeDaemonMessages,
@@ -24,8 +46,6 @@ export const CONVERSATION_RETRY_DELAYS_MS = [1000, 3000, 10000, 30000];
  * state. Anything else is transient and is retried, a bounded number of
  * times.
  */
-const PERMANENT_LOAD_STATUSES: ReadonlySet<number> = new Set([403, 404]);
-
 export interface Conversation {
   id: string;
   title: string;
@@ -83,7 +103,7 @@ function toActiveTask(value: unknown): ActiveTask | null {
 
 interface ApiConversation {
   id: string;
-  title: string;
+  title: string | null;
   created_at: string;
   updated_at: string;
   message_count?: number;
@@ -114,7 +134,7 @@ const MAX_SEARCH_LENGTH = 200;
 function toConversation(conv: ApiConversation): Conversation {
   return {
     id: conv.id,
-    title: conv.title,
+    title: conv.title ?? '',
     messages: [], // Messages are fetched individually
     selectedModel: conv.metadata?.model || 'auto',
     createdAt: conv.created_at,
@@ -129,6 +149,8 @@ function toConversation(conv: ApiConversation): Conversation {
 }
 
 interface SearchState {
+  generation: number;
+  nextOffset: number;
   query: string;
   status: ConversationSearchStatus;
   results: Conversation[];
@@ -136,19 +158,88 @@ interface SearchState {
 }
 
 const IDLE_SEARCH: SearchState = {
+  generation: -1,
+  nextOffset: 0,
   query: '',
   status: 'idle',
   results: [],
   hasMore: false,
 };
 
+function fromHistoryRow(row: ConversationHistoryRow): Conversation {
+  return toConversation({
+    id: row.id,
+    title: row.title,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    last_activity_at: row.last_activity_at,
+    pinned: row.pinned,
+    message_count:
+      typeof row.message_count === 'number' ? row.message_count : 0,
+    title_locked: row.title_locked === true,
+    status: typeof row.status === 'string' ? row.status : 'active',
+    metadata:
+      typeof row.metadata === 'object' &&
+      row.metadata !== null &&
+      !Array.isArray(row.metadata)
+        ? (row.metadata as Record<string, unknown>)
+        : {},
+  });
+}
+
+function listBoundary(row: Conversation): ConversationHistoryRow {
+  return {
+    id: row.id,
+    user_id: '',
+    title: row.title,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+    last_activity_at: row.lastActivityAt ?? null,
+    pinned: row.pinned,
+  };
+}
+
+const EMPTY_LIST = {
+  generation: -1,
+  rows: [] as Conversation[],
+  loaded: false,
+  total: 0,
+  hasMore: false,
+  loading: false,
+  refreshing: false,
+  updatesPending: false,
+  error: false,
+};
+const emptyList = () => EMPTY_LIST;
+
+const EMPTY_MESSAGE_HISTORY: MessageHistorySnapshot<Conversation> = {
+  generation: -1,
+  id: null,
+  scope: '',
+  tail: null,
+  messages: [],
+  hasOlder: false,
+  loadingOlder: false,
+  syncing: false,
+  error: false,
+  failure: null,
+  retryKind: null,
+  incomplete: false,
+};
+const emptyMessageHistory = () => EMPTY_MESSAGE_HISTORY;
+
 export function useConversationHistory() {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const authGeneration = useAuthGeneration();
+  const [searchQuery, setSearchQueryState] = useState('');
   const [search, setSearch] = useState<SearchState>(IDLE_SEARCH);
   // Only the latest search request may publish results.
   const searchRequest = useRef(0);
+  const searchAbort = useRef<AbortController | null>(null);
+  const setSearchQuery = useCallback((query: string) => {
+    searchRequest.current += 1;
+    searchAbort.current?.abort();
+    setSearchQueryState(query);
+  }, []);
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentId = searchParams.get('id');
@@ -185,12 +276,21 @@ export function useConversationHistory() {
 
   const apiFetch = useCallback(
     async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
+      const generation = getAuthGeneration();
+      const assertCurrent = () => {
+        if (generation !== getAuthGeneration() || init.signal?.aborted) {
+          throw new DOMException('Request scope changed', 'AbortError');
+        }
+      };
       const candidates = apiCandidates(path);
       let lastError: unknown = null;
 
       for (let index = 0; index < candidates.length; index += 1) {
+        assertCurrent();
         const candidate = candidates[index];
         const controller = new AbortController();
+        const abort = () => controller.abort(init.signal?.reason);
+        init.signal?.addEventListener('abort', abort, { once: true });
         const timeoutId = setTimeout(() => {
           try {
             controller.abort(
@@ -202,11 +302,13 @@ export function useConversationHistory() {
         }, timeoutMs);
 
         try {
+          assertCurrent();
           const response = await fetch(candidate, {
             ...init,
             signal: controller.signal,
           });
           clearTimeout(timeoutId);
+          assertCurrent();
 
           if (response.status === 404 && index < candidates.length - 1) {
             continue;
@@ -215,10 +317,13 @@ export function useConversationHistory() {
           return response;
         } catch (error) {
           clearTimeout(timeoutId);
+          assertCurrent();
           lastError = error;
           if (index === candidates.length - 1) {
             throw error;
           }
+        } finally {
+          init.signal?.removeEventListener('abort', abort);
         }
       }
 
@@ -230,43 +335,140 @@ export function useConversationHistory() {
     [apiCandidates],
   );
 
-  const fetchConversations = useCallback(() => {
-    const read = async (): Promise<Conversation[] | undefined> => {
-      try {
-        const response = await apiFetch('/conversations?limit=100', {
-          headers: await getAuthHeaders(),
-        });
-        if (!response.ok) {
-          return [];
-        }
-        const data = await response.json();
-        const conversationsArray: ApiConversation[] = data.conversations || [];
+  const [pager] = useState(
+    () =>
+      new ConversationPager<Conversation>({
+        generation: getAuthGeneration,
+        compare: (a, b) =>
+          compareConversationBoundary(listBoundary(a), listBoundary(b)),
+        readPage: async (cursor, lease) => {
+          const params = new URLSearchParams({
+            pagination: 'cursor',
+            limit: '100',
+          });
+          if (cursor !== null) params.set('cursor', cursor);
+          const result = await readScopedHistory(
+            lease,
+            apiCandidates(`/conversations?${params}`),
+            { getAuthHeaders },
+          );
+          lease.assertCurrent();
+          if (result.status !== 200)
+            throw new Error('Conversation page unavailable');
+          const parsed = parseConversationHistoryPage(result.data, cursor);
+          return {
+            rows: parsed.conversations.map(fromHistoryRow),
+            total: parsed.total,
+            page: parsed.page,
+          };
+        },
+        readOne: async (id, lease) => {
+          const result = await readScopedHistory(
+            lease,
+            apiCandidates(`/conversations/${id}?limit=1`),
+            { getAuthHeaders },
+          );
+          lease.assertCurrent();
+          if (result.status !== 200) return { status: result.status };
+          const parsed = parseConversationHistoryPage({
+            conversations: [result.data],
+            total: 1,
+            page: {
+              has_more: false,
+              next_cursor: null,
+              start_cursor: 'metadata',
+              end_cursor: 'metadata',
+            },
+          });
+          if (parsed.conversations[0].id !== id)
+            throw new Error('Conversation identity mismatch');
+          return { status: 200, row: fromHistoryRow(parsed.conversations[0]) };
+        },
+      }),
+  );
+  const listSnapshot = useSyncExternalStore(
+    pager.subscribe,
+    pager.getSnapshot,
+    emptyList,
+  );
+  const list =
+    listSnapshot.generation === authGeneration ? listSnapshot : EMPTY_LIST;
+  const conversations = list.rows;
+  const isLoaded = list.loaded;
+  const setConversations = useCallback(
+    (update: (rows: Conversation[]) => Conversation[]) => pager.update(update),
+    [pager],
+  );
 
-        const formattedConversations: Conversation[] =
-          conversationsArray.map(toConversation);
-
-        return formattedConversations;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return;
-        }
-        return [];
+  useEffect(() => {
+    const owner = pager;
+    owner.resume();
+    let observedGeneration = getAuthGeneration();
+    const reconcile = () => {
+      if (observedGeneration !== getAuthGeneration()) {
+        observedGeneration = getAuthGeneration();
+        searchRequest.current += 1;
+        searchAbort.current?.abort();
+        setSearch(IDLE_SEARCH);
+        setSearchQueryState('');
       }
+      owner.syncGeneration();
+      if (!owner.getSnapshot().loaded || owner.getSnapshot().error)
+        owner.refresh();
     };
-    return read()
-      .then((rows) => {
-        if (rows !== undefined) setConversations(rows);
-      })
-      .finally(() => setIsLoaded(true));
-  }, [apiFetch, getAuthHeaders]);
+    const unsubscribe = subscribeAuthGeneration(reconcile);
+    reconcile();
+    const interval = setInterval(owner.refresh, 30000);
+    return () => {
+      clearInterval(interval);
+      unsubscribe();
+      searchAbort.current?.abort();
+      owner.dispose();
+    };
+  }, [pager]);
+
+  const fetchConversations = useCallback(() => {
+    pager?.refresh();
+  }, [pager]);
+  const conversationPaging: ConversationPaging = {
+    hasMore: list.hasMore,
+    loading: list.loading,
+    refreshing: list.refreshing,
+    updatesPending: list.updatesPending,
+    error: list.error,
+    loadMore: pager?.loadMore ?? (() => {}),
+    retry: pager?.retry ?? (() => {}),
+  };
 
   const runSearch = useCallback(
     async (query: string, offset: number) => {
+      const generation = getAuthGeneration();
       const request = ++searchRequest.current;
+      searchAbort.current?.abort();
+      const controller = new AbortController();
+      searchAbort.current = controller;
+      const scope = new HistoryScope(getAuthGeneration, null);
+      const lease = scope.capture({
+        selected: false,
+        signal: controller.signal,
+      });
+      const current = () =>
+        !controller.signal.aborted &&
+        generation === getAuthGeneration() &&
+        request === searchRequest.current;
       setSearch((prev) =>
-        offset === 0
-          ? { query, status: 'searching', results: [], hasMore: false }
-          : { ...prev, status: 'searching' },
+        !current()
+          ? prev
+          : offset === 0
+            ? {
+                generation,
+                nextOffset: 0,
+                query,
+                status: 'searching',
+                results: [],
+                hasMore: false,
+              }
+            : { ...prev, status: 'searching' },
       );
       try {
         const params = new URLSearchParams({
@@ -274,37 +476,51 @@ export function useConversationHistory() {
           limit: String(SEARCH_PAGE_SIZE),
           offset: String(offset),
         });
-        const response = await apiFetch(`/conversations?${params}`, {
-          headers: await getAuthHeaders(),
-        });
-        if (request !== searchRequest.current) return;
-        if (!response.ok) throw new Error(`Search failed: ${response.status}`);
-        const data = await response.json();
-        if (request !== searchRequest.current) return;
+        const result = await readScopedHistory(
+          lease,
+          apiCandidates(`/conversations?${params}`),
+          { getAuthHeaders },
+        );
+        if (!current()) return;
+        if (result.status !== 200)
+          throw new Error(`Search failed: ${result.status}`);
+        const data = result.data as { conversations?: ApiConversation[] };
         const page: Conversation[] = (
           (data.conversations || []) as ApiConversation[]
         ).map(toConversation);
         setSearch((prev) => {
+          if (!current()) return prev;
           const seen = new Set(
             offset === 0 ? [] : prev.results.map((c) => c.id),
           );
           const merged = offset === 0 ? [] : [...prev.results];
           for (const conv of page) {
-            if (!seen.has(conv.id)) merged.push(conv);
+            if (!seen.has(conv.id)) {
+              merged.push(conv);
+              seen.add(conv.id);
+            }
           }
           return {
             query,
+            generation,
+            nextOffset: offset + page.length,
             status: 'ready',
             results: merged,
             hasMore: page.length === SEARCH_PAGE_SIZE,
           };
         });
       } catch {
-        if (request !== searchRequest.current) return;
-        setSearch((prev) => ({ ...prev, query, status: 'error' }));
+        if (!current()) return;
+        setSearch((prev) =>
+          current() ? { ...prev, generation, query, status: 'error' } : prev,
+        );
+      } finally {
+        lease.release();
+        scope.dispose();
+        if (searchAbort.current === controller) searchAbort.current = null;
       }
     },
-    [apiFetch, getAuthHeaders],
+    [apiCandidates, getAuthHeaders],
   );
 
   const normalizedSearchQuery = searchQuery.trim().slice(0, MAX_SEARCH_LENGTH);
@@ -331,7 +547,8 @@ export function useConversationHistory() {
 
   const loadMoreSearch = useCallback(() => {
     if (search.status !== 'ready' || !search.hasMore) return;
-    void runSearch(search.query, search.results.length);
+    if (search.generation !== getAuthGeneration()) return;
+    void runSearch(search.query, search.nextOffset);
   }, [runSearch, search]);
 
   const retrySearch = useCallback(() => {
@@ -339,35 +556,32 @@ export function useConversationHistory() {
   }, [runSearch, search.query]);
 
   const conversationSearch: ConversationSearch = {
-    ...search,
+    ...(search.generation === authGeneration ? search : IDLE_SEARCH),
     loadMore: loadMoreSearch,
     retry: retrySearch,
   };
 
-  // Initial fetch and polling
-  useEffect(() => {
-    fetchConversations();
-    const interval = setInterval(fetchConversations, 30000); // Poll every 30s
-    return () => clearInterval(interval);
-  }, [fetchConversations]);
-
   const createConversation = useCallback(async () => {
+    const generation = getAuthGeneration();
     try {
+      const headers = await getAuthHeaders();
+      if (generation !== getAuthGeneration()) return null;
       const response = await apiFetch('/conversations', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(await getAuthHeaders()),
+          ...headers,
         },
         body: JSON.stringify({ title: 'New conversation' }),
       });
 
-      if (!response.ok) return null;
+      if (generation !== getAuthGeneration() || !response.ok) return null;
 
       const newConv: ApiConversation = await response.json();
+      if (generation !== getAuthGeneration()) return null;
       const formattedConv: Conversation = {
         id: newConv.id,
-        title: newConv.title,
+        title: newConv.title ?? '',
         messages: [],
         selectedModel: 'auto',
         createdAt: newConv.created_at,
@@ -386,13 +600,14 @@ export function useConversationHistory() {
     } catch {
       return null;
     }
-  }, [apiFetch, getAuthHeaders, router]);
+  }, [apiFetch, getAuthHeaders, router, setConversations]);
 
   const updateConversation = useCallback(
     async (
       id: string,
       updates: Partial<Conversation> & { messages?: DaemonMessage[] },
     ) => {
+      const generation = getAuthGeneration();
       // Optimistic update
       setConversations((prev) =>
         prev.map((conv) => (conv.id === id ? { ...conv, ...updates } : conv)),
@@ -400,7 +615,9 @@ export function useConversationHistory() {
       setSearch((prev) => ({
         ...prev,
         results: prev.results.map((conv) =>
-          conv.id === id ? { ...conv, ...updates } : conv,
+          generation === getAuthGeneration() && conv.id === id
+            ? { ...conv, ...updates }
+            : conv,
         ),
       }));
 
@@ -420,20 +637,28 @@ export function useConversationHistory() {
         }
 
         if (Object.keys(payload).length > 0) {
+          const headers = await getAuthHeaders();
+          if (generation !== getAuthGeneration()) return;
           await apiFetch(`/conversations/${id}`, {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
-              ...(await getAuthHeaders()),
+              ...headers,
             },
             body: JSON.stringify(payload),
           });
         }
       } catch {
-        fetchConversations(); // Revert on error
+        if (generation === getAuthGeneration()) fetchConversations(); // Revert on error
       }
     },
-    [apiFetch, conversations, fetchConversations, getAuthHeaders],
+    [
+      apiFetch,
+      conversations,
+      fetchConversations,
+      getAuthHeaders,
+      setConversations,
+    ],
   );
 
   const setConversationModel = useCallback(
@@ -445,22 +670,29 @@ export function useConversationHistory() {
 
   const deleteConversation = useCallback(
     async (id: string) => {
+      const generation = getAuthGeneration();
       // Optimistic update
       setConversations((prev) => prev.filter((conv) => conv.id !== id));
       setSearch((prev) => ({
         ...prev,
-        results: prev.results.filter((conv) => conv.id !== id),
+        results:
+          generation === getAuthGeneration()
+            ? prev.results.filter((conv) => conv.id !== id)
+            : prev.results,
       }));
       if (currentId === id) {
         router.push('/');
       }
 
       try {
+        const headers = await getAuthHeaders();
+        if (generation !== getAuthGeneration()) return false;
         const response = await apiFetch(`/conversations/${id}`, {
           method: 'DELETE',
-          headers: await getAuthHeaders(),
+          headers,
         });
 
+        if (generation !== getAuthGeneration()) return false;
         if (!response.ok) {
           fetchConversations();
           return false;
@@ -468,24 +700,37 @@ export function useConversationHistory() {
 
         return true;
       } catch {
-        fetchConversations(); // Revert on error
+        if (generation === getAuthGeneration()) fetchConversations(); // Revert on error
         return false;
       }
     },
-    [apiFetch, currentId, router, fetchConversations, getAuthHeaders],
+    [
+      apiFetch,
+      currentId,
+      router,
+      fetchConversations,
+      getAuthHeaders,
+      setConversations,
+    ],
   );
 
   const fetchConversationById = useCallback(
     async (id: string): Promise<Conversation | null> => {
+      const scope = new HistoryScope(getAuthGeneration, null);
+      const lease = scope.capture({ selected: false });
       try {
-        const response = await apiFetch(`/conversations/${id}`, {
-          headers: await getAuthHeaders(),
-        });
-        if (!response.ok) {
+        const result = await readScopedHistory(
+          lease,
+          apiCandidates(`/conversations/${id}`),
+          { getAuthHeaders },
+        );
+        lease.assertCurrent();
+        if (result.status !== 200) {
           return null;
         }
 
-        const data = await response.json();
+        const data = result.data as Record<string, any>;
+        if (data.id !== id) return null;
         const formattedConv: Conversation = {
           id: data.id,
           title: data.title,
@@ -503,167 +748,117 @@ export function useConversationHistory() {
           latestTask: toActiveTask(data.latest_task),
         };
 
+        lease.assertCurrent();
         return formattedConv;
       } catch {
         return null;
+      } finally {
+        lease.release();
+        scope.dispose();
       }
     },
-    [apiFetch, getAuthHeaders],
+    [apiCandidates, getAuthHeaders],
   );
 
-  /**
-   * ``permanent``: the server answered for this conversation with ``403``
-   * or ``404`` (#477) — it will not become available by waiting. ``null``
-   * and transient failures are indistinguishable to callers that only need
-   * the conversation: both resolve to no conversation.
-   */
-  const fetchConversationLoad = useCallback(
-    async (
-      id: string,
-    ): Promise<{ conversation: Conversation | null; permanent: boolean }> => {
-      const response = await (async () => {
-        try {
-          return await apiFetch(`/conversations/${id}`, {
-            headers: await getAuthHeaders(),
+  const [messageOwner] = useState(
+    () =>
+      new MessageHistory<Conversation>({
+        generation: getAuthGeneration,
+        retryDelays: CONVERSATION_RETRY_DELAYS_MS,
+        read: async (id, bounds, lease) => {
+          const params = new URLSearchParams({
+            pagination: 'cursor',
+            limit: '100',
           });
-        } catch {
-          return undefined; // transport error: transient
-        }
-      })();
-      if (!response) return { conversation: null, permanent: false };
-      if (!response.ok) {
-        return {
-          conversation: null,
-          permanent: PERMANENT_LOAD_STATUSES.has(response.status),
-        };
-      }
-      try {
-        const data = await response.json();
-        return {
-          conversation: {
-            id: data.id,
-            title: data.title,
-            messages: normalizeDaemonMessages(data.messages),
-            selectedModel: data.metadata?.model || 'auto',
-            createdAt: data.created_at,
-            updatedAt: data.updated_at,
-            messageCount: data.message_count,
-            lastActivityAt: data.last_activity_at,
-            pinned: data.pinned,
-            title_locked: data.title_locked,
-            status: data.status,
-            metadata: data.metadata || {},
-            activeTask: toActiveTask(data.active_task),
-            latestTask: toActiveTask(data.latest_task),
-          },
-          permanent: false,
-        };
-      } catch {
-        return { conversation: null, permanent: false };
-      }
-    },
-    [apiFetch, getAuthHeaders],
+          if (bounds.before) params.set('before', bounds.before);
+          if (bounds.through) params.set('through', bounds.through);
+          const result = await readScopedHistory(
+            lease,
+            apiCandidates(`/conversations/${id}?${params}`),
+            { getAuthHeaders },
+          );
+          lease.assertCurrent();
+          if (result.status !== 200) return { status: result.status };
+          const parsed = parseMessageHistoryPage(
+            result.data,
+            id,
+            bounds.before,
+          );
+          const metadata = parseConversationHistoryPage({
+            conversations: [parsed.conversation],
+            total: 1,
+            page: {
+              has_more: false,
+              next_cursor: null,
+              start_cursor: 'metadata',
+              end_cursor: 'metadata',
+            },
+          });
+          const conversation: Conversation = {
+            ...fromHistoryRow(metadata.conversations[0]),
+            messages: parsed.messages,
+            activeTask: toActiveTask(parsed.conversation.active_task),
+            latestTask: toActiveTask(parsed.conversation.latest_task),
+          };
+          return {
+            status: 200,
+            value: {
+              conversation,
+              messages: parsed.messages,
+              page: parsed.page,
+            },
+          };
+        },
+      }),
   );
-
-  const [currentConversation, setCurrentConversation] =
-    useState<Conversation | null>(null);
-  /**
-   * Why the open conversation has no server copy and is not loading anymore
-   * (#477): ``permanent`` for a ``403``/``404`` answer about it,
-   * ``exhausted`` when the bounded transient retries ran out. Rendered with
-   * the existing navigation affordances, never a new interface.
-   */
-  const [conversationLoadFailure, setConversationLoadFailure] = useState<
-    'permanent' | 'exhausted' | null
-  >(null);
-
-  const [observedSelection, setObservedSelection] = useState({
-    id: currentId,
-    load: fetchConversationLoad,
-  });
-  if (
-    observedSelection.id !== currentId ||
-    observedSelection.load !== fetchConversationLoad
-  ) {
-    setObservedSelection({ id: currentId, load: fetchConversationLoad });
-    setConversationLoadFailure(null);
-    if (!currentId) setCurrentConversation(null);
-  }
-
-  useEffect(() => {
-    if (!currentId) {
-      return;
-    }
-
-    // An older fetch that finishes after a newer one must not replace the
-    // open conversation with the one the user left.
-    let stale = false;
-    let retry: ReturnType<typeof setTimeout> | null = null;
-    // A failed load is retried: the open conversation must not stay unloaded
-    // (its composer is held until its server state, and any task, is known).
-    const fetchConversationDetails = async (attempt: number) => {
-      const { conversation, permanent } =
-        await fetchConversationLoad(currentId);
-      if (stale) return;
-      if (conversation) {
-        setCurrentConversation(conversation);
-        return;
-      }
-      if (permanent) {
-        // The server answered about this conversation: stopping, not
-        // looping, is the recovery. The page shows the actionable state.
-        setConversationLoadFailure('permanent');
-        return;
-      }
-      if (attempt >= CONVERSATION_RETRY_DELAYS_MS.length) {
-        // Transient problems only get the listed delays: retrying forever
-        // leaves a blocked composer with no explanation (#477).
-        setConversationLoadFailure('exhausted');
-        return;
-      }
-      retry = setTimeout(
-        () => void fetchConversationDetails(attempt + 1),
-        CONVERSATION_RETRY_DELAYS_MS[attempt],
-      );
-    };
-
-    void fetchConversationDetails(0);
-    return () => {
-      stale = true;
-      if (retry) clearTimeout(retry);
-    };
-  }, [currentId, fetchConversationLoad]);
-
-  const getCurrentConversation = useCallback(() => {
-    return currentConversation;
-  }, [currentConversation]);
-
-  // The open conversation id as of the latest render, for discarding refreshes
-  // that finish after the user has moved to another conversation.
+  const selectedSnapshot = useSyncExternalStore(
+    messageOwner.subscribe,
+    messageOwner.getSnapshot,
+    emptyMessageHistory,
+  );
+  const messageHistory =
+    selectedSnapshot.generation === authGeneration &&
+    selectedSnapshot.id === currentId
+      ? selectedSnapshot
+      : EMPTY_MESSAGE_HISTORY;
   const currentIdRef = useRef(currentId);
-  // A layout effect runs before passive effects, so a refresh that resolves
-  // during the switch already sees the new id.
   useLayoutEffect(() => {
     currentIdRef.current = currentId;
-  }, [currentId]);
-
-  /**
-   * Re-read the open conversation, e.g. while a durable task is running.
-   * Resolves to ``null`` when the user has switched conversations meanwhile,
-   * so callers never render one conversation's messages in another.
-   */
-  const refreshCurrentConversation = useCallback(async () => {
-    const requestedId = currentIdRef.current;
-    if (!requestedId) return null;
-    const conversation = await fetchConversationById(requestedId);
-    if (!conversation || currentIdRef.current !== requestedId) return null;
-    setCurrentConversation((previous) =>
-      previous === null || previous.id === conversation.id
-        ? conversation
-        : previous,
-    );
-    return conversation;
-  }, [fetchConversationById]);
+    messageOwner.select(currentId);
+  }, [messageOwner, currentId, authGeneration]);
+  useEffect(() => {
+    messageOwner.resume();
+    const reconcile = () => {
+      messageOwner.select(currentIdRef.current);
+      messageOwner.startInitial();
+    };
+    const unsubscribe = subscribeAuthGeneration(reconcile);
+    reconcile();
+    const interval = setInterval(() => {
+      if (
+        messageOwner.getSnapshot().failure === null &&
+        messageOwner.getSnapshot().tail !== null
+      )
+        void messageOwner.refreshRange();
+    }, 30000);
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+      messageOwner.dispose();
+    };
+  }, [messageOwner]);
+  useEffect(() => {
+    messageOwner.startInitial();
+  }, [messageOwner, currentId, authGeneration]);
+  const getCurrentConversation = useCallback(() => {
+    const tail = messageHistory.tail;
+    return tail && messageOwner.canUse(tail) ? tail : null;
+  }, [messageHistory.tail, messageOwner]);
+  const conversationLoadFailure = messageHistory.failure;
+  const refreshCurrentConversation = useCallback(
+    () => messageOwner.refresh(),
+    [messageOwner],
+  );
 
   /**
    * The caller's task created with ``key``: ``null`` when the server has
@@ -672,14 +867,17 @@ export function useConversationHistory() {
    */
   const taskForKey = useCallback(
     async (key: string): Promise<KeyedTask | null | undefined> => {
+      const lease = messageOwner.captureOperation();
       try {
-        const response = await apiFetch(
-          `/tasks/by-key/${encodeURIComponent(key)}`,
-          { headers: await getAuthHeaders() },
+        const result = await readScopedHistory(
+          lease,
+          apiCandidates(`/tasks/by-key/${encodeURIComponent(key)}`),
+          { getAuthHeaders },
         );
-        if (response.status === 404) return null;
-        if (!response.ok) return undefined;
-        const task = (await response.json()) as Record<string, unknown>;
+        lease.assertCurrent();
+        if (result.status === 404) return null;
+        if (result.status !== 200) return undefined;
+        const task = result.data as Record<string, unknown>;
         return typeof task.id === 'string' &&
           typeof task.conversation_id === 'string' &&
           typeof task.status === 'string'
@@ -691,27 +889,34 @@ export function useConversationHistory() {
           : undefined;
       } catch {
         return undefined;
+      } finally {
+        lease.release();
       }
     },
-    [apiFetch, getAuthHeaders],
+    [apiCandidates, getAuthHeaders, messageOwner],
   );
 
   /** A task's current status, or ``undefined`` when it cannot be read. */
   const taskStatus = useCallback(
     async (taskId: string): Promise<string | undefined> => {
+      const lease = messageOwner.captureOperation();
       try {
-        const response = await apiFetch(
-          `/tasks/${encodeURIComponent(taskId)}`,
-          { headers: await getAuthHeaders() },
+        const result = await readScopedHistory(
+          lease,
+          apiCandidates(`/tasks/${encodeURIComponent(taskId)}`),
+          { getAuthHeaders },
         );
-        if (!response.ok) return undefined;
-        const task = (await response.json()) as { status?: unknown };
+        lease.assertCurrent();
+        if (result.status !== 200) return undefined;
+        const task = result.data as { status?: unknown };
         return typeof task.status === 'string' ? task.status : undefined;
       } catch {
         return undefined;
+      } finally {
+        lease.release();
       }
     },
-    [apiFetch, getAuthHeaders],
+    [apiCandidates, getAuthHeaders, messageOwner],
   );
 
   /**
@@ -721,11 +926,15 @@ export function useConversationHistory() {
    */
   const cancelTask = useCallback(
     async (taskId: string): Promise<TaskCancelOutcome> => {
+      const lease = messageOwner.captureOperation();
       try {
+        const headers = await getAuthHeaders();
+        lease.assertCurrent();
         const response = await apiFetch(
           `/tasks/${encodeURIComponent(taskId)}/cancel`,
-          { method: 'POST', headers: await getAuthHeaders() },
+          { method: 'POST', headers, signal: lease.signal },
         );
+        lease.assertCurrent();
         if (response.status === 409) return 'finished';
         if (!response.ok) return 'unconfirmed';
         // 200 with status "running": cancellation is requested, but the task
@@ -733,12 +942,15 @@ export function useConversationHistory() {
         const body = (await response.json().catch(() => ({}))) as {
           status?: unknown;
         };
+        lease.assertCurrent();
         return body.status === 'cancelled' ? 'cancelled' : 'cancelling';
       } catch {
         return 'unconfirmed';
+      } finally {
+        lease.release();
       }
     },
-    [apiFetch, getAuthHeaders],
+    [apiFetch, getAuthHeaders, messageOwner],
   );
 
   const switchConversation = useCallback(
@@ -767,6 +979,12 @@ export function useConversationHistory() {
     searchQuery,
     setSearchQuery,
     conversationSearch,
+    conversationPaging,
+    messageHistory,
+    loadOlderMessages: messageOwner.loadOlder,
+    refreshMessageHistory: messageOwner.refreshRange,
+    isCurrentConversation: messageOwner.canUse,
+    isHistoryScopeCurrent: messageOwner.isScopeCurrent,
     refreshConversations: fetchConversations,
   };
 }

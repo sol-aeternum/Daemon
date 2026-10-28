@@ -19,6 +19,8 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 vi.mock('../lib/auth', () => ({
+  getAuthGeneration: () => 0,
+  subscribeAuthGeneration: () => () => {},
   getAuthHeader: () => 'Bearer test-search',
   refreshIfNeeded: vi.fn(),
 }));
@@ -28,7 +30,13 @@ const activity = new Date().toISOString();
 
 function apiConversation(id: string, title: string) {
   return {
-    id,
+    id:
+      id === 'recent-trip'
+        ? '00000000-0000-0000-0000-000000000002'
+        : id === 'recent-code'
+          ? '00000000-0000-0000-0000-000000000001'
+          : id,
+    user_id: '00000000-0000-0000-0000-000000000099',
     title,
     created_at: activity,
     updated_at: activity,
@@ -76,7 +84,16 @@ beforeEach(() => {
           searchHeaders.push(new Headers(init?.headers));
           return searchResponder(url.searchParams);
         }
-        return json({ conversations: loaded });
+        return json({
+          conversations: loaded,
+          total: loaded.length,
+          page: {
+            has_more: false,
+            next_cursor: null,
+            start_cursor: 'first',
+            end_cursor: 'last',
+          },
+        });
       }
       if (init?.method === 'DELETE') return new Response(null, { status: 204 });
       return json({});
@@ -235,6 +252,51 @@ describe('sidebar title search across all conversations', () => {
     expect(
       screen.queryByRole('button', { name: 'Load more results' }),
     ).toBeNull();
+  });
+
+  it('advances search offsets by raw page length even across duplicate-only pages', async () => {
+    const first = Array.from({ length: SEARCH_PAGE_SIZE }, (_, index) =>
+      apiConversation(`note-${index}`, `Note ${index}`),
+    );
+    searchResponder = (params) =>
+      params.get('offset') === '0' ||
+      params.get('offset') === String(SEARCH_PAGE_SIZE)
+        ? json({ conversations: first })
+        : json({ conversations: [apiConversation('extra', 'Note extra')] });
+    const input = await renderSidebar();
+    type(input, 'note');
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Load more results' }),
+    );
+    await waitFor(() => expect(searchRequests).toHaveLength(2));
+    await waitFor(() => expect(latest.conversationSearch.status).toBe('ready'));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more results' }));
+    await screen.findByText('Note extra');
+    expect(searchRequests.map((params) => params.get('offset'))).toEqual([
+      '0',
+      '50',
+      '100',
+    ]);
+  });
+
+  it('invalidates a prior query before the next debounce starts', async () => {
+    let release!: () => void;
+    searchResponder = () =>
+      new Promise((resolve) => {
+        release = () =>
+          resolve(
+            json({ conversations: [apiConversation('old', 'About alpha')] }),
+          );
+      });
+    const input = await renderSidebar();
+    type(input, 'alpha');
+    await waitFor(() => expect(searchRequests).toHaveLength(1));
+    type(input, 'beta');
+    await act(async () => release());
+    expect(latest.conversationSearch.results).not.toContainEqual(
+      expect.objectContaining({ title: 'About alpha' }),
+    );
+    expect(screen.queryByText('About alpha')).toBeNull();
   });
 
   it('reports a failed search truthfully and retries on request', async () => {

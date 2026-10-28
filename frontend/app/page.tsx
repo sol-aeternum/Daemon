@@ -49,10 +49,14 @@ import {
   useRef,
   useEffect,
   Suspense,
+  Fragment,
   useMemo,
   useCallback,
   useLayoutEffect,
+  useSyncExternalStore,
 } from 'react';
+import { TailAdoption } from '../lib/tailAdoption';
+import { projectDisplayedHistory } from '../lib/historyPages';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
@@ -84,6 +88,7 @@ import {
   CollapsibleMessage,
 } from '../components/CollapsibleMessage';
 import { useChatScroll } from '../hooks/useChatScroll';
+import type { Conversation } from '../hooks/useConversationHistory';
 import { MobileHeader } from '../components/MobileHeader';
 import ChatSkeleton from '../components/ChatSkeleton';
 import { useConversationHistory } from '../hooks/useConversationHistory';
@@ -427,6 +432,12 @@ function ChatContent() {
     searchQuery,
     setSearchQuery,
     conversationSearch,
+    conversationPaging,
+    messageHistory,
+    isCurrentConversation,
+    isHistoryScopeCurrent,
+    loadOlderMessages,
+    refreshMessageHistory,
     refreshConversations,
     conversationLoadFailure,
   } = useConversationHistoryContext();
@@ -444,6 +455,18 @@ function ChatContent() {
   >({});
 
   const currentConversation = getCurrentConversation();
+  const [tailAdoption] = useState(
+    () =>
+      new TailAdoption(
+        messageHistory.scope,
+        currentConversation?.messages ?? [],
+      ),
+  );
+  const adoptedTail = useSyncExternalStore(
+    tailAdoption.subscribe,
+    tailAdoption.getSnapshot,
+    tailAdoption.getSnapshot,
+  );
 
   useEffect(() => {
     if (currentConversation?.selectedModel) {
@@ -476,6 +499,28 @@ function ChatContent() {
     pending: boolean;
   } | null>(null);
   const chatRequestGenerationRef = useRef<number | null>(null);
+  const localTailBlockedRef = useRef(false);
+  const localSendRevisionRef = useRef(0);
+  const localBusyRef = useRef(false);
+  // Task authority only; the single provider remains the owner of saved rows.
+  const pendingSavedTailRef = useRef<{
+    taskId: string;
+    scope: string;
+    revision: number;
+  } | null>(null);
+  const flushSavedTailRef = useRef<() => void>(() => {});
+  const adoptionLifetimeRef = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    const lifetime = {};
+    adoptionLifetimeRef.current = lifetime;
+    return () => {
+      if (adoptionLifetimeRef.current === lifetime) {
+        adoptionLifetimeRef.current = null;
+        pendingSavedTailRef.current = null;
+        flushSavedTailRef.current = () => {};
+      }
+    };
+  }, []);
   // The useChat setter, kept here so callbacks declared before it (onFinish)
   // can still rewrite the message list: a refused exchange is removed by its
   // message identities, not by re-sending text (#477).
@@ -528,6 +573,12 @@ function ChatContent() {
     [showError],
   );
   const beginSend = (key: string | null = null) => {
+    localTailBlockedRef.current = true;
+    localSendRevisionRef.current += 1;
+    pendingSavedTailRef.current = null;
+    // Qualify SDK events from this locally initiated turn even before the
+    // transport starts. A newly mounted account has no qualified old stream.
+    chatRequestGenerationRef.current = getAuthGeneration();
     // The key is known here for every keyed send; the transport confirms it.
     activeSubmissionKeyRef.current = key;
     activeSubmissionScopeRef.current =
@@ -748,7 +799,11 @@ function ChatContent() {
         chatRequestGenerationRef.current !== getAuthGeneration()
       )
         return;
-      setConnectionStatus('connected');
+      // The SDK calls onFinish even after onError; do not hide Retry by
+      // relabelling that failed transport as connected in its finally path.
+      setConnectionStatus(
+        isDisconnect || isError ? 'disconnected' : 'connected',
+      );
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
         setThoughtFallbackByMessageId((prev) => ({
@@ -779,8 +834,147 @@ function ChatContent() {
   useLayoutEffect(() => {
     setChatMessagesRef.current = setMessages;
   }, [setMessages]);
+  useEffect(
+    () => () => {
+      void stopChat();
+    },
+    [stopChat],
+  );
 
   const isLoading = status === 'submitted' || status === 'streaming';
+  useLayoutEffect(() => {
+    localBusyRef.current = isLoading || stopInFlight;
+  }, [isLoading, stopInFlight]);
+  const adoptConversation = useCallback(
+    (conversation: Conversation) => {
+      if (localBusyRef.current || composerSendInFlightRef.current) return false;
+      const adopted = tailAdoption.adopt(
+        messageHistory.scope,
+        conversation.messages,
+        () =>
+          isHistoryScopeCurrent(messageHistory.scope) &&
+          isCurrentConversation(conversation),
+        () => {
+          setMessages(conversation.messages);
+          setMessageScope(conversation.id);
+          renderedConversationIdRef.current = conversation.id;
+        },
+      );
+      if (adopted) localTailBlockedRef.current = false;
+      return adopted;
+    },
+    [
+      tailAdoption,
+      messageHistory.scope,
+      isHistoryScopeCurrent,
+      isCurrentConversation,
+      setMessages,
+    ],
+  );
+  const clearConversationView = useCallback(
+    () =>
+      tailAdoption.adopt(
+        messageHistory.scope,
+        [],
+        () => isHistoryScopeCurrent(messageHistory.scope),
+        () => {
+          setMessages([]);
+          setMessageScope(null);
+          renderedConversationIdRef.current = null;
+          localTailBlockedRef.current = false;
+        },
+      ),
+    [tailAdoption, messageHistory.scope, isHistoryScopeCurrent, setMessages],
+  );
+  const flushSavedTail = useCallback(() => {
+    const pending = pendingSavedTailRef.current;
+    if (!pending || !adoptionLifetimeRef.current) return;
+    const discard = () => {
+      if (pendingSavedTailRef.current === pending)
+        pendingSavedTailRef.current = null;
+    };
+    if (
+      !isHistoryScopeCurrent(pending.scope) ||
+      pending.revision !== localSendRevisionRef.current
+    ) {
+      discard();
+      return;
+    }
+    // This getter can lag behind the owner's latest snapshot until commit.
+    // A missing/stale rendered tail is not evidence that task authority expired.
+    const fresh = getCurrentConversation();
+    if (!fresh || !isCurrentConversation(fresh)) return;
+    if (
+      fresh.activeTask?.id !== pending.taskId &&
+      fresh.latestTask?.id !== pending.taskId
+    ) {
+      discard();
+      return;
+    }
+    if (adoptConversation(fresh)) discard();
+  }, [
+    getCurrentConversation,
+    isCurrentConversation,
+    isHistoryScopeCurrent,
+    adoptConversation,
+  ]);
+  useLayoutEffect(() => {
+    flushSavedTailRef.current = flushSavedTail;
+    flushSavedTail();
+  }, [flushSavedTail, currentConversation, isLoading, stopInFlight]);
+  const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
+  // A server-named live turn may be promoted from Home before selected detail
+  // finishes loading. Otherwise an old SDK view must not render in a new route.
+  const sdkOwnsView =
+    messageScope === currentId ||
+    data.some(
+      (event) =>
+        event.type === 'conversation' && event.conversation_id === currentId,
+    );
+  const displayedMessages = useMemo(
+    () =>
+      sdkOwnsView
+        ? projectDisplayedHistory(
+            messageHistory.messages ?? [],
+            messages,
+            adoptedTail.scope === messageHistory.scope
+              ? adoptedTail.oldest
+              : null,
+          )
+        : [],
+    [
+      messageHistory.messages,
+      messageHistory.scope,
+      messages,
+      adoptedTail,
+      sdkOwnsView,
+    ],
+  );
+  useEffect(() => {
+    const scope = messageHistory.scope;
+    const refresh = () => {
+      if (
+        isOnline &&
+        currentId &&
+        document.visibilityState === 'visible' &&
+        isHistoryScopeCurrent(scope)
+      )
+        void refreshMessageHistory();
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [
+    isOnline,
+    currentId,
+    messageHistory.scope,
+    isHistoryScopeCurrent,
+    refreshMessageHistory,
+  ]);
   // Leaving the conversation whose durable task this client is streaming
   // detaches from it (the task runs on server-side, and its own page follows
   // it); it never cancels it, and the newly opened conversation loads and
@@ -825,12 +1019,17 @@ function ChatContent() {
   // Until a conversation's server state has loaded, it may have a running
   // task: sending then would only meet conversation_busy.
   const conversationLoading =
-    Boolean(currentId) && currentConversation?.id !== currentId;
+    (Boolean(currentId) && currentConversation?.id !== currentId) ||
+    !sdkOwnsView;
   useActiveTaskFollower({
     conversation: followedConversation,
     isStreaming: isLoading,
     refresh: refreshCurrentConversation,
-    onUpdate: (conversation) => setMessages(conversation.messages),
+    scope: messageHistory.scope,
+    isCurrent: isCurrentConversation,
+    onUpdate: (conversation) => {
+      adoptConversation(conversation);
+    },
   });
   // Whenever a conversation's server state is seen (opened, refreshed or
   // followed), settle submissions whose task it shows has finished: retyping
@@ -838,6 +1037,7 @@ function ChatContent() {
   // while another conversation was open, and survives reloads.
   useEffect(() => {
     if (!currentConversation) return;
+    const scope = messageHistory.scope;
     for (const key of finishedSubmissionKeys(currentConversation, (status) =>
       TERMINAL_TASK_STATUSES.has(status),
     )) {
@@ -855,15 +1055,28 @@ function ChatContent() {
       .filter(({ taskId }) => !shown.has(taskId))
       .slice(0, 5)) {
       void taskStatus(taskId).then((status) => {
-        if (status && TERMINAL_TASK_STATUSES.has(status)) {
+        if (
+          isHistoryScopeCurrent(scope) &&
+          status &&
+          TERMINAL_TASK_STATUSES.has(status)
+        ) {
           finishSubmission(key);
         }
       });
     }
-  }, [currentConversation, taskStatus]);
+  }, [
+    currentConversation,
+    taskStatus,
+    messageHistory.scope,
+    isHistoryScopeCurrent,
+  ]);
 
   useEffect(() => {
+    let generation = getAuthGeneration();
     return subscribeAuthGeneration(() => {
+      const next = getAuthGeneration();
+      if (next === generation) return;
+      generation = next;
       if (!suggestionSubmissionRef.current) return;
       suggestionSubmissionRef.current = null;
       setSuggestionStopScope(null);
@@ -872,12 +1085,15 @@ function ChatContent() {
       setIsSubmittingSuggestion(false);
     });
   }, [stopChat, setMessages]);
-  const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
   const inferenceOverlapRisk =
     messages.some(hasUnresolvedInference) ||
     (currentConversation?.messages.some(hasUnresolvedInference) ?? false) ||
     Boolean(error?.message.includes(INFERENCE_INTERRUPTED_NOTICE));
   const reload = () => {
+    if (!sdkOwnsView) {
+      showError('This conversation is still loading. Try again in a moment.');
+      return;
+    }
     if (inferenceOverlapRisk) {
       showError(
         `${INFERENCE_INTERRUPTED_NOTICE} ${INFERENCE_NEW_REQUEST_WARNING}`,
@@ -950,14 +1166,15 @@ function ChatContent() {
 
     if (!currentId) {
       if (renderedConversationIdRef.current !== null) {
-        renderedConversationIdRef.current = null;
-        setMessages([]);
-        queueMicrotask(() => setMessageScope(null));
+        clearConversationView();
       }
       return;
     }
 
-    if (currentConversation?.id !== currentId) {
+    if (
+      currentConversation?.id !== currentId ||
+      !isCurrentConversation(currentConversation)
+    ) {
       return;
     }
 
@@ -966,17 +1183,126 @@ function ChatContent() {
       conversationChanged ||
       (messages.length === 0 && currentConversation.messages.length > 0)
     ) {
-      renderedConversationIdRef.current = currentId;
-      setMessages(currentConversation.messages);
-      queueMicrotask(() => setMessageScope(currentId));
+      if (!adoptConversation(currentConversation)) return;
     }
   }, [
+    currentConversation,
     currentConversation?.id,
     currentConversation?.messages,
     currentId,
     isLoading,
+    isCurrentConversation,
+    adoptConversation,
+    clearConversationView,
     messages.length,
     setMessages,
+  ]);
+
+  // Ordinary idle polling may adopt a fresh bounded tail only when this view
+  // has no unresolved local turn. A just-finished local send must first read a
+  // NEW saved tail; its pre-send or mid-stream snapshot is not completion proof.
+  useEffect(() => {
+    if (
+      isLoading ||
+      stopInFlight ||
+      error ||
+      !currentConversation ||
+      localTailBlockedRef.current
+    )
+      return;
+    const key = activeSubmissionKeyRef.current;
+    if (
+      activeSubmissionScopeRef.current === currentId &&
+      key &&
+      (pendingSubmission(key) || heldSubmission(key))
+    )
+      return;
+    if (
+      composerSendInFlightRef.current ||
+      suggestionSubmissionRef.current?.pending
+    )
+      return;
+    if (
+      unresolvedSubmissions().some(
+        ({ entry }) => entry.scope === (currentId ?? null),
+      ) ||
+      latestHeldSubmission(currentId ?? null)
+    )
+      return;
+    if (isCurrentConversation(currentConversation))
+      adoptConversation(currentConversation);
+  }, [
+    currentConversation,
+    currentId,
+    isLoading,
+    stopInFlight,
+    error,
+    isCurrentConversation,
+    adoptConversation,
+  ]);
+
+  useEffect(() => {
+    if (isLoading || stopInFlight || error || !localTailBlockedRef.current)
+      return;
+    const key = activeSubmissionKeyRef.current;
+    if (
+      activeSubmissionScopeRef.current === currentId &&
+      key &&
+      (pendingSubmission(key) || heldSubmission(key))
+    )
+      return;
+    if (
+      composerSendInFlightRef.current ||
+      suggestionSubmissionRef.current?.pending
+    )
+      return;
+    if (
+      unresolvedSubmissions().some(
+        ({ entry }) => entry.scope === (currentId ?? null),
+      ) ||
+      latestHeldSubmission(currentId ?? null)
+    )
+      return;
+    let cancelled = false;
+    const revision = localSendRevisionRef.current;
+    const scope = messageHistory.scope;
+    void refreshCurrentConversation().then((fresh) => {
+      if (
+        cancelled ||
+        !fresh ||
+        localBusyRef.current ||
+        revision !== localSendRevisionRef.current ||
+        !isHistoryScopeCurrent(scope)
+      )
+        return;
+      const pending = activeSubmissionKeyRef.current;
+      if (
+        activeSubmissionScopeRef.current === currentId &&
+        pending &&
+        (pendingSubmission(pending) || heldSubmission(pending))
+      )
+        return;
+      if (
+        unresolvedSubmissions().some(
+          ({ entry }) => entry.scope === (currentId ?? null),
+        ) ||
+        latestHeldSubmission(currentId ?? null)
+      )
+        return;
+      adoptConversation(fresh);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isLoading,
+    stopInFlight,
+    error,
+    currentId,
+    messageHistory.scope,
+    refreshCurrentConversation,
+    isHistoryScopeCurrent,
+    adoptConversation,
   ]);
 
   const attachmentItems = useMemo(
@@ -1217,6 +1543,7 @@ function ChatContent() {
       setConnectionStatus('disconnected');
     } finally {
       composerSendInFlightRef.current = false;
+      flushSavedTailRef.current();
       for (const refused of deferredRestoresRef.current.splice(0)) {
         void returnRejectedRef.current?.(refused);
       }
@@ -1241,7 +1568,14 @@ function ChatContent() {
   });
 
   const inputIsBusy =
-    (isLoading && messages.length > 0) || serverTaskBusy || stopInFlight;
+    sdkOwnsView &&
+    ((isLoading && messages.length > 0) || serverTaskBusy || stopInFlight);
+  const historyPagingUnavailable =
+    messageHistory.loadingOlder ||
+    messageHistory.syncing ||
+    (!messageHistory.hasOlder &&
+      !messageHistory.error &&
+      !messageHistory.incomplete);
   // Durable tasks survive a disconnect, so Stop cancels the task explicitly;
   // closing the app only detaches. The outcome comes from the server and is
   // never assumed: a missing task id is not proof that nothing was accepted.
@@ -1259,8 +1593,19 @@ function ChatContent() {
   // result, a terminal notice, or the still-running task, which the
   // follower then tracks and which keeps the input busy until it ends.
   const reconcileWithServer = useCallback(
-    (key: string | null = activeSubmissionKeyRef.current) =>
-      reconcileSubmission(key, {
+    (key: string | null = activeSubmissionKeyRef.current) => {
+      const scope = messageHistory.scope;
+      const generation = getAuthGeneration();
+      const revision = localSendRevisionRef.current;
+      const lifetime = adoptionLifetimeRef.current;
+      const current = () =>
+        lifetime !== null &&
+        adoptionLifetimeRef.current === lifetime &&
+        generation === getAuthGeneration() &&
+        isHistoryScopeCurrent(scope) &&
+        revision === localSendRevisionRef.current;
+      return reconcileSubmission(key, {
+        isCurrent: current,
         currentId: () => currentIdRef.current,
         taskForKey,
         settle: finishSubmission,
@@ -1269,6 +1614,7 @@ function ChatContent() {
         // sending it again reuses its key (safe even if it lands late).
         notFound: (key) => {
           void heldSubmissionsReady().then(() => {
+            if (!current()) return;
             if (dropIncompleteHeld(key)) return;
             if (restoreHeldSubmission(key)) {
               showError(
@@ -1292,17 +1638,23 @@ function ChatContent() {
         showSaved: async (taskId) => {
           const fresh = await refreshCurrentConversation();
           if (
+            current() &&
             fresh &&
+            isCurrentConversation(fresh) &&
             (fresh.activeTask?.id === taskId || fresh.latestTask?.id === taskId)
           ) {
-            setMessages(fresh.messages);
+            pendingSavedTailRef.current = { taskId, scope, revision };
+            flushSavedTailRef.current();
           }
         },
-      }),
+      });
+    },
     [
       dropIncompleteHeld,
       refreshCurrentConversation,
-      setMessages,
+      isCurrentConversation,
+      messageHistory.scope,
+      isHistoryScopeCurrent,
       showError,
       switchConversation,
       taskForKey,
@@ -1494,27 +1846,35 @@ function ChatContent() {
     if (!confirmation) return;
     const seq = ++stopSeqRef.current;
     setStoppingIn(scope);
+    const historyScope = messageHistory.scope;
     const outcome = confirmation.then((result) => {
-      if (result !== 'unconfirmed' && key) finishSubmission(key);
       if (seq === stopSeqRef.current) setStoppingIn(undefined);
       if (pendingStopRef.current?.outcome === outcome) {
         pendingStopRef.current = null;
       }
+      if (!isHistoryScopeCurrent(historyScope)) return 'unconfirmed' as const;
+      if (result !== 'unconfirmed' && key) finishSubmission(key);
       void reconcileWithServer(key);
       return result;
     });
     pendingStopRef.current = { scope, outcome };
     return outcome;
-  }, [cancelActiveTask, reconcileWithServer]);
+  }, [
+    cancelActiveTask,
+    reconcileWithServer,
+    messageHistory.scope,
+    isHistoryScopeCurrent,
+  ]);
   const handleStopResolved = useCallback(
     (outcome: StopOutcome) => {
+      if (!isHistoryScopeCurrent(messageHistory.scope)) return;
       if (outcome === 'unconfirmed') {
         showError(
           'Stop could not be confirmed. The request may still be running; its result will appear here.',
         );
       }
     },
-    [showError],
+    [showError, messageHistory.scope, isHistoryScopeCurrent],
   );
   const {
     stoppedMessageIds,
@@ -1539,7 +1899,7 @@ function ChatContent() {
   });
 
   const persistedMessagesById = useMemo(() => {
-    const entries = (currentConversation?.messages || []).reduce<
+    const entries = (messageHistory.messages || []).reduce<
       Array<[string, ReasoningMessage]>
     >((acc, message) => {
       if (message.id) {
@@ -1548,10 +1908,10 @@ function ChatContent() {
       return acc;
     }, []);
     return new Map<string, ReasoningMessage>(entries);
-  }, [currentConversation?.messages]);
+  }, [messageHistory.messages]);
 
   const persistedToolEventsByMessageId = useMemo(() => {
-    const entries = (currentConversation?.messages || []).reduce<
+    const entries = (messageHistory.messages || []).reduce<
       Array<[string, ChatEvent[]]>
     >((acc, message) => {
       if (message.id) {
@@ -1560,7 +1920,7 @@ function ChatContent() {
       return acc;
     }, []);
     return new Map<string, ChatEvent[]>(entries);
-  }, [currentConversation?.messages]);
+  }, [messageHistory.messages]);
 
   const prevLoadingRef = useRef(isLoading);
 
@@ -1582,9 +1942,10 @@ function ChatContent() {
     isScrolledUp,
     onScroll,
     jumpToLatest,
+    preservePrepend,
   } = useChatScroll({
     conversationId: currentId,
-    messages,
+    messages: displayedMessages,
     isLoading,
     authGeneration,
   });
@@ -1752,11 +2113,7 @@ function ChatContent() {
 
   useEffect(() => {
     if (flattenedData.length === 0) return;
-    if (
-      chatRequestGenerationRef.current !== null &&
-      chatRequestGenerationRef.current !== getAuthGeneration()
-    )
-      return;
+    if (chatRequestGenerationRef.current !== getAuthGeneration()) return;
     const conversationEvent = flattenedData.find(isConversationDataEvent);
     if (!conversationEvent) {
       if (currentId) {
@@ -1849,19 +2206,22 @@ function ChatContent() {
       ? normalizeChatEvents(getDaemonDataEvents([latestMessage]))
       : [];
 
-  const currentMessagesMatch = messageScope === currentId;
+  const currentMessagesMatch = sdkOwnsView;
   const detailTurns: DetailTurn[] = (
-    currentMessagesMatch ? messages : []
-  ).flatMap((message, index) => {
+    currentMessagesMatch ? displayedMessages : []
+  ).flatMap((message) => {
     if (message.role !== 'assistant') return [];
-    const live = getEventsForMessage(message.id, index === messages.length - 1);
+    const live = getEventsForMessage(
+      message.id,
+      message.id === messages.at(-1)?.id,
+    );
     return [
       {
         id: message.id,
         events: live.length
           ? live
           : persistedToolEventsByMessageId.get(message.id) || [],
-        running: isLoading && index === messages.length - 1,
+        running: isLoading && message.id === messages.at(-1)?.id,
         stopped: stoppedMessageIds.has(message.id),
       },
     ];
@@ -1971,8 +2331,10 @@ function ChatContent() {
         input={input}
         onInputChange={handleInputChange}
         onSubmit={handleSubmit}
-        isLoading={inputIsBusy || isSubmittingSuggestion}
-        onStop={handleStopGeneration}
+        isLoading={sdkOwnsView && (inputIsBusy || isSubmittingSuggestion)}
+        onStop={() => {
+          if (sdkOwnsView) handleStopGeneration();
+        }}
         attachments={attachmentItems}
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
@@ -2013,6 +2375,7 @@ function ChatContent() {
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           search={conversationSearch}
+          paging={conversationPaging}
           isLoading={!isLoaded}
           activeSection="home"
           onNavigate={handleSidebarNavigate}
@@ -2076,8 +2439,9 @@ function ChatContent() {
               aria-label="Conversation messages"
               className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
             >
-              {messages.length === 0 &&
-              isLoading &&
+              {((conversationLoading && !sdkOwnsView) ||
+                (messages.length === 0 &&
+                  (isLoading || conversationLoading))) &&
               !conversationLoadFailure ? (
                 <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
                   {/* Assistant message skeleton - left aligned */}
@@ -2151,7 +2515,7 @@ function ChatContent() {
                     </button>
                   </div>
                 </div>
-              ) : messages.length === 0 ? (
+              ) : displayedMessages.length === 0 ? (
                 <div className="h-full px-4 py-6">
                   <WelcomeScreen
                     input={input}
@@ -2162,9 +2526,57 @@ function ChatContent() {
                 </div>
               ) : (
                 <div className="mx-auto w-full max-w-3xl px-4 py-6">
-                  {messages.map((message, index) => {
+                  {currentId && (
+                    <div
+                      className="mb-4 space-y-2"
+                      aria-busy={
+                        messageHistory.loadingOlder || messageHistory.syncing
+                      }
+                    >
+                      <p
+                        role="status"
+                        aria-live="polite"
+                        className="text-sm text-[var(--color-text-muted)]"
+                      >
+                        {messageHistory.error
+                          ? 'History could not be fully refreshed. Loaded messages are retained.'
+                          : messageHistory.syncing
+                            ? 'Syncing loaded history…'
+                            : messageHistory.incomplete
+                              ? 'Loaded history still needs reconciliation.'
+                              : messageHistory.hasOlder
+                                ? 'Earlier messages are not loaded yet.'
+                                : 'No earlier messages in the last successful history read.'}
+                      </p>
+                      <button
+                        type="button"
+                        aria-disabled={historyPagingUnavailable}
+                        className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 aria-disabled:opacity-60"
+                        onClick={() => {
+                          if (historyPagingUnavailable) return;
+                          preservePrepend();
+                          if (
+                            messageHistory.incomplete ||
+                            (messageHistory.error &&
+                              messageHistory.retryKind !== 'older')
+                          )
+                            void refreshMessageHistory();
+                          else void loadOlderMessages();
+                        }}
+                      >
+                        {messageHistory.loadingOlder
+                          ? 'Loading earlier messages…'
+                          : messageHistory.error || messageHistory.incomplete
+                            ? 'Retry history'
+                            : messageHistory.hasOlder
+                              ? 'Load older messages'
+                              : 'No earlier messages'}
+                      </button>
+                    </div>
+                  )}
+                  {displayedMessages.map((message, index) => {
                     if (message.role === 'system') return null;
-                    const isLast = index === messages.length - 1;
+                    const isLast = message.id === messages.at(-1)?.id;
                     const liveEvents = getEventsForMessage(message.id, isLast);
                     const persistedToolEvents =
                       persistedToolEventsByMessageId.get(message.id) || [];
@@ -2236,10 +2648,10 @@ function ChatContent() {
                       <CollapsibleMessage
                         key={message.id}
                         messageId={message.id}
-                        title={`${message.role === 'user' ? 'You' : 'Daemon'} · message ${index + 1}`}
+                        title={`${message.role === 'user' ? 'You' : 'Daemon'} · loaded message ${index + 1}`}
                         preview={formattedMessageContent}
                         collapsible={
-                          index < messages.length - 5 &&
+                          index < displayedMessages.length - 5 &&
                           formattedMessageContent.length > COLLAPSE_MIN_CHARS
                         }
                         childrenClassName={
@@ -2514,9 +2926,9 @@ function ChatContentWrapper() {
 /**
  * Non-remounting playback scope.
  *
- * Conversation and auth generation are passed down as props instead of a key so
- * ChatContent (streaming state, drafts) stays mounted while a committed scope
- * change synchronously cancels read-aloud work inside the provider.
+ * Conversation changes keep ChatContent mounted, including normal promotion of
+ * a new live chat to its persisted ID. A genuine auth-generation change remounts
+ * its children so old SDK messages cannot render or be submitted in a new account.
  */
 function AudioPlaybackScopedProvider({
   children,
@@ -2530,7 +2942,9 @@ function AudioPlaybackScopedProvider({
     [authGeneration, currentId],
   );
   return (
-    <AudioPlaybackProvider scope={scope}>{children}</AudioPlaybackProvider>
+    <AudioPlaybackProvider scope={scope}>
+      <Fragment key={authGeneration}>{children}</Fragment>
+    </AudioPlaybackProvider>
   );
 }
 

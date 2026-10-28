@@ -52,6 +52,22 @@ export interface ConversationHistoryContextValue {
   conversationSearch: ReturnType<
     typeof useConversationHistory
   >['conversationSearch'];
+  conversationPaging: ReturnType<
+    typeof useConversationHistory
+  >['conversationPaging'];
+  messageHistory: ReturnType<typeof useConversationHistory>['messageHistory'];
+  loadOlderMessages: ReturnType<
+    typeof useConversationHistory
+  >['loadOlderMessages'];
+  refreshMessageHistory: ReturnType<
+    typeof useConversationHistory
+  >['refreshMessageHistory'];
+  isCurrentConversation: ReturnType<
+    typeof useConversationHistory
+  >['isCurrentConversation'];
+  isHistoryScopeCurrent: ReturnType<
+    typeof useConversationHistory
+  >['isHistoryScopeCurrent'];
   refreshConversations: ReturnType<
     typeof useConversationHistory
   >['refreshConversations'];

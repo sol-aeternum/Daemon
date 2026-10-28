@@ -4,11 +4,23 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { useConversationHistory } from '../hooks/useConversationHistory';
 
 const state = vi.hoisted(() => ({ search: '' }));
+const ids = {
+  'conv-a': '00000000-0000-0000-0000-000000000001',
+  'conv-b': '00000000-0000-0000-0000-000000000002',
+};
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(state.search),
+  useSearchParams: () => {
+    const params = new URLSearchParams(state.search);
+    const selected = params.get('id');
+    if (selected === 'conv-a' || selected === 'conv-b')
+      params.set('id', ids[selected]);
+    return params;
+  },
 }));
 vi.mock('../lib/auth', () => ({
+  getAuthGeneration: () => 0,
+  subscribeAuthGeneration: () => () => {},
   getAuthHeader: () => 'Bearer test-history',
   refreshIfNeeded: vi.fn(),
 }));
@@ -24,13 +36,44 @@ function deferred() {
 function conversation(id: string): Response {
   return new Response(
     JSON.stringify({
-      id,
+      id: ids[id as keyof typeof ids],
+      user_id: '00000000-0000-0000-0000-000000000099',
       title: id,
       messages: [],
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
+      last_activity_at: '2026-01-01T00:00:00Z',
+      pinned: false,
+      message_page: {
+        has_more: false,
+        next_cursor: null,
+        start_cursor: null,
+        end_cursor: null,
+      },
       status: 'active',
       metadata: {},
+    }),
+  );
+}
+
+function selectedName(input: RequestInfo | URL): string | undefined {
+  const path = new URL(String(input), 'http://test').pathname;
+  return Object.entries(ids).find(
+    ([, id]) => path === `/conversations/${id}`,
+  )?.[0];
+}
+
+function emptyList(): Response {
+  return new Response(
+    JSON.stringify({
+      conversations: [],
+      total: 0,
+      page: {
+        has_more: false,
+        next_cursor: null,
+        start_cursor: null,
+        end_cursor: null,
+      },
     }),
   );
 }
@@ -39,7 +82,7 @@ function OpenConversation() {
   const history = useConversationHistory();
   return (
     <>
-      <p>open:{history.getCurrentConversation()?.id ?? 'none'}</p>
+      <p>open:{history.getCurrentConversation()?.title ?? 'none'}</p>
       <p>failure:{history.conversationLoadFailure ?? 'none'}</p>
     </>
   );
@@ -56,15 +99,12 @@ it('ignores an older conversation fetch that finishes after the current one', as
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      const match = /\/conversations\/(conv-[ab])$/.exec(url);
-      if (!match) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ conversations: [] })),
-        );
+      const name = selectedName(input);
+      if (!name) {
+        return Promise.resolve(emptyList());
       }
       const request = deferred();
-      pending.set(match[1], request);
+      pending.set(name, request);
       return request.promise;
     }),
   );
@@ -88,11 +128,8 @@ it('retries a conversation that failed to load', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (!url.endsWith('/conversations/conv-a')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ conversations: [] })),
-        );
+      if (selectedName(input) !== 'conv-a') {
+        return Promise.resolve(emptyList());
       }
       calls += 1;
       return Promise.resolve(
@@ -116,10 +153,8 @@ it('stops transient retries at the cap with an actionable failure state', async 
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
-        if (!String(input).endsWith('/conversations/conv-a')) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ conversations: [] })),
-          );
+        if (selectedName(input) !== 'conv-a') {
+          return Promise.resolve(emptyList());
         }
         calls += 1;
         return Promise.resolve(
@@ -153,13 +188,11 @@ it.each([403, 404])(
       vi.stubGlobal(
         'fetch',
         vi.fn((input: RequestInfo | URL) => {
-          if (String(input).endsWith('/conversations/conv-a')) {
+          if (selectedName(input) === 'conv-a') {
             calls++;
             return Promise.resolve(new Response('unavailable', { status }));
           }
-          return Promise.resolve(
-            new Response(JSON.stringify({ conversations: [] })),
-          );
+          return Promise.resolve(emptyList());
         }),
       );
       state.search = 'id=conv-a';
@@ -180,10 +213,8 @@ it('drops a permanent selected-load failure across Home and a fresh A lookup', a
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
-      if (!String(input).endsWith('/conversations/conv-a')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ conversations: [] })),
-        );
+      if (selectedName(input) !== 'conv-a') {
+        return Promise.resolve(emptyList());
       }
       calls++;
       return calls === 1

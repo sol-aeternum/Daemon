@@ -45,6 +45,40 @@ function deps(
 }
 
 describe('reconcileSubmission', () => {
+  it('discards a returned task after the caller epoch changes, even for A-B-A', async () => {
+    let current = true;
+    const d = deps(
+      { id: 'task', conversationId: 'conv-a', status: 'completed' },
+      ['conv-a'],
+    );
+    d.taskForKey.mockImplementation(async () => {
+      current = false;
+      return { id: 'task', conversationId: 'conv-a', status: 'completed' };
+    });
+    await reconcileSubmission('key', { ...d, isCurrent: () => current });
+    expect(d.settle).not.toHaveBeenCalled();
+    expect(d.showSaved).not.toHaveBeenCalled();
+    expect(d.open).not.toHaveBeenCalled();
+  });
+
+  it('does not issue a retry lookup after its delay outlives the selected scope', async () => {
+    vi.useFakeTimers();
+    try {
+      let current = true;
+      const d = deps(null, ['conv-a']);
+      const pending = reconcileSubmission('key', {
+        ...d,
+        isCurrent: () => current,
+        lookupDelaysMs: [10],
+      });
+      current = false;
+      await vi.advanceTimersByTimeAsync(11);
+      await pending;
+      expect(d.taskForKey).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('settles the key of a task that already finished', async () => {
     for (const status of [
       'completed',

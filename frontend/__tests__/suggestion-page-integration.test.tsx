@@ -23,8 +23,23 @@ const state = vi.hoisted(() => ({
   send: vi.fn(),
   stop: vi.fn(),
   replace: vi.fn(),
+  isCurrentConversation: () => true,
+  isHistoryScopeCurrent: () => true,
+  refreshHistory: vi.fn(),
+  emptyConversation: {
+    id: 'existing-empty-chat',
+    title: 'New conversation',
+    messages: [] as DaemonMessage[],
+    createdAt: '',
+    updatedAt: '',
+    pinned: false,
+    title_locked: false,
+    status: 'active',
+    metadata: {},
+  },
   currentId: null as string | null,
   setMessages: null as null | ((messages: DaemonMessage[]) => void),
+  messages: [] as DaemonMessage[],
   transport: null as ChatTransport<DaemonMessage> | null,
   stopView: null as {
     conversationId: string | null;
@@ -50,6 +65,7 @@ vi.mock('@ai-sdk/react', async () => {
       state.transport = options.transport;
       const [messages, setMessages] = useState<DaemonMessage[]>([]);
       state.setMessages = setMessages;
+      state.messages = messages;
       return {
         messages,
         setMessages,
@@ -81,7 +97,14 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
   useConversationHistoryContext: () => ({
     currentId: state.currentId,
     conversations: [],
-    getCurrentConversation: () => undefined,
+    getCurrentConversation: () =>
+      state.currentId === 'existing-empty-chat'
+        ? state.emptyConversation
+        : undefined,
+    messageHistory: { scope: 'test-scope' },
+    isCurrentConversation: state.isCurrentConversation,
+    isHistoryScopeCurrent: state.isHistoryScopeCurrent,
+    refreshMessageHistory: state.refreshHistory,
     createConversation: vi.fn(),
     updateConversation: vi.fn(),
     setConversationModel: vi.fn(),
@@ -188,6 +211,39 @@ afterEach(() => {
 });
 
 describe('page suggestion activation and draft isolation', () => {
+  it('does not cancel a live suggestion for a same-generation readiness notification', () => {
+    const listeners = new Set<() => void>();
+    const subscribe = vi
+      .spyOn(auth, 'subscribeAuthGeneration')
+      .mockImplementation((callback) => {
+        listeners.add(callback);
+        return () => {
+          listeners.delete(callback);
+        };
+      });
+    try {
+      render(<ChatPage />);
+      fireEvent.click(screen.getByRole('button', { name: 'Plan the release' }));
+      act(() =>
+        state.setMessages?.([
+          {
+            id: 'live',
+            role: 'assistant',
+            parts: [{ type: 'text', text: 'Synthetic live partial' }],
+          },
+        ]),
+      );
+      const generation = auth.getAuthGeneration();
+      act(() => {
+        for (const listener of listeners) listener();
+      });
+      expect(auth.getAuthGeneration()).toBe(generation);
+      expect(state.stop).not.toHaveBeenCalled();
+      expect(state.messages.map((message) => message.id)).toEqual(['live']);
+    } finally {
+      subscribe.mockRestore();
+    }
+  });
   it.each(
     [null, 'existing-empty-chat'].flatMap((origin) =>
       ['before-assignment', 'after-assignment-before-route', 'after-route'].map(

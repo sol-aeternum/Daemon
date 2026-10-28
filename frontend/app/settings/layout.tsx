@@ -23,6 +23,7 @@ function SettingsSidebar() {
     searchQuery,
     setSearchQuery,
     conversationSearch,
+    conversationPaging,
   } = useConversationHistory();
 
   const handleSidebarNavigate = (section: SidebarSection) => {
@@ -46,6 +47,7 @@ function SettingsSidebar() {
       searchQuery={searchQuery}
       setSearchQuery={setSearchQuery}
       search={conversationSearch}
+      paging={conversationPaging}
       isLoading={!isLoaded}
       onNavigate={handleSidebarNavigate}
       onGoHome={() => handleSidebarNavigate('home')}

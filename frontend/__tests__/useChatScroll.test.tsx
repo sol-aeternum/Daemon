@@ -25,6 +25,7 @@ function Harness({
     isScrolledUp,
     onScroll,
     jumpToLatest,
+    preservePrepend,
   } = useChatScroll({ conversationId, messages: items, isLoading: loading });
   useLayoutEffect(() => {
     const container = scrollContainerRef.current!;
@@ -38,11 +39,17 @@ function Harness({
     <>
       <main data-testid="scroll" ref={scrollContainerRef} onScroll={onScroll}>
         <div>
+          {items.map((id) => (
+            <article key={id} data-message-id={id}>
+              {id}
+            </article>
+          ))}
           <div ref={messagesEndRef} />
         </div>
       </main>
       <span>{isScrolledUp ? 'Reading history' : 'Following'}</span>
       <button onClick={jumpToLatest}>Jump</button>
+      <button onClick={preservePrepend}>Older</button>
     </>
   );
 }
@@ -61,9 +68,70 @@ beforeEach(() => {
     },
   );
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe('useChatScroll', () => {
+  it('preserves a real message anchor through prepend and delayed media without bottom-follow', () => {
+    let offsets: Record<string, number> = { one: 300, two: 600, three: 900 };
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: HTMLElement) {
+        const top = this.dataset.messageId
+          ? offsets[this.dataset.messageId] -
+            screen.getByTestId('scroll').scrollTop
+          : 0;
+        return { top, bottom: top + 200, height: 200 } as DOMRect;
+      },
+    );
+    const view = render(<Harness items={['one', 'two', 'three']} />);
+    const container = screen.getByTestId('scroll');
+    container.scrollTop = 400;
+    fireEvent.scroll(container);
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+    scrollTo.mockClear();
+    offsets = { older: 100, one: 600, two: 900, three: 1200 };
+    contentHeight = 2300;
+    view.rerender(<Harness items={['older', 'one', 'two', 'three']} />);
+    expect(container.scrollTop).toBe(700);
+    offsets = { older: 100, one: 750, two: 1050, three: 1350 };
+    contentHeight = 2450;
+    act(() => resize());
+    expect(container.scrollTop).toBe(850);
+    expect(scrollTo).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Jump' }));
+    expect(container.scrollTop).toBe(1950);
+  });
+
+  it('uses a surviving successor if the anchor is deleted and releases on explicit user scroll', () => {
+    let offsets: Record<string, number> = { one: 300, two: 600 };
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: HTMLElement) {
+        const top = this.dataset.messageId
+          ? offsets[this.dataset.messageId] -
+            screen.getByTestId('scroll').scrollTop
+          : 0;
+        return { top, bottom: top + 200, height: 200 } as DOMRect;
+      },
+    );
+    const view = render(<Harness items={['one', 'two']} />);
+    const container = screen.getByTestId('scroll');
+    container.scrollTop = 400;
+    fireEvent.scroll(container);
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+    offsets = { older: 100, two: 900 };
+    contentHeight = 2300;
+    view.rerender(<Harness items={['older', 'two']} />);
+    expect(container.scrollTop).toBe(700);
+    fireEvent.wheel(container);
+    container.scrollTop = 200;
+    fireEvent.scroll(container);
+    offsets.two += 150;
+    contentHeight = 2450;
+    act(() => resize());
+    expect(container.scrollTop).toBe(200);
+  });
   it('follows new content and delayed media when at the bottom', () => {
     const { rerender } = render(<Harness />);
     expect(screen.getByTestId('scroll').scrollTop).toBe(1500);

@@ -119,7 +119,7 @@ async def test_conversations_list_uses_authenticated_user(authenticated_app, mon
     install_auth(monkeypatch, auth_user_id)
 
     store = AsyncMock()
-    store.list_conversations = AsyncMock(return_value=[])
+    store.list_conversations_page = AsyncMock(return_value=([], 0, False))
     authenticated_app.memory_store = store
 
     transport = ASGITransport(app=app)
@@ -127,8 +127,8 @@ async def test_conversations_list_uses_authenticated_user(authenticated_app, mon
         response = await client.get("/conversations", headers=make_auth_headers("valid-token"))
 
     assert response.status_code == 200
-    store.list_conversations.assert_called_once()
-    assert store.list_conversations.call_args.kwargs["user_id"] == auth_user_id
+    store.list_conversations_page.assert_called_once()
+    assert store.list_conversations_page.call_args.kwargs["user_id"] == auth_user_id
 
 
 @pytest.mark.asyncio

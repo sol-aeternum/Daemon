@@ -31,6 +31,7 @@ export function SidebarShell({
     searchQuery,
     setSearchQuery,
     conversationSearch,
+    conversationPaging,
     isLoaded,
   } = useConversationHistoryContext();
 
@@ -82,6 +83,7 @@ export function SidebarShell({
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           search={conversationSearch}
+          paging={conversationPaging}
           isLoading={!isLoaded}
           activeSection={section}
           onNavigate={handleNavigate}

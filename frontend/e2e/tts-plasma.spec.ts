@@ -1,4 +1,9 @@
 import { expect, test } from '@playwright/test';
+import {
+  historyFixtureConversationId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
 
 // Mirrors KDE's document-discovery hook, not the rest of the extension:
 // https://github.com/KDE/plasma-browser-integration/blob/a98771a68f4d4c49aaa578eb619bad33f4c80c83/extension/page-script.js
@@ -117,7 +122,7 @@ test.beforeEach(async ({ context }) => {
     if (p.endsWith('/entitlements'))
       return json({ plan: 'free', capabilities: ['chat'], limits: {} });
     const conversation = {
-      id: 'plasma-fixture',
+      id: historyFixtureConversationId,
       title: 'Plasma fixture',
       status: 'active',
       pinned: false,
@@ -125,15 +130,20 @@ test.beforeEach(async ({ context }) => {
       created_at: '2026-10-03T00:00:00Z',
       updated_at: '2026-10-03T00:00:00Z',
     };
-    if (p === '/conversations') return json({ conversations: [conversation] });
-    if (p === '/conversations/plasma-fixture')
-      return json({
-        ...conversation,
-        messages: [
-          { id: 'one', role: 'assistant', content: '**First** speech.' },
-          { id: 'two', role: 'assistant', content: 'Second speech.' },
-        ],
-      });
+    if (p === '/conversations') return json(historyFixtureList([conversation]));
+    if (p === `/conversations/${conversation.id}`)
+      return json(
+        historyFixtureDetail(
+          {
+            ...conversation,
+            messages: [
+              { id: 'one', role: 'assistant', content: '**First** speech.' },
+              { id: 'two', role: 'assistant', content: 'Second speech.' },
+            ],
+          },
+          url,
+        ),
+      );
     if (p === '/users/me/settings') return json({});
     if (p === '/v1/catalog')
       return json({
@@ -181,7 +191,7 @@ test('bottom player pauses, seeks and resumes one native audio without another r
     if (path === '/api/tts') requests.speech++;
     if (path === '/generated-audio/plasma.wav') requests.download++;
   });
-  await page.goto('/?id=plasma-fixture');
+  await page.goto(`/?id=${historyFixtureConversationId}`);
   await expect(page.getByRole('region', { name: 'Speech player' })).toHaveCount(
     0,
   );
@@ -269,7 +279,7 @@ test('bottom player pauses, seeks and resumes one native audio without another r
 test('native pause before the initial play promise settles retains resumable audio', async ({
   page,
 }) => {
-  await page.goto('/?id=plasma-fixture');
+  await page.goto(`/?id=${historyFixtureConversationId}`);
   await page.evaluate(() => {
     (
       window as unknown as { __plasmaSpeech: PlasmaFixtureState }
@@ -299,7 +309,7 @@ test('native pause before the initial play promise settles retains resumable aud
 test('plays with Plasma integration and cleans up on replacement, Stop and end', async ({
   page,
 }) => {
-  await page.goto('/?id=plasma-fixture');
+  await page.goto(`/?id=${historyFixtureConversationId}`);
   await page
     .getByRole('button', { name: 'Play TTS', exact: true })
     .first()
@@ -371,7 +381,7 @@ test('plays with Plasma integration and cleans up on replacement, Stop and end',
 test('Stop before the native play event cannot resurrect a detached player', async ({
   page,
 }) => {
-  await page.goto('/?id=plasma-fixture');
+  await page.goto(`/?id=${historyFixtureConversationId}`);
   await page.evaluate(() => {
     (
       window as unknown as { __plasmaSpeech: PlasmaFixtureState }

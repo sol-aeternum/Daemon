@@ -2485,6 +2485,17 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.list_conversations_page",
+      "kind": "sql_dynamic",
+      "fingerprint": "6355bc53181974ed",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "UI history page/count reader uses a shared SQL fragment; retained as an unresolved scanner candidate with no runtime guard or account-fence claim."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.list_memories",
       "kind": "sql_unresolvable",
       "fingerprint": "416412d91c00bdda",

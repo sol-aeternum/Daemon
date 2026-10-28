@@ -16,6 +16,9 @@ type UseActiveTaskFollowerOptions = {
   refresh: () => Promise<Conversation | null>;
   /** Shows the refreshed messages (partial answer, then the saved result). */
   onUpdate: (conversation: Conversation) => void;
+  /** Auth/selection epoch, independent of a reused URL or task ID. */
+  scope?: string;
+  isCurrent?: (conversation: Conversation) => boolean;
   pollMs?: number;
 };
 
@@ -31,15 +34,19 @@ export function useActiveTaskFollower({
   isStreaming,
   refresh,
   onUpdate,
+  scope,
+  isCurrent,
   pollMs = ACTIVE_TASK_POLL_MS,
 }: UseActiveTaskFollowerOptions): void {
   const activeTaskId = conversation?.activeTask?.id ?? null;
   const conversationId = conversation?.id ?? null;
   const refreshRef = useRef(refresh);
   const onUpdateRef = useRef(onUpdate);
+  const isCurrentRef = useRef(isCurrent);
   useEffect(() => {
     refreshRef.current = refresh;
     onUpdateRef.current = onUpdate;
+    isCurrentRef.current = isCurrent;
   });
 
   useEffect(() => {
@@ -50,7 +57,11 @@ export function useActiveTaskFollower({
     const tick = async () => {
       const fresh = await refreshRef.current().catch(() => null);
       if (cancelled) return;
-      if (fresh && fresh.id === conversationId) {
+      if (
+        fresh &&
+        fresh.id === conversationId &&
+        (isCurrentRef.current?.(fresh) ?? true)
+      ) {
         onUpdateRef.current(fresh);
         if (!fresh.activeTask) return; // finished: the saved state is shown
       }
@@ -62,5 +73,5 @@ export function useActiveTaskFollower({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeTaskId, conversationId, isStreaming, pollMs]);
+  }, [activeTaskId, conversationId, isStreaming, pollMs, scope]);
 }
