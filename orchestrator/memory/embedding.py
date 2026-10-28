@@ -139,10 +139,12 @@ def get_enabled_embedding_storage_models() -> tuple[str, ...]:
 
 
 def get_lexical_embedding_storage_models() -> tuple[str, ...]:
-    """Old spaces stay lexically discoverable, never compared with new vectors."""
+    """Old spaces stay lexically discoverable, never compared with new vectors.
+
+    This holds whichever route is selected: unsetting the route must not hide
+    the rows it wrote (#578).
+    """
     settings = get_settings()
-    if not get_selected_embedding_route_id():
-        return get_enabled_embedding_storage_models()
     return (
         embedding_adapter.STORAGE_MODEL,
         settings.embedding_document_model,

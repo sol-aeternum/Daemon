@@ -1,6 +1,6 @@
 {
   "scope": "reviewed SDK transformation input only; not provider or production qualification",
-  "sdk": {"distribution": "litellm", "version": "1.96.2"},
+  "sdk": {"distribution": "litellm", "version": "1.100.4"},
   "provenance": {
     "url": "https://raw.githubusercontent.com/BerriAI/litellm/60af2c601da29345ebd62df32819bff725934346/model_prices_and_context_window.json",
     "revision": "60af2c601da29345ebd62df32819bff725934346",
