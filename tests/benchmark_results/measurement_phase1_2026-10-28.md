@@ -228,6 +228,38 @@ report and aggregate evidence found no material defects. It used the disclosed
 same-family OpenAI fallback and did not inspect raw payloads or execute checks.
 These checks verify the partial report, not the missing B outcomes or billing.
 
+## Owner-authorized residual reconciliation
+
+The owner subsequently chose **one new replacement judgment** for `c5e8278d`,
+with the uncertain original call and its entire reservation preserved, plus the
+13 never-attempted B judgments and the previously approved cap diagnostic. The
+original request outcome remains unknown; this approval does not invent a status,
+usage receipt or recovered response for it. No completed question is rerun.
+
+The bounded residual lane uses `--residual-from` together with an explicit
+`--replacement-question-id`. It validates the stopped original generic arm's
+source hashes, run identity, completed prefix, original question/reference/context
+and hypothesis fields, pending next ID, and carried reservation before any call.
+It refuses nested recovery, mismatched/tampered receipts, dropped reservations,
+or a missing explicit replacement. Output must be a fresh directory; original
+artifacts are not edited. A replacement receipt is explicitly marked as new and
+linked to the failed run. This is not automatic resume, fallback or replay.
+
+Failure handling now retains only an allowlisted provider exception type and a
+numeric HTTP status from the exception cause chain. It never stores exception
+text, response contents, headers or arbitrary class names. This improves future
+classification without retroactively classifying the original failure (#595).
+Generic prompt/scoring and all reader/judge route/sampling pins are unchanged.
+
+The 14-row residual reservation is **$0.0932100**, and the cap diagnostic remains
+**$0.0491650**. Including the full old reservation, the carried-plus-planned amount
+is **$1.7019050**, below the $10 authorization. No new calls have yet run under
+this recovery plan. Targeted offline tests: **151 passed**; types: zero errors and
+warnings. Fresh scoped read-only review found no defects (disclosed same-family
+OpenAI fallback, not a diversity claim). Full managed gates passed in 472 seconds:
+backend 7,223 passed / 1,265 skipped / 14 warnings / 16 subtests; frontend 1,473
+tests; cache-browser 30. All blocking gates passed before paid recovery.
+
 After the measurement results, **stop for owner decisions** on primary metric and
 `ACCEPTANCE_RULE_PROPOSED.md`. No DB-backed Phase 2 failure triage or Phase 3 tuning
 is accepted or started by this implementation.

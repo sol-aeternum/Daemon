@@ -3,6 +3,8 @@
 One fresh output directory per run; deliberately no automatic resume or retry.
 On failure, retain the pending call and its whole-run cost reservation for operator
 reconciliation. Never use this lane as evidence of a new reader/retrieval result.
+An explicitly authorized fresh residual run can exclude verified completed receipts;
+its uncertain question requires a separately declared new replacement judgment.
 """
 
 from __future__ import annotations
@@ -118,8 +120,92 @@ def cost_reservation(rows: list[dict[str, Any]], metric: str, prior: Decimal) ->
     return reserve
 
 
-async def run(arm: str, metric: str, output: Path, prior: Decimal) -> dict[str, Any]:
+def reconcile_residual(
+    rows: list[dict[str, Any]],
+    source: dict[str, Any],
+    arm: str,
+    metric: str,
+    failed_dir: Path,
+    replacement_question_id: str,
+    prior: Decimal,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate a stopped first-run prefix without modifying or replaying receipts."""
+    manifest_path = failed_dir / "run_manifest.json"
+    results_path = failed_dir / evaluate.RESULTS_FILENAME
+    raw_manifest, raw_results = manifest_path.read_bytes(), results_path.read_bytes()
+    manifest = json.loads(raw_manifest)
+    receipts = [json.loads(line) for line in raw_results.splitlines()]
+    if (
+        metric != "generic"
+        or manifest.get("metric") != metric
+        or manifest.get("arm") != arm
+        or manifest.get("mode") != "judge_only_saved_dev_hypotheses"
+        or manifest.get("status") != "stopped_reconciliation_required"
+        or manifest.get("source") != source
+        or manifest.get("calls_planned") != len(rows)
+        or manifest.get("calls_completed") != len(receipts)
+        or manifest.get("residual") is not None
+        or not isinstance(manifest.get("run_id"), str)
+        or not manifest["run_id"]
+    ):
+        raise ValueError("Failed run does not match a stopped original generic dev arm")
+    held = Decimal(manifest["cost"]["cumulative_reserved_usd"])
+    if not held.is_finite() or held <= 0 or not prior.is_finite() or prior < held:
+        raise ValueError("Retain at least the failed run's cumulative reservation")
+    if not 0 <= len(receipts) < len(rows):
+        raise ValueError("No bounded residual remains")
+    fields = (
+        "question_id",
+        "question",
+        "reference",
+        "hypothesis",
+        "category",
+        "question_type",
+        "memory_context_sha256",
+        "system_prompt_sha256",
+    )
+    for receipt, original in zip(receipts, rows, strict=False):
+        if (
+            any(receipt.get(key) != original[key] for key in fields)
+            or receipt.get("original_judgment") != original["judgment"]
+            or receipt.get("judgment") not in {"correct", "partially_correct", "incorrect"}
+            or receipt.get("run_id") != manifest["run_id"]
+        ):
+            raise ValueError("Completed receipts are not the verified original dev prefix")
+    pending = rows[len(receipts)]["question_id"]
+    if manifest.get("pending_question_id") != pending or replacement_question_id != pending:
+        raise ValueError("Explicit new replacement must match the uncertain next question")
+    remaining = rows[len(receipts) :]
+    return remaining, {
+        "original_run_id": manifest["run_id"],
+        "failed_manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+        "failed_results_sha256": hashlib.sha256(raw_results).hexdigest(),
+        "verified_completed_question_ids": [r["question_id"] for r in receipts],
+        "remaining_question_ids": [r["question_id"] for r in remaining],
+        "uncertain_original_question_id": pending,
+        "original_request_outcome": "unknown; original whole-run reservation retained",
+        "new_replacement_explicitly_authorized": True,
+        "note": "Fresh residual measurement, not resume/replay of the original batch",
+    }
+
+
+async def run(
+    arm: str,
+    metric: str,
+    output: Path,
+    prior: Decimal,
+    *,
+    residual_from: Path | None = None,
+    replacement_question_id: str | None = None,
+) -> dict[str, Any]:
     rows, source = load_inputs(arm)
+    residual = None
+    if (residual_from is None) != (replacement_question_id is None):
+        raise ValueError("Residual source and explicit replacement must be supplied together")
+    if residual_from is not None and replacement_question_id is not None:
+        rows, residual = reconcile_residual(
+            rows, source, arm, metric, residual_from, replacement_question_id, prior
+        )
     reserve = cost_reservation(rows, metric, prior)
     # No DB connection is made. Still refuse production settings, and require
     # the same benchmark-only environment as the canonical runner.
@@ -137,6 +223,7 @@ async def run(arm: str, metric: str, output: Path, prior: Decimal) -> dict[str, 
         "mode": "judge_only_saved_dev_hypotheses",
         "arm": arm,
         "metric": metric,
+        "residual": residual,
         "source": source,
         "git": code,
         "calls_planned": len(rows),
@@ -200,6 +287,11 @@ async def run(arm: str, metric: str, output: Path, prior: Decimal) -> dict[str, 
                 )
             }
             result["original_judgment"] = row["judgment"]
+            if residual is not None:
+                result["residual_of_run_id"] = residual["original_run_id"]
+                result["new_replacement_for_uncertain_request"] = (
+                    row["question_id"] == residual["uncertain_original_question_id"]
+                )
             if metric == "official":
                 result.update(
                     await evaluate.judge_answer_official(
@@ -255,6 +347,7 @@ async def run(arm: str, metric: str, output: Path, prior: Decimal) -> dict[str, 
     except BaseException as exc:
         manifest["status"] = "stopped_reconciliation_required"
         manifest["error_type"] = type(exc).__name__
+        manifest["failure_diagnostics"] = evaluate.benchmark_failure_diagnostics(exc)
         manifest["ended_at"] = now()
         atomic_write_json(path, manifest)
         raise
@@ -270,9 +363,20 @@ def main() -> None:
     parser.add_argument("--metric", required=True, choices=("generic", "official"))
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--prior-reserved-usd", required=True, type=Decimal)
+    parser.add_argument("--residual-from", type=Path)
+    parser.add_argument("--replacement-question-id")
     args = parser.parse_args()
     try:
-        manifest = asyncio.run(run(args.arm, args.metric, args.output_dir, args.prior_reserved_usd))
+        manifest = asyncio.run(
+            run(
+                args.arm,
+                args.metric,
+                args.output_dir,
+                args.prior_reserved_usd,
+                residual_from=args.residual_from,
+                replacement_question_id=args.replacement_question_id,
+            )
+        )
     except Exception as exc:
         # No provider exception text, headers, keys or response bodies in stderr.
         raise SystemExit(
