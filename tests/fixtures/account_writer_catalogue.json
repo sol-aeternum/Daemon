@@ -1168,6 +1168,69 @@
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "ensure_benchmark_account",
+      "kind": "sql_inline",
+      "fingerprint": "b4372385de94ab44",
+      "tables": [
+        "entitlement_accounts"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Benchmark-only: provisions the LongMemEval user's entitlement account in the marked daemon_lme_bench database after assert_benchmark_database; never reached by production. No runtime account fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "fingerprint_benchmark_state",
+      "kind": "sql_dynamic",
+      "fingerprint": "886b4ca9084ec35a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Read-only count/md5 fingerprint over a fixed list of interpolated benchmark table names; the scanner cannot resolve targets. Benchmark-only, not a mutation. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "rollback_orphan_conversations",
+      "kind": "sql_inline",
+      "fingerprint": "7b2c7fef86559065",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Benchmark-only LongMemEval resume rollback of interrupted-session rows; runs only after assert_benchmark_database accepts the marked daemon_lme_bench database. Not a production path; no runtime account fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "rollback_orphan_conversations",
+      "kind": "sql_inline",
+      "fingerprint": "e8f175a2e3bab8de",
+      "tables": [
+        "memory_extraction_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Benchmark-only LongMemEval resume rollback of interrupted-session rows; runs only after assert_benchmark_database accepts the marked daemon_lme_bench database. Not a production path; no runtime account fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "rollback_orphan_conversations",
+      "kind": "sql_inline",
+      "fingerprint": "5b7de04a452223a8",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Benchmark-only LongMemEval resume rollback of interrupted-session rows; runs only after assert_benchmark_database accepts the marked daemon_lme_bench database. Not a production path; no runtime account fence. Uncovered."
+    },
+    {
       "owner_source": "orchestrator.eval.chunk_harness",
       "qualname": "LongMemEvalChunkRunner.run",
       "kind": "filesystem_write",
@@ -1419,6 +1482,248 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "_fsync_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "ab136a0977c1e762",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "_fsync_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "atomic_write_text",
+      "kind": "filesystem_write",
+      "fingerprint": "2efabb88bfd0d42c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "atomic_write_text",
+      "kind": "filesystem_write",
+      "fingerprint": "5afb20d297da7de9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "atomic_write_text",
+      "kind": "filesystem_write",
+      "fingerprint": "728575deadbe73a6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "atomic_write_text",
+      "kind": "filesystem_write",
+      "fingerprint": "0e92efab73acd349",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "atomic_write_text",
+      "kind": "filesystem_write",
+      "fingerprint": "668bf872157340fc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "atomic_write_text",
+      "kind": "filesystem_write",
+      "fingerprint": "ce91953b5f55658b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "append_jsonl_record",
+      "kind": "filesystem_write",
+      "fingerprint": "2efabb88bfd0d42c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "append_jsonl_record",
+      "kind": "filesystem_write",
+      "fingerprint": "764fedbaf59f009f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "append_jsonl_record",
+      "kind": "filesystem_write",
+      "fingerprint": "77001836f7f942d8",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "append_jsonl_record",
+      "kind": "filesystem_write",
+      "fingerprint": "728575deadbe73a6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "append_jsonl_record",
+      "kind": "filesystem_write",
+      "fingerprint": "0e92efab73acd349",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "a9d26d8cccdc5d47",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "210e4bc39688dac4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "728575deadbe73a6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "0e92efab73acd349",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "0c0ac3244f5f4a63",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "3d2fc70a361e0938",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "e50a339dc25a9c55",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "read_jsonl_records",
+      "kind": "filesystem_write",
+      "fingerprint": "8e3ae10d1ae8af1c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.eval.durable_io",
+      "qualname": "file_sha256",
+      "kind": "filesystem_write",
+      "fingerprint": "d7d01a6135981d90",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
       "owner_source": "orchestrator.eval.fact_harness",
       "qualname": "_reset_checkpoint_file",
       "kind": "filesystem_write",
@@ -1478,39 +1783,6 @@
       "qualname": "utc_now_iso",
       "kind": "filesystem_write",
       "fingerprint": "7fbe40f60530b9c8",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.eval.fact_harness",
-      "qualname": "write_json",
-      "kind": "filesystem_write",
-      "fingerprint": "22bda90261a1b31b",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.eval.fact_harness",
-      "qualname": "write_json",
-      "kind": "filesystem_write",
-      "fingerprint": "2efabb88bfd0d42c",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.eval.fact_harness",
-      "qualname": "write_json",
-      "kind": "filesystem_write",
-      "fingerprint": "923504abdfba55b0",
       "tables": [],
       "unknown": true,
       "uncovered": true,

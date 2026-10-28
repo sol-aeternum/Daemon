@@ -5,6 +5,13 @@
 `orchestrator/eval/longmemeval.py`, `orchestrator/eval/runner.py`, `orchestrator/eval/longmemeval_fast.py`,
 `tests/longmemeval/ingest.py`, and `tests/longmemeval/evaluate.py`.
 
+> **2026-10-26: production-parity harness.** The canonical lane now runs only against the dedicated
+> benchmark database. It refuses any `DATABASE_URL` that isn't a marked `daemon_lme_bench*`
+> database (`orchestrator/eval/bench_db.py`), so the `daemon:daemon@…/daemon` DSNs further down
+> predate the guard and are refused. Setup, resume, snapshots and evaluate-only reruns:
+> [`RUNBOOK_LAPTOP.md`](RUNBOOK_LAPTOP.md). Parity exceptions and the current baseline:
+> `tests/benchmark_results/parity_baseline_*.md`.
+
 ---
 
 ## 1. Canonical Lane vs Fast Lane
@@ -12,8 +19,8 @@
 ### Canonical lane (ONLY valid lane for extraction / dedup / entity-linking claims)
 
 ```text
-DATABASE_URL=postgresql://daemon:daemon@127.0.0.1:5432/daemon \
-PYTHONPATH=. python -m orchestrator.eval.longmemeval run \
+tests/benchmark_longmemeval/bench_db.sh run -- \
+  uv run --locked python -m orchestrator.eval.longmemeval run \
   --dataset tests/benchmark_longmemeval/fixtures/dev_subset.json \
   --output-dir tests/benchmark_results/dev_subset_baseline/runN
 ```
@@ -52,7 +59,7 @@ the canonical extraction/dedup pipeline entirely. See `ISOLATION_AUDIT.md` §Fas
 |---|---|---|
 | Dev subset dataset | 50-case locked fixture, exact `question_id` order preserved | `tests/benchmark_longmemeval/fixtures/dev_subset.json` |
 | Dev subset coverage map | Cell floors, selection rules, corpus-plan snapshot | `tests/benchmark_longmemeval/fixtures/dev_subset_coverage.md` |
-| Canonical result/checkpoint/score filenames | `longmemeval_results.jsonl`, `longmemeval_checkpoint.json`, `longmemeval_score.json`; checkpoint version `2` | `orchestrator/eval/runner.py:83-88` |
+| Canonical result/checkpoint/score filenames | `longmemeval_results.jsonl`, `longmemeval_checkpoint.json`, `longmemeval_score.json`; checkpoint version `3` (`orchestrator/eval/fact_harness.py`) | `orchestrator/eval/runner.py:83-88` |
 | Benchmark user identity | Shared fixed user `longmemeval@daemon.test` / `12345678-1234-5678-1234-567812345678` | `tests/longmemeval/ingest.py:37-39` |
 | Subset cell coverage | 9 IE-user, 9 IE-assistant, 10 MR, 10 TR, 9 KU, 5 abstention (overlap); 2,079 unique normalized corpus sessions | `dev_subset_coverage.md` |
 
@@ -206,8 +213,8 @@ rows. See `ISOLATION_AUDIT.md` §Fast lane audit.
 
 ```bash
 # Canonical lane — full pipeline
-DATABASE_URL=postgresql://daemon:daemon@127.0.0.1:5432/daemon \
-PYTHONPATH=. python -m orchestrator.eval.longmemeval run \
+tests/benchmark_longmemeval/bench_db.sh run -- \
+  uv run --locked python -m orchestrator.eval.longmemeval run \
   --dataset tests/benchmark_longmemeval/fixtures/dev_subset.json \
   --output-dir tests/benchmark_results/dev_subset_baseline/runN
 ```
@@ -219,14 +226,14 @@ run will resume from its checkpoint on re-invocation.
 
 ```bash
 # Phase 1: ingest only
-DATABASE_URL=postgresql://daemon:daemon@127.0.0.1:5432/daemon \
-PYTHONPATH=. python -m orchestrator.eval.longmemeval ingest \
+tests/benchmark_longmemeval/bench_db.sh run -- \
+  uv run --locked python -m orchestrator.eval.longmemeval ingest \
   --dataset tests/benchmark_longmemeval/fixtures/dev_subset.json \
   --output-dir tests/benchmark_results/dev_subset_baseline/runN
 
 # Phase 2: evaluate only (requires checkpoint from ingest)
-DATABASE_URL=postgresql://daemon:daemon@127.0.0.1:5432/daemon \
-PYTHONPATH=. python -m orchestrator.eval.longmemeval evaluate \
+tests/benchmark_longmemeval/bench_db.sh run -- \
+  uv run --locked python -m orchestrator.eval.longmemeval evaluate \
   --dataset tests/benchmark_longmemeval/fixtures/dev_subset.json \
   --output-dir tests/benchmark_results/dev_subset_baseline/runN
 
@@ -372,8 +379,8 @@ protocol.** The full-corpus path is excluded from this HARNESS because:
 When full-corpus Phase 0 is later attempted, the contract is:
 
 ```text
-DATABASE_URL=postgresql://daemon:daemon@127.0.0.1:5432/daemon \
-PYTHONPATH=. python -m orchestrator.eval.longmemeval run \
+tests/benchmark_longmemeval/bench_db.sh run -- \
+  uv run --locked python -m orchestrator.eval.longmemeval run \
   --dataset /tmp/longmemeval-review/data/longmemeval_s.json \
   --output-dir tests/benchmark_results/full_corpus_baseline/runN
 ```

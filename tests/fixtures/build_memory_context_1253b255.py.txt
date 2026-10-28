@@ -1,0 +1,174 @@
+# Frozen reference: orchestrator/memory/injection.py:build_memory_context at origin/main 1253b255,
+# before the gather/render split. Executed by tests/test_memory_context_parity.py as
+# a byte-identity oracle. Never edit; it documents the pre-split behaviour.
+async def build_memory_context(
+    store: MemoryStore,
+    conversation_id: uuid.UUID,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> str:
+    conversation = await store.get_conversation(conversation_id)
+    if not conversation:
+        return ""
+
+    user_id = conversation.get("user_id")
+    if not isinstance(user_id, uuid.UUID):
+        return ""
+
+    include_local = str(conversation.get("pipeline") or "").strip().lower() == "local"
+    if get_selected_embedding_route_id() and conversation.get("pipeline") not in ("cloud", "local"):
+        return ""  # Unknown source permissions cannot authorize context processing.
+
+    l0_memories = await store.get_l0_memories(user_id, include_local=include_local)
+    if not include_local:
+        l0_memories = [row for row in l0_memories if row.get("local_only") is False]
+    l0_block = _format_l0_block(l0_memories)
+
+    if estimate_tokens(l0_block) > L0_TOKEN_BUDGET:
+        l0_lines = l0_block.split("\n")
+        while estimate_tokens("\n".join(l0_lines)) > L0_TOKEN_BUDGET and len(l0_lines) > 1:
+            l0_lines.pop()
+        l0_block = "\n".join(l0_lines)
+
+    query_text = ""
+    recent_messages = await store.get_recent_messages(conversation_id, limit=20)
+
+    recent_messages = [strip_reasoning_fields_from_message(m) for m in recent_messages]
+
+    for message in reversed(recent_messages):
+        if str(message.get("role") or "").lower() == "user":
+            query_text = _normalize_content(message.get("content"))
+            if query_text:
+                break
+
+    if not query_text and recent_messages:
+        query_text = _normalize_content(recent_messages[-1].get("content"))
+
+    retrieved: list[dict[str, object]] = []
+    summaries_task = asyncio.create_task(
+        store.get_recent_summaries(user_id, limit=MAX_SUMMARY_ITEMS, include_local=include_local)
+    )
+
+    if query_text:
+        try:
+            try:
+                if get_selected_embedding_route_id() and conversation.get("pipeline") != "cloud":
+                    raise EmbeddingConfigurationError(
+                        "Local or unknown-locality conversation cannot be cloud embedded"
+                    )
+                query_result = await asyncio.wait_for(
+                    embed_query_with_metadata(query_text), timeout=8.0
+                )
+            except EmbeddingConfigurationError:
+                query_result = None
+            retrieved = await retrieve_memories_for_text(
+                store=store,
+                query_text=query_text,
+                user_id=user_id,
+                query_embedding=query_result.embedding if query_result is not None else None,
+                limit=MAX_MEMORY_ITEMS,
+                include_local=include_local,
+                storage_embedding_model=query_result.storage_model
+                if query_result is not None
+                else None,
+                query_embedding_model=query_result.model if query_result is not None else None,
+            )
+
+            # Record retrieved memory IDs for trust signal tracking
+            if retrieved:
+                try:
+                    ts_module = _lazy_import_trust_signals()
+                    if ts_module:
+                        memory_ids = [m.get("id") for m in retrieved if m.get("id")]
+                        await ts_module.record_retrieved_memories(
+                            conversation_id=conversation_id,
+                            memory_ids=memory_ids,
+                            store=store,
+                        )
+                except Exception:
+                    pass  # Trust signals are best-effort
+
+        except Exception as error:
+            raise_if_embedding_accounting_error(error)
+            retrieved = []
+
+    summaries = await summaries_task
+    if not include_local:
+        summaries = [row for row in summaries if row.get("local_only") is False]
+
+    memory_lines: list[str] = []
+    for memory in retrieved[:MAX_MEMORY_ITEMS]:
+        category = str(memory.get("category") or "fact").strip().lower()
+        label = (
+            category.title()
+            if category in {"fact", "project", "preference", "important"}
+            else "Fact"
+        )
+        text = _truncate_to_chars(
+            _normalize_content(memory.get("content")), MAX_SINGLE_MEMORY_CHARS
+        )
+        if text:
+            memory_lines.append(f"- {label}: {text}")
+
+    summary_lines: list[str] = []
+    for summary in summaries[:MAX_SUMMARY_ITEMS]:
+        text = _normalize_content(summary.get("content"))
+        if text:
+            summary_lines.append(f"- Session: {text}")
+
+    effective_token_budget = max(1, max_tokens)
+
+    def render(memories: list[str], summary_items: list[str]) -> str:
+        parts: list[str] = []
+        if memories:
+            parts.append("About this user:")
+            parts.extend(memories)
+        if summary_items:
+            parts.append("Recent context:")
+            parts.extend(summary_items)
+        return "\n".join(parts).strip()
+
+    def truncate_items(items: list[str], item_limit: int) -> list[str]:
+        output: list[str] = []
+        for line in items:
+            if len(line) <= item_limit:
+                output.append(line)
+                continue
+            output.append(_truncate_to_chars(line, item_limit))
+        return output
+
+    memory_lines = truncate_items(memory_lines, MAX_SINGLE_MEMORY_CHARS)
+    summary_lines = truncate_items(summary_lines, MAX_SINGLE_MEMORY_CHARS)
+
+    context = render(memory_lines, summary_lines)
+
+    while estimate_tokens(context) > effective_token_budget and memory_lines:
+        _ = memory_lines.pop()
+        context = render(memory_lines, summary_lines)
+
+    while estimate_tokens(context) > effective_token_budget and summary_lines:
+        _ = summary_lines.pop()
+        context = render(memory_lines, summary_lines)
+
+    if not l0_block and not memory_lines and not summary_lines:
+        return ""
+
+    if l0_block and not context:
+        raw_block = l0_block
+    elif l0_block:
+        raw_block = l0_block + "\n\n" + context
+    else:
+        raw_block = context
+
+    # Wrap the entire memory block in an explicit XML fence (defense in depth against
+    # prompt injection via planted memory content; see issue #19). The system prompt
+    # at orchestrator/prompts.py explicitly disclaims instructions found inside.
+    # Neutralize anything shaped like a closing tag — including XML-valid
+    # whitespace variants such as "</memory_records >" — so planted content
+    # cannot break out of the fence.
+    raw_block = re.sub(
+        r"<\s*/\s*memory_records\s*>",
+        "&lt;/memory_records&gt;",
+        raw_block,
+        flags=re.IGNORECASE,
+    )
+    return f'<memory_records trust="user_data">\n{raw_block}\n</memory_records>'

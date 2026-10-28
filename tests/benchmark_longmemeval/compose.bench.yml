@@ -1,0 +1,28 @@
+# Disposable LongMemEval benchmark database. Dev-only; never deployed.
+#
+# A separate Compose project (name, volume, network, port and database are all
+# distinct from docker-compose.yml) so the harness's destructive reset can only
+# ever reach this instance. Drive it through bench_db.sh; see RUNBOOK_LAPTOP.md.
+# Values are fixed on purpose: the instance listens on loopback only and holds
+# nothing but public benchmark data.
+name: daemon-lme-bench
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: daemon_lme_bench
+    volumes:
+      - daemon_lme_bench_pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d daemon_lme_bench"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  daemon_lme_bench_pgdata:
