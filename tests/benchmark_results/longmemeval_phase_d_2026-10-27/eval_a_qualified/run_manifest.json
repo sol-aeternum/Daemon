@@ -1,0 +1,471 @@
+{
+  "created_at": "2026-10-27T12:26:27+00:00",
+  "run_id": "f28e309123184cc2b04a60053672c75c",
+  "baseline_qualified": true,
+  "disqualifications": [],
+  "effective_config": {
+    "sha256": "92903870b7ceb3ca",
+    "settings": {
+      "chat_history_limit": "1a6562590ef19d10",
+      "consolidation_enabled": "b5bea41b6c623f7c",
+      "consolidation_interval_days": "7902699be42c8a8e",
+      "consolidation_nudge_conversation_interval": "e629fa6598d73276",
+      "consolidation_nudge_enabled": "b5bea41b6c623f7c",
+      "consolidation_nudge_min_skills": "4e07408562bedb8b",
+      "consolidation_nudge_stale_days": "624b60c58c9d8bfb",
+      "cors_allowed_origins": "8f1b817717a4aca9",
+      "crawl4ai_url": "a9382317cdee0ee4",
+      "daemon_allowed_hosts": "12ae32cb1ec02d01",
+      "daemon_allowed_origins": "12ae32cb1ec02d01",
+      "daemon_commercial_config": "74234e98afe7498f",
+      "daemon_cookie_secure": "b5bea41b6c623f7c",
+      "daemon_default_timezone": "68105452227ca2d3",
+      "daemon_deletion_journal_dir": "74234e98afe7498f",
+      "daemon_deletion_journal_id": "74234e98afe7498f",
+      "daemon_deployment_mode": "586468a78e0b978c",
+      "daemon_email_challenge_max_attempts": "ef2d127de37b942b",
+      "daemon_email_challenge_ttl_seconds": "284b7e6d788f363f",
+      "daemon_email_enabled": "b5bea41b6c623f7c",
+      "daemon_environment": "80be2eb0944c0453",
+      "daemon_fetch_user_agent": "9b8d66cd74a744f0",
+      "daemon_google_audience_allowlist": "12ae32cb1ec02d01",
+      "daemon_google_client_id": "74234e98afe7498f",
+      "daemon_google_enabled": "b5bea41b6c623f7c",
+      "daemon_google_nonce_ttl_seconds": "284b7e6d788f363f",
+      "daemon_hosted_identity_enabled": "fcbcf165908dd18a",
+      "daemon_hosted_identity_require_redis": "b5bea41b6c623f7c",
+      "daemon_http_allowed_domains": "12ae32cb1ec02d01",
+      "daemon_inference_policy": "12a41fe1f8b27c7e",
+      "daemon_mail_from_address": "33629f1b98d304a3",
+      "daemon_mail_sender_mode": "35932f2ae7475385",
+      "daemon_mail_smtp_host": "12ae32cb1ec02d01",
+      "daemon_mail_smtp_port": "82a93b152b275d4c",
+      "daemon_mail_smtp_use_tls": "b5bea41b6c623f7c",
+      "daemon_mail_smtp_username": "12ae32cb1ec02d01",
+      "daemon_max_chat_body_bytes": "761a941bccfaa75d",
+      "daemon_max_grant_amount_per_request": "ad57366865126e55",
+      "daemon_max_request_body_bytes": "dba761deee2bbfce",
+      "daemon_max_skill_upload_body_bytes": "dba761deee2bbfce",
+      "daemon_max_stt_body_bytes": "ddce3b5b39e288ad",
+      "daemon_min_grant_description_length": "ef2d127de37b942b",
+      "daemon_model_routing": "74234e98afe7498f",
+      "daemon_private_refresh_ttl_days": "69f59c273b6e669a",
+      "daemon_public_origin": "74234e98afe7498f",
+      "daemon_rate_limit_chat_per_ip_per_minute": "2abaca4911e68fa9",
+      "daemon_rate_limit_chat_per_user_per_minute": "39fa9ec190eee7b6",
+      "daemon_rate_limit_email_complete_per_ip_per_hour": "f5ca38f748a1d6ea",
+      "daemon_rate_limit_email_start_per_email_per_day": "4a44dc15364204a8",
+      "daemon_rate_limit_email_start_per_email_per_hour": "4e07408562bedb8b",
+      "daemon_rate_limit_email_start_per_ip_per_day": "f5ca38f748a1d6ea",
+      "daemon_rate_limit_email_start_per_ip_per_hour": "ef2d127de37b942b",
+      "daemon_session_cleanup_grace_days": "7902699be42c8a8e",
+      "daemon_session_cleanup_interval_seconds": "b045dd9c18caa8be",
+      "daemon_session_cleanup_max_delete_fraction": "d2cbad71ff333de6",
+      "daemon_signup_mode": "3b27dcea4f8b5976",
+      "daemon_sse_keepalive_interval_s": "74234e98afe7498f",
+      "daemon_temporary_refresh_ttl_seconds": "5feceb66ffc86f38",
+      "daemon_trust_proxy_forwarded_client_ip": "fcbcf165908dd18a",
+      "daemon_worker_failure_alert_email": "12ae32cb1ec02d01",
+      "dedup_merge_threshold": "8139b33952401b3e",
+      "dedup_supersede_same_slot_threshold": "4942870d7312d707",
+      "dedup_supersede_threshold": "5bcccbeaf5d2a211",
+      "default_provider": "208bec571aa2e39b",
+      "dream_min_cluster_size": "ef2d127de37b942b",
+      "dream_schedule_hour": "4e07408562bedb8b",
+      "dreaming_enabled": "b5bea41b6c623f7c",
+      "durable_chat_enabled": "fcbcf165908dd18a",
+      "embedding_dimensions": "e39eef82f61b21e2",
+      "embedding_document_model": "bf916abd519c4db6",
+      "embedding_fallback_providers": "12ae32cb1ec02d01",
+      "embedding_openai_fallback_model": "8ddf94269f8b8651",
+      "embedding_openrouter_document_model": "3dbd6190ab87c021",
+      "embedding_openrouter_query_model": "d5df27f736ea0f2a",
+      "embedding_query_model": "d622abc87c2d01a9",
+      "embedding_route_id": "68d248820666acb4",
+      "env": "8a17302d4ffff29e",
+      "fetch_allowed_content_types": "12ae32cb1ec02d01",
+      "fetch_blocked_domains": "12ae32cb1ec02d01",
+      "fetch_cache_ttl_seconds": "b045dd9c18caa8be",
+      "fetch_error_signatures": "12ae32cb1ec02d01",
+      "fetch_max_depth": "74234e98afe7498f",
+      "fetch_min_content_length": "27badc983df1780b",
+      "log_level": "06cbfd138d08326f",
+      "mock_llm": "fcbcf165908dd18a",
+      "openrouter_base_url": "e08186e0c8c6074c",
+      "openrouter_image_model": "d2c0a28df435114a",
+      "openrouter_referer": "0a13b53515da83e3",
+      "openrouter_title": "0f17cddf2204cf75",
+      "redis_url": "74234e98afe7498f",
+      "request_timeout_s": "17e70b2fd0afd679",
+      "retrieval_logging_debug": "fcbcf165908dd18a",
+      "retrieval_logging_enabled": "fcbcf165908dd18a",
+      "stream_ping_interval_s": "c72ae9676454d7cc",
+      "tts_model": "942605f57330cd48",
+      "tts_provider": "4402867f0a5ceb6c",
+      "tts_service_url": "4d3ae29f84c33a2d",
+      "tts_timeout_seconds": "1f4d86b1e0415f97",
+      "web_search_provider": "84c88e1086aec636",
+      "web_snapshot_default_chunk_chars": "8d284220975da66c",
+      "web_snapshot_max_account_bytes": "efc2a522d1bd2ac5",
+      "web_snapshot_max_account_count": "94f8607915dff25f",
+      "web_snapshot_max_chunk_chars": "c5d1866aabc15dda",
+      "web_snapshot_max_content_bytes": "50b4b069390c1d79",
+      "web_snapshot_max_conversation_bytes": "9641f70524a01757",
+      "web_snapshot_max_conversation_count": "a68b412c4282555f",
+      "web_snapshot_max_new_per_turn": "2c624232cdd22177",
+      "web_snapshot_max_response_bytes": "107f41ed92e01eb5",
+      "web_snapshot_retention_days": "624b60c58c9d8bfb"
+    },
+    "files": {
+      "inference_policy": "7ee24e0b3e9fff53922ed9741886efafe33c261484a49c601f8db804497e0210",
+      "model_routing": "9b61d2ce6d44595bd5ea3e734e3c5fa64603be9a67a7c43ef41f4b4becf3d39c",
+      "config_pin": "6432d63b0260b82ddab7778dd4883001a92137c706d28db5342e97182e07f2e9"
+    },
+    "harness": {
+      "benchmark_mode": true,
+      "force_retrieval_logging": true,
+      "limit": null,
+      "extraction_profile": "background",
+      "evaluate_operation": "chat"
+    }
+  },
+  "benchmark_name": "longmemeval_fact",
+  "substrate": "fact",
+  "git": {
+    "sha": "b342f62596acac14a596577e1caa1ce95f7d82ca",
+    "dirty": false,
+    "code_sha256": "a0a029c951142d7c7c9ee733c9741be7e9059f16711367a922e545981c47d5d7"
+  },
+  "config_pin": {
+    "path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+    "sha256": "6432d63b0260b82ddab7778dd4883001a92137c706d28db5342e97182e07f2e9"
+  },
+  "memory_formatter": {
+    "module": "orchestrator.memory.injection",
+    "function": "render_memory_context",
+    "source_sha256": "603d93754244df183829458fd911809093174ddbd08439a08d67359c4c464d04",
+    "output_sha256": "d290210a8a62bf63b506651d0ee46938c7c03848bc9cbd8a4708f1dfaf0627fd"
+  },
+  "dataset": {
+    "path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+    "sha256": "6612e3a03c79b92bab2f1750d4661908e3dc37359715b7fb6b62c6f758bddb34",
+    "limit": null
+  },
+  "routes": {
+    "answer": {
+      "model": "openrouter/openai/gpt-4o-2024-08-06",
+      "benchmark_mode": true,
+      "endpoint_slug": "azure",
+      "temperature": 0.0,
+      "seed": 42
+    },
+    "judge": {
+      "model": "openrouter/openai/gpt-4o-2024-08-06",
+      "benchmark_mode": true,
+      "temperature": 0.0,
+      "seed": 42
+    },
+    "extraction": {
+      "profile": "background",
+      "pinned_model": null,
+      "chunking": "orchestrator.worker.jobs._chunk_messages_for_extraction",
+      "observed_models": null
+    },
+    "inference_policy": {
+      "path": "config/inference_policy.production.json",
+      "sha256": "7ee24e0b3e9fff53922ed9741886efafe33c261484a49c601f8db804497e0210"
+    },
+    "model_routing": {
+      "path": "/home/sol/daemon-bench-b342f625/config/model_routing.json",
+      "sha256": "9b61d2ce6d44595bd5ea3e734e3c5fa64603be9a67a7c43ef41f4b4becf3d39c"
+    }
+  },
+  "embedding": {
+    "route_id": "azure-openrouter-small-1024",
+    "mode": "qualified_route",
+    "configuration": "unavailable",
+    "reason_codes": [
+      "route_unapproved"
+    ]
+  },
+  "ingest_source": {
+    "checkpoint_path": "/home/sol/.local/share/daemon-lme-bench/runs/phase-d-2026-10-27-b342f625/ingest/longmemeval_checkpoint.json",
+    "checkpoint_sha256": "8c873c1763d6000915f3a9e41de81d69dc435c1a9a6d2777e8ca4935ff0e04df",
+    "manifest_path": "/home/sol/.local/share/daemon-lme-bench/runs/phase-d-2026-10-27-b342f625/ingest/run_manifest.json",
+    "manifest_sha256": "536436c12bfb2fcb40c9c128389060f3a4f65ad4d3eb3dfa013a9478a97c94b6",
+    "state_fingerprint": {
+      "sha256": "251dd9cfed9a20fe6c719f277359a8eecf9505aa0c6d2441ca954e5838fa5c0a",
+      "users": 50,
+      "rows": {
+        "conversations": 2126,
+        "messages": 23381,
+        "memories": 25435,
+        "memory_extraction_log": 8633,
+        "entities": 0
+      }
+    },
+    "baseline_qualified": true,
+    "disqualifications": [],
+    "git": {
+      "sha": "b342f62596acac14a596577e1caa1ce95f7d82ca",
+      "dirty": false,
+      "code_sha256": "a0a029c951142d7c7c9ee733c9741be7e9059f16711367a922e545981c47d5d7"
+    }
+  },
+  "ingest_snapshot": {
+    "path": "/home/sol/.local/share/daemon-lme-bench/runs/phase-d-2026-10-27-b342f625/ingest.dump",
+    "sha256": "3fd65416fdc24e845a184d7b8d3e0828811e048cd8341a39fe285fc14dc1f5a1",
+    "recorded_at": "2026-10-27T12:35:43+00:00"
+  },
+  "parity_exceptions": [
+    {
+      "id": "query_source",
+      "difference": "The question text stands in for the latest user message; production derives the query from the conversation's recent messages.",
+      "impact": "Same normalisation and retrieval call; no prior turns in the query."
+    },
+    {
+      "id": "benchmark_users",
+      "difference": "Each question's haystack is ingested into its own benchmark user, in haystack-date order; a session shared by several questions is ingested once per question.",
+      "impact": "Each user's memory holds one history, as in production and LongMemEval; retrieval reads all of that user's memories, unscoped."
+    },
+    {
+      "id": "read_only_evaluate",
+      "difference": "Evaluate disables trust recording and memory access touches (record_side_effects=False, touch_results=False).",
+      "impact": "Production updates access_count/last_accessed_at, which feed later ranking; the harness keeps every question on the ingest state."
+    },
+    {
+      "id": "retrieval_log_label",
+      "difference": "Retrieval logging is forced on with retrieval_triggered_by='longmemeval'.",
+      "impact": "Diagnostics only; retrieval_log is not a ranking input."
+    },
+    {
+      "id": "system_prompt_extras",
+      "difference": "The answer prompt is compose_system_prompt(memory_context) with no preferences, skills index, answer controls or tools.",
+      "impact": "The memory block and base Daemon prompt match production; the answer model cannot call memory tools to fetch more."
+    },
+    {
+      "id": "answer_judge_models",
+      "difference": "Answers and judgments use the pinned benchmark route (openrouter/openai/gpt-4o-2024-08-06, temperature 0, seed 42), not the production chat route.",
+      "impact": "Measures memory surface with a fixed reader; not end-to-end product quality."
+    },
+    {
+      "id": "no_post_extraction_jobs",
+      "difference": "Ingest runs extraction and dedup only: no entity resolution, conversation summaries, dreaming or consolidation jobs.",
+      "impact": "Entity expansion and summaries are empty; production would have them."
+    },
+    {
+      "id": "message_timestamps",
+      "difference": "Haystack messages are stored at ingest time, not at the dataset's session dates, and retrieval runs with query_reference_time=None.",
+      "impact": "Recency and temporal windows see the ingest clock; temporal questions are disadvantaged relative to real usage."
+    }
+  ],
+  "invocations": [
+    {
+      "phase": "evaluate",
+      "started_at": "2026-10-27T12:26:27+00:00",
+      "resumed": false,
+      "outcome": "completed",
+      "concurrency": 1,
+      "last_progress_at": "2026-10-27T12:28:54+00:00",
+      "ended_at": "2026-10-27T12:28:56+00:00",
+      "active_seconds": 149.4
+    },
+    {
+      "phase": "evaluate",
+      "started_at": "2026-10-27T12:30:38+00:00",
+      "resumed": true,
+      "outcome": "completed",
+      "concurrency": 1,
+      "last_progress_at": "2026-10-27T12:31:40+00:00",
+      "ended_at": "2026-10-27T12:31:42+00:00",
+      "active_seconds": 64.2
+    },
+    {
+      "phase": "evaluate",
+      "started_at": "2026-10-27T12:33:24+00:00",
+      "resumed": true,
+      "outcome": "completed",
+      "concurrency": 1,
+      "last_progress_at": "2026-10-27T12:34:00+00:00",
+      "ended_at": "2026-10-27T12:34:02+00:00",
+      "active_seconds": 37.6
+    },
+    {
+      "phase": "evaluate",
+      "started_at": "2026-10-27T12:35:43+00:00",
+      "resumed": true,
+      "outcome": "completed",
+      "concurrency": 1,
+      "last_progress_at": "2026-10-27T12:36:09+00:00",
+      "ended_at": "2026-10-27T12:36:11+00:00",
+      "active_seconds": 27.5
+    }
+  ],
+  "phases": {
+    "evaluate": {
+      "completed_at": "2026-10-27T12:36:11+00:00",
+      "active_seconds": 279.2,
+      "questions": 50,
+      "errored": 0,
+      "state_matches_ingest_at_start": true,
+      "state_unchanged_by_evaluate": true,
+      "state_fingerprint_start": {
+        "sha256": "251dd9cfed9a20fe6c719f277359a8eecf9505aa0c6d2441ca954e5838fa5c0a",
+        "users": 50,
+        "rows": {
+          "conversations": 2126,
+          "messages": 23381,
+          "memories": 25435,
+          "memory_extraction_log": 8633,
+          "entities": 0
+        }
+      },
+      "state_fingerprint_end": {
+        "sha256": "251dd9cfed9a20fe6c719f277359a8eecf9505aa0c6d2441ca954e5838fa5c0a",
+        "users": 50,
+        "rows": {
+          "conversations": 2126,
+          "messages": 23381,
+          "memories": 25435,
+          "memory_extraction_log": 8633,
+          "entities": 0
+        }
+      },
+      "retrieval_modes": {
+        "embedding:openrouter:azure:openai/text-embedding-3-small:1024": 50
+      },
+      "answer_usage": {
+        "prompt_tokens": 121950,
+        "completion_tokens": 2043,
+        "total_tokens": 123993
+      },
+      "judge_usage": {
+        "prompt_tokens": 15637,
+        "completion_tokens": 1427,
+        "total_tokens": 17064
+      },
+      "provider_fingerprints": {
+        "answer": {
+          "fp_6d4f7d9eea": 50
+        },
+        "judge": {
+          "fp_5650d8d081": 9,
+          "fp_6d4f7d9eea": 19,
+          "fp_6f03790cfc": 2,
+          "fp_91c2c6d730": 20
+        }
+      },
+      "compute_spend": {
+        "by_model": [
+          {
+            "model": "openai/text-embedding-3-small",
+            "operation": "chat",
+            "calls": 6,
+            "actual_microusd": 6,
+            "input_tokens": 107,
+            "output_tokens": 0,
+            "open_reservations": 0
+          }
+        ]
+      }
+    },
+    "score": {
+      "completed_at": "2026-10-27T20:15:14+00:00",
+      "score_path": "/home/sol/.local/share/daemon-lme-bench/runs/phase-d-2026-10-27-b342f625/eval_a_qualified/longmemeval_score.json",
+      "score_sha256": "79ed7a4839372313211b308b872b07c4666b71e738137d2347cb0c1bcb6c02e3",
+      "strict_accuracy": 0.6,
+      "baseline_qualified": true,
+      "result_count": 50,
+      "error_count": 0
+    }
+  },
+  "schema_version": 1,
+  "route_attestations": [
+    {
+      "at": "2026-10-27T12:26:28+00:00",
+      "phase": "evaluate",
+      "routes": 9,
+      "attested": 9,
+      "check_failed": 0,
+      "revoked": 0
+    },
+    {
+      "at": "2026-10-27T12:30:39+00:00",
+      "phase": "evaluate",
+      "routes": 9,
+      "attested": 9,
+      "check_failed": 0,
+      "revoked": 0
+    },
+    {
+      "at": "2026-10-27T12:33:25+00:00",
+      "phase": "evaluate",
+      "routes": 9,
+      "attested": 9,
+      "check_failed": 0,
+      "revoked": 0
+    },
+    {
+      "at": "2026-10-27T12:35:44+00:00",
+      "phase": "evaluate",
+      "routes": 9,
+      "attested": 9,
+      "check_failed": 0,
+      "revoked": 0
+    }
+  ],
+  "benchmark_users": {
+    "per": "question",
+    "namespace": "ef9c86b2-45be-514c-94af-224bf6b9ef34",
+    "count": 50,
+    "sessions": 2126,
+    "session_order": "haystack_date",
+    "reordered_questions": [
+      "8c18457d",
+      "gpt4_4edbafa2",
+      "6613b389",
+      "gpt4_af6db32f",
+      "gpt4_b0863698",
+      "852ce960",
+      "6a1eabeb",
+      "5831f84d",
+      "f685340e",
+      "184da446",
+      "f685340e_abs",
+      "982b5123_abs",
+      "gpt4_93159ced_abs",
+      "0bb5a684",
+      "0977f2af",
+      "gpt4_65aabe59",
+      "3ba21379",
+      "gpt4_93159ced",
+      "59524333"
+    ]
+  },
+  "results_reconciliations": [
+    {
+      "at": "2026-10-27T12:30:41+00:00",
+      "file_rows": 50,
+      "duplicates_dropped": 0,
+      "adopted_from_file": 0,
+      "completed": 29,
+      "errored": 21
+    },
+    {
+      "at": "2026-10-27T12:33:27+00:00",
+      "file_rows": 50,
+      "duplicates_dropped": 0,
+      "adopted_from_file": 0,
+      "completed": 39,
+      "errored": 11
+    },
+    {
+      "at": "2026-10-27T12:35:46+00:00",
+      "file_rows": 50,
+      "duplicates_dropped": 0,
+      "adopted_from_file": 0,
+      "completed": 44,
+      "errored": 6
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "substrate": "fact",
+  "benchmark_name": "longmemeval_fact",
+  "generated_at": "2026-10-27T20:15:16+00:00",
+  "result_count": 50,
+  "accuracy": {
+    "IE-user": 0.1111111111111111,
+    "IE-assistant": 0.3333333333333333,
+    "IE-preference": 0.0,
+    "MR": 0.0,
+    "KU": 0.1111111111111111,
+    "TR": 0.1,
+    "ABS": 0.0
+  },
+  "strict_accuracy": 0.12,
+  "category_counts": {
+    "IE-assistant": {
+      "total": 9,
+      "errors": 0,
+      "correct": 3,
+      "partially_correct": 0,
+      "incorrect": 6
+    },
+    "IE-preference": {
+      "total": 3,
+      "errors": 0,
+      "correct": 0,
+      "partially_correct": 3,
+      "incorrect": 0
+    },
+    "IE-user": {
+      "total": 9,
+      "errors": 0,
+      "correct": 1,
+      "partially_correct": 0,
+      "incorrect": 8
+    },
+    "KU": {
+      "total": 9,
+      "errors": 0,
+      "correct": 1,
+      "partially_correct": 0,
+      "incorrect": 8
+    },
+    "MR": {
+      "total": 10,
+      "errors": 0,
+      "correct": 0,
+      "partially_correct": 0,
+      "incorrect": 10
+    },
+    "TR": {
+      "total": 10,
+      "errors": 0,
+      "correct": 1,
+      "partially_correct": 0,
+      "incorrect": 9
+    }
+  },
+  "error_count": 0,
+  "errored_question_ids": []
+}

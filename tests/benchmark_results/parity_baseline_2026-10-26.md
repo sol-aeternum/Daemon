@@ -1,7 +1,8 @@
 # LongMemEval harness parity baseline — 2026-10-26
 
 **Status:** harness parity and resumability are implemented and smoke-tested at `cc4b8045` (ingest at `b8c59918`). The dev-subset baseline
-(Phase D) **has not been run**. It waits for owner approval of the cost and time estimate in §6.
+(Phase D) ran on 2026-10-27 on the v4 harness (one user per question, #576). Its results are in
+[`longmemeval_phase_d_2026-10-27/`](longmemeval_phase_d_2026-10-27/README.md). §5–§6 below are the pre-run v3 record.
 
 These numbers are **not comparable** to the historical 10.4% / 67.8% / 81.1% results. Those came from a
 harness that did not build the production memory prompt. On `main`, its ingest also could not extract
