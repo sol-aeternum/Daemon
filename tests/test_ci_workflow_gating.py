@@ -16,7 +16,7 @@ LOCAL_CI = REPO_ROOT / "scripts" / "local_ci.sh"
 
 ALLOWED_CONTINUE_ON_ERROR_STEPS = {
     ("backend", "Bandit full inventory"),
-    ("frontend", "Browser regression inventory"),
+    ("browser-inventory", "Browser regression inventory"),
 }
 
 BLOCKING_GATE_STEPS = {
@@ -176,10 +176,35 @@ def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
 
     vitest_idx = frontend_steps.index("Vitest")
     chromium_idx = frontend_steps.index("Install Chromium for browser regressions")
-    browser_idx = frontend_steps.index("Browser regression inventory")
+    browser_idx = frontend_steps.index("Browser HTTP-cache isolation regression")
     build_idx = frontend_steps.index("Build")
 
     assert vitest_idx < chromium_idx < browser_idx < build_idx
+    assert "Browser regression inventory" not in frontend_steps
+
+
+def test_browser_inventory_job_stays_parallel_and_nonblocking() -> None:
+    workflow = _load_ci_workflow()
+    job = workflow["jobs"]["browser-inventory"]
+    steps = [name for job_id, name, _ in _iter_job_steps(workflow) if job_id == "browser-inventory"]
+    by_name = {step["name"]: step for step in job["steps"]}
+
+    # Its own job: never gates or delays the required Frontend gates check.
+    assert "needs" not in job and not job.get("continue-on-error", False)
+    assert not any(
+        "browser-inventory" in str(other.get("needs", "")) for other in workflow["jobs"].values()
+    )
+    assert job["name"] != workflow["jobs"]["frontend"]["name"]
+    assert (
+        steps.index("Install frontend dependencies")
+        < steps.index("Install Chromium for browser regressions")
+        < steps.index("Browser regression inventory")
+        < steps.index("Upload browser regression screenshots")
+    )
+    assert by_name["Browser regression inventory"]["run"] == "npm run test:browser"
+    upload = by_name["Upload browser regression screenshots"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["name"] == "browser-regressions"
 
 
 def test_cross_language_vitest_has_locked_python_before_execution() -> None:
