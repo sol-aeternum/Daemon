@@ -1,8 +1,8 @@
 # Memory tuning pass — 2026-10-28
 
 Status: **Phases 0/1 merged; official primary metric and existing thresholds ratified;
-Phase 2 DB classification complete, final PR gates pending.**
-No production memory change, ingest, holdout evaluation or candidate acceptance has
+Phase 2 DB classification merged; Phase 3A candidate implemented and verified offline.**
+No production deployment, new ingest, holdout evaluation or candidate acceptance has
 occurred. Judge inference and the approved two-reader-call saved-context cap
 diagnostic have run. Subsequent decisions use ratified rule `2026-10-28-official-v1`;
 Phase 1's earlier "under proposed rule" interpretations remain historical evidence,
@@ -115,9 +115,17 @@ Unique-question evidence labels: 3 source-retention gaps, 5 stored-answer prompt
 omissions, 2 historical-time grounding gaps, 2 update-ordering gaps, 3 abstention
 overreaches and 1 rubric/response ambiguity. Missing ranking traces and causal
 uncertainty are explicit. The historical-date parity limitation is tracked in #601.
-No official label is overwritten, and no candidate or experiment is selected.
-Next: final Phase 2 PR gates and a bounded Phase 3 experiment decision; source
-expansion, ingest and holdout remain separately approval-gated.
+No official label is overwritten; Phase 2 itself selected no tuning candidate.
+Phase 2 merged as #602 (`ae50bb29`), including the reviewed complete official-label
+coverage requirement. The owner approved the bounded Phase 3A selection/diversity
+candidate and offline tests; see
+[the experiment record](selection_diversity_phase3a_2026-10-28.md). No benchmark
+execution, candidate acceptance or deployment is authorized by that implementation
+approval. Source expansion, ingest and holdout remain separately approval-gated.
+The offline candidate passes 295 affected tests and all blocking full gates
+(7,371 backend / 1,473 frontend / 30 cache-browser; types clean), with scoped
+read-only review and its disclosed same-family limitation. It remains unmeasured,
+not benchmark-accepted or deployed, and adds no benchmark inference cost.
 
 ## Cumulative benchmark cost ledger
 
@@ -130,6 +138,7 @@ expansion, ingest and holdout remain separately approval-gated.
 | Owner-authorized fresh B residual | 14 | 0.0153575 | 0.2790525 |
 | Reader-cap diagnostic (2 reader + 4 judge responses) | 4 | 0.0240250 | 0.3030775 |
 | Phase 2 read-only DB classification | 0 | 0.0000000 | 0.3030775 |
+| Phase 3A offline candidate implementation/tests | 0 | 0.0000000 | 0.3030775 |
 
 **Actual billed cost is unknown.** The failed call may have been billed and is not
 included in the returned-usage estimate. The full **$1.7019050** reservation remains

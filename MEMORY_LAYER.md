@@ -279,6 +279,16 @@ final_score = 0.5 × vector_sim + 0.3 × bm25_normalized + 0.2 × recency × con
 - **Scoring factors:** recency (7d/30d/90d decay), source boost (`project`/`important` +10%), access count boost (up to +15%), confidence, trust score
 - **Minimum threshold:** final_score ≥ 0.15
 - **Max returned:** 5 memories
+- **Phase 3A candidate (not benchmark-accepted or deployed):** vector-query passes
+  select from the existing score-qualified pool with a fixed `DIVERSITY_PENALTY = 0.10`.
+  Greedy selection subtracts up to 0.10 for positive cosine overlap with selected
+  rows, using only existing finite, nonzero, same-identity/same-dimension vectors.
+  Missing or incomparable vectors have zero penalty. Selected rows retain their
+  original relevance scores and relevance/ID output order; no facts are merged or
+  rewritten. Lexical-only passes, fetch limits, eligibility filters, L0 and summary
+  handling are unchanged. This runs before the existing per-space cutoff; the outer
+  merge still uses only selected per-space rows, not the full diagnostic score pool.
+  See [the offline experiment record](tests/benchmark_results/selection_diversity_phase3a_2026-10-28.md).
 - **Touch:** Retrieved memory IDs are updated asynchronously (`last_accessed_at`, `access_count += 1`)
 
 For **local pipeline** conversations (pipeline = 'local'), vector search is skipped and only BM25 is used, with any-term matching.
