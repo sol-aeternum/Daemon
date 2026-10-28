@@ -215,5 +215,12 @@ def test_no_runtime_imports() -> None:
     root = Path(__file__).resolve().parents[1]
     for directory in ("orchestrator", "providers"):
         for path in (root / directory).rglob("*.py"):
-            if path.name != "artifact_envelope.py":
-                assert "artifact_envelope" not in path.read_text(), str(path.relative_to(root))
+            relative = path.relative_to(root).as_posix()
+            source = path.read_text()
+            if relative not in {
+                "orchestrator/artifact_envelope.py",
+                "orchestrator/artifact_staging.py",
+            }:
+                assert "artifact_envelope" not in source, relative
+            if relative != "orchestrator/artifact_staging.py":
+                assert "artifact_staging" not in source, relative

@@ -255,6 +255,84 @@ corruption/wrong-key/format errors and allocation boundaries. They do not qualif
 S1 staging, crash recovery, commit uncertainty, namespace retirement or reads.
 Catalog status remains **Not started**; the rest of increment 2 is outstanding.
 
+### Increment 2b — uncalled staging and private links
+
+The owner approved a synchronous one-shot preparation operation and this internal
+layout on 28 October 2026, after pre-change security review:
+
+```text
+<root>/live/<namespace>/staging/<intent>
+<root>/private/<namespace>/<intent>
+<root>/private/<namespace>/.prepare.lock
+```
+
+`orchestrator/artifact_staging.py::prepare_artifact` accepts an explicitly injected
+root, codec, binding, namespace, intent and content. Namespace/intent names are
+canonical 32-character lowercase hex identifiers representing 128-bit opaque
+values; callers must allocate them randomly and never reuse namespace names.
+These shape checks cannot prove randomness, ownership, intent admission or the
+account/generation-to-namespace mapping. Future callers must durably record the
+intent **before effects** through separately approved authority.
+
+The root, live/private parents, namespace directories and staging directory must
+already exist on one filesystem, owned by the process UID with mode 0700; the
+existing empty single-link regular `.prepare.lock` must have mode 0600. No
+directory, lock, mapping or journal record is created by this primitive. Only
+synthetic test setup provisions them here. Root ancestors are operator-trusted
+system directories, not required to be application-owned or mode 0700; traversal
+rejects symlinks in every component. Mount layout, ACLs and ancestor trust require
+deployment qualification and are not inferred from mode bits.
+
+Input encoding/validation precedes filesystem operations. The call opens its own
+descriptors and attempts an immediate nonblocking exclusive lock on the stable
+private namespace lock; contention returns `busy`. It validates pinned directory
+and lock identities, exclusively creates the intent stage (0600), completes
+bounded encrypted writes, syncs and closes the writable descriptor, syncs the
+staging directory, and creates a non-overwriting private hardlink. Identity,
+regular-file/mode/device/link-count, size and full authenticated binding/content
+checks precede private-directory sync and the final topology recheck. Every
+descriptor is owned by the call and closed before return; Linux close errors
+are not blindly retried against a potentially reused descriptor number.
+
+`StagedArtifact` contains only opaque namespace/intent, binding, encrypted size
+and an uncommitted outcome; no paths, handles or checksum index escape. A fresh
+successful operation returns `prepared_uncommitted`. An existing complete pair
+with identical authenticated binding/content returns `duplicate_uncommitted`
+without writing or syncing it. This is an observation, **not evidence that the
+earlier attempt completed its syncs**, and never upgrades uncertainty to success.
+Conflicting authenticated content returns `conflict`; partial, malformed,
+wrong-binding, replaced or otherwise unverifiable evidence requires reconciliation.
+The closed error codes are `invalid_input`, `unsupported`, `unavailable`, `busy`,
+`needs_reconciliation`, `conflict`, with no raw filesystem errors or private paths.
+
+Failures after exclusive-create admission preserve candidates; a missing stage
+does not prove no earlier effect because the private link may survive. There is
+no automatic retry/repair/resume, unlink, orphan sweep, expiry or purge. Unexpected
+source substitution can leave a suspect private candidate; it is preserved and
+denied, not silently cleaned or considered published. Neither return value is
+an acceptance acknowledgement, authoritative intent receipt or publication record.
+
+Future namespace retirement **must coordinate on the same stable private lock**
+and revalidate the live namespace while holding it. Identity checks alone cannot
+close arbitrary rename races: a held directory fd survives retirement, and an
+uncoordinated rename can leave a new stage inside the frozen directory. This
+primitive never recreates that live name or establishes a database fence. All
+writers must cooperate; modes/hardlinks do not prevent malicious same-UID/root
+code from reopening or modifying the inode. No process containment or immutable
+filesystem claim is made. Journaled provisioning, namespace retirement, tracked
+cross-process handle drain, registry commits, backup/manifest reconciliation and
+all-host durability remain prerequisites before composition or activation.
+
+`tests/test_artifact_staging.py` exercises synthetic encrypted image/text/CSV
+roundtrips, duplicate/conflict/partial evidence, component/symlink/type/mode/link
+refusal, short writes, sync/close/link faults, replacement/retirement interleavings,
+concurrent lock admission and owned-process interruption. These are local Linux
+filesystem mechanics checks, not power-loss/shared-mount or completed S1 lifecycle
+qualification. Only the uncalled staging module may compose the codec; the import
+guard still denies runtime callers of either module. Catalog stays **Not started**.
+The account-writer catalogue explicitly records the staging scanner candidates
+as deferred and uncovered; this classification does not establish runtime fencing.
+
 Smallest eventual end-to-end: A submits one PNG; fixture worker publishes CSV;
 A closes; another authenticated client for A reopens the same inputs and pinned
 CSV bytes; B is denied on every read variant. CSV version two never changes the
