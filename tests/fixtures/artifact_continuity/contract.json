@@ -1,0 +1,97 @@
+{
+  "fixture_version": 1,
+  "account_a": "a0000000-0000-4000-8000-000000000001",
+  "account_b": "b0000000-0000-4000-8000-000000000001",
+  "task": {
+    "task_id": "c0000000-0000-4000-8000-000000000001",
+    "owner_id": "a0000000-0000-4000-8000-000000000001",
+    "thread_id": "c0000000-0000-4000-8000-000000000002",
+    "user_message_id": "c0000000-0000-4000-8000-000000000003",
+    "result_message_id": "c0000000-0000-4000-8000-000000000004"
+  },
+  "job": {
+    "job_id": "d0000000-0000-4000-8000-000000000001",
+    "owner_id": "a0000000-0000-4000-8000-000000000001",
+    "task_id": "c0000000-0000-4000-8000-000000000001"
+  },
+  "inputs": [
+    {
+      "resource_id": "e0000000-0000-4000-8000-000000000001",
+      "version_id": "f0000000-0000-4000-8000-000000000001",
+      "owner_id": "a0000000-0000-4000-8000-000000000001",
+      "task_id": "c0000000-0000-4000-8000-000000000001",
+      "thread_id": "c0000000-0000-4000-8000-000000000002",
+      "message_id": "c0000000-0000-4000-8000-000000000003",
+      "ordinal": 0,
+      "representation": "submitted_image",
+      "availability": "available",
+      "display_name": "fixture.png",
+      "mime_type": "image/png",
+      "content_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    },
+    {
+      "resource_id": "e0000000-0000-4000-8000-000000000002",
+      "version_id": "f0000000-0000-4000-8000-000000000002",
+      "owner_id": "a0000000-0000-4000-8000-000000000001",
+      "task_id": "c0000000-0000-4000-8000-000000000001",
+      "thread_id": "c0000000-0000-4000-8000-000000000002",
+      "message_id": "c0000000-0000-4000-8000-000000000003",
+      "ordinal": 1,
+      "representation": "submitted_text",
+      "availability": "available",
+      "display_name": "fictional-notes.txt",
+      "mime_type": "text/plain",
+      "submitted_text": "Fictional excerpt\n... (truncated)",
+      "original_received": false
+    },
+    {
+      "resource_id": "e0000000-0000-4000-8000-000000000003",
+      "version_id": "f0000000-0000-4000-8000-000000000003",
+      "owner_id": "a0000000-0000-4000-8000-000000000001",
+      "task_id": "c0000000-0000-4000-8000-000000000001",
+      "thread_id": "c0000000-0000-4000-8000-000000000002",
+      "message_id": "c0000000-0000-4000-8000-000000000003",
+      "ordinal": 2,
+      "representation": "metadata_only",
+      "availability": "original_not_received",
+      "display_name": "fictional-binary.bin",
+      "mime_type": "application/octet-stream",
+      "reported_original_size": 123,
+      "original_received": false
+    }
+  ],
+  "output": {
+    "resource_id": "e0000000-0000-4000-8000-000000000004",
+    "owner_id": "a0000000-0000-4000-8000-000000000001",
+    "task_id": "c0000000-0000-4000-8000-000000000001",
+    "job_id": "d0000000-0000-4000-8000-000000000001",
+    "thread_id": "c0000000-0000-4000-8000-000000000002",
+    "message_id": "c0000000-0000-4000-8000-000000000004",
+    "versions": [
+      {
+        "version_id": "f0000000-0000-4000-8000-000000000004",
+        "representation": "generated_file",
+        "mime_type": "text/csv",
+        "text": "label,value\nalpha,1\n"
+      },
+      {
+        "version_id": "f0000000-0000-4000-8000-000000000005",
+        "representation": "generated_file",
+        "mime_type": "text/csv",
+        "text": "label,value\nalpha,2\n"
+      }
+    ]
+  },
+  "presentation": {
+    "schema_version": 1,
+    "component_library_version": 1,
+    "snapshot_at": "2026-10-28T00:00:00Z",
+    "component": "file-results",
+    "files": [
+      {
+        "artifact_id": "e0000000-0000-4000-8000-000000000004",
+        "artifact_version_id": "f0000000-0000-4000-8000-000000000004"
+      }
+    ]
+  }
+}
