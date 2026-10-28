@@ -1,0 +1,71 @@
+{
+  "status": "stopped_reconciliation_required",
+  "head": "52774035201964da27f8a322252627eaa95467d3",
+  "cumulative_reserved_usd": "1.5595300",
+  "actual_billed_cost_usd": null,
+  "entries": [
+    {
+      "name": "official_a_1",
+      "status": "completed",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/official_a_1/run_manifest.json",
+      "reservation_usd": "0.1194825",
+      "usage_cost_estimate_usd": "0.0238300"
+    },
+    {
+      "name": "official_a2_1",
+      "status": "completed",
+      "reservation_usd": "0.1198250",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/official_a2_1/run_manifest.json",
+      "calls_completed": 50,
+      "usage_cost_estimate_usd": "0.0238350"
+    },
+    {
+      "name": "official_b_1",
+      "status": "completed",
+      "reservation_usd": "0.1240875",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/official_b_1/run_manifest.json",
+      "calls_completed": 50,
+      "usage_cost_estimate_usd": "0.0245275"
+    },
+    {
+      "name": "official_a_2",
+      "status": "completed",
+      "reservation_usd": "0.1194825",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/official_a_2/run_manifest.json",
+      "calls_completed": 50,
+      "usage_cost_estimate_usd": "0.0238100"
+    },
+    {
+      "name": "official_a_3",
+      "status": "completed",
+      "reservation_usd": "0.1194825",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/official_a_3/run_manifest.json",
+      "calls_completed": 50,
+      "usage_cost_estimate_usd": "0.0238200"
+    },
+    {
+      "name": "generic_a_1",
+      "status": "completed",
+      "reservation_usd": "0.3174075",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/generic_a_1/run_manifest.json",
+      "calls_completed": 50,
+      "usage_cost_estimate_usd": "0.0528625"
+    },
+    {
+      "name": "generic_a2_1",
+      "status": "completed",
+      "reservation_usd": "0.3177500",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/generic_a2_1/run_manifest.json",
+      "calls_completed": 50,
+      "usage_cost_estimate_usd": "0.0530575"
+    },
+    {
+      "name": "generic_b_1",
+      "status": "stopped_reconciliation_required",
+      "reservation_usd": "0.3220125",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/generic_b_1/run_manifest.json",
+      "calls_completed": 36,
+      "usage_cost_estimate_usd": "0.0379525"
+    }
+  ]
+}

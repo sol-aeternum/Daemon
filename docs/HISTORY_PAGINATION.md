@@ -21,9 +21,10 @@ adoption, scroll/media anchors and focus/visibility/reconnect refresh are now wi
 locally. This integration is partially verified, not release-ready. Deferred
 task-qualified saved-tail adoption now survives composer/SDK/Stop completion.
 Browser qualification passes for mobile/desktop anchors, delayed media, focus,
-list access beyond 200 and bounded outbound send/retry payloads. Remaining
-full-project gates and #302 contents integration remain outstanding; no release
-or deployment claim is made.
+list access beyond 200 and bounded outbound send/retry payloads. The owner-approved
+normal merge from `main` now integrates #302's merged contents implementation
+(#591); current-head project gates and PR review remain required. No release or
+deployment claim is made.
 No deployment, migrations or model-context/extraction/retrieval changes.
 
 ## Requests and responses
@@ -163,9 +164,10 @@ movement and final/empty/search pages. Run via the registered task runner so its
 resource/evidence directories are supplied. It stops only its owned fixture.
 
 Legacy browser fixtures now use cursor-compatible IDs, owner fields, bounded page
-metadata and query-aware route matchers. Remaining work is PR gating/review and
-the existing DevTools CSP inventory, not a change to the one-provider/display seam
-or an import of #302's separate contents patch.
+metadata and query-aware route matchers. Remaining work is current-head PR
+gating/review and the existing DevTools CSP inventory. The previously separate
+#302 patch is now merged upstream through #591 and integrated through a normal
+owner-authorized merge, not copied from an unmerged peer checkout.
 Required additional cases: account/filter/A–B–A races after each async boundary,
 polling after older pages, more than one page arriving while disconnected,
 partial refresh failure, no context expansion, and mobile/desktop anchor/focus
@@ -373,5 +375,58 @@ test deadline. The runner lost its completion lock after writing the final
 inventory report, so command-exit success is not inferred from that report.
 No CSP policy, diagnostic allowlist, visual baseline, assertion or timeout was
 weakened. This non-blocking inventory remains uncleared and is a disclosed PR
-limitation, not a release-clearance claim. #302 coordination is maintained; its
-separate contents patch has not been imported or duplicated.
+limitation, not a release-clearance claim. These results predate the upstream
+contents integration below.
+
+### Upstream contents integration (#591 / #302)
+
+After PR #605 was opened, the owner authorized a normal merge of current `main`,
+including unchanged upstream benchmark artifacts (gate-only reads, no live
+benchmark execution or artifact edits). Contents navigation from merged #591 now
+consumes the same `displayedMessages` as rendering and scrolling, including newly
+prepended prompts. No second persisted owner or SDK-tail expansion is introduced.
+
+Focused supervision established scroll precedence: explicit contents navigation,
+browser find, Latest or user input revoke pending prepend/saved-reading placement;
+otherwise prepend anchoring precedes saved reading anchors and bottom-follow.
+Each placement frame checks an invalidated operation token and its container
+before touching scroll, focus or saved UI metadata. Committed conversation/auth
+changes and unmount invalidate these operations, including A–B–A and already
+delivered stale callbacks; speculative renders do not revoke the current view.
+Resize callbacks cannot override pending explicit placement. Browser find and
+collapsed-message reading-position restoration remain supported.
+
+The integrated five-file UI regression run passes 96 tests, including StrictMode,
+auth changes, stale callback delivery, saved-restoration cancellation, delayed
+media and navigation during prepend. Existing production contents/ergonomics
+browser assertions pass all 11 cases. The history browser suite retains its
+original focus/media/payload assertions and passes all five cases, including
+separate mobile/desktop checks for contents navigation into a prepended page
+before media completes. Browser
+HOME is confined to the task-managed temp directory; relative TMPDIR retains the
+UNIX-socket workaround, with no broad environment forwarding or parity allowlist.
+
+A fresh enforced read-only review of the integrated source and relevant callers,
+tests and fixtures found no source-backed defect. It uses the existing OpenAI
+OAuth fallback and is same-family with the authors; it is not independent-family
+approval or permission to merge. Full current-head gates/CI, completed Codex PR
+review and human final review remain required. No PR merge or deployment.
+
+After upstream integration the full backend gate passes 7,357 tests (1,273
+skipped; 16 subtests). The frontend suite passes 1,634 tests across 119 files.
+The sole code-gate failure was an exhaustive-deps warning about reading a mutable
+scope ref in cleanup; cleanup now captures its scope token without weakening
+invalidation or suppressing the rule, and lint passes. Repeated cache fixture
+verification encountered occupied loopback ports followed by TIME_WAIT sockets;
+the fixture correctly refused exclusive binding. No foreign listener was probed,
+adopted or terminated, and the gate was not skipped or loosened.
+After the sockets expired, ownership checks passed all three cases and the
+HTTP-cache browser gate passed all 30. Backend, frontend and aggregate blocking
+gates are verified across the final-state runs; the cache retry and lint repair
+are recorded rather than relabelled as an initially clean run.
+
+The integrated default non-blocking browser inventory was rerun with no retries:
+32 passed / 21 failed, a normal test-failure exit with no lifecycle ambiguity.
+All 21 failures remain design-token diagnostics for the single DevTools CSP
+style hash tracked in #490; there were no timeouts or screenshot-comparison
+failures. Policies, diagnostic allowlists, baselines and deadlines remain intact.

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
@@ -15,7 +16,7 @@ export default defineConfig({
       // Chromium's singleton UNIX socket cannot fit the long managed TMPDIR.
       // Relative browser temp stays inside this registered checkout (npm cwd),
       // with no external scratch, symlink or lifecycle admission override.
-      env: { TMPDIR: '.' },
+      env: { TMPDIR: '.', HOME: tmpdir() },
       executablePath: existsSync('/usr/bin/chromium')
         ? '/usr/bin/chromium'
         : undefined,

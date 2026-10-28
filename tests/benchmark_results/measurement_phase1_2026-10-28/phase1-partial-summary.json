@@ -1,0 +1,386 @@
+{
+  "runs": {
+    "generic_a2_1": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 31,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 5
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 1
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "correct": 5
+        },
+        "MR": {
+          "total": 10,
+          "correct": 6
+        },
+        "TR": {
+          "total": 10,
+          "correct": 5
+        }
+      },
+      "abs_correct": 1,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0530575",
+      "pending": null
+    },
+    "generic_a_1": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 30,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 5
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 0
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "correct": 5
+        },
+        "MR": {
+          "total": 10,
+          "correct": 6
+        },
+        "TR": {
+          "total": 10,
+          "correct": 5
+        }
+      },
+      "abs_correct": 1,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0528625",
+      "pending": null
+    },
+    "generic_b_1": {
+      "status": "stopped_reconciliation_required",
+      "rows": 36,
+      "correct": 6,
+      "categories": {
+        "IE-assistant": {
+          "total": 6,
+          "correct": 2
+        },
+        "IE-preference": {
+          "total": 1,
+          "correct": 0
+        },
+        "IE-user": {
+          "total": 6,
+          "correct": 1
+        },
+        "KU": {
+          "total": 7,
+          "correct": 2
+        },
+        "MR": {
+          "total": 8,
+          "correct": 0
+        },
+        "TR": {
+          "total": 8,
+          "correct": 1
+        }
+      },
+      "abs_correct": 2,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 36
+      },
+      "usage_estimate_usd": "0.0379525",
+      "pending": "c5e8278d"
+    },
+    "official_a2_1": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 34,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 6
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 1
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "correct": 6
+        },
+        "MR": {
+          "total": 10,
+          "correct": 7
+        },
+        "TR": {
+          "total": 10,
+          "correct": 5
+        }
+      },
+      "abs_correct": 2,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0238350",
+      "pending": null
+    },
+    "official_a_1": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 34,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 6
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 1
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "correct": 6
+        },
+        "MR": {
+          "total": 10,
+          "correct": 7
+        },
+        "TR": {
+          "total": 10,
+          "correct": 5
+        }
+      },
+      "abs_correct": 2,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0238300",
+      "pending": null
+    },
+    "official_a_2": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 34,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 6
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 1
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "correct": 6
+        },
+        "MR": {
+          "total": 10,
+          "correct": 7
+        },
+        "TR": {
+          "total": 10,
+          "correct": 5
+        }
+      },
+      "abs_correct": 2,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0238100",
+      "pending": null
+    },
+    "official_a_3": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 33,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 6
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 0
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "correct": 6
+        },
+        "MR": {
+          "total": 10,
+          "correct": 7
+        },
+        "TR": {
+          "total": 10,
+          "correct": 5
+        }
+      },
+      "abs_correct": 2,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0238200",
+      "pending": null
+    },
+    "official_b_1": {
+      "status": "completed",
+      "rows": 50,
+      "correct": 5,
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "correct": 3
+        },
+        "IE-preference": {
+          "total": 3,
+          "correct": 0
+        },
+        "IE-user": {
+          "total": 9,
+          "correct": 0
+        },
+        "KU": {
+          "total": 9,
+          "correct": 1
+        },
+        "MR": {
+          "total": 10,
+          "correct": 0
+        },
+        "TR": {
+          "total": 10,
+          "correct": 1
+        }
+      },
+      "abs_correct": 2,
+      "abs_total": 5,
+      "finish_reasons": {
+        "stop": 50
+      },
+      "usage_estimate_usd": "0.0245275",
+      "pending": null
+    }
+  },
+  "repeated_official_a_pairs": [
+    {
+      "left": "official_a_1",
+      "right": "official_a_2",
+      "flips": [],
+      "disagreements": 0
+    },
+    {
+      "left": "official_a_1",
+      "right": "official_a_3",
+      "flips": [
+        "75f70248"
+      ],
+      "disagreements": 1
+    },
+    {
+      "left": "official_a_2",
+      "right": "official_a_3",
+      "flips": [
+        "75f70248"
+      ],
+      "disagreements": 1
+    }
+  ],
+  "fresh_comparisons": {
+    "a": {
+      "paired": 50,
+      "strict_disagreements": 4,
+      "generic_rejudge_strict_flips": 0,
+      "generic_three_way_table": {
+        "incorrect|incorrect": 16,
+        "correct|correct": 30,
+        "partially_correct|partially_correct": 3,
+        "partially_correct|incorrect": 1
+      },
+      "strict_disagreement_ids": [
+        "59524333",
+        "75f70248",
+        "80ec1f4f_abs",
+        "c4f10528"
+      ]
+    },
+    "a2": {
+      "paired": 50,
+      "strict_disagreements": 3,
+      "generic_rejudge_strict_flips": 0,
+      "generic_three_way_table": {
+        "incorrect|incorrect": 16,
+        "correct|correct": 31,
+        "partially_correct|partially_correct": 2,
+        "incorrect|partially_correct": 1
+      },
+      "strict_disagreement_ids": [
+        "59524333",
+        "80ec1f4f_abs",
+        "c4f10528"
+      ]
+    },
+    "b": {
+      "paired": 36,
+      "strict_disagreements": 2,
+      "generic_rejudge_strict_flips": 1,
+      "generic_three_way_table": {
+        "incorrect|incorrect": 29,
+        "correct|correct": 5,
+        "partially_correct|partially_correct": 1,
+        "incorrect|correct": 1
+      },
+      "strict_disagreement_ids": [
+        "852ce960",
+        "86f00804"
+      ]
+    }
+  },
+  "total_returned_judge_calls": 386,
+  "total_usage_estimate_usd": "0.2636950",
+  "cumulative_reserved_usd": "1.5595300",
+  "actual_billed_cost_usd": null
+}

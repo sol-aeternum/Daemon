@@ -89,6 +89,7 @@ import {
 } from '../components/CollapsibleMessage';
 import { useChatScroll } from '../hooks/useChatScroll';
 import type { Conversation } from '../hooks/useConversationHistory';
+import { ConversationContents } from '../components/ConversationContents';
 import { MobileHeader } from '../components/MobileHeader';
 import ChatSkeleton from '../components/ChatSkeleton';
 import { useConversationHistory } from '../hooks/useConversationHistory';
@@ -1943,6 +1944,7 @@ function ChatContent() {
     onScroll,
     jumpToLatest,
     preservePrepend,
+    scrollToMessage,
   } = useChatScroll({
     conversationId: currentId,
     messages: displayedMessages,
@@ -2207,6 +2209,24 @@ function ChatContent() {
       : [];
 
   const currentMessagesMatch = sdkOwnsView;
+  const contentsEntries = useMemo(
+    () =>
+      displayedMessages.flatMap((message) => {
+        if (message.role !== 'user') return [];
+        const firstLine = getDaemonMessageText(message)
+          .split(/\r?\n/)
+          .find((line) => line.trim());
+        const label =
+          firstLine?.trim().replace(/\s+/g, ' ') || 'Untitled prompt';
+        return [
+          {
+            id: message.id,
+            label: label.length > 90 ? `${label.slice(0, 89)}…` : label,
+          },
+        ];
+      }),
+    [displayedMessages],
+  );
   const detailTurns: DetailTurn[] = (
     currentMessagesMatch ? displayedMessages : []
   ).flatMap((message) => {
@@ -2404,6 +2424,13 @@ function ChatContent() {
               onOpenSidebar={() => setIsSidebarOpen(true)}
             >
               <div className="flex items-center gap-2">
+                <ConversationContents
+                  key={`mobile-${authGeneration}-${currentId}`}
+                  mobile
+                  entries={contentsEntries}
+                  scrollContainerRef={scrollContainerRef}
+                  onNavigate={scrollToMessage}
+                />
                 {detailsButton}
                 {toolLogToggle}
                 <ConnectionStatus
@@ -2432,439 +2459,457 @@ function ChatContent() {
               </div>
             </header>
 
-            <main
-              ref={scrollContainerRef}
-              onScroll={onScroll}
-              tabIndex={-1}
-              aria-label="Conversation messages"
-              className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
-            >
-              {((conversationLoading && !sdkOwnsView) ||
-                (messages.length === 0 &&
-                  (isLoading || conversationLoading))) &&
-              !conversationLoadFailure ? (
-                <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
-                  {/* Assistant message skeleton - left aligned */}
-                  <div className="flex flex-col items-start mb-6">
-                    <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
-                      <SkeletonBlock
-                        width="60%"
-                        height="4rem"
-                        className="bg-[var(--color-bg-secondary)]"
-                      />
+            <div className="flex min-h-0 flex-1">
+              <main
+                ref={scrollContainerRef}
+                onScroll={onScroll}
+                tabIndex={-1}
+                aria-label="Conversation messages"
+                className="min-w-0 flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
+              >
+                {((conversationLoading && !sdkOwnsView) ||
+                  (messages.length === 0 &&
+                    (isLoading || conversationLoading))) &&
+                !conversationLoadFailure ? (
+                  <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
+                    {/* Assistant message skeleton - left aligned */}
+                    <div className="flex flex-col items-start mb-6">
+                      <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
+                        <SkeletonBlock
+                          width="60%"
+                          height="4rem"
+                          className="bg-[var(--color-bg-secondary)]"
+                        />
+                      </div>
+                    </div>
+                    {/* User message skeleton - right aligned */}
+                    <div className="flex flex-col items-end mb-6">
+                      <div className="max-w-message-mobile md:max-w-assistant-message">
+                        <SkeletonBlock
+                          width="80%"
+                          height="3rem"
+                          className="bg-[var(--color-accent-primary)] opacity-60"
+                        />
+                      </div>
+                    </div>
+                    {/* Assistant message skeleton - left aligned */}
+                    <div className="flex flex-col items-start mb-6">
+                      <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
+                        <SkeletonBlock
+                          width="50%"
+                          height="5rem"
+                          className="bg-[var(--color-bg-secondary)]"
+                        />
+                      </div>
+                    </div>
+                    {/* User message skeleton - right aligned */}
+                    <div className="flex flex-col items-end mb-6">
+                      <div className="max-w-message-mobile md:max-w-assistant-message">
+                        <SkeletonBlock
+                          width="70%"
+                          height="2.5rem"
+                          className="bg-[var(--color-accent-primary)] opacity-60"
+                        />
+                      </div>
+                    </div>
+                    {/* Assistant message skeleton - left aligned */}
+                    <div className="flex flex-col items-start mb-6">
+                      <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
+                        <SkeletonBlock
+                          width="75%"
+                          height="4rem"
+                          className="bg-[var(--color-bg-secondary)]"
+                        />
+                      </div>
                     </div>
                   </div>
-                  {/* User message skeleton - right aligned */}
-                  <div className="flex flex-col items-end mb-6">
-                    <div className="max-w-message-mobile md:max-w-assistant-message">
-                      <SkeletonBlock
-                        width="80%"
-                        height="3rem"
-                        className="bg-[var(--color-accent-primary)] opacity-60"
-                      />
-                    </div>
-                  </div>
-                  {/* Assistant message skeleton - left aligned */}
-                  <div className="flex flex-col items-start mb-6">
-                    <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
-                      <SkeletonBlock
-                        width="50%"
-                        height="5rem"
-                        className="bg-[var(--color-bg-secondary)]"
-                      />
-                    </div>
-                  </div>
-                  {/* User message skeleton - right aligned */}
-                  <div className="flex flex-col items-end mb-6">
-                    <div className="max-w-message-mobile md:max-w-assistant-message">
-                      <SkeletonBlock
-                        width="70%"
-                        height="2.5rem"
-                        className="bg-[var(--color-accent-primary)] opacity-60"
-                      />
-                    </div>
-                  </div>
-                  {/* Assistant message skeleton - left aligned */}
-                  <div className="flex flex-col items-start mb-6">
-                    <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
-                      <SkeletonBlock
-                        width="75%"
-                        height="4rem"
-                        className="bg-[var(--color-bg-secondary)]"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : conversationLoadFailure ? (
-                <div className="h-full px-4 py-6">
-                  <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-3 px-4 text-center">
-                    <p
-                      role="status"
-                      className="text-sm text-[var(--color-text-secondary)]"
-                    >
-                      {conversationLoadFailure === 'permanent'
-                        ? 'This conversation is not available. It may have been deleted, or it belongs to another account.'
-                        : 'This conversation has not loaded. The service may be temporarily unavailable; try again later.'}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handleGoHome}
-                      className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
-                    >
-                      Go to Home
-                    </button>
-                  </div>
-                </div>
-              ) : displayedMessages.length === 0 ? (
-                <div className="h-full px-4 py-6">
-                  <WelcomeScreen
-                    input={input}
-                    onSuggestionSelect={handleSuggestionSelect}
-                    isSubmittingSuggestion={isSubmittingSuggestion}
-                    composer={chatComposer}
-                  />
-                </div>
-              ) : (
-                <div className="mx-auto w-full max-w-3xl px-4 py-6">
-                  {currentId && (
-                    <div
-                      className="mb-4 space-y-2"
-                      aria-busy={
-                        messageHistory.loadingOlder || messageHistory.syncing
-                      }
-                    >
+                ) : conversationLoadFailure ? (
+                  <div className="h-full px-4 py-6">
+                    <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center gap-3 px-4 text-center">
                       <p
                         role="status"
-                        aria-live="polite"
-                        className="text-sm text-[var(--color-text-muted)]"
+                        className="text-sm text-[var(--color-text-secondary)]"
                       >
-                        {messageHistory.error
-                          ? 'History could not be fully refreshed. Loaded messages are retained.'
-                          : messageHistory.syncing
-                            ? 'Syncing loaded history…'
-                            : messageHistory.incomplete
-                              ? 'Loaded history still needs reconciliation.'
-                              : messageHistory.hasOlder
-                                ? 'Earlier messages are not loaded yet.'
-                                : 'No earlier messages in the last successful history read.'}
+                        {conversationLoadFailure === 'permanent'
+                          ? 'This conversation is not available. It may have been deleted, or it belongs to another account.'
+                          : 'This conversation has not loaded. The service may be temporarily unavailable; try again later.'}
                       </p>
                       <button
                         type="button"
-                        aria-disabled={historyPagingUnavailable}
-                        className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 aria-disabled:opacity-60"
-                        onClick={() => {
-                          if (historyPagingUnavailable) return;
-                          preservePrepend();
-                          if (
-                            messageHistory.incomplete ||
-                            (messageHistory.error &&
-                              messageHistory.retryKind !== 'older')
-                          )
-                            void refreshMessageHistory();
-                          else void loadOlderMessages();
-                        }}
+                        onClick={handleGoHome}
+                        className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
                       >
-                        {messageHistory.loadingOlder
-                          ? 'Loading earlier messages…'
-                          : messageHistory.error || messageHistory.incomplete
-                            ? 'Retry history'
-                            : messageHistory.hasOlder
-                              ? 'Load older messages'
-                              : 'No earlier messages'}
+                        Go to Home
                       </button>
                     </div>
-                  )}
-                  {displayedMessages.map((message, index) => {
-                    if (message.role === 'system') return null;
-                    const isLast = message.id === messages.at(-1)?.id;
-                    const liveEvents = getEventsForMessage(message.id, isLast);
-                    const persistedToolEvents =
-                      persistedToolEventsByMessageId.get(message.id) || [];
-                    const msgEvents =
-                      liveEvents.length > 0 ? liveEvents : persistedToolEvents;
-                    const documentsForMessage = currentMessagesMatch
-                      ? getConversationOutputs(msgEvents)
-                      : [];
-                    const liveThoughtContent = getThinkingContent(liveEvents);
-                    const messageContent = getDaemonMessageText(message);
-                    const formattedMessageContent =
-                      formatMessageContent(messageContent);
-
-                    const councilEventsInMessage = hasCouncilEvents(msgEvents);
-                    const councilInterviewEvent =
-                      getCouncilInterviewEvent(msgEvents);
-                    const councilProgressEvent =
-                      getLatestCouncilProgressEvent(msgEvents);
-                    const councilOutputEvents =
-                      getCouncilOutputEvents(msgEvents);
-                    const councilProgressVisible =
-                      shouldShowCouncilProgress(msgEvents);
-
-                    const persistedMessage = persistedMessagesById.get(
-                      message.id,
-                    ) as ReasoningMessage | undefined;
-                    const reasoningMessage =
-                      persistedMessage ?? (message as ReasoningMessage);
-                    const persistedReasoning = reasoningMessage.reasoning_text;
-                    const rawDuration =
-                      typeof reasoningMessage.reasoning_duration_secs ===
-                      'number'
-                        ? reasoningMessage.reasoning_duration_secs
-                        : undefined;
-                    const persistedDuration =
-                      rawDuration !== undefined
-                        ? Math.max(1, rawDuration)
-                        : undefined;
-                    const fallbackDuration =
-                      persistedReasoning && persistedDuration === undefined
-                        ? 1
-                        : persistedDuration;
-                    const persistedModel = reasoningMessage.reasoning_model;
-                    const routingEvent = msgEvents.find(isRoutingEvent);
-                    // Disclosures (fallback, budget-fitted output) arrive as later
-                    // routing updates, so the notice reads the latest one.
-                    const latestRoutingEvent =
-                      msgEvents.findLast(isRoutingEvent);
-                    const routingModel = routingEvent?.model;
-                    const fallbackThought =
-                      thoughtFallbackByMessageId[message.id];
-                    const thoughtContent =
-                      liveThoughtContent ||
-                      persistedReasoning ||
-                      fallbackThought ||
-                      '';
-                    const thoughtEvent: ChatEvent | undefined = thoughtContent
-                      ? { type: 'thinking', content: thoughtContent }
-                      : undefined;
-                    const modelName = getModelName(
-                      persistedModel || routingModel,
-                    );
-                    const citationSources =
-                      message.role === 'assistant'
-                        ? buildMessageCitationSources(msgEvents)
-                        : [];
-
-                    return (
-                      <CollapsibleMessage
-                        key={message.id}
-                        messageId={message.id}
-                        title={`${message.role === 'user' ? 'You' : 'Daemon'} · loaded message ${index + 1}`}
-                        preview={formattedMessageContent}
-                        collapsible={
-                          index < displayedMessages.length - 5 &&
-                          formattedMessageContent.length > COLLAPSE_MIN_CHARS
-                        }
-                        childrenClassName={
-                          message.role === 'user'
-                            ? 'flex justify-end'
-                            : 'space-y-3'
+                  </div>
+                ) : displayedMessages.length === 0 ? (
+                  <div className="h-full px-4 py-6">
+                    <WelcomeScreen
+                      input={input}
+                      onSuggestionSelect={handleSuggestionSelect}
+                      isSubmittingSuggestion={isSubmittingSuggestion}
+                      composer={chatComposer}
+                    />
+                  </div>
+                ) : (
+                  <div className="mx-auto w-full max-w-3xl px-4 py-6">
+                    {currentId && (
+                      <div
+                        className="mb-4 space-y-2"
+                        aria-busy={
+                          messageHistory.loadingOlder || messageHistory.syncing
                         }
                       >
-                        {message.role === 'assistant' &&
-                          !councilEventsInMessage && (
-                            <div className="w-full space-y-2">
-                              <ThinkingIndicator
-                                event={thoughtEvent}
-                                isThinking={isLast && isLoading}
-                                isFinished={!isLast || !isLoading}
-                                duration={
-                                  isLast && isLoading
-                                    ? undefined
-                                    : getDurationForMessage(message.id) > 0
-                                      ? getDurationForMessage(message.id)
-                                      : fallbackDuration
-                                }
-                                modelName={modelName}
-                                onDurationChange={(d) =>
-                                  (thinkingDurationRef.current = d)
-                                }
-                              />
-                              {!hideToolCalls && (
-                                <ToolCallLog events={msgEvents} />
+                        <p
+                          role="status"
+                          aria-live="polite"
+                          className="text-sm text-[var(--color-text-muted)]"
+                        >
+                          {messageHistory.error
+                            ? 'History could not be fully refreshed. Loaded messages are retained.'
+                            : messageHistory.syncing
+                              ? 'Syncing loaded history…'
+                              : messageHistory.incomplete
+                                ? 'Loaded history still needs reconciliation.'
+                                : messageHistory.hasOlder
+                                  ? 'Earlier messages are not loaded yet.'
+                                  : 'No earlier messages in the last successful history read.'}
+                        </p>
+                        <button
+                          type="button"
+                          aria-disabled={historyPagingUnavailable}
+                          className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 aria-disabled:opacity-60"
+                          onClick={() => {
+                            if (historyPagingUnavailable) return;
+                            preservePrepend();
+                            if (
+                              messageHistory.incomplete ||
+                              (messageHistory.error &&
+                                messageHistory.retryKind !== 'older')
+                            )
+                              void refreshMessageHistory();
+                            else void loadOlderMessages();
+                          }}
+                        >
+                          {messageHistory.loadingOlder
+                            ? 'Loading earlier messages…'
+                            : messageHistory.error || messageHistory.incomplete
+                              ? 'Retry history'
+                              : messageHistory.hasOlder
+                                ? 'Load older messages'
+                                : 'No earlier messages'}
+                        </button>
+                      </div>
+                    )}
+                    {displayedMessages.map((message, index) => {
+                      if (message.role === 'system') return null;
+                      const isLast = message.id === messages.at(-1)?.id;
+                      const liveEvents = getEventsForMessage(
+                        message.id,
+                        isLast,
+                      );
+                      const persistedToolEvents =
+                        persistedToolEventsByMessageId.get(message.id) || [];
+                      const msgEvents =
+                        liveEvents.length > 0
+                          ? liveEvents
+                          : persistedToolEvents;
+                      const documentsForMessage = currentMessagesMatch
+                        ? getConversationOutputs(msgEvents)
+                        : [];
+                      const liveThoughtContent = getThinkingContent(liveEvents);
+                      const messageContent = getDaemonMessageText(message);
+                      const formattedMessageContent =
+                        formatMessageContent(messageContent);
+
+                      const councilEventsInMessage =
+                        hasCouncilEvents(msgEvents);
+                      const councilInterviewEvent =
+                        getCouncilInterviewEvent(msgEvents);
+                      const councilProgressEvent =
+                        getLatestCouncilProgressEvent(msgEvents);
+                      const councilOutputEvents =
+                        getCouncilOutputEvents(msgEvents);
+                      const councilProgressVisible =
+                        shouldShowCouncilProgress(msgEvents);
+
+                      const persistedMessage = persistedMessagesById.get(
+                        message.id,
+                      ) as ReasoningMessage | undefined;
+                      const reasoningMessage =
+                        persistedMessage ?? (message as ReasoningMessage);
+                      const persistedReasoning =
+                        reasoningMessage.reasoning_text;
+                      const rawDuration =
+                        typeof reasoningMessage.reasoning_duration_secs ===
+                        'number'
+                          ? reasoningMessage.reasoning_duration_secs
+                          : undefined;
+                      const persistedDuration =
+                        rawDuration !== undefined
+                          ? Math.max(1, rawDuration)
+                          : undefined;
+                      const fallbackDuration =
+                        persistedReasoning && persistedDuration === undefined
+                          ? 1
+                          : persistedDuration;
+                      const persistedModel = reasoningMessage.reasoning_model;
+                      const routingEvent = msgEvents.find(isRoutingEvent);
+                      // Disclosures (fallback, budget-fitted output) arrive as later
+                      // routing updates, so the notice reads the latest one.
+                      const latestRoutingEvent =
+                        msgEvents.findLast(isRoutingEvent);
+                      const routingModel = routingEvent?.model;
+                      const fallbackThought =
+                        thoughtFallbackByMessageId[message.id];
+                      const thoughtContent =
+                        liveThoughtContent ||
+                        persistedReasoning ||
+                        fallbackThought ||
+                        '';
+                      const thoughtEvent: ChatEvent | undefined = thoughtContent
+                        ? { type: 'thinking', content: thoughtContent }
+                        : undefined;
+                      const modelName = getModelName(
+                        persistedModel || routingModel,
+                      );
+                      const citationSources =
+                        message.role === 'assistant'
+                          ? buildMessageCitationSources(msgEvents)
+                          : [];
+
+                      return (
+                        <CollapsibleMessage
+                          key={message.id}
+                          messageId={message.id}
+                          title={`${message.role === 'user' ? 'You' : 'Daemon'} · loaded message ${index + 1}`}
+                          preview={formattedMessageContent}
+                          collapsible={
+                            index < displayedMessages.length - 5 &&
+                            formattedMessageContent.length > COLLAPSE_MIN_CHARS
+                          }
+                          childrenClassName={
+                            message.role === 'user'
+                              ? 'flex justify-end'
+                              : 'space-y-3'
+                          }
+                        >
+                          {message.role === 'assistant' &&
+                            !councilEventsInMessage && (
+                              <div className="w-full space-y-2">
+                                <ThinkingIndicator
+                                  event={thoughtEvent}
+                                  isThinking={isLast && isLoading}
+                                  isFinished={!isLast || !isLoading}
+                                  duration={
+                                    isLast && isLoading
+                                      ? undefined
+                                      : getDurationForMessage(message.id) > 0
+                                        ? getDurationForMessage(message.id)
+                                        : fallbackDuration
+                                  }
+                                  modelName={modelName}
+                                  onDurationChange={(d) =>
+                                    (thinkingDurationRef.current = d)
+                                  }
+                                />
+                                {!hideToolCalls && (
+                                  <ToolCallLog events={msgEvents} />
+                                )}
+                                <RoutingNotice
+                                  fallback={latestRoutingEvent?.fallback}
+                                  reasonCodes={latestRoutingEvent?.reason_codes}
+                                />
+                              </div>
+                            )}
+
+                          {councilEventsInMessage && (
+                            <div className="w-full space-y-4">
+                              {councilInterviewEvent && (
+                                <CouncilInterviewCard
+                                  event={councilInterviewEvent}
+                                  onSendConfig={(config) => {
+                                    // A retry of this turn re-sends no files.
+                                    lastTurnRef.current = {
+                                      conversationId:
+                                        currentId ||
+                                        latestConversationIdRef.current ||
+                                        null,
+                                      attachments: [],
+                                    };
+                                    // Council configuration runs request-
+                                    // bound (DURABLE_REQUEST_DESIGN §7): no
+                                    // task exists to replay, so it is not
+                                    // held, and a retry is a new run.
+                                    const text = `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`;
+                                    beginSend();
+                                    void sendMessage(
+                                      { text },
+                                      {
+                                        body: {
+                                          id:
+                                            currentId ||
+                                            latestConversationIdRef.current ||
+                                            null,
+                                          model: activeModel,
+                                        },
+                                      },
+                                    );
+                                  }}
+                                />
                               )}
-                              <RoutingNotice
-                                fallback={latestRoutingEvent?.fallback}
-                                reasonCodes={latestRoutingEvent?.reason_codes}
-                              />
+
+                              {councilProgressEvent &&
+                                councilProgressVisible && (
+                                  <CouncilProgress
+                                    event={
+                                      councilProgressEvent as {
+                                        type: 'council_progress';
+                                        stage: string;
+                                        current_round: number;
+                                        total_rounds: number;
+                                        models_complete: number;
+                                        models_total: number;
+                                      }
+                                    }
+                                  />
+                                )}
+
+                              {councilOutputEvents.length > 0 && (
+                                <CouncilOutputViewer
+                                  events={councilOutputEvents}
+                                />
+                              )}
+
+                              {stoppedMessageIds.has(message.id) && (
+                                <div
+                                  role="status"
+                                  className="text-xs text-[var(--color-text-muted)]"
+                                >
+                                  (stopped)
+                                </div>
+                              )}
+                              {stoppingMessageIds.has(message.id) && (
+                                <div
+                                  role="status"
+                                  className="text-xs text-[var(--color-text-muted)]"
+                                >
+                                  (stopping…)
+                                </div>
+                              )}
                             </div>
                           )}
 
-                        {councilEventsInMessage && (
-                          <div className="w-full space-y-4">
-                            {councilInterviewEvent && (
-                              <CouncilInterviewCard
-                                event={councilInterviewEvent}
-                                onSendConfig={(config) => {
-                                  // A retry of this turn re-sends no files.
-                                  lastTurnRef.current = {
-                                    conversationId:
-                                      currentId ||
-                                      latestConversationIdRef.current ||
-                                      null,
-                                    attachments: [],
-                                  };
-                                  // Council configuration runs request-
-                                  // bound (DURABLE_REQUEST_DESIGN §7): no
-                                  // task exists to replay, so it is not
-                                  // held, and a retry is a new run.
-                                  const text = `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`;
-                                  beginSend();
-                                  void sendMessage(
-                                    { text },
-                                    {
-                                      body: {
-                                        id:
-                                          currentId ||
-                                          latestConversationIdRef.current ||
-                                          null,
-                                        model: activeModel,
-                                      },
-                                    },
-                                  );
-                                }}
-                              />
-                            )}
-
-                            {councilProgressEvent && councilProgressVisible && (
-                              <CouncilProgress
-                                event={
-                                  councilProgressEvent as {
-                                    type: 'council_progress';
-                                    stage: string;
-                                    current_round: number;
-                                    total_rounds: number;
-                                    models_complete: number;
-                                    models_total: number;
-                                  }
-                                }
-                              />
-                            )}
-
-                            {councilOutputEvents.length > 0 && (
-                              <CouncilOutputViewer
-                                events={councilOutputEvents}
-                              />
-                            )}
-
-                            {stoppedMessageIds.has(message.id) && (
-                              <div
-                                role="status"
-                                className="text-xs text-[var(--color-text-muted)]"
-                              >
-                                (stopped)
+                          {message.role === 'assistant' &&
+                          !councilEventsInMessage ? (
+                            <div className="w-full space-y-2">
+                              <div className="w-full">
+                                <MarkdownMessage
+                                  content={messageContent}
+                                  sources={citationSources}
+                                />
+                                {messageContent.trim() && (
+                                  <>
+                                    <CopyResponseButton
+                                      content={messageContent}
+                                    />
+                                    <TextToSpeechButton
+                                      text={messageContent}
+                                      messageId={message.id}
+                                      conversationId={currentId ?? null}
+                                      available={
+                                        currentMessagesMatch &&
+                                        (!isLast || !isLoading)
+                                      }
+                                    />
+                                  </>
+                                )}
                               </div>
-                            )}
-                            {stoppingMessageIds.has(message.id) && (
-                              <div
-                                role="status"
-                                className="text-xs text-[var(--color-text-muted)]"
-                              >
-                                (stopping…)
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {message.role === 'assistant' &&
-                        !councilEventsInMessage ? (
-                          <div className="w-full space-y-2">
-                            <div className="w-full">
-                              <MarkdownMessage
-                                content={messageContent}
-                                sources={citationSources}
-                              />
-                              {messageContent.trim() && (
-                                <>
-                                  <CopyResponseButton
-                                    content={messageContent}
-                                  />
-                                  <TextToSpeechButton
-                                    text={messageContent}
-                                    messageId={message.id}
-                                    conversationId={currentId ?? null}
-                                    available={
-                                      currentMessagesMatch &&
-                                      (!isLast || !isLoading)
-                                    }
-                                  />
-                                </>
+                              {stoppedMessageIds.has(message.id) && (
+                                <div
+                                  role="status"
+                                  className="text-xs text-[var(--color-text-muted)]"
+                                >
+                                  (stopped)
+                                </div>
+                              )}
+                              {stoppingMessageIds.has(message.id) && (
+                                <div
+                                  role="status"
+                                  className="text-xs text-[var(--color-text-muted)]"
+                                >
+                                  (stopping…)
+                                </div>
+                              )}
+                              {documentsForMessage.map(
+                                (documentDownloadForMessage) => (
+                                  <div
+                                    key={documentDownloadForMessage.fileUrl}
+                                    className="mt-4 w-full"
+                                  >
+                                    <FileDownloadCard
+                                      filename={
+                                        documentDownloadForMessage.filename
+                                      }
+                                      fileUrl={
+                                        documentDownloadForMessage.fileUrl
+                                      }
+                                      fileSize={
+                                        documentDownloadForMessage.fileSize
+                                      }
+                                      fileType={
+                                        documentDownloadForMessage.fileType
+                                      }
+                                      trailingAction={
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            openDetails(
+                                              'Outputs',
+                                              documentDownloadForMessage,
+                                            )
+                                          }
+                                          className="inline-flex min-h-touch items-center justify-center gap-2 px-3 bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-primary)] border border-[var(--color-border-primary)] text-[var(--color-text-secondary)] rounded-lg"
+                                          aria-label={`Preview ${documentDownloadForMessage.filename}`}
+                                        >
+                                          <Eye className="w-4 h-4" />
+                                          Preview
+                                        </button>
+                                      }
+                                    />
+                                  </div>
+                                ),
                               )}
                             </div>
-                            {stoppedMessageIds.has(message.id) && (
-                              <div
-                                role="status"
-                                className="text-xs text-[var(--color-text-muted)]"
-                              >
-                                (stopped)
+                          ) : message.role === 'user' ? (
+                            <div className="max-w-message-mobile md:max-w-user-message rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 text-[var(--color-text-primary)]">
+                              <div className="whitespace-pre-wrap leading-relaxed font-medium">
+                                {formattedMessageContent}
                               </div>
-                            )}
-                            {stoppingMessageIds.has(message.id) && (
-                              <div
-                                role="status"
-                                className="text-xs text-[var(--color-text-muted)]"
-                              >
-                                (stopping…)
-                              </div>
-                            )}
-                            {documentsForMessage.map(
-                              (documentDownloadForMessage) => (
-                                <div
-                                  key={documentDownloadForMessage.fileUrl}
-                                  className="mt-4 w-full"
-                                >
-                                  <FileDownloadCard
-                                    filename={
-                                      documentDownloadForMessage.filename
-                                    }
-                                    fileUrl={documentDownloadForMessage.fileUrl}
-                                    fileSize={
-                                      documentDownloadForMessage.fileSize
-                                    }
-                                    fileType={
-                                      documentDownloadForMessage.fileType
-                                    }
-                                    trailingAction={
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          openDetails(
-                                            'Outputs',
-                                            documentDownloadForMessage,
-                                          )
-                                        }
-                                        className="inline-flex min-h-touch items-center justify-center gap-2 px-3 bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-primary)] border border-[var(--color-border-primary)] text-[var(--color-text-secondary)] rounded-lg"
-                                        aria-label={`Preview ${documentDownloadForMessage.filename}`}
-                                      >
-                                        <Eye className="w-4 h-4" />
-                                        Preview
-                                      </button>
-                                    }
-                                  />
-                                </div>
-                              ),
-                            )}
-                          </div>
-                        ) : message.role === 'user' ? (
-                          <div className="max-w-message-mobile md:max-w-user-message rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 text-[var(--color-text-primary)]">
-                            <div className="whitespace-pre-wrap leading-relaxed font-medium">
-                              {formattedMessageContent}
+                              <SuggestionSourceContext
+                                context={
+                                  message.metadata?.home_suggestion ??
+                                  persistedMessagesById.get(message.id)
+                                    ?.metadata?.home_suggestion
+                                }
+                              />
                             </div>
-                            <SuggestionSourceContext
-                              context={
-                                message.metadata?.home_suggestion ??
-                                persistedMessagesById.get(message.id)?.metadata
-                                  ?.home_suggestion
-                              }
-                            />
-                          </div>
-                        ) : null}
-                      </CollapsibleMessage>
-                    );
-                  })}
-                  <div ref={messagesEndRef} />
-                </div>
-              )}
-            </main>
+                          ) : null}
+                        </CollapsibleMessage>
+                      );
+                    })}
+                    <div ref={messagesEndRef} />
+                  </div>
+                )}
+              </main>
+              <ConversationContents
+                key={`desktop-${authGeneration}-${currentId}`}
+                entries={contentsEntries}
+                scrollContainerRef={scrollContainerRef}
+                onNavigate={scrollToMessage}
+              />
+            </div>
 
             {messages.length > 0 && (
               <footer className="relative shrink-0 bg-[var(--color-bg-primary)] pb-safe-panel">

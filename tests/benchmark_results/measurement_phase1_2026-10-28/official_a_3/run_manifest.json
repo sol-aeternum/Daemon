@@ -1,0 +1,51 @@
+{
+  "run_id": "77cf4887d450438c8f5f7c9a90daae3d",
+  "started_at": "2026-10-28T08:19:25.804885+00:00",
+  "status": "completed",
+  "mode": "judge_only_saved_dev_hypotheses",
+  "arm": "a",
+  "metric": "official",
+  "source": {
+    "source_run_id": "f28e309123184cc2b04a60053672c75c",
+    "source_results_sha256": "18b78076021b8150a4d7fab1db3ecb05084cd3f2ff2413d26cbd91da9e828994",
+    "source_manifest_sha256": "b9dd231536406ebacd53232117f1a92de5ce784cc4a47667731301a218ee0479",
+    "dev_sha256": "6612e3a03c79b92bab2f1750d4661908e3dc37359715b7fb6b62c6f758bddb34"
+  },
+  "git": {
+    "sha": "52774035201964da27f8a322252627eaa95467d3",
+    "dirty": false,
+    "code_sha256": "c24610d2aa6d3033f991c97344496cabfb259247ea406a50bc5c3f989e62466e"
+  },
+  "calls_planned": 50,
+  "calls_completed": 50,
+  "database_access": false,
+  "reader_calls": 0,
+  "memory_context": "unchanged saved Phase D contexts; no retrieval",
+  "generic_comparator": "stored Phase D judgment",
+  "route": {
+    "model": "openrouter/openai/gpt-4o-2024-08-06",
+    "endpoint_slug": "azure",
+    "temperature": 0,
+    "seed": 42,
+    "max_tokens": 10,
+    "num_retries": 0,
+    "allow_fallbacks": false,
+    "official_prompt_source_commit": "d6dc8b50a2d9ac0c99485ea28fa5755c62414c34"
+  },
+  "cost": {
+    "authorization_usd": "10",
+    "prior_cumulative_reserved_usd": "0.4828775",
+    "whole_run_reservation_usd": "0.1194825",
+    "cumulative_reserved_usd": "0.6023600",
+    "undiscounted_input_usd_per_token": "0.0000025",
+    "undiscounted_output_usd_per_token": "0.00001",
+    "price_quote_checked": "2026-10-28",
+    "price_quote_source": "https://openrouter.ai/api/v1/models/openai/gpt-4o-2024-08-06/endpoints",
+    "usage_cost_estimate_usd": "0.0238200",
+    "actual_billed_cost_usd": null,
+    "note": "Reservation retained even on failure; usage-based undiscounted estimate is not a billing receipt."
+  },
+  "pending_question_id": null,
+  "pending_started_at": "2026-10-28T08:20:05.869809+00:00",
+  "ended_at": "2026-10-28T08:20:06.545697+00:00"
+}

@@ -204,6 +204,15 @@ A task references conversation and workspace context without a memory or filesys
 
 ## 13. Design choice C — owned resources and legacy artifact handling (pending)
 
+**28 October 2026:** the owner approved the first-slice recommendations in
+[ARTIFACT_CONTINUITY.md](ARTIFACT_CONTINUITY.md): unified owned resources and pinned
+versions, received-representation honesty, bounded encrypted objects, structured
+metadata search and detach/retain on chat deletion. S1 shared POSIX was already
+selected in #469. The first increment records contracts/fixtures only; registry,
+exact DDL/API implementation, retention durations/quotas/abandoned-upload policy,
+storage/lifecycle qualification, backfill and deployment remain separately gated.
+The historical alternatives below do not reopen that S1 choice.
+
 The original working-tree assessment found missing download ownership checks (#312). Current main at PR preparation (`2bf65150`) already scopes generated downloads and writes to authenticated owner namespaces through `orchestrator/artifacts.py`; unowned root-level files are not served through those routes. Preserve that enforcement. A durable resource registry, task provenance, versioning and lifecycle remain separate work: age-based cleanup is not a user-approved workspace retention contract. Choice C is needed by slice 3, not slice 1.
 
 ### Catalog requirements — 9 October 2026 planning clarification

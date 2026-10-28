@@ -1,0 +1,21 @@
+{
+  "original_request_question_id": "c5e8278d",
+  "original_request_outcome": "unknown; not recoverable from retained artifacts",
+  "original_provider_failure_class": "unclassified",
+  "original_b_returned_receipts_verified": 36,
+  "original_b_unattempted_questions": 13,
+  "original_artifacts": "tests/benchmark_results/measurement_phase1_2026-10-28/generic_b_1",
+  "original_artifacts_match_live_evidence": true,
+  "original_whole_batch_and_prior_reservations_retained_usd": "1.5595300",
+  "original_failed_request_billing": "unknown; never assumed free",
+  "producer_reconciliation": "all owned scopes exited; no outstanding producers",
+  "owner_decision": "New replacement (Recommended), chosen explicitly after uncertainty and possible double billing were disclosed",
+  "new_measurement_scope": "one fresh 14-row generic-B residual (one new replacement and 13 unattempted rows), followed by previously approved paired reader-cap diagnostic",
+  "completed_questions_to_replay": 0,
+  "original_manifest_or_receipt_mutations": 0,
+  "new_residual_reservation_usd": "0.0932100",
+  "reader_cap_reservation_usd": "0.0491650",
+  "total_carried_and_planned_usd": "1.7019050",
+  "automatic_retries_or_fallbacks": false,
+  "ingest_or_holdout_authorized": false
+}

@@ -4,8 +4,8 @@ Covers the acceptance, claim, fencing, retry, cancellation and tenant
 isolation contracts in docs/DURABLE_REQUEST_DESIGN.md §4–§6, §9, §11 and §17.
 Leases are expired with SQL, never by sleeping. No inference is involved.
 
-Requires ``TASKS_TEST_DATABASE_URL`` pointing at a disposable database; every
-test replays all migrations into its own schema and drops it afterwards. The
+Requires ``TASKS_TEST_DATABASE_URL`` pointing at a disposable server with CREATEDB;
+every test clones a migrated session template into its own database. The
 application ``DATABASE_URL`` is never read.
 """
 

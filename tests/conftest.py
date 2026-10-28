@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 # LiteLLM defaults to DEV mode and calls load_dotenv() during import. Test
 # worktrees can be nested below a primary checkout, so that search may cross
@@ -51,6 +52,37 @@ def _clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def durable_database_template():
+    from tests.durable_database import migrated_template
+    from tests.durable_tasks_support import DSN_ENV
+
+    dsn = os.environ.get(DSN_ENV, "").strip()
+    if not dsn:
+        pytest.skip(f"requires disposable {DSN_ENV}")
+    async with migrated_template(dsn) as template:
+        yield template
+
+
+@pytest.fixture
+def unpaced_mock_stream(monkeypatch):
+    """Opt-in for contract tests, never real-clock/cancellation qualification."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from orchestrator import daemon
+
+    async def yield_without_pacing(delay):
+        # Fail if another kind of wait is introduced here; don't erase deadlines.
+        assert delay == 0.05
+        await asyncio.sleep(0)
+
+    # Patch only daemon's module reference, not the process-global asyncio.sleep.
+    monkeypatch.setattr(
+        daemon, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": yield_without_pacing}))
+    )
 
 
 @pytest.fixture(scope="session")

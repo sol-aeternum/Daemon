@@ -18,6 +18,8 @@ from orchestrator import main as main_module
 from orchestrator import model_routing
 from tests.qualified_compute import install_qualified_compute
 
+pytestmark = pytest.mark.usefixtures("unpaced_mock_stream")
+
 # The stand-in deployment must qualify the profiles these tests dispatch under,
 # so admission is satisfied by the workload the classifier actually selected:
 # Luna serves routine/research/council, GLM-5.3 serves reasoning.

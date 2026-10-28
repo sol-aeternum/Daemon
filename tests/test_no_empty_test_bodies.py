@@ -56,7 +56,8 @@ def _iter_test_files() -> list[Path]:
     )
 
 
-def _parseable_test_files() -> tuple[list[Path], list[tuple[Path, SyntaxError]]]:
+@pytest.fixture(scope="module")
+def parsed_test_files() -> tuple[dict[Path, ast.Module], list[tuple[Path, SyntaxError]]]:
     """Partition test files into parseable and unparseable buckets.
 
     Returns ``(parseable, [(unparseable_path, error), ...])``. The
@@ -66,22 +67,22 @@ def _parseable_test_files() -> tuple[list[Path], list[tuple[Path, SyntaxError]]]
     primary defense against unparseable test files; this is a
     soft secondary check that does not couple the two concerns.
     """
-    parseable: list[Path] = []
+    parseable: dict[Path, ast.Module] = {}
     unparseable: list[tuple[Path, SyntaxError]] = []
-    for path in _iter_test_files():
+    files = _iter_test_files()
+    assert files, f"No test files found under {TESTS_DIR}"
+    for path in files:
         try:
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            parseable.append(path)
+            parseable[path] = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError as exc:
             unparseable.append((path, exc))
     return parseable, unparseable
 
 
-def _all_test_functions(path: Path) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+def _all_test_functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     """Return every top-level or nested function whose name starts
     with ``test_``. Skips MOCK class methods (the audit's grep
     matched those too, but they're not test functions)."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
@@ -179,14 +180,13 @@ def _iter_mark_expressions(value: ast.expr) -> list[ast.expr]:
     return [value]
 
 
-def _module_and_class_mark_violations(path: Path) -> list[tuple[int, str, str]]:
+def _module_and_class_mark_violations(tree: ast.Module) -> list[tuple[int, str, str]]:
     """Find skip/xfail marks without reason= outside function decorators.
 
     Covers the two collection-affecting placements the function-decorator
     walk cannot see: module-level ``pytestmark = ...`` assignments and
     decorators on ``Test*`` classes.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     violations: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -239,7 +239,7 @@ def _has_substantive_body(body: list[ast.stmt]) -> bool:
     return bool(substantive)
 
 
-def test_no_test_function_is_pass_only() -> None:
+def test_no_test_function_is_pass_only(parsed_test_files) -> None:
     """Every test function must have at least one substantive
     statement. A function body that is only ``pass`` is the
     textbook definition of an empty test.
@@ -254,15 +254,14 @@ def test_no_test_function_is_pass_only() -> None:
     syntax-error check in ``test_test_files_parse.py``. Coupling
     the two checks would force this PR to wait on that one.
     """
-    parseable, unparseable = _parseable_test_files()
+    parseable, unparseable = parsed_test_files
     violations: list[tuple[Path, int, str]] = []
-    for path in parseable:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path, tree in parseable.items():
         module_parked, parked_classes = _parked_scopes(tree)
         if module_parked:
             continue
         parked_lines = _functions_inside_classes(tree, parked_classes)
-        for func in _all_test_functions(path):
+        for func in _all_test_functions(tree):
             if _is_deliberately_parked(func) or func.lineno in parked_lines:
                 continue
             if not _has_substantive_body(func.body):
@@ -290,23 +289,23 @@ def test_no_test_function_is_pass_only() -> None:
         )
 
 
-def test_every_pytest_mark_skip_has_reason() -> None:
+def test_every_pytest_mark_skip_has_reason(parsed_test_files) -> None:
     """``@pytest.mark.skip(...)`` and ``@pytest.mark.xfail(...)``
     MUST include a ``reason=`` argument. An unmarked skip is
     indistinguishable from a forgotten TODO. Checked on function
     decorators, ``Test*`` class decorators, and module-level
     ``pytestmark`` assignments."""
-    parseable, _ = _parseable_test_files()
+    parseable, _ = parsed_test_files
     violations: list[tuple[Path, int, str, str]] = []
-    for path in parseable:
-        for func in _all_test_functions(path):
+    for path, tree in parseable.items():
+        for func in _all_test_functions(tree):
             for d in func.decorator_list:
                 name, has_reason = _mark_name_and_reason(d)
                 if name not in ("skip", "xfail"):
                     continue
                 if not has_reason:
                     violations.append((path, func.lineno, func.name, f"@pytest.mark.{name}"))
-        for lineno, where, decorator in _module_and_class_mark_violations(path):
+        for lineno, where, decorator in _module_and_class_mark_violations(tree):
             violations.append((path, lineno, where, decorator))
 
     if violations:
@@ -318,9 +317,3 @@ def test_every_pytest_mark_skip_has_reason() -> None:
             f"{len(violations)} skip/xfail mark(s) without a reason. "
             f"Add a reason= argument explaining WHY the test is skipped:\n{details}"
         )
-
-
-def test_tests_dir_is_not_empty() -> None:
-    """Sanity check: the walker found at least one test file."""
-    files = _iter_test_files()
-    assert files, f"No test files found under {TESTS_DIR}"

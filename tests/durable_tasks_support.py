@@ -1,8 +1,9 @@
 """Shared disposable-PostgreSQL fixture for durable task tests.
 
-Requires ``TASKS_TEST_DATABASE_URL`` pointing at a disposable database; every
-test replays all migrations into its own schema and drops it afterwards. The
-application ``DATABASE_URL`` is never read.
+Requires ``TASKS_TEST_DATABASE_URL`` pointing at a disposable server with CREATEDB.
+Each test gets a fresh database cloned from a session-local migrated template.
+The application ``DATABASE_URL`` is never read. ``_provision`` retains the clean
+schema-replay path for migration namespace regressions.
 """
 
 from __future__ import annotations
@@ -75,13 +76,26 @@ def durable_env_fixture(*, initialized: bool = False) -> Any:
     """Build the ``env`` fixture; assign it in each test module (``env = ...``)."""
 
     @pytest_asyncio.fixture
-    async def env() -> AsyncIterator[Env]:
-        async for value in _provision():
-            if initialized:
-                # Historical initialized-account fixtures, NOT sign-up evidence.
-                for uid in (value.alice, value.bob):
-                    await seed_entitlement(value.pool, uid)
-            yield value
+    async def env(durable_database_template, monkeypatch) -> AsyncIterator[Env]:
+        async with durable_database_template.clone() as dsn:
+            # Independent connections and spawned test processes must use this
+            # clone too. monkeypatch restores the control URL after teardown.
+            monkeypatch.setenv(DSN_ENV, dsn)
+            pool = await asyncpg.create_pool(
+                dsn,
+                min_size=2,
+                max_size=8,
+                server_settings={"search_path": f"{durable_database_template.schema}, public"},
+            )
+            try:
+                value = await _seed_env(pool)
+                if initialized:
+                    # Historical initialized-account fixtures, NOT sign-up evidence.
+                    for uid in (value.alice, value.bob):
+                        await seed_entitlement(value.pool, uid)
+                yield value
+            finally:
+                await asyncio.wait_for(pool.close(), timeout=10)
 
     return env
 
@@ -130,24 +144,28 @@ async def _provision() -> AsyncGenerator[Env, None]:
             for path in sorted(MIGRATIONS.glob("*.sql")):
                 async with conn.transaction():
                     await conn.execute(migration_sql_for_schema(path, schema))
-        encryption = ContentEncryption(Fernet.generate_key().decode())
-        memory = MemoryStore(pool, encryption)
-        users = []
-        for name in ("alice", "bob"):
-            user_id = uuid.uuid4()
-            await pool.execute(
-                "INSERT INTO users (id, email, name, username) VALUES ($1, $2, $3, $3)",
-                user_id,
-                f"{name}+{user_id.hex}@daemon.test",
-                f"{name}-{user_id.hex[:8]}",
-            )
-            users.append(user_id)
-        yield Env(pool, TaskStore(pool, encryption, memory), memory, users[0], users[1])
+        yield await _seed_env(pool)
     finally:
         if pool is not None:
             await asyncio.wait_for(pool.close(), timeout=10)
         await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin.close()
+
+
+async def _seed_env(pool: asyncpg.Pool) -> Env:
+    encryption = ContentEncryption(Fernet.generate_key().decode())
+    memory = MemoryStore(pool, encryption)
+    users = []
+    for name in ("alice", "bob"):
+        user_id = uuid.uuid4()
+        await pool.execute(
+            "INSERT INTO users (id, email, name, username) VALUES ($1, $2, $3, $3)",
+            user_id,
+            f"{name}+{user_id.hex}@daemon.test",
+            f"{name}-{user_id.hex[:8]}",
+        )
+        users.append(user_id)
+    return Env(pool, TaskStore(pool, encryption, memory), memory, users[0], users[1])
 
 
 async def task_capture(env: Env, user: uuid.UUID | None = None) -> CapturedGeneration:

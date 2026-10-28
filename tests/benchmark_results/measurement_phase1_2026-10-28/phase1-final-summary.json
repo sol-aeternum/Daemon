@@ -1,0 +1,236 @@
+{
+  "status": "all_planned_outcomes_observed_with_one_owner_authorized_new_replacement",
+  "original_failed_request_outcome": "unknown",
+  "actual_billed_cost_usd": null,
+  "total_returned_calls": 406,
+  "total_returned_judge_calls": 404,
+  "total_returned_reader_calls": 2,
+  "total_attempted_calls": 407,
+  "quoted_rate_usage_estimate_usd": "0.3030775",
+  "cumulative_reserved_usd": "1.7019050",
+  "arms": {
+    "a": {
+      "rows": 50,
+      "generic_correct": 30,
+      "official_correct": 34,
+      "strict_disagreements": 4,
+      "strict_disagreement_ids": [
+        "59524333",
+        "75f70248",
+        "80ec1f4f_abs",
+        "c4f10528"
+      ],
+      "agreement": 0.92,
+      "paired_three_way_table": {
+        "correct|correct": 30,
+        "incorrect|correct": 3,
+        "incorrect|incorrect": 14,
+        "partially_correct|correct": 1,
+        "partially_correct|incorrect": 2
+      },
+      "generic_vs_historical_strict_flips": [],
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "generic_correct": 5,
+          "official_correct": 6
+        },
+        "IE-preference": {
+          "total": 3,
+          "generic_correct": 0,
+          "official_correct": 1
+        },
+        "IE-user": {
+          "total": 9,
+          "generic_correct": 9,
+          "official_correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "generic_correct": 5,
+          "official_correct": 6
+        },
+        "MR": {
+          "total": 10,
+          "generic_correct": 6,
+          "official_correct": 7
+        },
+        "TR": {
+          "total": 10,
+          "generic_correct": 5,
+          "official_correct": 5
+        }
+      },
+      "abstention_subset": {
+        "total": 5,
+        "generic_correct": 1,
+        "official_correct": 2
+      }
+    },
+    "a2": {
+      "rows": 50,
+      "generic_correct": 31,
+      "official_correct": 34,
+      "strict_disagreements": 3,
+      "strict_disagreement_ids": [
+        "59524333",
+        "80ec1f4f_abs",
+        "c4f10528"
+      ],
+      "agreement": 0.94,
+      "paired_three_way_table": {
+        "correct|correct": 31,
+        "incorrect|correct": 3,
+        "incorrect|incorrect": 13,
+        "partially_correct|incorrect": 3
+      },
+      "generic_vs_historical_strict_flips": [],
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "generic_correct": 5,
+          "official_correct": 6
+        },
+        "IE-preference": {
+          "total": 3,
+          "generic_correct": 1,
+          "official_correct": 1
+        },
+        "IE-user": {
+          "total": 9,
+          "generic_correct": 9,
+          "official_correct": 9
+        },
+        "KU": {
+          "total": 9,
+          "generic_correct": 5,
+          "official_correct": 6
+        },
+        "MR": {
+          "total": 10,
+          "generic_correct": 6,
+          "official_correct": 7
+        },
+        "TR": {
+          "total": 10,
+          "generic_correct": 5,
+          "official_correct": 5
+        }
+      },
+      "abstention_subset": {
+        "total": 5,
+        "generic_correct": 1,
+        "official_correct": 2
+      }
+    },
+    "b": {
+      "rows": 50,
+      "generic_correct": 7,
+      "official_correct": 5,
+      "strict_disagreements": 2,
+      "strict_disagreement_ids": [
+        "852ce960",
+        "86f00804"
+      ],
+      "agreement": 0.96,
+      "paired_three_way_table": {
+        "correct|correct": 5,
+        "correct|incorrect": 2,
+        "incorrect|incorrect": 40,
+        "partially_correct|incorrect": 3
+      },
+      "generic_vs_historical_strict_flips": [
+        "852ce960"
+      ],
+      "categories": {
+        "IE-assistant": {
+          "total": 9,
+          "generic_correct": 3,
+          "official_correct": 3
+        },
+        "IE-preference": {
+          "total": 3,
+          "generic_correct": 0,
+          "official_correct": 0
+        },
+        "IE-user": {
+          "total": 9,
+          "generic_correct": 1,
+          "official_correct": 0
+        },
+        "KU": {
+          "total": 9,
+          "generic_correct": 2,
+          "official_correct": 1
+        },
+        "MR": {
+          "total": 10,
+          "generic_correct": 0,
+          "official_correct": 0
+        },
+        "TR": {
+          "total": 10,
+          "generic_correct": 1,
+          "official_correct": 1
+        }
+      },
+      "abstention_subset": {
+        "total": 5,
+        "generic_correct": 2,
+        "official_correct": 2
+      }
+    }
+  },
+  "official_a_repeat_pairs": [
+    {
+      "left": "official_a_1",
+      "right": "official_a_2",
+      "strict_disagreement_ids": []
+    },
+    {
+      "left": "official_a_1",
+      "right": "official_a_3",
+      "strict_disagreement_ids": [
+        "75f70248"
+      ]
+    },
+    {
+      "left": "official_a_2",
+      "right": "official_a_3",
+      "strict_disagreement_ids": [
+        "75f70248"
+      ]
+    }
+  ],
+  "official_a_a2_strict_flips": [],
+  "cap_diagnostic": [
+    {
+      "question_id": "0a34ad58",
+      "answer_max_tokens": 256,
+      "answer_finish_reason": "length",
+      "answer_usage": {
+        "prompt_tokens": 2418,
+        "completion_tokens": 256,
+        "total_tokens": 2674
+      },
+      "judgment": "partially_correct",
+      "official_judgment": "incorrect",
+      "memory_context_sha256": "cb2b7c4f3c4be59f8b8e91410c0f1692dd9b733b5427cca5a09cc9c638e4a6ec",
+      "system_prompt_sha256": "b117eab63be1d3a91f112f4382e5e199dc7f038608c6d5c159dcf6c814aad84e"
+    },
+    {
+      "question_id": "0a34ad58",
+      "answer_max_tokens": 1024,
+      "answer_finish_reason": "stop",
+      "answer_usage": {
+        "prompt_tokens": 2418,
+        "completion_tokens": 334,
+        "total_tokens": 2752
+      },
+      "judgment": "partially_correct",
+      "official_judgment": "incorrect",
+      "memory_context_sha256": "cb2b7c4f3c4be59f8b8e91410c0f1692dd9b733b5427cca5a09cc9c638e4a6ec",
+      "system_prompt_sha256": "b117eab63be1d3a91f112f4382e5e199dc7f038608c6d5c159dcf6c814aad84e"
+    }
+  ]
+}

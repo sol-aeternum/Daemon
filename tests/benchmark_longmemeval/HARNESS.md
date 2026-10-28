@@ -12,6 +12,30 @@
 > [`RUNBOOK_LAPTOP.md`](RUNBOOK_LAPTOP.md). Parity exceptions and the current baseline:
 > `tests/benchmark_results/parity_baseline_*.md`.
 
+> **2026-10-28: Phase 1 measurement changes (not production tuning).** The fact
+> reader now records both the unchanged generic judgment and the official
+> category/abstention-aware LongMemEval judgment, with raw outputs and finish reasons.
+> The generic fields and historical strict scoring remain unchanged. An additive
+> `dual_judgments` report distinguishes missing observations from zero accuracy and
+> reports abstention as an overlapping subset, not a seventh disjoint category.
+> Official prompts are byte-matched to upstream commit `d6dc8b50`; the Azure route
+> and seed 42 are declared deviations from upstream's direct-OpenAI invocation.
+> Each canonical question now costs one reader call and **two** judge calls.
+> Saved-hypothesis rejudging and the separately owner-approved reader-cap diagnostic:
+> [Phase 1 measurement record](../benchmark_results/measurement_phase1_2026-10-28.md).
+> A stopped saved-hypothesis batch can supply verified completed receipts to a
+> **fresh, explicitly authorized residual run**, using `--residual-from` and
+> `--replacement-question-id`. This never resumes the failed run or replays
+> completed questions; its full reservation stays held, and a new replacement
+> for an uncertain call is marked separately. See the measurement record for the
+> owner-approved recovery scope and failure-classification limits.
+> Canonical question completion remains the reader plus generic judgment. If the
+> additive official call fails, the saved base answer/context/usage remain valid,
+> `official_judge_status` is `failed`, and official coverage is missing—not an
+> incorrect observation. The failed call's usage is unknown. Canonical re-entry
+> retains that base result and never automatically reruns its paid calls or retries
+> the official metric; any recovery must explicitly judge the saved hypothesis.
+
 ---
 
 ## 1. Canonical Lane vs Fast Lane
@@ -125,6 +149,15 @@ environment and is not benchmark storage.
 
 The benchmark harness executes entirely from the **host shell** (not inside containers).
 All provider keys must be present in the host environment before running.
+
+Worktrees have no `.env` of their own. To run from one without exporting keys into the shell,
+prefix the command with `scripts/with_key.py`, which reads only the named keys from the main
+checkout's `.env` and passes them to that one command (keys already set in the shell win):
+
+```bash
+scripts/with_key.py OPENROUTER_API_KEY VOYAGE_API_KEY -- \
+  env PYTHONPATH=. python -m orchestrator.eval.longmemeval --help
+```
 
 ```bash
 # Required provider keys for extraction, answer, and judge steps

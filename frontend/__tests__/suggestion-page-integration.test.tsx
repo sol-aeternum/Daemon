@@ -194,6 +194,11 @@ beforeEach(() => {
   const storage = createAuthTestStorage();
   vi.stubGlobal('localStorage', storage);
   vi.clearAllMocks();
+  vi.stubGlobal('matchMedia', () => ({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }));
   state.currentId = null;
   state.transport = null;
   state.stopView = null;

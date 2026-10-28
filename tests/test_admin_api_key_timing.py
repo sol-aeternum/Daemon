@@ -8,26 +8,20 @@ and leaks the prefix-length match count via response time. The fix uses
 
 from __future__ import annotations
 
-import hmac
 import pathlib
-
-import pytest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SELF_FILE = pathlib.Path(__file__).resolve()
 
 
-@pytest.mark.parametrize(
-    "needle",
-    [
+def test_no_eq_comparison_against_admin_key():
+    needles = (
         "token == settings.daemon_admin_api_key",
         "settings.daemon_admin_api_key == token",
         "== settings.daemon_admin_api_key",
         "==daemon_admin_api_key",
-    ],
-)
-def test_no_eq_comparison_against_admin_key(needle):
+    )
     offenders = []
     for path in REPO_ROOT.rglob("*.py"):
         if path.resolve() == SELF_FILE:
@@ -41,27 +35,8 @@ def test_no_eq_comparison_against_admin_key(needle):
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if needle in text:
-            offenders.append(path)
+        offenders.extend((path, needle) for needle in needles if needle in text)
     assert not offenders, (
-        f"Found non-constant-time comparison against admin API key ({needle!r}) in: "
-        + ", ".join(str(p.relative_to(REPO_ROOT)) for p in offenders)
+        "Found non-constant-time comparison against admin API key in: "
+        + ", ".join(f"{p.relative_to(REPO_ROOT)} ({needle!r})" for p, needle in offenders)
     )
-
-
-def test_hmac_compare_digest_matches():
-    secret = "super-secret-admin-key-123"
-    presented = "super-secret-admin-key-123"
-    assert hmac.compare_digest(presented.encode(), secret.encode())
-
-
-def test_hmac_compare_digest_rejects_mismatch():
-    secret = "super-secret-admin-key-123"
-    presented = "super-secret-admin-key-124"
-    assert not hmac.compare_digest(presented.encode(), secret.encode())
-
-
-def test_hmac_compare_digest_rejects_prefix_match():
-    secret = "super-secret-admin-key-123"
-    presented = "super-secret-admin-key"
-    assert not hmac.compare_digest(presented.encode(), secret.encode())

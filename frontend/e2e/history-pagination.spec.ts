@@ -256,6 +256,65 @@ for (const width of [390, 1440]) {
   });
 }
 
+for (const width of [390, 1440]) {
+  test(`contents navigates a prepended prompt before delayed media at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const evidence = await fixture(page, true);
+    let releaseMedia!: () => void;
+    const media = new Promise<void>((resolve) => {
+      releaseMedia = resolve;
+    });
+    await page.route('**/history-media.svg', async (route) => {
+      await media;
+      await route.fulfill({
+        contentType: 'image/svg+xml',
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="navy"/></svg>',
+      });
+    });
+    await page.goto(`/?id=${conversationId}`);
+    const main = page.getByRole('main', { name: 'Conversation messages' });
+    await expect(main.locator('article')).toHaveCount(100);
+    await main
+      .getByRole('button', { name: 'Load older messages', exact: true })
+      .click();
+    await expect(main.locator('article')).toHaveCount(200);
+    if (width < 768)
+      await page
+        .getByRole('button', { name: 'Open conversation contents' })
+        .click();
+    const contents = page
+      .getByRole('navigation', { name: 'Conversation contents' })
+      .filter({ visible: true });
+    await expect(contents).toContainText('Loaded portion only · 100 prompts');
+    await contents.locator(`[data-contents-message-id="${id(51)}"]`).click();
+    const selected = main.locator(`[data-message-id="${id(51)}"]`);
+    await expect(selected).toBeFocused();
+    const offset = () =>
+      selected.evaluate(
+        (node) =>
+          node.getBoundingClientRect().top -
+          node.closest('main')!.getBoundingClientRect().top,
+      );
+    await expect.poll(offset).toBeGreaterThanOrEqual(0);
+    await expect.poll(offset).toBeLessThan(40);
+    const before = await offset();
+    releaseMedia();
+    await expect(main.getByAltText('Fictional delayed media')).toHaveJSProperty(
+      'complete',
+      true,
+    );
+    await expect
+      .poll(async () => Math.abs((await offset()) - before))
+      .toBeLessThan(2);
+    await expect(selected).toBeFocused();
+    expect(evidence.payloads).toEqual([]);
+    expect(evidence.unexpected).toEqual([]);
+    expect(evidence.runtimeErrors).toEqual([]);
+  });
+}
+
 const rowsInTail = new Set(Array.from({ length: 100 }, (_, n) => id(n + 101)));
 
 test('conversation pages reach beyond 200 while the exhausted control retains keyboard focus', async ({

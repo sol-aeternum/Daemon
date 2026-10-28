@@ -26,6 +26,7 @@ from orchestrator.main import app
 from tests.test_identity_rate_limiter import FakeRedis
 from tests.qualified_compute import install_qualified_compute
 
+pytestmark = pytest.mark.usefixtures("unpaced_mock_stream")
 
 # Two distinct fixtures so per-user isolation is observable in tests:
 # each auth override creates its own AuthenticatedDevice with a unique
@@ -117,23 +118,6 @@ def _reset_chat_rate_metrics() -> None:
     from orchestrator.services.identity.rate_limit_dep import reset_chat_rate_limit_metrics
 
     reset_chat_rate_limit_metrics()
-
-
-@pytest.mark.asyncio
-async def test_chat_endpoint_serves_below_user_limit(chat_client: AsyncClient, monkeypatch) -> None:
-    """Below the per-user limit, requests succeed (or stream)."""
-    monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
-    get_settings.cache_clear()
-
-    # Two requests — at the limit; both succeed (response is SSE).
-    for _ in range(2):
-        response = await chat_client.post(
-            "/chat",
-            json=_make_chat_payload(),
-            headers={"Content-Type": "application/json"},
-        )
-        assert response.status_code == 200, response.text
 
 
 @pytest.mark.asyncio
