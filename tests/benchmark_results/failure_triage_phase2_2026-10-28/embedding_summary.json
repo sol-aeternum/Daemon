@@ -1,0 +1,9 @@
+{
+  "rows_checked": 7954,
+  "with_embedding": 7954,
+  "models": [
+    "openrouter:azure:openai/text-embedding-3-small:1024"
+  ],
+  "local_only_or_unknown_rows": 0,
+  "raw_metadata_sha256": "ecbbd228983d3973a8ebcb190e7c8af4ab8699f2e0fbeca22787a1c06a5bb669"
+}

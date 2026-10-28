@@ -1,0 +1,1849 @@
+{
+  "rule_version": "2026-10-28-official-v1",
+  "primary_metric": "official_strict",
+  "status": "classified_with_explicit_uncertainty; no tuning",
+  "coverage": {
+    "unique_questions": 16,
+    "a_non_correct": 16,
+    "a2_non_correct": 16,
+    "arm_observations": 32
+  },
+  "classification_counts_unique_questions": {
+    "abstention-overreach": 3,
+    "prompt-selection-gap": 5,
+    "rubric-ambiguity": 1,
+    "source-retention-gap": 3,
+    "temporal-grounding-gap": 2,
+    "temporal-ordering-gap": 2
+  },
+  "cases": [
+    {
+      "question_id": "4388e9dd",
+      "question_type": "single-session-assistant",
+      "question": "I was going through our previous chat and I was wondering, what was Andy wearing in the script you wrote for the comedy movie scene?",
+      "reference": "Andy was wearing an untidy, stained white shirt.",
+      "question_date": "2023/05/30 (Tue) 20:43",
+      "classification": "source-retention-gap",
+      "confidence": "high",
+      "diagnosis": "The shirt description is in both the user-authored fiction brief and assistant script, but the support session produced zero facts and zero linked memories. No Andy/shirt-description anchor occurs in this user's stored memories. The reader's abstention is consistent with the supplied context.",
+      "falsification_check_and_boundary": "Inspect the two no-fact extraction records and all 409 memory contents for a semantically equivalent retained script detail before calling this a ranking failure. This is task/fiction retention, not an ordinary profile fact; source-expansion design needs approval.",
+      "db_evidence_sha256": "43ca72fe9196d1d46c4c75706975f67e227778b14e06120ad18089762a25e317",
+      "db_memories_examined": 409,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_sharegpt_qTi81nS_0",
+          "haystack_date": "2023/05/20 (Sat) 10:04",
+          "conversation_id": "88608589-9500-4db1-b248-9666599ad898",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [],
+      "source_message_excerpts": [
+        {
+          "id": "e3c5cdba-893c-4ae8-96a1-c9aa1a20cb6f",
+          "conversation_id": "88608589-9500-4db1-b248-9666599ad898",
+          "role": "user",
+          "created_at": "2026-10-27 07:26:40.400174+00:00",
+          "excerpt": "ses while using disabled toilets, despite him having no obvious disability. Andy wears an untidy, stained white shirt. When addressing a group he starts with the words \"Right guys, settle down\".\n\nRoger, a man in his 50s, is a computing teacher working under Andy. He is an intelligent man, with gr",
+          "full_content_sha256": "2a46425642975ad27b380b6529379a47a39b53cf189b387ca4264ccdf6a9f71f"
+        },
+        {
+          "id": "1514ad64-0041-4f61-845a-2702e96de305",
+          "conversation_id": "88608589-9500-4db1-b248-9666599ad898",
+          "role": "assistant",
+          "created_at": "2026-10-27 07:26:40.401425+00:00",
+          "excerpt": "d poor personal hygiene, is standing in front of the department's whiteboard. He wears an untidy, stained white shirt.\n\nANDY:\nRight guys, settle down. I just wanted to let you all know that this year's talent show is going to be bigger and better than ever. I'm putting in a lot of hard work to ma",
+          "full_content_sha256": "ee19dd0c17e73531d358b328fe53d99c76f414921a1dfc385b0db051d72074f7"
+        }
+      ],
+      "support_linked_memory_count": 0,
+      "support_extraction_evidence": [
+        {
+          "id": "5fc49cd1-7245-42fb-a39f-40d510adbca5",
+          "conversation_id": "88608589-9500-4db1-b248-9666599ad898",
+          "raw_count": 0,
+          "new": 0,
+          "extracted_facts": []
+        },
+        {
+          "id": "89e395d0-0532-498d-babf-74721cd14278",
+          "conversation_id": "88608589-9500-4db1-b248-9666599ad898",
+          "raw_count": 0,
+          "new": 0,
+          "extracted_facts": []
+        }
+      ],
+      "anchor_search": {
+        "pattern": "Andy|stained|untidy|white shirt",
+        "scope": "all memories for this benchmark question user",
+        "matches": [],
+        "limitation": "Literal anchor search is not proof of semantic absence outside the scoped extraction/row evidence"
+      },
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have a record of the specific script details, including what Andy was wearing in the comedy movie scene. If you have the script or any notes, feel free to share them, and I can help you with any questions or ideas related to it.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User wants outfit ideas for styling their silk blouse for a work event\n- Project: User is working on a music video project\n- Project: User plans to contact local talent agencies and theater groups to find actors for the music video\n- Project: User is concerned about finding an affordable filming location for the music video\n- Project: User is concerned about the cost of hiring actors for their music video\n</memory_records>",
+          "memory_context_sha256": "d96e84d58afac96187294a5d6b57b9995ed3e113607f4a790305dc598683face",
+          "system_prompt_sha256": "ee6be3039acefc4f051d1dd3730cc07ea12922b86d056b3f43a815fc294d61bb",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have a record of the specific script details, including what Andy was wearing in the comedy movie scene. If you have the script or any notes, feel free to share them, and I can help you with any questions or ideas related to it.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User wants outfit ideas for styling their silk blouse for a work event\n- Project: User is working on a music video project\n- Project: User plans to contact local talent agencies and theater groups to find actors for the music video\n- Project: User is concerned about finding an affordable filming location for the music video\n- Project: User is concerned about the cost of hiring actors for their music video\n</memory_records>",
+          "memory_context_sha256": "d96e84d58afac96187294a5d6b57b9995ed3e113607f4a790305dc598683face",
+          "system_prompt_sha256": "ee6be3039acefc4f051d1dd3730cc07ea12922b86d056b3f43a815fc294d61bb",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "71a3fd6b",
+      "question_type": "single-session-assistant",
+      "question": "I'm planning my trip to Speyer again and I wanted to confirm, what's the phone number of the Speyer tourism board that you provided me earlier?",
+      "reference": "+49 (0) 62 32 / 14 23 - 0",
+      "question_date": "2023/05/30 (Tue) 21:38",
+      "classification": "source-retention-gap",
+      "confidence": "high",
+      "diagnosis": "The assistant message contains the tourism-board phone number. The completed source session logged zero facts and has no linked memories; no Speyer/phone anchor exists in the 493 stored memories. Saved context discusses other trips/gallery plans, not this contact.",
+      "falsification_check_and_boundary": "Search all stored contents for an equivalent tourism-board contact, not merely any phone number. Treat broader assistant/reference retention as an approval-gated design, not a retrieval-only fix.",
+      "db_evidence_sha256": "22426b009d7e89ccb26d76c4ee8c7fa44b1ad36202ef2f84c112bdadd4c65489",
+      "db_memories_examined": 493,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_ultrachat_417348",
+          "haystack_date": "2023/05/29 (Mon) 09:40",
+          "conversation_id": "a11f37d6-6b28-4f62-aa48-9f4908f2b2ee",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [],
+      "source_message_excerpts": [
+        {
+          "id": "8e698893-090b-4679-8d6c-c103488e02bf",
+          "conversation_id": "a11f37d6-6b28-4f62-aa48-9f4908f2b2ee",
+          "role": "assistant",
+          "created_at": "2026-10-27 08:57:36.705415+00:00",
+          "excerpt": " the following details:\n\nSpeyer Tourismus Marketing GmbH\nMaximilianstraße 13\n67346 Speyer\nPhone: +49 (0) 62 32 / 14 23 - 0\nEmail: info@speyer.de\nWebsite: https://www.speyer.de/",
+          "full_content_sha256": "8d736dfa885e5578abbce8022c24bd4c2caf7da5a4407d634fb5414ad82cc469"
+        }
+      ],
+      "support_linked_memory_count": 0,
+      "support_extraction_evidence": [
+        {
+          "id": "cfcf53fb-4a5d-4df1-8950-ae7a64249603",
+          "conversation_id": "a11f37d6-6b28-4f62-aa48-9f4908f2b2ee",
+          "raw_count": 0,
+          "new": 0,
+          "extracted_facts": []
+        }
+      ],
+      "anchor_search": {
+        "pattern": "Speyer|62\\s*32|14\\s*23",
+        "scope": "all memories for this benchmark question user",
+        "matches": [],
+        "limitation": "Literal anchor search is not proof of semantic absence outside the scoped extraction/row evidence"
+      },
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have a record of the phone number for the Speyer tourism board from our previous conversations. Let me search for the current contact information for you.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User is planning a trip to the Sierra Nevada mountains.\n- Project: User plans to ask Ms. Johnson about notable past exhibitions at the City Art Gallery\n- Project: User plans to check the City Art Gallery's website for a newsletter or membership section.\n- Project: User needs to make a few phone calls today.\n- Preference: User had a great experience on the City Art Gallery's curator-led tour.\n</memory_records>",
+          "memory_context_sha256": "36aa1cc80f67ec0a23c12ef1a6f14d36f008bcca35873c22b621bf8092794a9f",
+          "system_prompt_sha256": "e795ec1a38078a18eef2c688210c8684c413c9a08c686c6f33ca33eb93946c38",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have a record of providing the phone number for the Speyer tourism board previously. Let me search for the current contact information for you.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User is planning a trip to the Sierra Nevada mountains.\n- Project: User plans to ask Ms. Johnson about notable past exhibitions at the City Art Gallery\n- Project: User plans to check the City Art Gallery's website for a newsletter or membership section.\n- Project: User needs to make a few phone calls today.\n- Preference: User had a great experience on the City Art Gallery's curator-led tour.\n</memory_records>",
+          "memory_context_sha256": "36aa1cc80f67ec0a23c12ef1a6f14d36f008bcca35873c22b621bf8092794a9f",
+          "system_prompt_sha256": "e795ec1a38078a18eef2c688210c8684c413c9a08c686c6f33ca33eb93946c38",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "7a8d0b71",
+      "question_type": "single-session-assistant",
+      "question": "I'm looking back at our previous chat about the DHL Wellness Retreats campaign. Can you remind me how much was allocated for influencer marketing in the campaign plan?",
+      "reference": "$2,000",
+      "question_date": "2023/05/30 (Tue) 22:31",
+      "classification": "source-retention-gap",
+      "confidence": "high",
+      "diagnosis": "The assistant campaign plan explicitly budgets $2,000 for influencer marketing. Only two user-project facts survived the support session, neither with the budget. A different $2,000 closing-cost memory is unrelated and is not answer evidence.",
+      "falsification_check_and_boundary": "Require the campaign entity and influencer allocation together; a bare matching dollar amount is insufficient. Retaining authored campaign details would need the separately approved source-expansion design.",
+      "db_evidence_sha256": "59ad1d9e900e53cc279f73d6fc5ea62094fbcec5bf81dbe036b12997fffb3fcf",
+      "db_memories_examined": 538,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_sharegpt_i0tMT9q_9",
+          "haystack_date": "2023/05/24 (Wed) 10:19",
+          "conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "756ad3b2-28c5-4106-a0ea-f5eac2d73b64",
+          "source_conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "category": "project",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8199999928474426,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 11:47:20.895030+00:00",
+          "valid_to": null,
+          "memory_slot": "project.dhl_wellness_retreats.email_marketing",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User is developing an email marketing campaign for the DHL Wellness Retreats and wants it to include example emails.",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "e6087c26-fb76-4d9b-97e2-90eb85911ec2",
+          "source_conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "category": "project",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.7200000286102295,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 11:47:39.264697+00:00",
+          "valid_to": null,
+          "memory_slot": "retreats.email_copy",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User wants example emails written for retreats",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "d6b07100-b612-4474-af7d-d8b6059b4cff",
+          "conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "role": "assistant",
+          "created_at": "2026-10-27 11:47:14.199372+00:00",
+          "excerpt": "edback and insights to improve the retreat experiences and marketing efforts.\n\nBudget:\n\n* Influencer marketing: $2,000\n\nTimeline:\n\n* May 1st - May 31st: Influencer marketing campaign\n\nMeasurement:\n\n* Monitor influencer engagement, such as likes, comments, shares, and follower growth.\n* Track websi",
+          "full_content_sha256": "80bcb2ff9b628fa03d3cf376d927024507369325a0c0dde1512b57537026718d"
+        }
+      ],
+      "support_linked_memory_count": 2,
+      "support_extraction_evidence": [
+        {
+          "id": "31ca08fc-4e59-42d7-870f-04046f6ed98e",
+          "conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "raw_count": 1,
+          "new": 1,
+          "extracted_facts": [
+            {
+              "slot": "project.dhl_wellness_retreats.email_marketing",
+              "content": "User is developing an email marketing campaign for the DHL Wellness Retreats and wants it to include example emails.",
+              "category": "project",
+              "confidence": 0.82
+            }
+          ]
+        },
+        {
+          "id": "bcec9779-7eba-4b77-9134-a7ea6d85a12b",
+          "conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "raw_count": 0,
+          "new": 0,
+          "extracted_facts": []
+        },
+        {
+          "id": "7c4c725f-083f-445d-b679-03d7404fd57d",
+          "conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "raw_count": 0,
+          "new": 0,
+          "extracted_facts": []
+        },
+        {
+          "id": "267471ab-126e-4a4c-865d-28f09b1d185f",
+          "conversation_id": "6310ea61-8e85-415f-ab24-c267efc2e16a",
+          "raw_count": 1,
+          "new": 1,
+          "extracted_facts": [
+            {
+              "slot": "retreats.email_copy",
+              "content": "User wants example emails written for retreats",
+              "category": "project",
+              "confidence": 0.72
+            }
+          ]
+        }
+      ],
+      "anchor_search": {
+        "pattern": "influencer|DHL|retreat",
+        "scope": "all memories for this benchmark question user",
+        "matches": [
+          {
+            "id": "756ad3b2-28c5-4106-a0ea-f5eac2d73b64",
+            "content": "User is developing an email marketing campaign for the DHL Wellness Retreats and wants it to include example emails."
+          },
+          {
+            "id": "e6087c26-fb76-4d9b-97e2-90eb85911ec2",
+            "content": "User wants example emails written for retreats"
+          }
+        ],
+        "limitation": "Literal anchor search is not proof of semantic absence outside the scoped extraction/row evidence"
+      },
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have specific details about the budget allocation for influencer marketing in the DHL Wellness Retreats campaign. If you have any documents or notes from your planning sessions, they might contain this information. Alternatively, if you want to discuss or adjust the budget, I can help with that.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User is developing an email marketing campaign for the DHL Wellness Retreats and wants it to include example emails.\n- Project: User is working with the design team to prepare the marketing campaign\n- Project: User is working with the content team to prepare the marketing campaign\n- Project: User plans to launch the marketing campaign in about six weeks\n- Project: User's marketing campaign aims to increase brand awareness\n</memory_records>",
+          "memory_context_sha256": "4aa252fcfe571afdcc9809424cb04c7eaee3857e868770ade3367c2d092a49b7",
+          "system_prompt_sha256": "e213a1e1d8c751f4e1eff681e3dedf39336c68bcad35d5df9ca057c89d000224",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have specific details about the budget allocation for influencer marketing in the DHL Wellness Retreats campaign. If you have any documents or notes from your planning sessions, they might contain this information. Alternatively, if you want to discuss or adjust the budget, I can help with that.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User is developing an email marketing campaign for the DHL Wellness Retreats and wants it to include example emails.\n- Project: User is working with the design team to prepare the marketing campaign\n- Project: User is working with the content team to prepare the marketing campaign\n- Project: User plans to launch the marketing campaign in about six weeks\n- Project: User's marketing campaign aims to increase brand awareness\n</memory_records>",
+          "memory_context_sha256": "4aa252fcfe571afdcc9809424cb04c7eaee3857e868770ade3367c2d092a49b7",
+          "system_prompt_sha256": "e213a1e1d8c751f4e1eff681e3dedf39336c68bcad35d5df9ca057c89d000224",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "28dc39ac",
+      "question_type": "multi-session",
+      "question": "How many hours have I spent playing games in total?",
+      "reference": "140 hours",
+      "question_date": "2023/05/30 (Tue) 23:42",
+      "classification": "prompt-selection-gap",
+      "confidence": "high",
+      "diagnosis": "Stored active facts give 70 + 25(normal) + 30(hard) + 10(Celeste) + 5(Hyper Light Drifter) = 140 hours. The saved five-fact context repeats the 70-hour fact twice, includes 30 hours, and omits the other 40 hours. Correct evidence exists but did not reach the prompt.",
+      "falsification_check_and_boundary": "No historical retrieval logs are available here, so candidate exclusion, rank cutoff and later rendering cannot be separated. Duplicate occupancy is observed, not proof that deduplication alone would recover all missing facts.",
+      "db_evidence_sha256": "73a094091ee209803996fcdd6a3db1fd11826add488f9626b16465addc736043",
+      "db_memories_examined": 566,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_8d015d9d_3",
+          "haystack_date": "2023/05/20 (Sat) 14:21",
+          "conversation_id": "3690d1aa-eb6e-4630-9173-43a88b070e5b",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_8d015d9d_5",
+          "haystack_date": "2023/05/23 (Tue) 12:05",
+          "conversation_id": "219261fa-f63a-4d64-8374-7e4632cc7a49",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_8d015d9d_2",
+          "haystack_date": "2023/05/25 (Thu) 14:10",
+          "conversation_id": "0c80df83-998c-4f9f-bb39-b393f4462a44",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_8d015d9d_4",
+          "haystack_date": "2023/05/27 (Sat) 12:34",
+          "conversation_id": "15210844-3def-4da8-98f8-c234efa5ec89",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_8d015d9d_1",
+          "haystack_date": "2023/05/29 (Mon) 00:59",
+          "conversation_id": "6ea290a9-b930-4d48-87ea-20671020f353",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "06729686-3261-40ed-8ff6-df507bf435c3",
+          "source_conversation_id": "3690d1aa-eb6e-4630-9173-43a88b070e5b",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:20:25.753867+00:00",
+          "valid_to": null,
+          "memory_slot": "gaming.assassins_creed_odyssey.playtime",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has spent around 70 hours playing Assassin's Creed Odyssey",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "8925ddbd-0184-4573-b2c5-a7f91bf5e677",
+          "source_conversation_id": "3690d1aa-eb6e-4630-9173-43a88b070e5b",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8500000238418579,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:20:42.068461+00:00",
+          "valid_to": null,
+          "memory_slot": "gaming.assassins_creed_odyssey",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has played Assassin's Creed Odyssey for 70 hours",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "0807f4f5-3e15-43bf-b776-857b726ad7e2",
+          "source_conversation_id": "6ea290a9-b930-4d48-87ea-20671020f353",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:01:20.984829+00:00",
+          "valid_to": null,
+          "memory_slot": "gaming.the_last_of_us_part_ii",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User completed The Last of Us Part II on normal difficulty in 25 hours",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "11672c8b-34a5-4b99-9fc5-b92c5fc17bc5",
+          "source_conversation_id": "0c80df83-998c-4f9f-bb39-b393f4462a44",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:47:57.938251+00:00",
+          "valid_to": null,
+          "memory_slot": "gaming.completed.the_last_of_us_part_ii",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User completed The Last of Us Part II on hard difficulty in 30 hours",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "99db9c59-462a-4f38-bc8b-7c4261a8437a",
+          "source_conversation_id": "15210844-3def-4da8-98f8-c234efa5ec89",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:53:28.327248+00:00",
+          "valid_to": null,
+          "memory_slot": "game.celeste.completion_time",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User completed Celeste in 10 hours",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "f98e98cb-d6bb-4a7d-a0f4-a7c415b4570f",
+          "source_conversation_id": "219261fa-f63a-4d64-8374-7e4632cc7a49",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:37:16.044045+00:00",
+          "valid_to": null,
+          "memory_slot": "gaming.hyper_light_drifter.completion_time",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User completed Hyper Light Drifter in 5 hours",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [],
+      "support_linked_memory_count": 80,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "Based on the information I have, you've spent around 70 hours playing Assassin's Creed Odyssey and 30 hours playing The Last of Us Part II. I don't have the exact number of hours for Hyper Light Drifter, but if you provide that, I can add it to the total. So far, the total is 100 hours.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User has spent around 70 hours playing Assassin's Creed Odyssey\n- Fact: User has played Assassin's Creed Odyssey for 70 hours\n- Fact: User spent around 30 hours playing The Last of Us Part II on hard difficulty\n- Fact: User has recently been playing a lot of action-adventure games\n- Fact: User has played Hyper Light Drifter\n</memory_records>",
+          "memory_context_sha256": "cf131519fbe43fdbae2edfbc41a8d352ff964f908149847eb00e089ff6c6fe4c",
+          "system_prompt_sha256": "180b59b9285f5552706a27578e5b402478eb16520eed5d2c3fd30ba30ba84a69",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "Based on the information I have, you've spent around 70 hours playing Assassin's Creed Odyssey and 30 hours playing The Last of Us Part II. However, I don't have the exact number of hours for Hyper Light Drifter or other games you might have played. From the available data, you've spent at least 100 hours playing games. If you provide more details about other games, I can update the total.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User has spent around 70 hours playing Assassin's Creed Odyssey\n- Fact: User has played Assassin's Creed Odyssey for 70 hours\n- Fact: User spent around 30 hours playing The Last of Us Part II on hard difficulty\n- Fact: User has recently been playing a lot of action-adventure games\n- Fact: User has played Hyper Light Drifter\n</memory_records>",
+          "memory_context_sha256": "cf131519fbe43fdbae2edfbc41a8d352ff964f908149847eb00e089ff6c6fe4c",
+          "system_prompt_sha256": "180b59b9285f5552706a27578e5b402478eb16520eed5d2c3fd30ba30ba84a69",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "1192316e",
+      "question_type": "multi-session",
+      "question": "What is the total time it takes I to get ready and commute to work?",
+      "reference": "an hour and a half",
+      "question_date": "2023/05/30 (Tue) 19:00",
+      "classification": "prompt-selection-gap",
+      "confidence": "high",
+      "diagnosis": "The DB stores a one-hour morning routine and a 30-minute commute. Saved context contains only the commute and related plans, so the reader asks for the missing preparation time rather than computing 90 minutes.",
+      "falsification_check_and_boundary": "Verify the one-hour fact is eligible and absent from the final context; do not claim a specific candidate-score/rank cause without the missing retrieval trace.",
+      "db_evidence_sha256": "55beb8622ef6cf38f1b3d62447473d9f51fd835d86da764177d153273adf6a36",
+      "db_memories_examined": 527,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_e184e4c3_2",
+          "haystack_date": "2023/05/20 (Sat) 20:31",
+          "conversation_id": "4e4fddf9-952f-46d4-b4a0-399beb6779d6",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_e184e4c3_1",
+          "haystack_date": "2023/05/23 (Tue) 08:13",
+          "conversation_id": "ab3effd4-7984-4e69-866c-d3919b548fb8",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "b2239692-8040-4005-abaa-79588eedf2b1",
+          "source_conversation_id": "ab3effd4-7984-4e69-866c-d3919b548fb8",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:36:49.374004+00:00",
+          "valid_to": null,
+          "memory_slot": "routine.morning.duration",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User's morning routine takes about an hour",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "2b34b3b2-589a-43eb-908e-3e2bedf033e5",
+          "source_conversation_id": "4e4fddf9-952f-46d4-b4a0-399beb6779d6",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 08:24:44.497784+00:00",
+          "valid_to": null,
+          "memory_slot": "commute.duration",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User's daily commute to work takes about 30 minutes",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [],
+      "support_linked_memory_count": 32,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You mentioned that your daily commute to work takes about 30 minutes. If you can provide the time it takes for you to get ready in the morning, I can help you calculate the total time for your morning routine and commute.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User's daily commute to work takes about 30 minutes\n- Fact: User has a morning commute\n- Project: User wants tips for staying focused and alert during their morning commute\n- Project: User plans to listen to a mix of audiobooks and podcasts during their commute to see what they enjoy most\n- Project: User is considering trying tips to stay focused and alert during their morning commute\n</memory_records>",
+          "memory_context_sha256": "ad72c98a2487511b5ee82b69e4144f0a025acf6b1b49f9f9899c933c759554cf",
+          "system_prompt_sha256": "993257661a4602069b083ed50c7acac23e94921ff7b6f027e81f6d71f5f33f84",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You mentioned that your daily commute to work takes about 30 minutes. If you can provide the time it takes for you to get ready in the morning, I can help you calculate the total time for both getting ready and commuting.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User's daily commute to work takes about 30 minutes\n- Fact: User has a morning commute\n- Project: User wants tips for staying focused and alert during their morning commute\n- Project: User plans to listen to a mix of audiobooks and podcasts during their commute to see what they enjoy most\n- Project: User is considering trying tips to stay focused and alert during their morning commute\n</memory_records>",
+          "memory_context_sha256": "ad72c98a2487511b5ee82b69e4144f0a025acf6b1b49f9f9899c933c759554cf",
+          "system_prompt_sha256": "993257661a4602069b083ed50c7acac23e94921ff7b6f027e81f6d71f5f33f84",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "6613b389",
+      "question_type": "temporal-reasoning",
+      "question": "How many months before my anniversary did Rachel get engaged?",
+      "reference": "2",
+      "question_date": "2023/07/07 (Fri) 13:04",
+      "classification": "prompt-selection-gap",
+      "confidence": "high",
+      "diagnosis": "The DB contains Rachel's May 15 engagement and the July 22 anniversary. The saved context includes the engagement and gift/party plans, but not the anniversary date; both readers explicitly request that missing date.",
+      "falsification_check_and_boundary": "Distinguish this missing-second-fact case from the relative-day grounding cases: the required absolute month/day facts are already stored.",
+      "db_evidence_sha256": "8ce63c1c0d8100c24777cf6326de7461cef3413c0fffeff71857b5f2ba08e47e",
+      "db_memories_examined": 485,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_aaf71ce2_3",
+          "haystack_date": "2023/07/07 (Fri) 19:55",
+          "conversation_id": "a33621b8-364a-4403-91a3-ac6454063cef",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_aaf71ce2_2",
+          "haystack_date": "2023/07/07 (Fri) 04:44",
+          "conversation_id": "0cbc4570-58c2-4c04-bd8b-c219f1ca4b57",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_aaf71ce2_1",
+          "haystack_date": "2023/07/07 (Fri) 11:28",
+          "conversation_id": "27db003a-726d-4e43-8e34-c5545b012256",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "21ac11f9-9689-4571-af6f-3c5c7c858260",
+          "source_conversation_id": "0cbc4570-58c2-4c04-bd8b-c219f1ca4b57",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:22:35.086554+00:00",
+          "valid_to": null,
+          "memory_slot": "relationship.friend.engagement",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User's close friend Rachel got engaged on May 15, which the user described as last month",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "55eab6cb-17c0-4201-be69-9b3b70700029",
+          "source_conversation_id": "0cbc4570-58c2-4c04-bd8b-c219f1ca4b57",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:23:26.131705+00:00",
+          "valid_to": null,
+          "memory_slot": "relationship.wedding_anniversary",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User's wedding anniversary is on July 22",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "94c365d4-d4cb-47c1-8661-9b9ff73a09f6",
+          "source_conversation_id": "a33621b8-364a-4403-91a3-ac6454063cef",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:01:36.583596+00:00",
+          "valid_to": null,
+          "memory_slot": "relationship.anniversary",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User's anniversary with their partner is July 22",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [],
+      "support_linked_memory_count": 60,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "Rachel got engaged on May 15, which you described as last month. To determine how many months before your anniversary this occurred, I need to know the date of your anniversary. Could you provide that information?",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User's close friend Rachel got engaged on May 15, which the user described as last month\n- Project: User plans to write a heartfelt letter to Rachel to commemorate her engagement.\n- Project: User is planning a beach weekend getaway for Rachel's bachelorette party in August\n- Project: User chose a customized photo frame featuring a picture of Rachel's engagement ring as a gift for Rachel.\n- Project: User is considering a thoughtful, personalized engagement gift for Rachel\n</memory_records>",
+          "memory_context_sha256": "49960356bd06430e0ae7aff2a40a36df5921da89b4a95e8f82e044fc6dc5c0f8",
+          "system_prompt_sha256": "133fca768a8726d9275648df64d45de83f392ba13bec2922f2c1fcbece6353ca",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "Rachel got engaged on May 15, which you described as last month. To determine how many months before your anniversary this occurred, I need to know the date of your anniversary. Could you provide that information?",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User's close friend Rachel got engaged on May 15, which the user described as last month\n- Project: User plans to write a heartfelt letter to Rachel to commemorate her engagement.\n- Project: User is planning a beach weekend getaway for Rachel's bachelorette party in August\n- Project: User chose a customized photo frame featuring a picture of Rachel's engagement ring as a gift for Rachel.\n- Project: User is considering a thoughtful, personalized engagement gift for Rachel\n</memory_records>",
+          "memory_context_sha256": "49960356bd06430e0ae7aff2a40a36df5921da89b4a95e8f82e044fc6dc5c0f8",
+          "system_prompt_sha256": "133fca768a8726d9275648df64d45de83f392ba13bec2922f2c1fcbece6353ca",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "0bb5a684",
+      "question_type": "temporal-reasoning",
+      "question": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+      "reference": "7 days. 8 days (including the last day) is also acceptable.",
+      "question_date": "2023/01/13 (Fri) 12:09",
+      "classification": "prompt-selection-gap",
+      "confidence": "high",
+      "diagnosis": "The DB stores the January 10 workshop and January 17 team meeting. Only the workshop date reaches the saved prompt, alongside other workshops. The reader asks for the meeting date needed for the seven-day interval.",
+      "falsification_check_and_boundary": "A date-rendering change cannot expose a fact that is absent from the selected/rendered context; verify both event facts reach any proposed candidate prompt.",
+      "db_evidence_sha256": "0251055c349bec7cb74b87b739a313b32ea3dfb4cc123ce75f014ccc68876e74",
+      "db_memories_examined": 485,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_e936197f_1",
+          "haystack_date": "2023/01/13 (Fri) 01:02",
+          "conversation_id": "e10aa075-8e87-4520-9b77-bb4d8198ad55",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_e936197f_2",
+          "haystack_date": "2023/01/13 (Fri) 13:59",
+          "conversation_id": "d0f9c616-8f5d-4916-ad22-51366e432bb2",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "e65f7073-1d85-4bc9-bfc5-2fe9e54dacc8",
+          "source_conversation_id": "e10aa075-8e87-4520-9b77-bb4d8198ad55",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:26:04.686907+00:00",
+          "valid_to": null,
+          "memory_slot": "learning.workshop",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User attended the \"Effective Communication in the Workplace\" workshop on January 10",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "0770505d-0b96-4908-af07-2e692c034b9b",
+          "source_conversation_id": "d0f9c616-8f5d-4916-ad22-51366e432bb2",
+          "category": "project",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 11:12:35.035581+00:00",
+          "valid_to": null,
+          "memory_slot": "meeting.upcoming",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User is preparing for an upcoming team meeting on January 17",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "3c418fde-f8c6-4383-8513-9df463894cd9",
+          "source_conversation_id": "d0f9c616-8f5d-4916-ad22-51366e432bb2",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.699999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 11:13:41.957060+00:00",
+          "valid_to": null,
+          "memory_slot": "event.team_meeting",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has a team meeting on January 17th",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [],
+      "support_linked_memory_count": 28,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You attended the \"Effective Communication in the Workplace\" workshop on January 10. To determine how many days before the team meeting you were preparing for this workshop took place, I'll need to know the date of the team meeting. Could you provide that information?",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User attended the \"Effective Communication in the Workplace\" workshop on January 10\n- Fact: User attended a workshop on effective communication in the workplace\n- Fact: User attended a half-day mindfulness workshop at a yoga studio near home on December 12\n- Fact: User attended a three-day entrepreneurship workshop in January\n- Fact: User considers self-awareness a key takeaway from the workplace communication workshop\n</memory_records>",
+          "memory_context_sha256": "e12ae4c9d7f77ce9bf0fe4d384b38e0bf77b59b7dc9ba737d0afbb639b8c0fff",
+          "system_prompt_sha256": "197d3762d5d19073ec88a3218a03b521807daf3f7fbcb0d4246a05ddd0f9d3b2",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You attended the \"Effective Communication in the Workplace\" workshop on January 10. To determine how many days before the team meeting you were preparing for this workshop took place, I need to know the date of the team meeting. Could you provide that information?",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User attended the \"Effective Communication in the Workplace\" workshop on January 10\n- Fact: User attended a workshop on effective communication in the workplace\n- Fact: User attended a half-day mindfulness workshop at a yoga studio near home on December 12\n- Fact: User attended a three-day entrepreneurship workshop in January\n- Fact: User considers self-awareness a key takeaway from the workplace communication workshop\n</memory_records>",
+          "memory_context_sha256": "e12ae4c9d7f77ce9bf0fe4d384b38e0bf77b59b7dc9ba737d0afbb639b8c0fff",
+          "system_prompt_sha256": "197d3762d5d19073ec88a3218a03b521807daf3f7fbcb0d4246a05ddd0f9d3b2",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "0a34ad58",
+      "question_type": "single-session-preference",
+      "question": "I’m a bit anxious about getting around Tokyo. Do you have any helpful tips?",
+      "reference": "The user would prefer responses that utilize their existing resources, such as their Suica card and TripIt app, to provide personalized tips for navigating Tokyo's public transportation. They might not prefer general tips or recommendations that do not take into account their prior preparations.",
+      "question_date": "2023/05/30 (Tue) 22:40",
+      "classification": "prompt-selection-gap",
+      "confidence": "high",
+      "diagnosis": "Suica ownership and downloaded TripIt are stored, active, cloud-eligible and embedded, but the saved context contains only general Tokyo plans. The reader suggests getting a Suica rather than using the existing one. Phase 1 removed truncation at cap 1024 without fixing either strict label.",
+      "falsification_check_and_boundary": "Do not infer cap tuning as the cause or fix: the approved saved-context cap diagnostic preserved the failure. Verify personalized resource facts reach the prompt before generation experiments.",
+      "db_evidence_sha256": "56dad7379a11dbfcbd1d5807132da180e2cbdb9e48487e7a2a437416d717aec8",
+      "db_memories_examined": 552,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_cebb7159",
+          "haystack_date": "2023/05/22 (Mon) 23:46",
+          "conversation_id": "ac432db6-f463-470b-8292-f76c2f84c753",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "07c6d26d-8bd3-438b-aecc-6d8451f0ec5d",
+          "source_conversation_id": "ac432db6-f463-470b-8292-f76c2f84c753",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.699999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:44:13.321458+00:00",
+          "valid_to": null,
+          "memory_slot": "travel.suica",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has a Suica card",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "3bb5fed7-48de-4aa3-9cbc-5ec9d1fb9d42",
+          "source_conversation_id": "ac432db6-f463-470b-8292-f76c2f84c753",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:43:20.425331+00:00",
+          "valid_to": null,
+          "memory_slot": "transport.suica",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User recently got a Suica card",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "ddabe83c-c72c-4e28-b6b2-287102a9c442",
+          "source_conversation_id": "ac432db6-f463-470b-8292-f76c2f84c753",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.9200000166893005,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:43:45.194808+00:00",
+          "valid_to": null,
+          "memory_slot": "travel.app.tripit",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has downloaded the TripIt app to stay organized during the trip",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "2c404c4c-2603-4b11-83b3-59bb7ce5776a",
+          "conversation_id": "ac432db6-f463-470b-8292-f76c2f84c753",
+          "role": "user",
+          "created_at": "2026-10-27 10:43:06.135929+00:00",
+          "excerpt": "l me what I need to prepare for the tour, and how I can get to the meeting point using my Suica card? I have downloaded the TripIt app to stay organized, but I'm still nervous about the trip.",
+          "full_content_sha256": "170d5cc7fc753f6555fc4e0b27861f4a94d9188fdbb39b793ab3082800dee995"
+        }
+      ],
+      "support_linked_memory_count": 16,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "partially_correct",
+          "hypothesis": "Navigating Tokyo can be a bit overwhelming due to its size and complexity, but here are some tips to help you get around smoothly:\n\n1. **Public Transport**: Tokyo has an extensive and efficient public transport system, including trains, subways, and buses. The JR Yamanote Line is a convenient loop line that connects many major areas.\n\n2. **Suica/Pasmo Cards**: Consider getting a Suica or Pasmo card for easy access to public transport. These prepaid cards can be used on trains, buses, and even for shopping at convenience stores.\n\n3. **Navigation Apps**: Use navigation apps like Google Maps or Japan Transit Planner to plan your routes and check train schedules.\n\n4. **Language**: While many signs are in English, learning a few basic Japanese phrases can be helpful. Most station staff can assist you in English if needed.\n\n5. **Peak Hours**: Try to avoid traveling during peak hours (7-9 AM and 5-7 PM) to avoid crowded trains.\n\n6. **Walking**: Tokyo is a pedestrian-friendly city, and walking can be a great way to explore local neighborhoods.\n\n7. **Taxi Services**: Taxis are available but can be expensive. They are a good option for late-night",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User is planning to travel to Tokyo soon\n- Project: User plans to shop while in Tokyo\n- Project: User is planning to visit Tokyo Tower\n- Project: User is planning to visit Tsukiji Fish Market\n- Project: User is planning to take a guided tour to Nikko National Park\n</memory_records>",
+          "memory_context_sha256": "cb2b7c4f3c4be59f8b8e91410c0f1692dd9b733b5427cca5a09cc9c638e4a6ec",
+          "system_prompt_sha256": "b117eab63be1d3a91f112f4382e5e199dc7f038608c6d5c159dcf6c814aad84e",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "partially_correct",
+          "hypothesis": "Navigating Tokyo can be a bit overwhelming due to its size and complexity, but here are some tips to help you get around smoothly:\n\n1. **Public Transport**: Tokyo has an extensive and efficient public transport system, including trains, subways, and buses. The JR Yamanote Line is a convenient loop line that connects many major areas.\n\n2. **Suica/Pasmo Cards**: Consider getting a Suica or Pasmo card for easy access to public transport. These prepaid cards can be used on trains, buses, and even for purchases at convenience stores.\n\n3. **Navigation Apps**: Use navigation apps like Google Maps or Japan Transit Planner to plan your routes and check train schedules.\n\n4. **Signage**: Most signs in Tokyo are in both Japanese and English, making it easier for tourists to navigate.\n\n5. **Peak Hours**: Try to avoid traveling during peak hours (7-9 AM and 5-7 PM) to avoid crowded trains.\n\n6. **Walking**: Tokyo is a pedestrian-friendly city, and walking can be a great way to explore local neighborhoods.\n\n7. **Language**: While many people in Tokyo speak some English, learning a few basic Japanese phrases can be helpful.\n\n8. **Wi-Fi**:",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Project: User is planning to travel to Tokyo soon\n- Project: User plans to shop while in Tokyo\n- Project: User is planning to visit Tokyo Tower\n- Project: User is planning to visit Tsukiji Fish Market\n- Project: User is planning to take a guided tour to Nikko National Park\n</memory_records>",
+          "memory_context_sha256": "cb2b7c4f3c4be59f8b8e91410c0f1692dd9b733b5427cca5a09cc9c638e4a6ec",
+          "system_prompt_sha256": "b117eab63be1d3a91f112f4382e5e199dc7f038608c6d5c159dcf6c814aad84e",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "gpt4_af6db32f",
+      "question_type": "temporal-reasoning",
+      "question": "How many days ago did I watch the Super Bowl?",
+      "reference": "17 days ago. 18 days (including the last day) is also acceptable.",
+      "question_date": "2023/03/01 (Wed) 19:28",
+      "classification": "temporal-grounding-gap",
+      "confidence": "high",
+      "diagnosis": "The stored and rendered fact still says watched the Super Bowl today. Source haystack date is 2023-02-12 and question date 2023-03-01, but DB message/valid-from times are ingestion-time 2026 and metadata is empty. The reader receives neither the historical anchor nor the benchmark question as-of date and answers zero days.",
+      "falsification_check_and_boundary": "The two dates remain in frozen fixture/checkpoint evidence, not in this fact's historical DB time. Do not silently render ingestion time as event time, inject benchmark-only dates, or count a date-parity repair as a production memory gain. Ingest-level changes require approval.",
+      "db_evidence_sha256": "a05d8d686c3311eb1873aab4033f44aec41c0c13a9b387c57b8ab180283f1806",
+      "db_memories_examined": 456,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_184c8f56_1",
+          "haystack_date": "2023/02/12 (Sun) 06:29",
+          "conversation_id": "3585e567-5da1-4947-8088-5f79e2aa2295",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "06b9595c-8a60-495f-a82d-4ddbad5395b1",
+          "source_conversation_id": "3585e567-5da1-4947-8088-5f79e2aa2295",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8799999952316284,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:57:59.287298+00:00",
+          "valid_to": null,
+          "memory_slot": "sports.super_bowl",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User watched the Super Bowl at a friend's house today.",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "3c0b28de-c3be-4049-bdb8-06477fc29aa3",
+          "conversation_id": "3585e567-5da1-4947-8088-5f79e2aa2295",
+          "role": "user",
+          "created_at": "2026-10-27 09:57:33.026577+00:00",
+          "excerpt": "and I was thinking of serving some food that's similar to what I had at my friend's house today when we watched the Super Bowl - you know, pizza and wings. Do you have any recommendations for good wing sauces or pizza toppings that would be a hit with my friends? By the way,",
+          "full_content_sha256": "ac9fb8f707c282e9f27568629b0d4efc18a74d2aff5f66f2dd79fa9fccea666a"
+        }
+      ],
+      "support_linked_memory_count": 16,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You watched the Super Bowl today, so it was 0 days ago.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User watched the Super Bowl at a friend's house today.\n- Fact: User had pizza and wings while watching the Super Bowl at a friend's house.\n- Fact: User wants to catch up on NFL games before the draft.\n- Fact: User won $20 from a colleague after the Super Bowl\n- Fact: User started watching Stranger Things on Netflix about a month ago\n</memory_records>",
+          "memory_context_sha256": "ee0fb99536856bec9e0cacb35e5317b358cef4a6d9b1b3eb5557f6ae66ea61c7",
+          "system_prompt_sha256": "dc0d9578d6e40f9e78f654aca5412b19772a84a3d9f559676472269bb38f1958",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You watched the Super Bowl today, so it was 0 days ago.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User watched the Super Bowl at a friend's house today.\n- Fact: User had pizza and wings while watching the Super Bowl at a friend's house.\n- Fact: User wants to catch up on NFL games before the draft.\n- Fact: User won $20 from a colleague after the Super Bowl\n- Fact: User started watching Stranger Things on Netflix about a month ago\n</memory_records>",
+          "memory_context_sha256": "ee0fb99536856bec9e0cacb35e5317b358cef4a6d9b1b3eb5557f6ae66ea61c7",
+          "system_prompt_sha256": "dc0d9578d6e40f9e78f654aca5412b19772a84a3d9f559676472269bb38f1958",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "gpt4_b0863698",
+      "question_type": "temporal-reasoning",
+      "question": "How many days ago did I participate in the 5K charity run?",
+      "reference": "7 days ago. 8 days (including the last day) is also acceptable.",
+      "question_date": "2023/03/26 (Sun) 04:13",
+      "classification": "temporal-grounding-gap",
+      "confidence": "high",
+      "diagnosis": "The source says the 5K happened today on haystack date 2023-03-19; the question is dated 2023-03-26. The stored fact keeps the duration but drops today/date; DB timestamps are ingestion-time 2026, metadata is empty, and the prompt lacks an as-of anchor. The reader asks for an event date.",
+      "falsification_check_and_boundary": "This is not a pure failure to retrieve the 5K event: that event is already rendered. Distinguish source-time preservation, query-time parity and formatting before designing a change; do not infer the event date from 2026 ingestion timestamps.",
+      "db_evidence_sha256": "1073e2be2ed7edd8841888c576bf9c77d45a5faf51e65e5ccaf4e3ce3c33e04c",
+      "db_memories_examined": 504,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_550bb2d1_1",
+          "haystack_date": "2023/03/19 (Sun) 12:13",
+          "conversation_id": "f4642d2c-58bb-4d74-abe7-5ad17ddcd183",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "0bfb4843-b1bc-4b46-a18f-254032fb872d",
+          "source_conversation_id": "f4642d2c-58bb-4d74-abe7-5ad17ddcd183",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:14:29.697502+00:00",
+          "valid_to": null,
+          "memory_slot": "running.5k_result",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User completed a 5K charity run in 27 minutes and 12 seconds",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "1ac36106-a68a-4a94-8a75-ce765cb4cdc7",
+          "conversation_id": "f4642d2c-58bb-4d74-abe7-5ad17ddcd183",
+          "role": "user",
+          "created_at": "2026-10-27 10:14:07.068597+00:00",
+          "excerpt": "some new running routes in my area. I just got back into running and did a 5K charity run today, finishing in 27 minutes and 12 seconds, which was a great motivator. Do you have any recommendations for routes that are around 3-5 miles long?",
+          "full_content_sha256": "59fa529766867daad34d170360af27fee03d6e8f03b78201e4931f309870d1d7"
+        }
+      ],
+      "support_linked_memory_count": 24,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "I don't have the exact date of your participation in the 5K charity run. If you provide the date, I can calculate how many days ago it was.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User completed a 5K charity run in 27 minutes and 12 seconds\n- Fact: User was involved in a charity 5K run/walk event\n- Fact: User recently volunteered at a charity 5K run/walk by helping with registration.\n- Fact: User recently volunteered at a charity 5K run/walk by handing out water to participants.\n- Preference: User found completing the 5K charity run motivating\n</memory_records>",
+          "memory_context_sha256": "c049d9147fdb078a1cf2fdd741b1bb8bf0d2c41c5ec517a31ddfcdd8e49036d9",
+          "system_prompt_sha256": "c083edcff9a3eeecf5a2e1ec672f1cba8cd4931a72a92847e804553e2a4e28ad",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "To determine how many days ago you participated in the 5K charity run, I need to know the date of the event. Could you provide that information?",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User completed a 5K charity run in 27 minutes and 12 seconds\n- Fact: User was involved in a charity 5K run/walk event\n- Fact: User recently volunteered at a charity 5K run/walk by helping with registration.\n- Fact: User recently volunteered at a charity 5K run/walk by handing out water to participants.\n- Preference: User found completing the 5K charity run motivating\n</memory_records>",
+          "memory_context_sha256": "c049d9147fdb078a1cf2fdd741b1bb8bf0d2c41c5ec517a31ddfcdd8e49036d9",
+          "system_prompt_sha256": "c083edcff9a3eeecf5a2e1ec672f1cba8cd4931a72a92847e804553e2a4e28ad",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "852ce960",
+      "question_type": "knowledge-update",
+      "question": "What was the amount I was pre-approved for when I got my mortgage from Wells Fargo?",
+      "reference": "$400,000",
+      "question_date": "2023/12/18 (Mon) 04:17",
+      "classification": "temporal-ordering-gap",
+      "confidence": "medium",
+      "diagnosis": "Older $350,000 and later $400,000 Wells Fargo facts are both active and both present in context, with the old amount repeated and first. Their source sessions and DB valid-from values preserve relative order, but those provenance cues are not rendered. Both readers choose the older amount.",
+      "falsification_check_and_boundary": "Correct-value presence alone does not make the temporal choice unambiguous. Ordering/provenance loss is a contributing explanation, not proof a renderer-only change will fix the reader; preserve both source claims rather than silently overwriting history.",
+      "db_evidence_sha256": "1e906f9975a9137427f70a2c8fa603a0a75d02fa2ffa09925a98ed18ca246333",
+      "db_memories_examined": 393,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_3a6f1e82_1",
+          "haystack_date": "2023/08/11 (Fri) 00:01",
+          "conversation_id": "58372709-8715-4656-99b3-da56b9dce5a5",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_3a6f1e82_2",
+          "haystack_date": "2023/11/30 (Thu) 00:36",
+          "conversation_id": "b922f438-3295-4bae-a864-47058a5e6013",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "fd58c1ec-7871-4276-9675-eb401dc5f550",
+          "source_conversation_id": "58372709-8715-4656-99b3-da56b9dce5a5",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:19:17.128577+00:00",
+          "valid_to": null,
+          "memory_slot": "mortgage.preapproval",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User is pre-approved for a $350,000 mortgage from Wells Fargo",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "c9e8262b-d295-4c89-945f-30fadaa49f00",
+          "source_conversation_id": "58372709-8715-4656-99b3-da56b9dce5a5",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.800000011920929,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:19:33.444719+00:00",
+          "valid_to": null,
+          "memory_slot": "homebuying.preapproval_amount",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has a mortgage pre-approval for $350,000",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "f09df78b-c706-40a3-8daf-5741de361829",
+          "source_conversation_id": "b922f438-3295-4bae-a864-47058a5e6013",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8799999952316284,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:58:50.769019+00:00",
+          "valid_to": null,
+          "memory_slot": "finance.mortgage.preapproval",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User was pre-approved for $400,000 by Wells Fargo",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "2e59c291-b977-4dd3-8b75-25ae2eedc71c",
+          "conversation_id": "58372709-8715-4656-99b3-da56b9dce5a5",
+          "role": "user",
+          "created_at": "2026-10-27 09:18:56.989049+00:00",
+          "excerpt": "I'm actually buying a $325,000 house, and I got pre-approved for $350,000 from Wells Fargo. What would be the estimated closing costs for my situation?",
+          "full_content_sha256": "0b250fc3e43ae8e7abcc12cbc69dbe365d9b0e323020e6dde1cf8bb1906a48d4"
+        },
+        {
+          "id": "5ed880a8-3c14-489a-8965-77ce0554b4b4",
+          "conversation_id": "b922f438-3295-4bae-a864-47058a5e6013",
+          "role": "user",
+          "created_at": "2026-10-27 09:58:26.786644+00:00",
+          "excerpt": "ss, but it'll be worth it to have a backyard like the one I'll have - remember when I got pre-approved for $400,000 from Wells Fargo?",
+          "full_content_sha256": "81a5887aed5491b2f1f4c334777bbd79b10cc730222570d771d4832675b67be7"
+        }
+      ],
+      "support_linked_memory_count": 40,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You were pre-approved for a mortgage amount of $350,000 from Wells Fargo.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User is pre-approved for a $350,000 mortgage from Wells Fargo\n- Fact: User was pre-approved for $400,000 by Wells Fargo\n- Fact: User has a mortgage pre-approval for $350,000\n- Project: User is considering financing $300,000 for the home purchase\n- Project: User is planning to buy a home priced at $325,000\n</memory_records>",
+          "memory_context_sha256": "9af4da3ac0704228e0e5de5b0fd3a05abf3ef4d1689041bbfda7797fa78be69f",
+          "system_prompt_sha256": "507682559abbd51abb5f76e1e4beae16a1ab2445ad475b2648756de1cb1cf39f",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You were pre-approved for a mortgage amount of $350,000 from Wells Fargo.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User is pre-approved for a $350,000 mortgage from Wells Fargo\n- Fact: User was pre-approved for $400,000 by Wells Fargo\n- Fact: User has a mortgage pre-approval for $350,000\n- Project: User is considering financing $300,000 for the home purchase\n- Project: User is planning to buy a home priced at $325,000\n</memory_records>",
+          "memory_context_sha256": "9af4da3ac0704228e0e5de5b0fd3a05abf3ef4d1689041bbfda7797fa78be69f",
+          "system_prompt_sha256": "507682559abbd51abb5f76e1e4beae16a1ab2445ad475b2648756de1cb1cf39f",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "f685340e",
+      "question_type": "knowledge-update",
+      "question": "How often do I play tennis with my friends at the local park previously? How often do I play now?",
+      "reference": "Previously, you play tennis with your friends at the local park every week (on Sunday). Currently, you play tennis every other week (on Sunday).",
+      "question_date": "2023/07/31 (Mon) 11:43",
+      "classification": "temporal-ordering-gap",
+      "confidence": "medium",
+      "diagnosis": "March weekly and July every-other-week tennis facts are stored and both rendered as undated present-tense facts. The response reverses previous/current frequency. Source-session and ingestion-order evidence can distinguish them, but the saved text does not expose that ordering.",
+      "falsification_check_and_boundary": "Do not call this a missing-value extraction failure. A provenance/order intervention remains an experiment, not an established causal fix or permission to close/replace stored facts.",
+      "db_evidence_sha256": "a752ffff5841ae1cdf1fba8c9b10e000b1b065c657f255baada692698cb0bda8",
+      "db_memories_examined": 583,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_25df025b_1",
+          "haystack_date": "2023/03/11 (Sat) 18:01",
+          "conversation_id": "a616073e-b56d-4f05-8658-878ec9e9ff1a",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_25df025b_2",
+          "haystack_date": "2023/07/30 (Sun) 04:03",
+          "conversation_id": "2d3cb338-54a7-4eec-ace3-69da3f12da64",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "2c42d9b9-278a-4f92-a88b-eff1d56340a9",
+          "source_conversation_id": "a616073e-b56d-4f05-8658-878ec9e9ff1a",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:17:46.625923+00:00",
+          "valid_to": null,
+          "memory_slot": "hobby.tennis",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User plays tennis weekly with friends",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "dc5cdf58-8b98-432b-8bf7-d13815680f28",
+          "source_conversation_id": "2d3cb338-54a7-4eec-ace3-69da3f12da64",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 10:36:32.184256+00:00",
+          "valid_to": null,
+          "memory_slot": "hobby.tennis",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User plays tennis with friends at a local park every other week on Sundays",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "927a146c-5bd4-4128-aef0-98589cac088b",
+          "conversation_id": "a616073e-b56d-4f05-8658-878ec9e9ff1a",
+          "role": "user",
+          "created_at": "2026-10-27 09:17:39.141006+00:00",
+          "excerpt": "ions? By the way, I was just at the local park last Sunday, and I saw some people playing tennis - reminds me of my own weekly tennis sessions with friends.",
+          "full_content_sha256": "834cbc07f93d6e2a97f28b64cd27d9b1215a65a1692d23040777891c71fb2871"
+        },
+        {
+          "id": "671b7fc9-f4c6-4b16-99fb-903f9fa9de98",
+          "conversation_id": "2d3cb338-54a7-4eec-ace3-69da3f12da64",
+          "role": "user",
+          "created_at": "2026-10-27 10:36:14.811260+00:00",
+          "excerpt": "n you suggest some jogging routes near my house? Oh, and by the way, I'm planning to play tennis with my friends at the local park this Sunday, like we do every other week.",
+          "full_content_sha256": "aa37b8e2028a89c664249e0df50b7da6689b41536389cb07fe85481fe9c6f404"
+        }
+      ],
+      "support_linked_memory_count": 33,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "Previously, you played tennis with your friends at the local park every other week on Sundays. Now, you play tennis weekly with your friends.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User plays tennis with friends at a local park every other week on Sundays\n- Project: User plans to play tennis with friends at a local park this Sunday\n- Fact: User plays tennis weekly with friends\n- Fact: User plays tennis for fun with friends\n- Fact: User plans to carry tennis gear to a local park\n</memory_records>",
+          "memory_context_sha256": "e13890c9a23c89c5d4a488a09d3334905138ad0702645abb6ff8bea3d3fc8f85",
+          "system_prompt_sha256": "17560d415a3dd3ecd54846aa259a2343a294579d543abdc47f2051bb87b1213c",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "Previously, you played tennis with your friends at the local park every other week on Sundays. Now, you play tennis weekly with your friends.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User plays tennis with friends at a local park every other week on Sundays\n- Project: User plans to play tennis with friends at a local park this Sunday\n- Fact: User plays tennis weekly with friends\n- Fact: User plays tennis for fun with friends\n- Fact: User plans to carry tennis gear to a local park\n</memory_records>",
+          "memory_context_sha256": "e13890c9a23c89c5d4a488a09d3334905138ad0702645abb6ff8bea3d3fc8f85",
+          "system_prompt_sha256": "17560d415a3dd3ecd54846aa259a2343a294579d543abdc47f2051bb87b1213c",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "f685340e_abs",
+      "question_type": "knowledge-update",
+      "question": "How often do I play table tennis with my friends at the local park?",
+      "reference": "The information provided is not enough. You mentioned playing tennis but not table tennis.",
+      "question_date": "2023/06/19 (Mon) 04:29",
+      "classification": "abstention-overreach",
+      "confidence": "medium",
+      "diagnosis": "Stored/supplied facts concern tennis, not table tennis. Both answers contrast tennis with table tennis and supply tennis frequency, without clearly saying the asked frequency is unknown. Official abstention judging rejects both. The distinction is visible in the question/context, so no new personal fact is needed to abstain.",
+      "falsification_check_and_boundary": "This wording is judge-sensitive: contrasting the sports can resemble recognizing missing information. Retain the official failure and flag interpretation uncertainty; do not invent a negative fact that the user never plays table tennis or override the metric.",
+      "db_evidence_sha256": "1a1e0e68e47f39472ae510da146ffac24502223429b7739f68b14b9f9d4084ec",
+      "db_memories_examined": 470,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_25df025b_abs_1",
+          "haystack_date": "2023/05/22 (Mon) 05:28",
+          "conversation_id": "b9af3740-20b9-4f7b-8535-5b1f9a930df8",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_25df025b_abs_2",
+          "haystack_date": "2023/05/23 (Tue) 11:17",
+          "conversation_id": "bd3c959d-c886-4f96-b75e-2ddd9c81283e",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "092a10ba-678a-47c6-bcb7-98f4d34bb494",
+          "source_conversation_id": "bd3c959d-c886-4f96-b75e-2ddd9c81283e",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:55:36.862044+00:00",
+          "valid_to": null,
+          "memory_slot": "hobby.tennis",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User plays tennis with friends at a local park every other week",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "38a24238-05e6-4b33-9dec-72bb9baa6643",
+          "source_conversation_id": "b9af3740-20b9-4f7b-8535-5b1f9a930df8",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:16:37.357305+00:00",
+          "valid_to": null,
+          "memory_slot": "hobby.tennis",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has weekly tennis sessions with friends",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [],
+      "support_linked_memory_count": 33,
+      "support_extraction_evidence": [],
+      "anchor_search": {
+        "pattern": "table tennis",
+        "scope": "all memories for this benchmark question user",
+        "matches": [],
+        "limitation": "Literal anchor search is not proof of semantic absence outside the scoped extraction/row evidence"
+      },
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You play tennis, not table tennis, with your friends at the local park every other week.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User plays tennis with friends at a local park every other week\n- Project: User plans to play tennis with friends this Sunday at a local park\n- Fact: User has weekly tennis sessions with friends\n- Fact: User plays tennis for fun with friends\n- Project: User is trying to improve their tennis net game\n</memory_records>",
+          "memory_context_sha256": "634c80fe14eadf317f30e849ddb4a5f178ab0b20d4edec9e685fce5efe357f3a",
+          "system_prompt_sha256": "2f0fdd1b9a0d806da2fff70006a849ec6294554b046d55adce7005d049885d34",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You play tennis, not specifically table tennis, with your friends at a local park every other week.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User plays tennis with friends at a local park every other week\n- Project: User plans to play tennis with friends this Sunday at a local park\n- Fact: User has weekly tennis sessions with friends\n- Fact: User plays tennis for fun with friends\n- Project: User is trying to improve their tennis net game\n</memory_records>",
+          "memory_context_sha256": "634c80fe14eadf317f30e849ddb4a5f178ab0b20d4edec9e685fce5efe357f3a",
+          "system_prompt_sha256": "2f0fdd1b9a0d806da2fff70006a849ec6294554b046d55adce7005d049885d34",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "gpt4_93159ced_abs",
+      "question_type": "temporal-reasoning",
+      "question": "How long have I been working before I started my current job at Google?",
+      "reference": "The information provided is not enough. From the information provided, You haven't started working at Google yet.",
+      "question_date": "2023/05/30 (Tue) 18:54",
+      "classification": "abstention-overreach",
+      "confidence": "high",
+      "diagnosis": "The prompt gives NovaTech tenure and total work experience, plus unrelated Google Photos. It does not establish a current Google job. The reader accepts the question's false premise and subtracts tenure to fabricate pre-Google work time.",
+      "falsification_check_and_boundary": "Check entity/relationship scope, not the bare Google token: product use is not employment evidence. Abstention is required without searching for invented personal history.",
+      "db_evidence_sha256": "1d9fe7e9b90265be7be2512ddf62f436105c7e95ccdf4ae8b451754b81852962",
+      "db_memories_examined": 465,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_e5131a1b_abs_1",
+          "haystack_date": "2023/05/30 (Tue) 03:53",
+          "conversation_id": "e9610105-142e-4c6c-bcd6-66a340ec56f6",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_e5131a1b_abs_2",
+          "haystack_date": "2023/05/30 (Tue) 16:35",
+          "conversation_id": "cddd7c68-5ca8-4eb7-821b-c521571644e8",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "5d3cb356-bbec-4121-bfac-e612b1f309bc",
+          "source_conversation_id": "cddd7c68-5ca8-4eb7-821b-c521571644e8",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:49:35.966040+00:00",
+          "valid_to": null,
+          "memory_slot": "employment.novatech",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has worked at NovaTech for about 4 years and 3 months",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "9dcfcaf2-2252-427a-bfdc-154c279e9861",
+          "source_conversation_id": "e9610105-142e-4c6c-bcd6-66a340ec56f6",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:26:42.030711+00:00",
+          "valid_to": null,
+          "memory_slot": "career.experience",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has been working professionally for 9 years",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "2e3ca05a-aa3b-4a40-89b6-63a81dcad0e3",
+          "source_conversation_id": "8639b2d9-b6a2-474d-8ec1-3cb87e10db88",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:53:07.322167+00:00",
+          "valid_to": null,
+          "memory_slot": "software.google_photos",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User uses Google Photos",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [],
+      "support_linked_memory_count": 45,
+      "support_extraction_evidence": [],
+      "anchor_search": {
+        "pattern": "Google",
+        "scope": "all memories for this benchmark question user",
+        "matches": [
+          {
+            "id": "091e19fb-455c-47cb-82bc-02ef49a3ad38",
+            "content": "User has tried Google Photos' editing features."
+          },
+          {
+            "id": "2e3ca05a-aa3b-4a40-89b6-63a81dcad0e3",
+            "content": "User uses Google Photos"
+          },
+          {
+            "id": "658d4d2a-004e-4439-840b-9a22e9d25e35",
+            "content": "User is deciding between Google Drive's 100GB and 200GB plans"
+          },
+          {
+            "id": "68f4e4af-0e49-4a1e-9f52-9f51e38a326d",
+            "content": "User plans to try Google Photos' automatic video creation to make a recap of their festival experience."
+          },
+          {
+            "id": "ccf66b9d-a476-44e5-89fa-34597e9a39e1",
+            "content": "User is considering using Google Drive because it integrates with Google Photos"
+          },
+          {
+            "id": "e74296ae-78c2-4dcd-a28a-fbfe19ecd9de",
+            "content": "User has not tried Google Photos' automatic video creation feature."
+          },
+          {
+            "id": "ec00ca83-e08d-4758-aeb6-edf0c1c99e0a",
+            "content": "User chose to start with the 100GB Google Drive plan and upgrade if needed."
+          }
+        ],
+        "limitation": "Literal anchor search is not proof of semantic absence outside the scoped extraction/row evidence"
+      },
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You have been working professionally for 9 years, and you have worked at NovaTech for about 4 years and 3 months. Therefore, you worked for approximately 4 years and 9 months before starting your current job at Google.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User has worked at NovaTech for about 4 years and 3 months\n- Fact: User has been working professionally for 9 years\n- Fact: User has more than four years of experience.\n- Fact: User uses Google Photos\n- Fact: User is a software engineer specializing in backend development\n</memory_records>",
+          "memory_context_sha256": "1923879d5b7fe11199d46e062710a7bf030b52d780e7c3de2aa9b8c906a3ae13",
+          "system_prompt_sha256": "7d777482533f4eee8057df3b4b043a1d8602a88c4f53315bb55b6f61981c8bed",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You have been working professionally for 9 years, and you have worked at NovaTech for about 4 years and 3 months. Therefore, you worked for approximately 4 years and 9 months before starting your current job at Google.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User has worked at NovaTech for about 4 years and 3 months\n- Fact: User has been working professionally for 9 years\n- Fact: User has more than four years of experience.\n- Fact: User uses Google Photos\n- Fact: User is a software engineer specializing in backend development\n</memory_records>",
+          "memory_context_sha256": "1923879d5b7fe11199d46e062710a7bf030b52d780e7c3de2aa9b8c906a3ae13",
+          "system_prompt_sha256": "7d777482533f4eee8057df3b4b043a1d8602a88c4f53315bb55b6f61981c8bed",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "gpt4_372c3eed_abs",
+      "question_type": "multi-session",
+      "question": "How many years in total did I spend in formal education from high school to the completion of my Master's degree?",
+      "reference": "The information provided is not enough. You mentioned 4 years in high school (2010-2014), 2 years at PCC (2014-2016), and 4 years at UCLA (2016-2020). But you didn't mention the number of years you spend getting the Master's degree",
+      "question_date": "2023/08/20 (Sun) 23:54",
+      "classification": "abstention-overreach",
+      "confidence": "high",
+      "diagnosis": "The DB and saved prompt explicitly say considering a Master's degree, not having completed it. The reader adds a typical two-year Master's duration and gives a total; PCC is additionally absent from context, but adding PCC still cannot answer an unknown completed-Master's duration.",
+      "falsification_check_and_boundary": "Do not classify the primary failure only as missing PCC retrieval. Even perfect retrieval of recorded education cannot establish completion/duration of an unobserved Master's degree.",
+      "db_evidence_sha256": "196c12c3ef05fb5baeeb03f702f5d2ff7cc5ad7936a431d61f8c58d28aa23a08",
+      "db_memories_examined": 486,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_35c5419d_abs_3",
+          "haystack_date": "2023/08/20 (Sun) 00:09",
+          "conversation_id": "e9d631fb-8d71-44a3-ad58-071ef33f8e38",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_35c5419d_abs_1",
+          "haystack_date": "2023/08/20 (Sun) 01:26",
+          "conversation_id": "9ac50a0f-9c62-464d-b0be-8598a12411b3",
+          "status": "complete"
+        },
+        {
+          "raw_session_id": "answer_35c5419d_abs_2",
+          "haystack_date": "2023/08/20 (Sun) 10:01",
+          "conversation_id": "89a561f3-ea33-4e5a-9604-9d6228f8900c",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "d9402cb1-a287-4555-bf26-c5fac0b09c3d",
+          "source_conversation_id": "9ac50a0f-9c62-464d-b0be-8598a12411b3",
+          "category": "project",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.6499999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:25:12.734781+00:00",
+          "valid_to": null,
+          "memory_slot": "education.masters.cs",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User is considering pursuing a Master's degree in Computer Science",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "702c7228-b28d-4ab5-8b02-07feb8d7dc7d",
+          "source_conversation_id": "e9d631fb-8d71-44a3-ad58-071ef33f8e38",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:22:33.438528+00:00",
+          "valid_to": null,
+          "memory_slot": "education.degree_duration",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User completed their Bachelor's degree in four years",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "f9a116f3-8abd-4c7b-bc17-5bbb16828af5",
+          "source_conversation_id": "9ac50a0f-9c62-464d-b0be-8598a12411b3",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8999999761581421,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:25:17.217801+00:00",
+          "valid_to": null,
+          "memory_slot": "education.high_school",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User attended Arcadia High School from 2010 to 2014",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "813b251c-f671-4790-b37d-30fcd7854385",
+          "source_conversation_id": "89a561f3-ea33-4e5a-9604-9d6228f8900c",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.949999988079071,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 09:47:06.352847+00:00",
+          "valid_to": null,
+          "memory_slot": "education.degree",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User earned an Associate's degree in Computer Science from Pasadena City College in May 2016",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "6527b36d-8ce2-49b7-aa05-3c144fa87983",
+          "conversation_id": "9ac50a0f-9c62-464d-b0be-8598a12411b3",
+          "role": "user",
+          "created_at": "2026-10-27 09:25:00.475289+00:00",
+          "excerpt": "I'm considering pursuing a Master's degree in Computer Science, and I was wondering if you could help me with some information on the top CS programs in California. By the way, I'm from Arcadia, California.",
+          "full_content_sha256": "3bd8782b15292158c6c2a10098dd564d6b773bcf324ee5d7883bdc3e748bf7fd"
+        }
+      ],
+      "support_linked_memory_count": 59,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "partially_correct",
+          "hypothesis": "You attended Arcadia High School from 2010 to 2014, which is 4 years. You completed your Bachelor's degree in Computer Science from UCLA in 2020, which took 4 years. If you pursue a Master's degree, it typically takes about 2 years to complete. \n\nAdding these together: 4 years of high school + 4 years of undergraduate + 2 years of Master's = 10 years in total.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User completed their Bachelor's degree in four years\n- Project: User is considering pursuing a Master's degree in Computer Science\n- Fact: User attended Arcadia High School from 2010 to 2014\n- Fact: User earned a Bachelor's degree in Computer Science from UCLA in 2020\n- Fact: User graduated from UCLA in 2020\n</memory_records>",
+          "memory_context_sha256": "af322362e7ff56735f080ea36d51fcb4f6b5b456faf9aab565da125877a76bcf",
+          "system_prompt_sha256": "0e21e4577fea15866f3c2fa5e525e845dc08412b22e7d3d98c1308a302fd1ce8",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "incorrect",
+          "hypothesis": "You attended Arcadia High School from 2010 to 2014, which is 4 years. You completed your Bachelor's degree in Computer Science from UCLA in 2020, which took 4 years. If you pursue a Master's degree, it typically takes about 2 years. \n\nIn total, you would spend approximately 10 years in formal education from high school to the completion of your Master's degree.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User completed their Bachelor's degree in four years\n- Project: User is considering pursuing a Master's degree in Computer Science\n- Fact: User attended Arcadia High School from 2010 to 2014\n- Fact: User earned a Bachelor's degree in Computer Science from UCLA in 2020\n- Fact: User graduated from UCLA in 2020\n</memory_records>",
+          "memory_context_sha256": "af322362e7ff56735f080ea36d51fcb4f6b5b456faf9aab565da125877a76bcf",
+          "system_prompt_sha256": "0e21e4577fea15866f3c2fa5e525e845dc08412b22e7d3d98c1308a302fd1ce8",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    },
+    {
+      "question_id": "09d032c9",
+      "question_type": "single-session-preference",
+      "question": "I've been having trouble with the battery life on my phone lately. Any tips?",
+      "reference": "The user would prefer responses that build upon their previous mention of purchasing a portable power bank, such as suggestions on how to optimize its use, like ensuring it's fully charged before use. They might also appreciate tips on utilizing battery-saving features on their phone. The user may not prefer responses that suggest alternative solutions or unrelated advice.",
+      "question_date": "2023/05/30 (Tue) 16:42",
+      "classification": "rubric-ambiguity",
+      "confidence": "medium",
+      "diagnosis": "The requested personalization fact (existing portable power bank) is stored and present in the prompt. Both answers mention using the existing power bank/charging pad plus battery-saving advice, yet official judging says incorrect. There is no demonstrated memory omission to fix here.",
+      "falsification_check_and_boundary": "Flag possible judge/rubric mismatch or insufficiently focused personalization for human adjudication; do not silently rescore, tune to this one answer, claim a confirmed false negative, or treat it as retrieval/extraction failure.",
+      "db_evidence_sha256": "e27ded14f5aaa57cb4ee68d02c842c853fa71baa6c47533841772aeae09be6f4",
+      "db_memories_examined": 542,
+      "support_sessions": [
+        {
+          "raw_session_id": "answer_b10dce5e",
+          "haystack_date": "2023/05/27 (Sat) 05:53",
+          "conversation_id": "b36e9d9f-5980-4141-91b2-ded7ffa849e9",
+          "status": "complete"
+        }
+      ],
+      "source_memories": [
+        {
+          "id": "c0b7eb8f-807d-45e7-906c-c65fdedf8485",
+          "source_conversation_id": "b36e9d9f-5980-4141-91b2-ded7ffa849e9",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8799999952316284,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 11:23:51.551297+00:00",
+          "valid_to": null,
+          "memory_slot": "tech_accessory.power_bank",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has a portable power bank",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        },
+        {
+          "id": "e344f0ec-1beb-4483-bd2d-c02a5643d898",
+          "source_conversation_id": "b36e9d9f-5980-4141-91b2-ded7ffa849e9",
+          "category": "fact",
+          "source_type": "extracted",
+          "status": "active",
+          "tier": "l1",
+          "local_only": false,
+          "confidence": 0.8799999952316284,
+          "trust_score": 0.5,
+          "valid_from": "2026-10-27 11:23:55.447069+00:00",
+          "valid_to": null,
+          "memory_slot": "tech_accessory.wireless_charging_pad",
+          "embedding_model": "openrouter:azure:openai/text-embedding-3-small:1024",
+          "metadata": {},
+          "content": "User has a wireless charging pad",
+          "has_embedding": true,
+          "embedding_eligibility_note": "Stored qualified 1024-dimensional embedding identity; no ranking replay performed"
+        }
+      ],
+      "source_message_excerpts": [
+        {
+          "id": "6ff4a133-8828-42d5-8ad1-2dbfaade0c6e",
+          "conversation_id": "b36e9d9f-5980-4141-91b2-ded7ffa849e9",
+          "role": "user",
+          "created_at": "2026-10-27 11:23:43.590955+00:00",
+          "excerpt": "I'm looking for some advice on the best way to organize my tech accessories, like my new portable power bank and wireless charging pad, when I'm traveling.",
+          "full_content_sha256": "f670d841edd153dd9aa2af04998bbd36c70eb2892b65a4668062dbb6d559f426"
+        }
+      ],
+      "support_linked_memory_count": 11,
+      "support_extraction_evidence": [],
+      "anchor_search": null,
+      "matching_retrieval_logs_available": 0,
+      "observations": {
+        "a": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "partially_correct",
+          "hypothesis": "Here are some tips to help improve your phone's battery life:\n\n1. **Screen Brightness**: Lower your screen brightness or set it to auto-adjust based on ambient light.\n\n2. **Background Apps**: Close apps running in the background that you don't need. They can drain your battery even when you're not using them.\n\n3. **Battery Saver Mode**: Enable battery saver mode to reduce power consumption.\n\n4. **Location Services**: Turn off location services when not needed, as GPS can be a significant battery drain.\n\n5. **Notifications**: Limit notifications from apps that aren't essential.\n\n6. **Wireless Charging**: Since you have a wireless charging pad, make sure to use it regularly to keep your phone charged without overcharging.\n\n7. **Portable Power Bank**: Carry your portable power bank for quick charges when you're on the go.\n\n8. **Software Updates**: Ensure your phone's software is up to date, as updates often include battery optimization improvements.\n\nImplementing these tips should help extend your phone's battery life.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User has a portable power bank\n- Fact: User has a wireless charging pad\n- Project: User is trying to establish a consistent daily routine to improve productivity\n- Fact: User has been traveling a lot lately\n- Preference: User wants grocery budgeting tips.\n</memory_records>",
+          "memory_context_sha256": "f28b1439ec31c05877ea3153da7ef8a831a5795317272b68b2b9dfdcd0e2f773",
+          "system_prompt_sha256": "49ac2b90e6bb77cf326f422fc7006bbcb22f740e27f04d200f40e3969228fc1c",
+          "reader_source_run_id": "f28e309123184cc2b04a60053672c75c",
+          "official_run_id": "4e94e995715440b983c3cfcb9c2202d6"
+        },
+        "a2": {
+          "official_judgment": "incorrect",
+          "generic_judgment": "partially_correct",
+          "hypothesis": "Here are some tips to help improve your phone's battery life:\n\n1. **Reduce Screen Brightness**: Lowering the screen brightness can significantly save battery power.\n\n2. **Limit Background Apps**: Close apps running in the background that you don't need, as they can drain the battery.\n\n3. **Use Battery Saver Mode**: Enable battery saver mode to optimize power usage.\n\n4. **Turn Off Unnecessary Features**: Disable features like Bluetooth, Wi-Fi, and GPS when not in use.\n\n5. **Manage App Permissions**: Restrict apps from using location services or sending notifications unnecessarily.\n\n6. **Update Apps and Software**: Ensure your apps and phone software are up to date for better efficiency.\n\n7. **Use Airplane Mode**: When you don't need connectivity, switch to airplane mode to save battery.\n\n8. **Charge Smartly**: Use your wireless charging pad or portable power bank to keep your phone charged without overcharging.\n\nImplementing these tips can help extend your phone's battery life.",
+          "memory_context": "<memory_records trust=\"user_data\">\nAbout this user:\n- Fact: User has a portable power bank\n- Fact: User has a wireless charging pad\n- Project: User is trying to establish a consistent daily routine to improve productivity\n- Fact: User has been traveling a lot lately\n- Preference: User wants grocery budgeting tips.\n</memory_records>",
+          "memory_context_sha256": "f28b1439ec31c05877ea3153da7ef8a831a5795317272b68b2b9dfdcd0e2f773",
+          "system_prompt_sha256": "49ac2b90e6bb77cf326f422fc7006bbcb22f740e27f04d200f40e3969228fc1c",
+          "reader_source_run_id": "7894ebae3c7b4d0e88368f21c29c10ca",
+          "official_run_id": "bad1ce8d166c4c3a9ca17773601ab78a"
+        }
+      }
+    }
+  ]
+}

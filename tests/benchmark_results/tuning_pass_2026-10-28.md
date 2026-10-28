@@ -1,11 +1,12 @@
 # Memory tuning pass — 2026-10-28
 
-Status: **Phase 0 merged; Phase 1 measurements complete after authorized recovery;
-final report/PR gates pending.**
-No production memory change, ingest, holdout evaluation, metric ratification or
-acceptance decision has occurred. Judge inference and the approved two-reader-call
-saved-context cap diagnostic have run.
-Interim interpretation remains **under proposed rule**.
+Status: **Phases 0/1 merged; official primary metric and existing thresholds ratified;
+Phase 2 DB classification complete, final PR gates pending.**
+No production memory change, ingest, holdout evaluation or candidate acceptance has
+occurred. Judge inference and the approved two-reader-call saved-context cap
+diagnostic have run. Subsequent decisions use ratified rule `2026-10-28-official-v1`;
+Phase 1's earlier "under proposed rule" interpretations remain historical evidence,
+not retroactive candidate acceptance.
 
 ## Phase 0 — holdout
 
@@ -98,10 +99,25 @@ The official parser uses `"yes" in eval_response.lower()`; retain raw output and
 finish reason so invalid or truncated responses cannot be hidden by aggregate scores.
 The generic judge must remain unchanged alongside this second metric.
 
-Still required: finalize report gates and the separate Phase 1 PR, then pause for
-owner decisions on primary metric and `ACCEPTANCE_RULE_PROPOSED.md`. No Phase 2/3
-tuning has started. The original provider cause/billing remains unknown; the safe
-failure-diagnostic fix is tracked in #595 and does not invent retrospective evidence.
+The owner authorized merging Phase 1 #597 (merge `78e0ff4a`) and explicitly chose
+official strict primary / generic secondary, ratifying the existing qualification
+and acceptance thresholds without waivers. The original provider cause/billing
+remains unknown; #595's future-diagnostic repair does not recover that history.
+
+## Phase 2 — completed DB classification
+
+See [the DB-backed triage report](failure_triage_phase2_2026-10-28.md). All 32 failed
+first-pass official A/A2 observations across 16 questions are covered. Exact
+benchmark marker, read-only transactions and qualified Phase D fingerprint were
+verified before/after export and after full local gates. No restore was needed.
+
+Unique-question evidence labels: 3 source-retention gaps, 5 stored-answer prompt
+omissions, 2 historical-time grounding gaps, 2 update-ordering gaps, 3 abstention
+overreaches and 1 rubric/response ambiguity. Missing ranking traces and causal
+uncertainty are explicit. The historical-date parity limitation is tracked in #601.
+No official label is overwritten, and no candidate or experiment is selected.
+Next: final Phase 2 PR gates and a bounded Phase 3 experiment decision; source
+expansion, ingest and holdout remain separately approval-gated.
 
 ## Cumulative benchmark cost ledger
 
@@ -113,6 +129,7 @@ failure-diagnostic fix is tracked in #595 and does not invent retrospective evid
 | Partial fresh generic B | 36 | 0.0379525 | 0.2636950 |
 | Owner-authorized fresh B residual | 14 | 0.0153575 | 0.2790525 |
 | Reader-cap diagnostic (2 reader + 4 judge responses) | 4 | 0.0240250 | 0.3030775 |
+| Phase 2 read-only DB classification | 0 | 0.0000000 | 0.3030775 |
 
 **Actual billed cost is unknown.** The failed call may have been billed and is not
 included in the returned-usage estimate. The full **$1.7019050** reservation remains

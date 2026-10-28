@@ -8,6 +8,7 @@ Only prompt construction and the upstream label predicate are reproduced here.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 OFFICIAL_SOURCE_COMMIT = "d6dc8b50a2d9ac0c99485ea28fa5755c62414c34"
@@ -117,3 +118,23 @@ def score_dual_judgments(rows: list[dict[str, Any]]) -> dict[str, Any]:
             row.get("official_judge_finish_reason") == "length" for row in rows
         ),
     }
+
+
+def require_complete_official_coverage(
+    rows: list[dict[str, Any]], expected_question_ids: Sequence[str]
+) -> dict[str, Any]:
+    """Offline primary-series coverage check, not full run/candidate qualification.
+
+    Callers supply IDs from the frozen dev fixture and compare this summary to
+    both evaluate/score manifest summaries. Keep additive/partial scoring intact:
+    successful generic evidence must survive a failed official call.
+    """
+    expected = set(expected_question_ids)
+    if len(expected) != 50 or len(expected_question_ids) != 50:
+        raise ValueError("Official primary coverage requires 50 unique frozen dev IDs")
+    observed = [row.get("question_id") for row in rows]
+    if len(observed) != 50 or set(observed) != expected:
+        raise ValueError("Official primary coverage requires exactly one row per frozen dev ID")
+    if any(row.get("official_judgment") not in {"correct", "incorrect"} for row in rows):
+        raise ValueError("Official primary coverage requires a binary verdict for every dev ID")
+    return score_dual_judgments(rows)["official"]

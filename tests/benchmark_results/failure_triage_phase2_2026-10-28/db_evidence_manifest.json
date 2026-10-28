@@ -1,0 +1,183 @@
+{
+  "status": "completed",
+  "database_name": "daemon_lme_bench",
+  "transaction_read_only": true,
+  "fingerprint": {
+    "sha256": "251dd9cfed9a20fe6c719f277359a8eecf9505aa0c6d2441ca954e5838fa5c0a",
+    "users": 50,
+    "rows": {
+      "conversations": 2126,
+      "messages": 23381,
+      "memories": 25435,
+      "memory_extraction_log": 8633,
+      "entities": 0
+    }
+  },
+  "snapshot_state_matches_qualified_ingest": true,
+  "retrieval_logs_note": "Excluded from canonical ingest fingerprint; retained only as query-matched diagnostics, not assumed to belong to A/A2",
+  "dev_sha256": "6612e3a03c79b92bab2f1750d4661908e3dc37359715b7fb6b62c6f758bddb34",
+  "ingest_checkpoint_sha256": "8c873c1763d6000915f3a9e41de81d69dc435c1a9a6d2777e8ca4935ff0e04df",
+  "mutations_or_provider_calls": 0,
+  "cases": [
+    {
+      "question_id": "4388e9dd",
+      "path": "4388e9dd.json",
+      "sha256": "43ca72fe9196d1d46c4c75706975f67e227778b14e06120ad18089762a25e317",
+      "memories": 409,
+      "support_sessions": 1,
+      "support_messages": 6,
+      "extraction_logs": 2,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "71a3fd6b",
+      "path": "71a3fd6b.json",
+      "sha256": "22426b009d7e89ccb26d76c4ee8c7fa44b1ad36202ef2f84c112bdadd4c65489",
+      "memories": 493,
+      "support_sessions": 1,
+      "support_messages": 6,
+      "extraction_logs": 1,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "28dc39ac",
+      "path": "28dc39ac.json",
+      "sha256": "73a094091ee209803996fcdd6a3db1fd11826add488f9626b16465addc736043",
+      "memories": 566,
+      "support_sessions": 5,
+      "support_messages": 60,
+      "extraction_logs": 29,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "1192316e",
+      "path": "1192316e.json",
+      "sha256": "55beb8622ef6cf38f1b3d62447473d9f51fd835d86da764177d153273adf6a36",
+      "memories": 527,
+      "support_sessions": 2,
+      "support_messages": 24,
+      "extraction_logs": 11,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "6613b389",
+      "path": "6613b389.json",
+      "sha256": "8ce63c1c0d8100c24777cf6326de7461cef3413c0fffeff71857b5f2ba08e47e",
+      "memories": 485,
+      "support_sessions": 3,
+      "support_messages": 36,
+      "extraction_logs": 15,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "gpt4_af6db32f",
+      "path": "gpt4_af6db32f.json",
+      "sha256": "a05d8d686c3311eb1873aab4033f44aec41c0c13a9b387c57b8ab180283f1806",
+      "memories": 456,
+      "support_sessions": 1,
+      "support_messages": 12,
+      "extraction_logs": 4,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "gpt4_b0863698",
+      "path": "gpt4_b0863698.json",
+      "sha256": "1073e2be2ed7edd8841888c576bf9c77d45a5faf51e65e5ccaf4e3ce3c33e04c",
+      "memories": 504,
+      "support_sessions": 1,
+      "support_messages": 12,
+      "extraction_logs": 4,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "852ce960",
+      "path": "852ce960.json",
+      "sha256": "1e906f9975a9137427f70a2c8fa603a0a75d02fa2ffa09925a98ed18ca246333",
+      "memories": 393,
+      "support_sessions": 2,
+      "support_messages": 24,
+      "extraction_logs": 9,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "f685340e",
+      "path": "f685340e.json",
+      "sha256": "a752ffff5841ae1cdf1fba8c9b10e000b1b065c657f255baada692698cb0bda8",
+      "memories": 583,
+      "support_sessions": 2,
+      "support_messages": 24,
+      "extraction_logs": 8,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "f685340e_abs",
+      "path": "f685340e_abs.json",
+      "sha256": "1a1e0e68e47f39472ae510da146ffac24502223429b7739f68b14b9f9d4084ec",
+      "memories": 470,
+      "support_sessions": 2,
+      "support_messages": 24,
+      "extraction_logs": 8,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "gpt4_93159ced_abs",
+      "path": "gpt4_93159ced_abs.json",
+      "sha256": "1d9fe7e9b90265be7be2512ddf62f436105c7e95ccdf4ae8b451754b81852962",
+      "memories": 465,
+      "support_sessions": 2,
+      "support_messages": 24,
+      "extraction_logs": 12,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "gpt4_372c3eed_abs",
+      "path": "gpt4_372c3eed_abs.json",
+      "sha256": "196c12c3ef05fb5baeeb03f702f5d2ff7cc5ad7936a431d61f8c58d28aa23a08",
+      "memories": 486,
+      "support_sessions": 3,
+      "support_messages": 34,
+      "extraction_logs": 17,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "0bb5a684",
+      "path": "0bb5a684.json",
+      "sha256": "0251055c349bec7cb74b87b739a313b32ea3dfb4cc123ce75f014ccc68876e74",
+      "memories": 485,
+      "support_sessions": 2,
+      "support_messages": 24,
+      "extraction_logs": 12,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "0a34ad58",
+      "path": "0a34ad58.json",
+      "sha256": "56dad7379a11dbfcbd1d5807132da180e2cbdb9e48487e7a2a437416d717aec8",
+      "memories": 552,
+      "support_sessions": 1,
+      "support_messages": 20,
+      "extraction_logs": 9,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "09d032c9",
+      "path": "09d032c9.json",
+      "sha256": "e27ded14f5aaa57cb4ee68d02c842c853fa71baa6c47533841772aeae09be6f4",
+      "memories": 542,
+      "support_sessions": 1,
+      "support_messages": 20,
+      "extraction_logs": 10,
+      "retrieval_logs": 0
+    },
+    {
+      "question_id": "7a8d0b71",
+      "path": "7a8d0b71.json",
+      "sha256": "59ad1d9e900e53cc279f73d6fc5ea62094fbcec5bf81dbe036b12997fffb3fcf",
+      "memories": 538,
+      "support_sessions": 1,
+      "support_messages": 5,
+      "extraction_logs": 4,
+      "retrieval_logs": 0
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "after_full_local_gates": true,
+  "transaction_read_only": "on",
+  "fingerprint": {
+    "sha256": "251dd9cfed9a20fe6c719f277359a8eecf9505aa0c6d2441ca954e5838fa5c0a",
+    "users": 50,
+    "rows": {
+      "conversations": 2126,
+      "messages": 23381,
+      "memories": 25435,
+      "memory_extraction_log": 8633,
+      "entities": 0
+    }
+  },
+  "unchanged": true
+}
