@@ -1,7 +1,8 @@
 # Test suite optimisation — 2026-10-28
 
-Status: implementation, three full after-suite runs and all blocking local gates
-verified; owner-authorized draft PR / hosted CI measurement in progress.
+Status: draft PR #588 published; initial head `4c2524ee` passed local and hosted
+blocking gates. Review follow-up local verification passed; refreshed hosted CI
+is pending.
 
 ## Scope and baseline
 
@@ -203,3 +204,43 @@ Hosted results are pending. The baseline pytest process
 exited 0, but lifecycle bookkeeping returned EAGAIN afterwards. Its exact scope
 was reconciled by the installed lifecycle helper as stopped / exit status
 unknown; this does not change the separately preserved pytest result.
+
+## Posted review follow-up
+
+The posted review found no blocking defects. Its lease-constant concern is
+addressed within the existing real-renewal test: a positive safety margin must
+leave room for heartbeat cadence plus the complete I/O budget before local lease
+expiry, and the whole-attempt timeout must exceed that usable lease. This avoids
+restoring a standalone literal-assignment test. Synthetic invalid margin and
+attempt-budget mutations fail those assertions.
+
+The reported weak fetch-deadline test was confirmed: two two-second sleeps did
+not exhaust the 15-second budget, and `await_count <= 2` allowed both addresses.
+It now advances only the direct-fetch module's clock to the deadline on the first
+failed send, requires exactly one send and one client construction, and checks
+the attempted address. Removing the pre-attempt deadline check in memory fails
+the client-count assertion (two instead of one); this also catches a second
+client whose send is cancelled immediately by zero remaining time. No production
+code, shared event-loop clock, timeout or assertion is weakened. Both affected
+modules pass: 94 tests in 10.92 s.
+
+Follow-up full backend: 7958 passed / 428 skipped / 14 warnings in 498.17 s.
+The first type gate identified an optional mock argument record; an explicit
+non-None assertion repaired it. Full type checking, the affected test, Ruff and
+pre-commit then passed. Other backend/aggregate gates passed on the unchanged
+inputs; frontend evidence is reused because its inputs are unchanged. Fresh
+read-only review found no defects (disclosed OpenAI same-family fallback).
+
+The #575 time-only loop double stays deliberately narrow: unsupported new loop
+APIs fail loudly and require revisiting the qualification. The review accepted
+that tradeoff. Database durability changes, backend sharding, forkserver preload
+and runner-watchdog changes remain separate design/qualification work; the
+reviewer is separately handling browser-job parallelisation.
+
+Exact initial-head hosted receipt (CI `40640113853`, head `4c2524ee`): pytest
+441.11 s (7955 passed / 431 existing skips), backend 551 s, frontend 648 s,
+summed runner time 1276 s, creation-to-last-job-completion 651 s. Versus pinned
+baseline CI `40633084741`, that is 46.7% less pytest time, 31.2% shorter longest
+job and 23.9% less summed runner time. Frontend now limits the critical path;
+its unchanged non-blocking browser inventory took 360 s (32 passed / 21 failed).
+These are measurements of the initial head, not the subsequent review repair.

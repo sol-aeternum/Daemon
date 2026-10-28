@@ -213,6 +213,15 @@ async def test_original_cancellation_and_phase_survive_owned_transaction(env: En
 
 
 async def test_valid_renewal_uses_request_time_not_ack_or_cadence(env: Env, monkeypatch):
+    # Defaults must leave room for a scheduled renewal and its whole I/O budget
+    # before local expiry; the whole-attempt timeout must permit renewal.
+    assert 0 < runner.LEASE_SAFETY_S < runner.LEASE_S
+    assert (
+        0
+        < runner.HEARTBEAT_S + runner.HEARTBEAT_IO_TIMEOUT_S
+        < runner.LEASE_S - runner.LEASE_SAFETY_S
+        < runner.ATTEMPT_TIMEOUT_S
+    )
     claim = await claimed(env)
     loop = asyncio.get_running_loop()
     state = runner.AttemptState(claim, lease_deadline=loop.time() + 39)
