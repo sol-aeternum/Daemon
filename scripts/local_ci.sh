@@ -154,6 +154,7 @@ START_TS=$(date +%s)
 
 run_gate() {
     local family="$1" gate="$2" kind="$3" cmd="$4"
+    local started=$SECONDS
     info "[$family] $gate ($kind)"
     dim "  $ $cmd"
     (
@@ -161,6 +162,7 @@ run_gate() {
         eval "$cmd"
     )
     local rc=$?
+    dim "  elapsed: $((SECONDS - started))s"
     if [[ $rc -eq 0 ]]; then
         ok "$gate"
         PASSED+=("$family/$gate")

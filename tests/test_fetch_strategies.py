@@ -2212,17 +2212,21 @@ class TestFetchService:
     @pytest.mark.asyncio
     async def test_address_retry_skips_remaining_when_deadline_already_past(self, fetch_policy):
         """Once the deadline is exhausted, no further address is attempted."""
-        import asyncio as _asyncio
-        import time as _time
+        from types import SimpleNamespace
+
+        from orchestrator.services.fetch.strategies import direct
 
         strategy = DirectFetchStrategy(fetch_policy)
+        now = 1000.0
 
         async def slow_connect(*args, **kwargs):
-            await _asyncio.sleep(2.0)
+            nonlocal now
+            now += direct._PER_FETCH_DEADLINE_SECONDS
             raise httpx.ConnectError("simulated slow drop")
 
-        started = _time.monotonic()
         with (
+            # Replace only this module's clock, not asyncio's real timer clock.
+            patch.object(direct, "time", SimpleNamespace(monotonic=lambda: now)),
             _mock_direct_resolution(
                 "https://example.com/article",
                 addresses=("93.184.216.34", "93.184.216.35"),
@@ -2232,19 +2236,17 @@ class TestFetchService:
                 new_callable=AsyncMock,
                 side_effect=slow_connect,
             ) as mock_send,
+            patch.object(direct.httpx, "AsyncClient", wraps=httpx.AsyncClient) as mock_client,
             pytest.raises(FetchTransportError),
         ):
             await strategy.fetch("https://example.com/article")
-        elapsed = _time.monotonic() - started
 
-        # The first attempt consumes the budget; the second short-circuits.
-        assert mock_send.await_count <= 2
-        # Wallclock bounded by per-attempt cap, not by ``2 × timeout``.
-        from orchestrator.services.fetch.strategies.direct import (
-            _PER_ADDRESS_TIMEOUT_SECONDS,
-        )
-
-        assert elapsed < _PER_ADDRESS_TIMEOUT_SECONDS + 2.0
+        mock_send.assert_awaited_once()
+        # Even constructing a second client is forbidden: a zero-time wait_for
+        # could otherwise hide the missing pre-attempt deadline check.
+        mock_client.assert_called_once()
+        assert mock_send.await_args is not None
+        assert mock_send.await_args.args[0].url.host == "93.184.216.34"
 
     @pytest.mark.asyncio
     async def test_redirect_loop_shares_one_deadline_across_hops(self, fetch_policy):
