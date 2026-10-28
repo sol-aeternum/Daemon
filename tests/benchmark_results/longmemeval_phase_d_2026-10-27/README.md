@@ -5,7 +5,7 @@ user per question). All manifests report `baseline_qualified: true` and no `disq
 
 **Headline:** with qualified embeddings, the production memory pipeline answers **30 of 50 (60%)**
 dev-subset questions strictly correct. A same-snapshot rerun scored **31 of 50 (62%)**. Arm B is **not** a
-lexical-retrieval result: it retrieved no memory for any question, so its 6 of 50 (12%) is a no-memory floor
+lexical-retrieval result: it retrieved no facts for any question, so its 6 of 50 (12%) is a no-retrieved-facts floor
 (see "Arm B").
 
 These numbers are **not comparable** to the historical 10.4% / 67.8% / 81.1% results, or to the v3 smoke in
@@ -47,22 +47,26 @@ A2 re-ran evaluate from the same snapshot.
 - **One rerun is a single sample of F.** It suggests strict accuracy moves by about ±1 question (±2 points)
   on this subset. It is not a measured bound. Judge nondeterminism is tracked in #574.
 
-## Arm B: a no-memory floor, not lexical retrieval
+## Arm B: a no-retrieved-facts floor, not lexical retrieval
 
 B ran evaluate with `EMBEDDING_ROUTE_ID` unset, which is what the runbook calls the lexical arm.
 
 - **What happened:** every memory was written during ingest with
   `embedding_model = openrouter:azure:openai/text-embedding-3-small:1024`. Without a route, the production
   BM25 fallback only considers memories stored under the no-route models (`voyage-4-large` and configured
-  fallbacks). So `memories_used` is 0 and the memory context is empty for all 50 questions.
+  fallbacks). So `memories_used` is 0 for all 50 questions. **Measurement correction,
+  2026-10-28:** four rows still contain summary memory (`6cb6f249`, `982b5123_abs`,
+  `3ba21379`, `1de5cff2`); their contexts are not empty. The original result files
+  and manifests are unchanged. Skipping post-extraction jobs does not prevent
+  extraction from storing `category='summary'` memories, which the shared renderer reads.
 - **This is production behaviour, not a harness fault.** It is filed as #578. The v3 smoke shows the same thing: its B leg retrieved nothing for 3 of 3 questions.
 - **Owner decision:** B is reported as the no-memory floor, and the planned B2 rerun was skipped.
 - **What B's 6 correct answers are:**
   - two abstentions, where "I don't have that information" is the right answer
   - three IE-assistant questions that general knowledge answers: Memrise, Veja, and 2–3 eggs for a French omelette
   - one judge false positive: `86f00804`, the same question and failure noted in the v3 smoke
-- **What the A-vs-B gap does and doesn't show:** the gap (30 vs 6) measures what retrieved memory adds over no
-  memory. It says nothing about embedding versus lexical retrieval.
+- **What the A-vs-B gap does and doesn't show:** the gap (30 vs 6) measures what retrieved facts add
+  with summary context still present in both arms. It says nothing about embedding versus lexical retrieval.
 
 ## Ingest
 

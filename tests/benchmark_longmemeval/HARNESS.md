@@ -12,6 +12,18 @@
 > [`RUNBOOK_LAPTOP.md`](RUNBOOK_LAPTOP.md). Parity exceptions and the current baseline:
 > `tests/benchmark_results/parity_baseline_*.md`.
 
+> **2026-10-28: Phase 1 measurement changes (not production tuning).** The fact
+> reader now records both the unchanged generic judgment and the official
+> category/abstention-aware LongMemEval judgment, with raw outputs and finish reasons.
+> The generic fields and historical strict scoring remain unchanged. An additive
+> `dual_judgments` report distinguishes missing observations from zero accuracy and
+> reports abstention as an overlapping subset, not a seventh disjoint category.
+> Official prompts are byte-matched to upstream commit `d6dc8b50`; the Azure route
+> and seed 42 are declared deviations from upstream's direct-OpenAI invocation.
+> Each canonical question now costs one reader call and **two** judge calls.
+> Saved-hypothesis rejudging and the separately owner-approved reader-cap diagnostic:
+> [Phase 1 measurement record](../benchmark_results/measurement_phase1_2026-10-28.md).
+
 ---
 
 ## 1. Canonical Lane vs Fast Lane
