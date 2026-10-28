@@ -66,12 +66,14 @@ from orchestrator.memory.injection import (
 )
 from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.evaluate import (
+    ANSWER_MAX_TOKENS,
     BENCHMARK_ANSWER_MODEL,
     BENCHMARK_JUDGE_MODEL,
     BENCHMARK_ANSWER_ENDPOINT_SLUG,
     BENCHMARK_SEED,
     CATEGORY_MAP,
     CHECKPOINT_FILENAME,
+    JUDGE_MAX_TOKENS,
     RESULTS_FILENAME,
     evaluate_single_parity,
     print_results,
@@ -84,6 +86,11 @@ from tests.longmemeval.ingest import (
     build_corpus_plan,
     ingest_session_parity,
     normalize_question_id,
+)
+from tests.longmemeval.official_judge import (
+    OFFICIAL_MAX_TOKENS,
+    OFFICIAL_SOURCE_COMMIT,
+    score_dual_judgments,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,7 +159,8 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
         "id": "no_post_extraction_jobs",
         "difference": "Ingest runs extraction and dedup only: no entity resolution, "
         "conversation summaries, dreaming or consolidation jobs.",
-        "impact": "Entity expansion and summaries are empty; production would have them.",
+        "impact": "No post-extraction jobs are scheduled; extraction may still store summary-category "
+        "memories, which the shared production renderer includes. This is not a summary-free arm.",
     },
     {
         "id": "message_timestamps",
@@ -453,6 +461,7 @@ def build_score_payload(results: list[dict[str, Any]]) -> dict[str, Any]:
         "category_counts": dict(sorted(category_counts.items())),
         "error_count": len(errored),
         "errored_question_ids": errored,
+        "dual_judgments": score_dual_judgments(results),
     }
 
 
@@ -1053,12 +1062,31 @@ class LongMemEvalFactRunner:
                     else None,
                     "temperature": 0.0 if self.benchmark_mode else 0.7,
                     "seed": BENCHMARK_SEED if self.benchmark_mode else None,
+                    "max_tokens": ANSWER_MAX_TOKENS,
                 },
                 "judge": {
                     "model": judge_model,
                     "benchmark_mode": self.benchmark_mode,
                     "temperature": 0.0,
                     "seed": BENCHMARK_SEED if self.benchmark_mode else None,
+                    "max_tokens": JUDGE_MAX_TOKENS,
+                },
+                "official_judge": {
+                    "model": judge_model,
+                    "benchmark_mode": self.benchmark_mode,
+                    "temperature": 0.0,
+                    "seed": BENCHMARK_SEED if self.benchmark_mode else None,
+                    "max_tokens": OFFICIAL_MAX_TOKENS,
+                    "endpoint_slug": BENCHMARK_ANSWER_ENDPOINT_SLUG
+                    if self.benchmark_mode
+                    else None,
+                    "prompt_source_commit": OFFICIAL_SOURCE_COMMIT,
+                    "upstream_deviations": [
+                        "Azure via OpenRouter instead of direct OpenAI",
+                        "seed 42",
+                    ]
+                    if self.benchmark_mode
+                    else ["Unpinned harness route"],
                 },
                 "extraction": {
                     "profile": EXTRACTION_PROFILE,
@@ -1829,6 +1857,13 @@ class LongMemEvalFactRunner:
                 ),
                 "answer_usage": _sum_usage(ordered_results_list, "answer_usage"),
                 "judge_usage": _sum_usage(ordered_results_list, "judge_usage"),
+                "official_judge_usage": _sum_usage(ordered_results_list, "official_judge_usage"),
+                "official_judge_fingerprints": _tally(
+                    [str(row.get("official_judge_fingerprint")) for row in ordered_results_list]
+                ),
+                "answer_finish_reasons": _tally(
+                    [str(row.get("answer_finish_reason")) for row in ordered_results_list]
+                ),
                 "provider_fingerprints": {
                     call: _tally(
                         [str(row.get(f"{call}_fingerprint")) for row in ordered_results_list]

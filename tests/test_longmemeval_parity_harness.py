@@ -1889,9 +1889,13 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
 
     async def fake_llm(**kwargs: Any) -> Any:
         calls.append(kwargs)
-        content = "Miso" if kwargs["bm_call_key"] == "answer" else "CORRECT\nMatches."
+        content = {
+            "answer": "Miso",
+            "judge": "CORRECT\nMatches.",
+            "official_judge": "yes",
+        }[kwargs["bm_call_key"]]
         response = {
-            "choices": [{"message": {"content": content}}],
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 3, "total_tokens": 103},
             "system_fingerprint": f"fp_{kwargs['bm_call_key']}",
         }
@@ -1924,10 +1928,17 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
     assert [m["role"] for m in answer_messages] == ["system", "user"]
     assert "- Fact: User adopted a cat named Miso" in answer_messages[0]["content"]
     assert '<memory_records trust="user_data">' in answer_messages[0]["content"]
-    assert [c["bm_call_key"] for c in calls] == ["answer", "judge"]
+    assert [c["bm_call_key"] for c in calls] == ["answer", "judge", "official_judge"]
     assert result["judgment"] == "correct"
     assert result["hypothesis"] == "Miso"
     assert result["retrieval_mode"] == "lexical"
     assert result["answer_usage"]["prompt_tokens"] == 100
     assert result["judge_usage"]["completion_tokens"] == 3
     assert (result["answer_fingerprint"], result["judge_fingerprint"]) == ("fp_answer", "fp_judge")
+    assert result["answer_finish_reason"] == result["judge_finish_reason"] == "stop"
+    assert result["judge_raw_output"] == "CORRECT\nMatches."
+    assert result["official_judgment"] == "correct"
+    assert result["official_judge_fingerprint"] == "fp_official_judge"
+    assert result["official_judge_raw_output"] == "yes"
+    assert result["official_judge_finish_reason"] == "stop"
+    assert calls[2]["max_tokens"] == 10

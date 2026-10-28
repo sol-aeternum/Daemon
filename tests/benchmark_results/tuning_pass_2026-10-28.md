@@ -1,6 +1,6 @@
 # Memory tuning pass — 2026-10-28
 
-Status: **Phase 0 implemented; blocking local gates pass. Phase 1 not yet run.**
+Status: **Phase 0 PR #587 open; Phase 1 measurement code passes local gates, paid execution pending.**
 No production memory change, ingest, benchmark inference, metric ratification or
 acceptance decision has occurred. Interim interpretation remains **under proposed rule**.
 
@@ -57,6 +57,14 @@ The snapshot was only hashed, not restored or modified.
   snapshots, timeouts or security policy changed. The final PR gate rerun is pending.
 
 ## Phase 1 — queued measurement work
+
+The separate stacked measurement branch implements dual judging and saved-context
+diagnostics; see [the Phase 1 record](measurement_phase1_2026-10-28.md). The owner
+approved the paired 256/1024-token diagnostic before implementation. No inference
+has run. Planned reservation for all 406 calls is $1.6086950, not actual spend.
+The repaired pending-call marker passes the 137-test targeted suite. Full blocking
+local gates passed (677 seconds): backend 7,180 passed / 1,264 skipped, frontend
+1,464 passed, cache-browser 30 passed, with no new gate exceptions.
 
 Official source inspected:
 [`src/evaluation/evaluate_qa.py` at d6dc8b50](https://github.com/xiaowu0162/LongMemEval/blob/d6dc8b50a2d9ac0c99485ea28fa5755c62414c34/src/evaluation/evaluate_qa.py).
