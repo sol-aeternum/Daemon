@@ -15,7 +15,7 @@ export default defineConfig({
       // Chromium's singleton UNIX socket cannot fit the long managed TMPDIR.
       // Relative browser temp stays inside this registered checkout (npm cwd),
       // with no external scratch, symlink or lifecycle admission override.
-      env: { ...process.env, TMPDIR: '.' },
+      env: { TMPDIR: '.' },
       executablePath: existsSync('/usr/bin/chromium')
         ? '/usr/bin/chromium'
         : undefined,
