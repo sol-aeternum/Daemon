@@ -2694,12 +2694,15 @@ class MemoryStore:
         source_conversation_ids: list[uuid.UUID] | None = None,
         embedding_models: list[str] | tuple[str, ...] | None = None,
         include_l0: bool = True,
+        match_any_term: bool = False,
         conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search memories using BM25 full-text search.
 
         Uses PostgreSQL ts_rank on content_tsv with plainto_tsquery for
-        natural language query parsing.
+        natural language query parsing. plainto_tsquery requires every query
+        term; ``match_any_term`` ORs the query's lexemes instead and lets
+        ts_rank order the candidates, so a whole question can still match (#580).
         """
         # By design, L0 memories remain directly searchable for explicit recall
         # queries. Dedup callers opt out so frozen memories cannot be mutated.
@@ -2710,8 +2713,13 @@ class MemoryStore:
             rows = await executor.fetch(
                 """
                 SELECT *,
-                       ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
-                FROM memories
+                       ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
+                FROM memories,
+                     (SELECT CASE WHEN $12::bool
+                                  THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
+                                        FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
+                                  ELSE plainto_tsquery('english', $2)
+                             END AS tsq) AS bm25_query
                 WHERE user_id = $1
                   AND status != 'deleted'
                   AND ($3::bool OR valid_to IS NULL)
@@ -2721,7 +2729,7 @@ class MemoryStore:
                   AND (embedding_model = ANY($10::text[]) OR embedding_model IS NULL)
                   AND ($11::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
-                  AND content_tsv @@ plainto_tsquery('english', $2)
+                  AND content_tsv @@ bm25_query.tsq
                   AND category = $5
                   AND ($7::text IS NULL OR memory_slot = $7)
                 ORDER BY bm25_score DESC
@@ -2738,13 +2746,19 @@ class MemoryStore:
                 conversation_filter,
                 effective_embedding_models,
                 include_l0,
+                match_any_term,
             )
         else:
             rows = await executor.fetch(
                 """
                 SELECT *,
-                       ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
-                FROM memories
+                       ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
+                FROM memories,
+                     (SELECT CASE WHEN $11::bool
+                                  THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
+                                        FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
+                                  ELSE plainto_tsquery('english', $2)
+                             END AS tsq) AS bm25_query
                 WHERE user_id = $1
                   AND status != 'deleted'
                   AND ($3::bool OR valid_to IS NULL)
@@ -2754,7 +2768,7 @@ class MemoryStore:
                   AND (embedding_model = ANY($9::text[]) OR embedding_model IS NULL)
                   AND ($10::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
-                  AND content_tsv @@ plainto_tsquery('english', $2)
+                  AND content_tsv @@ bm25_query.tsq
                   AND ($5::text IS NULL OR memory_slot = $5)
                 ORDER BY bm25_score DESC
                 LIMIT $6
@@ -2769,6 +2783,7 @@ class MemoryStore:
                 conversation_filter,
                 effective_embedding_models,
                 include_l0,
+                match_any_term,
             )
 
         results = []

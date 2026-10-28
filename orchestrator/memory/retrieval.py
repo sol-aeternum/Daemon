@@ -920,6 +920,10 @@ async def retrieve_memories(
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
                 embedding_models=_bm25_storage_models(effective_embedding_model),
+                # With a query vector, BM25 keeps the all-terms match the hybrid
+                # weights were calibrated on. Without one, lexical rank is the
+                # only signal, so a whole question matches on any term (#580).
+                match_any_term=not query_embedding,
             ),
         )
 
