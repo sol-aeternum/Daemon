@@ -1,7 +1,23 @@
 # LongMemEval dev-subset acceptance rule
 
-**Status: Proposed — owner approval required.** Nothing here is in force until the owner ratifies
-it. Until then, dev-subset numbers are evidence for discussion, not a gate.
+**Status: Ratified by the owner on 2026-10-28.** Rule version:
+`2026-10-28-official-v1`. The existing qualification checks and numerical paired-noise,
+category and abstention thresholds below are retained without exemptions.
+
+**Primary metric:** official category/abstention-aware strict accuracy, with the
+unchanged generic strict series retained as a secondary regression report. This is
+the declared Azure/OpenRouter + seed-42 implementation of the pinned official
+prompts, not a claim of identical upstream serving. See
+[Phase 1 measurement evidence](measurement_phase1_2026-10-28.md).
+
+Ratification permits Phase 2 DB-backed failure classification, not candidate
+acceptance without the required evidence. Known baseline zeros, the historical
+empty-bin ABS placeholder, and B's summary-bearing/no-retrieved-facts status remain
+explicit limitations; they are not silently waived or treated as a qualified
+lexical comparison. Saved-hypothesis judge repetitions do not replace the full
+canonical evaluate-only noise checks below. Missing qualification/noise evidence
+continues to block acceptance. No ingest, holdout inference, source-expansion
+design, or production cap change is authorized by this rule.
 
 Scope: deciding whether a memory change (Waves 1–9 and later) improves the production memory prompt
 surface, measured with the production-parity fact harness on the 50-question dev subset
