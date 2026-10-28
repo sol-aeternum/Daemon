@@ -32,6 +32,8 @@ from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from tests.qualified_compute import install_qualified_compute
 
+pytestmark = pytest.mark.usefixtures("unpaced_mock_stream")
+
 # Placements taken from the real workload routing metadata, so these tests
 # exercise the shipped profiles rather than a parallel fiction:
 #   Luna    -> routine, research, background, council (not reasoning)

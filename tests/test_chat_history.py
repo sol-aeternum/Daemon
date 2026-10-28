@@ -25,6 +25,8 @@ from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from tests.qualified_compute import install_qualified_compute
 
+pytestmark = pytest.mark.usefixtures("unpaced_mock_stream")
+
 
 @pytest_asyncio.fixture
 async def client(monkeypatch):

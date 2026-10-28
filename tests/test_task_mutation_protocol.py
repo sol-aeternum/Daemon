@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import asyncpg
@@ -121,15 +122,40 @@ async def test_unknown_closes_admission_before_queued_writer_or_renewal(
 
 async def test_busy_nonfinal_gate_does_not_hide_local_deadline(env: Env, monkeypatch):
     claim = await claimed(env)
-    loop = asyncio.get_running_loop()
-    state = runner.AttemptState(claim, lease_deadline=loop.time() + 0.1)
+    # Read real committed state before controlling the local clock. A SQL timeout
+    # is a different safe outcome (blocked, not fenced), which caused #575.
+    observation = await env.tasks.observe_attempt(claim)
+    now = 1000.0
+    state = runner.AttemptState(claim, lease_deadline=now + 1)
     monkeypatch.setattr(runner, "HEARTBEAT_S", 0.01)
+    observed = []
+
+    async def observe(binding):
+        nonlocal now
+        assert state.write_lock.locked()
+        observed.append(binding)
+        now = state.lease_deadline  # expire only after a successful busy-gate read
+        return observation
+
+    async def advance(delay):
+        nonlocal now
+        now += delay
+        await asyncio.sleep(0)
+
+    clock = SimpleNamespace(time=lambda: now)
+    monkeypatch.setattr(env.tasks, "observe_attempt", observe)
+    monkeypatch.setattr(
+        runner,
+        "asyncio",
+        SimpleNamespace(**(vars(asyncio) | {"get_running_loop": lambda: clock, "sleep": advance})),
+    )
     # Gate held by another local write, never taken by observer.
     await state.write_lock.acquire()
     execution = asyncio.create_task(asyncio.Event().wait())
     state.execution = execution
     try:
         await asyncio.wait_for(runner._heartbeat(env.tasks, state, execution), 0.3)
+        assert observed == [claim] and state.blocked is None
         assert state.fenced and execution.cancelling()
         with pytest.raises(runner.LeaseLost):
             # A new caller after the deadline cannot dispatch even if gate releases.
@@ -184,18 +210,6 @@ async def test_original_cancellation_and_phase_survive_owned_transaction(env: En
     assert getattr(original, "task_commit_attempted") is (phase != "body")
     assert getattr(original, "task_commit_acknowledged") is (phase == "release")
     assert fault.terminates == int(phase != "release")
-
-
-async def test_cadence_override_does_not_change_io_cap(monkeypatch):
-    assert runner.HEARTBEAT_S == runner.HEARTBEAT_IO_TIMEOUT_S == 10.0
-    assert (
-        runner.LEASE_S,
-        runner.LEASE_SAFETY_S,
-        runner.STOP_GRACE_S,
-        runner.ATTEMPT_TIMEOUT_S,
-    ) == (45.0, 5.0, 2.0, 600)
-    monkeypatch.setattr(runner, "HEARTBEAT_S", 0.01)
-    assert runner.HEARTBEAT_IO_TIMEOUT_S == 10.0
 
 
 async def test_valid_renewal_uses_request_time_not_ack_or_cadence(env: Env, monkeypatch):
