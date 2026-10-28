@@ -1,9 +1,10 @@
 # LongMemEval Phase 1 — measurement, not tuning
 
-Status: **measurement code verified locally; paid execution pending**.
+Status: **partially measured; stopped on an unclassified provider failure**.
 No production memory change, primary-metric choice, acceptance-rule ratification,
 ingest or holdout evaluation is included. Interpret interim findings **under proposed rule**.
-Phase 0 holdout PR: [#587](https://github.com/sol-aeternum/Daemon/pull/587), unmerged.
+Phase 0 holdout PR: [#587](https://github.com/sol-aeternum/Daemon/pull/587), owner-authorized
+merge verified at `26bccd15`. No Phase 1 merge is authorized.
 
 ## Judge contract
 
@@ -92,10 +93,16 @@ claim exact billed cost when provider billing evidence is unavailable.
 
 | Plan | Calls | Reserved USD | Actual execution |
 |---|---:|---:|---|
-| Official A/A2/B + two more official A passes | 250 | 0.6023600 | Not run |
-| Generic A/A2/B | 150 | 0.9571700 | Not run |
+| Official A/A2/B + two more official A passes | 250 | 0.6023600 | 250 responses returned |
+| Generic A/A2/B | 150 | 0.9571700 | 136 responses; 1 uncertain request; 13 unattempted |
 | Saved-A paired reader caps, including both judges | 6 | 0.0491650 | Not run |
-| Total | 406 | **1.6086950** | **$0 spent so far** |
+| Total planned | 406 | **1.6086950** | 386 returned judge responses; diagnostic not started |
+
+Actual held cumulative reservation is **$1.5595300**; the diagnostic's $0.0491650
+remains only planned, not initiated. Returned usage gives a **$0.2636950**
+undiscounted quoted-rate estimate. Actual billing and the failed request's usage
+are unknown; retain the failed batch's entire reservation rather than treating
+missing usage as free. See the cumulative ledger in `tuning_pass_2026-10-28.md`.
 
 The cumulative evaluate-only authorization is $10. Every ingest and any spend
 beyond $10 require an estimate and owner approval. No ingest or final holdout
@@ -136,11 +143,90 @@ because the configured Go routes were unavailable. It found one medium-severity
 failure-path defect: missing usage cleared the pending call before cost reconciliation.
 The marker now remains set and a regression assertion covers that path. The primary
 accepted and repaired the finding; no other material findings were returned.
-Paid execution and final result/PR gates remain pending.
-The subsequent managed commit was refused before execution by lifecycle lock
-contention (`Errno 11`), not a code/check failure. All recorded scopes are exited;
-the reviewed changes remain staged and no unchanged retry or guard bypass was
-attempted. Commit and paid execution are blocked pending runner recovery.
+The initial managed commit was refused by lifecycle lock contention (`Errno 11`).
+After independently verifying lock availability, the commit succeeded and was
+rebased onto main, including the owner-provided `scripts/with_key.py`. Its key-only
+credential handoff was verified without displaying values or sourcing production
+settings. Code was clean and fixed at **`52774035201964da27f8a322252627eaa95467d3`**
+through every paid call. Rebased full gates passed again in 404 seconds: backend
+7,209 passed / 1,265 skipped / 14 warnings / 16 subtests; frontend 1,473 tests;
+cache-browser 30. A prelaunch lock refusal on the first batch created no manifest
+or scope; only after observing the exact lock unheld was a changed-state launch made.
+
+## Partial results — not an acceptance decision
+
+Raw dev-only outputs, finish reasons, fingerprints, usage, original manifests and
+hash inventory are retained in [`measurement_phase1_2026-10-28/`](measurement_phase1_2026-10-28/).
+The primary checked every returned row against frozen dev IDs/questions/references
+before copying artifacts; no holdout payload was accessed. Paths in immutable
+manifests/ledger preserve the original local recovery locations, not portable paths.
+
+| Arm | Historical generic strict | Fresh generic strict | Official strict (first pass) |
+|---|---:|---:|---:|
+| A | 30/50 (60%) | 30/50 (60%) | 34/50 (68%) |
+| A2 | 31/50 (62%) | 31/50 (62%) | 34/50 (68%) |
+| B | 6/50 (12%) | **Incomplete: 6/36 observed** | 5/50 (10%) |
+
+The 36 B rows are the completed prefix, not a random subset or a full-arm score.
+Do not report 6/36 as a comparable B accuracy or backfill missing fresh labels
+with historical judgments.
+
+| Category (count) | Fresh generic A | Official A | Fresh generic A2 | Official A2 | Official B |
+|---|---:|---:|---:|---:|---:|
+| IE-user (9) | 9 | 9 | 9 | 9 | 0 |
+| IE-assistant (9) | 5 | 6 | 5 | 6 | 3 |
+| IE-preference (3) | 0 | 1 | 1 | 1 | 0 |
+| KU (9) | 5 | 6 | 5 | 6 | 1 |
+| MR (10) | 6 | 7 | 6 | 7 | 0 |
+| TR (10) | 5 | 5 | 5 | 5 | 1 |
+| Abstention subset (5, overlapping) | 1 | 2 | 1 | 2 | 2 |
+
+Counts are correct answers, not percentages. B retains summary context as documented
+above. There is no retrieval/reader change behind the metric difference.
+
+- Official-vs-fresh-generic strict disagreement: A **4/50 (8%)**, A2 **3/50 (6%)**,
+  and B **2/36** on the observed prefix only. Historical-generic-vs-official B is
+  **1/50 (2%)**. No observed comparison exceeded the approximately 20% stop threshold.
+- Fresh generic A/A2 have **zero strict label flips** versus their historical labels;
+  each has one three-way-label change involving `partially_correct`. B has one
+  strict flip in the completed prefix; its remaining labels are unknown.
+- Official A repeated scores are **34/50, 34/50, 33/50**. Pairwise disagreements are
+  **0/50, 1/50, 1/50**, all variability on preference question `75f70248`. A single
+  score does not establish zero judge noise, despite fixed temperature and seed.
+- All **386 returned judgments** have finish reason `stop`, not `length`, and the
+  recorded served model is the pinned `openai/gpt-4o-2024-08-06`. Official raw outputs
+  are only case/punctuation variants of yes/no. The additive unexpected-output count
+  counts `Yes.`/`No.` as non-exact tokens; it is not evidence of semantic parse failure.
+
+## Stopped failure and remaining work
+
+Generic B completed 36 calls, then stopped on the request for `c5e8278d` at
+2026-10-28T08:22:49Z. Its manifest retains that pending ID and the whole reservation.
+Only `BenchmarkProviderError` and standard LiteLLM help text survived sanitization;
+the underlying exception class/status was discarded. **No timeout, rate limit,
+authentication, quota, insufficient-funds or billing cause is established.**
+The diagnostic gap is filed as [#595](https://github.com/sol-aeternum/Daemon/issues/595).
+The call may or may not have executed/billed. No automatic/manual replay, fallback,
+debug tracing, account lookup or additional paid call was attempted after failure.
+The original sequence and all receipts remain retained; the reader-cap diagnostic
+was not reached. No new canonical evaluation, snapshot restore or ingest occurred.
+
+Remaining: safely reconcile the uncertain call, establish an admitted residual plan
+for the 14 missing B outcomes, run the approved paired reader-cap diagnostic, and
+complete final result/PR gates. Phase 1 is **not complete**; primary metric and
+acceptance-rule decisions are not yet requested as though all measurements passed.
+
+### Partial-evidence verification
+
+The unchanged implementation retains its completed rebased full-gate evidence.
+After adding these artifacts/docs, aggregate gates passed (89-row feature matrix,
+all-file doc freshness, lint/format and secret scanning). The primary checked all
+386 raw rows for dev-only membership/reference consistency, pinned served model,
+normal finish, raw output and nonnegative token-usage fields; the copied artifact
+hashes preserve the original records. A fresh scoped read-only review of the new
+report and aggregate evidence found no material defects. It used the disclosed
+same-family OpenAI fallback and did not inspect raw payloads or execute checks.
+These checks verify the partial report, not the missing B outcomes or billing.
 
 After the measurement results, **stop for owner decisions** on primary metric and
 `ACCEPTANCE_RULE_PROPOSED.md`. No DB-backed Phase 2 failure triage or Phase 3 tuning
