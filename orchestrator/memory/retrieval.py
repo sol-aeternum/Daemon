@@ -165,6 +165,30 @@ def _is_retrieval_logging_enabled(explicit_flag: bool) -> bool:
         return False
 
 
+def _bm25_storage_models(storage_model: str) -> list[str]:
+    """Spaces one retrieval pass searches lexically.
+
+    A fallback-space pass stays in its own space. The primary pass also covers
+    every known space without a pass of its own, such as rows written while a
+    route was selected, so they stay discoverable after it is unset (#578).
+    """
+    if storage_model != get_primary_embedding_storage_model():
+        return [storage_model]
+    own_passes = set(get_configured_embedding_fallback_storage_models())
+    return list(
+        dict.fromkeys(
+            [
+                storage_model,
+                *(
+                    model
+                    for model in get_lexical_embedding_storage_models()
+                    if model not in own_passes
+                ),
+            ]
+        )
+    )
+
+
 async def _available_fallback_storage_models(
     store: MemoryStore,
     user_id: uuid.UUID,
@@ -895,9 +919,7 @@ async def retrieve_memories(
                 memory_slot=normalized_slot,
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
-                embedding_models=list(get_lexical_embedding_storage_models())
-                if get_selected_embedding_route_id()
-                else [effective_embedding_model],
+                embedding_models=_bm25_storage_models(effective_embedding_model),
             ),
         )
 
