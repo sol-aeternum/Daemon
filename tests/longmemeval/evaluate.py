@@ -55,6 +55,11 @@ from orchestrator.memory.injection import (
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.ingest import DATASET_PATH as DEFAULT_DATASET_PATH
+from tests.longmemeval.official_judge import (
+    OFFICIAL_MAX_TOKENS,
+    build_official_prompt,
+    official_label,
+)
 
 CATEGORY_MAP: dict[str, str] = {
     "single-session-user": "IE-user",
@@ -114,6 +119,39 @@ logger = logging.getLogger(__name__)
 
 class BenchmarkProviderError(RuntimeError):
     """Provider or transport failure in LongMemEval benchmark mode."""
+
+
+def benchmark_failure_diagnostics(exc: BaseException) -> dict[str, str | int | None]:
+    """Retain allowlisted diagnostics, never exception text or response contents."""
+    allowed = {
+        "RateLimitError",
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "BadRequestError",
+        "NotFoundError",
+        "APITimeoutError",
+        "Timeout",
+        "TimeoutError",
+        "APIConnectionError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+        "APIError",
+    }
+    kind = "OtherError"
+    status = None
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    for _ in range(4):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if type(current).__name__ in allowed:
+            kind = type(current).__name__
+        code = getattr(current, "status_code", None)
+        if type(code) is int and 100 <= code <= 599:
+            status = code
+        current = current.__cause__
+    return {"provider_exception_type": kind, "http_status_code": status}
 
 
 _BM_METADATA: dict[str, dict[str, str | None]] = {}
@@ -230,6 +268,10 @@ def _capture_benchmark_metadata(response_data: Any, *, key: str) -> None:
     model = response_data.get("model")
     normalized_fingerprint = fingerprint if isinstance(fingerprint, str) else None
     normalized_model = model if isinstance(model, str) else None
+    choices = response_data.get("choices") or []
+    choice = choices[0] if choices else {}
+    finish_reason = choice.get("finish_reason")
+    raw_output = (choice.get("message") or {}).get("content")
 
     # Recorded, not enforced: the pinned endpoint rotates system_fingerprint
     # across serving nodes, so each result row carries its own and the
@@ -237,6 +279,8 @@ def _capture_benchmark_metadata(response_data: Any, *, key: str) -> None:
     _BM_METADATA[key] = {
         "fingerprint": normalized_fingerprint,
         "model": normalized_model,
+        "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
+        "raw_output": raw_output if isinstance(raw_output, str) else None,
     }
 
 
@@ -256,7 +300,7 @@ async def _call_llm_with_provider_config(
 
     is_benchmark = bm_call_key is not None
     if is_benchmark:
-        if bm_call_key == "judge":
+        if bm_call_key in {"judge", "official_judge"}:
             model = BENCHMARK_JUDGE_MODEL
         else:
             model = BENCHMARK_ANSWER_MODEL
@@ -274,6 +318,7 @@ async def _call_llm_with_provider_config(
     }
     if is_benchmark:
         call_params["seed"] = BENCHMARK_SEED
+        call_params["num_retries"] = 0
         call_params["extra_body"] = {
             "provider": {
                 "order": [BENCHMARK_ANSWER_ENDPOINT_SLUG],
@@ -364,14 +409,8 @@ async def judge_answer(
     return judgment
 
 
-async def _judge_with_usage(
-    question_text: str,
-    hypothesis: str,
-    reference: str,
-    *,
-    benchmark_mode: bool,
-) -> tuple[str, dict[str, int]]:
-    prompt = f"""You are judging whether an AI assistant's answer is factually correct.
+def build_generic_judge_prompt(question_text: str, hypothesis: str, reference: str) -> str:
+    return f"""You are judging whether an AI assistant's answer is factually correct.
 
 Question: {question_text}
 Ground truth answer: {reference}
@@ -387,6 +426,15 @@ Be generous with CORRECT. The question is whether the assistant knew the right a
 Reply with exactly one word on the first line: CORRECT, PARTIAL, or INCORRECT
 Then a one-sentence explanation on the second line."""
 
+
+async def _judge_with_usage(
+    question_text: str,
+    hypothesis: str,
+    reference: str,
+    *,
+    benchmark_mode: bool,
+) -> tuple[str, dict[str, int]]:
+    prompt = build_generic_judge_prompt(question_text, hypothesis, reference)
     response = await _call_llm_with_provider_config(
         model=JUDGE_MODEL,
         messages=[{"role": "user", "content": prompt}],
@@ -418,6 +466,44 @@ Then a one-sentence explanation on the second line."""
         return "correct", usage
     else:
         return "incorrect", usage
+
+
+async def judge_answer_official(
+    question_text: str,
+    hypothesis: str,
+    reference: str,
+    *,
+    question_id: str,
+    question_type: str,
+    benchmark_mode: bool = True,
+) -> dict[str, Any]:
+    """Second metric only: official category prompt, cap and label predicate.
+
+    The pinned Azure route and seed remain the harness's, not upstream OpenAI's.
+    Return raw output and finish reason alongside the upstream substring verdict.
+    """
+    prompt = build_official_prompt(
+        question_type, question_text, reference, hypothesis, question_id=question_id
+    )
+    response = await _call_llm_with_provider_config(
+        model=JUDGE_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=JUDGE_TEMPERATURE,
+        max_tokens=OFFICIAL_MAX_TOKENS,
+        bm_call_key="official_judge" if benchmark_mode else None,
+    )
+    if response is None:
+        raise BenchmarkProviderError("Official judge returned no response")
+    raw_output = _extract_content(response)
+    metadata = get_benchmark_tracking().get("official_judge", {}) if benchmark_mode else {}
+    return {
+        "official_judgment": "correct" if official_label(raw_output) else "incorrect",
+        "official_judge_raw_output": raw_output,
+        "official_judge_finish_reason": metadata.get("finish_reason"),
+        "official_judge_model": metadata.get("model"),
+        "official_judge_fingerprint": metadata.get("fingerprint"),
+        "official_judge_usage": _usage_from_response(response),
+    }
 
 
 async def answer_with_llm(
@@ -629,6 +715,7 @@ async def evaluate_single_parity(
     messages = build_parity_answer_messages(question_text, memory_context)
     hypothesis, answer_usage = await _answer_with_messages(messages, benchmark_mode=benchmark_mode)
     answer_fingerprint = last_benchmark_fingerprint("answer") if benchmark_mode else None
+    answer_metadata = get_benchmark_tracking().get("answer", {}) if benchmark_mode else {}
     judgment, judge_usage = await _judge_with_usage(
         question_text,
         hypothesis,
@@ -636,7 +723,9 @@ async def evaluate_single_parity(
         benchmark_mode=benchmark_mode,
     )
     judge_fingerprint = last_benchmark_fingerprint("judge") if benchmark_mode else None
-    return {
+    judge_metadata = get_benchmark_tracking().get("judge", {}) if benchmark_mode else {}
+    question_type = {value: key for key, value in CATEGORY_MAP.items()}.get(category, category)
+    result = {
         "question_id": question_id,
         "question": question_text,
         "reference": reference,
@@ -654,7 +743,35 @@ async def evaluate_single_parity(
         "judge_usage": judge_usage,
         "answer_fingerprint": answer_fingerprint,
         "judge_fingerprint": judge_fingerprint,
+        "answer_finish_reason": answer_metadata.get("finish_reason"),
+        "answer_raw_output": answer_metadata.get("raw_output"),
+        "answer_max_tokens": ANSWER_MAX_TOKENS,
+        "judge_raw_output": judge_metadata.get("raw_output"),
+        "judge_finish_reason": judge_metadata.get("finish_reason"),
+        "question_type": question_type,
     }
+    try:
+        official = await judge_answer_official(
+            question_text,
+            hypothesis,
+            reference,
+            question_id=question_id,
+            question_type=question_type,
+            benchmark_mode=benchmark_mode,
+        )
+    except Exception as exc:
+        # The additive metric must not erase or invalidate paid base evidence.
+        # No top-level error: canonical re-entry must retain this generic result,
+        # not repeat retrieval/reader/generic calls to obtain a missing label.
+        result.update(
+            official_judge_status="failed",
+            official_judge_failure_diagnostics=benchmark_failure_diagnostics(exc),
+            official_judge_usage=None,  # unknown, not a zero-cost observation
+        )
+    else:
+        result.update(official)
+        result["official_judge_status"] = "completed"
+    return result
 
 
 def score_accuracy(results: list[dict[str, Any]]) -> dict[str, float]:

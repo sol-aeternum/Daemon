@@ -1,0 +1,44 @@
+{
+  "mode": "saved_context_reader_cap_diagnostic_not_canonical_evaluate",
+  "started_at": "2026-10-28T08:53:07.902683+00:00",
+  "status": "completed",
+  "git": {
+    "sha": "cf62a34d9eeaee53bc6eb7d9f43303ae639a79e2",
+    "dirty": false,
+    "code_sha256": "89de2933ac14e1bae0fa6c3a662700732625cd52236a55f009a4ec575d635ab8"
+  },
+  "source": {
+    "source_run_id": "f28e309123184cc2b04a60053672c75c",
+    "source_results_sha256": "18b78076021b8150a4d7fab1db3ecb05084cd3f2ff2413d26cbd91da9e828994",
+    "source_manifest_sha256": "b9dd231536406ebacd53232117f1a92de5ce784cc4a47667731301a218ee0479",
+    "dev_sha256": "6612e3a03c79b92bab2f1750d4661908e3dc37359715b7fb6b62c6f758bddb34"
+  },
+  "question_id": "0a34ad58",
+  "caps": [
+    256,
+    1024
+  ],
+  "calls_completed": 6,
+  "database_access": false,
+  "retrieval_calls": 0,
+  "memory_context_sha256": "cb2b7c4f3c4be59f8b8e91410c0f1692dd9b733b5427cca5a09cc9c638e4a6ec",
+  "system_prompt_sha256": "b117eab63be1d3a91f112f4382e5e199dc7f038608c6d5c159dcf6c814aad84e",
+  "route": {
+    "reader": "openrouter/openai/gpt-4o-2024-08-06",
+    "judge": "openrouter/openai/gpt-4o-2024-08-06",
+    "endpoint_slug": "azure",
+    "seed": 42,
+    "temperature": 0,
+    "num_retries": 0,
+    "allow_fallbacks": false
+  },
+  "cost": {
+    "whole_run_reservation_usd": "0.0491650",
+    "prior_cumulative_reserved_usd": "1.6527400",
+    "cumulative_reserved_usd": "1.7019050",
+    "usage_cost_estimate_usd": "0.0240250",
+    "actual_billed_cost_usd": null
+  },
+  "pending_call": null,
+  "ended_at": "2026-10-28T08:53:17.476060+00:00"
+}

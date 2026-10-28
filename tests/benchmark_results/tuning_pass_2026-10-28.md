@@ -1,8 +1,11 @@
 # Memory tuning pass — 2026-10-28
 
-Status: **Phase 0 implemented; blocking local gates pass. Phase 1 not yet run.**
-No production memory change, ingest, benchmark inference, metric ratification or
-acceptance decision has occurred. Interim interpretation remains **under proposed rule**.
+Status: **Phase 0 merged; Phase 1 measurements complete after authorized recovery;
+final report/PR gates pending.**
+No production memory change, ingest, holdout evaluation, metric ratification or
+acceptance decision has occurred. Judge inference and the approved two-reader-call
+saved-context cap diagnostic have run.
+Interim interpretation remains **under proposed rule**.
 
 ## Phase 0 — holdout
 
@@ -54,9 +57,31 @@ The snapshot was only hashed, not restored or modified.
   [#490](https://github.com/sol-aeternum/Daemon/issues/490). Persistent failures include
   Next devtools inline-style CSP errors in design-token diagnostics; two UI cases
   passed only on the runner's configured retry. No frontend source, assertions,
-  snapshots, timeouts or security policy changed. The final PR gate rerun is pending.
+  snapshots, timeouts or security policy changed. The final gated PR run also passed.
+  The owner authorized merging #587; merge commit `26bccd15` is verified. This does
+  not authorize Phase 1 merge, tuning, or holdout inference.
 
-## Phase 1 — queued measurement work
+## Phase 1 — completed measurement evidence
+
+The separate measurement branch implements dual judging and saved-context
+diagnostics; see [the Phase 1 record](measurement_phase1_2026-10-28.md). The owner
+approved the paired 256/1024-token diagnostic before implementation; it completed
+after recovery. The original planned reservation was $1.6086950, not actual spend.
+The repaired pending-call marker passes the 137-test targeted suite. Full blocking
+local gates passed (677 seconds): backend 7,180 passed / 1,264 skipped, frontend
+1,464 passed, cache-browser 30 passed, with no new gate exceptions.
+After rebase onto main (including the owner-provided named-key wrapper), all blocking
+gates passed again in 404 seconds: backend 7,209 passed / 1,265 skipped; frontend
+1,473 passed; cache-browser 30 passed. The first paid sequence stayed at `52774035`;
+the separately gated recovery/diagnostic sequence stayed at `cf62a34d`.
+The first sequence returned 386 judge responses and one uncertain failed request;
+the owner then approved one new replacement plus the 13 unattempted B questions.
+All 14 residual judgments and the six-call cap diagnostic completed after separately
+reviewed/gated recovery code. The original failure/receipts/reservation are preserved.
+Official A=34/50, A2=34/50, B=5/50; official A repeats=34/50 and 33/50.
+Fresh generic A=30/50, A2=31/50, and full assembled B=7/50. These are metric/noise
+measurements, not memory gains. The cap test confirmed 256-token truncation and
+normal termination at 334 tokens with cap 1024, but no strict gain under either judge.
 
 Official source inspected:
 [`src/evaluation/evaluate_qa.py` at d6dc8b50](https://github.com/xiaowu0162/LongMemEval/blob/d6dc8b50a2d9ac0c99485ea28fa5755c62414c34/src/evaluation/evaluate_qa.py).
@@ -73,16 +98,27 @@ The official parser uses `"yes" in eval_response.lower()`; retain raw output and
 finish reason so invalid or truncated responses cannot be hidden by aggregate scores.
 The generic judge must remain unchanged alongside this second metric.
 
-Still required: dual-judge implementation, all-row A/A2/B official rejudging, two
-additional A official rejudgings, answer-cap investigation, paired disagreement and
-category tables, run manifests and cost evidence. Pause afterward for owner decisions
-on primary metric and `ACCEPTANCE_RULE_PROPOSED.md`; no Phase 2/3 tuning yet.
+Still required: finalize report gates and the separate Phase 1 PR, then pause for
+owner decisions on primary metric and `ACCEPTANCE_RULE_PROPOSED.md`. No Phase 2/3
+tuning has started. The original provider cause/billing remains unknown; the safe
+failure-diagnostic fix is tracked in #595 and does not invent retrospective evidence.
 
 ## Cumulative benchmark cost ledger
 
-| Activity | Ingest calls | Answer calls | Judge calls | Cost USD | Cumulative USD |
-|---|---:|---:|---:|---:|---:|
-| Phase 0 selection and snapshot hash check | 0 | 0 | 0 | 0.00 | 0.00 |
+| Activity | Returned judge calls | Quoted-rate usage estimate USD | Cumulative estimate USD |
+|---|---:|---:|---:|
+| Phase 0 selection and snapshot hash check | 0 | 0.00 | 0.00 |
+| Official A/A2/B and two additional official A passes | 250 | 0.1198225 | 0.1198225 |
+| Fresh generic A/A2 | 100 | 0.1059200 | 0.2257425 |
+| Partial fresh generic B | 36 | 0.0379525 | 0.2636950 |
+| Owner-authorized fresh B residual | 14 | 0.0153575 | 0.2790525 |
+| Reader-cap diagnostic (2 reader + 4 judge responses) | 4 | 0.0240250 | 0.3030775 |
+
+**Actual billed cost is unknown.** The failed call may have been billed and is not
+included in the returned-usage estimate. The full **$1.7019050** reservation remains
+held, including the entire failed generic-B batch and new recovery/diagnostic
+reservations. Total returned: 404 judge + 2 reader responses; one additional request
+has an unknown outcome. No ingest calls occurred.
 
 Evaluate-only authorization is cumulative $10; all ingest and any spend beyond that
 limit require an estimate and owner approval. Agent-worker failures are not benchmark

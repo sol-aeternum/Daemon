@@ -1,0 +1,26 @@
+{
+  "status": "completed",
+  "head": "cf62a34d9eeaee53bc6eb7d9f43303ae639a79e2",
+  "owner_authorized_new_replacement": "c5e8278d",
+  "old_reservations_still_held_usd": "1.5595300",
+  "cumulative_reserved_usd": "1.7019050",
+  "actual_billed_cost_usd": null,
+  "entries": [
+    {
+      "name": "generic_b_residual_1",
+      "reservation_usd": "0.0932100",
+      "status": "completed",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/generic_b_residual_1/run_manifest.json",
+      "calls_completed": 14,
+      "usage_cost_estimate_usd": "0.0153575"
+    },
+    {
+      "name": "reader_cap_a_1",
+      "reservation_usd": "0.0491650",
+      "status": "completed",
+      "manifest": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/phase1-runs/reader_cap_a_1/run_manifest.json",
+      "calls_completed": 6,
+      "usage_cost_estimate_usd": "0.0240250"
+    }
+  ]
+}

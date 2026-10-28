@@ -1,0 +1,88 @@
+{
+  "official": {
+    "total": 50,
+    "judged": 50,
+    "correct": 34,
+    "strict_accuracy": 0.68,
+    "missing": 0
+  },
+  "official_by_category": {
+    "IE-assistant": {
+      "total": 9,
+      "judged": 9,
+      "correct": 6,
+      "strict_accuracy": 0.6666666666666666,
+      "missing": 0
+    },
+    "IE-preference": {
+      "total": 3,
+      "judged": 3,
+      "correct": 1,
+      "strict_accuracy": 0.3333333333333333,
+      "missing": 0
+    },
+    "IE-user": {
+      "total": 9,
+      "judged": 9,
+      "correct": 9,
+      "strict_accuracy": 1.0,
+      "missing": 0
+    },
+    "KU": {
+      "total": 9,
+      "judged": 9,
+      "correct": 6,
+      "strict_accuracy": 0.6666666666666666,
+      "missing": 0
+    },
+    "MR": {
+      "total": 10,
+      "judged": 10,
+      "correct": 7,
+      "strict_accuracy": 0.7,
+      "missing": 0
+    },
+    "TR": {
+      "total": 10,
+      "judged": 10,
+      "correct": 5,
+      "strict_accuracy": 0.5,
+      "missing": 0
+    }
+  },
+  "abstention_subset": {
+    "overlaps_original_categories": true,
+    "generic": {
+      "total": 5,
+      "judged": 5,
+      "correct": 1,
+      "strict_accuracy": 0.2,
+      "missing": 0
+    },
+    "official": {
+      "total": 5,
+      "judged": 5,
+      "correct": 2,
+      "strict_accuracy": 0.4,
+      "missing": 0
+    }
+  },
+  "paired": {
+    "total": 50,
+    "strict_disagreements": 3,
+    "strict_disagreement_rate": 0.06,
+    "strict_disagreement_ids": [
+      "80ec1f4f_abs",
+      "c4f10528",
+      "59524333"
+    ],
+    "three_way_table": {
+      "correct|correct": 31,
+      "incorrect|correct": 3,
+      "incorrect|incorrect": 14,
+      "partially_correct|incorrect": 2
+    }
+  },
+  "official_unexpected_output_count": 28,
+  "official_length_finish_count": 0
+}

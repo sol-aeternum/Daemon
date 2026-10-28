@@ -460,6 +460,125 @@ async def test_evaluate_retries_errored_questions(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "rate_limit"])
+@pytest.mark.parametrize("reentry", ["checkpoint", "flushed_only"])
+async def test_official_failure_preserves_base_observation_and_never_replays_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, reentry: str
+) -> None:
+    from orchestrator.memory import injection
+    from tests.longmemeval import evaluate
+
+    dataset_path = _write_dataset(tmp_path)
+    runner = _runner(tmp_path, dataset_path)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    BenchRuntime(monkeypatch)
+    retrievals: list[str] = []
+    calls: list[str] = []
+
+    async def gather(store: Any, **kwargs: Any) -> injection.MemoryContextInputs:
+        retrievals.append(kwargs["query_text"])
+        return injection.MemoryContextInputs(
+            retrieved=[{"content": "User adopted a cat named Miso", "category": "fact"}],
+            retrieval_mode="lexical",
+        )
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    async def llm(**kwargs: Any) -> dict[str, Any]:
+        key = kwargs["bm_call_key"]
+        calls.append(key)
+        if key == "official_judge":
+            cause = (
+                RateLimitError("DO-NOT-STORE-PROVIDER-TEXT")
+                if failure == "rate_limit"
+                else TimeoutError("DO-NOT-STORE-PROVIDER-TEXT")
+            )
+            raise evaluate.BenchmarkProviderError("DO-NOT-STORE-WRAPPER-TEXT") from cause
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "Miso" if key == "answer" else "CORRECT\nMatches."},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 3, "total_tokens": 103},
+            "system_fingerprint": f"fp_{key}",
+        }
+        evaluate._capture_benchmark_metadata(response, key=key)
+        return response
+
+    monkeypatch.setattr(evaluate, "gather_memory_context_inputs", gather)
+    monkeypatch.setattr(evaluate, "_call_llm_with_provider_config", llm)
+    results = await runner.evaluate()
+    assert len(results) == len(retrievals) == 2
+    assert calls == ["answer", "judge", "official_judge"] * 2
+    for row in results:
+        assert row["hypothesis"] == "Miso" and row["judgment"] == "correct"
+        assert "Miso" in row["memory_context"]
+        assert row["memory_context_sha256"] == evaluate._sha256_text(row["memory_context"])
+        assert row["system_prompt_sha256"] == evaluate._sha256_text(
+            evaluate.build_parity_answer_messages(row["question"], row["memory_context"])[0][
+                "content"
+            ]
+        )
+        assert (
+            row["answer_usage"]
+            == row["judge_usage"]
+            == {"prompt_tokens": 100, "completion_tokens": 3, "total_tokens": 103}
+        )
+        assert row["answer_fingerprint"] == "fp_answer"
+        assert row["judge_fingerprint"] == "fp_judge"
+        assert row["judge_raw_output"] == "CORRECT\nMatches."
+        assert "error" not in row and "official_judgment" not in row
+        assert row["official_judge_status"] == "failed"
+        assert row["official_judge_usage"] is None
+        assert row["official_judge_failure_diagnostics"] == {
+            "provider_exception_type": "RateLimitError"
+            if failure == "rate_limit"
+            else "TimeoutError",
+            "http_status_code": 429 if failure == "rate_limit" else None,
+        }
+        assert fact_harness.is_completed_result(row)
+    assert "DO-NOT-STORE" not in runner.output_path.read_text()
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    assert checkpoint["phases"]["evaluate"]["completed_count"] == 2
+    assert checkpoint["phases"]["evaluate"]["error_count"] == 0
+    assert list(checkpoint["phases"]["evaluate"]["results"].values()) == results
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    phase = manifest["phases"]["evaluate"]
+    assert (
+        phase["answer_usage"]
+        == phase["judge_usage"]
+        == {"prompt_tokens": 200, "completion_tokens": 6, "total_tokens": 206}
+    )
+    assert phase["official_judge_failed"] == 2
+    assert phase["official_judgments"] == {
+        "total": 2,
+        "judged": 0,
+        "correct": 0,
+        "strict_accuracy": None,
+        "missing": 2,
+    }
+    score = runner.score()
+    assert score["strict_accuracy"] == 1 and score["error_count"] == 0
+    assert score["dual_judgments"]["official"]["missing"] == 2
+    assert score["dual_judgments"]["official"]["judged"] == 0
+    assert score["dual_judgments"]["official"]["strict_accuracy"] is None
+
+    if reentry == "flushed_only":
+        checkpoint["phases"]["evaluate"]["results"] = {}
+        checkpoint["phases"]["evaluate"]["completed_count"] = 0
+        runner.checkpoint_path.write_text(json.dumps(checkpoint))
+    resumed = _runner(tmp_path, dataset_path)
+    assert await resumed.evaluate() == results
+    assert calls == ["answer", "judge", "official_judge"] * 2
+    assert len(retrievals) == 2
+    assert len(runner.output_path.read_text().splitlines()) == 2
+
+
+@pytest.mark.asyncio
 async def test_stop_request_finishes_in_flight_question_then_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1889,9 +2008,13 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
 
     async def fake_llm(**kwargs: Any) -> Any:
         calls.append(kwargs)
-        content = "Miso" if kwargs["bm_call_key"] == "answer" else "CORRECT\nMatches."
+        content = {
+            "answer": "Miso",
+            "judge": "CORRECT\nMatches.",
+            "official_judge": "yes",
+        }[kwargs["bm_call_key"]]
         response = {
-            "choices": [{"message": {"content": content}}],
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 3, "total_tokens": 103},
             "system_fingerprint": f"fp_{kwargs['bm_call_key']}",
         }
@@ -1924,10 +2047,18 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
     assert [m["role"] for m in answer_messages] == ["system", "user"]
     assert "- Fact: User adopted a cat named Miso" in answer_messages[0]["content"]
     assert '<memory_records trust="user_data">' in answer_messages[0]["content"]
-    assert [c["bm_call_key"] for c in calls] == ["answer", "judge"]
+    assert [c["bm_call_key"] for c in calls] == ["answer", "judge", "official_judge"]
     assert result["judgment"] == "correct"
     assert result["hypothesis"] == "Miso"
     assert result["retrieval_mode"] == "lexical"
     assert result["answer_usage"]["prompt_tokens"] == 100
     assert result["judge_usage"]["completion_tokens"] == 3
     assert (result["answer_fingerprint"], result["judge_fingerprint"]) == ("fp_answer", "fp_judge")
+    assert result["answer_finish_reason"] == result["judge_finish_reason"] == "stop"
+    assert result["judge_raw_output"] == "CORRECT\nMatches."
+    assert result["official_judgment"] == "correct"
+    assert result["official_judge_fingerprint"] == "fp_official_judge"
+    assert result["official_judge_raw_output"] == "yes"
+    assert result["official_judge_finish_reason"] == "stop"
+    assert result["official_judge_status"] == "completed"
+    assert calls[2]["max_tokens"] == 10
