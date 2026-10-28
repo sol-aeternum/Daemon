@@ -330,6 +330,8 @@ concurrent lock admission and owned-process interruption. These are local Linux
 filesystem mechanics checks, not power-loss/shared-mount or completed S1 lifecycle
 qualification. Only the uncalled staging module may compose the codec; the import
 guard still denies runtime callers of either module. Catalog stays **Not started**.
+The account-writer catalogue explicitly records the staging scanner candidates
+as deferred and uncovered; this classification does not establish runtime fencing.
 
 Smallest eventual end-to-end: A submits one PNG; fixture worker publishes CSV;
 A closes; another authenticated client for A reopens the same inputs and pinned
