@@ -725,15 +725,7 @@ async def evaluate_single_parity(
     judge_fingerprint = last_benchmark_fingerprint("judge") if benchmark_mode else None
     judge_metadata = get_benchmark_tracking().get("judge", {}) if benchmark_mode else {}
     question_type = {value: key for key, value in CATEGORY_MAP.items()}.get(category, category)
-    official = await judge_answer_official(
-        question_text,
-        hypothesis,
-        reference,
-        question_id=question_id,
-        question_type=question_type,
-        benchmark_mode=benchmark_mode,
-    )
-    return {
+    result = {
         "question_id": question_id,
         "question": question_text,
         "reference": reference,
@@ -757,8 +749,29 @@ async def evaluate_single_parity(
         "judge_raw_output": judge_metadata.get("raw_output"),
         "judge_finish_reason": judge_metadata.get("finish_reason"),
         "question_type": question_type,
-        **official,
     }
+    try:
+        official = await judge_answer_official(
+            question_text,
+            hypothesis,
+            reference,
+            question_id=question_id,
+            question_type=question_type,
+            benchmark_mode=benchmark_mode,
+        )
+    except Exception as exc:
+        # The additive metric must not erase or invalidate paid base evidence.
+        # No top-level error: canonical re-entry must retain this generic result,
+        # not repeat retrieval/reader/generic calls to obtain a missing label.
+        result.update(
+            official_judge_status="failed",
+            official_judge_failure_diagnostics=benchmark_failure_diagnostics(exc),
+            official_judge_usage=None,  # unknown, not a zero-cost observation
+        )
+    else:
+        result.update(official)
+        result["official_judge_status"] = "completed"
+    return result
 
 
 def score_accuracy(results: list[dict[str, Any]]) -> dict[str, float]:

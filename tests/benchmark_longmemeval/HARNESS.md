@@ -29,6 +29,12 @@
 > completed questions; its full reservation stays held, and a new replacement
 > for an uncertain call is marked separately. See the measurement record for the
 > owner-approved recovery scope and failure-classification limits.
+> Canonical question completion remains the reader plus generic judgment. If the
+> additive official call fails, the saved base answer/context/usage remain valid,
+> `official_judge_status` is `failed`, and official coverage is missing—not an
+> incorrect observation. The failed call's usage is unknown. Canonical re-entry
+> retains that base result and never automatically reruns its paid calls or retries
+> the official metric; any recovery must explicitly judge the saved hypothesis.
 
 ---
 

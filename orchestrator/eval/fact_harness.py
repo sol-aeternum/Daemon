@@ -763,7 +763,11 @@ async def reset_canonical_benchmark(
 
 
 def is_completed_result(result: object) -> bool:
-    """A question counts as done only when it was judged without a harness error."""
+    """Base/generic observation is complete without a top-level harness error.
+
+    A failed/missing additive official metric never permits automatic replay of
+    the saved reader/generic calls; its coverage is reported separately.
+    """
     return (
         isinstance(result, dict)
         and "error" not in result
@@ -1858,6 +1862,10 @@ class LongMemEvalFactRunner:
                 "answer_usage": _sum_usage(ordered_results_list, "answer_usage"),
                 "judge_usage": _sum_usage(ordered_results_list, "judge_usage"),
                 "official_judge_usage": _sum_usage(ordered_results_list, "official_judge_usage"),
+                "official_judgments": score_dual_judgments(ordered_results_list)["official"],
+                "official_judge_failed": sum(
+                    row.get("official_judge_status") == "failed" for row in ordered_results_list
+                ),
                 "official_judge_fingerprints": _tally(
                     [str(row.get("official_judge_fingerprint")) for row in ordered_results_list]
                 ),

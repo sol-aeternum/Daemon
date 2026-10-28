@@ -351,6 +351,34 @@ the disclosed same-family OpenAI fallback; original failure outcome/billing rema
 unknown. Final result validation checks all 402 result rows (400 rejudged hypotheses
 plus two diagnostic answers) against dev IDs/references and verifies artifact hashes.
 
+## PR P2 repair — secondary-judge outage must not erase base evidence
+
+The PR review found that canonical evaluation discarded a successful reader answer
+and generic judgment when the newly additive official call raised. The owner
+approved the narrow repair: retain the successful base observation, separately
+mark official status failed/coverage missing, and preserve the existing generic
+completion contract without automatic replay on re-entry.
+
+The helper now returns the answer, context/hashes, generic label, raw metadata and
+both successful usages even when the official call fails. It records only safe
+official failure diagnostics; failed official usage is unknown, not zero. There is
+no fabricated official incorrect label or top-level generic error. The canonical
+manifest exposes official observed/missing counts and failed-call counts separately.
+Checkpoint and JSONL-only re-entry retain completed generic observations, so no
+reader/generic/retrieval or official retry is silently performed. Explicit recovery
+must use the saved hypothesis, not generate a new reader answer.
+
+Synthetic canonical-runner regressions cover timeout and HTTP-429 causes, retained
+base fields and paid usage, null official accuracy with missing coverage, safe
+diagnostics, checkpoint re-entry, and flushed-result adoption after checkpoint loss.
+No paid inference, snapshot restore, ingest or measurement-artifact rewrite is
+part of this repair. Recorded experiment SHAs and outcomes remain unchanged.
+Verification: 155 targeted tests and all blocking local gates passed (448 seconds):
+backend 7,276 passed / 1,265 skipped / 14 warnings / 16 subtests; frontend 1,473
+tests; cache-browser 30; types clean. Fresh scoped read-only review found no defects,
+using the disclosed OpenAI same-family fallback. Current-head hosted checks and
+review are still required before any merge; no merge approval is implied.
+
 After the measurement results, **stop for owner decisions** on primary metric and
 `ACCEPTANCE_RULE_PROPOSED.md`. No DB-backed Phase 2 failure triage or Phase 3 tuning
 is accepted or started by this implementation.
