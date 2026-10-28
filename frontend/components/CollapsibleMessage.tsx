@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -9,6 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { REVEAL_MESSAGE_EVENT } from '@/lib/messageNavigation';
 
 // Messages shorter than this stay expanded; collapsing them costs a click
 // without saving meaningful space.
@@ -41,6 +41,7 @@ export function CollapsibleMessage({
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
   const contentRef = useRef<HTMLDivElement>(null);
+  const articleRef = useRef<HTMLElement>(null);
   const canCollapse = useSyncExternalStore(
     noopSubscribe,
     supportsUntilFound,
@@ -58,16 +59,27 @@ export function CollapsibleMessage({
     else content.removeAttribute('hidden');
   }, [collapsed]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const content = contentRef.current;
-    if (!content) return;
+    const article = articleRef.current;
+    if (!content || !article) return;
     const reveal = () => setExpanded(true);
     content.addEventListener('beforematch', reveal);
-    return () => content.removeEventListener('beforematch', reveal);
+    article.addEventListener(REVEAL_MESSAGE_EVENT, reveal);
+    return () => {
+      content.removeEventListener('beforematch', reveal);
+      article.removeEventListener(REVEAL_MESSAGE_EVENT, reveal);
+    };
   }, []);
 
   return (
-    <article className="mb-8" data-message-id={messageId} aria-label={title}>
+    <article
+      ref={articleRef}
+      tabIndex={-1}
+      className="mb-8 scroll-mt-4 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+      data-message-id={messageId}
+      aria-label={title}
+    >
       {showToggle && (
         <div className="rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-2 mb-3">
           <h2 className="text-sm font-medium text-[var(--color-text-secondary)]">
@@ -89,7 +101,7 @@ export function CollapsibleMessage({
           </button>
         </div>
       )}
-      <div id={contentId} ref={contentRef}>
+      <div id={contentId} ref={contentRef} data-message-content>
         <div className={childrenClassName}>{children}</div>
       </div>
     </article>

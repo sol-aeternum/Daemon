@@ -237,6 +237,11 @@ const testStorage: Storage = {
 beforeEach(() => {
   vi.stubGlobal('localStorage', testStorage);
   vi.resetAllMocks();
+  vi.stubGlobal('matchMedia', () => ({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }));
   // Real auth/coordinator modules need usable nonsecret shared metadata and a
   // qualified navigator (FIFO Web Locks fixture) before manual token binding;
   // the environment is installed after resetAllMocks so its FIFO locks fixture
