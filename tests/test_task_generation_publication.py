@@ -185,10 +185,19 @@ async def test_own_completion_receipt_is_not_replaced_by_failed_observation(
         return await real_resolve(store, state)
 
     async def observe(binding):
+        try:
+            beat = None if race.committed else await real_observe(binding)
+        except runner.LeaseLost:
+            # A read that started before the commit can return after it and
+            # see the lease that commit ended; the heartbeat would then stop
+            # before any read fails. Fail every read that ends after it (#577).
+            if not race.committed:
+                raise
+            beat = None
         if race.committed:
             failed_read.set()
             raise OSError("synthetic read-only observation failure after own SQL commit")
-        return await real_observe(binding)
+        return beat
 
     async def after():
         await asyncio.wait_for(failed_read.wait(), 5)
