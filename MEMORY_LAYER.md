@@ -375,7 +375,9 @@ When selected, this is the primary document/query route and never traverses the
 legacy fallback chain. Its stable storage identity is
 `openrouter:azure:openai/text-embedding-3-small:1024`; old identities remain
 lexically discoverable, but their vectors are never compared against new query
-vectors. New writes do not reembed old rows. Embeddings do not authorize merging.
+vectors. The reverse also holds: after the selector is emptied, rows written under
+this identity stay lexically discoverable, though no query vector reaches them
+(#578). New writes do not reembed old rows. Embeddings do not authorize merging.
 
 Each outbound batch reserves bounded input-token compute on the existing account
 scope before sending. Unknown sends and malformed receipts retain conservative
@@ -418,7 +420,7 @@ cloud synthesis to compatibility clients lacking a trusted stored conversation.
 
 Retained legacy retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). These unqualified legacy adapters remain denied; this logic is not the selected Azure adapter's behavior. Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
 
-Fallback logic: Voyage remains primary. `EMBEDDING_FALLBACK_PROVIDERS` is empty by default; operators can explicitly configure an ordered `openrouter,openai` chain (or either provider alone). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and tries that chain until the failure window clears. OpenRouter reuses `OPENROUTER_API_KEY` and sends native `input_type="document"` / `input_type="query"` requests, but routed-vector parity with direct Voyage has not been demonstrated, so those vectors use a distinct `openrouter:<model>` storage identity. OpenAI vectors likewise use `openai:<model>`. Vector and BM25 search filter by enabled storage identity; retrieval embeds fallback queries only when that user has rows in the corresponding active or inferred historical space. Dedup reconciles enabled spaces lexically and by slot without cross-provider vector comparison, while excluding L0 and dream observations. OpenAI inputs are truncated to its smaller per-input limit. `/status` exposes `embedding_failures_total` and per-provider `embedding_provider_used` counters.
+Fallback logic: Voyage remains primary. `EMBEDDING_FALLBACK_PROVIDERS` is empty by default; operators can explicitly configure an ordered `openrouter,openai` chain (or either provider alone). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and tries that chain until the failure window clears. OpenRouter reuses `OPENROUTER_API_KEY` and sends native `input_type="document"` / `input_type="query"` requests, but routed-vector parity with direct Voyage has not been demonstrated, so those vectors use a distinct `openrouter:<model>` storage identity. OpenAI vectors likewise use `openai:<model>`. Vector search filters by enabled storage identity; retrieval embeds fallback queries only when that user has rows in the corresponding active or inferred historical space. Each fallback pass searches its own space with BM25, and the primary pass's BM25 covers every other known identity, such as rows written under a since-emptied route selector. Dedup reconciles enabled spaces lexically and by slot without cross-provider vector comparison, while excluding L0 and dream observations. OpenAI inputs are truncated to its smaller per-input limit. `/status` exposes `embedding_failures_total` and per-provider `embedding_provider_used` counters.
 
 ---
 
