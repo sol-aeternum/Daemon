@@ -333,6 +333,14 @@ guard still denies runtime callers of either module. Catalog stays **Not started
 The account-writer catalogue explicitly records the staging scanner candidates
 as deferred and uncovered; this classification does not establish runtime fencing.
 
+### R0 — uncalled output identity reservations
+
+The owner approved the bounded two-table reservation precursor on 28 October 2026.
+[R0's contract](ARTIFACT_OUTPUT_RESERVATIONS.md) records the immutable job/slot
+identity, encrypted descriptor, transaction/privilege boundary and qualification
+limits. Migration 051 and the uncalled wrapper supply DB reservation observations,
+not namespace admission or publication authority. Catalog stays **Not started**.
+
 Smallest eventual end-to-end: A submits one PNG; fixture worker publishes CSV;
 A closes; another authenticated client for A reopens the same inputs and pinned
 CSV bytes; B is denied on every read variant. CSV version two never changes the

@@ -103,6 +103,8 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
     # Exact financial adapters and owner-approved fixture-injected inference seams.
     # Production constructors/startup remain unwired (checked separately below).
     adapters = {
+        # R0 is itself uncalled; its independent import guard denies runtime use.
+        "orchestrator/artifact_reservations.py",
         "orchestrator/entitlements/attempt.py",
         "orchestrator/entitlements/service.py",
         "orchestrator/entitlements/errors.py",
