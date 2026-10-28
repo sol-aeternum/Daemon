@@ -275,13 +275,13 @@ final_score = 0.5 × vector_sim + 0.3 × bm25_normalized + 0.2 × recency × con
 ```
 
 - **Vector search** via pgvector cosine distance (`embedding <=>`) — `voyage-4-lite` query model
-- **BM25 search** via PostgreSQL `ts_rank(content_tsv, plainto_tsquery)` — supports lexical/exact-match queries
+- **BM25 search** via PostgreSQL `ts_rank(content_tsv, plainto_tsquery)` — supports lexical/exact-match queries. When the pass has a query vector, every query term must match. When it has none (local or denied query embedding), the query's stemmed lexemes are ORed and `ts_rank` orders the candidates, so a whole question can still match a stored fact. Dedup always requires every term.
 - **Scoring factors:** recency (7d/30d/90d decay), source boost (`project`/`important` +10%), access count boost (up to +15%), confidence, trust score
 - **Minimum threshold:** final_score ≥ 0.15
 - **Max returned:** 5 memories
 - **Touch:** Retrieved memory IDs are updated asynchronously (`last_accessed_at`, `access_count += 1`)
 
-For **local pipeline** conversations (pipeline = 'local'), vector search is skipped and only BM25 is used.
+For **local pipeline** conversations (pipeline = 'local'), vector search is skipped and only BM25 is used, with any-term matching.
 
 ### 5. Trust Signals
 
