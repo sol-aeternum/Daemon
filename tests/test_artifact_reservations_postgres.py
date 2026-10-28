@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 import json
 from uuid import uuid4
+from urllib.parse import urlencode
 
 import asyncpg
 from cryptography.fernet import Fernet
@@ -16,6 +17,7 @@ from orchestrator.services.account_control.store import account_lock_key
 from tests.compute_metadata_support import ROOT, metadata_cluster as metadata_cluster
 from tests import test_attempt_lifecycle_postgres as lifecycle_tests
 from tests.test_attempt_lifecycle_postgres import seed
+from tests.durable_database import migrated_template
 
 lifecycle_db = lifecycle_tests.db
 
@@ -480,6 +482,33 @@ async def test_migration_refuses_unsafe_default_privileges_atomically(lifecycle_
                 await owner.execute(
                     f"ALTER DEFAULT PRIVILEGES REVOKE {privileges} ON {target} FROM md_third"
                 )
+
+
+@pytest.mark.asyncio
+async def test_full_chain_template_and_clone_keep_r0_private(lifecycle_db):
+    # Only this owned network-none fixture's Unix bridge, never an env/app DSN.
+    dsn = "postgresql://postgres@/postgres?" + urlencode({"host": str(lifecycle_db.host)})
+    async with migrated_template(dsn) as template, template.clone() as cloned_dsn:
+        conn = await asyncpg.connect(cloned_dsn)
+        try:
+            assert await conn.fetchval("SELECT to_regclass('public.users')") is None
+            for table in ("artifact_output_jobs", "artifact_output_intents"):
+                assert await conn.fetchval("SELECT to_regclass($1)", f"public.{table}") is None
+                assert await conn.fetchval("SELECT to_regclass($1)", f"{template.schema}.{table}")
+            functions = await conn.fetch(
+                "SELECT pg_get_functiondef(p.oid) AS definition, "
+                "EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a "
+                "WHERE a.grantee=0) AS public_grant "
+                "FROM pg_proc p WHERE p.pronamespace=$1::regnamespace "
+                "AND p.proname LIKE 'artifact_output_%'",
+                template.schema,
+            )
+            assert len(functions) == 6
+            assert all(
+                not row["public_grant"] and "public." not in row["definition"] for row in functions
+            )
+        finally:
+            await conn.close()
 
 
 @pytest.mark.asyncio

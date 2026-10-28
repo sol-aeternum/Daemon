@@ -121,6 +121,12 @@ rollback and lost COMMIT. The fixture uses only a fresh owned network-none cache
 PostgreSQL container and wire bridge, never an application DSN. Full repository
 gates and final source review remain separate completion evidence.
 
+The isolated-schema fixture adapter explicitly relocates migration 051 alongside
+048–050; regression checks exercise clean full-chain template creation and clone
+with private reservation tables/functions and unchanged PUBLIC privilege grantees.
+This test-only relocation does not alter the production migration or replace its
+separate original-`public` schema qualification.
+
 No reservation includes a namespace, availability, ready flag or publication
 receipt, and no module imports it at runtime. Journaled namespace creation and
 retirement, pending-entry reconciliation, storage durability, publication/repair,
