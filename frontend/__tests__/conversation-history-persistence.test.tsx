@@ -17,6 +17,8 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(state.search),
 }));
 vi.mock('../lib/auth', () => ({
+  getAuthGeneration: () => 0,
+  subscribeAuthGeneration: () => () => {},
   getAuthHeader: () => 'Bearer test-history',
   refreshIfNeeded: vi.fn(),
 }));
@@ -69,7 +71,8 @@ describe('saved conversation visibility', () => {
           JSON.stringify({
             conversations: [
               {
-                id: 'saved-chat',
+                id: '00000000-0000-0000-0000-000000000002',
+                user_id: '00000000-0000-0000-0000-000000000099',
                 title: 'New conversation',
                 message_count: 2,
                 created_at: '2000-01-01T00:00:00Z',
@@ -81,7 +84,8 @@ describe('saved conversation visibility', () => {
                 metadata: {},
               },
               {
-                id: 'empty-draft',
+                id: '00000000-0000-0000-0000-000000000001',
+                user_id: '00000000-0000-0000-0000-000000000099',
                 title: 'New conversation',
                 message_count: 0,
                 created_at: activity,
@@ -93,6 +97,13 @@ describe('saved conversation visibility', () => {
                 metadata: {},
               },
             ],
+            total: 2,
+            page: {
+              has_more: false,
+              next_cursor: null,
+              start_cursor: 'first',
+              end_cursor: 'last',
+            },
           }),
           { headers: { 'Content-Type': 'application/json' } },
         ),
@@ -110,10 +121,12 @@ describe('saved conversation visibility', () => {
     }
     expect(
       fetchMock.mock.calls.filter(
-        ([url]) => url === '/conversations?limit=100',
+        ([url]) => url === '/conversations?pagination=cursor&limit=100',
       ),
     ).toHaveLength(3);
-    expect(fetchMock.mock.calls[0][0]).toBe('/conversations?limit=100');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/conversations?pagination=cursor&limit=100',
+    );
   });
 
   it('orders the Chats page by returned activity instead of stale update timestamps', async () => {

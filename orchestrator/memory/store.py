@@ -14,6 +14,7 @@ import asyncpg
 
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
+from orchestrator.history_pagination import HistoryBoundary
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.entity_projection import (
     EntityMutation,
@@ -413,6 +414,67 @@ class MemoryStore:
             )
         return [self._conversation_listing_row(r) for r in rows]
 
+    async def list_conversations_page(
+        self,
+        user_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        search: str | None = None,
+        before: HistoryBoundary | None = None,
+    ) -> tuple[list[dict[str, Any]], int, bool]:
+        """UI-only live page and full matching count from one SQL observation.
+
+        Mutable activity/pinning means this is NOT a cross-request snapshot.
+        Keep the existing list reader for non-UI callers and offset search.
+        """
+        if not 1 <= limit <= 100 or offset < 0 or (before is not None and offset):
+            raise ValueError("Invalid conversation page bounds")
+        pattern = f"%{search.strip()}%" if search and search.strip() else None
+        rows = await self._pool.fetch(
+            f"""
+            WITH page_rows AS (
+                SELECT c.*,
+                       listing_meta.actual_message_count,
+                       listing_meta.effective_last_activity_at
+                FROM conversations c
+                {MemoryStore._CONVERSATION_LISTING_METADATA_JOIN}
+                WHERE c.user_id = $1
+                  AND ($2::text IS NULL OR COALESCE(c.title, '') ILIKE $2)
+                  AND ($3::timestamptz IS NULL OR
+                       (COALESCE(c.pinned, FALSE),
+                        listing_meta.effective_last_activity_at, c.id)
+                       < ($4::boolean, $3::timestamptz, $5::uuid))
+                ORDER BY COALESCE(c.pinned, FALSE) DESC,
+                         listing_meta.effective_last_activity_at DESC, c.id DESC
+                LIMIT $6 OFFSET $7
+            ), matching AS (
+                SELECT COUNT(*) AS matching_total FROM conversations c
+                WHERE c.user_id = $1
+                  AND ($2::text IS NULL OR COALESCE(c.title, '') ILIKE $2)
+            )
+            SELECT page_rows.*, matching.matching_total
+            FROM matching LEFT JOIN page_rows ON TRUE
+            ORDER BY COALESCE(page_rows.pinned, FALSE) DESC,
+                     page_rows.effective_last_activity_at DESC, page_rows.id DESC
+            """,
+            user_id,
+            pattern,
+            before.at if before else None,
+            before.pinned if before else None,
+            before.id if before else None,
+            limit + 1,
+            offset,
+        )
+        total = int(rows[0]["matching_total"])
+        page = []
+        for row in rows:
+            if row["id"] is not None:
+                conversation = dict(row)
+                conversation.pop("matching_total")
+                page.append(self._conversation_listing_row(conversation))
+        return page[:limit], total, len(page) > limit
+
     async def update_conversation(
         self,
         conversation_id: uuid.UUID,
@@ -718,6 +780,52 @@ class MemoryStore:
             self._decrypt_message_tool_traces(d)
             results.append(_normalize_message(d))
         return results
+
+    async def get_message_history_page(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        user_id: uuid.UUID,
+        limit: int = 100,
+        before: HistoryBoundary | None = None,
+        through: HistoryBoundary | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Bounded UI history, oldest first; all statuses remain reviewable.
+
+        This deliberately does not share extraction's mutable-row filtering or
+        the separate model-context reader's status/window policy.
+        """
+        if not 1 <= limit <= 100:
+            raise ValueError("Invalid message history page limit")
+        rows = await self._pool.fetch(
+            """
+            SELECT m.* FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id AND c.user_id = m.user_id
+            WHERE m.conversation_id = $1 AND c.user_id = $2
+              AND ($3::timestamptz IS NULL OR (m.created_at, m.id) < ($3, $4::uuid))
+              AND ($5::timestamptz IS NULL OR (m.created_at, m.id) >= ($5, $6::uuid))
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT $7
+            """,
+            conversation_id,
+            user_id,
+            before.at if before else None,
+            before.id if before else None,
+            through.at if through else None,
+            through.id if through else None,
+            limit + 1,
+        )
+        results = []
+        for row in reversed(rows[:limit]):
+            message = dict(row)
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            self._decrypt_message_tool_traces(message)
+            results.append(_normalize_message(message))
+        return results, len(rows) > limit
 
     async def get_owned_message(
         self, message_id: uuid.UUID, *, user_id: uuid.UUID, conversation_id: uuid.UUID

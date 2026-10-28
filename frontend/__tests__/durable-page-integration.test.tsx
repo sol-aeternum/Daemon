@@ -7,7 +7,7 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
+import { StrictMode, type ReactNode } from 'react';
 import type { DaemonMessage } from '../lib/chatMessages';
 import * as auth from '../lib/auth';
 import {
@@ -36,7 +36,22 @@ const state = vi.hoisted(() => ({
   send: vi.fn(),
   regenerate: vi.fn(),
   stop: vi.fn(),
+  applyMessages: vi.fn(),
   replace: vi.fn(),
+  isCurrentConversation: (_conversation: unknown): boolean => true,
+  isHistoryScopeCurrent: (_scope: string): boolean => true,
+  loadOlder: vi.fn(),
+  refreshHistory: vi.fn(),
+  preservePrepend: vi.fn(),
+  history: {
+    scope: 'test-scope',
+    messages: [] as DaemonMessage[],
+    hasOlder: false,
+    loadingOlder: false,
+    syncing: false,
+    error: false,
+    incomplete: false,
+  },
   currentId: null as string | null,
   setMessages: null as null | ((messages: DaemonMessage[]) => void),
   conversation: null as unknown,
@@ -46,9 +61,12 @@ const state = vi.hoisted(() => ({
   taskStatus: vi.fn(),
   switchConversation: vi.fn(),
   messages: [] as DaemonMessage[],
+  sdkError: undefined as Error | undefined,
+  sdkStatus: 'ready' as 'ready' | 'streaming' | 'submitted' | 'error',
   conversationLoadFailure: null as null | 'permanent' | 'exhausted',
   chatOptions: null as null | {
     onFinish?: (event: Record<string, unknown>) => void;
+    onError?: (error: Error) => void;
   },
 }));
 const candidate = {
@@ -63,10 +81,21 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: state.replace }),
 }));
 vi.mock('@ai-sdk/react', async () => {
-  const { useState } = await import('react');
+  const { useState, useCallback } = await import('react');
   return {
     useChat: (options: typeof state.chatOptions) => {
-      const [messages, setMessages] = useState<DaemonMessage[]>([]);
+      const [messages, setSDKMessages] = useState<DaemonMessage[]>([]);
+      const setMessages = useCallback(
+        (
+          next:
+            | DaemonMessage[]
+            | ((previous: DaemonMessage[]) => DaemonMessage[]),
+        ) => {
+          state.applyMessages(next);
+          setSDKMessages(next);
+        },
+        [setSDKMessages],
+      );
       state.setMessages = setMessages;
       state.messages = messages;
       state.chatOptions = options;
@@ -76,7 +105,8 @@ vi.mock('@ai-sdk/react', async () => {
         sendMessage: state.send,
         regenerate: state.regenerate,
         stop: state.stop,
-        status: 'ready',
+        status: state.sdkStatus,
+        error: state.sdkError,
       };
     },
   };
@@ -84,22 +114,38 @@ vi.mock('@ai-sdk/react', async () => {
 vi.mock('../components/ConversationHistoryProvider', () => ({
   ConversationHistoryProvider: ({ children }: { children: ReactNode }) =>
     children,
-  useConversationHistoryContext: () => ({
-    currentId: state.currentId,
-    conversations: [],
-    getCurrentConversation: () => state.conversation,
-    refreshCurrentConversation: state.refresh,
-    cancelTask: state.cancelTask,
-    taskForKey: state.taskForKey,
-    taskStatus: state.taskStatus,
-    createConversation: vi.fn(),
-    updateConversation: vi.fn(),
-    setConversationModel: vi.fn(),
-    switchConversation: state.switchConversation,
-    conversationLoadFailure: state.conversationLoadFailure,
-    fetchConversationById: vi.fn(),
-    refreshConversations: vi.fn(),
-  }),
+  useConversationHistoryContext: () => {
+    // Faithfully retain the rendered snapshot: refresh can update the owner
+    // before this getter is replaced by a committed provider render.
+    const renderedConversation = state.conversation;
+    return {
+      currentId: state.currentId,
+      conversations: [],
+      getCurrentConversation: () => renderedConversation,
+      refreshCurrentConversation: state.refresh,
+      messageHistory: {
+        ...state.history,
+        messages: state.history.messages.length
+          ? state.history.messages
+          : ((state.conversation as { messages?: DaemonMessage[] } | null)
+              ?.messages ?? []),
+      },
+      loadOlderMessages: state.loadOlder,
+      refreshMessageHistory: state.refreshHistory,
+      isCurrentConversation: state.isCurrentConversation,
+      isHistoryScopeCurrent: state.isHistoryScopeCurrent,
+      cancelTask: state.cancelTask,
+      taskForKey: state.taskForKey,
+      taskStatus: state.taskStatus,
+      createConversation: vi.fn(),
+      updateConversation: vi.fn(),
+      setConversationModel: vi.fn(),
+      switchConversation: state.switchConversation,
+      conversationLoadFailure: state.conversationLoadFailure,
+      fetchConversationById: vi.fn(),
+      refreshConversations: vi.fn(),
+    };
+  },
 }));
 vi.mock('../components/AudioPlaybackProvider', () => ({
   AudioPlaybackProvider: ({ children }: { children: ReactNode }) => children,
@@ -157,8 +203,14 @@ vi.mock('../components/ChatHeaderActions', () => ({
   ChatHeaderActions: () => null,
 }));
 vi.mock('../components/ConnectionStatus', () => ({
-  ConnectionStatus: ({ onReconnect }: { onReconnect: () => void }) => (
-    <button type="button" onClick={onReconnect}>
+  ConnectionStatus: ({
+    onReconnect,
+    status,
+  }: {
+    onReconnect: () => void;
+    status: string;
+  }) => (
+    <button type="button" data-connection-status={status} onClick={onReconnect}>
       Reconnect
     </button>
   ),
@@ -175,6 +227,7 @@ vi.mock('../hooks/useChatScroll', () => ({
     isScrolledUp: false,
     onScroll: vi.fn(),
     jumpToLatest: vi.fn(),
+    preservePrepend: state.preservePrepend,
   }),
 }));
 vi.mock('react-resizable-panels', () => ({
@@ -250,7 +303,20 @@ beforeEach(() => {
   auth.clearLocalAuthState();
   auth.setAccessToken('fixture', Date.now() + 120_000, FIXTURE_AUTH_EPOCH);
   state.currentId = 'conv-1';
+  state.history = {
+    scope: 'test-scope',
+    messages: [],
+    hasOlder: false,
+    loadingOlder: false,
+    syncing: false,
+    error: false,
+    incomplete: false,
+  };
   state.conversationLoadFailure = null;
+  state.sdkError = undefined;
+  state.sdkStatus = 'ready';
+  state.isCurrentConversation = () => true;
+  state.isHistoryScopeCurrent = (scope) => scope === state.history.scope;
   state.conversation = runningConversation(true);
   state.cancelTask.mockResolvedValue('cancelled');
   state.taskForKey.mockResolvedValue(null);
@@ -262,6 +328,427 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe('#230 display-only history projection', () => {
+  it('keeps an errored transport disconnected when the SDK invokes onFinish after onError', async () => {
+    state.conversation = runningConversation(false);
+    state.send.mockImplementation(async () => {
+      state.chatOptions?.onError?.(new Error('Synthetic transport failure'));
+      state.chatOptions?.onFinish?.({
+        message: { id: 'failed-reply', role: 'assistant', parts: [] },
+        isAbort: false,
+        isDisconnect: false,
+        isError: true,
+      });
+    });
+    render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'synthetic status check' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledOnce());
+    for (const control of screen.getAllByRole('button', { name: 'Reconnect' }))
+      expect(control.getAttribute('data-connection-status')).toBe(
+        'disconnected',
+      );
+  });
+
+  it('adopts an authoritative saved tail after an errored composer send finally settles', async () => {
+    state.conversation = runningConversation(false);
+    let finishSend!: () => void;
+    state.send.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSend = resolve;
+        }),
+    );
+    state.taskForKey.mockResolvedValue({
+      id: 'task-recovered',
+      conversationId: 'conv-1',
+      status: 'completed',
+    });
+    const fresh = {
+      ...runningConversation(false),
+      messages: [
+        {
+          id: 'saved-recovery',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'Synthetic authoritative result' }],
+        },
+      ] as DaemonMessage[],
+      latestTask: { id: 'task-recovered', status: 'completed' },
+    };
+    state.refresh.mockImplementation(async () => {
+      state.conversation = fresh;
+      return fresh;
+    });
+    const view = render(<ChatPage />);
+    fireEvent.change(await screen.findByLabelText('Composer'), {
+      target: { value: 'synthetic recovery request' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledOnce());
+    await act(async () => {
+      state.setMessages?.([
+        {
+          id: 'local-partial',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'Synthetic local partial' }],
+        },
+      ]);
+      state.sdkError = new Error('Synthetic dropped stream');
+      state.chatOptions?.onError?.(state.sdkError);
+    });
+    await waitFor(() => expect(state.refresh).toHaveBeenCalledOnce());
+    view.rerender(<ChatPage />);
+    // The saved result arrived before sendMessage's finally: do not overwrite
+    // the local turn while its composer work is still in flight.
+    expect(state.messages.map((message) => message.id)).toEqual([
+      'local-partial',
+    ]);
+    await act(async () => {
+      finishSend();
+    });
+    // A persistent SDK error intentionally blocks generic idle adoption. Task
+    // authority must survive the earlier refusal and flush without another poll.
+    expect(state.messages).toBe(fresh.messages);
+  });
+
+  it('does not render or regenerate another route’s SDK tail while selected detail is loading', async () => {
+    state.conversation = runningConversation(false);
+    const view = render(<ChatPage />);
+    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2));
+    const previous = state.messages;
+    state.currentId = 'another-conversation';
+    state.conversation = null;
+    view.rerender(<ChatPage />);
+    expect(screen.queryAllByRole('article')).toHaveLength(0);
+    expect(state.messages).toBe(previous);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reconnect' })[0]);
+    expect(state.regenerate).not.toHaveBeenCalled();
+  });
+
+  it('prepends older persisted messages without changing SDK send/regenerate state or losing focus', async () => {
+    const saved = (n: number): DaemonMessage => ({
+      id: `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`,
+      role: n % 2 ? 'user' : 'assistant',
+      created_at: '2026-10-28T00:00:00.123456Z',
+      parts: [{ type: 'text', text: `Synthetic saved message ${n}` }],
+    });
+    const tail = [saved(3), saved(4)];
+    state.conversation = { ...runningConversation(false), messages: tail };
+    state.history = { ...state.history, messages: tail, hasOlder: true };
+    state.loadOlder.mockImplementation(async () => {
+      state.history = {
+        ...state.history,
+        messages: [saved(1), saved(2), ...tail],
+        hasOlder: false,
+      };
+    });
+    const view = render(<ChatPage />);
+    const older = await screen.findByRole('button', {
+      name: 'Load older messages',
+    });
+    await waitFor(() => expect(state.messages).toHaveLength(2));
+    const sdk = state.messages;
+    const payload = JSON.stringify(sdk);
+    older.focus();
+    await act(async () => fireEvent.click(older));
+    view.rerender(<ChatPage />);
+    expect(screen.getAllByRole('article')).toHaveLength(4);
+    expect(state.preservePrepend).toHaveBeenCalledOnce();
+    expect(state.messages).toBe(sdk);
+    expect(JSON.stringify(state.messages)).toBe(payload);
+    expect(screen.getByRole('button', { name: 'No earlier messages' })).toBe(
+      older,
+    );
+    expect(document.activeElement).toBe(older);
+    expect(older.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(older);
+    expect(state.loadOlder).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reconnect' })[0]);
+    expect(state.regenerate).toHaveBeenCalledOnce();
+    expect(state.messages).toBe(sdk);
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function pendingSavedRecovery(strict = false) {
+  const initial = runningConversation(false);
+  const fresh = {
+    ...initial,
+    messages: [
+      {
+        id: 'saved-recovery',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Synthetic authoritative result' }],
+      },
+    ] as DaemonMessage[],
+    latestTask: { id: 'task-recovered', status: 'completed' },
+  };
+  let ownerTail: unknown = initial;
+  state.conversation = initial;
+  state.isCurrentConversation = (conversation) => conversation === ownerTail;
+  const send = deferred<void>();
+  const response = deferred<typeof fresh>();
+  state.send.mockReturnValue(send.promise);
+  state.taskForKey.mockResolvedValue({
+    id: 'task-recovered',
+    conversationId: 'conv-1',
+    status: 'completed',
+  });
+  state.refresh.mockImplementation(async () => {
+    const value = await response.promise;
+    ownerTail = value;
+    return value;
+  });
+  const wrap = (child: ReactNode) =>
+    strict ? <StrictMode>{child}</StrictMode> : child;
+  const view = render(wrap(<ChatPage />));
+  fireEvent.change(await screen.findByLabelText('Composer'), {
+    target: { value: 'synthetic recovery request' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(state.send).toHaveBeenCalledOnce());
+  await act(async () => {
+    state.setMessages?.([
+      {
+        id: 'local-partial',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Synthetic local partial' }],
+      },
+    ]);
+    state.sdkError = new Error('Synthetic dropped stream');
+    state.chatOptions?.onError?.(state.sdkError);
+  });
+  await waitFor(() => expect(state.refresh).toHaveBeenCalledOnce());
+  return {
+    ...view,
+    rerender: (child: ReactNode) => view.rerender(wrap(child)),
+    fresh,
+    send,
+    response,
+    publish: (value: unknown = fresh) => {
+      ownerTail = value;
+      state.conversation = value;
+      view.rerender(wrap(<ChatPage />));
+    },
+  };
+}
+
+describe('#230 deferred saved-tail authority', () => {
+  const expectLocal = () =>
+    expect(state.messages.map((message) => message.id)).toEqual([
+      'local-partial',
+    ]);
+
+  it.each([false, true])(
+    'retains authority across stale/null getters until commit without refetching (StrictMode=%s)',
+    async (strict) => {
+      const recovery = await pendingSavedRecovery(strict);
+      await act(async () => {
+        recovery.response.resolve(recovery.fresh);
+      });
+      await act(async () => {
+        recovery.send.resolve();
+      });
+      expectLocal(); // owner has fresh, committed getter still has initial
+      recovery.publish(null);
+      expectLocal();
+      recovery.publish();
+      expect(state.messages).toBe(recovery.fresh.messages);
+      expect(state.refresh).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('also flushes when the provider commits before the authoritative read returns', async () => {
+    const recovery = await pendingSavedRecovery();
+    recovery.publish();
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    expectLocal(); // not yet qualified by the returned task-bound read
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    expect(state.messages).toBe(recovery.fresh.messages);
+    expect(state.refresh).toHaveBeenCalledOnce();
+  });
+
+  it('waits for committed SDK completion after composer completion even while error remains', async () => {
+    const recovery = await pendingSavedRecovery();
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    state.sdkStatus = 'streaming';
+    recovery.publish();
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    expectLocal();
+    state.sdkStatus = 'error';
+    recovery.rerender(<ChatPage />);
+    expect(state.sdkError).toBeDefined();
+    expect(state.messages).toBe(recovery.fresh.messages);
+  });
+
+  it('waits for Stop confirmation after composer completion', async () => {
+    const recovery = await pendingSavedRecovery();
+    const stop = deferred<'cancelled'>();
+    state.cancelTask.mockReturnValue(stop.promise);
+    state.sdkStatus = 'streaming';
+    // DurableStop identifies the running task from the SDK tail, not history.
+    act(() =>
+      state.setMessages?.([
+        {
+          id: 'local-partial',
+          role: 'assistant',
+          parts: [
+            { type: 'text', text: 'Synthetic local partial' },
+            {
+              type: 'data-event',
+              data: {
+                type: 'task',
+                task_id: 'task-recovered',
+                status: 'running',
+              },
+            },
+          ],
+        },
+      ]),
+    );
+    recovery.rerender(<ChatPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(state.cancelTask).toHaveBeenCalledOnce());
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    state.sdkStatus = 'error';
+    recovery.publish();
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    expectLocal();
+    await act(async () => {
+      stop.resolve('cancelled');
+    });
+    expect(state.messages).toBe(recovery.fresh.messages);
+  });
+
+  it('rejects a deferred old response after a newer same-conversation send starts', async () => {
+    const recovery = await pendingSavedRecovery();
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reconnect' })[0]);
+    expect(state.regenerate).toHaveBeenCalledOnce();
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    recovery.publish();
+    expectLocal();
+  });
+
+  it('invalidates queued authority on a newer send before the provider commits', async () => {
+    const recovery = await pendingSavedRecovery();
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+      recovery.send.resolve();
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reconnect' })[0]);
+    expect(state.regenerate).toHaveBeenCalledOnce();
+    recovery.publish();
+    expectLocal();
+  });
+
+  it('invalidates pending authority across A-B-A even when the URL returns to the same ID', async () => {
+    const recovery = await pendingSavedRecovery();
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    state.currentId = 'conv-2';
+    state.history = { ...state.history, scope: 'selection-B' };
+    recovery.publish(null);
+    state.currentId = 'conv-1';
+    state.history = { ...state.history, scope: 'selection-A2' };
+    recovery.publish();
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    expectLocal();
+  });
+
+  it('discards old-task authority rather than broadening it to a newer task', async () => {
+    const recovery = await pendingSavedRecovery();
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    const other = {
+      ...recovery.fresh,
+      latestTask: { id: 'different-task', status: 'completed' },
+    };
+    recovery.publish(other);
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    expectLocal();
+    recovery.publish(); // old matching task reappearing cannot revive consumed authority
+    expectLocal();
+    expect(state.refresh).toHaveBeenCalledOnce();
+  });
+
+  it('retains authority when tail ownership changes between the getter and adoption guard', async () => {
+    const recovery = await pendingSavedRecovery();
+    await act(async () => {
+      recovery.response.resolve(recovery.fresh);
+    });
+    recovery.publish();
+    const current = state.isCurrentConversation;
+    let first = true;
+    state.isCurrentConversation = (conversation) => {
+      if (!first) return false;
+      first = false;
+      return current(conversation);
+    };
+    recovery.rerender(<ChatPage />);
+    first = true; // next flush sees a valid getter, then loses ownership at the setter
+    await act(async () => {
+      recovery.send.resolve();
+    });
+    expectLocal();
+    state.isCurrentConversation = current;
+    recovery.rerender(<ChatPage />);
+    expect(state.messages).toBe(recovery.fresh.messages);
+  });
+
+  it.each(['before-response', 'after-response'] as const)(
+    'cannot install or flush authority after unmount at %s',
+    async (when) => {
+      const recovery = await pendingSavedRecovery();
+      if (when === 'after-response')
+        await act(async () => {
+          recovery.response.resolve(recovery.fresh);
+        });
+      recovery.unmount();
+      const prior = state.messages;
+      const applies = state.applyMessages.mock.calls.length;
+      await act(async () => {
+        recovery.response.resolve(recovery.fresh);
+        recovery.send.resolve();
+      });
+      expect(state.messages).toBe(prior);
+      expect(state.applyMessages).toHaveBeenCalledTimes(applies);
+      expect(state.refresh).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe('#477 submission reliability closeout', () => {

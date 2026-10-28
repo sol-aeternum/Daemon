@@ -1,9 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
+import {
+  historyFixtureId,
+  historyFixtureConversationId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
 
 // Entirely synthetic loaded history. No pagination, second history store, or
 // live backend is involved in these production-module browser checks.
 const conversation = {
-  id: 'contents-long',
+  id: historyFixtureConversationId,
   title: 'Contents long fixture',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
@@ -26,7 +32,7 @@ const conversation = {
 };
 const otherConversation = {
   ...conversation,
-  id: 'contents-other',
+  id: historyFixtureId(999),
   title: 'Contents other fixture',
   messages: [
     {
@@ -63,16 +69,28 @@ async function mockApi(page: Page) {
   );
   await page.route('**/conversations*', (route) =>
     route.fulfill({
-      json: {
-        conversations: [conversation, otherConversation],
-      },
+      json: historyFixtureList([conversation, otherConversation]),
     }),
   );
-  await page.route('**/conversations/contents-long', (route) =>
-    route.fulfill({ json: conversation }),
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          conversation,
+          new URL(route.request().url()),
+        ),
+      }),
   );
-  await page.route('**/conversations/contents-other', (route) =>
-    route.fulfill({ json: otherConversation }),
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${otherConversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          otherConversation,
+          new URL(route.request().url()),
+        ),
+      }),
   );
   await page.route('**/users/me/settings', (route) =>
     route.fulfill({ json: {} }),
@@ -197,7 +215,7 @@ for (const width of [375, 1440]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await page.goto('/?id=contents-long');
+    await page.goto(`/?id=${conversation.id}`);
     const main = page.getByRole('main', { name: 'Conversation messages' });
     await expect(main.locator('article')).toHaveCount(100);
     let contents = await openContents(page, width);
@@ -221,11 +239,11 @@ for (const width of [375, 1440]) {
       await expect(close).toBeFocused();
     }
     for (const id of [
-      'message-1',
-      'message-51',
-      'message-3',
-      'message-81',
-      'message-21',
+      historyFixtureId(1),
+      historyFixtureId(51),
+      historyFixtureId(3),
+      historyFixtureId(81),
+      historyFixtureId(21),
     ]) {
       await selectPrompt(page, width, id);
       contents = await openContents(page, width);
@@ -234,7 +252,9 @@ for (const width of [375, 1440]) {
       ).toHaveAttribute('aria-current', 'location');
       if (width < 768) await page.keyboard.press('Escape');
     }
-    const selected = main.locator('[data-message-id="message-21"]');
+    const selected = main.locator(
+      `[data-message-id="${historyFixtureId(21)}"]`,
+    );
     const readingTop = await selected.evaluate(
       (element) => element.getBoundingClientRect().top,
     );
@@ -255,7 +275,9 @@ for (const width of [375, 1440]) {
 
     // Navigation must not break the native beforematch/browser-find path in a
     // different still-collapsed message. Text fragments use that browser path.
-    const findTarget = main.locator('[data-message-id="message-2"]');
+    const findTarget = main.locator(
+      `[data-message-id="${historyFixtureId(2)}"]`,
+    );
     await expect(findTarget.locator('[hidden="until-found"]')).toHaveCount(1);
     await page.evaluate(() => {
       location.hash = ':~:text=Findable%20detail%202.';
@@ -279,7 +301,7 @@ for (const width of [375, 1440]) {
   }) => {
     await page.setViewportSize({ width, height: 1000 });
     await installStream(page);
-    await page.goto('/?id=contents-long');
+    await page.goto(`/?id=${conversation.id}`);
     const main = page.getByRole('main', { name: 'Conversation messages' });
     await expect(main.locator('article')).toHaveCount(100);
     await page
@@ -287,7 +309,7 @@ for (const width of [375, 1440]) {
       .fill('Continue the synthetic discussion');
     await page.getByRole('textbox', { name: 'Message Daemon' }).press('Enter');
     await expect(main).toContainText('Contents stream begins.');
-    await selectPrompt(page, width, 'message-21');
+    await selectPrompt(page, width, historyFixtureId(21));
     const top = await main.evaluate((element) => element.scrollTop);
     const stop = page.getByRole('button', {
       name: 'Stop generating',

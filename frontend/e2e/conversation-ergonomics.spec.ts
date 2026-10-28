@@ -1,7 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
+import {
+  historyFixtureConversationId,
+  historyFixtureId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
 
 const conversation = {
-  id: 'conversation-1',
+  id: historyFixtureConversationId,
   title: 'Planning',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
@@ -69,10 +75,17 @@ async function mockApi(page: Page) {
     }),
   );
   await page.route('**/conversations*', (route) =>
-    route.fulfill({ json: { conversations: [conversation] } }),
+    route.fulfill({ json: historyFixtureList([conversation]) }),
   );
-  await page.route('**/conversations/conversation-1', (route) =>
-    route.fulfill({ json: conversation }),
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          conversation,
+          new URL(route.request().url()),
+        ),
+      }),
   );
   await page.route('**/users/me/settings', (route) =>
     route.fulfill({ json: {} }),
@@ -105,7 +118,7 @@ test('a 100-message thread collapses long older messages and can expand them', a
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   const messages = page.getByRole('main', { name: 'Conversation messages' });
   await expect(messages.locator('article')).toHaveCount(100);
   await expect
@@ -121,13 +134,13 @@ test('a 100-message thread collapses long older messages and can expand them', a
   await expect(
     messages.getByRole('button', { name: 'Show more', exact: true }),
   ).toHaveCount(85);
-  const short = messages.locator('[data-message-id="message-4"]');
+  const short = messages.locator(`[data-message-id="${historyFixtureId(4)}"]`);
   await expect(short.getByText('Message 4 short note.')).toBeVisible();
   await expect(short.getByRole('button', { name: 'Show more' })).toHaveCount(0);
   await expect(
-    messages.locator('[data-message-id="message-100"]'),
+    messages.locator(`[data-message-id="${historyFixtureId(100)}"]`),
   ).toContainText('Full content 100.');
-  const old = messages.locator('[data-message-id="message-2"]');
+  const old = messages.locator(`[data-message-id="${historyFixtureId(2)}"]`);
   const oldDetail = old.getByText('Full content 2.');
   await old.scrollIntoViewIfNeeded();
   await expect(old.locator('[hidden="until-found"]')).toHaveCount(1);
@@ -163,10 +176,10 @@ test('browser find reveals text inside a collapsed message', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   const messages = page.getByRole('main', { name: 'Conversation messages' });
   await expect(messages.locator('article')).toHaveCount(100);
-  const old = messages.locator('[data-message-id="message-2"]');
+  const old = messages.locator(`[data-message-id="${historyFixtureId(2)}"]`);
   const oldDetail = old.getByText('Full content 2.');
   await expect(oldDetail).toBeHidden();
   // Text fragments reveal hidden="until-found" content through the same
@@ -183,7 +196,7 @@ for (const width of [390, 1440]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await page.goto('/?id=conversation-1');
+    await page.goto(`/?id=${conversation.id}`);
     const messages = page.getByRole('main', { name: 'Conversation messages' });
     const wrapper = page
       .locator('[data-panel] > div')
@@ -227,7 +240,9 @@ for (const width of [390, 1440]) {
       await messages.hover();
       await page.mouse.wheel(0, 3000);
       await assertBoundary();
-      const old = messages.locator('[data-message-id="message-2"]');
+      const old = messages.locator(
+        `[data-message-id="${historyFixtureId(2)}"]`,
+      );
       await old.scrollIntoViewIfNeeded();
       await old.getByRole('button', { name: 'Show more', exact: true }).focus();
       await page.keyboard.press('Enter');
@@ -305,11 +320,11 @@ for (const width of [375, 1440]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await page.goto('/?id=conversation-1');
+    await page.goto(`/?id=${conversation.id}`);
     const toggle = page
       .getByRole('button', { name: 'Hide tool calls' })
       .filter({ visible: true });
-    const latest = page.locator('[data-message-id="message-100"]');
+    const latest = page.locator(`[data-message-id="${historyFixtureId(100)}"]`);
     await expect(
       latest.getByRole('button', { name: /^Tool activity:/ }),
     ).toBeVisible();
@@ -381,7 +396,7 @@ test('streaming preserves reading position and Jump to latest resumes following'
       );
     };
   });
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   const messages = page.getByRole('main', { name: 'Conversation messages' });
   await expect(messages.locator('article')).toHaveCount(100);
   const distanceFromBottom = () =>

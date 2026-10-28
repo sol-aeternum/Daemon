@@ -1,5 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { expect, test as base, type Page } from '@playwright/test';
+import {
+  historyFixtureConversationId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
 
 const test = base.extend<{ runtimeErrors: Error[] }>({
   runtimeErrors: [
@@ -26,7 +31,7 @@ const test = base.extend<{ runtimeErrors: Error[] }>({
 });
 
 const conversation = {
-  id: 'conversation-1',
+  id: historyFixtureConversationId,
   title: 'Planning',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
@@ -62,10 +67,17 @@ async function mockApi(page: Page) {
     }),
   );
   await page.route('**/conversations*', (route) =>
-    route.fulfill({ json: { conversations: [conversation] } }),
+    route.fulfill({ json: historyFixtureList([conversation]) }),
   );
-  await page.route('**/conversations/conversation-1', (route) =>
-    route.fulfill({ json: conversation }),
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          conversation,
+          new URL(route.request().url()),
+        ),
+      }),
   );
   await page.route('**/users/me/settings', (route) =>
     route.fulfill({ json: {} }),
@@ -94,7 +106,7 @@ test('the development fixture keeps uncaught runtime errors observable', async (
   runtimeErrors,
 }, testInfo) => {
   await page.setViewportSize({ width: 375, height: 1100 });
-  await page.goto('/settings/profile?from=conversation-1');
+  await page.goto(`/settings/profile?from=${conversation.id}`);
   await expect(page.getByRole('link', { name: '← Chat' })).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Open Next.js Dev Tools', exact: true }),
@@ -159,7 +171,7 @@ test('the /council compatibility command opens the existing interview', async ({
         'data: [DONE]\n\n',
     });
   });
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   const composer = page.locator('textarea');
   await composer.fill('/council');
   await page.getByRole('button', { name: 'Send message' }).click();
@@ -200,7 +212,7 @@ for (const answerDetail of ['balanced', 'brief', 'detailed']) {
               .join('') + 'data: [DONE]\n\n',
         });
       });
-      await page.goto('/?id=conversation-1');
+      await page.goto(`/?id=${conversation.id}`);
       const detail = page.getByRole('combobox', { name: 'Answer detail' });
       const effort = page.getByRole('combobox', { name: 'Research effort' });
       const composer = page.getByRole('textbox', { name: 'Message Daemon' });
@@ -230,7 +242,7 @@ for (const answerDetail of ['balanced', 'brief', 'detailed']) {
       await page.getByRole('button', { name: 'Send message' }).click();
       const payload = (await requestPromise).postDataJSON();
       expect(payload).toMatchObject({
-        id: 'conversation-1',
+        id: conversation.id,
         model: 'auto',
         attachments: [],
         answer_detail: answerDetail,
@@ -259,7 +271,7 @@ test('header settings shortcut preserves the conversation across sections and ba
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   await expect(
     page.getByRole('heading', { name: 'Planning', exact: true }),
   ).toBeVisible();
@@ -270,14 +282,18 @@ test('header settings shortcut preserves the conversation across sections and ba
   await detail.selectOption('brief');
   await effort.selectOption('research');
   await page.getByRole('button', { name: 'Open settings' }).click();
-  await expect(page).toHaveURL(/\/settings\/profile\?from=conversation-1$/);
+  await expect(page).toHaveURL(
+    new RegExp(`/settings/profile\\?from=${conversation.id}$`),
+  );
   await page
     .getByRole('navigation', { name: 'Settings' })
     .getByRole('link', { name: 'Appearance' })
     .click();
-  await expect(page).toHaveURL(/\/settings\/appearance\?from=conversation-1$/);
+  await expect(page).toHaveURL(
+    new RegExp(`/settings/appearance\\?from=${conversation.id}$`),
+  );
   await page.getByRole('link', { name: '← Chat' }).click();
-  await expect(page).toHaveURL(/\/\?id=conversation-1$/);
+  await expect(page).toHaveURL(new RegExp(`/\\?id=${conversation.id}$`));
   await expect(composer).toHaveValue(
     'Keep this draft across settings sections',
   );
@@ -288,7 +304,7 @@ test('header settings shortcut preserves the conversation across sections and ba
 for (const width of [375, 768, 1440]) {
   test(`navigation fits at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 1100 });
-    await page.goto('/?id=conversation-1');
+    await page.goto(`/?id=${conversation.id}`);
     const detail = page.getByRole('combobox', { name: 'Answer detail' });
     const effort = page.getByRole('combobox', { name: 'Research effort' });
     const composer = page.getByRole('textbox', { name: 'Message Daemon' });
@@ -372,7 +388,7 @@ for (const width of [375, 768, 1440]) {
       path: testInfo.outputPath(`chat-${width}.png`),
       fullPage: true,
     });
-    await page.goto('/settings/profile?from=conversation-1');
+    await page.goto(`/settings/profile?from=${conversation.id}`);
     const nav = page.getByRole('navigation', { name: 'Settings' });
     await expect(nav).toBeInViewport();
     await expect(nav.getByRole('link')).toHaveCount(6);
@@ -441,7 +457,7 @@ for (const width of [375, 768, 1440]) {
       contentType: 'application/json',
     });
     await page.getByRole('link', { name: '← Chat' }).click();
-    await expect(page).toHaveURL(/\/\?id=conversation-1$/);
+    await expect(page).toHaveURL(new RegExp(`/\\?id=${conversation.id}$`));
     await expect(composer).toHaveValue(
       'Keep this draft across menus and settings',
     );
@@ -453,7 +469,7 @@ for (const width of [375, 768, 1440]) {
 test('an unsent draft and its attachment survive a page reload in the same tab', async ({
   page,
 }) => {
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   const composer = page.locator('textarea');
   await composer.fill('Half-written question');
   await page.locator('input[type="file"]').setInputFiles({
@@ -525,7 +541,7 @@ test('sidebar search finds older conversations through the server and pages resu
       return route.fulfill({ json: { conversations } });
     },
   );
-  await page.goto('/?id=conversation-1');
+  await page.goto(`/?id=${conversation.id}`);
   const search = page.getByRole('searchbox', {
     name: 'Search conversation titles',
   });

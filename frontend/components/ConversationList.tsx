@@ -7,6 +7,7 @@ import type {
   ConversationSearch,
 } from '../hooks/useConversationHistory';
 import { AccountWidget } from './AccountWidget';
+import type { ConversationPaging } from '@/lib/conversationPager';
 import { SkeletonCircle, SkeletonLine } from './ui/Skeleton';
 import {
   MoreHorizontal,
@@ -40,6 +41,7 @@ interface ConversationListProps {
   setSearchQuery: (query: string) => void;
   /** Server title search; without it, search filters loaded titles only. */
   search?: ConversationSearch;
+  paging?: ConversationPaging;
   isLoading?: boolean;
   activeSection?: SidebarSection;
   onNavigate?: (section: SidebarSection) => void;
@@ -57,6 +59,7 @@ export function ConversationList({
   searchQuery,
   setSearchQuery,
   search,
+  paging,
   isLoading = false,
   activeSection = 'home',
   onNavigate,
@@ -517,20 +520,61 @@ export function ConversationList({
                 )}
               </>
             )}
-            {serverSearch?.hasMore && (
-              <div className="p-3">
-                <button
-                  type="button"
-                  onClick={serverSearch.loadMore}
-                  disabled={serverSearch.status === 'searching'}
-                  className="w-full rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-60"
-                >
-                  {serverSearch.status === 'searching'
-                    ? 'Loading more…'
-                    : 'Load more results'}
-                </button>
-              </div>
-            )}
+          </div>
+        )}
+        {serverSearch?.hasMore && (
+          <div className="p-3">
+            <button
+              type="button"
+              onClick={serverSearch.loadMore}
+              disabled={serverSearch.status === 'searching'}
+              className="min-h-touch w-full rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60"
+            >
+              {serverSearch.status === 'searching'
+                ? 'Loading more…'
+                : 'Load more results'}
+            </button>
+          </div>
+        )}
+        {!trimmedSearchQuery && paging && !isLoading && (
+          <div
+            className="p-3 space-y-2"
+            aria-busy={paging.loading || paging.refreshing}
+          >
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-xs text-[var(--color-text-muted)]"
+            >
+              {paging.error
+                ? "Couldn't update conversations. Loaded conversations are retained."
+                : paging.updatesPending
+                  ? 'Conversation updates pending…'
+                  : paging.hasMore
+                    ? 'Older conversations are available.'
+                    : 'No older conversations in the last successful read.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (paging.loading || (!paging.hasMore && !paging.error))
+                  return;
+                if (paging.error) paging.retry();
+                else paging.loadMore();
+              }}
+              aria-disabled={
+                paging.loading || (!paging.hasMore && !paging.error)
+              }
+              className="min-h-touch w-full rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 aria-disabled:opacity-60"
+            >
+              {paging.loading
+                ? 'Loading conversations…'
+                : paging.error
+                  ? 'Retry conversations'
+                  : paging.hasMore
+                    ? 'Load more conversations'
+                    : 'No more conversations'}
+            </button>
           </div>
         )}
       </div>

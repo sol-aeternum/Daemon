@@ -39,6 +39,8 @@ export const RECONCILE_LOOKUP_DELAYS_MS = [0, 500, 1500];
 type KeyedTask = { id: string; conversationId: string; status: string };
 
 type ReconcileDeps = {
+  /** Caller-owned auth/selection epoch, rechecked after every async boundary. */
+  isCurrent?: () => boolean;
   /** The open conversation id now (``null`` for an unnamed new chat). */
   currentId: () => string | null;
   /** ``null``: no task for the key (yet); ``undefined``: unknown. */
@@ -75,16 +77,19 @@ export async function reconcileSubmission(
   key: string | null,
   deps: ReconcileDeps,
 ): Promise<void> {
-  if (!key) return;
+  const current = () => deps.isCurrent?.() ?? true;
+  if (!key || !current()) return;
   const startedIn = deps.currentId();
   let task: KeyedTask | null | undefined = null;
   for (const delayMs of deps.lookupDelaysMs ?? RECONCILE_LOOKUP_DELAYS_MS) {
     if (delayMs) await sleep(delayMs);
+    if (!current()) return;
     task = await deps.taskForKey(key);
+    if (!current()) return;
     if (task !== null) break; // found, or the lookup itself failed
   }
   if (task === null) deps.notFound?.(key);
-  if (!task) return;
+  if (!task || !current()) return;
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
     deps.settle(key);
   } else {
@@ -92,9 +97,11 @@ export async function reconcileSubmission(
     // which is found under the conversation it was sent from (``null`` for
     // a new chat), before promotion moves the submission to its new one.
     deps.record(key, task.id);
+    if (!current()) return;
     deps.promote(key, task.conversationId);
   }
   const now = deps.currentId();
+  if (!current()) return;
   if (now === task.conversationId) {
     await deps.showSaved(task.id);
   } else if (startedIn === null && now === null) {

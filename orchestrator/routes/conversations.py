@@ -1,6 +1,7 @@
 """Conversation API routes."""
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -8,6 +9,12 @@ import uuid
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
+from orchestrator.history_pagination import (
+    HistoryBoundary,
+    InvalidHistoryCursor,
+    decode_cursor,
+    encode_cursor,
+)
 from orchestrator.routes.tasks import TaskOut, task_out, task_store
 from orchestrator.tasks.store import TaskNotFound
 
@@ -51,8 +58,16 @@ class ConversationOut(BaseModel):
     summary_updated_at: datetime | None = None
 
 
+class HistoryPageOut(BaseModel):
+    has_more: bool
+    next_cursor: str | None
+    start_cursor: str | None
+    end_cursor: str | None
+
+
 class ConversationWithMessagesOut(ConversationOut):
     messages: list[MessageOut]
+    message_page: HistoryPageOut | None = None
     # The conversation's queued or running durable task, so another device can
     # reattach to it (docs/DURABLE_REQUEST_DESIGN.md §7).
     active_task: TaskOut | None = None
@@ -64,6 +79,7 @@ class ConversationWithMessagesOut(ConversationOut):
 class ConversationListResponse(BaseModel):
     conversations: list[ConversationOut]
     total: int
+    page: HistoryPageOut | None = None
 
 
 class ConversationUpdate(BaseModel):
@@ -128,8 +144,10 @@ async def create_conversation(
 @router.get("", response_model=ConversationListResponse)
 async def list_conversations(
     search: str | None = None,
-    limit: int = Query(20, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    pagination: Literal["cursor"] | None = None,
+    cursor: str | None = None,
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
@@ -137,14 +155,39 @@ async def list_conversations(
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    conversations = await store.list_conversations(
+    if pagination == "cursor" and (offset or (search and search.strip())):
+        raise HTTPException(status_code=400, detail="Cursor mode cannot use offset or search")
+    if cursor is not None and pagination != "cursor":
+        raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
+    try:
+        boundary = decode_cursor(cursor, user_id=auth.user_id) if cursor is not None else None
+    except InvalidHistoryCursor as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_cursor"}) from exc
+    conversations, total, has_more = await store.list_conversations_page(
         user_id=auth.user_id,
-        limit=limit,
+        limit=limit if limit is not None else (100 if pagination == "cursor" else 20),
         offset=offset,
         search=search,
+        before=boundary,
     )
     conversations = [_normalize_conversation(c) for c in conversations]
-    return {"conversations": conversations, "total": len(conversations)}
+    page = None
+    if pagination == "cursor":
+        boundaries = [
+            encode_cursor(
+                HistoryBoundary(conv.last_activity_at or conv.updated_at, conv.id, conv.pinned),
+                user_id=auth.user_id,
+            )
+            for c in conversations
+            for conv in [ConversationOut.model_validate(c)]
+        ]
+        page = {
+            "has_more": has_more,
+            "next_cursor": boundaries[-1] if boundaries and has_more else None,
+            "start_cursor": boundaries[0] if boundaries else None,
+            "end_cursor": boundaries[-1] if boundaries else None,
+        }
+    return {"conversations": conversations, "total": total, "page": page}
 
 
 @router.get("/{conversation_id}", response_model=ConversationWithMessagesOut)
@@ -152,6 +195,9 @@ async def get_conversation(
     conversation_id: uuid.UUID,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    pagination: Literal["cursor"] | None = None,
+    before: str | None = None,
+    through: str | None = None,
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
@@ -165,7 +211,51 @@ async def get_conversation(
     if conversation.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
+    if pagination == "cursor" and (offset or limit > 100):
+        if limit > 100:
+            raise HTTPException(status_code=422, detail="Cursor page limit must be at most 100")
+        raise HTTPException(status_code=400, detail="Cursor mode cannot use offset")
+    if pagination != "cursor" and (before is not None or through is not None):
+        raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
+    message_page = None
+    if pagination == "cursor":
+        try:
+            before_boundary = (
+                decode_cursor(before, user_id=auth.user_id, conversation_id=conversation_id)
+                if before is not None
+                else None
+            )
+            through_boundary = (
+                decode_cursor(through, user_id=auth.user_id, conversation_id=conversation_id)
+                if through is not None
+                else None
+            )
+        except InvalidHistoryCursor as exc:
+            raise HTTPException(status_code=400, detail={"code": "invalid_cursor"}) from exc
+        messages, has_more = await store.get_message_history_page(
+            conversation_id,
+            user_id=auth.user_id,
+            limit=limit,
+            before=before_boundary,
+            through=through_boundary,
+        )
+        boundaries = [
+            encode_cursor(
+                HistoryBoundary(message.created_at, message.id),
+                user_id=auth.user_id,
+                conversation_id=conversation_id,
+            )
+            for m in messages
+            for message in [MessageOut.model_validate(m)]
+        ]
+        message_page = {
+            "has_more": has_more,
+            "next_cursor": boundaries[0] if boundaries and has_more else None,
+            "start_cursor": boundaries[0] if boundaries else None,
+            "end_cursor": boundaries[-1] if boundaries else None,
+        }
+    else:
+        messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
     conversation = _normalize_conversation(conversation)
     messages = [_normalize_message(m) for m in messages]
     active_task = latest_task = None
@@ -179,6 +269,7 @@ async def get_conversation(
     return {
         **conversation,
         "messages": messages,
+        "message_page": message_page,
         "active_task": active_task,
         "latest_task": latest_task,
     }

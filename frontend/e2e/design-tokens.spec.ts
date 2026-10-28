@@ -1,5 +1,10 @@
 import { expect, type Page } from '@playwright/test';
 import { captureSurface, test } from './design-token-capture';
+import {
+  historyFixtureConversationId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
 
 // Current GET /users/me/settings contract: routes/users.py, ProfileTab and
 // HomeSuggestionsPreference. Synthetic saved preferences, not an account/plan.
@@ -40,7 +45,7 @@ const status = {
 type StatusState = 'unavailable' | 'missing' | 'error' | 'eligible';
 
 const conversation = {
-  id: 'conversation-1',
+  id: historyFixtureConversationId,
   title: 'Planning',
   status: 'active',
   pinned: false,
@@ -140,10 +145,17 @@ async function mockApi(
     }),
   );
   await page.route('**/conversations*', (route) =>
-    route.fulfill({ json: { conversations: [conversation] } }),
+    route.fulfill({ json: historyFixtureList([conversation]) }),
   );
-  await page.route('**/conversations/conversation-1', (route) =>
-    route.fulfill({ json: conversation }),
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          conversation,
+          new URL(route.request().url()),
+        ),
+      }),
   );
   await page.route('**/users/me/settings', (route) =>
     route.fulfill({ json: settings }),
@@ -212,7 +224,7 @@ async function mockApi(
 const pages = [
   {
     slug: 'chat',
-    path: '/?id=conversation-1',
+    path: `/?id=${conversation.id}`,
     ready: 'Help me plan a focused afternoon.',
   },
   { slug: 'landing', path: '/landing', ready: 'Your AI, Your Rules.' },

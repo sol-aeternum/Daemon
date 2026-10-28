@@ -100,6 +100,12 @@ def owned_search_redis(tmp_path_factory):
 
 def pytest_addoption(parser):
     parser.addoption(
+        "--history-postgres",
+        action="store_true",
+        default=False,
+        help="Run UI history SQL against a fresh network-none cached PostgreSQL fixture",
+    )
+    parser.addoption(
         "--compute-metadata-postgres",
         action="store_true",
         default=False,
