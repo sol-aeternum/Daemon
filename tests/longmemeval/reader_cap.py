@@ -188,6 +188,7 @@ async def run(output: Path, prior: Decimal) -> dict[str, Any]:
         manifest.update(
             status="stopped_reconciliation_required",
             error_type=type(exc).__name__,
+            failure_diagnostics=evaluate.benchmark_failure_diagnostics(exc),
             ended_at=rejudge.now(),
         )
         atomic_write_json(path, manifest)

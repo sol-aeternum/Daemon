@@ -190,3 +190,184 @@ async def test_dirty_code_refused_before_paid_call(
     with pytest.raises(ValueError, match="Commit the measurement code"):
         await rejudge.run("a", "official", tmp_path / "dirty", Decimal("0"))
     assert not (tmp_path / "dirty").exists()
+
+
+def failed_prefix(tmp_path: Path) -> tuple[Path, list[dict[str, Any]]]:
+    rows = synthetic_rows()
+    path = tmp_path / "original"
+    path.mkdir()
+    manifest = {
+        "run_id": "original-run",
+        "mode": "judge_only_saved_dev_hypotheses",
+        "arm": "b",
+        "metric": "generic",
+        "status": "stopped_reconciliation_required",
+        "source": {"test": "synthetic"},
+        "calls_planned": 2,
+        "calls_completed": 1,
+        "pending_question_id": "synthetic-2_abs",
+        "cost": {"cumulative_reserved_usd": "1.5595300"},
+    }
+    receipt = {**rows[0], "original_judgment": rows[0]["judgment"], "run_id": "original-run"}
+    (path / "run_manifest.json").write_text(json.dumps(manifest))
+    (path / evaluate.RESULTS_FILENAME).write_text(json.dumps(receipt) + "\n")
+    return path, rows
+
+
+@pytest.mark.asyncio
+async def test_residual_is_fresh_excludes_completed_and_preserves_failed_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed, rows = failed_prefix(tmp_path)
+    stub_runtime(monkeypatch, rows)
+    before = {p.name: p.read_bytes() for p in failed.iterdir()}
+    calls: list[str] = []
+
+    async def judge(
+        question: str, hypothesis: str, reference: str, **kwargs: Any
+    ) -> tuple[str, dict[str, int]]:
+        calls.append(question)
+        return "correct", {"prompt_tokens": 100, "completion_tokens": 2}
+
+    monkeypatch.setattr(evaluate, "_judge_with_usage", judge)
+    output = tmp_path / "residual"
+    result = await rejudge.run(
+        "b",
+        "generic",
+        output,
+        Decimal("1.5595300"),
+        residual_from=failed,
+        replacement_question_id="synthetic-2_abs",
+    )
+    assert result["calls_planned"] == result["calls_completed"] == len(calls) == 1
+    assert result["residual"]["verified_completed_question_ids"] == ["synthetic-1"]
+    assert result["residual"]["remaining_question_ids"] == ["synthetic-2_abs"]
+    assert result["residual"]["new_replacement_explicitly_authorized"] is True
+    assert Decimal(result["cost"]["cumulative_reserved_usd"]) > Decimal("1.5595300")
+    receipt = json.loads((output / evaluate.RESULTS_FILENAME).read_text())
+    assert receipt["question_id"] == "synthetic-2_abs"
+    assert receipt["new_replacement_for_uncertain_request"] is True
+    assert receipt["residual_of_run_id"] == "original-run"
+    assert {p.name: p.read_bytes() for p in failed.iterdir()} == before
+    with pytest.raises(FileExistsError):
+        await rejudge.run(
+            "b",
+            "generic",
+            output,
+            Decimal("1.5595300"),
+            residual_from=failed,
+            replacement_question_id="synthetic-2_abs",
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "arm",
+        "metric",
+        "source",
+        "status",
+        "pending",
+        "count",
+        "receipt",
+        "duplicate",
+        "nested",
+        "reservation",
+    ],
+)
+def test_residual_rejects_unreconciled_or_mismatched_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    failed, rows = failed_prefix(tmp_path)
+    manifest_path = failed / "run_manifest.json"
+    result_path = failed / evaluate.RESULTS_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    if mutation in {"arm", "metric", "source", "status"}:
+        manifest[mutation] = "different"
+    elif mutation == "pending":
+        manifest["pending_question_id"] = "not-the-next-row"
+    elif mutation == "count":
+        manifest["calls_completed"] = 0
+    elif mutation == "nested":
+        manifest["residual"] = {"original_run_id": "some-prior-run"}
+    elif mutation == "reservation":
+        manifest["cost"]["cumulative_reserved_usd"] = "2"
+    elif mutation == "receipt":
+        r = json.loads(result_path.read_text())
+        r["hypothesis"] = "different"
+        result_path.write_text(json.dumps(r) + "\n")
+    elif mutation == "duplicate":
+        result_path.write_text(result_path.read_text() * 2)
+        manifest["calls_completed"] = 2
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        rejudge.reconcile_residual(
+            rows,
+            {"test": "synthetic"},
+            "b",
+            "generic",
+            failed,
+            "synthetic-2_abs",
+            Decimal("1.5595300"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_residual_requires_explicit_replacement_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed, rows = failed_prefix(tmp_path)
+    stub_runtime(monkeypatch, rows)
+    for replacement in (None, "not-pending"):
+        with pytest.raises(ValueError):
+            await rejudge.run(
+                "b",
+                "generic",
+                tmp_path / "refused",
+                Decimal("1.5595300"),
+                residual_from=failed,
+                replacement_question_id=replacement,
+            )
+    assert not (tmp_path / "refused").exists()
+
+
+@pytest.mark.asyncio
+async def test_safe_failure_metadata_keeps_status_without_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub_runtime(monkeypatch, synthetic_rows())
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    async def judge(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            raise RateLimitError("NEVER-RETAIN-THIS-PROVIDER-TEXT")
+        except RateLimitError as cause:
+            raise evaluate.BenchmarkProviderError("NEVER-RETAIN-THIS-WRAPPER-TEXT") from cause
+
+    monkeypatch.setattr(evaluate, "judge_answer_official", judge)
+    output = tmp_path / "structured-error"
+    with pytest.raises(evaluate.BenchmarkProviderError):
+        await rejudge.run("a", "official", output, Decimal("0"))
+    raw = (output / "run_manifest.json").read_text()
+    manifest = json.loads(raw)
+    assert manifest["failure_diagnostics"] == {
+        "provider_exception_type": "RateLimitError",
+        "http_status_code": 429,
+    }
+    assert manifest["pending_question_id"] == "synthetic-1"
+    assert "NEVER-RETAIN" not in raw
+
+
+def test_failure_diagnostics_allowlists_types_and_numeric_status_only() -> None:
+    class UntrustedType(Exception):
+        status_code = "SECRET-NOT-A-STATUS"
+
+    exc = UntrustedType("SECRET-MESSAGE")
+    exc.__cause__ = exc
+    assert evaluate.benchmark_failure_diagnostics(exc) == {
+        "provider_exception_type": "OtherError",
+        "http_status_code": None,
+    }

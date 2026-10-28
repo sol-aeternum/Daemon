@@ -23,6 +23,12 @@
 > Each canonical question now costs one reader call and **two** judge calls.
 > Saved-hypothesis rejudging and the separately owner-approved reader-cap diagnostic:
 > [Phase 1 measurement record](../benchmark_results/measurement_phase1_2026-10-28.md).
+> A stopped saved-hypothesis batch can supply verified completed receipts to a
+> **fresh, explicitly authorized residual run**, using `--residual-from` and
+> `--replacement-question-id`. This never resumes the failed run or replays
+> completed questions; its full reservation stays held, and a new replacement
+> for an uncertain call is marked separately. See the measurement record for the
+> owner-approved recovery scope and failure-classification limits.
 
 ---
 

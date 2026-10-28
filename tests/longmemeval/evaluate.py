@@ -121,6 +121,39 @@ class BenchmarkProviderError(RuntimeError):
     """Provider or transport failure in LongMemEval benchmark mode."""
 
 
+def benchmark_failure_diagnostics(exc: BaseException) -> dict[str, str | int | None]:
+    """Retain allowlisted diagnostics, never exception text or response contents."""
+    allowed = {
+        "RateLimitError",
+        "AuthenticationError",
+        "PermissionDeniedError",
+        "BadRequestError",
+        "NotFoundError",
+        "APITimeoutError",
+        "Timeout",
+        "TimeoutError",
+        "APIConnectionError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+        "APIError",
+    }
+    kind = "OtherError"
+    status = None
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    for _ in range(4):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if type(current).__name__ in allowed:
+            kind = type(current).__name__
+        code = getattr(current, "status_code", None)
+        if type(code) is int and 100 <= code <= 599:
+            status = code
+        current = current.__cause__
+    return {"provider_exception_type": kind, "http_status_code": status}
+
+
 _BM_METADATA: dict[str, dict[str, str | None]] = {}
 
 
