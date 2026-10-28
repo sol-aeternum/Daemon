@@ -95,15 +95,13 @@ def read_keys(env_file: Path, keys: Iterable[str]) -> dict[str, str]:
     return found
 
 
-def default_env_file() -> Path:
+def default_env_file(base: Mapping[str, str]) -> Path:
     """The .env beside the main checkout's .git, from any worktree of the repo.
 
     Resolved from this script's own location; only the lookup drops inherited
     repository selectors, the command still gets the caller's environment.
     """
-    lookup_env = {
-        key: value for key, value in os.environ.items() if key not in GIT_REPOSITORY_SELECTORS
-    }
+    lookup_env = {key: value for key, value in base.items() if key not in GIT_REPOSITORY_SELECTORS}
     try:
         common_dir = subprocess.run(
             [
@@ -131,7 +129,7 @@ def resolve_environment(
     missing = [key for key in keys if not base.get(key)]
     if not missing:
         return dict(base)
-    path = env_file if env_file is not None else default_env_file()
+    path = env_file if env_file is not None else default_env_file(base)
     if not path.is_file():
         raise WithKeyError(f"{path} not found; pass --env-file")
     loaded = read_keys(path, missing)
