@@ -126,6 +126,15 @@ environment and is not benchmark storage.
 The benchmark harness executes entirely from the **host shell** (not inside containers).
 All provider keys must be present in the host environment before running.
 
+Worktrees have no `.env` of their own. To run from one without exporting keys into the shell,
+prefix the command with `scripts/with_key.py`, which reads only the named keys from the main
+checkout's `.env` and passes them to that one command (keys already set in the shell win):
+
+```bash
+scripts/with_key.py OPENROUTER_API_KEY VOYAGE_API_KEY -- \
+  env PYTHONPATH=. python -m orchestrator.eval.longmemeval --help
+```
+
 ```bash
 # Required provider keys for extraction, answer, and judge steps
 # Benchmark will fail at extraction/answer/judge phases without these set in the host shell
