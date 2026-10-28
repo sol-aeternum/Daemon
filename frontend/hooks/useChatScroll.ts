@@ -1,10 +1,44 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import {
+  findMessage,
+  messageElements,
+  revealMessage,
+} from '@/lib/messageNavigation';
+
+type ReadingAnchor = { id: string; offset: number; expanded: boolean };
+type Position = { top: number; follow: boolean; anchor?: ReadingAnchor };
+
+function readingAnchor(container: HTMLElement): ReadingAnchor | undefined {
+  const top = container.getBoundingClientRect().top;
+  const elements = messageElements(container);
+  let low = 0;
+  let high = elements.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (elements[middle].getBoundingClientRect().bottom <= top + 24)
+      low = middle + 1;
+    else high = middle;
+  }
+  const element = elements[low];
+  if (!element?.dataset.messageId) return;
+  return {
+    id: element.dataset.messageId,
+    offset: element.getBoundingClientRect().top - top,
+    expanded: !element.querySelector('[data-message-content][hidden]'),
+  };
+}
 
 // UI-only positions, never transcript text. One sign-in lifetime at a time.
 let positionScope: number | undefined;
-const positions = new Map<string, { top: number; follow: boolean }>();
+const positions = new Map<string, Position>();
 
 export function useChatScroll({
   conversationId,
@@ -17,7 +51,7 @@ export function useChatScroll({
   isLoading: boolean;
   authGeneration?: number;
 }) {
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (positionScope !== authGeneration) {
       positions.clear();
       positionScope = authGeneration;
@@ -30,6 +64,8 @@ export function useChatScroll({
   const previousConversationRef = useRef(conversationId);
   const previousScrollTopRef = useRef(0);
   const restoredKey = useRef<string | null>(null);
+  const anchorRef = useRef<ReadingAnchor | undefined>(undefined);
+  const navigationFrame = useRef<number | undefined>(undefined);
   const [scrollState, setScrollState] = useState({
     conversationId,
     isScrolledUp: false,
@@ -49,14 +85,57 @@ export function useChatScroll({
   }, [authGeneration, positionKey]);
 
   const jumpToLatest = useCallback(() => {
+    if (navigationFrame.current !== undefined)
+      cancelAnimationFrame(navigationFrame.current);
+    navigationFrame.current = undefined;
+    anchorRef.current = undefined;
     autoScrollEnabledRef.current = true;
     scrollToBottom();
     setScrollState({ conversationId, isScrolledUp: false });
   }, [conversationId, scrollToBottom]);
 
+  const pauseFollowing = useCallback(() => {
+    autoScrollEnabledRef.current = false;
+    anchorRef.current = undefined;
+    setScrollState({ conversationId, isScrolledUp: true });
+  }, [conversationId]);
+
+  const scrollToMessage = useCallback(
+    (id: string) => {
+      const container = scrollContainerRef.current;
+      const element = container && findMessage(container, id);
+      if (!container || !element) return;
+      // Expansion notifies ResizeObserver. Pause BEFORE revealing, otherwise
+      // the observer can return the reader to the streaming end.
+      pauseFollowing();
+      revealMessage(element);
+      if (navigationFrame.current !== undefined)
+        cancelAnimationFrame(navigationFrame.current);
+      navigationFrame.current = undefined;
+      navigationFrame.current = requestAnimationFrame(() => {
+        navigationFrame.current = undefined;
+        if (!container.contains(element)) return;
+        container.scrollTop +=
+          element.getBoundingClientRect().top -
+          container.getBoundingClientRect().top -
+          16;
+        previousScrollTopRef.current = container.scrollTop;
+        element.focus({ preventScroll: true });
+        anchorRef.current = readingAnchor(container);
+        if (authGeneration !== undefined && positionScope === authGeneration)
+          positions.set(positionKey, {
+            top: container.scrollTop,
+            follow: false,
+            anchor: anchorRef.current,
+          });
+      });
+    },
+    [authGeneration, pauseFollowing, positionKey],
+  );
+
   const onScroll = useCallback(() => {
     const container = scrollContainerRef.current;
-    if (!container) return;
+    if (!container || navigationFrame.current !== undefined) return;
     const nearBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight <
       64;
@@ -66,10 +145,14 @@ export function useChatScroll({
       autoScrollEnabledRef.current = false;
     }
     previousScrollTopRef.current = container.scrollTop;
+    anchorRef.current = autoScrollEnabledRef.current
+      ? undefined
+      : readingAnchor(container);
     if (authGeneration !== undefined && positionScope === authGeneration)
       positions.set(positionKey, {
         top: container.scrollTop,
         follow: autoScrollEnabledRef.current,
+        anchor: anchorRef.current,
       });
     const isScrolledUp = !nearBottom && !autoScrollEnabledRef.current;
     setScrollState((previous) =>
@@ -84,6 +167,8 @@ export function useChatScroll({
     if (previousConversationRef.current !== conversationId) {
       previousConversationRef.current = conversationId;
       autoScrollEnabledRef.current = true;
+      anchorRef.current = undefined;
+      restoredKey.current = null;
     }
     // Wait for persisted messages before restoring; an empty loading container
     // would clamp scrollTop to zero and destroy the saved reading position.
@@ -99,15 +184,28 @@ export function useChatScroll({
         autoScrollEnabledRef.current = false;
         container.scrollTop = saved.top;
         previousScrollTopRef.current = saved.top;
+        anchorRef.current = undefined;
+        if (saved.anchor) {
+          const anchor = saved.anchor;
+          const element = findMessage(container, saved.anchor.id);
+          if (element && saved.anchor.expanded) revealMessage(element);
+          navigationFrame.current = requestAnimationFrame(() => {
+            navigationFrame.current = undefined;
+            const target = findMessage(container, anchor.id);
+            if (!target) return;
+            container.scrollTop +=
+              target.getBoundingClientRect().top -
+              container.getBoundingClientRect().top -
+              anchor.offset;
+            previousScrollTopRef.current = container.scrollTop;
+            anchorRef.current = anchor;
+          });
+        }
+        setScrollState({ conversationId, isScrolledUp: true });
         return;
       }
     }
-    if (
-      authGeneration !== undefined &&
-      messages.length === 0 &&
-      positions.has(positionKey)
-    )
-      return;
+    if (messages.length === 0) return;
     if (autoScrollEnabledRef.current) scrollToBottom();
   }, [
     conversationId,
@@ -119,19 +217,70 @@ export function useChatScroll({
   ]);
 
   const hasMessages = messages.length > 0;
+  useLayoutEffect(
+    () => () => {
+      if (navigationFrame.current !== undefined)
+        cancelAnimationFrame(navigationFrame.current);
+      navigationFrame.current = undefined;
+    },
+    [conversationId],
+  );
+
   useEffect(() => {
     const container = scrollContainerRef.current;
     const content = messagesEndRef.current?.parentElement;
-    if (!container || !content || typeof ResizeObserver === 'undefined') return;
+    if (
+      !hasMessages ||
+      !container ||
+      !content ||
+      typeof ResizeObserver === 'undefined'
+    )
+      return;
     // Images, expanded tools, and viewport changes can alter height without
     // changing the message array. Follow only while the reader is at the end.
     const observer = new ResizeObserver(() => {
       if (autoScrollEnabledRef.current) scrollToBottom();
+      else if (anchorRef.current) {
+        // Stable-ID anchoring also covers prepended loaded messages and layout
+        // changes above the reader. Native browser anchoring may already have
+        // compensated, in which case this delta is zero.
+        const anchor = anchorRef.current;
+        const element = findMessage(container, anchor.id);
+        if (element) {
+          container.scrollTop +=
+            element.getBoundingClientRect().top -
+            container.getBoundingClientRect().top -
+            anchor.offset;
+          previousScrollTopRef.current = container.scrollTop;
+          if (authGeneration !== undefined && positionScope === authGeneration)
+            positions.set(positionKey, {
+              top: container.scrollTop,
+              follow: false,
+              anchor,
+            });
+        }
+      }
     });
     observer.observe(container);
     observer.observe(content);
     return () => observer.disconnect();
-  }, [conversationId, hasMessages, scrollToBottom]);
+  }, [
+    conversationId,
+    hasMessages,
+    scrollToBottom,
+    authGeneration,
+    positionKey,
+  ]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    // Browser find owns its reveal/scroll. Do not let expansion re-enable
+    // following before the browser gets to place the matching text.
+    container.addEventListener('beforematch', pauseFollowing, true);
+    return () =>
+      container.removeEventListener('beforematch', pauseFollowing, true);
+  }, [pauseFollowing]);
 
   return {
     scrollContainerRef,
@@ -139,5 +288,6 @@ export function useChatScroll({
     isScrolledUp,
     onScroll,
     jumpToLatest,
+    scrollToMessage,
   };
 }
