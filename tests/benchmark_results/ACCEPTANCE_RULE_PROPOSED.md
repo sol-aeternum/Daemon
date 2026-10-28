@@ -10,6 +10,13 @@ the declared Azure/OpenRouter + seed-42 implementation of the pinned official
 prompts, not a claim of identical upstream serving. See
 [Phase 1 measurement evidence](measurement_phase1_2026-10-28.md).
 
+The primary series is per-row `official_judgment`, summarized by
+`phases.score.dual_judgments.official` (including `official_by_category` and the
+official `abstention_subset` series alongside it). Legacy top-level strict scores
+and `judgment` remain **generic**, not aliases for the primary metric. All strict
+outcomes, paired gains, *F*/*G*, category and abstention checks below use the official
+series; the generic series is reported separately, never substituted.
+
 Ratification permits Phase 2 DB-backed failure classification, not candidate
 acceptance without the required evidence. Known baseline zeros, the historical
 empty-bin ABS placeholder, and B's summary-bearing/no-retrieved-facts status remain
@@ -40,6 +47,25 @@ LongMemEval_S run for any public claim.
    (`embedding:<model>` or `lexical`).
 6. No category scores 0. Overall accuracy is not below 5% or above 95%. Either result triggers
    investigation, not acceptance.
+7. Every baseline, canonical noise and candidate run covers **exactly the frozen
+   50 dev question IDs**, once each, with one binary `official_judgment` (`correct`
+   or `incorrect`) per ID. No duplicates, missing/extra IDs or invalid verdicts:
+   `phases.evaluate.official_judgments` and
+   `phases.score.dual_judgments.official` must both report
+   `missing == 0` and `judged == total == 50`, consistent with the saved rows.
+   Use the offline `require_complete_official_coverage` check in
+   `tests/longmemeval/official_judge.py` with IDs from the frozen dev fixture to
+   validate the rows; also check both manifest summaries against its result.
+   A completed evaluate phase and zero **generic** error count do not establish
+   official coverage: the harness intentionally preserves successful reader/generic
+   evidence when the official judge fails, and official accuracy otherwise uses
+   only observed labels. Incomplete coverage **blocks acceptance**, including
+   noise/paired comparisons. Preserve completed calls and reconcile missing
+   judgments from the saved hypotheses under existing spend authorization (ask
+   first if not covered); do not replay readers or silently treat missing labels
+   as incorrect, drop IDs, or waive coverage. Reconciled results must retain source
+   hypothesis/context identity and complete coverage before use; saved-hypothesis
+   rejudging does not replace required canonical noise runs.
 
 ## 2. Two runs are comparable only if
 

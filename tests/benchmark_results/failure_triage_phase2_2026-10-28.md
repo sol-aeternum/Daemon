@@ -237,11 +237,27 @@ the strength of this triage report.
 ## Verification status
 
 Read-only marker/fingerprint checks and primary case-evidence inspection completed.
-Five offline tests pass, covering exact A/A2 failure membership, source/context
+The original five offline tests pass, covering exact A/A2 failure membership, source/context
 hashes, literal dev-support excerpts, DB provenance, retained thresholds and explicit
 metric/causal caveats. Fresh scoped read-only review found no defects. It used the
 disclosed same-family OpenAI fallback; it did not inspect full DB exports or execute
 queries/tests and does not independently prove semantic absence.
+
+Current-head PR review identified a primary-metric qualification gap: completed
+generic results can coexist with failed official judgments. The rule now explicitly
+maps all primary comparisons to official labels and requires exactly one binary
+official verdict for every frozen dev ID, with matching complete evaluate/score
+summaries. An additive offline coverage helper and eight additional regression
+cases reject missing, duplicate, extra, wrong-ID and invalid-label series, including
+the successful-generic/failed-official shape from #597. Partial measurement scoring
+and checkpoint behavior remain unchanged; this is a measurement qualification
+repair, not a production-memory gain or threshold change. The three targeted test
+modules pass (101 tests). Fresh scoped read-only review of the helper found no
+defects, with the same disclosed OpenAI-family limitation and no reviewer-run tests.
+All blocking full local gates also passed on the repaired state in 465 seconds:
+backend 7,332 passed / 1,265 skipped / 14 warnings / 16 subtests; frontend 1,473;
+cache-browser 30; types clean. Hosted current-head checks/review and human final
+review remain required before merge.
 
 All blocking managed local gates passed in 589 seconds: backend 7,281 passed /
 1,265 skipped / 14 warnings / 16 subtests; frontend 1,473 tests; cache-browser 30;

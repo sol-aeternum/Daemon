@@ -11,6 +11,13 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
+from tests.longmemeval.official_judge import (
+    require_complete_official_coverage,
+    score_dual_judgments,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "tests/benchmark_results"
 TRIAGE = RESULTS / "failure_triage_phase2_2026-10-28"
@@ -39,6 +46,67 @@ def test_ratification_retains_thresholds_and_qualification_limits() -> None:
         assert threshold in rule
     assert "do not replace the full" in rule
     assert "block acceptance" in rule
+    for requirement in (
+        "phases.score.dual_judgments.official",
+        "phases.evaluate.official_judgments",
+        "judged == total == 50",
+        "missing == 0",
+        "require_complete_official_coverage",
+        "Incomplete coverage **blocks acceptance**",
+    ):
+        assert requirement in rule
+
+
+def test_official_failure_cannot_qualify_successful_generic_results() -> None:
+    # #597 shape: completed reader/generic result, no generic error, official failed.
+    ids = [f"synthetic-{i}" for i in range(50)]
+    rows = [
+        {"question_id": qid, "judgment": "correct", "official_judgment": "correct"} for qid in ids
+    ]
+    rows[-1].pop("official_judgment")
+    rows[-1]["official_judge_status"] = "failed"
+    assert not any(row.get("error") for row in rows)
+    score = score_dual_judgments(rows)
+    assert score["official"]["strict_accuracy"] == 1.0  # observed-only denominator
+    assert score["official"]["judged"] == 49 and score["official"]["missing"] == 1
+    with pytest.raises(ValueError, match="binary verdict"):
+        require_complete_official_coverage(rows, ids)
+
+
+@pytest.mark.parametrize(
+    "damage", ["duplicate", "missing", "extra", "wrong_id", "partial", "invalid"]
+)
+def test_official_primary_coverage_rejects_incomplete_or_invalid_rows(damage: str) -> None:
+    ids = [f"synthetic-{i}" for i in range(50)]
+    rows = [{"question_id": qid, "official_judgment": "incorrect"} for qid in ids]
+    if damage == "duplicate":
+        rows[-1] = dict(rows[0])
+    elif damage == "missing":
+        rows.pop()
+    elif damage == "extra":
+        rows.append({"question_id": "extra", "official_judgment": "correct"})
+    elif damage == "wrong_id":
+        rows[-1]["question_id"] = "not-in-dev"
+    else:
+        rows[-1]["official_judgment"] = "partially_correct" if damage == "partial" else "unknown"
+    with pytest.raises(ValueError):
+        require_complete_official_coverage(rows, ids)
+
+
+def test_official_primary_coverage_accepts_complete_binary_dev_series() -> None:
+    ids = [entry["question_id"] for entry in load(DEV)]
+    for arm in ("a", "a2", "b"):
+        path = (
+            RESULTS
+            / "measurement_phase1_2026-10-28"
+            / f"official_{arm}_1"
+            / "longmemeval_results.jsonl"
+        )
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        summary = require_complete_official_coverage(rows, ids)
+        assert summary["judged"] == summary["total"] == 50 and summary["missing"] == 0
+    with pytest.raises(ValueError, match="50 unique"):
+        require_complete_official_coverage(rows, ids[:-1] + ids[:1])
 
 
 def test_every_non_correct_primary_a_a2_observation_is_covered() -> None:

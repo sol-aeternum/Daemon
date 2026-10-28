@@ -24,3 +24,7 @@ are absent in the ingest state and excluded from its canonical fingerprint.
 The offline tests validate coverage, hashes/source references, excerpts and state
 metadata without DB/credentials/provider/holdout access. They do not establish a
 causal fix, semantic absence from literal searches, or independent judge validity.
+The primary-series coverage regressions additionally exercise
+`require_complete_official_coverage` against incomplete/invalid synthetic series
+and the complete saved official A/A2/B series. That helper validates coverage only;
+the rule still requires matching manifest summaries and all other acceptance gates.
