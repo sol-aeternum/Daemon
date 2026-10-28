@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import math
 import re
 import time
 import uuid
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 MAX_RETURNED_MEMORIES = 5
 INITIAL_VECTOR_CANDIDATES = 10
 MIN_FINAL_SCORE = 0.15
+DIVERSITY_PENALTY = 0.10
 MAX_LOGGED_CONTENT_CHARS = 120
 
 
@@ -361,6 +363,84 @@ def _normalize_bm25_scores(candidates: list[dict[str, object]]) -> None:
     else:
         for c in candidates:
             c["bm25_normalized"] = 0.0
+
+
+def _normalized_memory_vector(
+    memory: dict[str, object],
+) -> tuple[str, tuple[float, ...]] | None:
+    """Read an existing vector, never infer a missing space or request an embedding."""
+    model = memory.get("embedding_model")
+    if not isinstance(model, str) or not model.strip():
+        return None
+    raw = memory.get("embedding")
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not (raw.startswith("[") and raw.endswith("]")):
+            return None
+        components: list[object] = list(raw[1:-1].split(","))
+    elif isinstance(raw, list | tuple):
+        components = list(cast(list[object] | tuple[object, ...], raw))
+    else:
+        return None
+    if not components or any(
+        isinstance(value, bool) or not isinstance(value, int | float | str) for value in components
+    ):
+        return None
+    try:
+        values = [float(cast(int | float | str, value)) for value in components]
+    except (ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) for value in values):
+        return None
+    norm = math.hypot(*values)
+    if not math.isfinite(norm) or norm == 0:
+        return None
+    return model, tuple(value / norm for value in values)
+
+
+def _select_diverse_memories(
+    candidates: list[dict[str, object]], *, limit: int, penalty: float
+) -> list[dict[str, object]]:
+    """Soft diversity selection over the unchanged, already eligible/scored pool.
+
+    This is not fact equivalence or storage deduplication: distinct values and
+    updates remain separate rows. Original relevance scores and output ordering
+    are retained. A zero penalty is exactly the historical relevance-only top-k.
+    """
+    if limit <= 0:
+        return []
+
+    def relevance_key(memory: dict[str, object]) -> tuple[float, str]:
+        return -_as_float(memory.get("final_score"), 0.0), str(memory.get("id", ""))
+
+    ordered = sorted(candidates, key=relevance_key)
+    if penalty <= 0 or len(ordered) <= limit:
+        return ordered[:limit]
+    vectors = [_normalized_memory_vector(memory) for memory in ordered]
+    redundancy = [0.0] * len(ordered)
+    remaining = list(range(len(ordered)))
+    selected: list[dict[str, object]] = []
+    while remaining and len(selected) < limit:
+        best = min(
+            remaining,
+            key=lambda index: (
+                -(_as_float(ordered[index].get("final_score"), 0.0) - penalty * redundancy[index]),
+                *relevance_key(ordered[index]),
+            ),
+        )
+        remaining = [index for index in remaining if index != best]
+        selected.append(ordered[best])
+        chosen_vector = vectors[best]
+        if chosen_vector is None:
+            continue
+        chosen_model, chosen_values = chosen_vector
+        for index in remaining:
+            vector = vectors[index]
+            if vector is None or vector[0] != chosen_model or len(vector[1]) != len(chosen_values):
+                continue
+            similarity = math.fsum(a * b for a, b in zip(chosen_values, vector[1], strict=True))
+            redundancy[index] = max(redundancy[index], min(1.0, max(0.0, similarity)))
+    return sorted(selected, key=relevance_key)
 
 
 def _prepend_l0_memories(
@@ -1031,13 +1111,13 @@ async def retrieve_memories(
         item for item in scored if _as_float(item.get("final_score"), 0.0) >= MIN_FINAL_SCORE
     ]
 
-    ranked = sorted(
+    # Select before the existing per-space cutoff, not from an expanded outer
+    # pool. Lexical-only passes keep exactly their previous relevance-only order.
+    ranked = _select_diverse_memories(
         filtered,
-        key=lambda item: (
-            -_as_float(item.get("final_score"), 0.0),
-            str(item.get("id", "")),
-        ),
-    )[:target_limit]
+        limit=target_limit,
+        penalty=DIVERSITY_PENALTY if query_embedding else 0.0,
+    )
 
     if _is_retrieval_logging_enabled(log_retrieval):
         _log_retrieval_results(
