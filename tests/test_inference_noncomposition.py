@@ -103,3 +103,38 @@ def test_new_adapter_import_and_construction_start_no_io(monkeypatch):
     monkeypatch.setitem(sys.modules, key, module)
     spec.loader.exec_module(module)
     module.InferenceRecovery(object())
+
+
+@pytest.mark.parametrize(
+    "site,function",
+    [
+        ("orchestrator/db.py", "init_app_state"),
+        ("orchestrator/worker/worker.py", "on_startup"),
+    ],
+)
+@pytest.mark.parametrize(
+    "damage", ["wrong_factory", "wrong_function", "extra_acceptor", "alias", "crossed_pool"]
+)
+def test_only_exact_approved_startup_factory_invocations_are_admitted(site, function, damage):
+    source = (ROOT / site).read_text()
+    if damage == "wrong_factory":
+        original = "qualify_task_composition(" if "db.py" in site else "qualify_worker_composition("
+        replacement = (
+            "qualify_worker_composition(" if "db.py" in site else "qualify_task_composition("
+        )
+        source = source.replace(original, replacement)
+    elif damage == "wrong_function":
+        source = source.replace(f"async def {function}(", "async def unrelated_startup(")
+    elif damage == "extra_acceptor":
+        source = source.replace(
+            "enabled=True,", "enabled=True, acceptor_dsn=settings.database_url,"
+        )
+    elif damage == "alias":
+        source += "\nfrom orchestrator.tasks.composition import qualify_worker_composition as Q\nQ(enabled=True)\n"
+    else:
+        source = source.replace(
+            "worker_pool=state.db_pool", "worker_pool=state.task_acceptor_pool"
+        ).replace("worker_pool=db_pool", "worker_pool=other_pool")
+    assert any(
+        "factory activation" in finding for finding in composition_violations({site: source})
+    )

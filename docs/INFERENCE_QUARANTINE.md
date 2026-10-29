@@ -1,6 +1,6 @@
 # Cloud-inference quarantine — source-only #477 slice
 
-**Not enabled or production-composed.** Migration
+**Not enabled or deployment-qualified.** Migration
 `050_task_inference_recovery.sql`, `orchestrator/tasks/inference.py` and explicit
 fixture injection extend the actual acceptance, task, runner and compute paths.
 The flag remains off. Source/tests do not qualify deployed roles, real provider
@@ -15,8 +15,11 @@ origin. Duplicate acceptance never creates coverage or adopts legacy tasks.
 Execution requires an explicitly injected `InferenceRecovery`, authenticated
 original origin and existing full 049 identity. Missing coverage, collaborator,
 schema or required observations refuses instead of choosing the legacy path.
-Default HTTP and worker constructors do not provide these collaborators. The
-explicit isolated-host factory described below is not called by either startup.
+Default constructors do not provide these collaborators. Explicitly selected
+backend and separate worker startup now qualify them as described in
+[TASK_STARTUP_COMPOSITION.md](TASK_STARTUP_COMPOSITION.md). Unconfigured startup
+requires positive evidence of a pre-050 database; configuration removal cannot
+downgrade a migrated host.
 
 Explicit or inherited compute coverage also requires the existing shared invocation
 before reconciliation or admission. Missing/crossed account, financial scope,
@@ -97,7 +100,8 @@ account/reservation money locks. Original owner, period, scope, operation, label
 and amount survive; this is neither new execution admission nor a refund policy.
 
 This accounting-only branch needs the existing explicit recovery and same DB pool
-injection, not Redis or a provider key. Production startup remains unwired. Each
+injection, not Redis or a provider key. Selected startup supplies that binding,
+including when NEW durable submissions are disabled. Each
 fresh independent pass refuses an inherited invocation, considers at most 50
 original reservations with a separate process-local circular fairness cursor,
 and shares one cooperative two-second deadline with transaction-local 250ms lock /
@@ -138,19 +142,22 @@ must lack it and all direct marker/048/049 table/column privileges or owner/help
 membership. Fixture pools use separated non-owner principals. UUIDs and Python
 preflight do not authenticate end users or sandbox an adversarial tasks-DML holder.
 
-### Explicit isolated-host composition (source only)
+### Explicit composition and selected service startup (source only)
 
 `orchestrator/tasks/composition.py:qualify_task_composition` accepts externally
 owned pools, encryption and settings, never DSNs or credential factories. Its
-default returns no bundle with no I/O; contradictory/off, partial, same-pool,
+default returns no bundle with no I/O; contradictory, partial, same-pool,
 cross-database and unsafe-principal configurations refuse. The trusted synthetic
 host must create both pools from its one owned endpoint/database. Observed catalog
 identity is an additional negative check, not cross-cluster or restore attestation.
 The factory does not create/close pools, provision roles, alter grants, migrate,
-start jobs or introduce an environment switch. Normal startup remains uncomposed.
+start jobs or introduce an environment switch. The approved startup adapter owns
+pools and selects this factory using explicit service configuration; see
+[TASK_STARTUP_COMPOSITION.md](TASK_STARTUP_COMPOSITION.md).
 
 Both actual caller connections must pass capability/schema/ACL checks **before**
-either unchanged J1 barrier runs: the existing barrier can initialize its binding.
+either J1 barrier runs. Only A may initialize a configured journal binding; W
+requires an existing matching binding and cannot initialize it.
 The factory checks protected object shapes, constraint presence/validation, definer
 signatures/search paths, current/default ACL exposure and the immutable witness
 trigger; reviewed migrations remain the supported creators, not arbitrary manual
@@ -167,7 +174,10 @@ SESSION_USER/CURRENT_USER substitution, privileged/owner/helper capabilities and
 cross-principal membership, including NOINHERIT. Startup success is not a permit.
 
 The worker receives a distinct W-only binding: no A pool/store is carried into
-its context. TaskStore, MemoryStore/encryption, recovery and compute/accounting
+its context. The separate-service worker factory observes current A capabilities
+through W catalog queries, then qualifies actual W and the existing J1 binding.
+This does not authenticate A or replace the backend actual-pair checks.
+TaskStore, MemoryStore/encryption, recovery and compute/accounting
 pool identities are pinned; missing/crossed context refuses before runner/sweep
 effects. W's existing per-operation preflights/live SQL gates remain; composed
 wake-up writers and empty-candidate sweep discovery also check the actual caller
@@ -182,13 +192,18 @@ pools, J1 initial-binding ordering and post-dispatch quarantine/original funded-
 recovery. Scripted remote continuation is not real-provider cessation evidence.
 Opt-in PostgreSQL skips are not qualification; final-state gates and independent
 changed-logic review remain required. Default non-composition inventory admits only
-the exact factory construction/import sites, never arbitrary callers or startup.
+the exact factory construction/import sites and two approved startup calls,
+never arbitrary callers or additional activation sites.
 
-OFF adds no composition effects but does not disable existing ordinary chat/tools
-or previously accepted jobs, prove no earlier activation, detect a rolled-back DB,
-or offer a new operational rollback route. Coverage/first-dispatch evidence is not
-cleared. Production principals, deployed pool binding, restore/retention, general
-deletion/output fencing and #477 enablement remain unqualified and unauthorized.
+`DURABLE_CHAT_ENABLED=false` stops NEW durable acceptance. Selected composition,
+existing-task observation, Stop and recovery remain operational after restart.
+Keep its roles, credentials and journal configuration. This does not disable
+ordinary chat/tools or previously accepted jobs, prove no earlier activation,
+detect a rolled-back DB or offer an operational rollback route. Coverage/first-
+dispatch evidence is not cleared. Production principals, deployed pool binding,
+restore/retention and general deletion/output fencing remain unqualified. The
+owner authorized durable enablement conditionally on readiness; source tests alone
+do not establish readiness.
 
 The uncomposed abandoned consumer takes at most 32 controls per pass and shares one
 absolute cooperative two-second budget across discovery, acquisition, checks,

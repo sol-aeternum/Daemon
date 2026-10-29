@@ -5101,9 +5101,42 @@
     },
     {
       "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_catalog_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "477265da69a12704",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Closed SQL predicate string.replace is conservatively classified as a filesystem candidate. It performs no filesystem write; retained deferred and uncovered, not a general writer fence."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_catalog_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "6c889b4dab1eda30",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Second closed SQL predicate string.replace remains an explicit conservative filesystem candidate. No role values are interpolated and no filesystem write occurs. Deferred and uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_catalog_preflight",
+      "kind": "sql_unresolvable",
+      "fingerprint": "68f362258a29e812",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "W-only startup observes the expected A privilege catalogs through a parameterized closed predicate. Scanner cannot resolve the constructed SQL. Deferred and uncovered; not an authenticated A session, data mutation or complete account fence."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
       "qualname": "acceptor_preflight",
       "kind": "sql_named",
-      "fingerprint": "0a25ed238853f962",
+      "fingerprint": "fe3ad3b39c72d344",
       "tables": [],
       "unknown": true,
       "uncovered": true,

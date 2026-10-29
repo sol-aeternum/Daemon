@@ -19,19 +19,27 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
         tree = ast.parse(source)
         nodes = list(ast.walk(tree))
         aliases = {}
-        factory = next(
-            (
-                n
-                for n in tree.body
-                if isinstance(n, ast.AsyncFunctionDef) and n.name == "qualify_task_composition"
-            ),
-            None,
-        )
+        factories = [
+            n
+            for n in tree.body
+            if isinstance(n, ast.AsyncFunctionDef)
+            and n.name in ("qualify_task_composition", "qualify_worker_composition")
+        ]
         factory_nodes = (
-            set(map(id, ast.walk(factory)))
-            if (path == "orchestrator/tasks/composition.py" and factory is not None)
+            {id(node) for factory in factories for node in ast.walk(factory)}
+            if path == "orchestrator/tasks/composition.py"
             else set()
         )
+        host_function = {
+            "orchestrator/db.py": "init_app_state",
+            "orchestrator/worker/worker.py": "on_startup",
+        }.get(path)
+        host_nodes = {
+            id(node)
+            for function in ast.walk(tree)
+            if isinstance(function, ast.AsyncFunctionDef) and function.name == host_function
+            for node in ast.walk(function)
+        }
 
         def factory_constructor(node, target):
             if id(node) not in factory_nodes:
@@ -94,7 +102,14 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                             and isinstance(node.value, ast.Name)
                             and node.value.id in ("bundle", "worker")
                         )
-                        if not default and not factory_binding:
+                        host_binding = (
+                            path == "orchestrator/db.py"
+                            and id(node) in host_nodes
+                            and ast.unparse(target) == "state.task_composition"
+                            and isinstance(node.value, ast.Name)
+                            and node.value.id == "bundle"
+                        )
+                        if not default and not factory_binding and not host_binding:
                             violations.append(
                                 f"{path}:{node.lineno}:unapproved composition binding"
                             )
@@ -180,7 +195,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and isinstance(node, ast.ImportFrom)
                     and node.module == "orchestrator.tasks.inference"
                     and {item.name for item in node.names}
-                    == {"InferenceRecovery", "acceptor_preflight"}
+                    == {"InferenceRecovery", "acceptor_preflight", "acceptor_catalog_preflight"}
                 )
                 if (
                     any("orchestrator.tasks.inference" in m for m in modules)
@@ -220,8 +235,41 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     or any(isinstance(a, ast.Starred) for a in node.args)
                 ):
                     violations.append(f"{path}:{node.lineno}:task composition")
-            if target.endswith(".qualify_task_composition") or target == "qualify_task_composition":
-                violations.append(f"{path}:{node.lineno}:factory activation")
+            if target.endswith(
+                (".qualify_task_composition", ".qualify_worker_composition")
+            ) or target in ("qualify_task_composition", "qualify_worker_composition"):
+                keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+                expected = {
+                    "orchestrator/db.py": {
+                        "enabled": "True",
+                        "acceptor_pool": "state.task_acceptor_pool",
+                        "worker_pool": "state.db_pool",
+                        "encryption": "encryption",
+                        "settings": "settings",
+                        "acceptor_role": "settings.daemon_task_acceptor_role",
+                        "worker_role": "settings.daemon_task_worker_role",
+                    },
+                    "orchestrator/worker/worker.py": {
+                        "enabled": "True",
+                        "worker_pool": "db_pool",
+                        "encryption": "encryption",
+                        "settings": "app_settings",
+                        "acceptor_role": "app_settings.daemon_task_acceptor_role",
+                        "worker_role": "app_settings.daemon_task_worker_role",
+                    },
+                }.get(path)
+                required_factory = (
+                    ".qualify_task_composition"
+                    if path == "orchestrator/db.py"
+                    else ".qualify_worker_composition"
+                )
+                if not (
+                    id(node) in host_nodes
+                    and target.endswith(required_factory)
+                    and not node.args
+                    and keywords == expected
+                ):
+                    violations.append(f"{path}:{node.lineno}:factory activation")
             if (
                 target.endswith((".TaskComposition", ".WorkerComposition"))
                 and id(node) not in factory_nodes

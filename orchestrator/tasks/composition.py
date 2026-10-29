@@ -1,7 +1,7 @@
-"""Explicit isolated-host composition; default startup never calls this factory.
+"""Explicit isolated-host and selected separate-service startup composition.
 
-The trusted synthetic host supplies two pools made from its ONE owned endpoint
-and database. Catalog equality is a negative check, not cross-cluster or restore
+The trusted host supplies paired pools made from its ONE endpoint and database.
+Separate W-only startup requires an existing matching journal binding. Catalog equality is a negative check, not cross-cluster or restore
 attestation. This module accepts no DSN, creates/closes no pool and schedules no
 work. Its bundle is cooperating-caller wiring, not a Python security sandbox.
 """
@@ -18,8 +18,15 @@ from orchestrator.config import Settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from orchestrator.services.account_control.transaction import ObservationBlocked
-from orchestrator.services.deletion_journal.barrier import require_recovery_barrier
-from orchestrator.tasks.inference import InferenceRecovery, acceptor_preflight
+from orchestrator.services.deletion_journal.barrier import (
+    configured_journal,
+    require_recovery_barrier,
+)
+from orchestrator.tasks.inference import (
+    InferenceRecovery,
+    acceptor_catalog_preflight,
+    acceptor_preflight,
+)
 from orchestrator.tasks._invocation import invocation, require_effect
 from orchestrator.tasks.store import TaskStore
 
@@ -140,10 +147,11 @@ async def _schema(conn: Any, acceptor: str, worker: str, *, is_worker: bool) -> 
     ]
     if (
         await conn.fetchval(
-            "SELECT bool_and(pg_catalog.has_table_privilege(CURRENT_USER,t,p)) "
+            "SELECT bool_and(pg_catalog.has_table_privilege($3::name,t,p)) "
             "FROM unnest($1::text[],$2::text[]) AS required(t,p)",
             [table for table, _ in pairs],
             [privilege for _, privilege in pairs],
+            worker if is_worker else acceptor,
         )
         is not True
     ):
@@ -433,10 +441,13 @@ async def qualify_task_composition(
     worker_pool: asyncpg.Pool | None = None,
     encryption: ContentEncryption | None = None,
     settings: Settings | None = None,
+    acceptor_role: str | None = None,
+    worker_role: str | None = None,
 ) -> TaskComposition | None:
     """No default I/O; explicit qualification borrows but never owns the pools."""
     if enabled is False and all(
-        value is None for value in (acceptor_pool, worker_pool, encryption, settings)
+        value is None
+        for value in (acceptor_pool, worker_pool, encryption, settings, acceptor_role, worker_role)
     ):
         return None
     if (
@@ -446,7 +457,7 @@ async def qualify_task_composition(
         or acceptor_pool is worker_pool
         or not isinstance(encryption, ContentEncryption)
         or not isinstance(settings, Settings)
-        or not settings.durable_chat_enabled
+        or ((acceptor_role is None) != (worker_role is None))
     ):
         raise ObservationBlocked("inference_composition_refused")
     if invocation.get() is not None:
@@ -458,13 +469,18 @@ async def qualify_task_composition(
             ai, wi = await _connection_identity(a), await _connection_identity(w)
             if ai[1:] != wi[1:] or ai[0] == wi[0]:
                 raise ObservationBlocked("inference_database_refused")
+            if acceptor_role is not None and (ai[0] != acceptor_role or wi[0] != worker_role):
+                raise ObservationBlocked("inference_principal_refused")
             await acceptor_preflight(a, expected=ai[0], other=wi[0])
             recovery.principals = (wi[0], ai[0])
             await recovery.preflight(w)
             await _schema(a, ai[0], wi[0], is_worker=False)
             await _schema(w, ai[0], wi[0], is_worker=True)
     await require_recovery_barrier(acceptor_pool, settings)
-    await require_recovery_barrier(worker_pool, settings)
+    if configured_journal(settings) is None:
+        await require_recovery_barrier(worker_pool, settings)
+    else:
+        await require_recovery_barrier(worker_pool, settings, initialize_binding=False)
     acceptor = TaskStore(
         acceptor_pool, encryption, MemoryStore(acceptor_pool, encryption), cover_new_inference=True
     )
@@ -484,3 +500,74 @@ async def qualify_task_composition(
     tasks._memory._task_composition = worker
     bundle.validate()
     return bundle
+
+
+async def qualify_worker_composition(
+    *,
+    enabled: bool = False,
+    worker_pool: asyncpg.Pool | None = None,
+    encryption: ContentEncryption | None = None,
+    settings: Settings | None = None,
+    acceptor_role: str | None = None,
+    worker_role: str | None = None,
+) -> WorkerComposition | None:
+    """Qualify a separate W-only host against an already bound journal.
+
+    A catalog observation is not an authenticated A session or a stored ready bit.
+    Backend acceptance retains actual-pair qualification and per-call A checks.
+    """
+    if enabled is False and all(
+        value is None for value in (worker_pool, encryption, settings, acceptor_role, worker_role)
+    ):
+        return None
+    if (
+        enabled is not True
+        or not isinstance(worker_pool, asyncpg.Pool)
+        or not isinstance(encryption, ContentEncryption)
+        or not isinstance(settings, Settings)
+        or not acceptor_role
+        or not worker_role
+        or acceptor_role == worker_role
+        or settings.daemon_task_acceptor_database_url
+        or settings.daemon_task_acceptor_role != acceptor_role
+        or settings.daemon_task_worker_role != worker_role
+    ):
+        raise ObservationBlocked("inference_composition_refused")
+    if configured_journal(settings) is None:
+        raise ObservationBlocked("inference_journal_required")
+    if invocation.get() is not None:
+        raise ObservationBlocked("inherited_inference_invocation")
+    recovery = InferenceRecovery(worker_pool)
+    recovery.principals = (worker_role, acceptor_role)
+    async with asyncio.timeout(2):
+        async with worker_pool.acquire() as w:
+            wi = await _connection_identity(w)
+            if wi[0] != worker_role:
+                raise ObservationBlocked("inference_principal_refused")
+            await acceptor_catalog_preflight(w, acceptor_role, worker_role)
+            await recovery.preflight(w)
+            await _schema(w, acceptor_role, worker_role, is_worker=False)
+            await _schema(w, acceptor_role, worker_role, is_worker=True)
+    # The worker cannot initialize a missing binding, even with otherwise safe ACLs.
+    await require_recovery_barrier(worker_pool, settings, initialize_binding=False)
+    tasks = TaskStore(
+        worker_pool,
+        encryption,
+        MemoryStore(worker_pool, encryption),
+        inference_recovery=recovery,
+    )
+    worker = WorkerComposition(
+        tasks,
+        recovery,
+        worker_pool,
+        tasks._memory,
+        encryption,
+        settings,
+        worker_role,
+        acceptor_role,
+        _ADMITTED,
+    )
+    tasks._composition = worker
+    tasks._memory._task_composition = worker
+    worker.validate()
+    return worker

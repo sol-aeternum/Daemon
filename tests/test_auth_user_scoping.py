@@ -60,6 +60,8 @@ async def authenticated_app(monkeypatch):
 
     app_state = MagicMock()
     app_state.settings = settings
+    app_state.task_acceptor_pool = None
+    app_state.task_composition = None
     app_state.db_pool = MagicMock()
     app_state.db_pool.acquire = acquire
     app_state.db_pool.fetch = AsyncMock(return_value=[])

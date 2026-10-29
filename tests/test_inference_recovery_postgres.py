@@ -50,7 +50,7 @@ async def db(metadata_cluster):
     cluster.sql(
         """
         GRANT USAGE ON SCHEMA public TO md_app,md_acceptor;
-        GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO md_app,md_acceptor;
+        GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO md_acceptor;
         REVOKE ALL ON public.compute_scope_metadata,public.compute_reservation_metadata,
           public.attempt_lifecycle_control,public.attempt_lifecycle_commands,
           public.task_inference_recovery FROM md_app,md_acceptor;
@@ -67,6 +67,11 @@ async def db(metadata_cluster):
         database=name,
         role="md_owner",
     )
+    # Qualification lane: W receives only the preserved proposed exact map.
+    # A remains the existing synthetic acceptor fixture; W has no A membership.
+    from tests.exact_worker_privileges import grant_exact_worker
+
+    grant_exact_worker(cluster, name)
     resource = cluster.resource / uuid4().hex[:6]
     resource.mkdir(mode=0o700)
     assert len(os.fsencode(resource / ".s.PGSQL.5432")) < 108

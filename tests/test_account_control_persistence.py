@@ -753,6 +753,17 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
         ("orchestrator.services.account_control.transaction", "control_transaction"),
     },
+    # Approved startup selection adds only the closed refusal exception.
+    # These hosts gain no request-store, phase or replay-applier API access.
+    "orchestrator/db.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/worker/worker.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/tasks/startup.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
     # Explicit isolated composition/selectors use refusal only, never J1b APIs.
     "orchestrator/tasks/composition.py": {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
@@ -835,6 +846,18 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
 @pytest.mark.parametrize(
     "path,extra",
     [
+        (
+            "orchestrator/db.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/worker/worker.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/tasks/startup.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
         (
             "orchestrator/services/identity/initialization.py",
             "from orchestrator.services.account_control.store import record_request_facts",

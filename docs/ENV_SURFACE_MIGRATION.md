@@ -7,6 +7,28 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Separate durable task startup — 29 October 2026
+
+MIGRATION: selected backend and worker startup retain qualification independently
+of `DURABLE_CHAT_ENABLED`, which gates NEW durable submissions only. Add
+`DAEMON_TASK_ACCEPTOR_ROLE` and `DAEMON_TASK_WORKER_ROLE` to both services; set
+`DATABASE_URL` to the separate W login. Add `DAEMON_TASK_ACCEPTOR_DATABASE_URL`
+only to the backend. Role names must be distinct canonical lowercase PostgreSQL
+identifiers. Both services require the same explicitly configured J1 directory
+and identity. Backend owns two pools; worker owns only W and refuses a supplied A
+credential. Keep this configuration when turning NEW submissions off.
+
+Absent and empty task configuration are equivalent only on a positively observed
+pre-050 database with NEW disabled. Partial configuration, NEW enabled without
+composition, and a migrated 050 database with configuration removed all refuse.
+No automatic migration, role provisioning, journal-file initialization or privileged
+fallback is introduced. Existing owner credentials and any dotenv/bind-mounted
+credential source must be excluded from the worker's actual runtime, not merely
+from the Compose injection list. The repository's generic development Compose
+mount is not a qualified durable deployment. See
+[TASK_STARTUP_COMPOSITION.md](TASK_STARTUP_COMPOSITION.md) for exact limits and
+separate operational approvals.
+
 ### J1a journal startup substrate — 12 October 2026
 
 MIGRATION: PostgreSQL is mandatory at backend/worker startup even when journal
