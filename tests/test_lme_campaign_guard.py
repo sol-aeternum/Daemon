@@ -106,7 +106,7 @@ def test_inactive_scope_does_not_require_pins_or_receipt():
 def test_reservation_pending_receipts_and_partial_evidence(tmp_path):
     with active(tmp_path) as instance:
         state = json.loads(instance.state_path.read_text())
-        assert state["plan"]["cumulative_reserved_usd"] == "6.0519050"
+        assert state["plan"]["cumulative_reserved_usd"] == "10.4019050"
         for stage in guard.STAGES:
             with guard.campaign_call(stage, request(stage)) as receipt:
                 pending = json.loads(instance.state_path.read_text())["pending"]

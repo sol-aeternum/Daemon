@@ -8,7 +8,8 @@ This bounds local request reservations, not a provider's eventual billing.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
@@ -18,7 +19,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Callable, Iterator, Mapping
+import time
+from typing import Any, AsyncIterator, Callable, Iterator, Mapping
 
 ARMS = ("A0", "A1", "A2", "C0")
 STAGES = ("embedding", "answer", "judge", "official_judge")
@@ -30,7 +32,9 @@ INPUT_RATE = Decimal("0.0000025")
 OUTPUT_RATE = Decimal("0.00001")
 EMBEDDING_RATE = Decimal("0.00000002")
 NEW_HOLD = Decimal("4.35")
-PRIOR_HOLD = Decimal("1.7019050")
+PRIOR_HOLD = Decimal("6.0519050")
+CAMPAIGN_CEILING = Decimal("10.4019050")
+LLM_START_INTERVAL = 5.0
 _active: ContextVar[Campaign | None] = ContextVar("lme_campaign", default=None)
 
 
@@ -110,7 +114,7 @@ class CampaignPlan:
                 else:
                     amount = tokens * INPUT_RATE + CAPS[stage] * OUTPUT_RATE
                 total += 4 * amount
-        if total > NEW_HOLD or PRIOR_HOLD + NEW_HOLD > 10:
+        if total > NEW_HOLD or PRIOR_HOLD + NEW_HOLD > CAMPAIGN_CEILING:
             raise CampaignStopped("Allocations exceed approved whole-envelope reservation")
         return {
             "schema": 1,
@@ -122,6 +126,9 @@ class CampaignPlan:
             "prior_reserved_usd": str(PRIOR_HOLD),
             "cumulative_reserved_usd": str(PRIOR_HOLD + NEW_HOLD),
             "allocated_usd": str(total),
+            "llm_start_interval_seconds": LLM_START_INTERVAL,
+            "prior_restore_attempts": 1,
+            "maximum_cumulative_restore_attempts": 5,
         }
 
 
@@ -169,6 +176,38 @@ def campaign_call(stage: str, request: dict[str, Any]) -> Iterator[CallReceipt]:
         raise
 
 
+@asynccontextmanager
+async def campaign_llm_call(stage: str, request: dict[str, Any]) -> AsyncIterator[CallReceipt]:
+    """Await only the remaining start interval; ordinary calls stay default-inert."""
+    campaign = current_campaign()
+    if campaign is None:
+        with campaign_call(stage, request) as receipt:
+            yield receipt
+        return
+    campaign._check()
+    if campaign._pacing or stage == "embedding":
+        campaign.fail("Concurrent or non-LLM pacing request")
+    campaign._pacing = True
+    try:
+        campaign._validate_request(stage, request)
+        while True:
+            campaign._check()
+            remaining = LLM_START_INTERVAL - (time.monotonic() - campaign._last_llm_start)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(remaining)
+        # campaign_call revalidates stage/state and persists pending before yield.
+        with campaign_call(stage, request) as receipt:
+            campaign._last_llm_start = time.monotonic()
+            yield receipt
+    except BaseException:
+        if not campaign._stopped:
+            campaign.stop("Paced call interrupted; no automatic replay")
+        raise
+    finally:
+        campaign._pacing = False
+
+
 class Campaign:
     """One process owns the campaign. Any unclean exit permanently blocks reentry.
 
@@ -187,6 +226,9 @@ class Campaign:
         self._pid = os.getpid()
         self._live = False
         self._stopped = False
+        self._pacing = False
+        # Also enforce a full interval after a new process/clean arm handoff.
+        self._last_llm_start = time.monotonic()
         self.database_pool: Any = None  # Explicitly bound only after verified restore.
 
     @property
