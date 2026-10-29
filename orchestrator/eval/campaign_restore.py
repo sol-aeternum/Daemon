@@ -288,6 +288,26 @@ def render_archive(snapshot: Path, directory: Path) -> Path:
     return path
 
 
+async def seal_failed_admission(control: Any, pins: Mapping[str, Any]) -> str:
+    """One bounded compensation on the existing connection; never reconnect/retry."""
+    try:
+        async with asyncio.timeout(15):
+            for after in (False, True):
+                identity = await target_identity(control)
+                require(
+                    identity["system_identifier"] == pins["server_identifier"]
+                    and identity["oid"] == pins["database_oid"],
+                    "Compensation target changed",
+                )
+                if after:
+                    require(identity["datallowconn"] is False, "Admission closure unconfirmed")
+                else:
+                    await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS false")
+        return "closed"
+    except (Exception, asyncio.CancelledError):
+        return "unknown"
+
+
 @asynccontextmanager
 async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIterator[FixedPool]:
     """One reviewed destructive attempt; admission remains closed on every error."""
@@ -302,6 +322,8 @@ async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIt
     control = await asyncpg.connect(CONTROL_DSN, timeout=10, command_timeout=30)
     pool: Any = None
     child: subprocess.Popen[bytes] | None = None
+    admitted = False
+    original_failure: BaseException | None = None
     stderr = (artifacts / "restore-stderr.log").open("xb")
     os.chmod(stderr.name, 0o600)
     try:
@@ -316,6 +338,7 @@ async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIt
             "Database identity differs from pin",
         )
         campaign.pending_restore(arm, {**identity, **before, "script_sha256": digest_file(script)})
+        admitted = True  # Before enabling: even a lost enable acknowledgment needs sealing.
         if not before["datallowconn"]:
             await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS true")
         pool = await asyncpg.create_pool(
@@ -412,17 +435,56 @@ async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIt
         campaign.start_arm(arm, verified_pins=campaign.plan["pins"], restore=receipt)
         yield campaign.database_pool
         await verify_sessions(control, set())  # Canonical phase must close its pool.
-    except BaseException:
-        campaign.stop("Restore/owned pool failed or uncertain; target remains disabled")
+    except BaseException as failure:
+        original_failure = failure
+        outcome = "not_attempted"
+        if admitted:
+            sealing = asyncio.create_task(seal_failed_admission(control, campaign.plan["pins"]))
+            while not sealing.done():
+                try:
+                    await asyncio.shield(sealing)
+                except asyncio.CancelledError:
+                    # Defer cancellation only for this bounded compensation, never
+                    # resume restore/evaluation work. Re-raise original failure below.
+                    continue
+            outcome = sealing.result()
+        campaign.state["failure_admission"] = outcome
+        try:
+            campaign.stop(
+                f"Restore/owned pool failed; admission {outcome}; reconciliation required"
+            )
+        except BaseException as recording_error:
+            failure.add_note(
+                f"Failure evidence persistence failed: {type(recording_error).__name__}"
+            )
         raise
     finally:
         # Stop only our exact child and pool. Never terminate other DB producers,
         # reopen the DB or retry an unknown action during error cleanup.
-        if child is not None and child.poll() is None:
-            child.terminate()
-            await asyncio.to_thread(child.wait, timeout=15)
-        if pool is not None:
-            await asyncio.wait_for(pool.close(), 30)
-        campaign.database_pool = None
-        stderr.close()
-        await control.close()
+        cleanup_errors: list[BaseException] = []
+        try:
+            if child is not None and child.poll() is None:
+                child.terminate()
+                await asyncio.to_thread(child.wait, timeout=15)
+        except BaseException as error:
+            cleanup_errors.append(error)
+        try:
+            if pool is not None:
+                await asyncio.wait_for(pool.close(), 30)
+        except BaseException as error:
+            cleanup_errors.append(error)
+        finally:
+            campaign.database_pool = None
+            stderr.close()
+        try:
+            await control.close()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        if cleanup_errors:
+            if original_failure is not None:
+                for error in cleanup_errors:
+                    original_failure.add_note(
+                        f"Owned resource cleanup unresolved: {type(error).__name__}"
+                    )
+            else:
+                raise cleanup_errors[0]

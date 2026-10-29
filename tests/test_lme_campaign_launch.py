@@ -367,6 +367,93 @@ async def test_native_foreign_connection_stops_before_public_schema_replacement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["pool", "acquire", "spawn", "handshake", "cancel"])
+async def test_native_setup_failure_reseals_initially_disabled_database(
+    pg16, tmp_path, monkeypatch, stage
+):
+    async with prepared(pg16, tmp_path, monkeypatch) as (campaign, snapshot, db, control_dsn):
+        observer = await asyncpg.connect(db)
+        control = await asyncpg.connect(control_dsn)
+        await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS false")
+        original_pool = restore.asyncpg.create_pool
+        original_popen = restore.subprocess.Popen
+
+        async def pool_factory(*args, **kwargs):
+            assert (await restore.target_identity(control))["datallowconn"] is True
+            if stage == "pool":
+                raise RuntimeError("synthetic setup failure")
+            if stage == "cancel":
+                raise asyncio.CancelledError()
+            pool = await original_pool(*args, **kwargs)
+            if stage == "acquire":
+
+                class BrokenAcquire:
+                    def acquire(self, **kwargs):
+                        raise RuntimeError("synthetic setup failure")
+
+                    async def close(self):
+                        await pool.close()
+
+                return BrokenAcquire()
+            return pool
+
+        def spawn(*args, **kwargs):
+            if stage == "spawn":
+                raise RuntimeError("synthetic setup failure")
+            process: Any = original_popen(*args, **kwargs)
+            if stage == "handshake":
+
+                class BadHandshake:
+                    def readline(self):
+                        return b"invalid PID\n"
+
+                process.stdout = BadHandshake()
+            return process
+
+        monkeypatch.setattr(restore.asyncpg, "create_pool", pool_factory)
+        monkeypatch.setattr(restore.subprocess, "Popen", spawn)
+        try:
+            with pytest.raises((RuntimeError, asyncio.CancelledError, guard.CampaignStopped)):
+                async with restore.restored_pool(campaign, "A0", snapshot):
+                    pytest.fail("Setup failure reached evaluation")
+            assert (await restore.target_identity(control))["datallowconn"] is False
+            assert await observer.fetchval("SELECT count(*) FROM memories") == 1
+            saved = json.loads(campaign.state_path.read_text())
+            assert saved["failure_admission"] == "closed"
+            assert saved["restore_pending"]["arm"] == "A0"
+        finally:
+            await observer.close()
+            await control.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["identity", "execute", "readback", "open"])
+async def test_compensation_never_claims_unknown_admission_closed(monkeypatch, fault):
+    calls = []
+
+    async def identity(control):
+        calls.append("identity")
+        if fault == "identity" or (fault == "readback" and len(calls) > 1):
+            raise ConnectionError("synthetic control loss")
+        return {"system_identifier": "fixture", "oid": 1, "datallowconn": fault == "open"}
+
+    class Control:
+        async def execute(self, sql):
+            calls.append("execute")
+            if fault == "execute":
+                raise ConnectionError("synthetic lost acknowledgment")
+
+    monkeypatch.setattr(restore, "target_identity", identity)
+    assert (
+        await restore.seal_failed_admission(
+            Control(), {"server_identifier": "fixture", "database_oid": 1}
+        )
+        == "unknown"
+    )
+    assert calls.count("execute") <= 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutation",
     [

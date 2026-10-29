@@ -73,7 +73,12 @@ Owner-approved restoration **preserves the same database**, replacing only `publ
    complete official coverage and qualification before advancing.
 5. Leave admission closed between arms. Only clean, fully qualified campaign
    completion may restore its original open state. Any failed or uncertain action
-   stays disabled/pending for operator reconciliation, never an automatic retry.
+   retains pending evidence for operator reconciliation, never an automatic retry.
+   Setup failures after durable restore admission attempt one bounded closure on
+   the same control connection, including failures during temporary reopening.
+   Cancellation waits for that compensation before propagating. Only verified
+   identity and closed-state readback record `failure_admission: closed`; control
+   loss or ambiguous readback record `unknown`, requiring explicit reconciliation.
 
 The database gate excludes ordinary new target writers. It does not claim isolation
 from a same-UID administrator deliberately reopening the database from maintenance
