@@ -187,6 +187,7 @@ class Campaign:
         self._pid = os.getpid()
         self._live = False
         self._stopped = False
+        self.database_pool: Any = None  # Explicitly bound only after verified restore.
 
     @property
     def state_path(self) -> Path:
@@ -240,6 +241,7 @@ class Campaign:
                     or saved.get("plan_sha256") != self._plan_hash
                     or saved.get("plan") != self.plan
                     or saved.get("pending") is not None
+                    or saved.get("restore_pending") is not None
                     or saved.get("question") is not None
                     or saved.get("arm") is not None
                     or not 0 < saved.get("arm_index", 0) < len(ARMS)
@@ -272,6 +274,7 @@ class Campaign:
                 self.state["arm"] is not None
                 or self.state["arm_index"] == 0
                 or self.state["pending"]
+                or self.state.get("restore_pending")
             ):
                 self.fail("Incomplete campaign; reconcile rather than resume")
             self.state["status"] = (
@@ -306,6 +309,36 @@ class Campaign:
         self.state["restores"].append(dict(restore))
         self.state.update(arm=arm, question_index=0, question=None, stage_index=0)
         self._save()
+
+    def pending_restore(self, arm: str, identity: Mapping[str, Any]) -> None:
+        """Reserve exactly one destructive attempt before any target ALTER/DROP."""
+        self._check()
+        index = self.state["arm_index"]
+        if (
+            index >= len(ARMS)
+            or ARMS[index] != arm
+            or self.state["arm"] is not None
+            or self.state.get("restore_pending") is not None
+            or self.state.get("restore_attempts", 0) != index
+        ):
+            self.fail("Restore repeated, unordered or unresolved")
+        self.state["restore_attempts"] = index + 1
+        self.state["restore_pending"] = {"arm": arm, "identity": dict(identity)}
+        self._save()
+
+    def restored(self, arm: str, evidence: Mapping[str, Any]) -> None:
+        self._check()
+        if self.state.get("restore_pending", {}).get("arm") != arm or not evidence:
+            self.fail("Restore receipt lacks pending identity")
+        self.state.setdefault("restore_receipts", []).append(dict(evidence))
+        self.state["restore_pending"] = None
+        self._save()
+
+    def evaluation_pool(self) -> Any:
+        self._check()
+        if self.database_pool is None or self.state.get("restore_pending"):
+            self.fail("Verified preopened campaign pool missing")
+        return self.database_pool
 
     def begin_question(self, question_id: str) -> None:
         self._check()
@@ -518,6 +551,7 @@ class Campaign:
             self.state["question"] is not None
             or self.state["question_index"] != 50
             or self.state["pending"]
+            or self.state.get("restore_pending")
             or not qualification
         ):
             self.fail("Arm incomplete or not qualified")

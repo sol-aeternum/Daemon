@@ -37,16 +37,51 @@ producers are excluded**, nor protect against arbitrary same-UID code. Receipt
 files contain benchmark outputs and belong in private retained evidence, not Git.
 Credentials and request headers are excluded from identities/artifacts.
 
-## Deliberately not implemented by this primitive
+## Common launcher and approved in-place restoration
 
-There is **no paid-launch CLI, destructive restore command or automatic recovery**.
-`start_arm(verified_pins=..., restore=...)` and `finish_arm(qualification=...)` bind
-the operator's independently verified evidence. Nonempty dictionaries are not proof
-of identity, restore completion, dataset freeze, qualified manifests or acceptance.
-Do not wire those methods to fabricated flags or invoke them as substitutes for
-the remaining checks below.
+`python -m orchestrator.eval.campaign_launch prepare` is read-only preparation.
+It validates the frozen dataset, control/candidate source difference, shared code,
+snapshot/ingest identity, public endpoint prices, cached tokenizer, catalogue and
+protected fingerprint. It writes a private pinned plan and one COPY-aware-validated
+restore script, hashed and reused unchanged across all arms. No inference or restore
+occurs during preparation. Snapshot-derived SQL is private retained evidence, never
+committed or supplied to a model reviewer.
 
-Before any real run, implement/test/review the common launcher that verifies:
+`python -m orchestrator.eval.campaign_launch arm` executes only one explicit arm.
+It requires the clean pinned checkout and a fresh source/plan/arm/live-state-bound
+Astra action-review artifact. This is trusted operator evidence, not a cryptographic
+authorization mechanism. Do not fabricate an approval flag or replay an expired,
+interrupted or uncertain action. The primitive methods still bind evidence; the
+launcher supplies the actual checks rather than treating nonempty dicts as proof.
+
+Owner-approved restoration **preserves the same database**, replacing only `public`:
+
+1. Verify the exact container, loopback port, server system identifier, database OID,
+   existing marker/owner, immutable archive/script and preserved evidence. Record a
+   durable restore attempt/pending identity before any connection-state mutation.
+2. Open the owned restore session and all ten evaluation connections. Disable new
+   target connections, verify the exact owned PID set, and reject foreign sessions,
+   prepared transactions, replication slots or out-of-scope persistent objects.
+   Never terminate a foreign producer or use `DROP DATABASE ... FORCE`.
+3. Verify catalogue definitions and the dependency identities reachable by CASCADE.
+   Reject changed enums/types, schemas, ACLs, event triggers or unapproved objects.
+   Run public replacement plus the pinned script in one transaction through the
+   already-open session. Preserve the PG16 `pg_database_owner`/public-USAGE baseline.
+4. Check restored catalogue and protected content fingerprint, then use the same
+   fixed pool in the canonical runner. Admission stays closed; connection loss has
+   no reopen/fallback path. Attestation stops before pool closure. Verify each arm's
+   complete official coverage and qualification before advancing.
+5. Leave admission closed between arms. Only clean, fully qualified campaign
+   completion may restore its original open state. Any failed or uncertain action
+   stays disabled/pending for operator reconciliation, never an automatic retry.
+
+The database gate excludes ordinary new target writers. It does not claim isolation
+from a same-UID administrator deliberately reopening the database from maintenance
+SQL. Writes completed in `public` during connection setup are erased by replacement;
+unexpected out-of-scope changes cause a stop, not deletion. Tests use a separately
+owned, TCP-disabled PG16 fixture with public cached binaries, not the benchmark DB.
+
+Before any real run, final source/gate evidence and action-time supervision must verify:
 
 - Exact frozen IDs/dataset bytes, clean control/candidate SHAs and identical guard
   code/config, formatter and route pins, immutable snapshot hash and protected DB

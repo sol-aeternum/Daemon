@@ -1243,9 +1243,15 @@ class LongMemEvalFactRunner:
         pool: Any = None
         attestation_started = False
         try:
-            pool = await asyncpg.create_pool(
-                dsn=settings.database_url, min_size=2, max_size=max(10, 4 * self.concurrency + 2)
-            )
+            campaign = current_campaign()
+            if campaign is not None:
+                pool = campaign.evaluation_pool()
+            else:
+                pool = await asyncpg.create_pool(
+                    dsn=settings.database_url,
+                    min_size=2,
+                    max_size=max(10, 4 * self.concurrency + 2),
+                )
             await assert_benchmark_database(pool, settings.database_url)
             attestation_started = True
             attestation_counts = await prepare_service_runtime(settings, pool)
@@ -1951,6 +1957,7 @@ class LongMemEvalFactRunner:
                 "baseline_qualified": manifest.get("baseline_qualified", False),
                 "result_count": payload["result_count"],
                 "error_count": payload["error_count"],
+                "dual_judgments": payload["dual_judgments"],
             }
             save_manifest(manifest_path, manifest)
 

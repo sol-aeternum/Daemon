@@ -495,6 +495,7 @@ async def test_canonical_catch_saves_partial_then_stops_before_second_question(
     with pytest.raises(guard.CampaignStopped):
         with instance.activate():
             instance.start_arm("A0", verified_pins=plan().pins, restore={"synthetic": True})
+            instance.database_pool = await fact_harness.asyncpg.create_pool()
             await runner.evaluate()
     assert calls == ["synthetic-0"]
     rows = [json.loads(line) for line in runner.output_path.read_text().splitlines()]
