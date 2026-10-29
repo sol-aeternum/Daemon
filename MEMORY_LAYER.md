@@ -23,6 +23,19 @@ cannot bypass privacy or account compute policy.
 - **Fernet** encryption applied at the application layer before write — all `content` fields encrypted transparently
 - **Embeddings stored as plaintext** vectors so pgvector can index and search them
 
+The Memory Browser's owner-scoped list/count search uses the existing `content_tsv`
+index with `plainto_tsquery('english', query)` (#317). All non-stop query lexemes
+must match; English word forms are stemmed, with no substring/prefix or query-operator
+interpretation. Stop-word-only or punctuation-only searches match nothing. Empty
+search retains the unfiltered list. Category, source, status, locality and date
+filters, deterministic created-at/id order, and API query/page bounds are unchanged.
+Rows without an index remain available without a text filter but cannot match one;
+this repair performs no backfill or decrypt-and-scan fallback.
+
+`content_tsv` contains plaintext searchable lexemes despite Fernet-encrypted content.
+Reusing it adds no new plaintext store or exposure; it does not establish owner
+acceptance of that existing exposure for a pilot or qualify a deployment.
+
 ### Encryption
 
 `ContentEncryption` (`orchestrator/memory/encryption.py`) encrypts content before it reaches PostgreSQL and decrypts on read:
