@@ -219,6 +219,11 @@ is substituted for those later acceptance gates.
 | 5 | Accepted-input references and deterministic document-output registration; lost acknowledgement, duplicate submits/completions and interrupted publication. |
 | 6 | Native two-client UI plus encrypted replay adapter; account-switch/cache, unsupported-version and local-control tests asserting zero generation calls. |
 
+The owner subsequently approved [N0](NAMESPACE_JOURNAL_CANDIDATE.md), an uncalled
+pure namespace-intent candidate codec and mixed structural validator. It creates
+no namespace and changes no production journal/DB/startup behavior. Durable
+namespace admission, lifecycle and publication remain separately gated.
+
 ### Increment 2a — uncalled envelope codec
 
 The owner approved splitting increment 2 on 28 October 2026: first the bounded

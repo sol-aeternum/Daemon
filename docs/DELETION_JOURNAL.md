@@ -136,6 +136,9 @@ Registry, notice-send, namespace and suspension-change integration rows in the
 qualification matrix remain deferred: unknown kinds are refused, not implemented
 by a generic framework or used to manufacture applied markers. Original facts
 and no-dispatch mechanics are qualified only within this structural substrate.
+The separately approved [N0 candidate](NAMESPACE_JOURNAL_CANDIDATE.md) adds only
+uncalled pure namespace-intent format/validation code. It does not change this
+production decoder, journal writer, startup barrier or applied-marker contract.
 Production storage throughput, all-copy backup-marker evidence, live restore
 drills, continuous retention, secret erasure and proxy/artifact traffic withdrawal
 remain separately approval-blocked. No runtime enablement or live data was changed.
