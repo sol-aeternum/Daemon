@@ -308,6 +308,29 @@ describe('conversation model selection', () => {
     expect(shown(A, OPUS)).toBe(OPUS);
   });
 
+  it('reverts a failed save to a newer value another client saved', async () => {
+    const patches = installServer({ [A]: 'auto' });
+    render(<Probe />);
+    await screen.findByText('selected:Chat A');
+    const accepted = select(A, SONNET);
+    await flush();
+    patches[0].response.resolve(json({ status: 'updated' }));
+    await accepted;
+    expect(shown(A, SONNET)).toBe(SONNET);
+    // Another client saves Opus; this client's next read picks it up.
+    expect(shown(A, OPUS)).toBe(OPUS);
+    // The UI passes what it shows as `current`, but the stored baseline,
+    // not that argument, must already be Opus.
+    const rejected = select(A, 'auto', SONNET);
+    await flush();
+    patches[1].response.resolve(json({ detail: 'boom' }, 500));
+    await expect(rejected).resolves.toMatchObject({
+      status: 'failed',
+      revertTo: OPUS,
+    });
+    expect(shown(A, OPUS)).toBe(OPUS);
+  });
+
   it('scopes a failure to its own conversation after switching', async () => {
     const patches = installServer({ [A]: 'auto', [B]: OPUS });
     render(<Probe />);

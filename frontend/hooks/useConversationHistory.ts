@@ -788,6 +788,10 @@ export function useConversationHistory() {
         if (loaded !== save.confirmed) return save.confirmed;
         save.echoed = true;
       }
+      // With nothing pending, the read is the server's current value (perhaps
+      // set by another client), so a later failed save reverts to it.
+      save.confirmed = loaded;
+      save.requested = loaded;
       return loaded;
     },
     [],
