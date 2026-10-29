@@ -2375,6 +2375,7 @@ async def revoke_device_endpoint(
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
+            await lock_auth_runtime_state(conn)
             row = await conn.fetchrow(
                 """
                 SELECT id, user_id, revoked_at
