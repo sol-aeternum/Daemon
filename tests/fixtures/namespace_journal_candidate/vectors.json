@@ -1,0 +1,17 @@
+{
+  "note": "Synthetic canonical vectors for the uncalled N0 namespace journal candidate. Both payloads are first frames: sequence 1, zero previous digest, no account or operation predecessor. The single token {command_digest} is replaced by the test with the lowercase hex SHA-256 of command_digest_input, computed with hashlib and never with the module under test. No real account, namespace, journal or file appears here.",
+  "vectors": {
+    "v1_request_first_frame": {
+      "kind": "v1",
+      "event_type": "requested",
+      "canonical_payload": "{\"account_prev\":null,\"command\":{\"account_id\":\"ac000000-0000-4000-8000-000000000001\",\"decision_at\":\"2026-01-01T12:00:00+00:00\",\"event_type\":\"requested\",\"fields\":{\"billing_deadline\":\"2026-01-04T12:00:00+00:00\",\"causes\":[{\"code\":\"deletion\",\"id\":\"0b000000-0000-4000-8000-0000000000bb\"}],\"drain_deadline\":\"2026-01-02T12:00:00+00:00\",\"generation\":1,\"kind\":\"request\",\"no_grace\":false,\"prior_reason\":null,\"prior_status\":\"active\",\"reason\":null,\"revocation_deadline\":\"2026-01-03T12:00:00+00:00\"},\"operation_id\":\"0b000000-0000-4000-8000-0000000000bb\"},\"command_digest\":\"{command_digest}\",\"event_id\":\"0e000000-0000-4000-8000-0000000000e1\",\"journal_id\":\"0ad00000-0000-4000-8000-0000000000aa\",\"operation_prev\":null,\"previous_digest\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"seq\":1,\"version\":1}",
+      "command_digest_input": "{\"account_id\":\"ac000000-0000-4000-8000-000000000001\",\"event_type\":\"requested\",\"fields\":{\"causes\":[[\"deletion\",\"0b000000-0000-4000-8000-0000000000bb\"]],\"no_grace\":false,\"prior_reason\":null,\"prior_status\":\"active\",\"reason\":null},\"operation_id\":\"0b000000-0000-4000-8000-0000000000bb\"}"
+    },
+    "v2_namespace_birth_first_frame": {
+      "kind": "v2",
+      "event_type": "namespace_create_intended",
+      "canonical_payload": "{\"account_prev\":null,\"command\":{\"account_id\":\"ac000000-0000-4000-8000-000000000001\",\"decision_at\":\"2026-01-01T12:00:00+00:00\",\"event_type\":\"namespace_create_intended\",\"fields\":{\"generation\":0,\"kind\":\"namespace_create\",\"namespace\":\"0123456789abcdef0123456789abcdef\"},\"operation_id\":null},\"command_digest\":\"{command_digest}\",\"event_id\":\"0e000000-0000-4000-8000-0000000000e2\",\"journal_id\":\"0ad00000-0000-4000-8000-0000000000aa\",\"operation_prev\":null,\"previous_digest\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"seq\":1,\"version\":2}",
+      "command_digest_input": "{\"account_id\":\"ac000000-0000-4000-8000-000000000001\",\"domain\":\"daemon-namespace-command-v2\",\"event_type\":\"namespace_create_intended\",\"fields\":{\"generation\":0,\"kind\":\"namespace_create\",\"namespace\":\"0123456789abcdef0123456789abcdef\"},\"operation_id\":null}"
+    }
+  }
+}
