@@ -334,15 +334,33 @@ async def _call_llm_with_provider_config(
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    try:
-        response = await litellm.acompletion(**call_params)
-    except Exception as e:
-        if is_benchmark:
-            raise BenchmarkProviderError(
-                f"Benchmark-mode {bm_call_key} provider failure: {e}"
-            ) from e
-        logger.error(f"LLM call failed: {e}")
-        return None
+    from orchestrator.eval.campaign_guard import campaign_call, current_campaign
+
+    # Default-inert measurement hook. Never include credentials/headers in the
+    # request identity or retained receipt. All decoding happens inside the call
+    # scope so malformed paid responses also latch the campaign stop.
+    guarded_request = {
+        key: value
+        for key, value in call_params.items()
+        if key not in {"api_key", "extra_headers", "timeout"}
+    }
+    with campaign_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
+        try:
+            response = await litellm.acompletion(**call_params)
+        except Exception as e:
+            if is_benchmark:
+                raise BenchmarkProviderError(
+                    f"Benchmark-mode {bm_call_key} provider failure: {e}"
+                ) from e
+            logger.error(f"LLM call failed: {e}")
+            return None
+
+        if current_campaign() is not None:
+            model_dump = getattr(response, "model_dump", None)
+            response_data = model_dump() if callable(model_dump) else response
+            if not isinstance(response_data, dict):
+                raise BenchmarkProviderError("Guarded LLM receipt is not an object")
+            receipt.complete(response_data)
 
     if is_benchmark:
         response_data: Any = response

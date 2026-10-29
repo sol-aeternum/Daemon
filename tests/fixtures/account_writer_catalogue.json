@@ -1682,6 +1682,127 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "Campaign.activate",
+      "kind": "filesystem_write",
+      "fingerprint": "0171c44f0c976e9b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit opt-in benchmark evidence directory write; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "Campaign.activate",
+      "kind": "filesystem_write",
+      "fingerprint": "7cf4265056091358",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit opt-in benchmark evidence lock-file write; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "Campaign.activate",
+      "kind": "store_write",
+      "fingerprint": "f811e31f8024448a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Scanner candidate is campaign ContextVar.set, not an account store; no fence coverage claimed."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_sync_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Strict benchmark evidence directory fsync; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_sync_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "ecdc414b4c5f9d05",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Strict benchmark evidence directory descriptor open; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_write",
+      "kind": "filesystem_write",
+      "fingerprint": "05fa38777cec56a6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Strict benchmark evidence atomic replacement; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_write",
+      "kind": "filesystem_write",
+      "fingerprint": "29ba4b4fa90822a9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Strict benchmark evidence file fsync; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_write",
+      "kind": "filesystem_write",
+      "fingerprint": "4e6c27f11b704b39",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Removes only the owned leftover atomic-write temporary file; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_write",
+      "kind": "filesystem_write",
+      "fingerprint": "6d4e2638195f12b4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Private benchmark evidence temporary-file creation; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_write",
+      "kind": "filesystem_write",
+      "fingerprint": "a37031ca8645b5be",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Writes allowlisted benchmark reservation/receipt JSON; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_guard",
+      "qualname": "_write",
+      "kind": "filesystem_write",
+      "fingerprint": "d92df3c1c08be543",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes private benchmark evidence output; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.durable_io",
       "qualname": "_fsync_directory",
       "kind": "filesystem_write",

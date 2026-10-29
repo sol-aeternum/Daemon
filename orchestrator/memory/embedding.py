@@ -632,6 +632,9 @@ async def _post_embeddings(
     input_type: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    from orchestrator.eval.campaign_guard import reject_legacy_embedding
+
+    reject_legacy_embedding()
     _require_approved_embedding_service("voyage")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
@@ -658,6 +661,9 @@ async def _post_openai_embeddings(
     model: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    from orchestrator.eval.campaign_guard import reject_legacy_embedding
+
+    reject_legacy_embedding()
     _require_approved_embedding_service("openai")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
@@ -684,6 +690,9 @@ async def _post_openrouter_embeddings(
     input_type: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    from orchestrator.eval.campaign_guard import reject_legacy_embedding
+
+    reject_legacy_embedding()
     _require_approved_embedding_service("openrouter")
     settings = get_settings()
     headers = {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+from contextlib import ExitStack
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from typing import Any
 
@@ -21,6 +22,7 @@ from orchestrator.compute_runtime import (
 )
 from orchestrator.entitlements.errors import PolicyError
 from orchestrator.entitlements.policy import EmbeddingRoutePolicy, load_inference_policy
+from orchestrator.eval.campaign_guard import campaign_call, current_campaign
 
 MODEL = "openai/text-embedding-3-small"
 ENDPOINT = "https://openrouter.ai/api/v1"
@@ -250,16 +252,36 @@ async def embed(texts: list[str], *, route_id: str, api_key: str) -> list[list[f
         ) as client:
             for batch in batches:
                 bound = sum(input_bound(text) for text in batch)
-                async with metered_embedding_call(route, bound) as charge:
-                    fresh = approved_route(route_id)  # fresh attestation snapshot after hold
-                    if fresh != route:
-                        raise AdapterUnavailable("Embedding approval changed before send")
-                    policy = load_inference_policy()
-                    options = fresh.transport_payload(policy.requirements)["extra_body"]["provider"]
-                    charge.mark_dispatched()  # immediately before the one HTTP POST
-                    receipt = await _post(client, fresh, batch, api_key, options)
-                    batch_vectors, tokens, cost = validate_receipt(receipt, fresh, len(batch))
-                    charge.confirm(input_tokens=tokens, actual_microusd=cost)
+                # Keep the original admission order. The explicit measurement
+                # scope spans settlement, but begins immediately before dispatch.
+                with ExitStack() as guards:
+                    async with metered_embedding_call(route, bound) as charge:
+                        fresh = approved_route(route_id)  # fresh attestation snapshot after hold
+                        if fresh != route:
+                            raise AdapterUnavailable("Embedding approval changed before send")
+                        policy = load_inference_policy()
+                        options = fresh.transport_payload(policy.requirements)["extra_body"][
+                            "provider"
+                        ]
+                        request = {
+                            "route_id": route_id,
+                            "model": fresh.model,
+                            "endpoint": fresh.endpoint,
+                            "dimensions": fresh.dimensions,
+                            "input": batch,
+                            "provider": options,
+                        }
+                        observed = guards.enter_context(campaign_call("embedding", request))
+                        charge.mark_dispatched()  # immediately before the one HTTP POST
+                        receipt = await _post(client, fresh, batch, api_key, options)
+                        if current_campaign() is not None and isinstance(receipt, dict):
+                            observed.capture(receipt)
+                        batch_vectors, tokens, cost = validate_receipt(receipt, fresh, len(batch))
+                        charge.confirm(input_tokens=tokens, actual_microusd=cost)
+                    if current_campaign() is not None:
+                        if not isinstance(receipt, dict):
+                            raise AdapterReceiptError("Guarded embedding receipt is not an object")
+                        observed.complete(receipt)
                 vectors.extend(batch_vectors)  # release only after accounting succeeds
     except ComputeUnavailable as exc:
         if exc.category == FAILURE_SETTLEMENT_FAILED or exc.code.startswith("settlement"):
