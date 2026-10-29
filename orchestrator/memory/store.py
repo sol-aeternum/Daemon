@@ -2126,9 +2126,9 @@ class MemoryStore:
         if created_before is not None:
             params.append(created_before)
             conditions.append(f"created_at <= ${len(params)}::timestamptz")
-        if search is not None:
-            params.append(f"%{search}%")
-            conditions.append(f"content ILIKE ${len(params)}")
+        if search:
+            params.append(search)
+            conditions.append(f"content_tsv @@ plainto_tsquery('english', ${len(params)})")
         if confirmed is True:
             conditions.append("valid_to IS NULL")
         elif confirmed is False:
