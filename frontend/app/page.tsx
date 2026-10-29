@@ -430,6 +430,7 @@ function ChatContent() {
     taskStatus,
     switchConversation,
     setConversationModel,
+    resolveSelectedModel,
     searchQuery,
     setSearchQuery,
     conversationSearch,
@@ -444,6 +445,11 @@ function ChatContent() {
   } = useConversationHistoryContext();
 
   const [activeModel, setActiveModel] = useState<string>('auto');
+  // The choice as of the latest render, for the new-chat id assignment.
+  const activeModelRef = useRef(activeModel);
+  useLayoutEffect(() => {
+    activeModelRef.current = activeModel;
+  }, [activeModel]);
   // State to store events for past messages
   const [archivedEvents, setArchivedEvents] = useState<
     Record<
@@ -470,11 +476,11 @@ function ChatContent() {
   );
 
   useEffect(() => {
-    if (currentConversation?.selectedModel) {
-      const selectedModel = currentConversation.selectedModel;
-      queueMicrotask(() => setActiveModel(selectedModel));
-    }
-  }, [currentConversation]);
+    if (!currentConversation) return;
+    // A pending or unechoed local save wins over an older server read.
+    const selectedModel = resolveSelectedModel(currentConversation);
+    queueMicrotask(() => setActiveModel(selectedModel));
+  }, [currentConversation, resolveSelectedModel]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -592,6 +598,22 @@ function ChatContent() {
   useLayoutEffect(() => {
     currentIdRef.current = currentId;
   }, [currentId]);
+  // Save a conversation's model choice; a failed save is shown and reverted,
+  // never left on screen as if it had been saved (#231).
+  const persistModel = useCallback(
+    async (conversationId: string, model: string, previous: string) => {
+      const result = await setConversationModel(
+        conversationId,
+        model,
+        previous,
+      );
+      if (result.status !== 'failed') return;
+      if (currentIdRef.current === conversationId)
+        setActiveModel(result.revertTo);
+      showError(result.message);
+    },
+    [setConversationModel, showError],
+  );
   // Set once useChat has returned; used by callbacks created before it.
   const reconcileWithServerRef = useRef<
     ((key?: string | null) => Promise<void>) | null
@@ -2171,6 +2193,10 @@ function ChatContent() {
       }
       urlUpdatedRef.current = true;
       router.replace(`/?id=${conversationId}`);
+      // A choice made before the server named this chat is saved now.
+      const chosenModel = activeModelRef.current;
+      if (chosenModel !== 'auto')
+        void persistModel(conversationId, chosenModel, 'auto');
     }
 
     if (
@@ -2195,6 +2221,7 @@ function ChatContent() {
     assignConversationId,
     flattenedData,
     currentId,
+    persistModel,
     refreshConversations,
     router,
     showError,
@@ -2339,8 +2366,9 @@ function ChatContent() {
         controls={draft.controls}
         onControlsChange={draft.setControls}
         onSelectModel={(modelId) => {
+          const previous = activeModel;
           setActiveModel(modelId);
-          if (currentId) setConversationModel(currentId, modelId);
+          if (currentId) void persistModel(currentId, modelId, previous);
         }}
         isRecording={isRecording}
         isConnecting={isConnecting}

@@ -487,7 +487,9 @@ class MemoryStore:
         title_locked: bool | None = None,
         metadata_patch: dict[str, Any] | None = None,
         last_retrieved_memory_ids: list[uuid.UUID] | None = None,
+        touch_activity: bool = True,
     ) -> dict[str, Any] | None:
+        """``touch_activity=False`` keeps a preference-only edit from reordering history."""
         row = await self._pool.fetchrow(
             """
             UPDATE conversations
@@ -506,8 +508,8 @@ class MemoryStore:
                     ELSE COALESCE(metadata, '{}'::jsonb) || $8::jsonb
                 END,
                 last_retrieved_memory_ids = COALESCE($9, last_retrieved_memory_ids),
-                updated_at       = NOW(),
-                last_activity_at = NOW()
+                updated_at       = CASE WHEN $10 THEN NOW() ELSE updated_at END,
+                last_activity_at = CASE WHEN $10 THEN NOW() ELSE last_activity_at END
             WHERE id = $1
             RETURNING *
             """,
@@ -522,6 +524,7 @@ class MemoryStore:
             json.dumps([str(m) for m in last_retrieved_memory_ids])
             if last_retrieved_memory_ids
             else None,
+            touch_activity,
         )
         return dict(row) if row else None
 

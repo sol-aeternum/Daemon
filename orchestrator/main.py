@@ -67,6 +67,7 @@ from orchestrator.services.identity import (
     record_chat_rate_limit_rejection,
     record_chat_rate_limit_request,
 )
+from orchestrator.catalog import selectable_model_ids
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
     HostSecurityConfigError,
@@ -82,7 +83,6 @@ from orchestrator.compute_runtime import (
     choose_route,
     compute_error,
 )
-from orchestrator.entitlements.errors import PolicyError
 from orchestrator.entitlements.policy import load_inference_policy
 from orchestrator.daemon import (
     effective_provider_and_model,
@@ -1343,21 +1343,8 @@ async def list_providers(
 
 
 def _selectable_model_ids() -> set[str]:
-    """Only reviewed, available text routes can be offered for manual selection."""
-    try:
-        policy = load_inference_policy()
-    except PolicyError:
-        return set()
-    return {
-        route.model
-        for route in policy.routes.values()
-        if route.provider == "openrouter"
-        and route.model.startswith("openrouter/")
-        and route.is_approved(policy.requirements)
-        and route.supports(
-            required_capabilities=frozenset({"text"}), input_tokens=1, output_tokens=1
-        )
-    }
+    # Reads this module's loader so existing test fixtures that patch it apply.
+    return selectable_model_ids(load_inference_policy)
 
 
 @app.get("/api/models")
