@@ -11,7 +11,10 @@ waiver. PR #606's diversity candidate remains separately unmeasured/unmerged.
 activated by an environment variable or normal production startup. A caller must
 provide the ordered 50 IDs, per-question stage allocations, immutable campaign
 pins and a token counter. The plan reserves the approved $4.35 whole envelope plus
-the intact prior $1.7019050; it refuses allocations above the new reservation.
+the intact prior $6.0519050, for the approved replacement ceiling of $10.4019050;
+it refuses allocations above the new reservation. The separate $1 capacity-screen
+hold is not available to this campaign. One prior restore plus four replacement
+restores is the maximum approved cumulative scope; the failed ledger is immutable.
 These are local quoted-rate reservations, **not verified billing or a provider cap**.
 
 Each A0/A1/A2/C0 arm requires embedding → reader → generic → official stages for
@@ -22,6 +25,12 @@ calls or durability failures latch a stop. Successful partial receipts stay reta
 No interrupted/open/stopped/completed campaign can automatically replay. A clean,
 fully completed and externally qualified arm can hand off to a new pinned process
 for the next arm, allowing control/candidate source revisions without live edits.
+
+The owner-approved replacement uses a five-second minimum between LLM start
+boundaries, serially and identically across all four arms. The async LLM hook waits
+only the remaining interval, then revalidates and durably records pending before
+dispatch. Embeddings are unpaced; calls outside an active campaign are unchanged.
+Cancellation or a stop during the wait cannot dispatch. No automatic retries.
 
 Hooks cover the benchmark LLM preparation/send boundary and qualified embedding
 adapter dispatch/settlement. Each legacy embedding HTTP transport refuses an active
@@ -46,6 +55,20 @@ protected fingerprint. It writes a private pinned plan and one COPY-aware-valida
 restore script, hashed and reused unchanged across all arms. No inference or restore
 occurs during preparation. Snapshot-derived SQL is private retained evidence, never
 committed or supplied to a model reviewer.
+
+For the approved stopped-A0 recovery, `prepare-replacement` instead requires exact
+hashes of the original plan and failed ledger. It retains all prior reservations
+and the pending call, reuses pinned immutable artifacts and historical catalogue
+evidence, and verifies closed admission/identity/no sessions through a read-only
+control connection. It never connects to or reopens the target during preparation.
+Historical catalogue evidence is not a fresh measurement: the unchanged restore
+boundary must recheck the live catalogue before DROP and the restored catalogue
+and fingerprint afterward. Execution revalidates the recovery hashes. Original
+plans with old accounting or without replacement lineage cannot execute.
+The replacement directory is fixed to the failed campaign's sibling named with
+`-replacement`; another directory cannot reset its allowance. An existing stopped
+successor remains non-resumable. This shares the cooperative operator trust model
+of the evidence lock, not protection against administrative copying/deletion.
 
 `python -m orchestrator.eval.campaign_launch arm` executes only one explicit arm.
 It requires the clean pinned checkout and a fresh source/plan/arm/live-state-bound

@@ -334,7 +334,7 @@ async def _call_llm_with_provider_config(
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    from orchestrator.eval.campaign_guard import campaign_call, current_campaign
+    from orchestrator.eval.campaign_guard import campaign_llm_call, current_campaign
 
     # Default-inert measurement hook. Never include credentials/headers in the
     # request identity or retained receipt. All decoding happens inside the call
@@ -344,7 +344,7 @@ async def _call_llm_with_provider_config(
         for key, value in call_params.items()
         if key not in {"api_key", "extra_headers", "timeout"}
     }
-    with campaign_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
+    async with campaign_llm_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
         try:
             response = await litellm.acompletion(**call_params)
         except Exception as e:
