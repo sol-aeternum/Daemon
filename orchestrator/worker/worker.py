@@ -84,8 +84,12 @@ def _build_consolidation_cron_job(interval: int) -> Any:
 
 
 async def on_startup(ctx: WorkerContext) -> None:
+    from orchestrator.tasks.composition import qualify_worker_composition
+    from orchestrator.tasks.startup import task_startup_selected, require_legacy_task_schema
+
     app_settings = get_settings()
     apply_resolved_database_url(app_settings)
+    composed = task_startup_selected(app_settings, "worker")
     ctx["settings"] = app_settings
     shared_counter = ctx.get("redis")
     set_shared_encryption_failure_counter(
@@ -93,9 +97,11 @@ async def on_startup(ctx: WorkerContext) -> None:
         if hasattr(shared_counter, "incr")
         else None
     )
-    ctx["encryption"] = ContentEncryption(app_settings.daemon_encryption_key)
+    encryption = ContentEncryption(app_settings.daemon_encryption_key)
+    ctx["encryption"] = encryption
     ctx["store"] = None
     ctx["task_store"] = None
+    ctx["task_composition"] = None
 
     validate_database_credentials(app_settings)
     configured_journal(app_settings)
@@ -112,15 +118,30 @@ async def on_startup(ctx: WorkerContext) -> None:
     except Exception:
         raise JournalError("database_required") from None
     try:
-        await require_recovery_barrier(db_pool, app_settings)
-    except BaseException:
-        await db_pool.close()
-        raise
-    ctx["db_pool"] = db_pool
-    try:
+        if composed:
+            bundle = await qualify_worker_composition(
+                enabled=True,
+                worker_pool=db_pool,
+                encryption=encryption,
+                settings=app_settings,
+                acceptor_role=app_settings.daemon_task_acceptor_role,
+                worker_role=app_settings.daemon_task_worker_role,
+            )
+            if bundle is None:
+                from orchestrator.services.account_control.transaction import ObservationBlocked
+
+                raise ObservationBlocked("inference_composition_refused")
+            ctx["task_composition"] = bundle
+            ctx["store"] = bundle.memory
+            ctx["task_store"] = bundle.tasks
+        else:
+            await require_legacy_task_schema(db_pool)
+            await require_recovery_barrier(db_pool, app_settings)
+        ctx["db_pool"] = db_pool
         await initialize_development_pepper(app_settings, db_pool)
-        ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
-        ctx["task_store"] = TaskStore(db_pool, ctx["encryption"], ctx["store"])
+        if not composed:
+            ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
+            ctx["task_store"] = TaskStore(db_pool, ctx["encryption"], ctx["store"])
         logger.info("Worker DB pool created")
         # No background startup until the journal evidence gate has passed.
         from orchestrator.entitlements import attestation
@@ -131,6 +152,7 @@ async def on_startup(ctx: WorkerContext) -> None:
         ctx.pop("db_pool", None)
         ctx["store"] = None
         ctx["task_store"] = None
+        ctx["task_composition"] = None
         raise
 
 

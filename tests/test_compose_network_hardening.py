@@ -320,3 +320,24 @@ async def test_worker_pool_uses_postgres_env_derived_database_url(
 
     assert settings.database_url == "postgresql://daemon:unique%40secret@postgres:5432/daemon"
     assert captured["dsn"] == settings.database_url
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "postgresql://md_acceptor:daemon@postgres/daemon",
+        "postgresql://md_acceptor@postgres/daemon?password=unique&password=daemon",
+    ],
+)
+def test_production_acceptor_dsn_uses_existing_known_default_guard(credential):
+    # A distinct backend credential must not bypass the existing production gate.
+    settings = Settings(
+        daemon_environment="production",
+        database_url="postgresql://md_app:unique-fixture-secret@postgres/daemon",
+        daemon_task_acceptor_database_url=credential,
+    )
+    with pytest.raises(
+        UnsafeDatabaseCredentialError,
+        match="DAEMON_TASK_ACCEPTOR_DATABASE_URL uses a known default",
+    ):
+        validate_database_credentials(settings)

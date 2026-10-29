@@ -78,6 +78,7 @@ async def test_actual_lifespan_never_yields_after_failed_barrier(monkeypatch):
     from orchestrator import main
 
     value, pool = settings(database_url="postgresql://fictional", redis_url=None), AsyncMock()
+    pool.fetchval.return_value = True  # positive pre-050 catalog evidence
     monkeypatch.setattr(main, "get_settings", lambda: value)
     monkeypatch.setattr(main, "_validate_startup_config", lambda _: None)
     monkeypatch.setattr(db, "validate_redis_account_key", lambda _: None)
@@ -116,6 +117,7 @@ async def test_backend_connection_failure_no_longer_degrades(monkeypatch, enable
 async def test_backend_barrier_failure_closes_pool_before_consumers(monkeypatch):
     value = settings(database_url="postgresql://fictional", redis_url=None)
     pool = AsyncMock()
+    pool.fetchval.return_value = True  # positive pre-050 catalog evidence
     monkeypatch.setattr(db, "validate_redis_account_key", lambda _: None)
     monkeypatch.setattr(db.asyncpg, "create_pool", AsyncMock(return_value=pool))
     guard = AsyncMock(side_effect=JournalError("recovery_required"))
@@ -148,6 +150,7 @@ async def test_worker_connection_failure_runs_no_pepper_or_job(monkeypatch, enab
 @pytest.mark.asyncio
 async def test_worker_failed_barrier_closes_pool_and_runs_no_sideeffects(monkeypatch):
     value, pool = settings(database_url="postgresql://fictional"), AsyncMock()
+    pool.fetchval.return_value = True  # positive pre-050 catalog evidence
     monkeypatch.setattr(worker, "get_settings", lambda: value)
     monkeypatch.setattr(worker.asyncpg, "create_pool", AsyncMock(return_value=pool))
     monkeypatch.setattr(
