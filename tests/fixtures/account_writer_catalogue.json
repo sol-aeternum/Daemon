@@ -2967,7 +2967,7 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.update_conversation",
       "kind": "sql_inline",
-      "fingerprint": "90cef3c63b730fc4",
+      "fingerprint": "ea4a31137c38bd03",
       "tables": [
         "conversations"
       ],

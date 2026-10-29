@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
+
+from orchestrator.entitlements.errors import PolicyError
+from orchestrator.entitlements.policy import load_inference_policy
 
 
 @dataclass
@@ -78,6 +83,24 @@ def get_model_name(model_id: str) -> str:
         name = name.replace("-", " ").title()
         return name
     return model_id
+
+
+def selectable_model_ids(load_policy: Callable[[], Any] | None = None) -> set[str]:
+    """Only reviewed, available text routes can be offered for manual selection."""
+    try:
+        policy = (load_policy or load_inference_policy)()
+    except PolicyError:
+        return set()
+    return {
+        route.model
+        for route in policy.routes.values()
+        if route.provider == "openrouter"
+        and route.model.startswith("openrouter/")
+        and route.is_approved(policy.requirements)
+        and route.supports(
+            required_capabilities=frozenset({"text"}), input_tokens=1, output_tokens=1
+        )
+    }
 
 
 def get_catalog() -> dict[str, object]:

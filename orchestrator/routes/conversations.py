@@ -1,13 +1,15 @@
 """Conversation API routes."""
 
+import json
 from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.catalog import selectable_model_ids
 from orchestrator.db import get_app_state, AppState
 from orchestrator.history_pagination import (
     HistoryBoundary,
@@ -19,6 +21,11 @@ from orchestrator.routes.tasks import TaskOut, task_out, task_store
 from orchestrator.tasks.store import TaskNotFound
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+AUTO_MODEL = "auto"
+# The only client-writable key in conversations.metadata (#231). The rest of
+# that JSONB is server-owned (summary checkpoints, home-suggestion markers).
+SELECTED_MODEL_KEY = "selected_model"
 
 
 class MessageOut(BaseModel):
@@ -52,6 +59,9 @@ class ConversationOut(BaseModel):
     tokens_total: int = 0
     pinned: bool = False
     title_locked: bool = False
+    # A display preference only: /chat still admits whatever model a request
+    # names, so a stored choice never bypasses qualification or budget.
+    selected_model: str = AUTO_MODEL
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime | None = None
@@ -83,13 +93,28 @@ class ConversationListResponse(BaseModel):
 
 
 class ConversationUpdate(BaseModel):
+    # Unknown fields (including raw ``metadata``) fail loudly instead of being
+    # dropped while the client believes they were saved.
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = None
     pinned: bool | None = None
     title_locked: bool | None = None
+    selected_model: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class StatusResponse(BaseModel):
     status: str
+
+
+def _selected_model(metadata: object) -> str:
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            return AUTO_MODEL
+    value = metadata.get(SELECTED_MODEL_KEY) if isinstance(metadata, dict) else None
+    return value if isinstance(value, str) and value else AUTO_MODEL
 
 
 def _normalize_conversation(conversation: dict[str, object]) -> dict[str, object]:
@@ -97,6 +122,7 @@ def _normalize_conversation(conversation: dict[str, object]) -> dict[str, object
         conversation["pinned"] = False
     if conversation.get("title_locked") is None:
         conversation["title_locked"] = False
+    conversation["selected_model"] = _selected_model(conversation.get("metadata"))
     return conversation
 
 
@@ -286,6 +312,19 @@ async def update_conversation(
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    selected_model = update.selected_model
+    if (
+        selected_model is not None
+        and selected_model != AUTO_MODEL
+        and selected_model not in selectable_model_ids()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "model_not_selectable",
+                "message": "That model is not available for selection",
+            },
+        )
     existing = await store.get_conversation(conversation_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -294,6 +333,12 @@ async def update_conversation(
         title=update.title,
         pinned=update.pinned,
         title_locked=update.title_locked,
+        metadata_patch=(
+            {SELECTED_MODEL_KEY: selected_model} if selected_model is not None else None
+        ),
+        # Choosing a model is not conversation activity (#231).
+        touch_activity=selected_model is None
+        or any(value is not None for value in (update.title, update.pinned, update.title_locked)),
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Conversation not found")
