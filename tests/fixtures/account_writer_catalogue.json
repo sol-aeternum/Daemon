@@ -1748,6 +1748,17 @@
       "rationale": "Strict benchmark evidence atomic replacement; no account-generation fence coverage."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_final_verdict",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "e036dd0f46fe4715",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive final-verdict import evidence directories; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_guard",
       "qualname": "_write",
       "kind": "filesystem_write",

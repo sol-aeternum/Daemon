@@ -220,7 +220,12 @@ def verify_common(control: str, candidate: str) -> dict[str, str]:
 
 
 def checkout(plan: CampaignPlan, arm: str) -> None:
-    if "retry_recovery_lineage" in plan.pins:
+    if "final_verdict_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_final_verdict import verify_recovery
+
+        require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in final recovery")
+        verify_recovery(json.loads(json.dumps(plan.payload())))
+    elif "retry_recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_retry import verify_recovery
 
         require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in retry recovery")
@@ -371,6 +376,11 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     Like the sibling lock, this is cooperative operator protection, not a defense
     against a same-UID administrator copying or deleting retained evidence.
     """
+    if "final_verdict_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_final_verdict import verify_recovery
+
+        verify_recovery(json.loads(json.dumps(plan.payload())), directory)
+        return
     if "retry_recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_retry import verify_recovery
 
@@ -677,6 +687,20 @@ def main() -> None:
         retry.add_argument("--" + name, type=Path, required=True)
     for name in ("previous-plan-sha256", "stopped-ledger-sha256", "control-sha", "candidate-sha"):
         retry.add_argument("--" + name, required=True)
+    final = commands.add_parser(
+        "prepare-final-verdict-recovery", help="Offline exact completed-verdict import preparation"
+    )
+    for name in ("previous-plan", "stopped-ledger", "attempt-record", "result", "output"):
+        final.add_argument("--" + name, type=Path, required=True)
+    for name in (
+        "previous-plan-sha256",
+        "stopped-ledger-sha256",
+        "attempt-record-sha256",
+        "result-sha256",
+        "control-sha",
+        "candidate-sha",
+    ):
+        final.add_argument("--" + name, required=True)
     run = commands.add_parser(
         "arm", help="One explicitly reviewed arm; never automatic resume/retry"
     )
@@ -686,12 +710,14 @@ def main() -> None:
     args = parser.parse_args()
     from orchestrator.eval.campaign_recovery import prepare_second_replacement
     from orchestrator.eval.campaign_retry import prepare as prepare_retry
+    from orchestrator.eval.campaign_final_verdict import prepare as prepare_final
 
     operation = {
         "prepare": prepare,
         "prepare-replacement": prepare_replacement,
         "prepare-second-replacement": prepare_second_replacement,
         "prepare-retry-recovery": prepare_retry,
+        "prepare-final-verdict-recovery": prepare_final,
         "arm": run_arm,
     }
     asyncio.run(operation[args.command](args))

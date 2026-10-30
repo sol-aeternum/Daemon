@@ -1744,10 +1744,16 @@ class LongMemEvalFactRunner:
         question_order = build_question_order(dataset)
 
         campaign = current_campaign()
+        final_recovery = (
+            campaign is not None
+            and "final_verdict_recovery_lineage" in campaign.plan["pins"]
+            and campaign.state["arm"] == "A1"
+        )
         retry_recovery = (
             campaign is not None
             and "retry_recovery_lineage" in campaign.plan["pins"]
             and campaign.state["arm"] == "A1"
+            and not final_recovery
         )
         if campaign is not None:
             if (
@@ -1774,7 +1780,18 @@ class LongMemEvalFactRunner:
                         "Restore the ingest snapshot (RUNBOOK_LAPTOP.md) before evaluating."
                     )
                 logger.warning("[evaluate] Proceeding on a database that differs from the ingest")
-            if retry_recovery:
+            if final_recovery:
+                from orchestrator.eval.campaign_final_verdict import (
+                    seed_runner,
+                    write_recovery_results,
+                )
+
+                assert campaign is not None
+                seed_runner(campaign, checkpoint, manifest)
+                write_recovery_results(
+                    campaign, self.output_path, ordered_results(evaluate_phase["results"])
+                )
+            elif retry_recovery:
                 from orchestrator.eval.campaign_retry import seed_runner, write_recovery_results
 
                 assert campaign is not None
@@ -1908,7 +1925,12 @@ class LongMemEvalFactRunner:
             question_ids = [row["question_id"] for row in ordered_results_list]
             if len(question_ids) != len(set(question_ids)):
                 raise RuntimeError("Duplicate question results after evaluation")
-            if retry_recovery:
+            if final_recovery:
+                from orchestrator.eval.campaign_final_verdict import write_recovery_results
+
+                assert campaign is not None
+                write_recovery_results(campaign, self.output_path, ordered_results_list)
+            elif retry_recovery:
                 from orchestrator.eval.campaign_retry import write_recovery_results
 
                 assert campaign is not None
@@ -1990,6 +2012,14 @@ class LongMemEvalFactRunner:
         payload = build_score_payload(results)
         campaign = current_campaign()
         if (
+            campaign is not None
+            and "final_verdict_recovery_lineage" in campaign.plan["pins"]
+            and campaign.state["arm"] == "A1"
+        ):
+            from orchestrator.eval.campaign_final_verdict import validate_prefix
+
+            validate_prefix(campaign, results, load_manifest(self.resolved_manifest_path()) or {})
+        elif (
             campaign is not None
             and "retry_recovery_lineage" in campaign.plan["pins"]
             and campaign.state["arm"] == "A1"

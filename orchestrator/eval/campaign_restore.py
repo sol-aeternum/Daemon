@@ -318,6 +318,11 @@ async def attached_pool(campaign: Campaign) -> AsyncIterator[FixedPool]:
     campaign._recovery_check()
     state, pins = campaign.state, campaign.plan["pins"]
     validate_attribution(state, campaign.plan, attached=False)
+    final_recovery = "final_verdict_recovery_lineage" in pins
+    if final_recovery:
+        from orchestrator.eval.campaign_final_verdict import before_attach
+
+        before_attach(campaign)
     require(
         state["arm"] == "A1"
         and state["arm_index"] == 1
@@ -326,7 +331,7 @@ async def attached_pool(campaign: Campaign) -> AsyncIterator[FixedPool]:
         and state.get("attach_pending") is None
         and not state.get("attach_receipt")
         and state["pending"] is None
-        and len(state["receipts"]) == 195,
+        and len(state["receipts"]) == (200 if final_recovery else 195),
         "Attach repeated or outside exact recovered A1 state",
     )
     container = container_identity()
@@ -386,6 +391,10 @@ async def attached_pool(campaign: Campaign) -> AsyncIterator[FixedPool]:
                 "inherited_restore": state["imported_restore"],
                 "identity": identity,
             }
+            if final_recovery:
+                state["attach_receipt"]["final_verdict_recovery_lineage"] = pins[
+                    "final_verdict_recovery_lineage"
+                ]
             state["attach_pending"] = None
             campaign._save()
             campaign.database_pool = FixedPool(pool)

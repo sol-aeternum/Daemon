@@ -195,6 +195,41 @@ independent review, full project gates and fresh exact-action Astra review remai
 mandatory. Six new scanner-discovered copy/bootstrap writer sites are explicitly
 unknown, uncovered and deferred; account-generation/fencing runtime is unchanged.
 
+### Exact completed-final-verdict successor — 2026-10-30
+
+`prepare-final-verdict-recovery` is an offline, hash-bound import of the one
+owner-approved, completed standalone A1 q50 official attempt 4. It permits no
+inference or replay and does not relax the old max-three validator. The exact
+parent plan/ledger and completed attempt/result hashes are pinned in
+`orchestrator/eval/campaign_final_verdict.py`; only the fixed unused successor
+plan and directory are accepted. The stopped parent and its terminal attempt 3
+remain immutable. Exclusive interrupted bootstraps cannot resume.
+
+All 199 old receipt files and the first 49 result lines are copied byte-identically.
+Receipt 199 explicitly records a **normalized official result**, never a raw
+provider/HTTP response. Q50's non-official base and original run ID remain intact;
+the imported verdict is incorrect, and missing cost stays missing. Attempt 4 and
+its $0.0025875 reservation are separate from the preserved historical attempt
+ledger: $0.0226600 + $0.0025875 = $0.0252475 of the existing $1.098939 retry
+headroom. Both ledger validation and subsequent A2/C0 retry admission count this
+hold. The $14.7519050 campaign envelope and separate $1 capacity hold remain
+unchanged ($15.7519050 total); A2/C0 retain max three attempts without resets.
+
+A1 requires a fresh verified attach with no DROP or restore. Its canonical runner
+seeds all 50 results without paid calls, then fingerprints the fresh finalization
+window at start and end. The parent manifest has empty phases: no historical end
+fingerprint is invented. The new manifest identifies inherited artifacts/run
+provenance and explicitly limits its fingerprint claim to fresh finalization.
+Three prior restores plus the attributed A1 restore remain four; only A2/C0 may
+consume restores five/six after clean handoffs.
+
+The one newly scanner-discovered bootstrap directory writer is explicitly unknown,
+uncovered and deferred in the account writer catalogue; no scanner, account fence,
+durable-task or quarantine runtime changes are made. Synthetic source checks do
+not authorize live attach, paid execution, restore or candidate acceptance. Final
+independent review, full project gates and fresh exact-action Astra review remain
+required.
+
 `python -m orchestrator.eval.campaign_launch arm` executes only one explicit arm.
 It requires the clean pinned checkout and a fresh source/plan/arm/live-state-bound
 Astra action-review artifact. This is trusted operator evidence, not a cryptographic

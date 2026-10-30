@@ -94,7 +94,11 @@ class CampaignPlan:
 
     def payload(self) -> dict[str, Any]:
         retry = "retry_recovery_lineage" in self.pins
-        if retry:
+        if "final_verdict_recovery_lineage" in self.pins:
+            from orchestrator.eval.campaign_final_verdict import validate_mode
+
+            validate_mode(self.pins)
+        elif retry:
             from orchestrator.eval.campaign_retry import validate_mode
 
             validate_mode(self.pins)
@@ -294,6 +298,10 @@ class Campaign:
             raise CampaignStopped("Campaign inactive/stopped; no automatic replay")
 
     def _recovery_check(self) -> dict[str, Any] | None:
+        if "final_verdict_recovery_lineage" in self.plan["pins"]:
+            from orchestrator.eval.campaign_final_verdict import verify_recovery
+
+            return verify_recovery(self.plan, self.directory)
         if "retry_recovery_lineage" in self.plan["pins"]:
             from orchestrator.eval.campaign_retry import verify_recovery
 
@@ -342,7 +350,9 @@ class Campaign:
                 ):
                     raise CampaignStopped("Only a clean completed-arm handoff may continue")
                 if inherited is not None:
-                    if "retry_recovery_lineage" in self.plan["pins"]:
+                    if "final_verdict_recovery_lineage" in self.plan["pins"]:
+                        from orchestrator.eval.campaign_final_verdict import validate_handoff
+                    elif "retry_recovery_lineage" in self.plan["pins"]:
                         from orchestrator.eval.campaign_retry import validate_handoff
                     else:
                         from orchestrator.eval.campaign_recovery import validate_handoff
@@ -367,7 +377,9 @@ class Campaign:
                     "restores": [],
                 }
                 if inherited is not None:
-                    if "retry_recovery_lineage" in self.plan["pins"]:
+                    if "final_verdict_recovery_lineage" in self.plan["pins"]:
+                        from orchestrator.eval.campaign_final_verdict import bootstrap
+                    elif "retry_recovery_lineage" in self.plan["pins"]:
                         from orchestrator.eval.campaign_retry import bootstrap
                     else:
                         from orchestrator.eval.campaign_recovery import bootstrap
@@ -435,7 +447,11 @@ class Campaign:
         self._check()
         try:
             self._recovery_check()  # Under sibling lock, immediately before mutation admission.
-            if "retry_recovery_lineage" in self.plan["pins"]:
+            if "final_verdict_recovery_lineage" in self.plan["pins"]:
+                from orchestrator.eval.campaign_final_verdict import before_restore
+
+                before_restore(self)
+            elif "retry_recovery_lineage" in self.plan["pins"]:
                 from orchestrator.eval.campaign_retry import before_restore
 
                 before_restore(self)
@@ -717,7 +733,11 @@ class Campaign:
                 or len(self.state["qualifications"]) != index
             ):
                 self.fail("Recovery arm lacks full new execution/restore evidence")
-        if "retry_recovery_lineage" in self.plan["pins"]:
+        if "final_verdict_recovery_lineage" in self.plan["pins"]:
+            from orchestrator.eval.campaign_final_verdict import validate_completion
+
+            validate_completion(self)
+        elif "retry_recovery_lineage" in self.plan["pins"]:
             from orchestrator.eval.campaign_retry import validate_completion
 
             validate_completion(self)
