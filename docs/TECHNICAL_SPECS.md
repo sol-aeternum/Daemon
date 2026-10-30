@@ -194,6 +194,10 @@ rejection ratio above 10%.
 - `tts`: Private offline Kokoro runtime; ready only after warm synthesis. See [TTS architecture](TTS_ARCHITECTURE.md).
 - `migrate`: One-shot migration runner.
 
+The separately invoked [closed 043→050 driver](MIGRATION_044_050_DRIVER.md) pins
+seven SQL payloads and excludes 051. It is source-only; Compose migration behavior
+and the requirement for separate live execution approval remain unchanged.
+
 ### Key Environment Variables
 - `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `XAI_API_KEY`, `FAL_KEY`, `BRAVE_API_KEY`, `ELEVENLABS_API_KEY`.
 - `DATABASE_URL`, `REDIS_URL`, `DAEMON_ENCRYPTION_KEY`.

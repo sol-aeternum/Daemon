@@ -31,6 +31,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/MEMORY_EMBEDDING_ADAPTER.md` | N/A | Engineering/Operator | ungated-reference | Owner-approved dedicated token-metered Azure embedding contract and prospective qualification criteria; implementation and activation require separate final-state evidence |
 | `docs/MEMORY_JUDGE_QUALIFICATION.md` | N/A | Engineering | raw-log | Fictional PR #447 judge screens: original failed, fresh audited follow-up passed; not deployment approval |
 | `docs/FEATURE_MATRIX.md` | T1 | Product/Eng | gated | Code implementation state |
+| `docs/MIGRATION_044_050_DRIVER.md` | N/A | Engineering/Operator | ungated-reference | Closed source-only 043→050 driver, explicit target/schema receipts, failure limits and separate live execution approval |
 | `docs/TECHNICAL_SPECS.md` | T1 | Engineering | gated | `orchestrator/`, `migrations/`, `docker-compose.yml` |
 | `docs/PROJECT_CONTEXT.md` | T1 | Engineering | gated | `truth_set.md`, `docs/FEATURE_MATRIX.md` |
 | `docs/AUTH_ARCHITECTURE.md` | T1 | Engineering | gated | `orchestrator/auth*.py`, `orchestrator/routes/auth_setup.py`, `migrations/031_auth_device_model.sql`, `migrations/033_auth_runtime_state.sql` |
