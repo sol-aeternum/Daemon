@@ -11,7 +11,6 @@ import math
 import os
 import stat
 import struct
-import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -86,6 +85,7 @@ class HistoryStore:
     def __init__(
         self, path: Path, expected: Identity, ownership: Ownership, *, deadline: float
     ) -> None:
+        self._owner_pid = os.getpid()
         self.path = path
         self.expected = expected
         self.ownership = ownership
@@ -114,11 +114,17 @@ class HistoryStore:
         except BaseException as exc:
             try:
                 self.close()
-            except HistoryError:
+            except BaseException:
                 exc.add_note("History descriptor cleanup uncertain")
             if isinstance(exc, OSError):
                 raise HistoryError("unavailable") from None
             raise
+
+    def _require_owner(self) -> None:
+        # flock is tied to open file descriptions shared across fork. A copied
+        # thread mutex cannot serialize those descriptions with the parent.
+        if os.getpid() != self._owner_pid:
+            raise HistoryError("forked_store")
 
     def _open_directory(self, path: Path, deadline: float) -> int:
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -213,10 +219,12 @@ class HistoryStore:
 
     @contextmanager
     def _locked(self, deadline: float, outcome: _AppendOutcome | None = None) -> Iterator[None]:
+        self._require_owner()
         _check_time(deadline)
         if not self._mutex.acquire(timeout=max(0, deadline - time.monotonic())):
             raise HistoryError("deadline")
         locks = []
+        original: BaseException | None = None
         try:
             if self._dir < 0:
                 raise HistoryError("closed")
@@ -231,35 +239,41 @@ class HistoryStore:
                         time.sleep(min(0.01, max(0, deadline - time.monotonic())))
             self._check_pins(deadline)
             yield
-        except BaseException:
+        except BaseException as exc:
+            original = exc
             if outcome is not None and outcome.attempted:
                 self._poisoned = True
             raise
         finally:
-            original = sys.exception()
-            cleanup_error = None
-            try:
-                for fd in reversed(locks):
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                    except OSError as exc:
-                        cleanup_error = exc
-                if cleanup_error is not None:
+            cleanup_errors: list[BaseException] = []
+            # A cancellation is an uncertain unlock too. Keep attempting the
+            # other held locks and poison before releasing the local mutex.
+            for fd in reversed(locks):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except BaseException as exc:
                     self._poisoned = True
-                    if original is not None:
-                        original.add_note("History lock cleanup uncertain")
-                    else:
-                        raise cleanup_error
-                elif original is None:
-                    # Release is part of the original absolute budget too.
-                    try:
-                        _check_time(deadline)
-                    except HistoryError:
-                        if outcome is not None and outcome.attempted:
-                            self._poisoned = True
-                        raise
-            finally:
+                    cleanup_errors.append(exc)
+            if original is None and not cleanup_errors:
+                try:
+                    _check_time(deadline)
+                except BaseException as exc:
+                    if outcome is not None and outcome.attempted:
+                        self._poisoned = True
+                    cleanup_errors.append(exc)
+            try:
                 self._mutex.release()
+            except BaseException as exc:
+                self._poisoned = True
+                cleanup_errors.append(exc)
+            if cleanup_errors:
+                if original is not None:
+                    original.add_note("History lock cleanup uncertain")
+                else:
+                    first = cleanup_errors[0]
+                    if len(cleanup_errors) > 1:
+                        first.add_note("Additional history lock cleanup failures")
+                    raise first
 
     def _read(self, fd: int, size: int, deadline: float) -> bytes:
         os.lseek(fd, 0, os.SEEK_SET)
@@ -332,6 +346,7 @@ class HistoryStore:
         return state
 
     def verify(self, *, deadline: float) -> HistoryState:
+        self._require_owner()
         try:
             with self._locked(deadline):
                 return self._scan(deadline)
@@ -349,6 +364,9 @@ class HistoryStore:
             _check_time(deadline)
 
     def append(self, command: Command, *, deadline: float) -> AppendResult:
+        self._require_owner()
+        if self._poisoned:
+            raise HistoryError("store_poisoned")
         # Every append has a native outcome; no resumption after uncertainty.
         outcome = _AppendOutcome()
         try:
@@ -423,6 +441,7 @@ class HistoryStore:
                 return AppendResult(entry, True)
         except (OSError, HistoryError) as exc:
             if outcome.attempted:
+                self._poisoned = True
                 code = "durable_result_unavailable" if outcome.durable else "unknown_append"
                 raise HistoryError(code, uncertain=True) from None
             if isinstance(exc, OSError):
@@ -430,35 +449,51 @@ class HistoryStore:
             raise
         except BaseException as exc:
             if outcome.attempted:
+                self._poisoned = True
                 exc.add_note("History append outcome uncertain; invocation must not resume")
             raise
 
-    def close(self) -> None:
-        failed = False
-        with self._mutex:
-            # Attempt every descriptor exactly once, even after a close error.
-            # Retrying close can close a reused descriptor on Linux.
-            descriptors = list(self._fds.values())
-            self._fds.clear()
-            if self._dir >= 0:
-                descriptors.append(self._dir)
-                self._dir = -1
-            for fd in descriptors:
-                try:
-                    os.close(fd)
-                except OSError:
-                    failed = True
-            if failed:
+    def _close_descriptors(self) -> None:
+        # Detach ownership before attempting each close once. Retrying an
+        # uncertain close can close a reused descriptor on Linux.
+        descriptors = list(self._fds.values())
+        self._fds.clear()
+        if self._dir >= 0:
+            descriptors.append(self._dir)
+            self._dir = -1
+        first_error: BaseException | None = None
+        for fd in descriptors:
+            try:
+                os.close(fd)
+            except BaseException as exc:
                 self._poisoned = True
-                raise HistoryError("cleanup_unavailable")
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            if isinstance(first_error, OSError):
+                raise HistoryError("cleanup_unavailable") from None
+            first_error.add_note("History descriptor cleanup uncertain")
+            raise first_error
+
+    def close(self) -> None:
+        if os.getpid() != self._owner_pid:
+            # Drop only this child's descriptor references. LOCK_UN would
+            # unlock the parent's shared description, and its copied mutex
+            # may be permanently locked by a thread absent in the child.
+            self._poisoned = True
+            self._close_descriptors()
+            return
+        with self._mutex:
+            self._close_descriptors()
 
     def __enter__(self) -> HistoryStore:
+        self._require_owner()
         return self
 
     def __exit__(self, _kind: object, original: object, _traceback: object) -> None:
         try:
             self.close()
-        except HistoryError:
+        except BaseException:
             if isinstance(original, BaseException):
                 original.add_note("History descriptor cleanup uncertain")
             else:

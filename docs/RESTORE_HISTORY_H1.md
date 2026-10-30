@@ -91,7 +91,12 @@ Each call uses a process-local mutex, OP_LOCK then APPEND_LOCK, nonblocking floc
 and the caller's **absolute monotonic deadline**. Fresh directory enumeration and
 pinned inode checks prevent warmed scans ignoring new pending/unexpected files.
 RUNTIME_LOCK's inode is checked, but this slice does not install runtime lifecycle
-coordination. No lock is held across any provider call; there are no such callers.
+coordination. A store is owned by its creating PID. Inherited `append`, `verify`
+and context entry fail with `forked_store` before touching copied mutexes or
+shared flock descriptions. Child `close`/context exit may discard only its own
+inherited descriptor references without acquiring the inherited mutex or issuing
+LOCK_UN; the child must construct a new independent store to use the history.
+No lock is held across any provider call; there are no such callers.
 
 Append validates the whole chain and candidate before mutation. It loops short
 writes, fsyncs LOG, exclusively creates/writes/fsyncs HEAD.pending, replaces HEAD,
@@ -106,7 +111,13 @@ is returned late. Kernel I/O may finish after the logical deadline: it is not a
 remote cessation or finite kernel-cleanup guarantee. Synchronous ownership/locks
 remain until the call finishes; `close` waits for that owner rather than closing
 its descriptors from another thread. Cancellation preserves the original exception
-and an uncertainty note. Lock cleanup failure cannot return success. Interrupted
+and an uncertainty note. Every held unlock is attempted even if KeyboardInterrupt,
+SystemExit or another BaseException interrupts cleanup. The first cleanup error is
+raised when no protected-body error exists; a protected-body error is preserved
+with a cleanup note. An unrelated caller exception handler is not treated as that
+body error. Uncertain cleanup poisons the object before releasing the local mutex.
+Descriptor close likewise attempts every tracked descriptor once without retrying
+an uncertain close. Lock cleanup failure cannot return success. Interrupted
 bytes persist for explicit read-only inspection; reopening is not a send permit.
 
 ## Evidence and remaining work
