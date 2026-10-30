@@ -135,7 +135,11 @@ def test_no_runtime_callers_or_import_time_io(monkeypatch):
     root = Path(__file__).resolve().parents[1]
     for base in ("orchestrator", "providers", "scripts"):
         for path in (root / base).rglob("*.py"):
-            if path == root / "orchestrator/artifact_reservations.py":
+            if path in {
+                root / "orchestrator/artifact_reservations.py",
+                root / "orchestrator/resource_store.py",
+                root / "orchestrator/resource_csv.py",
+            }:
                 continue
             assert "artifact_reservations" not in path.read_text(), str(path)
     tree = ast.parse((root / "orchestrator/artifact_reservations.py").read_text())

@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { isCacheClearRequest, test } from './online-ui-fixture';
 import {
   historyFixtureConversationId,
   historyFixtureList,
@@ -9,7 +10,7 @@ import {
 // https://github.com/KDE/plasma-browser-integration/blob/a98771a68f4d4c49aaa578eb619bad33f4c80c83/extension/page-script.js
 // Detached new Audio() players are temporarily inserted then removed on play.
 // Chromium rejects their original play promise as "media was removed".
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, baseURL }) => {
   await context.addInitScript(() => {
     const state = {
       audio: [] as HTMLAudioElement[],
@@ -98,11 +99,15 @@ test.beforeEach(async ({ context }) => {
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     };
-    if (route.request().method() === 'OPTIONS') {
-      return route.fulfill({ status: 204, headers });
-    }
-    const json = (value: unknown) => route.fulfill({ json: value, headers });
-    if (p === '/api/v1/auth/cache/clear')
+    if (p === '/api/v1/auth/cache/clear') {
+      if (
+        !isCacheClearRequest(
+          url,
+          route.request().method(),
+          new URL(baseURL!).origin,
+        )
+      )
+        return route.abort('blockedbyclient');
       return route.fulfill({
         status: 204,
         headers: {
@@ -111,6 +116,11 @@ test.beforeEach(async ({ context }) => {
           'Clear-Site-Data': '"cache"',
         },
       });
+    }
+    if (route.request().method() === 'OPTIONS') {
+      return route.fulfill({ status: 204, headers });
+    }
+    const json = (value: unknown) => route.fulfill({ json: value, headers });
     if (p.endsWith('/auth/config'))
       return json({
         mode: 'self_hosted',

@@ -28,6 +28,43 @@ def test_namespace_adapter_leaves_previous_migrations_exact():
     assert migration_sql_for_schema(path, "tasks_test_" + uuid4().hex) == path.read_text()
 
 
+def test_namespace_inventory_adapter_keeps_acl_and_binding():
+    schema = "tasks_test_" + uuid4().hex
+    sql = migration_sql_for_schema(MIGRATIONS / "052_artifact_namespaces.sql", schema)
+    assert "public." not in sql
+    assert f"REFERENCES {schema}.deletion_journal_binding" in sql
+    assert f"REVOKE ALL ON {schema}.artifact_namespaces FROM PUBLIC" in sql
+    assert f"'{schema}.artifact_namespaces'::regclass" in sql
+
+
+def test_resource_registry_adapter_keeps_owned_binding_and_acl():
+    schema = "tasks_test_" + uuid4().hex
+    sql = migration_sql_for_schema(MIGRATIONS / "053_resource_registry.sql", schema)
+    assert "public." not in sql
+    assert f"ALTER TABLE {schema}.artifact_namespaces" in sql
+    assert f"REFERENCES {schema}.resource_versions" in sql
+    assert f"'{schema}.resource_publications'::regclass" in sql
+    assert "FROM PUBLIC" in sql and "registry_unsafe_default_privileges" in sql
+
+
+def test_input_batch_adapter_keeps_marker_constraints_and_acl():
+    schema = "tasks_test_" + uuid4().hex
+    sql = migration_sql_for_schema(MIGRATIONS / "054_resource_input_batches.sql", schema)
+    assert "public." not in sql
+    assert f"REFERENCES {schema}.resource_input_batches" in sql
+    assert f"'{schema}.resource_input_intents'::regclass" in sql
+    assert "FROM PUBLIC" in sql and "lookup_key_id" in sql and "source_deleted" in sql
+
+
+def test_presentation_adapter_preserves_source_detachment_and_acl():
+    schema = "tasks_test_" + uuid4().hex
+    sql = migration_sql_for_schema(MIGRATIONS / "055_resource_presentations.sql", schema)
+    assert "public." not in sql
+    assert f"REFERENCES {schema}.messages(id) DEFERRABLE INITIALLY DEFERRED" in sql
+    assert f"'{schema}.resource_presentations'::regclass" in sql
+    assert "resource_presentation_unsafe_default_privileges" in sql and "FROM PUBLIC" in sql
+
+
 def test_output_reservation_namespace_adapter_keeps_grantee_and_search_path_exact():
     schema = "tasks_test_" + uuid4().hex
     sql = migration_sql_for_schema(MIGRATIONS / "051_artifact_output_reservations.sql", schema)

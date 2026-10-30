@@ -204,7 +204,7 @@ jobs:
 
       - name: Browser regression inventory
         continue-on-error: true
-        run: npm run test:browser
+        run: npm run test:browser:qualification
 
       - name: Upload browser regression screenshots
         if: always()

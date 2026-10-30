@@ -151,6 +151,19 @@ def task_store(app_state: AppState) -> TaskStore:
     if app_state.db_pool is None or app_state.memory_store is None:
         raise HTTPException(status_code=503, detail="Task store unavailable")
     memory = app_state.memory_store
+    resources = getattr(memory, "_resource_inputs", None)
+    if resources is not None:
+        # Only the actual explicitly bound stores may join source deletion and
+        # acceptance. Do not manufacture an uncomposed replacement on this path.
+        tasks = resources._tasks
+        if (
+            tasks._pool is not app_state.db_pool
+            or tasks._memory is not memory
+            or tasks._resource_inputs is not resources
+            or not resources._verified
+        ):
+            raise HTTPException(status_code=503, detail="Task store unavailable")
+        return tasks
     return TaskStore(app_state.db_pool, memory.encryption, memory)
 
 

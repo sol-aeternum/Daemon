@@ -1,6 +1,6 @@
 """Candidate namespace-intent codec and mixed v1/v2 structural replay validator.
 
-UNCALLED CANDIDATE — N0 option A, see ``docs/NAMESPACE_JOURNAL_CANDIDATE.md``.
+N0 pure codec, now consumed only by the uncalled C1 mixed durable journal.
 Nothing in the runtime imports this module: it performs no storage I/O, reads no
 clock, allocates no random name, loads no settings and adds no dependency. It
 adds exactly one v2 command shape, ``namespace_create_intended``, beside the

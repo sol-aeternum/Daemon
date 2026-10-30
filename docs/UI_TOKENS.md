@@ -32,6 +32,24 @@ document contents or dynamic inline measurements.
 
 `npm run test:browser -- --project=design-tokens` checks eight pages in both
 themes, including label sizes, touch sizing, overflow, and screenshot baselines.
+For owner-approved combined qualification, run from `frontend/`:
+`npm run test:browser:qualification -- /absolute/retained/output-root`.
+The command runs the intact DevTools runtime-observability case on an owned
+development server, waits for it to exit, builds with the existing
+`NEXT_PUBLIC_API_URL=http://127.0.0.1:3181`, then runs the remaining inventory and
+the existing Midnight/contextual-home projects against `next start`. A failed
+stage stops the command; a production-only pass is not combined qualification.
+Development and production cannot concurrently mutate the same build output.
+The separate CSP-preview fixture keeps its original isolated development server.
+Isolated loopback ports 3180 (preview) and 3181 (app) leave default development
+ports untouched. All servers refuse reuse. Budgets, retries, assertions and PNGs
+are unchanged. Ordinary UI fixtures explicitly model unavailable service-worker
+capability, assert that model, and retain Playwright's worker-registration block.
+They exercise the real auth/cache barrier with synthetic acknowledgements, not
+live accounts. Dedicated PWA/cache qualification remains separate and unchanged.
+The development inventory still includes the observability case. The owner-approved
+non-blocking CI inventory uses the complete combined command, never production-only
+coverage; `npm run test:browser` remains the development diagnostic entry point.
 Browser output is retained in the CI `browser-regressions` artifact. Review
 intentional visual changes before updating baselines with
 `npm run test:browser -- --project=design-tokens --update-snapshots` on Linux.
@@ -62,6 +80,20 @@ application CSP errors, or failed cache-clear acknowledgements are not exempt.
 The only other expected HTTP errors are the explicit fixture 404 and the dedicated
 status-error case's 503. No pageerror is consumed, and no CSS hides error UI.
 
+Owner-approved production diagnostics also record acknowledged RSC prefetch
+cancellations separately: exact allowlisted same-origin page, GET, `_rsc`, both
+RSC/prefetch headers, the same request's HTTP 200 `text/x-component` response,
+and exactly `net::ERR_ABORTED`. The allowlist defaults empty outside this fixture.
+Raw responses and failures remain attached. This acknowledges response headers,
+not full body consumption. Missing/non-200 responses, other errors, API paths,
+unmarked navigation, foreign origins and every page/CSP error still fail.
+
 Reference PNG replacements are not part of fixture/capture qualification. Retain
 the failing full-image comparisons and review their pixels separately; a passing
 fixture check is not a green visual gate or approval to update snapshots.
+
+On 30 October, the owner separately approved 14 reviewed references: the sidebar
+history-pagination controls, chat message paging/Contents rail, and the durable
+catalog with its clearly labelled legacy-media section, in both themes. Only
+those references were regenerated; landing references, comparison tolerances and
+assertions were unchanged. This is source-only visual qualification, not rollout.

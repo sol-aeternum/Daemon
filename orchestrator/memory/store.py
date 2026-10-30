@@ -94,6 +94,7 @@ class MemoryStore:
         self._enc = encryption
         # Only the explicit isolated task factory binds this; defaults stay inert.
         self._task_composition: object | None = None
+        self._resource_inputs: Any = None
 
     @property
     def encryption(self) -> ContentEncryption:
@@ -629,7 +630,20 @@ class MemoryStore:
                 )
         return row is not None
 
-    async def delete_conversation(self, conversation_id: uuid.UUID) -> bool:
+    async def delete_conversation(
+        self, conversation_id: uuid.UUID, *, user_id: uuid.UUID | None = None
+    ) -> bool:
+        if self._resource_inputs is not None:
+            if user_id is None:
+                raise ValueError("resource_deletion_owner_required")
+            from orchestrator.tasks.store import ConversationBusy
+
+            deleted, running = await self._resource_inputs.delete_conversation(
+                user_id, conversation_id
+            )
+            if running is not None:
+                raise ConversationBusy(running)
+            return deleted
         result = await self._pool.execute(
             "DELETE FROM conversations WHERE id = $1",
             conversation_id,
@@ -734,10 +748,13 @@ class MemoryStore:
         limit: int = 100,
         offset: int = 0,
         created_after: datetime | None = None,
+        *,
+        _connection: Any = None,
     ) -> list[dict[str, Any]]:
+        reader = self._pool if _connection is None else _connection
         # Build query with optional created_after filter
         if created_after is not None:
-            rows = await self._pool.fetch(
+            rows = await reader.fetch(
                 """
                 SELECT * FROM (
                     SELECT * FROM messages
@@ -754,7 +771,7 @@ class MemoryStore:
                 created_after,
             )
         else:
-            rows = await self._pool.fetch(
+            rows = await reader.fetch(
                 """
                 SELECT * FROM (
                     SELECT * FROM messages
@@ -789,6 +806,7 @@ class MemoryStore:
         limit: int = 100,
         before: HistoryBoundary | None = None,
         through: HistoryBoundary | None = None,
+        _connection: Any = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Bounded UI history, oldest first; all statuses remain reviewable.
 
@@ -797,7 +815,8 @@ class MemoryStore:
         """
         if not 1 <= limit <= 100:
             raise ValueError("Invalid message history page limit")
-        rows = await self._pool.fetch(
+        reader = self._pool if _connection is None else _connection
+        rows = await reader.fetch(
             """
             SELECT m.* FROM messages m
             JOIN conversations c ON c.id = m.conversation_id AND c.user_id = m.user_id

@@ -99,6 +99,73 @@ investigation. This is a source interface description, not a live execution requ
 
 ## Acceptance evidence boundaries
 
+### C1 work in progress — offline container promotion
+
+The owner-approved combined C1 package adds an uncalled source interface,
+`upgrade.promote_container_v2`, for offline promotion of verified v1 containers
+to metadata version 2 without changing journal identity or existing frame bytes.
+All producers must be stopped by the operator; acquiring the journal lock does
+not prove that condition. No live promotion is authorised or performed here.
+Preflight uses the existing v1 scan, including its approved recovery of a complete
+valid HEAD temporary or complete suffix beyond HEAD. That can update derived HEAD
+metadata; it never rewrites journal frames. Torn or contradictory evidence blocks.
+The function exclusively writes/syncs `.META.v2.pending`, checks pinned identities,
+replaces metadata and syncs the directory. Failure after temporary creation is
+`unknown_upgrade`; evidence is preserved, with no automatic retry, rollback or
+temporary-file removal. Old readers reject the promoted container, including an
+empty log. A leftover promotion temporary blocks normal readers.
+
+The uncalled `mixed_store.MixedJournal` now supplies explicit mixed durable I/O.
+Container 1 admits only v1 frames; container 2 admits frozen v1 and N0 namespace
+birth frames. Both append and verification rescan the complete chain under the
+persistent lock, including metadata/directory re-sync after uncertain promotion.
+An immutable view is observation only, not namespace/projection authority. Append
+recomputes typed command digests, resolves original duplicate events before CAS,
+and validates closed grammar before any write. Shared bounded frame/HEAD mechanics
+retain legacy `Journal`'s exact v1 decoder and metadata policy. The N0 import guard
+allows only the explicitly uncalled mixed store and namespace controller; a separate guard denies runtime
+mixed-store imports. Unknown promotion temporaries remain preserved and refused.
+
+No default runtime composition or downgrade support is supplied.
+Production reader/startup behaviour remains unchanged. Promotion must not be used
+before the remaining C1 recovery path is qualified. Synthetic tests cover real POSIX writes,
+identity substitution, sync/replace faults, lock contention and owned-process
+death; they do not establish host/power-loss durability or operator quiescence.
+Mixed-store tests also cover both container versions, interleaved frames, immutable
+views, account/operation CAS, stable retries after unknown append, corruption and
+metadata replacement, sync refusal and owned-process contention. No DB marker or
+application readiness is established by these tests.
+
+### C1 work in progress — namespace inventory and physical verification
+
+Migration `052_artifact_namespaces.sql` and the uncalled `NamespaceController`
+add non-cascading, content-free birth inventory. Trusted explicit callers provide
+the original captured account generation; the controller reads the actual mixed
+journal, validates the binding and exact marker/inventory identities, and refuses
+all unsupported v1 lifecycle history before provisioning. Caller-supplied views
+or readiness receipts cannot authorise effects.
+
+The first account-locked READ COMMITTED transaction commits inventory and its
+birth marker atomically. That marker proves inventory only. A second transaction
+reacquires the original-generation guard, rescans the journal and verifies physical
+topology before committing `ready`. Failed or cancelled transactions terminate
+their exact leased connection before pool release; they do not retry COMMIT or
+read back on an uncertain channel. Filesystem cancellation first drains owned I/O.
+A later independent call resolves the original birth and reconciles actual state.
+
+The artifact root and `live`/`private` parents must already exist. Only committed
+provisioning inventory permits safe partial namespace creation. Every `ready`
+namespace is physically reverified, including recovery; missing ready directories
+or locks are refused rather than recreated. Unexpected provisioning files and
+unsafe topology remain preserved. Retired/uncertain states are not automatically
+reset. `reconcile_all` does not release the production startup barrier.
+
+Synthetic tests exercise real isolated PostgreSQL and POSIX provisioning, marker
+contradictions, stale generation after lock wait, commit uncertainty, cancellation
+and owned-process death. Combined C1 gates and final integrated review remain
+required. This source seam does not implement publication, full deletion/reset,
+retention/quota policy, cleanup, production migration or activation.
+
 - `test_deletion_journal_model.py`: controlled-time closed grammar, immutable
   deadlines/generations, both-head conflicts, duplicate/changed identities.
   Requests require their exact `(deletion|reset, operation_id)` cause; missing or

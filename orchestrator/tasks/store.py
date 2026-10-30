@@ -54,6 +54,7 @@ from orchestrator.tasks.states import (
 )
 
 if TYPE_CHECKING:
+    from orchestrator.resource_inputs import ResourceInputs
     from orchestrator.tasks.composition import TaskComposition, WorkerComposition
 
 #: Account suspension stops running work (§11); checked at heartbeat, before
@@ -278,6 +279,7 @@ class TaskStore:
         self._inference = inference_recovery
         self._cover_new_inference = cover_new_inference
         self._composition: TaskComposition | WorkerComposition | None = None
+        self._resource_inputs: ResourceInputs | None = None
         # Fairness only, independent of abandoned-pass lifecycle observation.
         self._quarantine_hold_after: tuple[uuid.UUID, uuid.UUID] | None = None
 
@@ -867,6 +869,25 @@ class TaskStore:
         NEW work requires the original server capture; a replay needs no capture.
         The same capture is retained through the bounded busy-conflict retry.
         """
+        if self._resource_inputs is not getattr(self._memory, "_resource_inputs", None):
+            raise ObservationBlocked("resource_composition_refused")
+        if self._resource_inputs is not None:
+            if request_canonical is None:
+                raise IdempotencyConflict("canonical request required by resource composition")
+            return await self._resource_inputs.accept(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                new_conversation_title=new_conversation_title,
+                pipeline=pipeline,
+                user_message=user_message,
+                task_input=task_input,
+                request_hash=request_hash,
+                idempotency_key=idempotency_key,
+                assistant_model=assistant_model,
+                max_attempts=max_attempts,
+                request_canonical=request_canonical,
+                captured_generation=captured_generation,
+            )
         for retry in (False, True):
             try:
                 return await self._accept_once(
@@ -915,38 +936,11 @@ class TaskStore:
             if existing is not None:
                 return existing
         try:
-            # Validate after replay, not before it. Constructor validation alone
-            # is insufficient for forged/mutated Python instances (bool == 1).
-            account_id = getattr(captured_generation, "account_id", None)
-            generation = getattr(captured_generation, "generation", None)
-            if (
-                type(captured_generation) is not CapturedGeneration
-                or not isinstance(account_id, uuid.UUID)
-                or type(generation) is not int
-                or not 0 <= generation <= 2**63 - 1
-                or account_id != user_id
-            ):
-                raise WriteGuardRefusal("invalid_capture")
-            if self._composition is not None:
-                from orchestrator.tasks.composition import TaskComposition
-
-                if not self._cover_new_inference or type(self._composition) is not TaskComposition:
-                    raise ObservationBlocked("inference_acceptor_refused")
-                await self._composition.preflight()
-            sealed_input = {
-                **task_input,
-                "origin_account_id": str(account_id),
-                "origin_account_generation": generation,
-                # Existing extraction consumers retain the same original origin.
-                "summary_origin_account_id": str(account_id),
-                "summary_origin_account_generation": generation,
-            }
-            # Never trust a caller's internal coverage claim.
-            sealed_input.pop("_inference_recovery_version", None)
-            if self._cover_new_inference:
-                sealed_input["_inference_recovery_version"] = 1
-            if request_canonical is not None:
-                sealed_input["_request"] = request_canonical
+            sealed_input = await self._accept_input(
+                user_id, task_input, request_canonical, captured_generation
+            )
+            assert captured_generation is not None
+            generation = captured_generation.generation
             # Account SHARE precedes every content lock/write on this connection,
             # and survives guard scope exit through the actual transaction commit.
             async with (
@@ -954,88 +948,20 @@ class TaskStore:
                 conn.transaction(isolation="read_committed"),
                 guard_content_write(conn, captured_generation),
             ):
-                if self._cover_new_inference:
-                    binding = self._composition
-                    if binding is not None:
-                        binding.validate()
-                    await acceptor_preflight(
-                        conn,
-                        expected=binding.acceptor_role if binding else None,
-                        other=binding.worker_role if binding else None,
-                    )
-                if conversation_id is None:
-                    conversation = await self._memory.create_conversation(
-                        user_id=user_id, pipeline=pipeline, title=new_conversation_title, conn=conn
-                    )
-                    conversation_id = conversation["id"]
-                else:
-                    owner = await conn.fetchval(
-                        "SELECT user_id FROM conversations WHERE id = $1 FOR UPDATE",
-                        conversation_id,
-                    )
-                    if owner != user_id:
-                        raise TaskNotFound("conversation not found")
-                assert conversation_id is not None
-                user_row = await self._memory.insert_message(
-                    conversation_id=conversation_id,
+                pending = await self._insert_accepted(
+                    conn,
                     user_id=user_id,
-                    role="user",
-                    content=user_message,
-                    status="complete",
-                    conn=conn,
-                )
-                result_row = await self._memory.insert_message(
                     conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content="",
-                    model=assistant_model,
-                    status="streaming",
-                    conn=conn,
+                    new_conversation_title=new_conversation_title,
+                    pipeline=pipeline,
+                    user_message=user_message,
+                    sealed_input=sealed_input,
+                    request_hash=request_hash,
+                    idempotency_key=idempotency_key,
+                    assistant_model=assistant_model,
+                    max_attempts=max_attempts,
+                    generation=generation,
                 )
-                # Both rows default to the transaction's now(); give the
-                # placeholder a strictly later timestamp so history ordering
-                # never ties the answer with its question (even within one
-                # clock tick).
-                await conn.execute(
-                    """
-                    UPDATE messages
-                    SET created_at = GREATEST(
-                        clock_timestamp(),
-                        (SELECT created_at FROM messages WHERE id = $2)
-                            + interval '1 microsecond')
-                    WHERE id = $1
-                    """,
-                    result_row["id"],
-                    user_row["id"],
-                )
-                task_id = await conn.fetchval(
-                    """
-                    INSERT INTO tasks
-                        (user_id, conversation_id, user_message_id, result_message_id,
-                         input_ciphertext, input_version, idempotency_key, request_hash,
-                         max_attempts)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    RETURNING id
-                    """,
-                    user_id,
-                    conversation_id,
-                    user_row["id"],
-                    result_row["id"],
-                    self._seal(sealed_input),
-                    CHAT_INPUT_VERSION,
-                    idempotency_key,
-                    request_hash,
-                    max_attempts,
-                )
-                if self._cover_new_inference:
-                    await conn.execute(
-                        "INSERT INTO public.task_inference_recovery(task_id,account_id,account_generation,protocol_version) VALUES($1,$2,$3,1)",
-                        task_id,
-                        user_id,
-                        generation,
-                    )
-                await self._append_event(conn, task_id, "accepted")
         except WriteGuardRefusal:
             # A concurrent matching acceptance may have committed after our first
             # lookup but before a fence refused NEW work. Resolve it only after
@@ -1067,13 +993,143 @@ class TaskStore:
                     raise ConversationBusy(active) from None
                 raise _ActiveTaskEnded(exc) from None
             raise
-        return AcceptedTask(
-            task_id=task_id,
+        return pending
+
+    async def _accept_input(
+        self,
+        user_id: uuid.UUID,
+        task_input: dict[str, Any],
+        request_canonical: str | None,
+        captured_generation: CapturedGeneration | None,
+    ) -> dict[str, Any]:
+        # Validate after replay, not before it; even mutated captures must fail.
+        account_id = getattr(captured_generation, "account_id", None)
+        generation = getattr(captured_generation, "generation", None)
+        if (
+            type(captured_generation) is not CapturedGeneration
+            or not isinstance(account_id, uuid.UUID)
+            or type(generation) is not int
+            or not 0 <= generation <= 2**63 - 1
+            or account_id != user_id
+        ):
+            raise WriteGuardRefusal("invalid_capture")
+        if self._composition is not None:
+            from orchestrator.tasks.composition import TaskComposition
+
+            if not self._cover_new_inference or type(self._composition) is not TaskComposition:
+                raise ObservationBlocked("inference_acceptor_refused")
+            await self._composition.preflight()
+        value = {
+            **task_input,
+            "origin_account_id": str(account_id),
+            "origin_account_generation": generation,
+            "summary_origin_account_id": str(account_id),
+            "summary_origin_account_generation": generation,
+        }
+        value.pop("_inference_recovery_version", None)
+        if self._cover_new_inference:
+            value["_inference_recovery_version"] = 1
+        if request_canonical is not None:
+            value["_request"] = request_canonical
+        return value
+
+    async def _insert_accepted(
+        self,
+        conn: Any,
+        *,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
+        new_conversation_title: str | None,
+        pipeline: str,
+        user_message: str,
+        sealed_input: dict[str, Any],
+        request_hash: str,
+        idempotency_key: str | None,
+        assistant_model: str | None,
+        max_attempts: int,
+        generation: int,
+        task_id: uuid.UUID | None = None,
+    ) -> AcceptedTask:
+        """Private transaction join; result is PENDING until caller's known COMMIT.
+
+        Caller owns original capture, account guard, sealed origins and preflight.
+        No transaction/pool/replay/commit handling here. The optional ID is allocated
+        by the trusted input-batch writer, never an HTTP parameter.
+        """
+        if not conn.is_in_transaction():
+            raise WriteGuardRefusal("transaction_required")
+        if self._cover_new_inference:
+            binding = self._composition
+            if binding is not None:
+                binding.validate()
+            await acceptor_preflight(
+                conn,
+                expected=binding.acceptor_role if binding else None,
+                other=binding.worker_role if binding else None,
+            )
+        if conversation_id is None:
+            conversation = await self._memory.create_conversation(
+                user_id=user_id, pipeline=pipeline, title=new_conversation_title, conn=conn
+            )
+            conversation_id = conversation["id"]
+        else:
+            owner = await conn.fetchval(
+                "SELECT user_id FROM conversations WHERE id = $1 FOR UPDATE", conversation_id
+            )
+            if owner != user_id:
+                raise TaskNotFound("conversation not found")
+        assert conversation_id is not None
+        user_row = await self._memory.insert_message(
             conversation_id=conversation_id,
-            user_message_id=user_row["id"],
-            result_message_id=result_row["id"],
-            status=TaskStatus.QUEUED,
-            created=True,
+            user_id=user_id,
+            role="user",
+            content=user_message,
+            status="complete",
+            conn=conn,
+        )
+        result_row = await self._memory.insert_message(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            role="assistant",
+            content="",
+            model=assistant_model,
+            status="streaming",
+            conn=conn,
+        )
+        # Strictly later placeholder preserves history ordering in one clock tick.
+        await conn.execute(
+            "UPDATE messages SET created_at = GREATEST(clock_timestamp(),"
+            "(SELECT created_at FROM messages WHERE id=$2)+interval '1 microsecond') WHERE id=$1",
+            result_row["id"],
+            user_row["id"],
+        )
+        task_id = await conn.fetchval(
+            "INSERT INTO tasks(id,user_id,conversation_id,user_message_id,result_message_id,"
+            "input_ciphertext,input_version,idempotency_key,request_hash,max_attempts) "
+            "VALUES(COALESCE($1,gen_random_uuid()),$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+            task_id,
+            user_id,
+            conversation_id,
+            user_row["id"],
+            result_row["id"],
+            self._seal(sealed_input),
+            CHAT_INPUT_VERSION,
+            idempotency_key,
+            request_hash,
+            max_attempts,
+        )
+        if not isinstance(task_id, uuid.UUID):
+            raise TaskError("invalid_task_identity")
+        if self._cover_new_inference:
+            await conn.execute(
+                "INSERT INTO public.task_inference_recovery(task_id,account_id,account_generation,protocol_version) VALUES($1,$2,$3,1)",
+                task_id,
+                user_id,
+                generation,
+            )
+        await self._append_event(conn, task_id, "accepted")
+        return AcceptedTask(
+            task_id, conversation_id, user_row["id"], result_row["id"], TaskStatus.QUEUED, True
         )
 
     async def task_for_key(self, user_id: uuid.UUID, idempotency_key: str) -> TaskSnapshot | None:
@@ -1115,6 +1171,12 @@ class TaskStore:
             raise ObservationBlocked("inference_composition_refused")
         if self._composition is not None:
             self._composition.validate()
+        if self._resource_inputs is not getattr(self._memory, "_resource_inputs", None):
+            raise ObservationBlocked("resource_composition_refused")
+        if self._resource_inputs is not None:
+            return await self._resource_inputs.find_by_key(
+                user_id, idempotency_key, request_hash, request_canonical
+            )
         row = await self._pool.fetchrow(
             "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
             user_id,
@@ -2173,28 +2235,38 @@ class TaskStore:
         asked to cancel and the conversation is kept, so an in-flight external
         effect never loses its evidence. Returns ``(deleted, running_task_id)``.
         """
+        if self._resource_inputs is not getattr(self._memory, "_resource_inputs", None):
+            raise ObservationBlocked("resource_composition_refused")
+        if self._resource_inputs is not None:
+            return await self._resource_inputs.delete_conversation(user_id, conversation_id)
         async with self._pool.acquire() as conn, conn.transaction():
-            owner = await conn.fetchval(
-                "SELECT user_id FROM conversations WHERE id = $1 FOR UPDATE", conversation_id
-            )
-            if owner != user_id:
-                raise TaskNotFound("conversation not found")
-            active = await conn.fetchrow(
-                "SELECT * FROM tasks WHERE conversation_id = $1 AND status IN ('queued', 'running') "
-                "FOR UPDATE",
-                conversation_id,
-            )
-            if active is not None and active["status"] == TaskStatus.RUNNING.value:
-                if active["cancel_requested_at"] is None:
-                    await conn.execute(
-                        "UPDATE tasks SET cancel_requested_at = now(), updated_at = now() "
-                        "WHERE id = $1",
-                        active["id"],
-                    )
-                    await self._append_event(conn, active["id"], "cancel_requested")
-                return False, active["id"]
-            await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
-            return True, None
+            return await self._delete_conversation_rows(conn, user_id, conversation_id)
+
+    async def _delete_conversation_rows(
+        self, conn: Any, user_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> tuple[bool, uuid.UUID | None]:
+        """Caller owns transaction; composed caller also owns account/journal guard."""
+        owner = await conn.fetchval(
+            "SELECT user_id FROM conversations WHERE id = $1 FOR UPDATE", conversation_id
+        )
+        if owner != user_id:
+            raise TaskNotFound("conversation not found")
+        active = await conn.fetchrow(
+            "SELECT * FROM tasks WHERE conversation_id = $1 AND status IN ('queued', 'running') FOR UPDATE",
+            conversation_id,
+        )
+        if active is not None and active["status"] == TaskStatus.RUNNING.value:
+            if active["cancel_requested_at"] is None:
+                await conn.execute(
+                    "UPDATE tasks SET cancel_requested_at = now(), updated_at = now() WHERE id = $1",
+                    active["id"],
+                )
+                await self._append_event(conn, active["id"], "cancel_requested")
+            return False, active["id"]
+        if self._resource_inputs is not None:
+            await self._resource_inputs._detach(conn, user_id, conversation_id)
+        await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
+        return True, None
 
     async def snapshot(self, user_id: uuid.UUID, task_id: uuid.UUID) -> TaskSnapshot | None:
         row = await self._pool.fetchrow(

@@ -1,18 +1,15 @@
-import { expect, test, type Page } from '@playwright/test';
-
-test.beforeEach(async ({ page }) => {
-  // Exercise the online application with deterministic API fixtures. Present a
-  // browser without service-worker support so Serwist doesn't try to register
-  // against Playwright's blocked worker API. PWA/offline behavior is not covered.
-  await page.addInitScript(() => {
-    Reflect.deleteProperty(Navigator.prototype, 'serviceWorker');
-  });
-});
+import { expect, type Page } from '@playwright/test';
+import { mockCacheClear, test } from './online-ui-fixture';
+import {
+  historyFixtureConversationId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
 
 // Fictional API responses exercise the real Next/React integration. These are
 // not authenticated production evidence and never invoke a provider.
 const conversation = {
-  id: 'midnight-fixture',
+  id: historyFixtureConversationId,
   title: 'Midnight review',
   pinned: false,
   status: 'active',
@@ -63,6 +60,7 @@ const conversation = {
 };
 
 async function mockApi(page: Page) {
+  await mockCacheClear(page);
   await page.route('**/api/entitlements', (route) =>
     route.fulfill({
       json: { plan: 'free', capabilities: ['chat'], limits: {} },
@@ -83,10 +81,28 @@ async function mockApi(page: Page) {
     }),
   );
   await page.route('**/conversations*', (route) =>
-    route.fulfill({ json: { conversations: [conversation] } }),
+    route.fulfill({ json: historyFixtureList([conversation]) }),
   );
-  await page.route('**/conversations/midnight-fixture', (route) =>
-    route.fulfill({ json: conversation }),
+  await page.route(
+    (url) => url.pathname === `/conversations/${conversation.id}`,
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          conversation,
+          new URL(route.request().url()),
+        ),
+      }),
+  );
+  await page.route(
+    (url) =>
+      url.origin === new URL(page.url()).origin &&
+      url.pathname === `/conversations/${conversation.id}/web-snapshots`,
+    (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({
+            json: { snapshots: [], total: 0, limit: 20, offset: 0 },
+          })
+        : route.abort('blockedbyclient'),
   );
   await page.route('**/users/me/settings', (route) =>
     route.fulfill({ json: {} }),
@@ -132,7 +148,7 @@ for (const theme of ['dark', 'light']) {
         (value) => localStorage.setItem('daemon-theme', value),
         theme,
       );
-      await page.goto('/?id=midnight-fixture');
+      await page.goto(`/?id=${conversation.id}`);
       const composer = page.locator('textarea').first();
       await composer.fill('Keep my unfinished draft');
       await page.locator('input[type="file"]').setInputFiles({
@@ -238,7 +254,7 @@ test('unavailable file is visible and does not regenerate or lose the draft', as
   await page.route('**/generated-files/older.csv', (route) =>
     route.fulfill({ status: 404 }),
   );
-  await page.goto('/?id=midnight-fixture');
+  await page.goto(`/?id=${conversation.id}`);
   await page.locator('textarea').fill('retain');
   await page
     .getByRole('button', { name: 'Preview older.csv', exact: true })
@@ -276,6 +292,7 @@ test('Escape closes details before Stop and preserves a newer streaming draft', 
           start(controller) {
             for (const event of [
               { type: 'start', messageId: 'streaming-fixture' },
+              { type: 'data-event', data: { type: 'request_bound' } },
               { type: 'text-start', id: 'text' },
               {
                 type: 'text-delta',
@@ -297,7 +314,7 @@ test('Escape closes details before Stop and preserves a newer streaming draft', 
       );
     };
   });
-  await page.goto('/?id=midnight-fixture');
+  await page.goto(`/?id=${conversation.id}`);
   const composer = page.locator('textarea');
   await composer.fill('Begin fixture');
   await composer.press('Enter');

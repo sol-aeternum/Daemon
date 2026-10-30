@@ -109,6 +109,9 @@ async def api():
     app = FastAPI()
     app.include_router(router)
     store = AsyncMock()
+    store._resource_inputs = (
+        None  # Match actual uncomposed MemoryStore, not an invented mock child.
+    )
     store.list_conversations_page.return_value = ([], 0, False)
     store.get_conversation.return_value = conversation()
     store.get_messages.return_value = []

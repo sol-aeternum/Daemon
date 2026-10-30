@@ -22,6 +22,11 @@ from tests.durable_database import migrated_template
 lifecycle_db = lifecycle_tests.db
 
 
+@pytest.fixture
+def reservation_key():
+    return Fernet.generate_key()
+
+
 @pytest_asyncio.fixture
 async def db(lifecycle_db):
     db = lifecycle_db
@@ -37,9 +42,9 @@ async def db(lifecycle_db):
 
 
 @pytest_asyncio.fixture
-async def scenario(db):
+async def scenario(db, reservation_key):
     async with db.connection() as owner, db.pool() as pool:
-        identity, conversation, wp, _, _ = await seed(db, owner)
+        identity, conversation, wp, _, _ = await seed(db, owner, encryption_key=reservation_key)
         try:
             await lc.AttemptLifecycleStore(pool).register(identity, uuid4())
             attempt = await owner.fetchval(
@@ -53,7 +58,7 @@ async def scenario(db):
             binding = ar.IntentBinding(
                 uuid4(), 0, uuid4(), uuid4(), identity.lifecycle_id, attempt, identity.epoch, 20
             )
-            codec = ar.DescriptorCodec(Fernet(Fernet.generate_key()))
+            codec = ar.DescriptorCodec(Fernet(reservation_key))
             command = codec.encode(job, binding, filename="private-sentinel.csv", sha256="a" * 64)
             yield identity, command, ar.OutputReservations(codec), codec, conversation
         finally:

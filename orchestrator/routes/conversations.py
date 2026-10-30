@@ -17,6 +17,8 @@ from orchestrator.history_pagination import (
 )
 from orchestrator.routes.tasks import TaskOut, task_out, task_store
 from orchestrator.tasks.store import TaskNotFound
+from orchestrator.resource_errors import ResourceError
+from orchestrator.services.account_control.guard import WriteGuardRefusal
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -40,6 +42,7 @@ class MessageOut(BaseModel):
     reasoning_model: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
+    task_id: uuid.UUID | None = None
 
 
 class ConversationOut(BaseModel):
@@ -218,6 +221,7 @@ async def get_conversation(
     if pagination != "cursor" and (before is not None or through is not None):
         raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
     message_page = None
+    inputs = getattr(store, "_resource_inputs", None)
     if pagination == "cursor":
         try:
             before_boundary = (
@@ -232,13 +236,27 @@ async def get_conversation(
             )
         except InvalidHistoryCursor as exc:
             raise HTTPException(status_code=400, detail={"code": "invalid_cursor"}) from exc
-        messages, has_more = await store.get_message_history_page(
-            conversation_id,
-            user_id=auth.user_id,
-            limit=limit,
-            before=before_boundary,
-            through=through_boundary,
-        )
+        try:
+            if inputs is not None:
+                messages, has_more = await inputs.history(
+                    auth.user_id,
+                    conversation_id,
+                    limit=limit,
+                    cursor_page=True,
+                    before=before_boundary,
+                    through=through_boundary,
+                )
+            else:
+                messages, has_more = await store.get_message_history_page(
+                    conversation_id,
+                    user_id=auth.user_id,
+                    limit=limit,
+                    before=before_boundary,
+                    through=through_boundary,
+                )
+        except (ResourceError, WriteGuardRefusal) as exc:
+            status = 404 if isinstance(exc, ResourceError) and exc.code == "not_found" else 503
+            raise HTTPException(status_code=status, detail="History unavailable") from None
         boundaries = [
             encode_cursor(
                 HistoryBoundary(message.created_at, message.id),
@@ -255,7 +273,16 @@ async def get_conversation(
             "end_cursor": boundaries[-1] if boundaries else None,
         }
     else:
-        messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
+        try:
+            if inputs is not None:
+                messages, _ = await inputs.history(
+                    auth.user_id, conversation_id, limit=limit, offset=offset
+                )
+            else:
+                messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
+        except (ResourceError, WriteGuardRefusal) as exc:
+            status = 404 if isinstance(exc, ResourceError) and exc.code == "not_found" else 503
+            raise HTTPException(status_code=status, detail="History unavailable") from None
     conversation = _normalize_conversation(conversation)
     messages = [_normalize_message(m) for m in messages]
     active_task = latest_task = None
@@ -332,7 +359,22 @@ async def delete_conversation(
                 },
             )
     else:
-        deleted = await store.delete_conversation(conversation_id)
+        if getattr(store, "_resource_inputs", None) is not None:
+            from orchestrator.tasks.store import ConversationBusy
+
+            try:
+                deleted = await store.delete_conversation(conversation_id, user_id=auth.user_id)
+            except ConversationBusy as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "task_running",
+                        "message": "A request in this conversation is still stopping; try again shortly",
+                        "task_id": str(exc.active_task_id),
+                    },
+                ) from exc
+        else:
+            deleted = await store.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "deleted"}
