@@ -93,6 +93,13 @@ class CampaignPlan:
     pins: Mapping[str, Any]
 
     def payload(self) -> dict[str, Any]:
+        recovery = "recovery_lineage" in self.pins
+        if recovery:
+            from orchestrator.eval.campaign_recovery import validate_mode
+
+            validate_mode(self.pins)
+        prior_hold = Decimal("10.4019050") if recovery else PRIOR_HOLD
+        ceiling = Decimal("14.7519050") if recovery else CAMPAIGN_CEILING
         if len(self.question_ids) != 50 or len(set(self.question_ids)) != 50:
             raise CampaignStopped("Campaign requires exactly 50 unique dev IDs")
         if any(not isinstance(qid, str) or not qid for qid in self.question_ids):
@@ -113,23 +120,26 @@ class CampaignPlan:
                     ) / 1_000_000
                 else:
                     amount = tokens * INPUT_RATE + CAPS[stage] * OUTPUT_RATE
-                total += 4 * amount
-        if total > NEW_HOLD or PRIOR_HOLD + NEW_HOLD > CAMPAIGN_CEILING:
+                total += (3 if recovery else 4) * amount
+        if total > NEW_HOLD or prior_hold + NEW_HOLD > ceiling:
             raise CampaignStopped("Allocations exceed approved whole-envelope reservation")
-        return {
+        payload = {
             "schema": 1,
             "arms": ARMS,
             "question_ids": self.question_ids,
             "input_limits": self.input_limits,
             "pins": self.pins,
             "new_reserved_usd": str(NEW_HOLD),
-            "prior_reserved_usd": str(PRIOR_HOLD),
-            "cumulative_reserved_usd": str(PRIOR_HOLD + NEW_HOLD),
+            "prior_reserved_usd": str(prior_hold),
+            "cumulative_reserved_usd": str(prior_hold + NEW_HOLD),
             "allocated_usd": str(total),
             "llm_start_interval_seconds": LLM_START_INTERVAL,
-            "prior_restore_attempts": 1,
-            "maximum_cumulative_restore_attempts": 5,
+            "prior_restore_attempts": 3 if recovery else 1,
+            "maximum_cumulative_restore_attempts": 6 if recovery else 5,
         }
+        if recovery:
+            payload.update(execution_arms=("A1", "A2", "C0"), separate_capacity_reserved_usd="1")
+        return payload
 
 
 def current_campaign() -> Campaign | None:
@@ -158,6 +168,10 @@ class CallReceipt:
         if self.campaign is not None:
             self.campaign.receive(self.stage, self.request, response)
         self.completed = True
+
+    def failure_details(self, exc: BaseException) -> None:
+        if self.campaign is not None:
+            self.campaign.failure_details(self.stage, self.request, exc)
 
 
 @contextmanager
@@ -253,6 +267,13 @@ class Campaign:
             self._stopped = True
             raise CampaignStopped("Campaign inactive/stopped; no automatic replay")
 
+    def _recovery_check(self) -> dict[str, Any] | None:
+        if "recovery_lineage" not in self.plan["pins"]:
+            return None
+        from orchestrator.eval.campaign_recovery import verify_recovery
+
+        return verify_recovery(self.plan, self.directory)
+
     def stop(self, reason: str) -> None:
         self._stopped = True  # Remains latched even if persistence/callers fail.
         self.state.update(status="stopped_reconciliation_required", reason=reason)
@@ -276,6 +297,7 @@ class Campaign:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._lock_fd = fd
+            inherited = self._recovery_check()
             if self.directory.exists():
                 saved = json.loads(self.state_path.read_bytes())
                 if (
@@ -289,6 +311,10 @@ class Campaign:
                     or not 0 < saved.get("arm_index", 0) < len(ARMS)
                 ):
                     raise CampaignStopped("Only a clean completed-arm handoff may continue")
+                if inherited is not None:
+                    from orchestrator.eval.campaign_recovery import validate_handoff
+
+                    validate_handoff(self.directory, saved, inherited)
                 self.state = saved
                 self.state["status"] = "running"
             else:
@@ -307,14 +333,20 @@ class Campaign:
                     "receipts": [],
                     "restores": [],
                 }
+                if inherited is not None:
+                    from orchestrator.eval.campaign_recovery import bootstrap
+
+                    bootstrap(self.directory, self.state, inherited)
             self._live = True
             self._save()  # Whole-envelope hold is durable BEFORE context is exposed.
             token = _active.set(self)
+            initial_arm_index = self.state["arm_index"]
             yield self
             self._check()
             if (
                 self.state["arm"] is not None
                 or self.state["arm_index"] == 0
+                or (inherited is not None and self.state["arm_index"] != initial_arm_index + 1)
                 or self.state["pending"]
                 or self.state.get("restore_pending")
             ):
@@ -344,6 +376,15 @@ class Campaign:
         """
         self._check()
         index = self.state["arm_index"]
+        if "recovery_lineage" in self.plan["pins"]:
+            if (
+                index < 1
+                or self.state.get("restore_pending") is not None
+                or self.state.get("restore_attempts") != index
+                or len(self.state.get("restore_receipts", [])) != index
+                or len(self.state["restores"]) != index - 1
+            ):
+                self.fail("Recovery arm requires a new verified restore")
         if index >= len(ARMS) or arm != ARMS[index] or self.state["arm"] is not None:
             self.fail("Unexpected or repeated arm")
         if dict(verified_pins) != self.plan["pins"] or not restore:
@@ -355,16 +396,25 @@ class Campaign:
     def pending_restore(self, arm: str, identity: Mapping[str, Any]) -> None:
         """Reserve exactly one destructive attempt before any target ALTER/DROP."""
         self._check()
+        try:
+            self._recovery_check()  # Under sibling lock, immediately before mutation admission.
+        except BaseException:
+            self.stop("Recovery pre-mutation verification failed; no replay")
+            raise
         index = self.state["arm_index"]
+        offset = 1 if "recovery_lineage" in self.plan["pins"] else 0
         if (
-            index >= len(ARMS)
+            index < offset
+            or self.plan["prior_restore_attempts"] + index - offset + 1
+            > self.plan["maximum_cumulative_restore_attempts"]
+            or index >= len(ARMS)
             or ARMS[index] != arm
             or self.state["arm"] is not None
             or self.state.get("restore_pending") is not None
-            or self.state.get("restore_attempts", 0) != index
+            or self.state.get("restore_attempts", 0) != index - offset
         ):
             self.fail("Restore repeated, unordered or unresolved")
-        self.state["restore_attempts"] = index + 1
+        self.state["restore_attempts"] = index - offset + 1
         self.state["restore_pending"] = {"arm": arm, "identity": dict(identity)}
         self._save()
 
@@ -570,6 +620,23 @@ class Campaign:
         path = self.directory / f"receipt-{len(self.state['receipts']):04d}.json"
         _write(path, {"pending": pending, "response": evidence})
 
+    def failure_details(self, stage: str, request: dict[str, Any], exc: BaseException) -> None:
+        """Separate sanitized failure evidence; never invent usage or clear pending."""
+        self._check()
+        pending = self.state["pending"]
+        if not pending or pending["stage"] != stage or pending["request_sha256"] != _hash(request):
+            self.fail("Failure does not match pending request")
+        from orchestrator.eval.campaign_recovery import failure_diagnostics
+
+        try:
+            _write(
+                self.directory / f"failure-{len(self.state['receipts']):04d}.json",
+                {"pending": pending, "diagnostics": failure_diagnostics(exc)},
+            )
+        except BaseException:
+            self.stop("Failure diagnostics durability failure; retain pending; no replay")
+            raise
+
     def finish_question(self, result: Mapping[str, Any]) -> None:
         self._check()
         if (
@@ -589,6 +656,18 @@ class Campaign:
     def finish_arm(self, *, qualification: Mapping[str, Any]) -> None:
         """Bind external full acceptance/manifest checks; never substitute for them."""
         self._check()
+        if "recovery_lineage" in self.plan["pins"]:
+            index = self.state["arm_index"]
+            if (
+                not 1 <= index < len(ARMS)
+                or self.state["arm"] != ARMS[index]
+                or self.state.get("restore_attempts") != index
+                or len(self.state["restores"]) != index
+                or len(self.state.get("restore_receipts", [])) != index
+                or len(self.state["receipts"]) != index * 200
+                or len(self.state["qualifications"]) != index
+            ):
+                self.fail("Recovery arm lacks full new execution/restore evidence")
         if (
             self.state["question"] is not None
             or self.state["question_index"] != 50

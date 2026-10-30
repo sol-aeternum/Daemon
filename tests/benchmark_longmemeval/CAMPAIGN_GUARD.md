@@ -70,6 +70,66 @@ The replacement directory is fixed to the failed campaign's sibling named with
 successor remains non-resumable. This shares the cooperative operator trust model
 of the evidence lock, not protection against administrative copying/deletion.
 
+### Explicit second replacement — owner-approved scope, 2026-10-30
+
+`prepare-second-replacement` implements the separately approved stopped-A1 recovery,
+not a loose resume/retry flag. It prepares offline from exact hashes of the previous
+replacement plan and stopped ledger, recursively verifies the original replacement
+lineage, and requires the exact stopped state: A1, question index 11, answer pending,
+245 completed receipts, two verified replacement restores, closed admission, and
+only A0 qualified. Both failed ledgers and all reservations remain intact. The
+provider failure occurred during LiteLLM response conversion; an empty HTTP body
+and final billing are **not established**.
+
+The new plan retains $10.4019050 and adds $4.35: $14.7519050 campaign reservations,
+or $15.7519050 including the separate, nonspendable $1 capacity hold. Only full
+A1/A2/C0 executions are allocated; A0 remains the comparator, not an executable
+recovery arm. Three prior restores plus at most three new restores gives a maximum
+of six. There is no automatic fallback, partial-A1 reuse, third recovery, or reset
+through a different output directory. The successor campaign is fixed to the failed
+replacement directory plus `-recovery`; the plan filename is the previous replacement
+plan stem plus `-recovery`, with the same suffix and parent.
+
+The recovery evidence digest map binds both ancestor plans/ledgers, every completed
+receipt, any partial pending receipt actually present, and the four qualified A0
+artifacts. Preparation recomputes A0 qualification against the frozen fifty-question
+dev set. Immutable archive/ingest/script pins remain unchanged. A source bridge binds
+the old control to the new control by exact diff digest and before/after source-file
+hashes: only `campaign_guard.py`, `campaign_launch.py`, `campaign_recovery.py` and the
+diagnostic exception path in `evaluate.py` may change in the benchmark runtime
+scope. This document is excluded as non-runtime documentation. Control/candidate
+verification still permits only the original retrieval diversity difference; prompt,
+prepared request, transport, pacing and retrieval behavior are not recovery variables.
+Primary review must separately confirm that the allowlisted source diff preserves
+the success path; a filename allowlist is not semantic proof.
+
+Under the existing sibling lock, activation revalidates ancestors/evidence and the
+fixed destination before exclusive creation. It durably copies exactly four A0
+artifacts, checking source and destination hashes, and records imported provenance
+without fabricating receipts or restores. Initial arm index is 1, with no new receipts
+or restore attempts. A partially created destination is permanently non-resumable;
+there is no cleanup/restart path. Clean handoffs recheck imported A0 hashes and the
+recovery restore offset. Launch and the guard's immediately-before-`pending_restore`
+hook reverify lineage, evidence and source bridge before mutation admission. These
+checks retain the existing cooperative filesystem trust model. The restore module
+and normal copied-A0 comparability/paired-result path are unchanged.
+
+Provider exceptions in an active benchmark call produce a separate
+`failure-<receipt_index>.json`, bound to the still-pending request identity. It
+contains only static allowlisted exception classes (unknown becomes `UnknownError`),
+integer HTTP status in 100–599, a bounded cycle-safe cause chain, and constant
+classification. No exception serialization, raw bodies, headers, URLs, request data,
+credentials or invented usage enters that artifact. Exact known-phrase classification
+does not establish an empty HTTP body. Persistence failure retains pending and stops;
+it never dispatches another request. Outside an active campaign the existing behavior
+is unchanged.
+
+This section records source implementation and approved scope, not live qualification
+or execution clearance. Synthetic tests do not establish private evidence validity,
+actual source bridge acceptance, current rates/privacy, database state, provider
+behavior, final billing, or candidate acceptance. Final independent review, project
+gates and exact-action Astra supervision remain required before any live action.
+
 `python -m orchestrator.eval.campaign_launch arm` executes only one explicit arm.
 It requires the clean pinned checkout and a fresh source/plan/arm/live-state-bound
 Astra action-review artifact. This is trusted operator evidence, not a cryptographic

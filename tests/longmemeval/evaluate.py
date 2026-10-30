@@ -349,6 +349,11 @@ async def _call_llm_with_provider_config(
             response = await litellm.acompletion(**call_params)
         except Exception as e:
             if is_benchmark:
+                receipt.failure_details(e)
+                if current_campaign() is not None:
+                    raise BenchmarkProviderError(
+                        "Guarded benchmark provider failure; see diagnostics"
+                    ) from e
                 raise BenchmarkProviderError(
                     f"Benchmark-mode {bm_call_key} provider failure: {e}"
                 ) from e
