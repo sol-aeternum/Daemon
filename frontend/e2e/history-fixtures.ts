@@ -13,6 +13,9 @@ type FixtureConversation = {
     role: string;
     content: string;
     created_at?: string;
+    metadata?: Record<string, unknown>;
+    tool_calls?: unknown[];
+    tool_results?: unknown[];
   }>;
   [key: string]: unknown;
 };

@@ -194,11 +194,15 @@ async def test_marker_mismatch_never_skips_effect(env: Env, directory, column):
 
 @pytest.mark.asyncio
 async def test_whole_pre_j1_schema_distinct_from_partial_schema(env: Env):
-    # The shared disposable fixture applies every migration. Remove the J1b
-    # dependents first to simulate an actual whole pre-J1 schema, not a broken FK.
+    # The shared disposable fixture applies every migration. Remove explicit C1
+    # namespace dependents and J1b first, never CASCADE away unexpected objects.
+    # This models absent J1 tables rather than a partially broken binding schema.
+    await env.pool.execute("DROP TABLE resource_publications,artifact_namespaces")
     await env.pool.execute("DROP TABLE account_deletions,account_suspension_causes")
     await env.pool.execute("ALTER TABLE entitlement_accounts DROP COLUMN content_generation")
     await env.pool.execute("DROP TABLE deletion_journal_applied,deletion_journal_binding")
+    assert await env.pool.fetchval("SELECT to_regclass('artifact_namespaces')") is None
+    assert await env.pool.fetchval("SELECT to_regclass('resource_versions')") is not None
     await require_recovery_barrier(env.pool, cast(Any, Settings)(_env_file=None))
     await env.pool.execute(
         "CREATE TABLE deletion_journal_binding(singleton boolean,journal_id uuid)"

@@ -1,9 +1,9 @@
+import { expect, type Page, type Request } from '@playwright/test';
+import { test as base } from './online-ui-fixture';
 import {
-  expect,
-  test as base,
-  type Page,
-  type Request,
-} from '@playwright/test';
+  isAcknowledgedPrefetchCancellation,
+  isAcknowledgedRscPrefetch,
+} from './settings-rsc-fixture';
 
 type HttpFailure = { url: string; status: number };
 
@@ -45,13 +45,19 @@ function knownDevtoolsCsp(text: string, source: string) {
 }
 
 export const test = base.extend<{
+  acknowledgedPrefetchPaths: string[];
   captureDiagnostics: {
     expectedHttpFailures: HttpFailure[];
     assertClean: () => void;
   };
 }>({
+  acknowledgedPrefetchPaths: [[], { option: true }],
   captureDiagnostics: [
-    async ({ page, browser }, use, testInfo) => {
+    async (
+      { page, browser, baseURL, acknowledgedPrefetchPaths },
+      use,
+      testInfo,
+    ) => {
       const pageErrors: string[] = [];
       const consoleMessages: {
         type: string;
@@ -60,10 +66,20 @@ export const test = base.extend<{
       }[] = [];
       const responses: HttpFailure[] = [];
       const bodylessCacheClears = new WeakSet<Request>();
+      const acknowledgedPrefetches = new WeakSet<Request>();
+      const prefetchResponses: {
+        url: string;
+        method: string;
+        status: number;
+        contentType: string;
+        rsc: string;
+        prefetch: string;
+      }[] = [];
       const failedRequests: {
         url: string;
         error: string | null;
         acknowledgedBodylessCacheClear: boolean;
+        acknowledgedPrefetchCancellation: boolean;
       }[] = [];
       const expectedHttpFailures: HttpFailure[] = [];
       page.on('pageerror', (error) =>
@@ -80,6 +96,30 @@ export const test = base.extend<{
       });
       page.on('response', (response) => {
         responses.push({ url: response.url(), status: response.status() });
+        const request = response.request();
+        const contentType = response.headers()['content-type'] ?? '';
+        if (
+          baseURL &&
+          isAcknowledgedRscPrefetch(
+            new URL(request.url()),
+            request.method(),
+            request.headers(),
+            new URL(baseURL).origin,
+            acknowledgedPrefetchPaths,
+            response.status(),
+            contentType,
+          )
+        ) {
+          acknowledgedPrefetches.add(request);
+          prefetchResponses.push({
+            url: request.url(),
+            method: request.method(),
+            status: response.status(),
+            contentType,
+            rsc: request.headers().rsc,
+            prefetch: request.headers()['next-router-prefetch'],
+          });
+        }
         if (
           response.status() === 204 &&
           response.request().method() === 'POST' &&
@@ -100,6 +140,10 @@ export const test = base.extend<{
           acknowledgedBodylessCacheClear:
             bodylessCacheClears.has(request) &&
             request.failure()?.errorText === 'net::ERR_ABORTED',
+          acknowledgedPrefetchCancellation: isAcknowledgedPrefetchCancellation(
+            acknowledgedPrefetches.has(request),
+            request.failure()?.errorText ?? null,
+          ),
         });
       });
 
@@ -107,7 +151,9 @@ export const test = base.extend<{
         expect(pageErrors, 'Uncaught browser runtime errors').toEqual([]);
         expect(
           failedRequests.filter(
-            (request) => !request.acknowledgedBodylessCacheClear,
+            (request) =>
+              !request.acknowledgedBodylessCacheClear &&
+              !request.acknowledgedPrefetchCancellation,
           ),
           'Failed browser requests',
         ).toEqual([]);
@@ -151,6 +197,7 @@ export const test = base.extend<{
             ).length,
             responses,
             failedRequests,
+            prefetchResponses,
             expectedHttpFailures,
           },
           null,

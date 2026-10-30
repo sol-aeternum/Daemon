@@ -19,6 +19,7 @@ import {
 } from '@/components/ConversationHistoryProvider';
 import { useAuthenticatedImageUrl } from '@/hooks/useAuthenticatedImageUrl';
 import { ensureAuthHeader } from '@/lib/auth';
+import { ResourceGallery } from '@/components/ResourceGallery';
 
 type ArtifactKind = 'image' | 'audio';
 
@@ -147,12 +148,14 @@ function ArtifactsView() {
       }
     >
       <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-6 md:py-8 space-y-5">
+        <ResourceGallery />
         <div className="rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-5">
           <h2 className="text-xl font-semibold text-[var(--color-text-primary)]">
-            Generated content library
+            Legacy recent-chat media
           </h2>
           <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-            Review generated images and audio from your recent conversations.
+            Image/audio links from the latest 20 conversations only; this is not
+            the full retained catalog.
           </p>
           <div className="mt-3 inline-flex items-center gap-4 text-sm text-[var(--color-text-secondary)]">
             <span>{summary.images} images</span>

@@ -8,6 +8,12 @@ DEC05/DEC07 and AC03/AC09/AC11; it does not complete #489 or #471.
 
 ## Source boundary
 
+The following records N0's original boundary. The subsequently owner-approved
+C1 package adds an explicitly uncalled `mixed_store` consumer and shares bounded
+POSIX framing/HEAD mechanics with `store.py`; the default reader and startup
+remain v1-only. See [C1 work in progress](DELETION_JOURNAL.md#c1-work-in-progress--offline-container-promotion).
+This codec remains pure; no namespace effect or runtime activation is supplied.
+
 `orchestrator/services/deletion_journal/namespace_candidate.py` is a separate,
 uncalled candidate. Production `model.py`, `store.py`, `barrier.py`, journal
 metadata and DB schemas are unchanged. There is no filesystem I/O, database,

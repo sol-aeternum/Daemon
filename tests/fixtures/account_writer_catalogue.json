@@ -9,6 +9,66 @@
     "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
+    "resource_presentations": {
+      "category": "content",
+      "owner_source": "migrations/055_resource_presentations.sql",
+      "ownership_path": "root:users <- conversations <- messages <- resource_presentations | root:users <- messages <- resource_presentations | root:users <- resource_presentations",
+      "rationale": "Account/reset encrypted pinned presentation envelope and minimal original provenance; source deletion detaches in the actual transaction. No complete lifecycle qualification. Uncovered."
+    },
+    "resource_input_batches": {
+      "category": "content",
+      "owner_source": "migrations/054_resource_input_batches.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks <- resource_input_batches | root:users <- conversations <- tasks <- resource_input_batches | root:users <- messages <- tasks <- resource_input_batches | root:users <- resource_input_batches | root:users <- tasks <- resource_input_batches",
+      "rationale": "Account/reset submission tracking and encrypted canonical request; source deletion erases request and retains content-free closed-key marker. Trusted same-account task join, not FK authorization. Uncovered."
+    },
+    "resource_input_intents": {
+      "category": "content",
+      "owner_source": "migrations/054_resource_input_batches.sql",
+      "ownership_path": "root:users <- conversations <- messages <- tasks <- resource_input_batches <- resource_input_intents | root:users <- conversations <- tasks <- resource_input_batches <- resource_input_intents | root:users <- messages <- tasks <- resource_input_batches <- resource_input_intents | root:users <- resource_input_batches <- resource_input_intents | root:users <- tasks <- resource_input_batches <- resource_input_intents",
+      "rationale": "Account/reset ordered immutable received representations and encrypted descriptors; committed tracking before private staging. No cleanup or complete lifecycle qualification. Uncovered."
+    },
+    "artifact_namespaces": {
+      "category": "control",
+      "owner_source": "migrations/052_artifact_namespaces.sql",
+      "ownership_path": "root:deletion_journal_binding <- artifact_namespaces",
+      "rationale": "Non-cascading content-free journal birth inventory; account_id is explicit ownership without user FK. No lifecycle completion or physical readiness inference. Uncovered."
+    },
+    "resource_catalog_heads": {
+      "category": "content",
+      "owner_source": "migrations/053_resource_registry.sql",
+      "ownership_path": "root:users <- resource_catalog_heads",
+      "rationale": "Account/reset content: committed version watermark and mutable-filter revision; no generation rewind or completed fence. Uncovered."
+    },
+    "resources": {
+      "category": "content",
+      "owner_source": "migrations/053_resource_registry.sql",
+      "ownership_path": "root:users <- resources",
+      "rationale": "Immutable account-owned resource identity; survives source deletion, removed by eventual account/reset erasure. SQL cascade is not file cleanup. Uncovered."
+    },
+    "resource_versions": {
+      "category": "content",
+      "owner_source": "migrations/053_resource_registry.sql",
+      "ownership_path": "root:users <- resources <- resource_versions",
+      "rationale": "Immutable representation and encrypted metadata/provenance/checksum; all versions are account/reset content. Availability is separately verified. Uncovered."
+    },
+    "resource_publications": {
+      "category": "content",
+      "owner_source": "migrations/053_resource_registry.sql",
+      "ownership_path": "root:deletion_journal_binding <- artifact_namespaces <- resource_publications | root:users <- resources <- resource_versions <- resource_publications",
+      "rationale": "Account/reset content via owned version; namespace FK is a binding dependency, not retained-control ownership. Encrypted immutable storage binding does not itself prove availability. Uncovered."
+    },
+    "resource_references": {
+      "category": "content",
+      "owner_source": "migrations/053_resource_registry.sql",
+      "ownership_path": "root:users <- conversations <- messages <- resource_references | root:users <- conversations <- messages <- tasks <- resource_references | root:users <- conversations <- resource_references | root:users <- conversations <- tasks <- resource_references | root:users <- messages <- resource_references | root:users <- messages <- tasks <- resource_references | root:users <- resources <- resource_versions <- resource_references | root:users <- tasks <- resource_references",
+      "rationale": "Pinned account-owned version and encrypted original provenance. Source links require explicit detach/source_deleted update before deletion; FK dependencies are not same-account permission. Reset content. Uncovered."
+    },
+    "resource_version_intents": {
+      "category": "content",
+      "owner_source": "migrations/053_resource_registry.sql",
+      "ownership_path": "root:users <- artifact_output_jobs <- resource_version_intents | root:users <- resource_version_intents | root:users <- resources <- resource_version_intents",
+      "rationale": "Stable append-version operation/slot with original generation and encrypted descriptor. No task/chat cascade; eventual account/reset erases content, not retained financial/control history. Uncovered."
+    },
     "artifact_output_jobs": {
       "category": "content",
       "owner_source": "migrations/051_artifact_output_reservations.sql",
@@ -311,6 +371,16 @@
     }
   },
   "fk_edges": {
+    "resource_presentations": ["messages", "users"],
+    "resource_input_batches": ["tasks", "users"],
+    "resource_input_intents": ["resource_input_batches"],
+    "artifact_namespaces": ["deletion_journal_binding"],
+    "resource_catalog_heads": ["users"],
+    "resources": ["users"],
+    "resource_versions": ["resources"],
+    "resource_publications": ["artifact_namespaces", "resource_versions"],
+    "resource_references": ["conversations", "messages", "resource_versions", "tasks"],
+    "resource_version_intents": ["artifact_output_jobs", "resources", "users"],
     "artifact_output_jobs": [
       "users"
     ],
@@ -461,6 +531,16 @@
     ]
   },
   "ownership_paths": {
+    "resource_presentations": "root:users <- conversations <- messages <- resource_presentations | root:users <- messages <- resource_presentations | root:users <- resource_presentations",
+    "resource_input_batches": "root:users <- conversations <- messages <- tasks <- resource_input_batches | root:users <- conversations <- tasks <- resource_input_batches | root:users <- messages <- tasks <- resource_input_batches | root:users <- resource_input_batches | root:users <- tasks <- resource_input_batches",
+    "resource_input_intents": "root:users <- conversations <- messages <- tasks <- resource_input_batches <- resource_input_intents | root:users <- conversations <- tasks <- resource_input_batches <- resource_input_intents | root:users <- messages <- tasks <- resource_input_batches <- resource_input_intents | root:users <- resource_input_batches <- resource_input_intents | root:users <- tasks <- resource_input_batches <- resource_input_intents",
+    "artifact_namespaces": "root:deletion_journal_binding <- artifact_namespaces",
+    "resource_catalog_heads": "root:users <- resource_catalog_heads",
+    "resources": "root:users <- resources",
+    "resource_versions": "root:users <- resources <- resource_versions",
+    "resource_publications": "root:deletion_journal_binding <- artifact_namespaces <- resource_publications | root:users <- resources <- resource_versions <- resource_publications",
+    "resource_references": "root:users <- conversations <- messages <- resource_references | root:users <- conversations <- messages <- tasks <- resource_references | root:users <- conversations <- resource_references | root:users <- conversations <- tasks <- resource_references | root:users <- messages <- resource_references | root:users <- messages <- tasks <- resource_references | root:users <- resources <- resource_versions <- resource_references | root:users <- tasks <- resource_references",
+    "resource_version_intents": "root:users <- artifact_output_jobs <- resource_version_intents | root:users <- resource_version_intents | root:users <- resources <- resource_version_intents",
     "artifact_output_jobs": "root:users <- artifact_output_jobs",
     "artifact_output_intents": "root:users <- artifact_output_jobs <- artifact_output_intents",
     "attempt_lifecycle_commands": "root:attempt_lifecycle_control <- attempt_lifecycle_commands",
@@ -513,6 +593,504 @@
     "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots"
   },
   "writer_sites": [
+    {
+      "owner_source": "orchestrator.resource_catalog", "qualname": "instant",
+      "kind": "filesystem_write", "fingerprint": "237c731376375320", "tables": [],
+      "unknown": true, "uncovered": true, "category": "deferred",
+      "rationale": "Conservative scanner candidate for timestamp string replace, not actual file I/O. Explicitly inventoried, no runtime-fence claim. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_csv", "qualname": "encode_csv",
+      "kind": "filesystem_write", "fingerprint": "09699fa1c6a4904a", "tables": [],
+      "unknown": true, "uncovered": true, "category": "deferred",
+      "rationale": "Conservative scanner candidate for bounded StringIO write, not filesystem publication. Actual R0/registry authority remains separate. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_presentations", "qualname": "ResourcePresentations.detachment",
+      "kind": "sql_inline", "fingerprint": "c23fef24929ce643", "tables": ["resource_presentations"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "Owner-approved two-pass bounded same-transaction presentation detachment with expected-source qualification and encrypted source-deleted provenance; no resource cascade or complete lifecycle-fence claim. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_presentations", "qualname": "ResourcePresentations.record",
+      "kind": "sql_inline", "fingerprint": "f4d1e2ec15153a2c", "tables": ["resource_presentations"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "Explicit isolated C1 account-qualified immutable pinned presentation, actual task/message ownership and lease checks; no completed lifecycle fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._replay",
+      "kind": "sql_inline", "fingerprint": "689a6a7dd933a9e8", "tables": ["tasks"],
+      "unknown": false, "uncovered": true, "category": "deferred",
+      "rationale": "Legacy canonical replay refreshes rotated request digest under the same account transaction; no new task, input backfill or complete writer fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
+      "kind": "sql_inline", "fingerprint": "51b67b0c9e49bdad", "tables": ["resource_references"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "Explicit C1 same-transaction encrypted provenance and live-source detachment; complete lifecycle fencing remains unqualified. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
+      "kind": "sql_inline", "fingerprint": "780c6b6456692f75", "tables": ["resource_catalog_heads"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "Explicit C1 source-detachment filter revision, not account/reset erasure. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
+      "kind": "sql_inline", "fingerprint": "a73fad343307edd3", "tables": ["resource_input_batches"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "Atomic canonical request erasure and closed deleted-key marker. Complete lifecycle fencing remains unqualified. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline", "fingerprint": "2824a2a25a4e0a66", "tables": ["resources"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 input resource insertion joined to actual task transaction; no completed lifecycle claim. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline", "fingerprint": "88d6a01a9f888aac", "tables": ["resource_catalog_heads"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 generation-bound catalog initialization on actual acceptance transaction. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline", "fingerprint": "97b96eaf8d0bf820", "tables": ["resource_catalog_heads"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 input version watermark committed with task and ordered references. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline", "fingerprint": "b2b755a3892e2d2a", "tables": ["resource_versions"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 immutable received representation insertion; account/reset content. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline", "fingerprint": "c0130b6802d63f59", "tables": ["resource_references"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 account-qualified ordered pinned input reference on actual acceptance connection. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline", "fingerprint": "c4a48280fae5e460", "tables": ["resource_publications"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 actual verified byte-bearing input publication; metadata-only has no row. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._reserve",
+      "kind": "sql_inline", "fingerprint": "21b61fc02de4a2f6", "tables": ["resource_input_batches"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 stable account-bound keyed submission identity committed before effects. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._reserve",
+      "kind": "sql_inline", "fingerprint": "713b80de8c1f6433", "tables": ["resource_input_intents"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "C1 ordered immutable received representation intent tracking before filesystem effects. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs.accept",
+      "kind": "sql_inline", "fingerprint": "4bf57b8de6afd945", "tables": ["resource_input_batches"],
+      "unknown": false, "uncovered": true, "category": "content",
+      "rationale": "Actual same-account task/message/origin validation before accepted pointer transition; no completed fence. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "NamespaceController._ensure",
+      "kind": "sql_inline",
+      "fingerprint": "414aa47231b8518e",
+      "tables": ["artifact_namespaces"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Uncalled birth inventory physical-readiness update; no complete lifecycle fence."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "NamespaceController._ensure",
+      "kind": "sql_inline",
+      "fingerprint": "93a2077245cb15c9",
+      "tables": ["deletion_journal_applied"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Exact namespace birth marker records inventory only, not request/lifecycle completion."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "NamespaceController._ensure",
+      "kind": "sql_inline",
+      "fingerprint": "ce1ef98e23f59828",
+      "tables": ["artifact_namespaces"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "control",
+      "rationale": "Uncalled non-cascading journal birth projection; default startup remains uncomposed."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "_topology",
+      "kind": "filesystem_write",
+      "fingerprint": "0093ad13d5baf08e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Store-owned namespace sync candidate; scanner cannot prove authority or lifecycle coverage."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "_topology",
+      "kind": "filesystem_write",
+      "fingerprint": "1e89b9186f714ce3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative store-handle open candidate; full account lifecycle remains uncovered."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "_topology",
+      "kind": "filesystem_write",
+      "fingerprint": "23abb7a73c1ecb40",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative private lock open candidate; scanner is not store-ownership proof."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "_topology",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled owned-descriptor durability operation; no whole-account fence claim."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "_topology",
+      "kind": "filesystem_write",
+      "fingerprint": "3c6c6f6d48447a3a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative lock handle open candidate; no live namespace activation."
+    },
+    {
+      "owner_source": "orchestrator.artifact_namespaces",
+      "qualname": "_topology.directory",
+      "kind": "filesystem_write",
+      "fingerprint": "7fa4127a0c75881d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Journal-backed explicit bootstrap mkdir; scanner cannot establish complete lifecycle coverage."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "06c9183b66528f7d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled private-copy sync; trusted registry authority is not statically proven."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled object fsync candidate; no runtime lifecycle coverage claim."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "388114919379a1e1",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled staging directory sync, not account authority."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "3cb968fe7a408902",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit committed private-link repair; actual binding/ownership verified by registry, not scanner."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "6dff859c271eb350",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Post-repair directory durability candidate; full lifecycle remains uncovered."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "7ff28ed6f3494548",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative private object read-handle candidate; no runtime authority inference."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "9023a418129f6803",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Post-repair staging sync candidate; not an erasure or retirement handler."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "d16be104cf97de78",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative stable private-lock open candidate. Full lifecycle uncomposed."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "e56fda1d642532da",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled live directory sync candidate; no production readiness grant."
+    },
+    {
+      "owner_source": "orchestrator.resource_storage",
+      "qualname": "_access",
+      "kind": "filesystem_write",
+      "fingerprint": "fc58713c385cb09b",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Post-repair private directory sync candidate; scanner cannot validate publication."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore._intent",
+      "kind": "sql_dynamic",
+      "fingerprint": "1fdeac7b1295fffa",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Closed internal table selection for cross-kind slot conflict reads; conservative dynamic SQL candidate."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore._intent",
+      "kind": "sql_dynamic",
+      "fingerprint": "31b6d76eadd07f77",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Closed internal R0/append intent read selection; not a new R0 writer or static coverage proof."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_dynamic",
+      "fingerprint": "02e51825b6ac0efe",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Closed internal table selection for actual intent row lock; dynamic candidate remains explicit."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_inline",
+      "fingerprint": "0637a128968b8b91",
+      "tables": ["resource_publications"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Atomic immutable account/reset publication binding; no availability boolean or completed account fence."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_inline",
+      "fingerprint": "12f8e0c25c0940ca",
+      "tables": ["resource_catalog_heads"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Generation-bound catalog head creation; account/reset content, uncalled runtime."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_inline",
+      "fingerprint": "6262a87a27ccace3",
+      "tables": ["resources"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Immutable resource birth inside guarded publication transaction; not a general writer fence."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_inline",
+      "fingerprint": "77a5713cd53b0b63",
+      "tables": ["resource_references"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Pinned output occurrence and encrypted provenance. Source-detachment integration remains required."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_inline",
+      "fingerprint": "dcd2fca830d8e93a",
+      "tables": ["resource_catalog_heads"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Committed version watermark advances atomically with publication and rolls back with failure."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.publish_output",
+      "kind": "sql_inline",
+      "fingerprint": "f6784cd6d80d0689",
+      "tables": ["resource_versions"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Immutable version and encrypted metadata; no source deletion cascade or implicit latest substitution."
+    },
+    {
+      "owner_source": "orchestrator.resource_store",
+      "qualname": "ResourceStore.reserve_version",
+      "kind": "sql_inline",
+      "fingerprint": "0cedf05b2b317bb6",
+      "tables": ["resource_version_intents"],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Separately approved stable append-version intent, original generation/current registered producer; R0 table writes unchanged."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.mixed_store",
+      "qualname": "MixedJournal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "01b418f1683b906f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled mixed journal metadata durability; no applied effects or completed account fence."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.mixed_store",
+      "qualname": "MixedJournal._scan",
+      "kind": "filesystem_write",
+      "fingerprint": "9638549e9c93e265",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative metadata descriptor open candidate; no lifecycle coverage inference."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.mixed_store",
+      "qualname": "MixedJournal.append",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled mixed append sync; actual startup/applier still uncomposed."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.upgrade",
+      "qualname": "promote_container_v2",
+      "kind": "filesystem_write",
+      "fingerprint": "01b418f1683b906f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit offline metadata promotion directory sync; execution not authorised on live journal."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.upgrade",
+      "qualname": "promote_container_v2",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Offline promotion temporary sync; no producer-stop or recovery proof from scanner."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.upgrade",
+      "qualname": "promote_container_v2",
+      "kind": "filesystem_write",
+      "fingerprint": "a27757af39632223",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit offline metadata replacement; uncertain outcome preserved, no production activation."
+    },
+    {
+      "owner_source": "orchestrator.services.deletion_journal.upgrade",
+      "qualname": "promote_container_v2",
+      "kind": "filesystem_write",
+      "fingerprint": "ba2e69f122ff31e3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive promotion temporary open candidate; not a runtime lifecycle writer."
+    },
     {
       "owner_source": "orchestrator.artifact_reservations",
       "qualname": "OutputReservations._call",
@@ -3732,7 +4310,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "0c1588b21e3c539c",
       "tables": [],
@@ -3743,7 +4321,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "35e0a975037a759a",
       "tables": [],
@@ -3754,7 +4332,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "4dce09717f5ac465",
       "tables": [],
@@ -3765,7 +4343,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "608c75ecd516eba2",
       "tables": [],
@@ -3776,7 +4354,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "91b4000a7ae2e3d5",
       "tables": [],
@@ -3787,7 +4365,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "9e12639fd51c0914",
       "tables": [],
@@ -3798,7 +4376,7 @@
     },
     {
       "owner_source": "orchestrator.services.deletion_journal.store",
-      "qualname": "Journal._scan",
+      "qualname": "Journal._finish_scan",
       "kind": "filesystem_write",
       "fingerprint": "b87879b9d89470b0",
       "tables": [],
@@ -5321,7 +5899,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore._accept_once",
+      "qualname": "TaskStore._insert_accepted",
       "kind": "sql_inline",
       "fingerprint": "c923936b4e2707e9",
       "tables": [
@@ -5345,9 +5923,9 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore._accept_once",
+      "qualname": "TaskStore._insert_accepted",
       "kind": "sql_inline",
-      "fingerprint": "0b8569b0ad0a2d20",
+      "fingerprint": "cad2ded4c4cd7000",
       "tables": [
         "tasks"
       ],
@@ -5358,9 +5936,9 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore._accept_once",
+      "qualname": "TaskStore._insert_accepted",
       "kind": "sql_inline",
-      "fingerprint": "18933ab45cc0d651",
+      "fingerprint": "680977920beca071",
       "tables": [
         "messages"
       ],
@@ -5636,9 +6214,9 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore.delete_conversation",
+      "qualname": "TaskStore._delete_conversation_rows",
       "kind": "sql_inline",
-      "fingerprint": "a1b2fef322ef3021",
+      "fingerprint": "26d2fe41023d6d8d",
       "tables": [
         "tasks"
       ],
@@ -5649,7 +6227,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore.delete_conversation",
+      "qualname": "TaskStore._delete_conversation_rows",
       "kind": "sql_inline",
       "fingerprint": "d86964f589fa361d",
       "tables": [

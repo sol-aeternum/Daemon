@@ -14,7 +14,8 @@
     "security:braces:watch": "node scripts/watch-braces-upstream.cjs",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:browser:qualification": "node e2e/run-ui-qualification.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.61",

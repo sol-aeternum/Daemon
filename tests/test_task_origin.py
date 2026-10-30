@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from dataclasses import FrozenInstanceError
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -236,9 +237,20 @@ def _assert_origin_import_boundary(path, text):
             ("TaskOriginRefusal", None),
             ("_classify_task_origin", None),
         }
+        # Its one approved static import does not authorize dynamic module
+        # lookup for extra symbols. Inspect the remainder independently.
+        remainder = ast.parse(text)
+        remainder.body = [
+            n
+            for n in remainder.body
+            if not (isinstance(n, ast.ImportFrom) and n.module == "orchestrator.tasks._origin")
+        ]
+        assert re.search(r"(?<!\w)tasks\._origin", ast.unparse(remainder)) is None, path
     else:
         assert "_classify_task_origin" not in text, path
-        assert "tasks._origin" not in text, path
+        # Match the module path, not the approved self._tasks._origin wrapper
+        # call. No new importer or dynamic module spelling is admitted.
+        assert re.search(r"(?<!\w)tasks\._origin", text) is None, path
         assert "import _origin" not in text, path
         assert not imports_origin(ast.parse(text)), path
 
@@ -251,11 +263,26 @@ def _assert_origin_import_boundary(path, text):
         ("providers/unapproved.py", "from ._origin import _classify_task_origin"),
         ("orchestrator/tasks/store.py", "from orchestrator.tasks._origin import *"),
         ("orchestrator/tasks/store.py", "import orchestrator.tasks._origin"),
+        ("orchestrator/unapproved.py", '__import__("orchestrator.tasks._origin")'),
     ],
 )
 def test_runtime_adoption_does_not_admit_other_importers_or_symbols(path, text):
     with pytest.raises(AssertionError):
         _assert_origin_import_boundary(path, text)
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        '__import__("orchestrator.tasks._origin")',
+        'importlib.import_module("orchestrator.tasks._origin")',
+    ],
+)
+def test_approved_wrapper_still_rejects_dynamic_module_access(lookup):
+    direct = "from orchestrator.tasks._origin import OriginalTaskOrigin, TaskOriginContext, TaskOriginRefusal, _classify_task_origin\n"
+    _assert_origin_import_boundary("orchestrator/tasks/store.py", direct)
+    with pytest.raises(AssertionError):
+        _assert_origin_import_boundary("orchestrator/tasks/store.py", direct + lookup)
 
 
 def test_source_boundary_is_stdlib_only_and_runtime_importer_is_exact():

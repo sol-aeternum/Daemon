@@ -220,7 +220,15 @@ def test_no_runtime_imports() -> None:
             if relative not in {
                 "orchestrator/artifact_envelope.py",
                 "orchestrator/artifact_staging.py",
+                "orchestrator/resource_storage.py",
+                "orchestrator/resource_store.py",
+                "orchestrator/resource_input_codec.py",
+                "orchestrator/resource_inputs.py",
             }:
                 assert "artifact_envelope" not in source, relative
-            if relative != "orchestrator/artifact_staging.py":
+            if relative not in {
+                "orchestrator/artifact_staging.py",
+                "orchestrator/artifact_namespaces.py",
+                "orchestrator/resource_storage.py",
+            }:
                 assert "artifact_staging" not in source, relative

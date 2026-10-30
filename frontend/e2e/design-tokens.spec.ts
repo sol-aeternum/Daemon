@@ -1,5 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { captureSurface, test } from './design-token-capture';
+import { isAdditionalRscPrefetch } from './settings-rsc-fixture';
+import { mockCacheClear } from './online-ui-fixture';
 import {
   historyFixtureConversationId,
   historyFixtureList,
@@ -84,10 +86,16 @@ async function mockApi(
       request.method() === 'POST';
     const nextPage =
       request.method() === 'GET' &&
-      url.searchParams.has('_rsc') &&
-      pages.some(
-        (target) => new URL(target.path, baseURL).pathname === url.pathname,
-      );
+      ((url.searchParams.has('_rsc') &&
+        pages.some(
+          (target) => new URL(target.path, baseURL).pathname === url.pathname,
+        )) ||
+        isAdditionalRscPrefetch(
+          url,
+          request.method(),
+          request.headers(),
+          appOrigin,
+        ));
     if (
       url.origin !== appOrigin ||
       (['fetch', 'xhr'].includes(request.resourceType()) &&
@@ -118,15 +126,7 @@ async function mockApi(
       });
     }
   });
-  await page.route('**/api/v1/auth/cache/clear', (route) =>
-    route.fulfill({
-      status: 204,
-      headers: {
-        'Cache-Control': 'no-store',
-        'Clear-Site-Data': '"cache"',
-      },
-    }),
-  );
+  await mockCacheClear(page);
   await page.route('**/api/v1/auth/config', (route) =>
     route.fulfill({
       json: {
@@ -146,6 +146,18 @@ async function mockApi(
   );
   await page.route('**/conversations*', (route) =>
     route.fulfill({ json: historyFixtureList([conversation]) }),
+  );
+  await page.route(
+    (url) =>
+      url.origin === new URL(baseURL).origin &&
+      url.pathname === '/api/resources',
+    (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({
+            json: { schema_version: 1, items: [], next_cursor: null },
+            headers: { 'Cache-Control': 'no-store' },
+          })
+        : route.abort('blockedbyclient'),
   );
   await page.route(
     (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
@@ -248,7 +260,17 @@ const pages = [
   },
 ];
 
-test.use({ locale: 'en-US', timezoneId: 'UTC', deviceScaleFactor: 1 });
+test.use({
+  locale: 'en-US',
+  timezoneId: 'UTC',
+  deviceScaleFactor: 1,
+  acknowledgedPrefetchPaths: [
+    ...pages.map((page) => new URL(page.path, 'http://fixture.test').pathname),
+    '/settings/voice',
+    '/settings/devices',
+    '/auth',
+  ],
+});
 
 test.beforeEach(async ({ page, captureDiagnostics, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -294,6 +316,16 @@ async function fixtureReady(
       status: 200,
     });
   }
+  if (slug === 'artifacts') {
+    await expect(
+      page.getByText('No retained versions match these filters.'),
+    ).toBeVisible();
+    expect(fixtures).toContainEqual({
+      path: '/api/resources',
+      method: 'GET',
+      status: 200,
+    });
+  }
   if (slug === 'memory') {
     const label =
       statusState === 'unavailable'
@@ -329,6 +361,18 @@ async function fixtureReady(
 }
 
 // Positive capture checks independent of the intentionally unchanged old PNGs.
+test('artifact fixture qualifies the empty durable catalog without generation', async ({
+  page,
+  captureDiagnostics,
+  baseURL,
+}) => {
+  const fixtures = await mockApi(page, baseURL!);
+  await page.goto('/artifacts');
+  await page.waitForLoadState('networkidle');
+  await fixtureReady(page, 'artifacts', fixtures);
+  captureDiagnostics.assertClean();
+});
+
 for (const slug of ['profile', 'memory']) {
   test(`${slug} fixture qualifies the original top-of-main capture`, async ({
     page,

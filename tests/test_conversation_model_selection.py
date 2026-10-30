@@ -46,6 +46,9 @@ async def api(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     store = AsyncMock()
+    # This fixture models the uncomposed MemoryStore default, not an injected
+    # ResourceInputs host. A bare AsyncMock otherwise invents that private field.
+    store._resource_inputs = None
     store.get_conversation.return_value = conversation()
     store.update_conversation.return_value = conversation()
     store.get_messages.return_value = []
@@ -149,6 +152,7 @@ async def test_reads_return_the_selected_model_but_never_raw_metadata(api, metad
     store.list_conversations_page.return_value = ([conversation(metadata)], 1, False)
 
     detail = (await client.get(f"/conversations/{CONVERSATION}")).json()
+    store.get_messages.assert_awaited_once_with(CONVERSATION, limit=100, offset=0)
     listed = (await client.get("/conversations")).json()["conversations"][0]
 
     for body in (detail, listed):

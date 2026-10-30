@@ -192,6 +192,7 @@ class Bridge:
         self.cluster, self.path = cluster, path
         self.handlers, self.processes, self.failures = set(), [], []
         self.commit_fault = None
+        self.commit_fault_role = "md_app"
         self.commit_seen = asyncio.Event()
         self.discarded_commit_bytes = 0
 
@@ -243,7 +244,9 @@ class Bridge:
                                 break
                             frame, buffer = buffer[:total], buffer[total:]
                             if startup:
-                                app_client = b"user\0md_app\0" in frame
+                                app_client = (
+                                    b"user\0" + self.commit_fault_role.encode("ascii") + b"\0"
+                                ) in frame
                             commit = (
                                 not startup
                                 and frame[:1] == b"Q"

@@ -57,6 +57,10 @@ def migration_sql_for_schema(path: Path, schema: str, *, schema_prefix: str | No
         "049_attempt_lifecycle.sql",
         "050_task_inference_recovery.sql",
         "051_artifact_output_reservations.sql",
+        "052_artifact_namespaces.sql",
+        "053_resource_registry.sql",
+        "054_resource_input_batches.sql",
+        "055_resource_presentations.sql",
     ):
         return sql
     return sql.replace("public.", namespace + ".").replace(

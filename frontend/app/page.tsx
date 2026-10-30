@@ -116,6 +116,7 @@ import { getAuthGeneration, subscribeAuthGeneration } from '../lib/auth';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import { RoutingNotice } from '../components/RoutingNotice';
 import MarkdownMessage from '../components/MarkdownMessage';
+import { TaskResources } from '../components/ResourceCards';
 import { FileDownloadCard } from '../components/FileDownloadCard';
 import { SkeletonBlock } from '../components/ui/Skeleton';
 import {
@@ -2837,6 +2838,13 @@ function ChatContent() {
                                   content={messageContent}
                                   sources={citationSources}
                                 />
+                                {getDaemonTaskId(message) && (
+                                  <TaskResources
+                                    key={`${authGeneration}-${getDaemonTaskId(message)}`}
+                                    taskId={getDaemonTaskId(message)!}
+                                    revision={isLoading ? 'working' : 'settled'}
+                                  />
+                                )}
                                 {messageContent.trim() && (
                                   <>
                                     <CopyResponseButton
