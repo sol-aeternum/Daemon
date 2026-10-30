@@ -3,18 +3,83 @@
 import ast
 import asyncio
 import importlib.util
+import fcntl
+import os
 from pathlib import Path
 import socket
 import subprocess
 import sys
+from uuid import UUID
 
 import asyncpg
 import pytest
 
-from tests.inference_composition_support import composition_violations
+from tests.inference_composition_support import ADMITTED, composition_violations
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+HISTORY_ADAPTER = "orchestrator/services/restore_history/acceptance.py"
+HISTORY_HELPERS = (
+    "from orchestrator.tasks.inference import "
+    "ROLE_PRECONDITION, acceptor_preflight, check_principal\n"
+)
+
+
+def test_history_helper_exception_is_exact_and_does_not_admit_the_path():
+    assert HISTORY_ADAPTER not in ADMITTED
+    assert composition_violations({HISTORY_ADAPTER: HISTORY_HELPERS}) == []
+    assert composition_violations({"orchestrator/other.py": HISTORY_HELPERS})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        HISTORY_HELPERS.replace("check_principal", "InferenceRecovery"),
+        HISTORY_HELPERS.replace("check_principal", "check_principal as check"),
+        HISTORY_HELPERS.replace(", check_principal", ""),
+        HISTORY_HELPERS.replace("orchestrator.tasks.inference", "...tasks.inference"),
+        HISTORY_HELPERS.replace("orchestrator.tasks.inference", ".orchestrator.tasks.inference"),
+        HISTORY_HELPERS.rstrip() + ", InferenceRecovery\n",
+        "import orchestrator.tasks.inference as m",
+        "from orchestrator.tasks import inference as m",
+        "import importlib as il\nil.import_module('orchestrator.tasks.inference')",
+        "__import__('orchestrator.tasks.inference')",
+        HISTORY_HELPERS + "InferenceRecovery(pool)",
+        HISTORY_HELPERS + "compose(inference_recovery=collaborator)",
+        HISTORY_HELPERS + "store._inference = collaborator",
+        HISTORY_HELPERS + "state.task_composition = bundle",
+        HISTORY_HELPERS + "qualify_task_composition(enabled=True)",
+    ],
+)
+def test_history_helper_exception_preserves_consumer_and_activation_restrictions(source):
+    assert composition_violations({HISTORY_ADAPTER: source})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from orchestrator.services.restore_history.acceptance import AcceptanceProjection",
+        "import orchestrator.services.restore_history.acceptance as h",
+        "from orchestrator.services import restore_history as h",
+        "from .services.restore_history.acceptance import AcceptanceProjection as A",
+        "from .services import restore_history as h",
+        "import importlib as il\nh = il.import_module('orchestrator.services.restore_history.acceptance')",
+        "h = __import__('orchestrator.services.restore_history.acceptance')",
+        "import importlib as il\nf = il.import_module\nh = f('orchestrator.services.restore_history.acceptance')",
+        "import importlib as il\nh = getattr(il, 'import_module')('orchestrator.services.restore_history.acceptance')",
+        "AcceptanceProjection(identity, acceptor='a', worker='w')",
+        "from orchestrator.services.restore_history.acceptance import AcceptanceProjection as A\nB = A\nB(identity, acceptor='a', worker='w')",
+    ],
+)
+@pytest.mark.parametrize(
+    "site", ["orchestrator/extra.py", "orchestrator/db.py", "orchestrator/worker/worker.py"]
+)
+def test_uncalled_history_runtime_import_and_construction_negatives(source, site):
+    if site == "orchestrator/worker/worker.py":
+        source = source.replace("from .services", "from ..services")
+    assert composition_violations({site: source})
+    assert composition_violations({"tests/explicit_fixture.py": source}) == []
 
 
 def test_production_inventory_and_disabled_constructor_defaults():
@@ -103,6 +168,42 @@ def test_new_adapter_import_and_construction_start_no_io(monkeypatch):
     monkeypatch.setitem(sys.modules, key, module)
     spec.loader.exec_module(module)
     module.InferenceRecovery(object())
+
+
+def test_history_adapter_import_and_construction_start_no_io(monkeypatch):
+    # Preload dependencies, then re-execute the adapter body under the probes.
+    # The loader may read Python source; H storage, network and process I/O may
+    # not begin. This is a discriminating probe, not a Python I/O sandbox.
+    from orchestrator.services.restore_history import acceptance
+    from orchestrator.services.restore_history.model import Identity
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("history adapter import/construction initiated I/O")
+
+    for owner, attr in (
+        (asyncpg, "connect"),
+        (asyncpg, "create_pool"),
+        (socket, "socket"),
+        (socket, "create_connection"),
+        (subprocess, "Popen"),
+        (asyncio, "create_task"),
+        (asyncio, "create_subprocess_exec"),
+        (os, "open"),
+        (fcntl, "flock"),
+    ):
+        monkeypatch.setattr(owner, attr, forbidden)
+    key = "orchestrator.services.restore_history._acceptance_import_probe"
+    spec = importlib.util.spec_from_file_location(key, ROOT / HISTORY_ADAPTER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, key, module)
+    spec.loader.exec_module(module)
+    expected = Identity(UUID(int=1), "0" * 64)
+    adapter = module.AcceptanceProjection(expected, acceptor="synthetic_a", worker="synthetic_w")
+    assert adapter.expected is expected
+    assert adapter.acceptor == "synthetic_a"
+    assert adapter.worker == "synthetic_w"
+    assert acceptance.AcceptanceProjection is not module.AcceptanceProjection
 
 
 @pytest.mark.parametrize(

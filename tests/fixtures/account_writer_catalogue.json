@@ -5236,6 +5236,17 @@
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
+      "owner_source": "orchestrator.services.restore_history.acceptance",
+      "qualname": "AcceptanceProjection.qualify",
+      "kind": "sql_unresolvable",
+      "fingerprint": "f600f60971c2232a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Imported native W role SELECT is outside cross-module SQL resolution. Uncalled acceptance projection candidate only; no runtime content fence or restore readiness."
+    },
+    {
       "owner_source": "orchestrator.services.restore_history.store",
       "qualname": "HistoryStore._check_pins",
       "kind": "filesystem_write",

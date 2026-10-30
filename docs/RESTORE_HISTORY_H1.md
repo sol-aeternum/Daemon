@@ -1,8 +1,10 @@
 # Independent restore history H1 — uncalled prototype
 
 This implements the owner's approved isolated source/test slice only. It has no
-runtime imports/callers, database connection, SQL projection schema, production
-initializer, key loader, environment surface, client/API changes or activation.
+runtime imports/callers, production initializer, key loader, environment surface,
+client/API changes or activation. A separately approved uncalled acceptance
+projection adapter and pending SQL payload are described in
+`RESTORE_HISTORY_ACCEPTANCE.md`; no database connection is acquired here.
 J1 is unchanged. A store result or matching projection report is **never an
 execution permit**, provider outcome, accounting authority or restore attestation.
 
@@ -141,8 +143,8 @@ not fresh authority and a later send after Stop is refused structurally. These
 passing diagnostics expose the missing coordination; they do not install protected
 SQL projections, production hooks, admission fences or restore qualification.
 
-Remaining: real protected non-cascading SQL projections and role qualification;
-acceptance/send/Stop/publication integration; async ownership supervision; stable
+Remaining: numbered projection payload/upgrade and deployed role qualification;
+complete acceptance/send/Stop/publication integration; async ownership supervision; stable
 client-key/error behavior; deletion/retention/J1 appliers; financial/auth/account/
 cache continuity evidence; supported restore reconciliation; production key,
 identity/storage provisioning and capacity/latency/retention qualification. No
