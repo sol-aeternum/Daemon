@@ -68,10 +68,10 @@ async def db(metadata_cluster):
         cluster.record("lifecycle_database_reconciled", database=name, connections=0)
 
 
-async def seed(db, owner, *, account=None):
+async def seed(db, owner, *, account=None, encryption_key=None):
     account = account or await db.account(owner)
     scope, metadata = uuid4(), uuid4()
-    enc = ContentEncryption(Fernet.generate_key().decode())
+    enc = ContentEncryption((encryption_key or Fernet.generate_key()).decode())
     # Existing writer methods, not copied SQL. Owner pool only for synthetic setup.
     pool = await asyncpg.create_pool(
         host=str(db.host),

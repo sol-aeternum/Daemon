@@ -234,6 +234,18 @@ describe('Memory Browser paging (#249)', () => {
     }
   }
 
+  it('explains word matching and retains the existing search length bound', () => {
+    render(<MemoryFilters onFilterChange={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: 'Search memories' });
+    expect(input.getAttribute('maxlength')).toBe('200');
+    const hint = document.getElementById(
+      input.getAttribute('aria-describedby')!,
+    );
+    expect(hint?.textContent).toBe(
+      'Matches all words and English word forms. Common words are ignored; partial words don’t match.',
+    );
+  });
+
   it('replay discriminator: unchanged filters never emit; genuine edits use300ms and latest callback', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const first = vi.fn(),

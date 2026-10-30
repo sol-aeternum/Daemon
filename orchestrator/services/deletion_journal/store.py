@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterator, cast
+from typing import Iterator, Protocol, Sequence, cast
 from uuid import UUID
 
 from .errors import JournalError
@@ -28,6 +28,11 @@ LOCK_WAIT_S = 5.0
 _FILES = {"journal.meta", ".journal.lock", "entries.log", "HEAD"}
 _TEMP = ".HEAD.pending"
 _ZERO = bytes(32)
+
+
+class _Digested(Protocol):
+    @property
+    def digest(self) -> bytes: ...
 
 
 def _canonical(value: object) -> bytes:
@@ -217,15 +222,18 @@ class Journal:
             os.close(fd)
 
     def _head(self, value: dict[str, object], state: JournalState) -> int:
+        return self._head_entries(value, state.entries)
+
+    def _head_entries(self, value: dict[str, object], entries: Sequence[_Digested]) -> int:
         if set(value) != {"journal_id", "seq", "digest"}:
             raise JournalError("corrupt")
         seq = value["seq"]
         if value["journal_id"] != str(self.journal_id) or type(seq) is not int:
             raise JournalError("corrupt")
         index = cast(int, seq)
-        if index < 0 or index > len(state.entries):
+        if index < 0 or index > len(entries):
             raise JournalError("corrupt")
-        digest = state.entries[index - 1].digest if index else _ZERO
+        digest = entries[index - 1].digest if index else _ZERO
         if value["digest"] != digest.hex():
             raise JournalError("corrupt")
         return index
@@ -258,23 +266,8 @@ class Journal:
         }:
             raise JournalError("corrupt")
         state = JournalState()
-        fd = self._open("entries.log", os.O_RDWR)
-        try:
-            info = os.fstat(fd)
-            identity = (info.st_dev, info.st_ino)
-            if self._log_identity is not None and identity != self._log_identity:
-                raise JournalError("corrupt")
-            self._log_identity = identity
-            while header := os.read(fd, 4):
-                if len(header) != 4:
-                    header += _read_exact(fd, 4 - len(header))
-                size = struct.unpack(">I", header)[0]
-                if size == 0 or size + 36 > MAX_FRAME:
-                    raise JournalError("corrupt")
-                payload = _read_exact(fd, size)
-                digest = _read_exact(fd, 32)
-                if hashlib.sha256(header + payload).digest() != digest:
-                    raise JournalError("corrupt")
+        with self._scan_log() as fd:
+            for payload, digest in self._frames(fd):
                 try:
                     entry = decode_entry(payload, digest)
                     if entry.journal_id != self.journal_id:
@@ -282,33 +275,58 @@ class Journal:
                     state.accept(entry)
                 except JournalError:
                     raise JournalError("corrupt") from None
-            head = self._head(self._small("HEAD"), state)
-            pending = _TEMP in self._names()
-            if pending:
-                if self._head(self._small(_TEMP), state) < head:
-                    raise JournalError("corrupt")
-                # Only a fully verified derived temporary may be replaced. Sync
-                # authoritative bytes before unlinking this recoverable metadata.
-                os.fsync(fd)
-                os.unlink(_TEMP, dir_fd=self._dir)
-                os.fsync(self._dir)
-            if head != len(state.entries) or pending:
-                os.fsync(fd)
-                self._publish_head(
-                    len(state.entries), state.entries[-1].digest if state.entries else _ZERO
-                )
-            # Reconfirm durability even on duplicate retries after an unknown
-            # directory-fsync outcome. Do not return a merely visible record.
-            os.fsync(fd)
-            head_fd = self._open("HEAD", os.O_RDONLY)
-            try:
-                os.fsync(head_fd)
-            finally:
-                os.close(head_fd)
-            os.fsync(self._dir)
+            self._finish_scan(fd, state.entries)
             return state
+
+    @contextmanager
+    def _scan_log(self) -> Iterator[int]:
+        """Owned, pinned log descriptor; caller holds the persistent lock."""
+        fd = self._open("entries.log", os.O_RDWR)
+        try:
+            info = os.fstat(fd)
+            identity = (info.st_dev, info.st_ino)
+            if self._log_identity is not None and identity != self._log_identity:
+                raise JournalError("corrupt")
+            self._log_identity = identity
+            yield fd
         finally:
             os.close(fd)
+
+    def _frames(self, fd: int) -> Iterator[tuple[bytes, bytes]]:
+        """Bounded authenticated framing only; closed decoding stays with caller."""
+        while header := os.read(fd, 4):
+            if len(header) != 4:
+                header += _read_exact(fd, 4 - len(header))
+            size = struct.unpack(">I", header)[0]
+            if size == 0 or size + 36 > MAX_FRAME:
+                raise JournalError("corrupt")
+            payload = _read_exact(fd, size)
+            digest = _read_exact(fd, 32)
+            if hashlib.sha256(header + payload).digest() != digest:
+                raise JournalError("corrupt")
+            yield payload, digest
+
+    def _finish_scan(self, fd: int, entries: Sequence[_Digested]) -> None:
+        head = self._head_entries(self._small("HEAD"), entries)
+        pending = _TEMP in self._names()
+        if pending:
+            if self._head_entries(self._small(_TEMP), entries) < head:
+                raise JournalError("corrupt")
+            # Sync authoritative bytes before removing valid derived metadata.
+            os.fsync(fd)
+            os.unlink(_TEMP, dir_fd=self._dir)
+            os.fsync(self._dir)
+        if head != len(entries) or pending:
+            os.fsync(fd)
+            self._publish_head(len(entries), entries[-1].digest if entries else _ZERO)
+        # Duplicate retries also reconfirm durability after uncertain syncs.
+        os.fsync(fd)
+        head_fd = self._open("HEAD", os.O_RDONLY)
+        try:
+            os.fsync(head_fd)
+        finally:
+            os.close(head_fd)
+        os.fsync(self._dir)
 
     def verify(self) -> JournalState:
         with self._locked():

@@ -225,6 +225,7 @@ export function parseMessageHistoryPage(
     );
     historyTimestamp(row.created_at);
     requirePage(typeof row.content === 'string');
+    if (row.task_id != null) identity(row.task_id);
     requirePage(
       row.role === 'system' || row.role === 'user' || row.role === 'assistant',
     );

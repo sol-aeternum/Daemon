@@ -704,6 +704,48 @@ async def test_exact_marker_checks_cannot_be_replaced_by_sequence_presence(env, 
 
 
 TITLE_GUARD_IMPORTS = {
+    # Approved explicit isolated C1 composition only. Exact guard/lock/refusal
+    # symbols, never deletion/reset request or phase mutation APIs.
+    "orchestrator/artifact_namespaces.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+        ("orchestrator.services.account_control.store", "Connection"),
+        ("orchestrator.services.account_control.store", "lock_account_control"),
+    },
+    "orchestrator/resource_store.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+        ("orchestrator.services.account_control.store", "Connection"),
+        ("orchestrator.services.account_control.store", "lock_account_control"),
+    },
+    "orchestrator/resource_inputs.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "capture_generation"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+        ("orchestrator.services.account_control.store", "Connection"),
+        ("orchestrator.services.account_control.store", "lock_account_control"),
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/resource_catalog.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
+    "orchestrator/resource_presentations.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
+    "orchestrator/resource_http.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "capture_generation"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
+    "orchestrator/resource_csv.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
+    "orchestrator/routes/conversations.py": {
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+    },
     # Approved birth-only primitive access, NOT request persistence/applier APIs.
     "orchestrator/services/identity/account_service.py": {
         ("orchestrator.services.account_control.store", "Connection"),
@@ -752,6 +794,17 @@ TITLE_GUARD_IMPORTS = {
     "orchestrator/tasks/inference.py": {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
         ("orchestrator.services.account_control.transaction", "control_transaction"),
+    },
+    # Approved startup selection adds only the closed refusal exception.
+    # These hosts gain no request-store, phase or replay-applier API access.
+    "orchestrator/db.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/worker/worker.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
+    },
+    "orchestrator/tasks/startup.py": {
+        ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
     },
     # Explicit isolated composition/selectors use refusal only, never J1b APIs.
     "orchestrator/tasks/composition.py": {
@@ -835,6 +888,30 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
 @pytest.mark.parametrize(
     "path,extra",
     [
+        (
+            "orchestrator/resource_inputs.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/resource_store.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/resource_http.py",
+            "from orchestrator.services.account_control.transaction import control_transaction",
+        ),
+        (
+            "orchestrator/db.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/worker/worker.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/tasks/startup.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
         (
             "orchestrator/services/identity/initialization.py",
             "from orchestrator.services.account_control.store import record_request_facts",

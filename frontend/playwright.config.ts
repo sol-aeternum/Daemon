@@ -9,6 +9,16 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   projects: [
+    {
+      name: 'online-ui-boundaries',
+      testMatch: 'online-ui-boundaries.spec.ts',
+      use: { baseURL: 'http://127.0.0.1:3101' },
+    },
+    {
+      name: 'development-runtime',
+      testMatch: 'dev-runtime-observability.spec.ts',
+      use: { baseURL: 'http://127.0.0.1:3101' },
+    },
     { name: 'csp-previews', testMatch: 'csp-previews.spec.ts' },
     {
       name: 'conversation-ergonomics',

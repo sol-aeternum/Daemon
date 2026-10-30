@@ -9,6 +9,8 @@ import {
   parseConversationHistoryPage,
   parseMessageHistoryPage,
 } from '../lib/historyPages';
+import { parseSnapshotListPage } from '../lib/webSnapshots';
+import { isRequestBound } from '../lib/chatMessages';
 
 const conversation = {
   id: historyFixtureConversationId,
@@ -31,6 +33,73 @@ const conversation = {
 };
 
 describe('cursor-compatible legacy browser fixtures', () => {
+  it('models the existing empty source-list and request-bound stream contracts', () => {
+    expect(
+      parseSnapshotListPage(
+        { snapshots: [], total: 0, limit: 20, offset: 0 },
+        conversation.id,
+        0,
+      ).rows,
+    ).toEqual([]);
+    expect(
+      isRequestBound({
+        id: 'streaming-fixture',
+        role: 'assistant',
+        parts: [{ type: 'data-event', data: { type: 'request_bound' } }],
+      }),
+    ).toBe(true);
+    expect(
+      isRequestBound({ id: 'streaming-fixture', role: 'assistant', parts: [] }),
+    ).toBe(false);
+  });
+  it('rejects the old production-fixture IDs while preserving tool/provenance metadata through cursor encoding', () => {
+    expect(() =>
+      parseConversationHistoryPage(
+        historyFixtureList([{ ...conversation, id: 'midnight-fixture' }]),
+      ),
+    ).toThrow();
+    expect(parseConversationHistoryPage(historyFixtureList([])).total).toBe(0);
+    const metadata = {
+      home_suggestion: {
+        version: 1,
+        suggestion_id: 'fixture-candidate',
+        sources: [
+          {
+            conversation_id: historyFixtureId(2000),
+            title: 'Release discussion',
+            messages: [
+              {
+                id: 'source-turn',
+                role: 'user',
+                content: 'Create a release plan, but do not deploy yet.',
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const toolCalls = [{ name: 'generate_document', arguments: {} }];
+    const encoded = historyFixtureDetail(
+      {
+        ...conversation,
+        messages: [
+          {
+            id: 'persisted-question',
+            role: 'user',
+            content: 'Synthetic prompt',
+            metadata,
+            tool_calls: toolCalls,
+          },
+        ],
+      },
+      new URL('http://fixture/?pagination=cursor&limit=100'),
+    );
+    const parsed = parseMessageHistoryPage(encoded, conversation.id);
+    expect(parsed.messages).toHaveLength(1);
+    expect(parsed.messages[0].metadata).toEqual(metadata);
+    expect(parsed.messages[0].tool_calls).toEqual(toolCalls);
+    expect(parsed.messages[0].id).toBe(historyFixtureId(1));
+  });
   it('produces whole-page-valid owner-qualified list and empty detail metadata', () => {
     expect(
       parseConversationHistoryPage(historyFixtureList([conversation])).total,

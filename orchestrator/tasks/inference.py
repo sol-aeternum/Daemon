@@ -1,4 +1,4 @@
-"""Fixture-injected inference quarantine. Not constructed by production startup.
+"""Explicitly qualified inference quarantine for isolated and selected startup hosts.
 
 Markers/readback are evidence, never reusable send authority. SQL authentication
 of encrypted origin stays with TaskStore; these entrypoints trust a separated
@@ -43,7 +43,7 @@ ACCEPTOR_ROLE = """SELECT
  AND pg_catalog.has_schema_privilege(CURRENT_USER,'public','USAGE')
  AND NOT pg_catalog.has_schema_privilege(CURRENT_USER,'public','CREATE')
  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_roles r WHERE
-   (r.rolsuper OR r.rolcreaterole OR r.rolbypassrls OR r.rolname IN
+   (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls OR r.rolname IN
     ('pg_execute_server_program','pg_read_server_files','pg_write_server_files'))
    AND pg_catalog.pg_has_role(CURRENT_USER,r.oid,'MEMBER'))
  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname='public'
@@ -77,6 +77,9 @@ async def check_principal(conn: Any, expected: str | None, other: str | None) ->
             "SELECT CURRENT_USER=SESSION_USER AND ($1::text IS NULL OR CURRENT_USER=$1) "
             "AND pg_catalog.current_schemas(false)=ARRAY['public']::name[] "
             "AND NOT pg_catalog.has_schema_privilege(CURRENT_USER,'public','CREATE') "
+            "AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_roles r "
+            "WHERE (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication "
+            "OR r.rolbypassrls) AND pg_catalog.pg_has_role(CURRENT_USER,r.oid,'MEMBER')) "
             "AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_database d "
             "WHERE d.datname=pg_catalog.current_database() "
             "AND pg_catalog.pg_has_role(CURRENT_USER,d.datdba,'MEMBER')) "
@@ -100,6 +103,42 @@ async def acceptor_preflight(
     require_effect()
     await check_principal(conn, expected, other)
     if await conn.fetchval(ACCEPTOR_ROLE) is not True:
+        raise ObservationBlocked("inference_acceptor_refused")
+
+
+async def acceptor_catalog_preflight(conn: Any, acceptor: str, worker: str) -> None:
+    """W observes A's authority in catalogs; this never authenticates an A session.
+
+    Backend NEW admission still checks its actual A connection. Only the fixed
+    actor keywords of the closed predicate are substituted; role values remain
+    asyncpg parameters. W never receives an A pool, DSN or SET ROLE capability.
+    """
+    if (
+        acceptor == worker
+        or await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=$1 AND rolcanlogin)",
+            acceptor,
+        )
+        is not True
+    ):
+        raise ObservationBlocked("inference_acceptor_refused")
+    if (
+        await conn.fetchval(
+            "SELECT NOT pg_catalog.pg_has_role($1::name,$2::name,'MEMBER') "
+            "AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_database d "
+            "WHERE d.datname=pg_catalog.current_database() "
+            "AND pg_catalog.pg_has_role($1::name,d.datdba,'MEMBER')) "
+            "AND pg_catalog.has_database_privilege($1::name,pg_catalog.current_database(),'CONNECT')",
+            acceptor,
+            worker,
+        )
+        is not True
+    ):
+        raise ObservationBlocked("inference_acceptor_refused")
+    catalog_authority = ACCEPTOR_ROLE.replace("CURRENT_USER = SESSION_USER", "TRUE").replace(
+        "CURRENT_USER", "$1::name"
+    )
+    if await conn.fetchval(catalog_authority, acceptor) is not True:
         raise ObservationBlocked("inference_acceptor_refused")
 
 

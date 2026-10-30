@@ -21,7 +21,12 @@ export type DaemonMessage = UIMessage<
   reasoning_model?: string | null;
   created_at?: string;
   updated_at?: string | null;
+  /** Account-qualified original task returned by saved history, not message metadata. */
+  task_id?: string | null;
 };
+
+const TASK_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const MESSAGE_ROLES: ReadonlySet<string> = new Set([
   'system',
@@ -76,6 +81,10 @@ export function normalizeDaemonMessage(
     role,
     content,
     metadata,
+    task_id:
+      typeof record.task_id === 'string' && TASK_UUID.test(record.task_id)
+        ? record.task_id
+        : null,
     parts: content.length > 0 ? [{ type: 'text', text: content }] : [],
   } as DaemonMessage;
 }
@@ -298,12 +307,20 @@ export function getDaemonTaskId(
   message: DaemonMessage | undefined,
 ): string | null {
   if (!message) return null;
+  const historical = message.task_id;
+  if (
+    historical != null &&
+    (typeof historical !== 'string' || !TASK_UUID.test(historical))
+  )
+    return null;
+  let task: string | null = historical ?? null;
   for (const part of message.parts) {
     if (part.type === 'data-event' && part.data.type === 'task') {
-      return part.data.task_id;
+      if (task !== null && task !== part.data.task_id) return null;
+      task = part.data.task_id;
     }
   }
-  return null;
+  return task;
 }
 
 /**

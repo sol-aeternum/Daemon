@@ -1,4 +1,13 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { mockCacheClear, test } from './online-ui-fixture';
+import {
+  historyFixtureId,
+  historyFixtureList,
+  historyFixtureDetail,
+} from './history-fixtures';
+
+const destinationId = historyFixtureId(3000);
+const sourceId = historyFixtureId(2000);
 
 // Deterministic, fictional transport fixtures. No provider or private data calls.
 const prompt =
@@ -7,14 +16,12 @@ const candidate = {
   id: 'fixture-candidate',
   summary: 'Plan the release',
   prompt,
-  source: { conversation_id: 'fixture-source', title: 'Release discussion' },
+  source: { conversation_id: sourceId, title: 'Release discussion' },
   expires_at: '2099-01-01T00:00:00Z',
 };
 
 async function fixtures(page: Page) {
-  await page.addInitScript(() =>
-    Reflect.deleteProperty(Navigator.prototype, 'serviceWorker'),
-  );
+  await mockCacheClear(page);
   await page.route('**/api/v1/auth/config', (route) =>
     route.fulfill({
       json: {
@@ -38,53 +45,58 @@ async function fixtures(page: Page) {
     }),
   );
   await page.route('**/conversations*', (route) =>
-    route.fulfill({ json: { conversations: [] } }),
+    route.fulfill({ json: historyFixtureList([]) }),
   );
-  await page.route('**/conversations/fixture-destination', (route) =>
-    route.fulfill({
-      json: {
-        id: 'fixture-destination',
-        title: 'Release plan',
-        pinned: false,
-        title_locked: false,
-        status: 'active',
-        metadata: {},
-        created_at: '2026-10-05T00:00:00Z',
-        updated_at: '2026-10-05T00:00:00Z',
-        messages: [
+  await page.route(
+    (url) => url.pathname === `/conversations/${destinationId}`,
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
           {
-            id: 'persisted-question',
-            role: 'user',
-            content: prompt,
-            metadata: {
-              home_suggestion: {
-                version: 1,
-                suggestion_id: candidate.id,
-                sources: [
-                  {
-                    conversation_id: 'fixture-source',
-                    title: 'Release discussion',
-                    messages: [
+            id: destinationId,
+            title: 'Release plan',
+            pinned: false,
+            title_locked: false,
+            status: 'active',
+            metadata: {},
+            created_at: '2026-10-05T00:00:00Z',
+            updated_at: '2026-10-05T00:00:00Z',
+            messages: [
+              {
+                id: 'persisted-question',
+                role: 'user',
+                content: prompt,
+                metadata: {
+                  home_suggestion: {
+                    version: 1,
+                    suggestion_id: candidate.id,
+                    sources: [
                       {
-                        id: 'source-turn',
-                        role: 'user',
-                        content:
-                          'Create a release plan, but do not deploy yet.',
+                        conversation_id: sourceId,
+                        title: 'Release discussion',
+                        messages: [
+                          {
+                            id: 'source-turn',
+                            role: 'user',
+                            content:
+                              'Create a release plan, but do not deploy yet.',
+                          },
+                        ],
                       },
                     ],
                   },
-                ],
+                },
               },
-            },
+              {
+                id: 'fixture-answer',
+                role: 'assistant',
+                content: 'Here is the fictional release plan.',
+              },
+            ],
           },
-          {
-            id: 'fixture-answer',
-            role: 'assistant',
-            content: 'Here is the fictional release plan.',
-          },
-        ],
-      },
-    }),
+          new URL(route.request().url()),
+        ),
+      }),
   );
   await page.route('**/users/me/settings', (route) =>
     route.fulfill({
@@ -197,7 +209,7 @@ for (const width of [375, 768, 1440]) {
           type: 'data-event',
           data: {
             type: 'conversation',
-            conversation_id: 'fixture-destination',
+            conversation_id: destinationId,
           },
         },
         { type: 'text-start', id: 'answer-text' },
@@ -249,7 +261,7 @@ for (const width of [375, 768, 1440]) {
     await page.keyboard.press('Escape');
     await expect(tooltip).not.toBeVisible();
     await row.click();
-    await expect(page).toHaveURL(/id=fixture-destination/);
+    await expect(page).toHaveURL(new RegExp(`id=${destinationId}`));
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ id: null, suggestion_id: candidate.id });
     const messages = sent[0].messages as Array<{

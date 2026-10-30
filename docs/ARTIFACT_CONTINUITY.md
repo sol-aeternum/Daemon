@@ -171,6 +171,16 @@ eventual retention policy. Preserve current queued-task cancel/delete and runnin
 opaque original provenance remains marked `source_deleted`, not copied chat text.
 No resource/version cascade on task/conversation deletion.
 
+For isolated C1 implementation, the owner additionally approved (29 October 2026)
+domain-separated account-bound submission lookup derived from explicitly injected
+existing encryption-key material; auth-pepper rotation preserves identity, while
+encryption/lookup-key rotation is blocked pending a separately reviewed design.
+Chat deletion erases the batch's canonical chat request transactionally and retains
+a content-free keyed marker: later reuse of that key always returns 409, never a
+replacement task or an acknowledgement of a deleted task. Received resources and
+minimal encrypted opaque provenance remain retained. No new secret/environment
+setting, live activation or retention duration was approved by these decisions.
+
 Account deletion/reset removes originals, versions, private links, stages,
 previews, indexes and presentations under the stronger approved contract. No
 content-bearing tombstones remain after account purge. Within a retained account,

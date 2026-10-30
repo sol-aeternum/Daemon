@@ -8,9 +8,11 @@ ErrorCode = Literal[
     "unavailable",
     "corrupt",
     "unknown_append",
+    "unknown_upgrade",
     "invalid_config",
     "database_required",
     "schema_required",
+    "binding_required",
     "marker_mismatch",
     "recovery_required",
 ]

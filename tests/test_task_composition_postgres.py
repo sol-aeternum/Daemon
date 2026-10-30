@@ -703,9 +703,42 @@ async def test_actual_connection_session_user_not_hidden_by_set_role(db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("separate_worker", [False, True])
 async def test_http_dispatch_uncertainty_restart_quarantine_and_original_hold_sweep(
-    http, monkeypatch
+    http, monkeypatch, tmp_path, separate_worker
 ):
+    import importlib
+    from unittest.mock import AsyncMock
+    from urllib.parse import urlencode
+    from orchestrator.entitlements import attestation
+    from orchestrator.services.deletion_journal.store import initialize
+
+    worker = importlib.import_module("orchestrator.worker.worker")
+    recovered_ctx = None
+    if separate_worker:
+        path, journal_id = tmp_path / "startup-journal", uuid4()
+        initialize(path, journal_id)
+        http.settings.daemon_deletion_journal_dir = str(path)
+        http.settings.daemon_deletion_journal_id = str(journal_id)
+        http.settings.daemon_task_acceptor_role = "md_acceptor"
+        http.settings.daemon_task_worker_role = "md_app"
+        http.db.sql("REVOKE INSERT,UPDATE,DELETE ON public.deletion_journal_binding FROM md_app")
+        bundle = await qualify_task_composition(
+            enabled=True,
+            acceptor_pool=http.a,
+            worker_pool=http.w,
+            encryption=http.encryption,
+            settings=http.settings,
+            acceptor_role="md_acceptor",
+            worker_role="md_app",
+        )
+        assert bundle is not None
+        http.bundle = bundle
+        http.state.task_composition = bundle
+        http.state.memory_store = bundle.tasks._memory
+        http.ctx.update(
+            task_composition=bundle.worker, task_store=bundle.tasks, store=bundle.tasks._memory
+        )
     sends = 0
     remote_tick, remote_continued = asyncio.Event(), asyncio.Event()
     producers = []
@@ -753,17 +786,35 @@ async def test_http_dispatch_uncertainty_restart_quarantine_and_original_hold_sw
                 "UPDATE tasks SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",
                 task,
             )
+        if separate_worker:
+            # A fresh process owns only W and requalifies J1 after NEW is disabled.
+            http.settings.durable_chat_enabled = False
+            worker_settings = http.settings.model_copy(
+                update={
+                    "database_url": f"postgresql://md_app@/{http.db.name}?{urlencode({'host': str(http.db.host)})}",
+                    "daemon_task_acceptor_database_url": None,
+                    "daemon_environment": "development",
+                }
+            )
+            monkeypatch.setattr(worker, "get_settings", lambda: worker_settings)
+            monkeypatch.setattr(attestation, "start", AsyncMock())
+            monkeypatch.setattr(attestation, "stop", AsyncMock())
+            recovered_ctx = {"redis": http.ctx["redis"]}
+            await worker.on_startup(recovered_ctx)
+            assert not hasattr(recovered_ctx["task_composition"], "acceptor_pool")
+            assert recovered_ctx["db_pool"] is not http.w
+        active_ctx = recovered_ctx if recovered_ctx is not None else http.ctx
         # Fresh invocation/owner observes the old mark. Fail AFTER terminal COMMIT
         # so only the independent sweep can recover the original funded obligation.
         with monkeypatch.context() as fault:
             fault.setattr(EntitlementService, "settle", settlement_unavailable)
             with pytest.raises(ConnectionError, match="settlement unavailable"):
-                await runner.run_chat_task(http.ctx, str(task))
+                await runner.run_chat_task(active_ctx, str(task))
         snapshot = await http.client.get(f"/tasks/{task}", headers=http.headers)
         assert snapshot.json()["status"] == "needs_attention"
         assert snapshot.json()["terminal_code"] == "inference_dispatch_unresolved"
         before = snapshot.json()
-        ctx = {**http.ctx, "redis": None}
+        ctx = {**active_ctx, "redis": None}
         assert await runner.sweep_tasks(ctx) == 0
         assert await runner.sweep_tasks(ctx) == 0
         assert (await http.client.get(f"/tasks/{task}", headers=http.headers)).json() == before
@@ -802,6 +853,8 @@ async def test_http_dispatch_uncertainty_restart_quarantine_and_original_hold_sw
                 await pending
         remote_tick.set()
         await asyncio.gather(*producers)
+        if recovered_ctx is not None and "db_pool" in recovered_ctx:
+            await worker.on_shutdown(recovered_ctx)
 
 
 @pytest.mark.asyncio
@@ -960,16 +1013,18 @@ async def test_database_owner_is_not_qualified_even_when_public_has_other_owner(
 
 
 @pytest.mark.asyncio
-async def test_new_acceptance_off_still_refuses_factory_and_new_acceptor(host):
+async def test_new_acceptance_off_requalifies_controls_but_refuses_new_acceptor(host):
     host.settings.durable_chat_enabled = False
+    requalified = await qualify_task_composition(
+        enabled=True,
+        acceptor_pool=host.a,
+        worker_pool=host.w,
+        encryption=host.encryption,
+        settings=host.settings,
+    )
+    assert requalified is not None
     with pytest.raises(ObservationBlocked, match="inference_composition_refused"):
-        await qualify_task_composition(
-            enabled=True,
-            acceptor_pool=host.a,
-            worker_pool=host.w,
-            encryption=host.encryption,
-            settings=host.settings,
-        )
+        await requalified.preflight()
     with pytest.raises(ObservationBlocked, match="inference_composition_refused"):
         await accept(host)
     assert task_store(host.state) is host.bundle.tasks

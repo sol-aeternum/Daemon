@@ -201,7 +201,7 @@ def test_browser_inventory_job_stays_parallel_and_nonblocking() -> None:
         < steps.index("Browser regression inventory")
         < steps.index("Upload browser regression screenshots")
     )
-    assert by_name["Browser regression inventory"]["run"] == "npm run test:browser"
+    assert by_name["Browser regression inventory"]["run"] == "npm run test:browser:qualification"
     upload = by_name["Upload browser regression screenshots"]
     assert upload["if"] == "always()"
     assert upload["with"]["name"] == "browser-regressions"

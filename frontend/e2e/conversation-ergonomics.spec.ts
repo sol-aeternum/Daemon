@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { mockCacheClear, test } from './online-ui-fixture';
 import {
   historyFixtureConversationId,
   historyFixtureId,
@@ -51,15 +52,7 @@ const conversation = {
 };
 
 async function mockApi(page: Page) {
-  await page.route('**/api/v1/auth/cache/clear', (route) =>
-    route.fulfill({
-      status: 204,
-      headers: {
-        'Cache-Control': 'no-store',
-        'Clear-Site-Data': '"cache"',
-      },
-    }),
-  );
+  await mockCacheClear(page);
   await page.route('**/api/v1/auth/config', (route) =>
     route.fulfill({
       json: {

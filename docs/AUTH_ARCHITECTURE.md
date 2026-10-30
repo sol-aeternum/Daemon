@@ -15,6 +15,11 @@ The existing singleton user ID `00000000-0000-0000-0000-000000000001` remains th
 ### Decision 3 — First boot is zero-active-device based
 First-boot setup is available when `COUNT(*) FROM devices WHERE revoked_at IS NULL` is zero, not when the users table is empty. Revoking all devices and restarting the backend re-enters setup.
 
+Device-management revocation takes the existing authentication transaction lock
+before its device lookup and active-device count, matching setup's lock order.
+Concurrent self-revocations therefore retain one active device (204/409). Other
+revocation and zero-device recovery paths retain their existing behavior.
+
 ### Decision 4 — Setup token hash is shared runtime state
 The setup token is generated on startup, written to the local operator token file with `0600` permissions, and stored only as a SHA-256 hash in the `system_state` table under `auth.setup_token_hash`. Multiple backend workers share the same verifier and burn the same row after successful setup. The plaintext setup token is never written to application logs.
 

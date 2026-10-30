@@ -105,6 +105,10 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
     adapters = {
         # R0 is itself uncalled; its independent import guard denies runtime use.
         "orchestrator/artifact_reservations.py",
+        # Approved injected registry/presentation/CSV surfaces, never startup.
+        "orchestrator/resource_store.py",
+        "orchestrator/resource_presentations.py",
+        "orchestrator/resource_csv.py",
         "orchestrator/entitlements/attempt.py",
         "orchestrator/entitlements/service.py",
         "orchestrator/entitlements/errors.py",

@@ -1,0 +1,416 @@
+{
+  "schema": "exact-worker-privileges/v1",
+  "baseline": "6485d4b1cc554f8e7c4cc572994448f7d6e22c22",
+  "proposal_sha256": "67b58ddfaf8954d5e36770857e5af4dbbe0648a61d93b32a72566b733188557c",
+  "ordinary_tables": [
+    {
+      "table": "public.account_deletions",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": [
+        "id"
+      ]
+    },
+    {
+      "table": "public.account_email_ownership",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": [
+        "ended_at"
+      ]
+    },
+    {
+      "table": "public.account_suspension_causes",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.conversations",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.council_sessions",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.deletion_journal_applied",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.deletion_journal_binding",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.devices",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.dream_log",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.email_challenges",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.entities",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.entitlement_accounts",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.entitlement_limit_encounters",
+      "table_privileges": [
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.entitlement_reservations",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.entitlement_subscription_events",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.entitlement_usage_periods",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.google_nonce_challenges",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.identity_audit_log",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "DELETE"
+      ],
+      "update_columns": [
+        "id"
+      ]
+    },
+    {
+      "table": "public.identity_providers",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.inference_route_attestations",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.job_failures",
+      "table_privileges": [
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memories",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_extraction_log",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.messages",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.pending_enrollments",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.refresh_rotation_grace",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.retrieval_log",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.sessions",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.signup_invites",
+      "table_privileges": [
+        "SELECT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.skill_consolidation_log",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.skill_nudge_user_state",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.skill_projections",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.system_state",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.task_attempts",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.task_events",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.task_operations",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.tasks",
+      "table_privileges": [
+        "SELECT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.tenant_memberships",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.tenants",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.users",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.video_credit_balances",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.video_credit_transactions",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": [
+        "id"
+      ]
+    },
+    {
+      "table": "public.web_snapshots",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "DELETE"
+      ],
+      "update_columns": [
+        "id"
+      ]
+    }
+  ],
+  "sequences_usage_only": [
+    "public.inference_route_attestations_id_seq"
+  ],
+  "ordinary_helper_execute": [
+    "public.identity_provenance_now()",
+    "public.entitlement_period_key(timestamp with time zone)"
+  ],
+  "worker_public_entrypoints_execute": [
+    "public.compute_metadata_create_scope(uuid,uuid)",
+    "public.compute_metadata_attach(uuid,uuid,uuid,uuid,uuid)",
+    "public.compute_metadata_read_scope(uuid,uuid)",
+    "public.compute_metadata_read_binding(uuid,uuid)",
+    "public.attempt_lifecycle_register(jsonb,uuid)",
+    "public.attempt_lifecycle_assert_open(jsonb)",
+    "public.attempt_lifecycle_close(jsonb,uuid,text)",
+    "public.attempt_lifecycle_readback(jsonb,uuid)",
+    "public.task_inference_dispatch_begin(jsonb,uuid,uuid,uuid)",
+    "public.task_inference_dispatch_readback(jsonb,uuid,uuid,uuid)",
+    "public.task_inference_recovery_lock(uuid,bigint,uuid,bigint,uuid)",
+    "public.attempt_lifecycle_abandoned_page(uuid)",
+    "public.attempt_lifecycle_close_abandoned(jsonb,uuid)"
+  ],
+  "protected_tables_no_direct_privileges": [
+    "public.attempt_lifecycle_commands",
+    "public.attempt_lifecycle_control",
+    "public.compute_reservation_metadata",
+    "public.compute_scope_metadata",
+    "public.task_inference_recovery"
+  ]
+}

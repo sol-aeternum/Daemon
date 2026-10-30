@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useId } from 'react';
 import { Search } from 'lucide-react';
 
 interface FilterState {
@@ -34,6 +34,7 @@ const STATUSES = [
 ] as const;
 
 export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
+  const searchHintId = useId();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedSource, setSelectedSource] = useState<string>('All');
@@ -103,16 +104,24 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
   return (
     <div className="space-y-4">
       {/* Search Input */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-        <input
-          type="text"
-          placeholder="Search memories..."
-          aria-label="Search memories"
-          value={searchQuery}
-          onChange={handleSearchChange}
-          className="w-full pl-10 pr-4 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50 focus:border-accent-primary"
-        />
+      <div className="space-y-2">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+          <input
+            type="text"
+            placeholder="Search memories..."
+            aria-label="Search memories"
+            aria-describedby={searchHintId}
+            maxLength={200}
+            value={searchQuery}
+            onChange={handleSearchChange}
+            className="w-full pl-10 pr-4 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50 focus:border-accent-primary"
+          />
+        </div>
+        <p id={searchHintId} className="text-xs text-text-muted">
+          Matches all words and English word forms. Common words are ignored;
+          partial words don’t match.
+        </p>
       </div>
 
       {/* Filter Groups */}

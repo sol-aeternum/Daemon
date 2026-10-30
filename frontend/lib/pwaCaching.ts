@@ -32,7 +32,8 @@ export function isPrivateArtifactRequest(
   } catch {
     return true;
   }
-  const artifact = /^\/+generated-(?:images|files|audio)\//;
+  const artifact =
+    /^\/+(?:generated-(?:images|files|audio)\/|resources(?:\/|$))/;
   if (artifact.test(path)) return true;
   // Under a path-prefixed API base (``https://host/daemon``) too.
   try {

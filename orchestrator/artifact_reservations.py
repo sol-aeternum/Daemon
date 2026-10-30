@@ -228,6 +228,14 @@ class DescriptorCodec:
         except (ValueError, TypeError, KeyError, UnicodeError, InvalidToken, RecursionError):
             raise ReservationError() from None
 
+    def decode(self, command: IntentCommand) -> dict[str, Any]:
+        """Validated immutable descriptor for an independently authorised registry.
+
+        Authentication of metadata is not publication, storage or account authority.
+        """
+        self.validate(command)
+        return json.loads(self._cipher.decrypt(command.descriptor_ciphertext.encode("ascii")))
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class ReservationObservation:

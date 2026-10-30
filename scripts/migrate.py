@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import asyncpg
@@ -42,20 +43,35 @@ async def acquire_migration_lock(conn: asyncpg.Connection) -> bool:
     return acquired
 
 
-async def release_migration_lock(conn: asyncpg.Connection) -> None:
+async def release_migration_lock(conn: asyncpg.Connection, *, require_owned: bool = False) -> None:
+    if require_owned:
+        if not await conn.fetchval(
+            "SELECT pg_catalog.pg_advisory_unlock($1)", MIGRATION_ADVISORY_LOCK_ID
+        ):
+            raise MigrationLockError("migration lock ownership unavailable")
+        return
     await conn.execute(
         "SELECT pg_advisory_unlock($1)",
         MIGRATION_ADVISORY_LOCK_ID,
     )
 
 
-async def apply_migration(conn: asyncpg.Connection, filepath: Path):
+async def apply_migration(
+    conn: asyncpg.Connection,
+    filepath: Path,
+    *,
+    sql_content: str | None = None,
+    before_commit: Callable[[], None] | None = None,
+):
     filename = filepath.name
-    sql_content = filepath.read_text()
+    if sql_content is None:
+        sql_content = filepath.read_text()
 
     async with conn.transaction():
         await conn.execute(sql_content)
         await conn.execute("INSERT INTO _migrations (filename) VALUES ($1)", filename)
+        if before_commit is not None:
+            before_commit()
 
 
 async def run_migrations():
