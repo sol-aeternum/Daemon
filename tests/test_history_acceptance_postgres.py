@@ -31,15 +31,22 @@ from orchestrator.tasks.store import TaskStore
 from tests.restore_history_support import HISTORY, KEY, ZERO, accept, key_check
 from tests.test_inference_recovery_postgres import db as db, metadata_cluster as metadata_cluster
 
-CANDIDATE = (
-    Path(__file__).resolve().parents[1] / "migrations/pending/restore_history_acceptance.sql"
-)
+CANDIDATE = Path(__file__).resolve().parents[1] / "migrations/056_restore_history_acceptance.sql"
 PROJECT = "SELECT * FROM public.task_history_acceptance_project($1)"
 PAGE = "SELECT * FROM public.task_history_acceptance_page($1,$2,$3)"
 
 
+def install_c1(db):
+    # Native fixture reaches 050. Install the unchanged merged C1 payloads in
+    # order before qualifying the H1 boundary with synthetic A/W principals.
+    for path in sorted(CANDIDATE.parent.glob("*.sql")):
+        if "051_" <= path.name < CANDIDATE.name:
+            db.sql("BEGIN;" + path.read_text() + "COMMIT;")
+
+
 @pytest_asyncio.fixture
 async def projection_db(db, request):
+    install_c1(db)
     db.sql("BEGIN;" + CANDIDATE.read_text() + "COMMIT;")
     if getattr(request, "param", True):
         async with db.connection() as conn:
@@ -343,10 +350,19 @@ async def test_missing_binding_and_wrong_history_refused(projection_db):
             await conn.fetch(PAGE, HISTORY, 0, key_check(KEY, HISTORY))
 
 
-def test_candidate_not_automatically_discovered_or_numbered():
-    root = CANDIDATE.parent.parent
-    assert CANDIDATE not in list(root.glob("*.sql"))
-    assert not CANDIDATE.name.startswith("056_")
+def test_numbered_payload_follows_merged_c1_without_duplicate_allocation():
+    from scripts.migrate import MIGRATIONS_DIR
+
+    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    assert CANDIDATE in files
+    assert [p.name for p in files if p.name.startswith("056_")] == [CANDIDATE.name]
+    assert [p.name for p in files if "052_" <= p.name <= CANDIDATE.name] == [
+        "052_artifact_namespaces.sql",
+        "053_resource_registry.sql",
+        "054_resource_input_batches.sql",
+        "055_resource_presentations.sql",
+        "056_restore_history_acceptance.sql",
+    ]
 
 
 def adapter_for(expected=None):

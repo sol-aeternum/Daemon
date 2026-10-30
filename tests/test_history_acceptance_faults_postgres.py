@@ -27,6 +27,7 @@ from tests.test_history_acceptance_postgres import (
     PAGE,
     PROJECT,
     adapter_for,
+    install_c1,
     native_task,
     projection_db as projection_db,
     db as db,
@@ -341,6 +342,7 @@ async def test_native_lock_timeout_refuses_without_extending_deadline(projection
 
 @pytest.mark.asyncio
 async def test_unsafe_default_grants_abort_candidate_atomically(db):
+    install_c1(db)
     db.sql(
         "ALTER DEFAULT PRIVILEGES FOR ROLE md_owner IN SCHEMA public GRANT SELECT ON TABLES TO md_third"
     )
@@ -422,6 +424,7 @@ async def test_real_task_cancellation_during_native_row_lock_keeps_caller_cleanu
 
 @pytest.mark.asyncio
 async def test_unsafe_default_function_grant_aborts_candidate_atomically(db):
+    install_c1(db)
     db.sql(
         "ALTER DEFAULT PRIVILEGES FOR ROLE md_owner IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO md_third"
     )

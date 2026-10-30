@@ -7,16 +7,20 @@ retention activation or dispatch authority is installed. J1 is unchanged.
 
 ## Payload and migration allocation
 
-`migrations/pending/restore_history_acceptance.sql` is deliberately unnumbered and
-outside the ordinary migration runner's top-level `*.sql` discovery. Fixtures
-apply it explicitly on owned synthetic PostgreSQL only. C1 PR #621 merged as
-`2ad9257ade1ddf6dd9f57f2eedacd82574e95222`, allocating 052–055 and changing the
-native acceptance transaction. This slice remains on its isolated pre-C1 base;
-numbered migration selection and merged-source integration are still pending.
-056 is not reserved. Closed
-044–050 and migration 051 are unchanged. Native integration must use the final C1
-transaction and preserve atomic pinned received-input registration. This payload
-has no dependency on C1 tables and does not qualify that composition.
+`migrations/056_restore_history_acceptance.sql` follows C1's merged 052–055
+allocation, verified on main `2ad9257ade1ddf6dd9f57f2eedacd82574e95222` before
+selecting the next free number. The ordinary runner discovers 056. The closed
+044–050 runner and migration 051 are unchanged; this is no live-upgrade approval.
+Synthetic upgrade tests use the existing migration advisory lock and per-file
+transactions, checking exact source inventory, owner-only publication and atomic
+056 failure after committed C1 migrations. All acceptance-role tests install
+051–055 before 056. No application database is used.
+
+The branch includes merged C1 source. Its TaskStore now shares a private
+transaction join with ResourceInputs; native H1 runtime integration must preserve
+C1's atomic pinned received-input registration and known-COMMIT boundary. This
+payload has no dependency on C1 tables. Schema coexistence and restricted-role
+qualification do not prove a composed C1/H1 runtime coordinator.
 
 The caller supplies the migration transaction. There are no application grants,
 role/membership creations, binding data, CLI initializer, backfill, pruning or
@@ -141,7 +145,7 @@ retains the acceptance; missing projections are reported, never repaired. This i
 synthetic PostgreSQL/POSIX evidence, not a private backup rehearsal or live
 qualification. Exact commands/results and failures are retained outside Git.
 
-Remaining: numbered migration allocation and complete upgrade/ACL qualification;
+Remaining: deployed upgrade/ACL qualification;
 H operation/lifetime locks and async ownership; native acceptance/send/Stop/output
 integration and fresh dispatch receipts; stable clients; deletion/retention/J1
 appliers; financial/auth/account/cache continuity; independent restore controls;

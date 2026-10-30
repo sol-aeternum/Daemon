@@ -1,5 +1,5 @@
--- Approved source/fixture payload; deliberately outside automatic migration discovery.
--- Number only after C1's 052--055 allocation settles. Caller owns the transaction.
+-- Approved source/fixture payload, numbered after merged C1 migrations 052--055.
+-- Caller owns the transaction. No runtime binding, grants or activation.
 SET LOCAL lock_timeout = '1s';
 SET LOCAL statement_timeout = '5s';
 
