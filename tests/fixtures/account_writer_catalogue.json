@@ -1814,6 +1814,72 @@
       "rationale": "Benchmark-only prepared-script directory; no account fence coverage."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "0540cbe60c130f57",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Private benchmark A0 evidence copy open; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "5a35087507b880f4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive private benchmark A0 destination open; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "96634f713ab0c8c4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsync of copied benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "ab4bf8ac783431cc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive inherited benchmark A0 directory creation; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "e226661cfe4f11e3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Copies hash-bound private benchmark evidence bytes; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "fb9b4bf2eabdf5b6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes copied private benchmark evidence; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_restore",
       "qualname": "FixedPool.execute",
       "kind": "sql_unresolvable",

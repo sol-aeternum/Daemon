@@ -59,6 +59,7 @@ COMMON = (
     "orchestrator/eval/campaign_validation.py",
     "orchestrator/eval/campaign_sql.py",
     "orchestrator/eval/campaign_launch.py",
+    "orchestrator/eval/campaign_recovery.py",
     "orchestrator/eval/fact_harness.py",
     "orchestrator/memory/embedding.py",
     "orchestrator/memory/embedding_adapter.py",
@@ -219,7 +220,13 @@ def verify_common(control: str, candidate: str) -> dict[str, str]:
 
 
 def checkout(plan: CampaignPlan, arm: str) -> None:
-    verify_replacement_lineage(plan.pins.get("replacement_lineage"))
+    if "recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_recovery import verify_recovery
+
+        require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in recovery")
+        verify_recovery(json.loads(json.dumps(plan.payload())))
+    else:
+        verify_replacement_lineage(plan.pins.get("replacement_lineage"))
     actual = git_state(ROOT)
     require(
         actual["sha"] == plan.pins["arm_shas"][arm] and actual["dirty"] is False,
@@ -359,6 +366,11 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     Like the sibling lock, this is cooperative operator protection, not a defense
     against a same-UID administrator copying or deleting retained evidence.
     """
+    if "recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_recovery import verify_recovery
+
+        verify_recovery(json.loads(json.dumps(plan.payload())), directory)
+        return
     lineage = plan.pins.get("replacement_lineage")
     verify_replacement_lineage(lineage)
     assert isinstance(lineage, dict)  # Enforced by verify_replacement_lineage above.
@@ -628,6 +640,18 @@ def main() -> None:
         replacement.add_argument("--" + name, type=Path, required=True)
     for name in ("previous-plan-sha256", "failed-ledger-sha256", "control-sha", "candidate-sha"):
         replacement.add_argument("--" + name, required=True)
+    second = commands.add_parser(
+        "prepare-second-replacement", help="Offline exact stopped-A1 recovery preparation only"
+    )
+    for name in ("previous-replacement-plan", "stopped-a1-ledger", "output"):
+        second.add_argument("--" + name, type=Path, required=True)
+    for name in (
+        "previous-replacement-plan-sha256",
+        "stopped-a1-ledger-sha256",
+        "control-sha",
+        "candidate-sha",
+    ):
+        second.add_argument("--" + name, required=True)
     run = commands.add_parser(
         "arm", help="One explicitly reviewed arm; never automatic resume/retry"
     )
@@ -635,7 +659,14 @@ def main() -> None:
         run.add_argument("--" + name, type=Path, required=True)
     run.add_argument("--arm", choices=ARMS, required=True)
     args = parser.parse_args()
-    operation = {"prepare": prepare, "prepare-replacement": prepare_replacement, "arm": run_arm}
+    from orchestrator.eval.campaign_recovery import prepare_second_replacement
+
+    operation = {
+        "prepare": prepare,
+        "prepare-replacement": prepare_replacement,
+        "prepare-second-replacement": prepare_second_replacement,
+        "arm": run_arm,
+    }
     asyncio.run(operation[args.command](args))
 
 
