@@ -448,6 +448,13 @@ def validate_attempt_ledger(
     completed_indices = []
     failure_paths = set()
     inherited = plan["pins"]["retry_recovery"]["inherited"]
+    resolution = None
+    if "final_verdict_recovery_lineage" in plan["pins"]:
+        from orchestrator.eval.campaign_final_verdict import validate_import_resolution
+
+        resolution = validate_import_resolution(state, plan, directory)
+        total += Decimal(resolution["reserved_usd"])
+        completed_indices.append(199)
     require(
         bool(state["attempts"])
         and state["attempts"][0]["identity"] == inherited["pending"]
@@ -562,7 +569,16 @@ def validate_attempt_ledger(
     )
     if settled:
         require(
-            all(group[-1]["status"] == "completed" for group in groups.values()),
+            all(
+                group[-1]["status"] == "completed"
+                or (
+                    resolution is not None
+                    and group[-1]["identity"] == resolution["identity"]
+                    and group[-1]["ordinal"] == 3
+                    and group[-1]["status"] == "terminal_failed"
+                )
+                for group in groups.values()
+            ),
             "Unresolved retry attempt at handoff",
         )
     # Changing a request hash must never start a second allowance for one logical stage.
@@ -603,6 +619,11 @@ async def prepare_attempt(campaign: Campaign, stage: str, request: Mapping[str, 
         )
     )
     already = sum((Decimal(item["usd"]) for item in state["retry_reservations"]), Decimal(0))
+    if "final_verdict_recovery_lineage" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_final_verdict import validate_import_resolution
+
+        imported = validate_import_resolution(state, campaign.plan, campaign.directory)
+        already += Decimal(imported["reserved_usd"])
     require(
         already + amount
         <= Decimal(campaign.plan["new_reserved_usd"]) - Decimal(campaign.plan["allocated_usd"]),
