@@ -4,6 +4,21 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const frontend = fileURLToPath(new URL('../', import.meta.url));
 
+// Existing tooling controls only: do not forward credentials or Node injection.
+export function qualificationEnvironment() {
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TMPDIR: process.env.TMPDIR,
+    TMP: process.env.TMP,
+    TEMP: process.env.TEMP,
+    PYTHONPYCACHEPREFIX: process.env.PYTHONPYCACHEPREFIX,
+    UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT,
+    CI: process.env.CI,
+    NEXT_PUBLIC_API_URL: 'http://127.0.0.1:3181',
+  };
+}
+
 /**
  * @param {string} outputRoot
  * @param {(command: string, args: string[], options: {cwd: string, env: NodeJS.ProcessEnv, stdio: 'inherit'}) => {status: number | null, error?: unknown, signal?: string | null}} run
@@ -38,7 +53,7 @@ export function runQualification(outputRoot, run = spawnSync) {
     console.info(`UI qualification: ${label}`);
     const result = run('npm', args, {
       cwd: frontend,
-      env: { ...process.env, NEXT_PUBLIC_API_URL: 'http://127.0.0.1:3181' },
+      env: qualificationEnvironment(),
       stdio: 'inherit',
     });
     if (result.error || result.signal || result.status !== 0) {

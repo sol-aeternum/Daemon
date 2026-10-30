@@ -50,6 +50,9 @@ live accounts. Dedicated PWA/cache qualification remains separate and unchanged.
 The development inventory still includes the observability case. The owner-approved
 non-blocking CI inventory uses the complete combined command, never production-only
 coverage; `npm run test:browser` remains the development diagnostic entry point.
+The combined runner forwards only existing executable/home, managed temporary
+directory, Python-environment and CI controls. It pins the isolated API origin;
+credentials and Node injection options are not inherited by its child stages.
 Browser output is retained in the CI `browser-regressions` artifact. Review
 intentional visual changes before updating baselines with
 `npm run test:browser -- --project=design-tokens --update-snapshots` on Linux.

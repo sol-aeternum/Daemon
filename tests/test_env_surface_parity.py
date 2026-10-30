@@ -288,9 +288,10 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
             "frontend/__tests__/progressive-research-setup.ts:57",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:222",
+            "frontend/e2e/run-ui-qualification.mjs:11",
         ),
         reason=(
-            "owner-approved P0.2 test-only clean child-process environment: preserves the "
+            "owner-approved P0.2 and combined UI test-only clean child environments preserve the "
             "host home for installed test tooling; not an application deployment knob. "
             "Only these exact launch sites are covered"
         ),
@@ -302,9 +303,10 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
             "frontend/__tests__/progressive-research-setup.ts:56",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:221",
+            "frontend/e2e/run-ui-qualification.mjs:10",
         ),
         reason=(
-            "owner-approved P0.2 test-only clean child-process environment: preserves the "
+            "owner-approved P0.2 and combined UI test-only clean child environments preserve the "
             "host executable search path; not an application deployment knob. "
             "Only these exact launch sites are covered"
         ),
@@ -315,10 +317,11 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
             "frontend/e2e/cache-fixture-environment.mjs:11",
             "frontend/__tests__/progressive-research-setup.ts:46",
             "frontend/e2e/renderer-crash.ts:215",
+            "frontend/e2e/run-ui-qualification.mjs:16",
         ),
         reason=(
-            "owner-approved P0.2 test-only selection of the locked Python environment "
-            "for the fixture API and pidfd guard, defaulting to .uv-venv; not application "
+            "owner-approved P0.2 and combined UI test-only selection of the locked Python environment "
+            "for fixture tooling, defaulting to .uv-venv where selected; not application "
             "configuration. Only these exact interpreter-selection sites are covered"
         ),
     ),
@@ -356,26 +359,36 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:9",
             "frontend/__tests__/progressive-research-setup.ts:58",
+            "frontend/e2e/run-ui-qualification.mjs:12",
         ),
         reason=(
-            "owner-approved test-only clean child-process environment preserves the caller's "
+            "owner-approved test-only clean child environments preserve the caller's "
             "task-private temporary directory. Standard process control, not an application "
             "deployment knob; only these exact fixture launch sites are covered"
         ),
     ),
     "TMP": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/__tests__/progressive-research-setup.ts:59",),
+        sources=(
+            "frontend/__tests__/progressive-research-setup.ts:59",
+            "frontend/e2e/run-ui-qualification.mjs:13",
+        ),
         reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
     ),
     "TEMP": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/__tests__/progressive-research-setup.ts:60",),
+        sources=(
+            "frontend/__tests__/progressive-research-setup.ts:60",
+            "frontend/e2e/run-ui-qualification.mjs:14",
+        ),
         reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
     ),
     "PYTHONPYCACHEPREFIX": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/__tests__/progressive-research-setup.ts:61",),
+        sources=(
+            "frontend/__tests__/progressive-research-setup.ts:61",
+            "frontend/e2e/run-ui-qualification.mjs:15",
+        ),
         reason="test-only backend transcript subprocess retains task-owned Python bytecode storage; not application configuration",
     ),
     "NEXT_PUBLIC_API_BASE_URL": NonFieldConsumer(

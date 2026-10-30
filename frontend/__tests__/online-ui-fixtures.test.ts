@@ -9,11 +9,17 @@ import {
   isAcknowledgedRscPrefetch,
   isAdditionalRscPrefetch,
 } from '../e2e/settings-rsc-fixture';
-import { runQualification } from '../e2e/run-ui-qualification.mjs';
+import {
+  qualificationEnvironment,
+  runQualification,
+} from '../e2e/run-ui-qualification.mjs';
 
 const origin = 'http://127.0.0.1:3181';
 const headers = { rsc: '1', 'next-router-prefetch': '1' };
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe('exact production page prefetch fixture', () => {
   for (const path of ['/settings/voice', '/settings/devices', '/auth']) {
@@ -164,6 +170,43 @@ describe('explicit unsupported service-worker capability', () => {
 });
 
 describe('complete sequential browser qualification', () => {
+  it('forwards only existing tooling controls and pins the isolated API origin', () => {
+    const inherited = {
+      PATH: '/synthetic/bin',
+      HOME: '/synthetic/home',
+      TMPDIR: '/synthetic/task/tmp',
+      TMP: '/synthetic/task/tmp',
+      TEMP: '/synthetic/task/tmp',
+      PYTHONPYCACHEPREFIX: '/synthetic/task/pycache',
+      UV_PROJECT_ENVIRONMENT: '/synthetic/task/venv',
+      CI: '1',
+    };
+    for (const [key, value] of Object.entries(inherited))
+      vi.stubEnv(key, value);
+    vi.stubEnv('SYNTHETIC_SECRET', 'fictional-do-not-forward');
+    vi.stubEnv('NODE_OPTIONS', '--import=/synthetic/injection.mjs');
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://foreign.test');
+    expect(qualificationEnvironment()).toEqual({
+      ...inherited,
+      NEXT_PUBLIC_API_URL: origin,
+    });
+    const run = vi.fn<NonNullable<Parameters<typeof runQualification>[1]>>(
+      () => ({ status: 0 }),
+    );
+    expect(runQualification('/synthetic/output', run)).toBe(0);
+    for (const call of run.mock.calls) {
+      expect(call[2].env).toEqual(qualificationEnvironment());
+      expect(call[2].env).not.toHaveProperty('SYNTHETIC_SECRET');
+      expect(call[2].env).not.toHaveProperty('NODE_OPTIONS');
+    }
+  });
+  it.each([undefined, '', '1'])(
+    'preserves the existing CI retry control %s',
+    (value) => {
+      vi.stubEnv('CI', value);
+      expect(qualificationEnvironment().CI).toBe(value);
+    },
+  );
   it('runs development, fresh matching build, then unfiltered production', () => {
     const run = vi.fn<NonNullable<Parameters<typeof runQualification>[1]>>(
       () => ({ status: 0 }),
