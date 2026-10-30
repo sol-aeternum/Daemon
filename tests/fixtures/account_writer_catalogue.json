@@ -1880,6 +1880,72 @@
       "rationale": "Flushes copied private benchmark evidence; no account-generation fence coverage."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "5a35087507b880f4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive hash-bound benchmark evidence copy; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "89c37f35fedb7daa",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Private benchmark evidence permission setting; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "96634f713ab0c8c4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Durability flush of copied benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "e226661cfe4f11e3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Copies retained benchmark prefix/receipt bytes; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "fb9b4bf2eabdf5b6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes private retained benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "e036dd0f46fe4715",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive retry bootstrap evidence directories; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_restore",
       "qualname": "FixedPool.execute",
       "kind": "sql_unresolvable",

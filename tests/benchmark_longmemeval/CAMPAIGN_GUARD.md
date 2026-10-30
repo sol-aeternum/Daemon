@@ -130,6 +130,71 @@ actual source bridge acceptance, current rates/privacy, database state, provider
 behavior, final billing, or candidate acceptance. Final independent review, project
 gates and exact-action Astra supervision remain required before any live action.
 
+### Explicit stopped-official recovery and bounded 429 retries
+
+The owner separately approved recovery of the exact stopped q49 official judge,
+without regenerating the completed answer/generic judge or restarting A1. The
+`prepare-retry-recovery` command and `retry_recovery_lineage` mode implement that
+one exception. They do not loosen the second-replacement validator or authorize
+arbitrary partial reuse, future automatic recovery, alternate output paths, or
+provider fallback. Both the plan and campaign successor are fixed to `-retry`.
+
+Preparation binds the exact approved parent plan/ledger, all 195 completed receipt
+files, the sanitized `failure-0195.json`, all 49 A1 rows plus checkpoint/manifest,
+and all four A0 artifacts, recursively rechecking earlier lineage. A pending partial
+receipt, different pending request hash, wrong source/state, changed prefix, symlink
+or foreign parent fails closed. The old four-file source bridge remains strict. A
+separate retry bridge covers the reviewed guard/launcher/recovery/retry/attach/harness/
+evaluator source delta; all other benchmark runtime source remains unchanged. `COMMON`
+is not expanded, so old source-bound plans remain verifiable. New control/candidate
+verification still permits only the retrieval diversity difference.
+
+This mode **carries**, rather than adds, the existing $4.35 envelope: $10.4019050
+prior plus $4.35 remains $14.7519050, with the separate nonspendable $1 capacity
+hold unchanged ($15.7519050 total). The original three-arm allocation of $3.251061
+leaves $1.098939 shared retry headroom. Every additional transport attempt reserves
+the entire question/stage input allocation plus output cap at the pinned rates,
+durably before waiting. Reservations never refund, including on success, failure,
+cancellation or uncertain billing. A 429 is not evidence of zero provider billing.
+
+An exclusive, non-resumable bootstrap copies exact retained prefix/receipt evidence
+and attributes the already completed A1 restore explicitly: one local restore plus
+three prior restores means four cumulative. Verified attach is separate from restore:
+it durably records one-shot pending before any admission ALTER, verifies exact target,
+closed admission and zero foreign producers, opens ten owned connections, recloses
+admission and verifies catalogue/protected fingerprints before binding the fixed pool.
+It runs no DROP, restore, migration or destructive psql. Failure uses bounded sealing
+on the same control connection, never reconnecting, terminating foreign producers,
+or replaying attach. A2/C0 alone consume restores five/six after clean handoffs.
+
+Only this explicit active mode permits transport retries, inside one logical guarded
+LLM call. LiteLLM retries remain zero and provider fallbacks remain off. Only a known
+top-level `RateLimitError` with integer status 429 qualifies; known quota/exhaustion/
+billing markers, timeouts, 5xx, empty responses and malformed usage never retry.
+There are at most three total attempts, including the immutable historical failed
+q49 attempt. Additional attempts wait 30 then 60 seconds, or a longer allowlisted
+Retry-After seconds/date value. Malformed headers or waits exceeding 120 seconds stop
+rather than clamping. Every actual start also respects five-second global pacing.
+Per-attempt pending identities, full-bound reservations and dispatch states are
+durable; unique sanitized failure artifacts never serialize exception/body/header/
+URL/request/credential data or invent usage. Any interrupted attempt remains stopped.
+
+Inside the canonical phase, a fresh fingerprint precedes importing the first 48
+complete rows and q49 partial row. The q49 branch runs **before** the generic completed
+result skip and calls only the official judge, with the historical request hash.
+Only official fields/completion provenance change; original base fields and run IDs
+remain intact. Q50 uses the normal four-stage path. The new executor manifest records
+explicit inherited-evaluation/mixed-source provenance and retry policy; it does not
+claim regenerated prefix rows or identical retry histories across arms. Scoring and
+arm completion recheck prefix/provenance and settled attempt accounting in addition
+to normal fifty-question qualification. No code-change/state-mismatch bypass is used.
+
+Synthetic source tests and this contract do not qualify the real retained artifacts,
+live attach state, external billing, paid execution, or candidate acceptance. Final
+independent review, full project gates and fresh exact-action Astra review remain
+mandatory. Six new scanner-discovered copy/bootstrap writer sites are explicitly
+unknown, uncovered and deferred; account-generation/fencing runtime is unchanged.
+
 `python -m orchestrator.eval.campaign_launch arm` executes only one explicit arm.
 It requires the clean pinned checkout and a fresh source/plan/arm/live-state-bound
 Astra action-review artifact. This is trusted operator evidence, not a cryptographic
