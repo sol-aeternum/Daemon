@@ -10,7 +10,7 @@ import logging
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -144,10 +144,11 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
     },
     {
         "id": "system_prompt_extras",
-        "difference": "The answer prompt is compose_system_prompt(memory_context) with no "
-        "preferences, skills index, answer controls or tools.",
-        "impact": "The memory block and base Daemon prompt match production; the answer model "
-        "cannot call memory tools to fetch more.",
+        "difference": "The answer prompt is compose_system_prompt(memory_context) plus "
+        "production's runtime date/time block at the question's question_date (read as UTC), "
+        "with no preferences, skills index, answer controls or tools.",
+        "impact": "The memory block, base Daemon prompt and current-date block match "
+        "production; the answer model cannot call memory tools to fetch more.",
     },
     {
         "id": "answer_judge_models",
@@ -165,10 +166,12 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
     },
     {
         "id": "message_timestamps",
-        "difference": "Haystack messages are stored at ingest time, not at the dataset's "
-        "session dates, and retrieval runs with query_reference_time=None.",
-        "impact": "Recency and temporal windows see the ingest clock; temporal questions are "
-        "disadvantaged relative to real usage.",
+        "difference": "Haystack messages and memories are stored at ingest time, not at the "
+        "dataset's session dates. The recency clock is pinned to question_date, and retrieval "
+        "runs with query_reference_time=None.",
+        "impact": "Stored times are later than every question date, so every memory gets the "
+        "freshest recency bucket regardless of run date; temporal windows are off. Source/event "
+        "time is lost, so relative-date facts stay unanchored (#601).",
     },
 )
 
@@ -541,6 +544,18 @@ def _parse_haystack_date(value: Any) -> datetime | None:
         return datetime.strptime(f"{date_part} {time_part}".strip(), "%Y/%m/%d %H:%M")
     except ValueError:
         return None
+
+
+def question_as_of(entry: Mapping[str, Any]) -> datetime:
+    """The question's "now": its ``question_date``, read as UTC (the dataset has no zone).
+
+    A timestamp, never an answer or evidence label. Unparsable dates fail the
+    question rather than silently falling back to the wall clock.
+    """
+    parsed = _parse_haystack_date(entry.get("question_date"))
+    if parsed is None:
+        raise ValueError("question_date missing or unparsable")
+    return parsed.replace(tzinfo=UTC)
 
 
 def build_question_streams(dataset: list[dict[str, Any]]) -> tuple[QuestionStream, ...]:
@@ -1877,6 +1892,8 @@ class LongMemEvalFactRunner:
                     def chat_scope(user_id: uuid.UUID = stream.user_id) -> Any:
                         return account_compute(pool, user_id, operation=EVALUATE_OPERATION)
 
+                    as_of = question_as_of(entry)
+
                     # The question's own user holds only its haystack, so
                     # retrieval reads all of that user's memories, as production does.
                     result = await evaluate_single_parity(
@@ -1890,6 +1907,7 @@ class LongMemEvalFactRunner:
                         user_id=stream.user_id,
                         benchmark_mode=self.benchmark_mode,
                         scope_factory=chat_scope,
+                        as_of=as_of,
                     )
                 except Exception as exc:
                     logger.exception("[evaluate] Question %s failed", question_id)
