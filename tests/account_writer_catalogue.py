@@ -63,6 +63,25 @@ _CREATE_TABLE_RE = re.compile(
     re.IGNORECASE,
 )
 _FK_RE = re.compile(r"\breferences\s+" + _TABLE_IDENTIFIER + r"(?=\s*\()", re.IGNORECASE)
+# A closed privilege list passed to a known builtin is not FK declaration
+# syntax. Keep every other REFERENCES occurrence subject to the existing
+# fail-closed grammar, including arbitrary strings and dynamic/quoted DDL.
+_PRIVILEGE_ARGUMENT = r"(?:[a-z_][a-z_0-9]*(?:\.[a-z_][a-z_0-9]*)*|'[^']*')"
+_PRIVILEGE_NAME = r"(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER)"
+_PRIVILEGE_CALL_RE = re.compile(
+    r"(?<![a-z_0-9.])(?:pg_catalog\.)?has_(?:table|any_column|column)_privilege\s*\(\s*"
+    + _PRIVILEGE_ARGUMENT
+    + r"\s*,\s*"
+    + _PRIVILEGE_ARGUMENT
+    + r"\s*,\s*(?:"
+    + _PRIVILEGE_ARGUMENT
+    + r"\s*,\s*)?'(?P<privileges>"
+    + _PRIVILEGE_NAME
+    + r"(?:\s*,\s*"
+    + _PRIVILEGE_NAME
+    + r")*)'\s*\)",
+    re.IGNORECASE,
+)
 _ALTER_TABLE_RE = re.compile(
     r"\balter\s+table\s+" + _TABLE_IDENTIFIER + r"(?=\s+(?:add|alter|drop)\s+[a-z_])",
     re.IGNORECASE,
@@ -191,7 +210,10 @@ def discover_tables(migrations_dir: Path) -> TableGraph:
             match = _ALTER_TABLE_RE.match(text, start.start())
             if match is None:
                 raise ValueError(f"unsupported ALTER declaration in {path.name}")
+        privilege_literals = [m.span("privileges") for m in _PRIVILEGE_CALL_RE.finditer(text)]
         for start in re.finditer(r"\breferences\b", text, re.I):
+            if any(left <= start.start() < right for left, right in privilege_literals):
+                continue
             match = _FK_RE.match(text, start.start())
             if match is None:
                 raise ValueError(f"unsupported reference declaration in {path.name}")
