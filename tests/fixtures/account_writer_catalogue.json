@@ -4295,6 +4295,116 @@
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._check_pins",
+      "kind": "filesystem_write",
+      "fingerprint": "12b925a7d003ebda",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._open",
+      "kind": "filesystem_write",
+      "fingerprint": "4a28157ee93d3b4f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "90642d86bb974d86",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "eb85604ab1625c11",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._write",
+      "kind": "filesystem_write",
+      "fingerprint": "96e422b6406e3d71",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "4977d3b91e6d7aea",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "9e12639fd51c0914",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "a160b30f5052117d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "da84a2c3c9cdd5e6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
       "owner_source": "orchestrator.services.web_snapshots",
       "qualname": "WebSnapshotStore._purge_account_expired",
       "kind": "sql_inline",
