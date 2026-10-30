@@ -131,6 +131,16 @@ The earlier design receipt incorrectly counted a Markdown separator as a 25th
 case; its explicit local correction records 24 proposed, zero design-task tests.
 Implementation-test results are reported separately from that design receipt.
 
+The opt-in `tests/test_restore_history_boundary_postgres.py` adds native
+PostgreSQL/POSIX diagnostics using a test-only acceptance hook. A durable prepare
+survives rollback and either server outcome behind a lost COMMIT acknowledgement;
+current native replay still creates fresh work after rollback because H lookup is
+not integrated. An older synthetic database restore loses native acceptance,
+possible-dispatch and Stop state while H retains all three. Historical append is
+not fresh authority and a later send after Stop is refused structurally. These
+passing diagnostics expose the missing coordination; they do not install protected
+SQL projections, production hooks, admission fences or restore qualification.
+
 Remaining: real protected non-cascading SQL projections and role qualification;
 acceptance/send/Stop/publication integration; async ownership supervision; stable
 client-key/error behavior; deletion/retention/J1 appliers; financial/auth/account/
