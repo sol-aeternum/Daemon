@@ -309,6 +309,109 @@ async def seal_failed_admission(control: Any, pins: Mapping[str, Any]) -> str:
 
 
 @asynccontextmanager
+async def attached_pool(campaign: Campaign) -> AsyncIterator[FixedPool]:
+    """One-shot attach to the already restored A1; never restores or increments it."""
+    from orchestrator.eval.campaign_retry import enabled, validate_attribution
+
+    campaign._check()
+    require(enabled(campaign), "Attach is only approved for explicit retry recovery")
+    campaign._recovery_check()
+    state, pins = campaign.state, campaign.plan["pins"]
+    validate_attribution(state, campaign.plan, attached=False)
+    require(
+        state["arm"] == "A1"
+        and state["arm_index"] == 1
+        and state["restore_attempts"] == 1
+        and len(state["restores"]) == 1
+        and state.get("attach_pending") is None
+        and not state.get("attach_receipt")
+        and state["pending"] is None
+        and len(state["receipts"]) == 195,
+        "Attach repeated or outside exact recovered A1 state",
+    )
+    container = container_identity()
+    control = await asyncpg.connect(CONTROL_DSN, timeout=10, command_timeout=30)
+    pool: Any = None
+    admitted = False
+    try:
+        await verify_server(control)
+        identity = await target_identity(control)
+        require(
+            identity["system_identifier"] == pins["server_identifier"]
+            and identity["oid"] == pins["database_oid"]
+            and identity["datallowconn"] is False,
+            "Attach target identity/admission differs",
+        )
+        await verify_sessions(control, set())
+        campaign._recovery_check()
+        state["attach_pending"] = {
+            "identity": identity,
+            "container": container,
+            "inherited_restore": state["imported_restore"],
+        }
+        campaign._save()  # Before even a possibly unacknowledged enable.
+        admitted = True
+        await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS true")
+        pool = await asyncpg.create_pool(
+            DSN,
+            min_size=10,
+            max_size=10,
+            max_queries=1000000,
+            max_inactive_connection_lifetime=0,
+            timeout=10,
+            command_timeout=30,
+        )
+        async with AsyncExitStack() as held:
+            connections = [
+                await held.enter_async_context(pool.acquire(timeout=30)) for _ in range(10)
+            ]
+            pids = {
+                int(await connection.fetchval("SELECT pg_backend_pid()"))
+                for connection in connections
+            }
+            require(len(pids) == 10, "Attach pool was not eagerly opened")
+            await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS false")
+            await verify_sessions(control, pids)
+            require(
+                await catalogue(connections[0]) == pins["catalogue_sha256"],
+                "Attach catalogue changed",
+            )
+            fingerprint = await fingerprint_benchmark_users(
+                connections[0], [question_user_id(qid) for qid in campaign.plan["question_ids"]]
+            )
+            require(fingerprint["sha256"] == STATE_SHA256, "Attach protected state changed")
+            state["attach_receipt"] = {
+                "fingerprint": fingerprint,
+                "owned_pids": sorted(pids),
+                "inherited_restore": state["imported_restore"],
+                "identity": identity,
+            }
+            state["attach_pending"] = None
+            campaign._save()
+            campaign.database_pool = FixedPool(pool)
+        yield campaign.database_pool
+        await verify_sessions(control, set())  # Canonical _phase must have closed the fixed pool.
+    except BaseException:
+        if admitted:
+            sealing = asyncio.create_task(seal_failed_admission(control, pins))
+            while not sealing.done():
+                try:
+                    await asyncio.shield(sealing)
+                except asyncio.CancelledError:
+                    continue
+            state["failure_admission"] = sealing.result()
+        campaign.stop("Verified attach failed; no reconnect/retry/resume")
+        raise
+    finally:
+        try:
+            if pool is not None:
+                await asyncio.wait_for(pool.close(), 30)
+        finally:
+            campaign.database_pool = None
+            await control.close()
+
+
+@asynccontextmanager
 async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIterator[FixedPool]:
     """One reviewed destructive attempt; admission remains closed on every error."""
     identity = container_identity()

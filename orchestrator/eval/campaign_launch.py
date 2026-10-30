@@ -220,7 +220,12 @@ def verify_common(control: str, candidate: str) -> dict[str, str]:
 
 
 def checkout(plan: CampaignPlan, arm: str) -> None:
-    if "recovery_lineage" in plan.pins:
+    if "retry_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_retry import verify_recovery
+
+        require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in retry recovery")
+        verify_recovery(json.loads(json.dumps(plan.payload())))
+    elif "recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_recovery import verify_recovery
 
         require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in recovery")
@@ -366,6 +371,11 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     Like the sibling lock, this is cooperative operator protection, not a defense
     against a same-UID administrator copying or deleting retained evidence.
     """
+    if "retry_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_retry import verify_recovery
+
+        verify_recovery(json.loads(json.dumps(plan.payload())), directory)
+        return
     if "recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_recovery import verify_recovery
 
@@ -543,7 +553,15 @@ async def run_arm(args: argparse.Namespace) -> None:
     with Campaign(
         args.campaign, plan, lambda text: len(encoding.encode_ordinary(text))
     ).activate() as campaign:
-        async with restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"])):
+        from orchestrator.eval.campaign_retry import enabled
+        from orchestrator.eval.campaign_restore import attached_pool
+
+        pool_context = (
+            attached_pool(campaign)
+            if enabled(campaign) and args.arm == "A1"
+            else restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"]))
+        )
+        async with pool_context:
             output = args.campaign / args.arm
             runner = fact_harness.LongMemEvalFactRunner(
                 dataset_path=DEV,
@@ -652,6 +670,13 @@ def main() -> None:
         "candidate-sha",
     ):
         second.add_argument("--" + name, required=True)
+    retry = commands.add_parser(
+        "prepare-retry-recovery", help="Offline exact stopped-official recovery"
+    )
+    for name in ("previous-plan", "stopped-ledger", "output"):
+        retry.add_argument("--" + name, type=Path, required=True)
+    for name in ("previous-plan-sha256", "stopped-ledger-sha256", "control-sha", "candidate-sha"):
+        retry.add_argument("--" + name, required=True)
     run = commands.add_parser(
         "arm", help="One explicitly reviewed arm; never automatic resume/retry"
     )
@@ -660,11 +685,13 @@ def main() -> None:
     run.add_argument("--arm", choices=ARMS, required=True)
     args = parser.parse_args()
     from orchestrator.eval.campaign_recovery import prepare_second_replacement
+    from orchestrator.eval.campaign_retry import prepare as prepare_retry
 
     operation = {
         "prepare": prepare,
         "prepare-replacement": prepare_replacement,
         "prepare-second-replacement": prepare_second_replacement,
+        "prepare-retry-recovery": prepare_retry,
         "arm": run_arm,
     }
     asyncio.run(operation[args.command](args))

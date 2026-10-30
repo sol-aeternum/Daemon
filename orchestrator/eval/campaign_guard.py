@@ -93,6 +93,11 @@ class CampaignPlan:
     pins: Mapping[str, Any]
 
     def payload(self) -> dict[str, Any]:
+        retry = "retry_recovery_lineage" in self.pins
+        if retry:
+            from orchestrator.eval.campaign_retry import validate_mode
+
+            validate_mode(self.pins)
         recovery = "recovery_lineage" in self.pins
         if recovery:
             from orchestrator.eval.campaign_recovery import validate_mode
@@ -139,6 +144,8 @@ class CampaignPlan:
         }
         if recovery:
             payload.update(execution_arms=("A1", "A2", "C0"), separate_capacity_reserved_usd="1")
+        if retry:
+            payload["retry_policy"] = dict(self.pins["retry_policy"])
         return payload
 
 
@@ -167,7 +174,23 @@ class CallReceipt:
     def complete(self, response: Mapping[str, Any]) -> None:
         if self.campaign is not None:
             self.campaign.receive(self.stage, self.request, response)
+            if "retry_recovery_lineage" in self.campaign.plan["pins"] and self.stage != "embedding":
+                from orchestrator.eval.campaign_retry import complete_attempt
+
+                complete_attempt(self.campaign, self.stage, self.request)
         self.completed = True
+
+    async def prepare_attempt(self) -> None:
+        if self.campaign is not None:
+            from orchestrator.eval.campaign_retry import prepare_attempt
+
+            await prepare_attempt(self.campaign, self.stage, self.request)
+
+    def retry_failure(self, exc: BaseException) -> bool:
+        assert self.campaign is not None
+        from orchestrator.eval.campaign_retry import failed_attempt
+
+        return failed_attempt(self.campaign, self.stage, self.request, exc)
 
     def failure_details(self, exc: BaseException) -> None:
         if self.campaign is not None:
@@ -204,7 +227,9 @@ async def campaign_llm_call(stage: str, request: dict[str, Any]) -> AsyncIterato
     campaign._pacing = True
     try:
         campaign._validate_request(stage, request)
-        while True:
+        # Retry mode durably reserves each attempt before either backoff or
+        # start-spacing sleeps; its transport loop owns all actual start pacing.
+        while "retry_recovery_lineage" not in campaign.plan["pins"]:
             campaign._check()
             remaining = LLM_START_INTERVAL - (time.monotonic() - campaign._last_llm_start)
             if remaining <= 0:
@@ -212,7 +237,8 @@ async def campaign_llm_call(stage: str, request: dict[str, Any]) -> AsyncIterato
             await asyncio.sleep(remaining)
         # campaign_call revalidates stage/state and persists pending before yield.
         with campaign_call(stage, request) as receipt:
-            campaign._last_llm_start = time.monotonic()
+            if "retry_recovery_lineage" not in campaign.plan["pins"]:
+                campaign._last_llm_start = time.monotonic()
             yield receipt
     except BaseException:
         if not campaign._stopped:
@@ -268,6 +294,10 @@ class Campaign:
             raise CampaignStopped("Campaign inactive/stopped; no automatic replay")
 
     def _recovery_check(self) -> dict[str, Any] | None:
+        if "retry_recovery_lineage" in self.plan["pins"]:
+            from orchestrator.eval.campaign_retry import verify_recovery
+
+            return verify_recovery(self.plan, self.directory)
         if "recovery_lineage" not in self.plan["pins"]:
             return None
         from orchestrator.eval.campaign_recovery import verify_recovery
@@ -312,7 +342,10 @@ class Campaign:
                 ):
                     raise CampaignStopped("Only a clean completed-arm handoff may continue")
                 if inherited is not None:
-                    from orchestrator.eval.campaign_recovery import validate_handoff
+                    if "retry_recovery_lineage" in self.plan["pins"]:
+                        from orchestrator.eval.campaign_retry import validate_handoff
+                    else:
+                        from orchestrator.eval.campaign_recovery import validate_handoff
 
                     validate_handoff(self.directory, saved, inherited)
                 self.state = saved
@@ -334,7 +367,10 @@ class Campaign:
                     "restores": [],
                 }
                 if inherited is not None:
-                    from orchestrator.eval.campaign_recovery import bootstrap
+                    if "retry_recovery_lineage" in self.plan["pins"]:
+                        from orchestrator.eval.campaign_retry import bootstrap
+                    else:
+                        from orchestrator.eval.campaign_recovery import bootstrap
 
                     bootstrap(self.directory, self.state, inherited)
             self._live = True
@@ -349,6 +385,7 @@ class Campaign:
                 or (inherited is not None and self.state["arm_index"] != initial_arm_index + 1)
                 or self.state["pending"]
                 or self.state.get("restore_pending")
+                or self.state.get("attach_pending")
             ):
                 self.fail("Incomplete campaign; reconcile rather than resume")
             self.state["status"] = (
@@ -398,6 +435,10 @@ class Campaign:
         self._check()
         try:
             self._recovery_check()  # Under sibling lock, immediately before mutation admission.
+            if "retry_recovery_lineage" in self.plan["pins"]:
+                from orchestrator.eval.campaign_retry import before_restore
+
+                before_restore(self)
         except BaseException:
             self.stop("Recovery pre-mutation verification failed; no replay")
             raise
@@ -428,7 +469,11 @@ class Campaign:
 
     def evaluation_pool(self) -> Any:
         self._check()
-        if self.database_pool is None or self.state.get("restore_pending"):
+        if (
+            self.database_pool is None
+            or self.state.get("restore_pending")
+            or self.state.get("attach_pending")
+        ):
             self.fail("Verified preopened campaign pool missing")
         return self.database_pool
 
@@ -458,6 +503,10 @@ class Campaign:
             "stage": stage,
             "request_sha256": _hash(request),
         }
+        historical = self.state.get("historical_pending")
+        if historical is not None and len(self.state["receipts"]) == 195:
+            if self.state["pending"] != historical:
+                self.fail("Recovered official request differs from historical pending hash")
         self._save()
 
     def _validate_request(self, stage: str, request: dict[str, Any]) -> None:
@@ -668,6 +717,10 @@ class Campaign:
                 or len(self.state["qualifications"]) != index
             ):
                 self.fail("Recovery arm lacks full new execution/restore evidence")
+        if "retry_recovery_lineage" in self.plan["pins"]:
+            from orchestrator.eval.campaign_retry import validate_completion
+
+            validate_completion(self)
         if (
             self.state["question"] is not None
             or self.state["question_index"] != 50
