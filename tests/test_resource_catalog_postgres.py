@@ -370,3 +370,17 @@ async def test_batched_presentation_deletion_atomicity(catalog_scenario, entry, 
             old = catalog.store._open(before["envelope_ciphertext"])
             new = catalog.store._open(after["envelope_ciphertext"])
             assert new == {**old, "source_deleted": True}
+
+
+@pytest.mark.asyncio
+async def test_pre_j1_schema_simulation_with_actual_c1_dependents(catalog_scenario):
+    from tests.durable_tasks_support import Env
+    from tests.test_deletion_journal_postgres import (
+        test_whole_pre_j1_schema_distinct_from_partial_schema,
+    )
+
+    _, catalog, _, tasks, expected, *_ = catalog_scenario
+    # Reuse the exact CI regression on the already owned, network-none public
+    # schema with original C1 migrations; never consult TASKS_TEST_DATABASE_URL.
+    env = Env(catalog.store._namespaces._pool, tasks, tasks._memory, expected.account_id, uuid4())
+    await test_whole_pre_j1_schema_distinct_from_partial_schema(env)
