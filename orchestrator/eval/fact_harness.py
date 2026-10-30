@@ -45,6 +45,7 @@ from orchestrator.eval.durable_io import (
     append_jsonl_record,
 )
 from orchestrator.eval.interrupts import StopController
+from orchestrator.eval.campaign_guard import current_campaign
 from orchestrator.eval.run_manifest import (
     MANIFEST_FILENAME,
     check_code_pin,
@@ -1242,9 +1243,15 @@ class LongMemEvalFactRunner:
         pool: Any = None
         attestation_started = False
         try:
-            pool = await asyncpg.create_pool(
-                dsn=settings.database_url, min_size=2, max_size=max(10, 4 * self.concurrency + 2)
-            )
+            campaign = current_campaign()
+            if campaign is not None:
+                pool = campaign.evaluation_pool()
+            else:
+                pool = await asyncpg.create_pool(
+                    dsn=settings.database_url,
+                    min_size=2,
+                    max_size=max(10, 4 * self.concurrency + 2),
+                )
             await assert_benchmark_database(pool, settings.database_url)
             attestation_started = True
             attestation_counts = await prepare_service_runtime(settings, pool)
@@ -1729,6 +1736,18 @@ class LongMemEvalFactRunner:
         save_runner_checkpoint(self.checkpoint_path, checkpoint)
         question_order = build_question_order(dataset)
 
+        campaign = current_campaign()
+        if campaign is not None:
+            if (
+                question_order != campaign.plan["question_ids"]
+                or self.allow_code_change
+                or self.allow_state_mismatch
+                or not self.benchmark_mode
+                or evaluate_phase["results"]
+                or self.output_path.exists()
+            ):
+                campaign.fail("Guarded evaluation requires exact fresh pinned dev execution")
+
         async with self._phase("evaluate", checkpoint) as (pool, store, manifest):
             manifest["benchmark_users"] = _benchmark_users_record(tuple(streams.values()))
             fingerprint_start = await fingerprint_benchmark_users(pool, user_ids)
@@ -1762,6 +1781,8 @@ class LongMemEvalFactRunner:
                 if is_completed_result(previous):
                     continue
                 self._check_stop()
+                if campaign is not None:
+                    campaign.begin_question(question_id)
 
                 question_text = entry.get("question", "")
                 reference = entry.get("answer", "")
@@ -1829,6 +1850,11 @@ class LongMemEvalFactRunner:
                 evaluate_phase["updated_at"] = utc_now_iso()
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)
                 self._heartbeat(manifest)
+
+                if campaign is not None:
+                    # Preserve the canonical partial row/checkpoint first, then
+                    # stop even when an inner official/provider exception was caught.
+                    campaign.finish_question(result)
 
             ordered_results_list = [
                 completed_results[qid] for qid in question_order if qid in completed_results
@@ -1931,6 +1957,7 @@ class LongMemEvalFactRunner:
                 "baseline_qualified": manifest.get("baseline_qualified", False),
                 "result_count": payload["result_count"],
                 "error_count": payload["error_count"],
+                "dual_judgments": payload["dual_judgments"],
             }
             save_manifest(manifest_path, manifest)
 

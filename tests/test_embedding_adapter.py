@@ -158,6 +158,36 @@ def test_embedding_mapping_optional_and_completion_contract_unchanged():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid", [True, False])
+async def test_campaign_hook_wraps_real_adapter_and_blocks_extra_send(
+    tmp_path, monkeypatch, installed, valid
+):
+    from orchestrator.eval import campaign_guard as guard
+    from tests.test_lme_campaign_guard import campaign, plan
+
+    payload = receipt()
+    if not valid:
+        payload["usage"]["prompt_tokens"] = True
+    calls, _ = transport(monkeypatch, installed, payload=payload)
+    instance = campaign(tmp_path)
+    with pytest.raises((guard.CampaignStopped, adapter.AdapterReceiptError)):
+        with instance.activate():
+            instance.start_arm("A0", verified_pins=plan().pins, restore={"synthetic": True})
+            instance.begin_question("synthetic-0")
+            vectors = await adapter.embed(
+                ["fictional query"], route_id=ROUTE_ID, api_key="fictional"
+            )
+            assert valid and len(vectors) == 1
+            # A second embedding, rather than the required reader, fails BEFORE HTTP.
+            await adapter.embed(["fictional query"], route_id=ROUTE_ID, api_key="fictional")
+    assert len(calls) == 1
+    state = json.loads(instance.state_path.read_text())
+    assert state["status"] == "stopped_reconciliation_required"
+    assert len(state["receipts"]) == int(valid)
+    assert (instance.directory / "receipt-0000.json").exists()
+
+
 @pytest.mark.parametrize("collection", ["routes", "embedding_routes", "tool_services"])
 def test_accounting_route_ids_unique_across_collections(collection):
     doc = document()
