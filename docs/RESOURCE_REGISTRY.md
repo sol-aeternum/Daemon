@@ -146,6 +146,12 @@ Committed matching pins resolve before new identity allocation. Current actual
 attempt authority is required for a new record; immutable replay can survive expiry.
 Source deletion detaches presentations in the same transaction, including zero-ref
 cases, retaining minimal encrypted opaque provenance rather than canonical chat text.
+The record limit applies per result message; matching immutable replay remains
+valid at capacity, while new records are refused. Conversation detachment uses
+bounded keyset batches in two passes under the existing source/task locks: all
+presentations and references validate before mutation, then presentations are
+revalidated and detached. A later failure rolls back the entire deletion; long
+conversations are not subject to the per-message presentation cap.
 
 `install_resource_routes` is an explicit isolated installer only. Existing real
 bearer-session auth and same-pool ownership precede metadata/content. Shared injected

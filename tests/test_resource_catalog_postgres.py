@@ -230,3 +230,143 @@ async def test_presentation_detaches_with_zero_resource_references(catalog_scena
     )
     assert await tasks.delete_conversation(expected.account_id, conversation) == (True, None)
     assert db.sql("SELECT source_message_id IS NULL FROM resource_presentations") == "t"
+
+
+@pytest.mark.asyncio
+async def test_presentation_last_slot_serializes_and_replay_survives_capacity(catalog_scenario):
+    db, _, presentations, _, expected, _, scenario = catalog_scenario
+    _, output, identity, command, *_ = scenario
+    pub = await output.publish_output(identity, command.binding.intent_id, accepted.outputs.CONTENT)
+    pins = [{"resource_id": str(pub.resource_id), "version_id": str(pub.version_id)}]
+    presentations.record_limit = 1
+    results = await asyncio.gather(
+        presentations.record(identity, []),
+        presentations.record(identity, pins),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, UUID) for result in results) == 1
+    assert sum(isinstance(result, ResourceError) for result in results) == 1
+    assert (
+        str(next(result for result in results if isinstance(result, ResourceError))) == "capacity"
+    )
+    assert db.sql("SELECT count(*) FROM resource_presentations") == "1"
+    winner = 0 if isinstance(results[0], UUID) else 1
+    # The owned PG transport drains terminated connections on this event loop.
+    # Use async SQL so the rejected writer's disconnect can release its locks.
+    async with db.connection() as conn:
+        await conn.execute(
+            "UPDATE tasks SET lease_expires_at=clock_timestamp()-interval '1 second'"
+        )
+    assert await presentations.record(identity, [[], pins][winner]) == results[winner]
+    assert len((await presentations.page(expected, identity.task_id))["items"]) == 1
+
+
+async def _long_presentation_conversation(catalog_scenario):
+    db, catalog, presentations, tasks, expected, _, scenario = catalog_scenario
+    presentations.record_limit = 2
+    await presentations.record(scenario[2], [])
+    async with db.connection() as conn:
+        original = await conn.fetchrow("SELECT * FROM resource_presentations")
+        conversation = await conn.fetchval(
+            "SELECT conversation_id FROM tasks WHERE id=$1", scenario[2].task_id
+        )
+    template = catalog.store._open(original["envelope_ciphertext"])
+    for i in range(4):
+        db.sql(
+            "UPDATE tasks SET status='completed',finished_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL"
+        )
+        task = await tasks.accept(
+            **accepted.submission(expected, key=f"long-{i}", conversation=conversation)
+        )
+        # Seed committed encrypted empty-pin envelopes for separate real accepted
+        # tasks. This fixture qualifies deletion, not producer admission.
+        async with db.connection() as conn:
+            message = await conn.fetchval(
+                "SELECT result_message_id FROM tasks WHERE id=$1", task.task_id
+            )
+            value = {
+                **template,
+                "original_task_id": str(task.task_id),
+                "original_message_id": str(message),
+            }
+            await conn.execute(
+                "INSERT INTO resource_presentations VALUES($1,$2,$3,$4,$5,$6)",
+                uuid4(),
+                expected.account_id,
+                expected.generation,
+                message,
+                catalog.store._seal(value),
+                original["created_at"],
+            )
+    db.sql(
+        "UPDATE tasks SET status='completed',finished_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL"
+    )
+    return conversation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["tasks", "memory"])
+@pytest.mark.parametrize("fault", [None, "late_corruption", "late_update"])
+async def test_batched_presentation_deletion_atomicity(catalog_scenario, entry, fault):
+    db, catalog, presentations, tasks, expected, *_ = catalog_scenario
+    conversation = await _long_presentation_conversation(catalog_scenario)
+    assert (
+        db.sql(
+            "SELECT max(n) FROM (SELECT count(*) n FROM resource_presentations GROUP BY source_message_id) x"
+        )
+        == "1"
+    )
+    async with db.connection() as conn:
+        rows = await conn.fetch("SELECT * FROM resource_presentations ORDER BY presentation_id")
+        last = rows[-1]["presentation_id"]
+        if fault == "late_corruption":
+            await conn.execute(
+                "UPDATE resource_presentations SET envelope_ciphertext='invalid' WHERE presentation_id=$1",
+                last,
+            )
+    if fault == "late_update":
+        db.sql(
+            "CREATE FUNCTION reject_last_detach() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            f"IF NEW.presentation_id='{last}'::uuid AND NEW.source_message_id IS NULL THEN "
+            "RAISE EXCEPTION 'synthetic late update'; END IF; RETURN NEW; END $$;"
+            "CREATE TRIGGER reject_last_detach BEFORE UPDATE ON resource_presentations "
+            "FOR EACH ROW EXECUTE FUNCTION reject_last_detach();"
+        )
+
+    async def delete():
+        if entry == "tasks":
+            assert await tasks.delete_conversation(expected.account_id, conversation) == (
+                True,
+                None,
+            )
+        else:
+            assert await tasks._memory.delete_conversation(
+                conversation, user_id=expected.account_id
+            )
+
+    if fault:
+        with pytest.raises(ResourceError):
+            await delete()
+        assert (
+            db.sql(
+                "SELECT count(*) FROM resource_presentations WHERE source_message_id IS NOT NULL"
+            )
+            == "5"
+        )
+        assert db.sql(f"SELECT count(*) FROM conversations WHERE id='{conversation}'") == "1"
+        # The first pass must detect late corruption before even attempting an
+        # update. For the update fault, the earlier successful updates rolled back.
+    else:
+        await delete()
+        assert (
+            db.sql("SELECT count(*) FROM resource_presentations WHERE source_message_id IS NULL")
+            == "5"
+        )
+        async with db.connection() as conn:
+            detached = await conn.fetch(
+                "SELECT * FROM resource_presentations ORDER BY presentation_id"
+            )
+        for before, after in zip(rows, detached, strict=True):
+            old = catalog.store._open(before["envelope_ciphertext"])
+            new = catalog.store._open(after["envelope_ciphertext"])
+            assert new == {**old, "source_deleted": True}

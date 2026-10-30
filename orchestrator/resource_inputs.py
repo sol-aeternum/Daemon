@@ -958,11 +958,8 @@ class ResourceInputs:
             conversation,
             task_ids,
         )
-        presentations = (
+        if self._presentations is not None:
             await self._presentations.detachment(conn, account, conversation)
-            if self._presentations is not None
-            else []
-        )
         if refs:
             head = await conn.fetchrow(
                 "SELECT * FROM resource_catalog_heads WHERE account_id=$1 FOR UPDATE", account
@@ -982,13 +979,8 @@ class ResourceInputs:
                     )
                 if pub.reference_id != ref["reference_id"]:
                     raise ResourceError()
-        for presentation_id, ciphertext in presentations:
-            await conn.execute(
-                "UPDATE resource_presentations SET source_message_id=NULL,envelope_ciphertext=$3 WHERE account_id=$1 AND presentation_id=$2",
-                account,
-                presentation_id,
-                ciphertext,
-            )
+        if self._presentations is not None:
+            await self._presentations.detachment(conn, account, conversation, apply=True)
         if refs:
             for ref in refs:
                 provenance = self._store._open(ref["provenance_ciphertext"])

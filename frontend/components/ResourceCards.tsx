@@ -184,6 +184,7 @@ export function TaskResources({
     const clear = () => {
       controller.abort();
       setState(null);
+      setCursor(null);
     };
     const unsubscribe = subscribeAuthGeneration(clear);
     async function load() {
@@ -246,7 +247,7 @@ export function TaskResources({
     void load();
     return () => {
       unsubscribe();
-      clear();
+      controller.abort();
     };
   }, [taskId, revision, generation, retry, cursor]);
   const current =

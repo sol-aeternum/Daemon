@@ -155,3 +155,104 @@ it('catalog load-more and restart never call generation', async () => {
       .mock.calls.every(([path]) => String(path).startsWith('/api/resources?')),
   ).toBe(true);
 });
+
+it('appends task input pages without dropping earlier cards or duplicating pins', async () => {
+  const second = {
+    ...item,
+    version_id: '33333333-3333-4333-8333-333333333333',
+    display: { name: 'second.txt', title: null },
+  };
+  let finish!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => {
+    finish = resolve;
+  });
+  vi.mocked(fetch).mockImplementation(async (path) => {
+    if (String(path).includes('?cursor=')) return pending;
+    return new Response(
+      JSON.stringify(
+        String(path).endsWith('/inputs')
+          ? { items: [item], next_cursor: 'next' }
+          : { items: [] },
+      ),
+    );
+  });
+  render(<TaskResources taskId={item.resource_id} />);
+  await screen.findByText('received.txt');
+  fireEvent.click(screen.getByRole('button', { name: 'Load more inputs' }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  expect(screen.getByText('received.txt')).toBeTruthy();
+  await act(async () => {
+    finish(
+      new Response(
+        JSON.stringify({ items: [item, second], next_cursor: null }),
+      ),
+    );
+  });
+  await screen.findByText('second.txt');
+  expect(screen.getAllByText('received.txt')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Load more inputs' })).toBeNull();
+});
+
+it.each(['account', 'task'])(
+  'discards an old pending input page on %s change',
+  async (change) => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(fetch).mockImplementation(async (path) => {
+      if (auth.generation !== 1) {
+        if (String(path).includes('?cursor='))
+          return new Response('{}', { status: 409 });
+        return new Response(
+          JSON.stringify({
+            items: String(path).endsWith('/inputs')
+              ? [{ ...item, display: { name: 'new-account.txt', title: null } }]
+              : [],
+            next_cursor: null,
+          }),
+        );
+      }
+      if (String(path).includes('?cursor=')) return pending;
+      return new Response(
+        JSON.stringify(
+          String(path).includes(item.resource_id) &&
+            String(path).endsWith('/inputs')
+            ? { items: [item], next_cursor: 'next' }
+            : { items: [], next_cursor: null },
+        ),
+      );
+    });
+    const view = render(<TaskResources taskId={item.resource_id} />);
+    await screen.findByText('received.txt');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more inputs' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    const signal = vi.mocked(fetch).mock.calls[2][1]?.signal;
+    await act(async () => {
+      if (change === 'account') {
+        auth.generation++;
+        for (const fn of auth.listeners) fn();
+      } else
+        view.rerender(
+          <TaskResources taskId="44444444-4444-4444-8444-444444444444" />,
+        );
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByText('received.txt')).toBeNull();
+    if (change === 'account') {
+      await screen.findByText('new-account.txt');
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.slice(3)
+          .every(([path]) => !String(path).includes('?cursor=')),
+      ).toBe(true);
+    }
+    await act(async () => {
+      finish(
+        new Response(JSON.stringify({ items: [item], next_cursor: null })),
+      );
+    });
+    expect(screen.queryByText('received.txt')).toBeNull();
+  },
+);

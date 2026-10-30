@@ -143,6 +143,8 @@ class ResourcePresentations:
                 raise ResourceError()
             if matches:
                 return matches[0]
+            if len(rows) >= self.record_limit:
+                raise ResourceError("capacity")
             await self.store._live(conn, identity)
             created = await conn.fetchval("SELECT clock_timestamp()")
             if not isinstance(created, datetime):
@@ -199,27 +201,53 @@ class ResourcePresentations:
             return {"schema_version": 1, "items": envelopes, "next_cursor": None}
 
     async def detachment(
-        self, conn: Any, account: UUID, conversation: UUID
-    ) -> list[tuple[UUID, str]]:
-        rows = await conn.fetch(
-            "SELECT p.* FROM resource_presentations p JOIN messages m ON m.id=p.source_message_id WHERE p.account_id=$1 AND m.conversation_id=$2 ORDER BY p.presentation_id LIMIT $3 FOR UPDATE OF p",
-            account,
-            conversation,
-            self.record_limit + 1,
-        )
-        if len(rows) > self.record_limit:
-            raise ResourceError("capacity")
-        result = []
-        for row in rows:
-            expected = CapturedGeneration(account, row["generation"])
-            value = self._open(row, expected)
-            task = await self.catalog._task_owned(conn, expected, UUID(value["original_task_id"]))
-            if (
-                task["conversation_id"] != conversation
-                or task["result_message_id"] != row["source_message_id"]
-            ):
-                raise ResourceError()
-            await self._check_pins(conn, expected, task, value["envelope"]["items"])
-            value["source_deleted"] = True
-            result.append((row["presentation_id"], self.store._seal(value)))
-        return result
+        self, conn: Any, account: UUID, conversation: UUID, *, apply: bool = False
+    ) -> None:
+        """Two bounded passes in the caller's source-locked deleting transaction.
+
+        The caller locks the conversation and all its tasks before either pass;
+        record() locks the same task, so cooperating writers cannot change the set.
+        Validate all presentations and references before calling with apply=True.
+        The second pass revalidates; any failure rolls back the whole deletion.
+        """
+        after = None
+        while True:
+            rows = await conn.fetch(
+                "SELECT p.*,m.user_id AS message_account FROM resource_presentations p "
+                "JOIN messages m ON m.id=p.source_message_id "
+                "WHERE p.account_id=$1 AND m.conversation_id=$2 "
+                "AND ($3::uuid IS NULL OR p.presentation_id>$3) "
+                "ORDER BY p.presentation_id LIMIT $4 FOR UPDATE OF p",
+                account,
+                conversation,
+                after,
+                self.record_limit,
+            )
+            if not rows:
+                return
+            for row in rows:
+                expected = CapturedGeneration(account, row["generation"])
+                value = self._open(row, expected)
+                task = await self.catalog._task_owned(
+                    conn, expected, UUID(value["original_task_id"])
+                )
+                if (
+                    row["message_account"] != account
+                    or task["conversation_id"] != conversation
+                    or task["result_message_id"] != row["source_message_id"]
+                ):
+                    raise ResourceError()
+                await self._check_pins(conn, expected, task, value["envelope"]["items"])
+                if apply:
+                    value["source_deleted"] = True
+                    changed = await conn.execute(
+                        "UPDATE resource_presentations SET source_message_id=NULL,envelope_ciphertext=$3 "
+                        "WHERE account_id=$1 AND presentation_id=$2 AND source_message_id=$4",
+                        account,
+                        row["presentation_id"],
+                        self.store._seal(value),
+                        row["source_message_id"],
+                    )
+                    if changed != "UPDATE 1":
+                        raise ResourceError()
+            after = rows[-1]["presentation_id"]
