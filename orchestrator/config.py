@@ -168,6 +168,11 @@ class Settings(BaseSettings):
     # native /chat turns are accepted durably and executed by the worker, so
     # closing the client never cancels them. Off until the rollout is approved.
     durable_chat_enabled: bool = False
+    # Startup composition remains configured when NEW acceptance is switched off.
+    # Only the backend may receive the acceptor connection credential.
+    daemon_task_acceptor_database_url: str | None = Field(default=None, repr=False)
+    daemon_task_acceptor_role: str | None = None
+    daemon_task_worker_role: str | None = None
 
     @property
     def sse_keepalive_interval_s(self) -> float:

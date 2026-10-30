@@ -112,7 +112,41 @@ interface ApiConversation {
   title_locked: boolean;
   status: string;
   metadata: Record<string, any>;
+  /** The conversation's saved model choice (#231): ``auto`` or a model ID. */
+  selected_model?: unknown;
 }
+
+function selectedModelOf(value: unknown): string {
+  return typeof value === 'string' && value ? value : 'auto';
+}
+
+/**
+ * Outcome of saving a conversation's model choice. ``failed`` is reported
+ * only when no newer choice for that conversation is pending, with the last
+ * value the server accepted to revert to.
+ */
+export type ModelSaveResult =
+  | { status: 'saved' }
+  | { status: 'superseded' }
+  | { status: 'failed'; revertTo: string; message: string };
+
+interface ModelSaveState {
+  generation: number;
+  /** Sequence of the newest choice; older queued choices are never sent. */
+  latest: number;
+  requested: string;
+  inFlight: number;
+  /** Last value the server accepted (or loaded with). */
+  confirmed: string;
+  /** False until a server read returns ``confirmed``, so stale reads lose. */
+  echoed: boolean;
+  queue: Promise<unknown>;
+}
+
+const MODEL_SAVE_FAILED =
+  "Couldn't save the model choice. It was changed back.";
+const MODEL_NOT_SELECTABLE =
+  "That model isn't available for selection. The model choice was changed back.";
 
 export type ConversationSearchStatus = 'idle' | 'searching' | 'ready' | 'error';
 
@@ -136,7 +170,7 @@ function toConversation(conv: ApiConversation): Conversation {
     id: conv.id,
     title: conv.title ?? '',
     messages: [], // Messages are fetched individually
-    selectedModel: conv.metadata?.model || 'auto',
+    selectedModel: selectedModelOf(conv.selected_model),
     createdAt: conv.created_at,
     updatedAt: conv.updated_at,
     messageCount: conv.message_count,
@@ -178,6 +212,7 @@ function fromHistoryRow(row: ConversationHistoryRow): Conversation {
       typeof row.message_count === 'number' ? row.message_count : 0,
     title_locked: row.title_locked === true,
     status: typeof row.status === 'string' ? row.status : 'active',
+    selected_model: row.selected_model,
     metadata:
       typeof row.metadata === 'object' &&
       row.metadata !== null &&
@@ -583,7 +618,7 @@ export function useConversationHistory() {
         id: newConv.id,
         title: newConv.title ?? '',
         messages: [],
-        selectedModel: 'auto',
+        selectedModel: selectedModelOf(newConv.selected_model),
         createdAt: newConv.created_at,
         updatedAt: newConv.updated_at,
         messageCount: newConv.message_count,
@@ -606,7 +641,7 @@ export function useConversationHistory() {
     async (
       id: string,
       updates: Partial<Conversation> & { messages?: DaemonMessage[] },
-    ) => {
+    ): Promise<boolean> => {
       const generation = getAuthGeneration();
       // Optimistic update
       setConversations((prev) =>
@@ -622,24 +657,16 @@ export function useConversationHistory() {
       }));
 
       try {
-        const payload: any = {};
+        const payload: Record<string, unknown> = {};
         if (updates.title !== undefined) payload.title = updates.title;
         if (updates.pinned !== undefined) payload.pinned = updates.pinned;
         if (updates.title_locked !== undefined)
           payload.title_locked = updates.title_locked;
-        if (updates.selectedModel !== undefined) {
-          // Update metadata for model selection
-          const currentConv = conversations.find((c) => c.id === id);
-          payload.metadata = {
-            ...(currentConv?.metadata || {}),
-            model: updates.selectedModel,
-          };
-        }
 
         if (Object.keys(payload).length > 0) {
           const headers = await getAuthHeaders();
-          if (generation !== getAuthGeneration()) return;
-          await apiFetch(`/conversations/${id}`, {
+          if (generation !== getAuthGeneration()) return false;
+          const response = await apiFetch(`/conversations/${id}`, {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
@@ -647,25 +674,127 @@ export function useConversationHistory() {
             },
             body: JSON.stringify(payload),
           });
+          if (generation !== getAuthGeneration()) return false;
+          // A resolved 4xx/5xx is a failed save, not a success.
+          if (!response.ok) {
+            fetchConversations();
+            return false;
+          }
         }
+        return true;
       } catch {
         if (generation === getAuthGeneration()) fetchConversations(); // Revert on error
+        return false;
       }
     },
-    [
-      apiFetch,
-      conversations,
-      fetchConversations,
-      getAuthHeaders,
-      setConversations,
-    ],
+    [apiFetch, fetchConversations, getAuthHeaders, setConversations],
   );
 
+  // Per-conversation model saves (#231). Saves for one conversation are sent
+  // one at a time, so the server applies them in the order they were chosen,
+  // and a queued choice that a newer one replaced is never sent.
+  const modelSaves = useRef(new Map<string, ModelSaveState>());
+
+  /**
+   * Save ``model`` as conversation ``id``'s choice. ``current`` is the
+   * choice shown before this change, used to revert the first save.
+   */
   const setConversationModel = useCallback(
-    (id: string, model: string) => {
-      updateConversation(id, { selectedModel: model });
+    async (
+      id: string,
+      model: string,
+      current: string = 'auto',
+    ): Promise<ModelSaveResult> => {
+      const generation = getAuthGeneration();
+      let save = modelSaves.current.get(id);
+      if (!save || save.generation !== generation) {
+        // Another account's pending saves never decide this one's state.
+        for (const [key, value] of modelSaves.current) {
+          if (value.generation !== generation) modelSaves.current.delete(key);
+        }
+        save = {
+          generation,
+          latest: 0,
+          requested: current,
+          inFlight: 0,
+          confirmed: current,
+          echoed: true,
+          queue: Promise.resolve(),
+        };
+        modelSaves.current.set(id, save);
+      }
+      const state = save;
+      const sequence = ++state.latest;
+      state.requested = model;
+      state.inFlight += 1;
+      const send = async (): Promise<ModelSaveResult> => {
+        if (sequence !== state.latest) return { status: 'superseded' };
+        let message = MODEL_SAVE_FAILED;
+        try {
+          const headers = await getAuthHeaders();
+          if (generation !== getAuthGeneration())
+            return { status: 'superseded' };
+          const response = await apiFetch(`/conversations/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ selected_model: model }),
+          });
+          if (generation !== getAuthGeneration())
+            return { status: 'superseded' };
+          if (response.ok) {
+            state.confirmed = model;
+            state.echoed = false;
+            return sequence === state.latest
+              ? { status: 'saved' }
+              : { status: 'superseded' };
+          }
+          const body = (await response.json().catch(() => null)) as {
+            detail?: { code?: unknown };
+          } | null;
+          if (body?.detail?.code === 'model_not_selectable')
+            message = MODEL_NOT_SELECTABLE;
+        } catch {
+          if (generation !== getAuthGeneration())
+            return { status: 'superseded' };
+        }
+        // A newer choice is queued behind this one and decides the outcome.
+        if (sequence !== state.latest) return { status: 'superseded' };
+        state.requested = state.confirmed;
+        return { status: 'failed', revertTo: state.confirmed, message };
+      };
+      const attempt = state.queue.then(send, send);
+      state.queue = attempt;
+      try {
+        return await attempt;
+      } finally {
+        state.inFlight -= 1;
+      }
     },
-    [updateConversation],
+    [apiFetch, getAuthHeaders],
+  );
+
+  /**
+   * The model to show for a loaded conversation: a pending choice, or one
+   * this client saved that a (possibly older) server read has not echoed
+   * yet, wins over the read's value.
+   */
+  const resolveSelectedModel = useCallback(
+    (conversation: Pick<Conversation, 'id' | 'selectedModel'>): string => {
+      const loaded = selectedModelOf(conversation.selectedModel);
+      const save = modelSaves.current.get(conversation.id);
+      if (!save || save.generation !== getAuthGeneration()) return loaded;
+      if (save.inFlight > 0) return save.requested;
+      if (!save.echoed) {
+        if (loaded !== save.confirmed) return save.confirmed;
+        save.echoed = true;
+      }
+      // With nothing pending, the read is the server's current value (perhaps
+      // set by another client), so a later failed save reverts to it.
+      save.confirmed = loaded;
+      save.requested = loaded;
+      return loaded;
+    },
+    [],
   );
 
   const deleteConversation = useCallback(
@@ -735,7 +864,7 @@ export function useConversationHistory() {
           id: data.id,
           title: data.title,
           messages: normalizeDaemonMessages(data.messages),
-          selectedModel: data.metadata?.model || 'auto',
+          selectedModel: selectedModelOf(data.selected_model),
           createdAt: data.created_at,
           updatedAt: data.updated_at,
           messageCount: data.message_count,
@@ -967,6 +1096,7 @@ export function useConversationHistory() {
     createConversation,
     updateConversation,
     setConversationModel,
+    resolveSelectedModel,
     deleteConversation,
     getCurrentConversation,
     refreshCurrentConversation,

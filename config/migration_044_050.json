@@ -1,0 +1,89 @@
+{
+  "baseline": "6485d4b1cc554f8e7c4cc572994448f7d6e22c22",
+  "expected_previous_watermark": "043_inference_route_attestations.sql",
+  "expected_previously_applied_filenames": [
+    "001_create_extensions.sql",
+    "002_create_users.sql",
+    "003_create_conversations.sql",
+    "004_create_messages.sql",
+    "005_create_memories.sql",
+    "006_create_extraction_log.sql",
+    "007_seed_default_user.sql",
+    "008_update_memories_source_type.sql",
+    "009_update_memories_constraints.sql",
+    "010_update_users_schema.sql",
+    "011_add_memories_embedding_model.sql",
+    "012_add_summary_updated_at.sql",
+    "013_extend_conversations_messages.sql",
+    "014_add_reasoning_columns.sql",
+    "015_add_reasoning_model.sql",
+    "016_bitemporal_memories.sql",
+    "017_video_credits.sql",
+    "018_video_credit_refund_idempotency.sql",
+    "019_voyage_embedding_migration.sql",
+    "020_create_council_sessions.sql",
+    "021_l0_tier_and_bm25.sql",
+    "022_summary_and_trust.sql",
+    "023_add_consolidation_source_type.sql",
+    "024_extend_memories_for_reasoning.sql",
+    "025_create_retrieval_log.sql",
+    "026_create_entities.sql",
+    "027_create_dream_log.sql",
+    "028_skill_projection.sql",
+    "029_skill_consolidation_nudge.sql",
+    "030_add_advisor_traces.sql",
+    "031_auth_device_model.sql",
+    "032_hosted_identity_claim.sql",
+    "033_auth_runtime_state.sql",
+    "034_device_creation_audit.sql",
+    "035_refresh_rotation_grace.sql",
+    "036_memory_content_hash.sql",
+    "036_skill_consolidation_pending_status.sql",
+    "037_worker_job_failures.sql",
+    "038_extraction_watermark.sql",
+    "039_entitlements_commercial.sql",
+    "040_memory_metadata.sql",
+    "041_web_snapshots.sql",
+    "042_reservation_routing_labels.sql",
+    "043_inference_route_attestations.sql"
+  ],
+  "files": [
+    {
+      "filename": "044_durable_tasks.sql",
+      "sha256": "b0c37e97ea88e4ac7feb2fc80d19b495697beb795fea2f36be5ecb0da9a44347",
+      "bytes": 8342
+    },
+    {
+      "filename": "045_identity_retention_provenance.sql",
+      "sha256": "9dfa06b77db68765dcd16ca4cdd40eea39334a355eed81a166c66f05c8c54670",
+      "bytes": 9940
+    },
+    {
+      "filename": "046_deletion_journal_markers.sql",
+      "sha256": "30cd0fdd226815680c65aa744742a24ab76f184bc62cb8e375e5a8c5fa87d9a2",
+      "bytes": 768
+    },
+    {
+      "filename": "047_account_control_persistence.sql",
+      "sha256": "ccb0289247de479b404850ccf25dbcb5a8dbe9247c6b82fc5497918347a682b8",
+      "bytes": 2139
+    },
+    {
+      "filename": "048_compute_metadata.sql",
+      "sha256": "7c7b161dc32955ab068c1a32d268ff097646b911b2f73f0585eac20dffc89e05",
+      "bytes": 8290
+    },
+    {
+      "filename": "049_attempt_lifecycle.sql",
+      "sha256": "95bebfcc7739ac4bebc2577f9a3230d1055cd3c0b2a9b0f67eb7229a4a278653",
+      "bytes": 12078
+    },
+    {
+      "filename": "050_task_inference_recovery.sql",
+      "sha256": "bd7c67c4831f596f6a02980e5182a2aeabc420c6034ded50ac677fca9b52cb38",
+      "bytes": 11928
+    }
+  ],
+  "explicitly_excluded": "051_artifact_output_reservations.sql",
+  "executed": false
+}

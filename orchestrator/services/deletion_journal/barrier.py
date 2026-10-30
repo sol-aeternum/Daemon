@@ -152,7 +152,9 @@ async def _verify_schema(
     return True
 
 
-async def _barrier(pool: asyncpg.Pool, settings: Settings) -> None:
+async def _barrier(
+    pool: asyncpg.Pool, settings: Settings, *, initialize_binding: bool = True
+) -> None:
     config = configured_journal(settings)
     async with pool.acquire() as connection:
         locked = False
@@ -182,6 +184,9 @@ async def _barrier(pool: asyncpg.Pool, settings: Settings) -> None:
                     or rows[0]["journal_id"] != identity
                 ):
                     raise JournalError("marker_mismatch")
+                if not rows and not initialize_binding:
+                    # W-only startup cannot create or borrow a readiness binding.
+                    raise JournalError("binding_required")
 
                 def verify() -> JournalState:
                     with Journal(directory, identity) as journal:
@@ -212,14 +217,16 @@ async def _barrier(pool: asyncpg.Pool, settings: Settings) -> None:
                     raise
 
 
-async def require_recovery_barrier(pool: asyncpg.Pool | None, settings: Settings) -> None:
+async def require_recovery_barrier(
+    pool: asyncpg.Pool | None, settings: Settings, *, initialize_binding: bool = True
+) -> None:
     """All startup modes require positive DB evidence (owner-approved change)."""
     configured_journal(settings)  # Reject half/malformed settings even without DB.
     if pool is None:
         raise JournalError("database_required")
     try:
         async with asyncio.timeout(STARTUP_BUDGET_S):
-            await _barrier(pool, settings)
+            await _barrier(pool, settings, initialize_binding=initialize_binding)
     except JournalError:
         raise
     except (TimeoutError, OSError, asyncpg.PostgresError, asyncpg.InterfaceError):

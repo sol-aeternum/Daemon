@@ -3,7 +3,7 @@
 import { chromium } from '../frontend/node_modules/playwright/index.mjs';
 import { build } from '../frontend/node_modules/esbuild/lib/main.js';
 import { createServer } from 'node:http';
-import { Readable } from 'node:stream';
+import { pipeFixtureResponse } from './resource_fixture_stream.mjs';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { createInterface } from 'node:readline';
@@ -16,6 +16,7 @@ const bundled=await build({absWorkingDir:frontend,entryPoints:['e2e/resource-nat
 const proxyBuild=await build({absWorkingDir:frontend,entryPoints:['lib/resourceProxy.ts'],bundle:true,write:false,format:'esm',platform:'node',define:{'process.env.DAEMON_INTERNAL_API_URL':JSON.stringify(base)}});
 const {resourceProxy}=await import('data:text/javascript;base64,'+Buffer.from(proxyBuild.outputFiles[0].text).toString('base64'));
 let holdNextPreview=false, previewBlocked, releasePreview;
+const streamFailures=[],streamCancellations=[];
 const blocked=new Promise(r=>{previewBlocked=r;});
 const released=new Promise(r=>{releasePreview=r;});
 const server=createServer(async(req,res)=>{
@@ -39,7 +40,7 @@ const server=createServer(async(req,res)=>{
     if(holdNextPreview&&target.endsWith('/preview')){holdNextPreview=false;previewBlocked();await released;}
     if(res.destroyed){await reply.body?.cancel();return;}
     res.writeHead(reply.status,Object.fromEntries(reply.headers));
-    if(reply.body)Readable.fromWeb(reply.body).pipe(res);else res.end();
+    if(reply.body)pipeFixtureResponse(reply.body,res,lifetime.signal,streamFailures,streamCancellations);else res.end();
   }catch {res.writeHead(503,{'Cache-Control':'private, no-store'});res.end();}
 });
 await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
@@ -83,6 +84,8 @@ try{
   assert.equal(await pages[1].locator('pre').count(),0);
   const denied=await pages[1].evaluate(async({token,version})=>{const r=await fetch('/api/resources?task_id='+version,{headers:{Authorization:'Bearer '+token},cache:'no-store'});return await r.json();},{token:headers[2].Authorization.slice(7),version:conversation});
   assert.deepEqual(denied.items,[]);
-  assert.equal(calls.filter(([method,path])=>method!=='GET'&&path!=='/api/v1/auth/cache/clear').length,0);
-  console.log(JSON.stringify({native_components:true,production_auth_cache:true,actual_resource_proxy:true,pinned_history_reloaded:true,two_sessions:true,account_switch_cleared:true,local_generation_calls:0}));
-}finally{releasePreview();await browser.close();await new Promise((r,j)=>server.close(e=>e?j(e):r()));}
+   assert.equal(calls.filter(([method,path])=>method!=='GET'&&path!=='/api/v1/auth/cache/clear').length,0);
+   assert.deepEqual(streamFailures,[]);
+   console.error('native fixture stream cancellations:',JSON.stringify(streamCancellations));
+   console.log(JSON.stringify({native_components:true,production_auth_cache:true,actual_resource_proxy:true,pinned_history_reloaded:true,two_sessions:true,account_switch_cleared:true,local_generation_calls:0}));
+}finally{releasePreview();await browser.close();await new Promise((r,j)=>server.close(e=>e?j(e):r()));assert.deepEqual(streamFailures,[]);}

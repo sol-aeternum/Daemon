@@ -25,6 +25,9 @@ export interface ConversationHistoryContextValue {
   setConversationModel: ReturnType<
     typeof useConversationHistory
   >['setConversationModel'];
+  resolveSelectedModel: ReturnType<
+    typeof useConversationHistory
+  >['resolveSelectedModel'];
   deleteConversation: ReturnType<
     typeof useConversationHistory
   >['deleteConversation'];

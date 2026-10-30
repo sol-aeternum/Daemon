@@ -108,6 +108,7 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
     createConversation: vi.fn(),
     updateConversation: vi.fn(),
     setConversationModel: vi.fn(),
+    resolveSelectedModel: () => 'auto',
     switchConversation: vi.fn(),
     fetchConversationById: vi.fn(),
     refreshConversations: vi.fn(),

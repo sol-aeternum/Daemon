@@ -12,6 +12,7 @@ ErrorCode = Literal[
     "invalid_config",
     "database_required",
     "schema_required",
+    "binding_required",
     "marker_mismatch",
     "recovery_required",
 ]

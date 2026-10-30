@@ -42,7 +42,7 @@ Why the checks are written the way they are
   resolve to a literal name (dynamic index, rest destructuring, whole-mapping
   iteration) is reported with ``path:line`` and fails the gate unless it is
   listed in ``FRONTEND_UNRESOLVED_SITE_ALLOWLIST`` with a reason.
-* **Behaviour preservation for the worker.** The nine backend-only Compose
+* **Behaviour preservation for the worker.** The ten backend-only Compose
   keys are explicit service-role exceptions with reasons. Unifying the two
   Python service environments is *not* behaviour neutral (it changes
   missing-key origins/public origin/cookies and adds a shell-override channel
@@ -109,7 +109,7 @@ AMBIENT_SUBCONFIG_CLASSES: tuple[type[BaseSettings], ...] = (
 
 # Inventory pins. A change here is a deliberate review trigger: the coverage
 # test reports the resolved name of the new field in the same run.
-EXPECTED_SETTINGS_FIELD_COUNT = 129
+EXPECTED_SETTINGS_FIELD_COUNT = 132
 EXPECTED_VIDEO_PRICING_FIELD_COUNT = 6
 
 # --------------------------------------------------------------------------
@@ -446,6 +446,9 @@ SECURITY_CRITICAL: dict[str, str] = {
 # dotenv file could previously be used. Unifying the two lists is therefore a
 # separate, explicit decision and is not implied by this gate.
 SERVICE_ROLE_EXCEPTIONS: dict[str, str] = {
+    "DAEMON_TASK_ACCEPTOR_DATABASE_URL": (
+        "backend-only acceptor capability; worker startup explicitly refuses this credential"
+    ),
     "DAEMON_ALLOWED_ORIGINS": "CORS origin allowlist; only the ASGI app evaluates Origin",
     "DAEMON_ALLOWED_HOSTS": "trusted-Host validation; only the ASGI app receives Host headers",
     "DAEMON_DEFAULT_TIMEZONE": "chat prompt timezone fallback consumed by chat rendering",
@@ -1919,12 +1922,12 @@ def test_python_service_environments_are_parity_checked_with_reasons() -> None:
     )
 
 
-def test_service_role_exceptions_are_exactly_the_nine_backend_only_keys() -> None:
+def test_service_role_exceptions_are_exactly_the_ten_backend_only_keys() -> None:
     surface = real_surface()
     backend = set(surface.compose.service_environment.get("backend", {}))
     worker = set(surface.compose.service_environment.get("worker", {}))
     assert set(SERVICE_ROLE_EXCEPTIONS) == backend - worker
-    assert len(SERVICE_ROLE_EXCEPTIONS) == 9
+    assert len(SERVICE_ROLE_EXCEPTIONS) == 10
     for name, reason in SERVICE_ROLE_EXCEPTIONS.items():
         assert reason.strip(), name
 
@@ -1944,7 +1947,7 @@ def test_service_parity_detects_an_unexplained_difference() -> None:
         "DAEMON_MAIL_SMTP_USE_TLS" in violation and "both Python services" in violation
         for violation in violations
     ), violations
-    # Unifying one of the nine enumerated backend-only keys is a behaviour
+    # Unifying one of the ten enumerated backend-only keys is a behaviour
     # decision, so it must be reported rather than accepted silently.
     unified = with_service_env(
         surface.compose, "worker", "DAEMON_COOKIE_SECURE", "${DAEMON_COOKIE_SECURE:-true}"

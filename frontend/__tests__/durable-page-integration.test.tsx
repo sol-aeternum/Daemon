@@ -56,6 +56,8 @@ const state = vi.hoisted(() => ({
   setMessages: null as null | ((messages: DaemonMessage[]) => void),
   conversation: null as unknown,
   refresh: vi.fn(),
+  setConversationModel: vi.fn(),
+  pickModel: 'auto',
   cancelTask: vi.fn(),
   taskForKey: vi.fn(),
   taskStatus: vi.fn(),
@@ -139,7 +141,9 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
       taskStatus: state.taskStatus,
       createConversation: vi.fn(),
       updateConversation: vi.fn(),
-      setConversationModel: vi.fn(),
+      setConversationModel: state.setConversationModel,
+      resolveSelectedModel: (conversation: { selectedModel?: string }) =>
+        conversation.selectedModel ?? 'auto',
       switchConversation: state.switchConversation,
       conversationLoadFailure: state.conversationLoadFailure,
       fetchConversationById: vi.fn(),
@@ -173,14 +177,19 @@ vi.mock('../components/ChatInputBar', () => ({
     onSubmit,
     isLoading,
     onStop,
+    onSelectModel,
   }: {
     input: string;
     onInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
     onSubmit: () => void;
     isLoading: boolean;
     onStop: () => void;
+    onSelectModel: (model: string) => void;
   }) => (
     <div>
+      <button type="button" onClick={() => onSelectModel(state.pickModel)}>
+        Pick model
+      </button>
       <textarea aria-label="Composer" value={input} onChange={onInputChange} />
       {isLoading ? (
         <button onClick={onStop}>Stop</button>
@@ -313,6 +322,7 @@ beforeEach(() => {
     incomplete: false,
   };
   state.conversationLoadFailure = null;
+  state.pickModel = 'auto';
   state.sdkError = undefined;
   state.sdkStatus = 'ready';
   state.isCurrentConversation = () => true;
@@ -812,6 +822,63 @@ describe('#477 submission reliability closeout', () => {
       answer_detail: 'balanced',
       research_effort: 'auto',
     });
+  });
+
+  it("sends the conversation's saved model on the next request (#231)", async () => {
+    state.conversation = {
+      ...(state.conversation as object),
+      selectedModel: 'openrouter/test/sonnet',
+    };
+    render(<ChatPage />);
+    // The loaded choice is applied after the render commits.
+    await act(async () => {});
+    fireEvent.change(screen.getByLabelText('Composer'), {
+      target: { value: 'A new question' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body.model).toBe(
+      'openrouter/test/sonnet',
+    );
+  });
+
+  it('uses a saved model choice and shows no error (#231)', async () => {
+    state.pickModel = 'openrouter/test/opus';
+    state.setConversationModel.mockResolvedValue({ status: 'saved' });
+    render(<ChatPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Pick model' }));
+    expect(state.setConversationModel).toHaveBeenCalledWith(
+      'conv-1',
+      'openrouter/test/opus',
+      'auto',
+    );
+    fireEvent.change(screen.getByLabelText('Composer'), {
+      target: { value: 'A new question' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body.model).toBe('openrouter/test/opus');
+    expect(screen.queryByText(/Couldn't save the model choice/)).toBeNull();
+  });
+
+  it('shows a failed model save and reverts the next request (#231)', async () => {
+    state.pickModel = 'openrouter/test/opus';
+    state.setConversationModel.mockResolvedValue({
+      status: 'failed',
+      revertTo: 'auto',
+      message: "Couldn't save the model choice. It was changed back.",
+    });
+    render(<ChatPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Pick model' }));
+    expect(
+      await screen.findByText(/Couldn't save the model choice/),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Composer'), {
+      target: { value: 'A new question' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
+    expect(state.send.mock.calls[0][1].body.model).toBe('auto');
   });
 
   it('snapshots controls before file serialization and preserves changed-back draft on late hold/ack', async () => {

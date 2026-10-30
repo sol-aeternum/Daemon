@@ -606,10 +606,10 @@
       "rationale": "Conservative scanner candidate for bounded StringIO write, not filesystem publication. Actual R0/registry authority remains separate. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
-      "kind": "sql_inline", "fingerprint": "bc6bab0fd60cc1f3", "tables": ["resource_presentations"],
+      "owner_source": "orchestrator.resource_presentations", "qualname": "ResourcePresentations.detachment",
+      "kind": "sql_inline", "fingerprint": "c23fef24929ce643", "tables": ["resource_presentations"],
       "unknown": false, "uncovered": true, "category": "content",
-      "rationale": "Same-transaction source presentation link detachment and encrypted source-deleted provenance; no resource cascade. Uncovered."
+      "rationale": "Owner-approved two-pass bounded same-transaction presentation detachment with expected-source qualification and encrypted source-deleted provenance; no resource cascade or complete lifecycle-fence claim. Uncovered."
     },
     {
       "owner_source": "orchestrator.resource_presentations", "qualname": "ResourcePresentations.record",
@@ -3545,7 +3545,7 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.update_conversation",
       "kind": "sql_inline",
-      "fingerprint": "90cef3c63b730fc4",
+      "fingerprint": "ea4a31137c38bd03",
       "tables": [
         "conversations"
       ],
@@ -4873,6 +4873,116 @@
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._check_pins",
+      "kind": "filesystem_write",
+      "fingerprint": "12b925a7d003ebda",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._open",
+      "kind": "filesystem_write",
+      "fingerprint": "4a28157ee93d3b4f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "90642d86bb974d86",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._open_directory",
+      "kind": "filesystem_write",
+      "fingerprint": "eb85604ab1625c11",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore._write",
+      "kind": "filesystem_write",
+      "fingerprint": "96e422b6406e3d71",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "35e0a975037a759a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "4977d3b91e6d7aea",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "9e12639fd51c0914",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "a160b30f5052117d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.store",
+      "qualname": "HistoryStore.append",
+      "kind": "filesystem_write",
+      "fingerprint": "da84a2c3c9cdd5e6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+    },
+    {
       "owner_source": "orchestrator.services.web_snapshots",
       "qualname": "WebSnapshotStore._purge_account_expired",
       "kind": "sql_inline",
@@ -5679,9 +5789,42 @@
     },
     {
       "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_catalog_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "477265da69a12704",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Closed SQL predicate string.replace is conservatively classified as a filesystem candidate. It performs no filesystem write; retained deferred and uncovered, not a general writer fence."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_catalog_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "6c889b4dab1eda30",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Second closed SQL predicate string.replace remains an explicit conservative filesystem candidate. No role values are interpolated and no filesystem write occurs. Deferred and uncovered."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
+      "qualname": "acceptor_catalog_preflight",
+      "kind": "sql_unresolvable",
+      "fingerprint": "68f362258a29e812",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "W-only startup observes the expected A privilege catalogs through a parameterized closed predicate. Scanner cannot resolve the constructed SQL. Deferred and uncovered; not an authenticated A session, data mutation or complete account fence."
+    },
+    {
+      "owner_source": "orchestrator.tasks.inference",
       "qualname": "acceptor_preflight",
       "kind": "sql_named",
-      "fingerprint": "0a25ed238853f962",
+      "fingerprint": "fe3ad3b39c72d344",
       "tables": [],
       "unknown": true,
       "uncovered": true,

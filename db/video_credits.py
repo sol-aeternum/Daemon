@@ -67,7 +67,7 @@ class VideoCreditsDAL:
                 await conn.execute(
                     """
                     INSERT INTO video_credit_balances (user_id, balance, updated_at)
-                    VALUES ($1, $2 - $3, NOW())
+                    VALUES ($1, $2::integer - $3::integer, NOW())
                     ON CONFLICT (user_id) 
                     DO UPDATE SET balance = video_credit_balances.balance - $3, 
                                   updated_at = NOW()

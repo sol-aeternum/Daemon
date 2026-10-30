@@ -146,7 +146,7 @@ Hybrid search combining:
 |----------|-----------|
 | **Chat** | `/chat` (SSE), `/v1/chat/completions` (OpenAI), `/chat/completions` |
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
-| **Conversations** | `/conversations/{conversation_id}` (GET/PATCH/DELETE) |
+| **Conversations** | `/conversations/{conversation_id}` (GET/PATCH/DELETE; PATCH takes `{title?, pinned?, title_locked?, selected_model?}` and rejects unknown fields; `selected_model` is `auto` or a selectable model ID, stored in server-owned conversation metadata, returned by conversation reads, and never bypasses `/chat` admission) |
 | **Memories** | `/memories/{memory_id}` (GET/PATCH/DELETE; PATCH takes `{content ≤2,000 chars, category?}`, re-embeds or clears the vector, returns the memory), `/memories/export`, `/memories/import` (≤500 items of `{content ≤2,000 chars, category}`; server-controlled status/source; embedded and deduplicated like other writes; returns created/merged/superseded counts), `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
 | **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/admin/sync` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
@@ -193,6 +193,10 @@ rejection ratio above 10%.
 - `crawl4ai`: Web scraping service.
 - `tts`: Private offline Kokoro runtime; ready only after warm synthesis. See [TTS architecture](TTS_ARCHITECTURE.md).
 - `migrate`: One-shot migration runner.
+
+The separately invoked [closed 043→050 driver](MIGRATION_044_050_DRIVER.md) pins
+seven SQL payloads and excludes 051. It is source-only; Compose migration behavior
+and the requirement for separate live execution approval remain unchanged.
 
 ### Key Environment Variables
 - `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `XAI_API_KEY`, `FAL_KEY`, `BRAVE_API_KEY`, `ELEVENLABS_API_KEY`.
