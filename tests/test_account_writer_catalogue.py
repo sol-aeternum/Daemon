@@ -146,6 +146,45 @@ def test_committed_manifest_matches_current_discovery() -> None:
     assert problems == []
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        "has_table_privilege(u,c.oid,'SELECT,INSERT,REFERENCES')",
+        "pg_catalog.has_any_column_privilege(u,'public.messages','SELECT,REFERENCES')",
+        "has_column_privilege(u,c.oid,'conversation_id','references')",
+    ],
+)
+def test_closed_builtin_privilege_literals_do_not_mask_actual_fk_discovery(tmp_path, call):
+    sql = _BASE_MIGRATIONS + (
+        f"SELECT {call};\n"
+        "CREATE TABLE notes (id uuid PRIMARY KEY, user_id uuid REFERENCES users(id));\n"
+    )
+    migrations, app = _write_tree(tmp_path, sql, _BASE_APP)
+    graph, paths, _ = _discovered(migrations, app)
+    assert graph.edges["notes"] == ("users",)
+    assert paths["notes"] == "root:users <- notes"
+    assert set(graph.tables) == {"users", "conversations", "messages", "tenants", "notes"}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'REFERENCES';",
+        "SELECT other_function(u,c.oid,'REFERENCES');",
+        "SELECT public.has_table_privilege(u,c.oid,'REFERENCES');",
+        "SELECT not_has_table_privilege(u,c.oid,'REFERENCES');",
+        "SELECT has_table_privilege(u,c.oid,'REFERENCES'||suffix);",
+        "SELECT has_table_privilege(u,c.oid,'REFERENCES,UNKNOWN');",
+        'CREATE TABLE notes (user_id uuid REFERENCES "users"(id));',
+        "DO $$ BEGIN EXECUTE 'ALTER TABLE notes ADD CONSTRAINT f FOREIGN KEY(user_id) REFERENCES ' || target; END $$;",
+    ],
+)
+def test_privilege_literal_handling_keeps_unsupported_references_fail_closed(tmp_path, sql):
+    migrations, _ = _write_tree(tmp_path, _BASE_MIGRATIONS + sql, _BASE_APP)
+    with pytest.raises(ValueError, match="unsupported reference"):
+        catalogue.discover_tables(migrations)
+
+
 def test_manifest_makes_explicit_non_wildcard_classification() -> None:
     manifest = json.loads(catalogue.MANIFEST_PATH.read_text(encoding="utf-8"))
     assert catalogue.validate_manifest_shape(manifest) == []

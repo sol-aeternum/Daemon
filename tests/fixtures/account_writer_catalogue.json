@@ -9,6 +9,18 @@
     "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
+    "task_history_binding": {
+      "category": "control",
+      "owner_source": "migrations/056_restore_history_acceptance.sql",
+      "ownership_path": "root:task_history_binding",
+      "rationale": "Approved immutable H identity/key-check commitments, with no K1 or native account FK. Uncalled source metadata; no live retention activation, ordinary content permission or completed fence. Uncovered."
+    },
+    "task_history_acceptance": {
+      "category": "control",
+      "owner_source": "migrations/056_restore_history_acceptance.sql",
+      "ownership_path": "root:task_history_binding <- task_history_acceptance",
+      "rationale": "Approved non-cascading acceptance evidence contains personal account/task identities and commitments; account_id is explicit ownership without a user FK. No raw request/key/content, live retention policy, replay/dispatch authority or runtime fencing. Uncovered."
+    },
     "resource_presentations": {
       "category": "content",
       "owner_source": "migrations/055_resource_presentations.sql",
@@ -498,6 +510,9 @@
     "task_attempts": [
       "tasks"
     ],
+    "task_history_acceptance": [
+      "task_history_binding"
+    ],
     "task_inference_recovery": [
       "tasks"
     ],
@@ -581,6 +596,8 @@
     "skill_projections": "root:skill_projections",
     "system_state": "root:system_state",
     "task_attempts": "root:users <- conversations <- messages <- tasks <- task_attempts | root:users <- conversations <- tasks <- task_attempts | root:users <- messages <- tasks <- task_attempts | root:users <- tasks <- task_attempts",
+    "task_history_binding": "root:task_history_binding",
+    "task_history_acceptance": "root:task_history_binding <- task_history_acceptance",
     "task_inference_recovery": "root:users <- conversations <- messages <- tasks <- task_inference_recovery | root:users <- conversations <- tasks <- task_inference_recovery | root:users <- messages <- tasks <- task_inference_recovery | root:users <- tasks <- task_inference_recovery",
     "task_events": "root:users <- conversations <- messages <- tasks <- task_events | root:users <- conversations <- tasks <- task_events | root:users <- messages <- tasks <- task_events | root:users <- tasks <- task_events",
     "task_operations": "root:users <- conversations <- messages <- tasks <- task_operations | root:users <- conversations <- tasks <- task_operations | root:users <- messages <- tasks <- task_operations | root:users <- tasks <- task_operations",
@@ -5377,6 +5394,17 @@
       "uncovered": true,
       "category": "control",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.acceptance",
+      "qualname": "AcceptanceProjection.qualify",
+      "kind": "sql_unresolvable",
+      "fingerprint": "f600f60971c2232a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Imported native W role SELECT is outside cross-module SQL resolution. Uncalled acceptance projection candidate only; no runtime content fence or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",

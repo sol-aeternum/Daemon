@@ -59,6 +59,54 @@ async def test_clean_migrations_and_clone_commit_rollback_ddl_isolation():
                         ("pgcrypto", "public"),
                         ("vector", "public"),
                     }
+                    for conn in (first, second):
+                        for table in ("task_history_binding", "task_history_acceptance"):
+                            assert await conn.fetchval(
+                                "SELECT to_regclass($1) IS NOT NULL", f"{template.schema}.{table}"
+                            )
+                            assert await conn.fetchval(
+                                "SELECT to_regclass($1) IS NULL", f"public.{table}"
+                            )
+                        functions = await conn.fetch(
+                            "SELECT p.proname,p.proconfig,pg_get_functiondef(p.oid) AS definition "
+                            "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                            "WHERE n.nspname=$1 AND p.proname LIKE 'task_history_%'",
+                            template.schema,
+                        )
+                        assert {r["proname"] for r in functions} == {
+                            "task_history_immutable",
+                            "task_history_decode_acceptance",
+                            "task_history_check_caller",
+                            "task_history_acceptance_project",
+                            "task_history_acceptance_page",
+                        }
+                        assert all(r["proconfig"] == ["search_path=pg_catalog"] for r in functions)
+                        assert all("public." not in r["definition"] for r in functions)
+                        assert (
+                            await conn.fetchval(
+                                "SELECT count(*) FROM pg_proc p "
+                                "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                                "CROSS JOIN LATERAL aclexplode("
+                                "coalesce(p.proacl,acldefault('f',p.proowner))) a "
+                                "WHERE n.nspname=$1 AND p.proname LIKE 'task_history_%' "
+                                "AND a.grantee<>p.proowner",
+                                template.schema,
+                            )
+                            == 0
+                        )
+                        assert (
+                            await conn.fetchval(
+                                "SELECT count(*) FROM pg_class c "
+                                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                                "CROSS JOIN LATERAL aclexplode("
+                                "coalesce(c.relacl,acldefault('r',c.relowner))) a "
+                                "WHERE n.nspname=$1 "
+                                "AND c.relname IN ('task_history_binding','task_history_acceptance') "
+                                "AND a.grantee<>c.relowner",
+                                template.schema,
+                            )
+                            == 0
+                        )
                     await first.execute("CREATE TABLE fixture_isolation(value integer)")
                     async with first.transaction():
                         await first.execute("INSERT INTO fixture_isolation VALUES(1)")

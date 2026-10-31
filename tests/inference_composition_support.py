@@ -146,6 +146,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                 symbol in value
                                 for symbol in (
                                     "orchestrator.tasks",
+                                    "orchestrator.services.restore_history",
                                     "InferenceRecovery",
                                     "TaskStore",
                                     "abandoned_pass",
@@ -197,13 +198,41 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and {item.name for item in node.names}
                     == {"InferenceRecovery", "acceptor_preflight", "acceptor_catalog_preflight"}
                 )
+                history_helpers = (
+                    path == "orchestrator/services/restore_history/acceptance.py"
+                    and isinstance(node, ast.ImportFrom)
+                    and node.level == 0
+                    and node.module == "orchestrator.tasks.inference"
+                    and {item.name for item in node.names}
+                    == {"ROLE_PRECONDITION", "acceptor_preflight", "check_principal"}
+                    and all(item.asname is None for item in node.names)
+                )
+                if isinstance(node, ast.ImportFrom) and node.level:
+                    package = path.removesuffix(".py").split("/")[:-1]
+                    prefix = ".".join(package[: len(package) - node.level + 1])
+                    modules = [prefix + ("." + node.module if node.module else "")]
                 if (
                     any("orchestrator.tasks.inference" in m for m in modules)
                     and path not in ADMITTED
                     and not notice_only
                     and not factory_import
+                    and not history_helpers
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved importer")
+                # H1 remains an uncalled source slice. Internal package imports
+                # compose its definitions, never admit an external runtime host.
+                if not path.startswith("orchestrator/services/restore_history/"):
+                    if isinstance(node, ast.ImportFrom):
+                        module = modules[0]
+                        imported = [module + "." + item.name for item in node.names]
+                    else:
+                        imported = modules
+                    if any(
+                        m == "orchestrator.services.restore_history"
+                        or m.startswith("orchestrator.services.restore_history.")
+                        for m in imported
+                    ):
+                        violations.append(f"{path}:{node.lineno}:uncalled history importer")
                 if (
                     isinstance(node, ast.ImportFrom)
                     and node.module == "orchestrator.tasks"
@@ -214,6 +243,15 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if not isinstance(node, ast.Call):
                 continue
             target = name(node.func)
+            if not path.startswith("orchestrator/services/restore_history/"):
+                if target.endswith(".AcceptanceProjection") or target == "AcceptanceProjection":
+                    violations.append(f"{path}:{node.lineno}:history adapter construction")
+                if (
+                    target in ("importlib.import_module", "__import__")
+                    and node.args
+                    and "orchestrator.services.restore_history" in name(node.args[0])
+                ):
+                    violations.append(f"{path}:{node.lineno}:dynamic history importer")
             admitted_call = factory_constructor(node, target)
             if (
                 path not in ADMITTED
