@@ -58,7 +58,7 @@ from orchestrator.eval.run_manifest import (
 )
 from orchestrator.entitlements import attestation
 from orchestrator.entitlements.policy import load_inference_policy
-from orchestrator.memory import injection
+from orchestrator.memory import injection, provenance
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.injection import (
     MemoryContextInputs,
@@ -335,7 +335,10 @@ def memory_formatter_identity() -> dict[str, Any]:
             injection._normalize_content,
             injection.estimate_tokens,
             injection.compose_system_prompt,
+            provenance.noted_suffix,
+            provenance.header_lines,
         ),
+        "render_noted_dates": provenance.RENDER_NOTED_DATES,
         "output_sha256": _sha256_text(_run_prompt_builder_for_hash()),
     }
 

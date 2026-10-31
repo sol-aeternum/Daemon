@@ -142,8 +142,11 @@ def qualification(
     return {"official": official, "dual": dual, "extraction_failures": failures}
 
 
-def comparability(first: Mapping[str, Any], second: Mapping[str, Any]) -> None:
-    for key in ("substrate", "config_pin", "memory_formatter", "parity_exceptions"):
+def comparability(
+    first: Mapping[str, Any], second: Mapping[str, Any], *, formatter: bool = True
+) -> None:
+    keys = ("substrate", "config_pin", "memory_formatter", "parity_exceptions")
+    for key in keys if formatter else tuple(k for k in keys if k != "memory_formatter"):
         require(first.get(key) == second.get(key), f"Comparator {key} differs")
     require(first["dataset"]["sha256"] == second["dataset"]["sha256"], "Comparator dataset differs")
     for key in ("answer", "judge", "official_judge", "inference_policy", "model_routing"):

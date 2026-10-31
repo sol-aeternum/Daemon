@@ -185,7 +185,15 @@ def git_bytes(sha: str, path: str) -> bytes:
     ).stdout
 
 
-def verify_common(control: str, candidate: str) -> dict[str, str]:
+RETRIEVAL_CANDIDATE = "orchestrator/memory/retrieval.py"
+PROVENANCE_CANDIDATE = "orchestrator/memory/provenance.py"
+NOTED_DATES_OFF = b"RENDER_NOTED_DATES = False\n"
+NOTED_DATES_ON = b"RENDER_NOTED_DATES = True\n"
+
+
+def verify_common(
+    control: str, candidate: str, candidate_file: str = RETRIEVAL_CANDIDATE
+) -> dict[str, str]:
     common = {}
     for path in COMMON:
         first, second = git_bytes(control, path), git_bytes(candidate, path)
@@ -214,11 +222,38 @@ def verify_common(control: str, candidate: str) -> dict[str, str]:
         text=True,
         timeout=30,
     ).stdout.splitlines()
-    require(
-        changes == ["orchestrator/memory/retrieval.py"],
-        "Candidate contains a second execution variable",
-    )
+    require(changes == [candidate_file], "Candidate contains a second execution variable")
     return common
+
+
+def noted_dates_candidate_formatter(control: str, candidate: str) -> dict[str, Any]:
+    """Formatter identity of a noted-dates candidate whose only change is the flag.
+
+    The candidate's provenance.py must equal control's with exactly the one
+    ``RENDER_NOTED_DATES = False`` line set to True; its identity is then computed
+    here (control checkout) with that flag on, so C0 can be pinned exactly.
+    """
+    first = git_bytes(control, PROVENANCE_CANDIDATE)
+    second = git_bytes(candidate, PROVENANCE_CANDIDATE)
+    require(
+        first.count(NOTED_DATES_OFF) == 1
+        and second == first.replace(NOTED_DATES_OFF, NOTED_DATES_ON),
+        "Noted-dates candidate changes more than the dormant flag",
+    )
+    from orchestrator.memory import provenance
+
+    require(provenance.RENDER_NOTED_DATES is False, "Control checkout has the flag enabled")
+    provenance.RENDER_NOTED_DATES = True
+    try:
+        return fact_harness.memory_formatter_identity()
+    finally:
+        provenance.RENDER_NOTED_DATES = False
+
+
+def arm_formatter(plan: CampaignPlan, arm: str) -> dict[str, Any]:
+    """The formatter pin an arm must match: a declared renderer candidate's for C0."""
+    candidate = plan.pins.get("candidate_formatter")
+    return candidate if arm == "C0" and candidate is not None else plan.pins["formatter"]
 
 
 def checkout(plan: CampaignPlan, arm: str) -> None:
@@ -258,7 +293,8 @@ def checkout(plan: CampaignPlan, arm: str) -> None:
     for path, digest in plan.pins["common_files"].items():
         require(digest_file(ROOT / path) == digest, "Common source/config content changed")
     require(
-        fact_harness.memory_formatter_identity() == plan.pins["formatter"], "Formatter pin differs"
+        fact_harness.memory_formatter_identity() == arm_formatter(plan, arm),
+        "Formatter pin differs",
     )
     require(
         [row["question_id"] for row in load_dev(DEV)] == list(plan.question_ids),
@@ -443,7 +479,12 @@ async def prepare(args: argparse.Namespace) -> None:
     historical = _historical_remap_pins(args) if args.historical_remap else None
     snapshot_sha256 = historical["snapshot_sha256"] if historical else SNAPSHOT_SHA256
     require(digest_file(args.snapshot) == snapshot_sha256, "Wrong immutable archive")
-    common = verify_common(args.control_sha, args.candidate_sha)
+    noted_dates = getattr(args, "candidate", "retrieval") == "noted-dates"
+    common = verify_common(
+        args.control_sha,
+        args.candidate_sha,
+        PROVENANCE_CANDIDATE if noted_dates else RETRIEVAL_CANDIDATE,
+    )
     cost = json.loads(args.cost_preflight.read_bytes())
     require(
         cost["provider_calls"] == cost["writes_or_restores"] == 0
@@ -538,6 +579,16 @@ async def prepare(args: argparse.Namespace) -> None:
         "common_files": common,
         "arm_shas": {arm: args.candidate_sha if arm == "C0" else args.control_sha for arm in ARMS},
         "formatter": fact_harness.memory_formatter_identity(),
+        **(
+            {
+                "candidate_variable": "noted-dates",
+                "candidate_formatter": noted_dates_candidate_formatter(
+                    args.control_sha, args.candidate_sha
+                ),
+            }
+            if noted_dates
+            else {}
+        ),
         "tokenizer_sha256": tokenizer_hash,
         "tokenizer_envelope": {
             "model": "gpt-4o-2024-08-06",
@@ -653,9 +704,19 @@ async def run_arm(args: argparse.Namespace) -> None:
                 manifest["git"]["sha"] == plan.pins["arm_shas"][args.arm],
                 "Manifest execution SHA differs",
             )
+            require(
+                manifest["memory_formatter"] == arm_formatter(plan, args.arm),
+                "Manifest formatter differs from the arm's pin",
+            )
             if args.arm != "A0":
                 first = json.loads((args.campaign / "A0/run_manifest.json").read_bytes())
-                comparability(first, manifest)
+                # A declared renderer candidate differs in formatter by design; it is
+                # pinned exactly above, and every other comparability field still applies.
+                comparability(
+                    first,
+                    manifest,
+                    formatter=not (args.arm == "C0" and "candidate_formatter" in plan.pins),
+                )
             artifacts = {
                 path.name: digest_file(path)
                 for path in (
@@ -723,6 +784,12 @@ def main() -> None:
         prep.add_argument("--" + name, type=Path, required=True)
     for name in ("control-sha", "candidate-sha"):
         prep.add_argument("--" + name, required=True)
+    prep.add_argument(
+        "--candidate",
+        choices=("retrieval", "noted-dates"),
+        default="retrieval",
+        help="Candidate variable: retrieval.py (default) or the dormant noted-dates flag",
+    )
     prep.add_argument(
         "--historical-remap",
         type=Path,

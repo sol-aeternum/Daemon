@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
+from orchestrator.memory import provenance
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_query_with_metadata,
@@ -343,6 +344,7 @@ def render_memory_context(
         l0_block = "\n".join(l0_lines)
 
     memory_lines: list[str] = []
+    memory_suffixes: list[str] = []
     for memory in inputs.retrieved[:MAX_MEMORY_ITEMS]:
         category = str(memory.get("category") or "fact").strip().lower()
         label = (
@@ -355,6 +357,7 @@ def render_memory_context(
         )
         if text:
             memory_lines.append(f"- {label}: {text}")
+            memory_suffixes.append(provenance.noted_suffix(memory))
 
     summary_lines: list[str] = []
     for summary in inputs.summaries[:MAX_SUMMARY_ITEMS]:
@@ -368,6 +371,7 @@ def render_memory_context(
         parts: list[str] = []
         if memories:
             parts.append("About this user:")
+            parts.extend(provenance.header_lines())
             parts.extend(memories)
         if summary_items:
             parts.append("Recent context:")
@@ -384,6 +388,11 @@ def render_memory_context(
         return output
 
     memory_lines = truncate_items(memory_lines, MAX_SINGLE_MEMORY_CHARS)
+    # Dates go on after truncation so a long memory can't cut them off; with the
+    # dormant flag off every suffix is "" and the output is unchanged.
+    memory_lines = [
+        line + suffix for line, suffix in zip(memory_lines, memory_suffixes, strict=True)
+    ]
     summary_lines = truncate_items(summary_lines, MAX_SINGLE_MEMORY_CHARS)
 
     context = render(memory_lines, summary_lines)
