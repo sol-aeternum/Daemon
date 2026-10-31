@@ -17,6 +17,9 @@ _ALLOWED = [
     r"SELECT pg_catalog\.set_config\('search_path', '', false\);$",
     r"CREATE EXTENSION IF NOT EXISTS (?:pgcrypto|vector) WITH SCHEMA public;$",
     r"COMMENT ON EXTENSION (?:pgcrypto|vector) IS ",
+    # The remapped-copy dump clears public's comment; this exact form changes no
+    # owner, ACL or catalogue-hashed state (catalogue() hashes no comments).
+    r"COMMENT ON SCHEMA public IS '';$",
     rf"CREATE (?:TABLE|SEQUENCE|FUNCTION|TYPE|VIEW|MATERIALIZED VIEW) {_PUBLIC}(?=\s|\()",
     rf"ALTER (?:TABLE (?:ONLY )?|SEQUENCE |FUNCTION |TYPE |VIEW ){_PUBLIC}(?:\s|\()",
     rf"COMMENT ON (?:TABLE|COLUMN|FUNCTION|TYPE|SEQUENCE|VIEW) {_PUBLIC}(?:\.|\s|\()",

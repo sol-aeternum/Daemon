@@ -159,6 +159,9 @@ def test_official_qualification_fails_closed(mutation):
         "\\include other.sql\n",
         "SELECT 1;\n",
         "CREATE EXTENSION IF NOT EXISTS unapproved WITH SCHEMA public;\n",
+        "COMMENT ON SCHEMA public IS 'changed';\n",
+        "COMMENT ON SCHEMA other IS '';\n",
+        "COMMENT ON SCHEMA public IS ''; DROP SCHEMA public;\n",
     ],
 )
 def test_sql_scanner_rejects_control_changes(tmp_path, payload):
@@ -166,6 +169,15 @@ def test_sql_scanner_rejects_control_changes(tmp_path, payload):
     path.write_text(payload)
     with pytest.raises(guard.CampaignStopped):
         validate_sql(path)
+
+
+def test_sql_scanner_accepts_only_the_empty_public_schema_comment(tmp_path):
+    path = tmp_path / "restore.sql"
+    path.write_text(
+        "COMMENT ON SCHEMA public IS '';\nCREATE TABLE public.x (id int);\n"
+        "COPY public.x (id) FROM stdin;\n1\n\\.\n"
+    )
+    assert validate_sql(path)["copy_blocks"] == 1
 
 
 def test_sql_scanner_keeps_copy_payload_out_of_command_parser(tmp_path):
