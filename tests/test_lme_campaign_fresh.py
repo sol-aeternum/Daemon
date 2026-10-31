@@ -853,6 +853,21 @@ async def test_fresh_prepare_copies_fixed_approval_and_checks_all_bindings(appro
     assert "under_cumulative_ten_usd" not in cost  # Legacy preflight is not reused.
     assert connect.await_count == 2  # Mocked control + mocked read-only catalogue transaction.
 
+    # A stopped fresh campaign leaves the target holding the remapped state; after the
+    # recorded reopen, a fresh plan accepts it (each arm restores anyway). Others refuse.
+    fingerprints = {"sha256": historical["state_sha256"]}
+    monkeypatch.setattr(
+        bench_db, "fingerprint_benchmark_users", AsyncMock(return_value=fingerprints)
+    )
+    args.output = root / "prepared-remapped.json"
+    await launch.prepare(args)
+    assert launch.load_plan(args.output).pins["fresh_campaign"]["approval"] == fresh.APPROVAL
+    fingerprints["sha256"] = "unrelated-state"
+    args.output = root / "prepared-unrelated.json"
+    with pytest.raises(guard.CampaignStopped, match="Preparation protected fingerprint differs"):
+        await launch.prepare(args)
+    assert not args.output.exists()
+
 
 def test_fresh_manifest_records_retry_policy_without_recovery_prefix(approved, monkeypatch):
     from orchestrator.eval import fact_harness

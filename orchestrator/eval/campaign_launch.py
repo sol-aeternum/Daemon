@@ -631,9 +631,14 @@ async def prepare(args: argparse.Namespace) -> None:
             fingerprint = await fingerprint_benchmark_users(
                 connection, [question_user_id(row["question_id"]) for row in dataset]
             )
-            require(
-                fingerprint["sha256"] == STATE_SHA256, "Preparation protected fingerprint differs"
-            )
+            # Every arm restores the pinned snapshot, so a fresh plan also accepts the
+            # target holding its own remapped state (left by a stopped fresh campaign
+            # and reopened by recorded reconciliation). Other modes require original.
+            accepted = {STATE_SHA256}
+            if fresh:
+                assert historical is not None
+                accepted.add(historical["state_sha256"])
+            require(fingerprint["sha256"] in accepted, "Preparation protected fingerprint differs")
     finally:
         if connection is not None:
             await connection.close()

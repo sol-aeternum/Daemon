@@ -352,6 +352,14 @@ check requires a correct official answer only in categories of at least
 verdict. Every other plan, including the stopped v1 plan, keeps
 `2026-10-28-official-v1`, where no category may score zero.
 
+A stopped fresh campaign leaves the target sealed and holding the remapped state.
+Its reconciliation is recorded in evidence and requires: the stopped ledger, no
+target sessions and no campaign process. It then reopens connections with the same
+`ALTER DATABASE … ALLOW_CONNECTIONS true` that a completed campaign's final reopen
+uses, and changes no data. Fresh `prepare` then accepts the target in either pinned
+state, original or this plan's remapped state, because every arm restores the
+pinned snapshot before evaluating. Other modes still require the original state.
+
 Under the sibling lock, activation exclusively creates and fsyncs a private
 `.fresh-approval-<id>.json` claim before creating the campaign directory. Code
 never deletes this claim; a claim without a valid clean handoff cannot bootstrap
