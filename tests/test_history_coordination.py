@@ -39,6 +39,184 @@ async def opened(path):
     return coordinator, identity, ownership
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [False, True])
+async def test_owner_can_cancel_and_join_queued_child_without_draining_its_gate(
+    tmp_path, monkeypatch, structured
+):
+    path = tmp_path / "h"
+    coordinator, _, _ = await opened(path)
+    queued = asyncio.Event()
+    attempts = []
+    native = coordinator._gate.acquire
+    child = None
+    original = RuntimeError("structured body failure")
+
+    async def acquire():
+        attempts.append(asyncio.current_task())
+        queued.set()
+        return await native()
+
+    async def waiting():
+        async with coordinator.operation(deadline=time.monotonic() + 5):
+            pytest.fail("cancelled child entered the operation")
+
+    async def owner():
+        nonlocal child
+        async with coordinator.operation(deadline=time.monotonic() + 5):
+            monkeypatch.setattr(coordinator._gate, "acquire", acquire)
+            if structured:
+                async with asyncio.TaskGroup() as group:
+                    child = group.create_task(waiting())
+                    await queued.wait()
+                    raise original
+            else:
+                child = asyncio.create_task(waiting())
+                await queued.wait()
+                child.cancel("first waiter cancellation")
+                repeated = []
+                cancel_child = child.cancel
+                asyncio.get_running_loop().call_soon(
+                    lambda: repeated.append(cancel_child("repeated waiter cancellation"))
+                )
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    await child
+                assert caught.value.args == ("first waiter cancellation",)
+                assert repeated == [False]
+                assert coordinator._gate.locked()
+                assert not available(path, "OP_LOCK")
+                assert not available(path, "RUNTIME_LOCK")
+
+    task = asyncio.create_task(owner())
+    try:
+        await queued.wait()
+        done, _ = await asyncio.wait({task}, timeout=0.5)
+        assert task in done, "owner deadlocked joining its cancelled gate waiter"
+        if structured:
+            with pytest.raises(ExceptionGroup) as caught:
+                await task
+            assert caught.value.exceptions == (original,)
+        else:
+            with pytest.raises(HistoryError, match="coordinator_blocked"):
+                await task
+        assert not coordinator._gate.locked()
+        assert available(path, "OP_LOCK")
+        assert not coordinator._gate._waiters
+        with pytest.raises(HistoryError, match="coordinator_blocked"):
+            async with coordinator.operation(deadline=time.monotonic() + 5):
+                pytest.fail("cancelled wait automatically retried")
+    finally:
+        # Red-test rescue only: old code spawns a shielded acquisition task.
+        # Cancel that pending logical waiter, never unlock an owned gate or
+        # detach physical work, so a regression fails without leaking tasks.
+        for attempt in attempts:
+            if attempt is not child and attempt is not None and not attempt.done():
+                attempt.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if child is not None:
+            await asyncio.gather(child, return_exceptions=True)
+        await coordinator.aclose(deadline=time.monotonic() + 5)
+
+
+@pytest.mark.asyncio
+async def test_queued_gate_deadline_settles_before_owner_exits(tmp_path, monkeypatch):
+    path = tmp_path / "h"
+    coordinator, _, _ = await opened(path)
+    queued = asyncio.Event()
+    native = coordinator._gate.acquire
+    attempts = []
+    child = None
+
+    async def acquire():
+        attempts.append(asyncio.current_task())
+        queued.set()
+        return await native()
+
+    async def waiting():
+        async with coordinator.operation(deadline=time.monotonic() + 0.04):
+            pytest.fail("expired waiter entered")
+
+    try:
+        with pytest.raises(HistoryError, match="coordinator_blocked"):
+            async with coordinator.operation(deadline=time.monotonic() + 5):
+                monkeypatch.setattr(coordinator._gate, "acquire", acquire)
+                child = asyncio.create_task(waiting())
+                await queued.wait()
+                done, _ = await asyncio.wait({child}, timeout=0.5)
+                assert child in done, "expired waiter drained the owner's gate"
+                with pytest.raises(TimeoutError):
+                    await child
+                assert coordinator._gate.locked()
+                assert not available(path, "OP_LOCK")
+        assert not coordinator._gate.locked()
+        assert not coordinator._gate._waiters
+    finally:
+        for attempt in attempts:
+            if attempt is not child and attempt is not None and not attempt.done():
+                attempt.cancel()
+        if child is not None:
+            await asyncio.gather(child, return_exceptions=True)
+        await coordinator.aclose(deadline=time.monotonic() + 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acquired", [False, True])
+async def test_gate_acquisition_cancellation_race_releases_exactly_once(
+    tmp_path, monkeypatch, acquired
+):
+    path = tmp_path / "h"
+    coordinator, _, _ = await opened(path)
+    native_acquire, native_release = coordinator._gate.acquire, coordinator._gate.release
+    releases = []
+    queued = asyncio.Event()
+
+    def release():
+        releases.append(True)
+        native_release()
+
+    async def acquire():
+        queued.set()
+        result = await native_acquire()
+        if acquired:
+            # Cancellation requested at successful native acquisition, before
+            # the caller next suspends. Ownership must already be accounted for.
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel("acquisition race")
+        return result
+
+    async def waiting():
+        async with coordinator.operation(deadline=time.monotonic() + 5):
+            pytest.fail("cancelled acquisition became success")
+
+    monkeypatch.setattr(coordinator._gate, "release", release)
+    monkeypatch.setattr(coordinator._gate, "acquire", acquire)
+    if not acquired:
+        await native_acquire()
+    task = asyncio.create_task(waiting())
+    try:
+        await queued.wait()
+        if not acquired:
+            # Wake the native lock waiter and cancel before it resumes. Native
+            # asyncio.Lock must settle that race without acquiring the gate.
+            coordinator._gate.release()
+            task.cancel("acquisition race")
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert caught.value.args == ("acquisition race",)
+        assert not task.cancel("repeated cancellation after settlement")
+        assert len(releases) == 1
+        assert not coordinator._gate.locked()
+        assert not coordinator._gate._waiters
+        assert available(path, "OP_LOCK") and available(path, "APPEND_LOCK")
+        with pytest.raises(HistoryError, match="coordinator_blocked"):
+            async with coordinator.operation(deadline=time.monotonic() + 5):
+                pytest.fail("acquisition failure became success")
+    finally:
+        monkeypatch.setattr(coordinator._gate, "acquire", native_acquire)
+        await coordinator.aclose(deadline=time.monotonic() + 5)
+
+
 def test_synchronous_operation_retains_op_and_lifetime_but_not_append_lock(tmp_path):
     path = tmp_path / "h"
     identity, ownership = owned(path)

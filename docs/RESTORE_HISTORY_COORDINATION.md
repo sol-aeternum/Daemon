@@ -62,6 +62,16 @@ or descriptors while its filesystem work continues. A completed late success is
 discarded as a success result. Cleanup failure is recorded on a protected-body
 exception; without a body exception cleanup failure propagates directly.
 
+Queued process-local gate acquisition is different: it submits no filesystem
+work and is directly cancellable under the same absolute deadline. Native
+`asyncio.Lock` settles a cancellation while queued or racing a wakeup; a
+successful acquisition is tracked before the next suspension and released once.
+It must not use physical-owner draining: an operation owner may cancel and join
+a child waiting for its gate, including during TaskGroup cleanup. Such a failed
+wait still blocks the coordinator monotonically, but settles without waiting
+for the current owner to exit. Submitted physical work, operation-lock cleanup
+and shutdown retain the shield-and-drain guarantees above.
+
 `aclose(deadline=...)` immediately refuses new scopes, waits for the current scope
 and its physical work, closes on the same serial worker, and joins the worker
 off-loop. Its close check is queued behind any unfinished initializer, so an

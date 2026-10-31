@@ -190,12 +190,18 @@ class HistoryCoordinator:
         if self._operation is not None and self._operation._task is asyncio.current_task():
             raise HistoryError("operation_active")
         _check_time(deadline)
-        waiting = asyncio.create_task(self._gate.acquire())
+        acquired = False
         entered = False
         operation = None
         original: BaseException | None = None
         try:
-            await self._observe(waiting, deadline)
+            # A queued asyncio waiter owns no physical work. Let native Lock
+            # cancellation settle it rather than draining behind an owner that
+            # may itself be joining this task (including TaskGroup cleanup).
+            async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                await self._gate.acquire()
+                acquired = True
+            _check_time(deadline)
             self._usable()
             entered = True
             await self._work(lambda: self._enter(deadline), deadline)
@@ -223,7 +229,7 @@ class HistoryCoordinator:
                 else:
                     raise
             finally:
-                if waiting.done() and not waiting.cancelled() and waiting.result():
+                if acquired:
                     self._gate.release()
 
     async def _shutdown(self) -> None:
