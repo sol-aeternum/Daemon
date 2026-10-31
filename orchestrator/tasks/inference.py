@@ -8,6 +8,7 @@ service principal, not a hostile tasks-DML holder.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import json
 from typing import Any
@@ -251,6 +252,7 @@ class InferenceRecovery:
         deadline: float,
         state: InferenceInvocation,
         identity: AttemptIdentity | None = None,
+        stage: Callable[[Any, Any], Awaitable[None]] | None = None,
     ) -> Any:
         state.require_effect()
         try:
@@ -270,6 +272,9 @@ class InferenceRecovery:
                             identity.wire(),
                         )
                     state.require_effect()
+                    if stage is not None:
+                        await stage(conn, result)
+                        state.require_effect()
                 # control_transaction returns only after own ACK and native release.
                 state.require_effect()
                 return result
@@ -337,22 +342,19 @@ class InferenceRecovery:
         self, identity: AttemptIdentity, reservation: UUID, state: InferenceInvocation
     ) -> None:
         """Fresh own committed binding only. No returned/cached bearer permit."""
+        await self._mark_with_stage(identity, reservation, state, stage=None)
+
+    async def _mark_with_stage(
+        self,
+        identity: AttemptIdentity,
+        reservation: UUID,
+        state: InferenceInvocation,
+        *,
+        stage: Callable[[Any, dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        """Uncalled H join stages on the original transaction, never readback."""
         state.require_send()
         runtime, nonce = uuid4(), uuid4()
-        try:
-            result = await self._owned(
-                "SELECT public.task_inference_dispatch_begin($1::jsonb,$2,$3,$4)",
-                (identity.wire(), reservation, runtime, nonce),
-                deadline=asyncio.get_running_loop().time() + 2.0,
-                state=state,
-                identity=identity,
-            )
-        except BaseException as exc:
-            exc.inference_identity = identity  # type: ignore[attr-defined]
-            exc.inference_reservation_id = reservation  # type: ignore[attr-defined]
-            exc.inference_runtime_identity = runtime  # type: ignore[attr-defined]
-            exc.inference_dispatch_nonce = nonce  # type: ignore[attr-defined]
-            raise
         expected = {
             "identity": json.loads(identity.wire()),
             "reservation_id": str(reservation),
@@ -360,6 +362,38 @@ class InferenceRecovery:
             "dispatch_nonce": str(nonce),
             "created": True,
         }
+
+        async def original_result(conn: Any, result: Any) -> None:
+            if result != expected or result.get("created") is not True:
+                state.block("inference_mark_result_unavailable")
+                raise ObservationBlocked()
+            if stage is not None:
+                await stage(conn, result)
+
+        try:
+            if stage is None:
+                result = await self._owned(
+                    "SELECT public.task_inference_dispatch_begin($1::jsonb,$2,$3,$4)",
+                    (identity.wire(), reservation, runtime, nonce),
+                    deadline=asyncio.get_running_loop().time() + 2.0,
+                    state=state,
+                    identity=identity,
+                )
+            else:
+                result = await self._owned(
+                    "SELECT public.task_inference_dispatch_begin($1::jsonb,$2,$3,$4)",
+                    (identity.wire(), reservation, runtime, nonce),
+                    deadline=asyncio.get_running_loop().time() + 2.0,
+                    state=state,
+                    identity=identity,
+                    stage=original_result,
+                )
+        except BaseException as exc:
+            exc.inference_identity = identity  # type: ignore[attr-defined]
+            exc.inference_reservation_id = reservation  # type: ignore[attr-defined]
+            exc.inference_runtime_identity = runtime  # type: ignore[attr-defined]
+            exc.inference_dispatch_nonce = nonce  # type: ignore[attr-defined]
+            raise
         if result != expected or result.get("created") is not True:
             state.block("inference_mark_result_unavailable")
             raise ObservationBlocked()

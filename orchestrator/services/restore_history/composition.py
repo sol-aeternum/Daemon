@@ -22,6 +22,7 @@ from orchestrator.tasks.store import AcceptedTask, IdempotencyConflict, TaskStor
 
 from .acceptance import AcceptanceProjection
 from .coordination import HistoryCoordinator
+from .effects_projection import HistoryProjection
 from .model import MAX_CANONICAL, AcceptPrepare, Command, HistoryError, commitments, parse
 from .projection import compare_projections
 from .store import _check_time
@@ -45,7 +46,7 @@ class HistoryAcceptance:
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection) is not AcceptanceProjection
+            or type(projection) not in (AcceptanceProjection, HistoryProjection)
             or history._expected != projection.expected
             or tasks._memory._pool is not tasks._pool
             or type(tasks._pool) is not asyncpg.Pool

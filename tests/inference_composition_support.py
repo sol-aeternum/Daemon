@@ -150,7 +150,12 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "InferenceRecovery",
                                     "TaskStore",
                                     "HistoryAcceptance",
+                                    "HistoryEffects",
+                                    "HistoryProjection",
+                                    "_owned",
                                     "_accept_with_stage",
+                                    "_mark_with_stage",
+                                    "_request_cancel_with_stage",
                                     "_accept_once",
                                     "retain_pool_cleanup",
                                     "abandoned_pass",
@@ -211,6 +216,14 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     == {"ROLE_PRECONDITION", "acceptor_preflight", "check_principal"}
                     and all(item.asname is None for item in node.names)
                 )
+                history_effect_type = (
+                    path == "orchestrator/services/restore_history/effects.py"
+                    and isinstance(node, ast.ImportFrom)
+                    and node.level == 0
+                    and node.module == "orchestrator.tasks.inference"
+                    and [(item.name, item.asname) for item in node.names]
+                    == [("InferenceRecovery", None)]
+                )
                 if isinstance(node, ast.ImportFrom) and node.level:
                     package = path.removesuffix(".py").split("/")[:-1]
                     prefix = ".".join(package[: len(package) - node.level + 1])
@@ -221,6 +234,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and not notice_only
                     and not factory_import
                     and not history_helpers
+                    and not history_effect_type
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved importer")
                 # H1 remains an uncalled source slice. Internal package imports
@@ -256,13 +270,89 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                 ]
                 enclosing = max(functions, key=lambda f: f.lineno).name if functions else None
                 if (
-                    path != "orchestrator/services/restore_history/composition.py"
-                    or enclosing != "_accept"
+                    (path, enclosing)
+                    not in {
+                        ("orchestrator/services/restore_history/composition.py", "_accept"),
+                        ("orchestrator/services/restore_history/effects.py", "_mark"),
+                        ("orchestrator/services/restore_history/effects.py", "_cancel"),
+                        ("orchestrator/services/restore_history/effects.py", "_complete"),
+                    }
                     or ast.unparse(node.func) != "retain_pool_cleanup"
                     or node.args
                     or node.keywords
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved cleanup scope")
+            effect_seam = next(
+                (
+                    method
+                    for method in ("_mark_with_stage", "_request_cancel_with_stage")
+                    if target.endswith("." + method) or target == method
+                ),
+                None,
+            )
+            if effect_seam is not None:
+                functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing = max(functions, key=lambda f: f.lineno).name if functions else None
+                method = "mark" if effect_seam == "_mark_with_stage" else "request_cancel"
+                keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+                args = [ast.unparse(arg) for arg in node.args]
+                native = (
+                    path
+                    == (
+                        "orchestrator/tasks/inference.py"
+                        if method == "mark"
+                        else "orchestrator/tasks/store.py"
+                    )
+                    and enclosing == method
+                    and ast.unparse(node.func) == "self." + effect_seam
+                    and keywords == {"stage": "None"}
+                    and args
+                    == (
+                        ["identity", "reservation", "state"]
+                        if method == "mark"
+                        else ["user_id", "task_id"]
+                    )
+                )
+                joined = (
+                    path == "orchestrator/services/restore_history/effects.py"
+                    and enclosing == ("_mark" if method == "mark" else "_cancel")
+                    and ast.unparse(node.func)
+                    == (
+                        "recovery._mark_with_stage"
+                        if method == "mark"
+                        else "self._tasks._request_cancel_with_stage"
+                    )
+                    and keywords == {"stage": "stage"}
+                    and args
+                    == (
+                        ["identity", "reservation", "invocation_state"]
+                        if method == "mark"
+                        else ["account", "task"]
+                    )
+                )
+                if not (native or joined):
+                    violations.append(f"{path}:{node.lineno}:unapproved effect staging seam")
+            if target.endswith("._owned") and any(k.arg == "stage" for k in node.keywords):
+                functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, ast.AsyncFunctionDef)
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing = max(functions, key=lambda f: f.lineno).name if functions else None
+                if not (
+                    path == "orchestrator/tasks/inference.py"
+                    and enclosing == "_mark_with_stage"
+                    and ast.unparse(node.func) == "self._owned"
+                    and next(ast.unparse(k.value) for k in node.keywords if k.arg == "stage")
+                    == "original_result"
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved mark transaction stage")
             staged_once = (target.endswith("._accept_once") or target == "_accept_once") and any(
                 k.arg == "stage" for k in node.keywords
             )
@@ -311,11 +401,19 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     violations.append(f"{path}:{node.lineno}:unapproved history staging seam")
             if not path.startswith("orchestrator/services/restore_history/"):
                 if target.endswith(
-                    (".AcceptanceProjection", ".HistoryCoordinator", ".HistoryAcceptance")
+                    (
+                        ".AcceptanceProjection",
+                        ".HistoryCoordinator",
+                        ".HistoryAcceptance",
+                        ".HistoryProjection",
+                        ".HistoryEffects",
+                    )
                 ) or target in (
                     "AcceptanceProjection",
                     "HistoryCoordinator",
                     "HistoryAcceptance",
+                    "HistoryProjection",
+                    "HistoryEffects",
                 ):
                     violations.append(f"{path}:{node.lineno}:history adapter construction")
                 if (

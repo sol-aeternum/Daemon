@@ -28,6 +28,24 @@ def test_namespace_adapter_leaves_previous_migrations_exact():
     assert migration_sql_for_schema(path, "tasks_test_" + uuid4().hex) == path.read_text()
 
 
+@pytest.mark.parametrize("prefix,custom", [("tasks_test_", False), ("bench_metadata_", True)])
+def test_history_effect_adapter_keeps_qualified_types_and_closed_privileges(prefix, custom):
+    schema = prefix + uuid4().hex
+    namespace = f'"{schema}"' if custom else schema
+    path = MIGRATIONS / "057_restore_history_effects.sql"
+    original = path.read_text()
+    sql = migration_sql_for_schema(path, schema, schema_prefix=prefix if custom else None)
+    assert "public." not in sql
+    assert f"REFERENCES {namespace}.task_history_binding(history_id) ON DELETE RESTRICT" in sql
+    assert f"account {namespace}.entitlement_accounts;" in sql
+    assert f"'{namespace}.task_history_projection'::pg_catalog.regclass" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+    assert "task_history_unsafe_default_privileges" in sql
+    assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
+    assert path.read_text() == original
+
+
 def test_namespace_inventory_adapter_keeps_acl_and_binding():
     schema = "tasks_test_" + uuid4().hex
     sql = migration_sql_for_schema(MIGRATIONS / "052_artifact_namespaces.sql", schema)

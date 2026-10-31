@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from orchestrator.services.connection_cleanup import pool_release, require_top_level
 from orchestrator.tasks._invocation import block, require_effect
 
 
@@ -51,6 +52,7 @@ async def control_transaction(
     try:
         require_effect()
         conn = await pool.acquire()
+        require_top_level(conn)
         tx = conn.transaction(isolation="read_committed")
         await tx.start()
         require_effect()
@@ -63,7 +65,7 @@ async def control_transaction(
         if task is not None and task.cancelling():
             raise asyncio.CancelledError
         release_conn, conn = conn, None
-        await pool.release(release_conn)
+        await pool_release(pool, release_conn)
         if task is not None and task.cancelling():
             raise asyncio.CancelledError
     except BaseException as original:
@@ -77,7 +79,7 @@ async def control_transaction(
                 try:
                     await tx.rollback()
                     release_conn, conn = conn, None
-                    await pool.release(release_conn)
+                    await pool_release(pool, release_conn)
                     cleaned = True
                 except asyncio.CancelledError as cancel:
                     original = cancel

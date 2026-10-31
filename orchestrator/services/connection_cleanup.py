@@ -80,6 +80,26 @@ async def _release(pool: Any, conn: Any, owner: _Scope) -> None:
         raise
 
 
+async def pool_release(pool: Any, conn: Any) -> None:
+    """Manual native transaction release, drained only inside the H owner."""
+    owner = _scope.get()
+    if owner is None:
+        await pool.release(conn)
+        return
+    owner.check()
+    await _release(pool, conn, owner)
+
+
+def require_top_level(conn: Any) -> None:
+    """An H-owned COMMIT must not be a release of somebody else's SAVEPOINT."""
+    owner = _scope.get()
+    if owner is not None:
+        owner.check()
+        if conn.is_in_transaction():
+            owner.failed = True
+            raise CleanupUnavailable("native_transaction_owner_unavailable")
+
+
 @asynccontextmanager
 async def pool_connection(pool: Any) -> AsyncIterator[Any]:
     owner = _scope.get()
