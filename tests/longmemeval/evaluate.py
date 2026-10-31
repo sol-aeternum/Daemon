@@ -40,6 +40,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, nullcontext
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,7 @@ from orchestrator.memory.injection import (
     gather_memory_context_inputs,
     render_memory_context,
 )
-from orchestrator.memory.retrieval import retrieve_memories_for_text
+from orchestrator.memory.retrieval import RECENCY_REFERENCE_TIME, retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.ingest import DATASET_PATH as DEFAULT_DATASET_PATH
 from tests.longmemeval.official_judge import (
@@ -680,9 +681,26 @@ async def build_parity_memory_context(
     return render_memory_context(inputs), inputs
 
 
-def build_parity_answer_messages(question_text: str, memory_context: str) -> list[dict[str, str]]:
+def build_parity_answer_messages(
+    question_text: str,
+    memory_context: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, str]]:
+    """``as_of`` appends production's runtime date/time block (UTC) for that instant.
+
+    Production chat always appends it; omitting ``as_of`` keeps the pre-#601
+    harness prompt, which saved-context diagnostics still reproduce.
+    """
+    system_prompt = compose_system_prompt(memory_context)
+    if as_of is not None:
+        from orchestrator.daemon import with_runtime_datetime_context
+
+        system_prompt = with_runtime_datetime_context(
+            system_prompt, now_utc=as_of, default_timezone="UTC"
+        )
     return [
-        {"role": "system", "content": compose_system_prompt(memory_context)},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question_text},
     ]
 
@@ -736,22 +754,32 @@ async def evaluate_single_parity(
     user_id: uuid.UUID = TEST_USER_ID,
     benchmark_mode: bool = True,
     scope_factory: ScopeFactory | None = None,
+    as_of: datetime | None = None,
 ) -> dict[str, Any]:
     """Evaluate one question through the production memory prompt surface.
 
     ``scope_factory`` opens the account compute scope a production chat turn
-    runs in; only the qualified embedding route needs it.
+    runs in; only the qualified embedding route needs it. ``as_of`` is the
+    question's "now": it pins the recency clock and adds production's runtime
+    date block. It does not set retrieval's ``query_reference_time``: stored
+    timestamps are still ingest time, so historical windows would match nothing.
     """
+    if as_of is not None and as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
     scope = scope_factory() if scope_factory is not None else nullcontext()
-    async with scope:
-        memory_context, inputs = await build_parity_memory_context(
-            store,
-            user_id=user_id,
-            question_text=question_text,
-            allowed_source_conversation_ids=allowed_source_conversation_ids,
-            log_retrieval=log_retrieval,
-        )
-    messages = build_parity_answer_messages(question_text, memory_context)
+    clock = RECENCY_REFERENCE_TIME.set(as_of)
+    try:
+        async with scope:
+            memory_context, inputs = await build_parity_memory_context(
+                store,
+                user_id=user_id,
+                question_text=question_text,
+                allowed_source_conversation_ids=allowed_source_conversation_ids,
+                log_retrieval=log_retrieval,
+            )
+    finally:
+        RECENCY_REFERENCE_TIME.reset(clock)
+    messages = build_parity_answer_messages(question_text, memory_context, as_of=as_of)
     hypothesis, answer_usage = await _answer_with_messages(messages, benchmark_mode=benchmark_mode)
     answer_fingerprint = last_benchmark_fingerprint("answer") if benchmark_mode else None
     answer_metadata = get_benchmark_tracking().get("answer", {}) if benchmark_mode else {}
@@ -789,6 +817,8 @@ async def evaluate_single_parity(
         "judge_finish_reason": judge_metadata.get("finish_reason"),
         "question_type": question_type,
     }
+    if as_of is not None:
+        result["as_of"] = as_of.isoformat()
     try:
         official = await judge_answer_official(
             question_text,

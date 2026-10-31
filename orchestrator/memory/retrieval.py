@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import cast
 
@@ -32,6 +33,13 @@ MAX_RETURNED_MEMORIES = 5
 INITIAL_VECTOR_CANDIDATES = 10
 MIN_FINAL_SCORE = 0.15
 MAX_LOGGED_CONTENT_CHARS = 120
+
+# Clock for the recency boost. Unset (production) means the wall clock; the
+# LongMemEval harness pins it to the question's as-of time so scores don't
+# drift with the date a benchmark happens to run (#601).
+RECENCY_REFERENCE_TIME: ContextVar[dt.datetime | None] = ContextVar(
+    "RECENCY_REFERENCE_TIME", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -275,7 +283,7 @@ def _truncate_for_log(value: object, limit: int = MAX_LOGGED_CONTENT_CHARS) -> s
 
 
 def _days_since_accessed(memory: dict[str, object]) -> float:
-    now = dt.datetime.now(dt.timezone.utc)
+    now = RECENCY_REFERENCE_TIME.get() or dt.datetime.now(dt.timezone.utc)
     accessed_at = (
         memory.get("last_accessed_at") or memory.get("updated_at") or memory.get("created_at")
     )

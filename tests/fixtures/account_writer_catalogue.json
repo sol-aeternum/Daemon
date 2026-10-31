@@ -3059,6 +3059,17 @@
     },
     {
       "owner_source": "orchestrator.eval.fact_harness",
+      "qualname": "question_as_of",
+      "kind": "filesystem_write",
+      "fingerprint": "d60b1479c6452fc9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative scanner candidate for datetime.replace(tzinfo=UTC), not actual file I/O. Explicitly inventoried, no runtime-fence claim. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.eval.fact_harness",
       "qualname": "read_json",
       "kind": "filesystem_write",
       "fingerprint": "c54c689704c2059e",

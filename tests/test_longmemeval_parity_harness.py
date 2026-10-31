@@ -14,6 +14,7 @@ import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -250,6 +251,7 @@ DATASET = [
         "question": "What is my cat called?",
         "answer": "Miso",
         "question_type": "single-session-user",
+        "question_date": "2023/05/20 (Sat) 02:21",
         "haystack_session_ids": ["s-a"],
         "haystack_sessions": [SESSION_A],
     },
@@ -258,6 +260,7 @@ DATASET = [
         "question": "Where do I fly from?",
         "answer": "Adelaide",
         "question_type": "multi-session",
+        "question_date": "2023/05/21 (Sun) 09:00",
         "haystack_session_ids": ["s-a", "s-b"],
         "haystack_sessions": [SESSION_A, SESSION_B],
     },
@@ -518,10 +521,13 @@ async def test_official_failure_preserves_base_observation_and_never_replays_it(
         assert row["hypothesis"] == "Miso" and row["judgment"] == "correct"
         assert "Miso" in row["memory_context"]
         assert row["memory_context_sha256"] == evaluate._sha256_text(row["memory_context"])
+        assert row["as_of"] in ("2023-05-20T02:21:00+00:00", "2023-05-21T09:00:00+00:00")
         assert row["system_prompt_sha256"] == evaluate._sha256_text(
-            evaluate.build_parity_answer_messages(row["question"], row["memory_context"])[0][
-                "content"
-            ]
+            evaluate.build_parity_answer_messages(
+                row["question"],
+                row["memory_context"],
+                as_of=datetime.fromisoformat(row["as_of"]),
+            )[0]["content"]
         )
         assert (
             row["answer_usage"]
@@ -993,6 +999,7 @@ def _dated_entry(question_id: str, sessions: list[tuple[str, str | None]]) -> di
         "question": "?",
         "answer": "a",
         "question_type": "multi-session",
+        "question_date": "2023/05/20 (Sat) 02:21",
         "haystack_session_ids": [f"{question_id}-{text}" for text, _ in sessions],
         "haystack_sessions": [[{"role": "user", "content": text}] for text, _ in sessions],
         "haystack_dates": [date for _, date in sessions],
@@ -1213,6 +1220,7 @@ def _single_question(tmp_path: Path, sessions: int) -> Path:
             "question": "?",
             "answer": "a",
             "question_type": "multi-session",
+            "question_date": "2023/05/20 (Sat) 02:21",
             "haystack_session_ids": [f"s-{i}" for i in range(sessions)],
             "haystack_sessions": [
                 [{"role": "user", "content": f"fact number {i}"}] for i in range(sessions)
@@ -2062,3 +2070,115 @@ async def test_evaluate_single_parity_answers_with_production_prompt(
     assert result["official_judge_finish_reason"] == "stop"
     assert result["official_judge_status"] == "completed"
     assert calls[2]["max_tokens"] == 10
+
+
+# ------------------------------------------------------- question as-of time (#601)
+def test_question_as_of_reads_question_date_as_utc() -> None:
+    as_of = fact_harness.question_as_of({"question_date": "2023/03/01 (Wed) 19:28"})
+    assert as_of == datetime(2023, 3, 1, 19, 28, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("entry", [{}, {"question_date": None}, {"question_date": "March 1st"}])
+def test_question_as_of_refuses_missing_or_unparsable_dates(entry: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="question_date"):
+        fact_harness.question_as_of(entry)
+
+
+def test_parity_answer_prompt_adds_production_date_block_only_with_as_of() -> None:
+    from orchestrator.daemon import with_runtime_datetime_context
+    from orchestrator.memory.injection import compose_system_prompt
+    from tests.longmemeval import evaluate
+
+    block = '<memory_records trust="user_data">\n- Fact: x\n</memory_records>'
+    plain = evaluate.build_parity_answer_messages("When?", block)
+    assert plain[0]["content"] == compose_system_prompt(block)
+    assert "Current date" not in plain[0]["content"]
+
+    as_of = datetime(2023, 3, 1, 19, 28, tzinfo=UTC)
+    dated = evaluate.build_parity_answer_messages("When?", block, as_of=as_of)
+    assert dated[0]["content"] == with_runtime_datetime_context(
+        compose_system_prompt(block), now_utc=as_of, default_timezone="UTC"
+    )
+    assert "- Current date: 2023-03-01" in dated[0]["content"]
+    assert dated[1] == {"role": "user", "content": "When?"}
+
+
+def test_recency_clock_defaults_to_wall_clock_and_honours_pin() -> None:
+    from orchestrator.memory import retrieval
+
+    accessed = datetime.now(UTC) - timedelta(days=40)
+    memory: dict[str, object] = {"last_accessed_at": accessed}
+    assert retrieval.RECENCY_REFERENCE_TIME.get() is None
+    assert 39.9 < retrieval._days_since_accessed(memory) < 40.1
+
+    token = retrieval.RECENCY_REFERENCE_TIME.set(accessed + timedelta(days=3))
+    try:
+        assert retrieval._days_since_accessed(memory) == pytest.approx(3.0)
+        # A pin earlier than the access time clamps to the freshest bucket.
+        retrieval.RECENCY_REFERENCE_TIME.set(accessed - timedelta(days=900))
+        assert retrieval._days_since_accessed(memory) == 1.0
+    finally:
+        retrieval.RECENCY_REFERENCE_TIME.reset(token)
+    assert retrieval.RECENCY_REFERENCE_TIME.get() is None
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_parity_pins_recency_clock_during_gather_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.memory import injection, retrieval
+    from tests.longmemeval import evaluate
+
+    seen: list[datetime | None] = []
+    calls: list[dict[str, Any]] = []
+
+    async def fake_gather(store: Any, **kwargs: Any) -> injection.MemoryContextInputs:
+        seen.append(retrieval.RECENCY_REFERENCE_TIME.get())
+        return injection.MemoryContextInputs(
+            retrieved=[{"content": "User watched the game", "category": "fact"}],
+            retrieval_mode="lexical",
+        )
+
+    async def fake_llm(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        content = {"answer": "17 days", "judge": "CORRECT\nok", "official_judge": "yes"}
+        response = {
+            "choices": [
+                {"message": {"content": content[kwargs["bm_call_key"]]}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        evaluate._capture_benchmark_metadata(response, key=kwargs["bm_call_key"])
+        return response
+
+    monkeypatch.setattr(evaluate, "gather_memory_context_inputs", fake_gather)
+    monkeypatch.setattr(evaluate, "_call_llm_with_provider_config", fake_llm)
+    as_of = datetime(2023, 3, 1, 19, 28, tzinfo=UTC)
+    result = await evaluate.evaluate_single_parity(
+        MagicMock(),
+        "q1",
+        "How many days ago?",
+        "17",
+        "TR",
+        allowed_source_conversation_ids=None,
+        as_of=as_of,
+    )
+    assert seen == [as_of]
+    assert retrieval.RECENCY_REFERENCE_TIME.get() is None
+    assert result["as_of"] == "2023-03-01T19:28:00+00:00"
+    assert "- Current date: 2023-03-01" in calls[0]["messages"][0]["content"]
+    assert result["system_prompt_sha256"] == evaluate._sha256_text(
+        calls[0]["messages"][0]["content"]
+    )
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await evaluate.evaluate_single_parity(
+            MagicMock(),
+            "q1",
+            "?",
+            "a",
+            "TR",
+            allowed_source_conversation_ids=None,
+            as_of=datetime(2023, 3, 1),
+        )
+    assert retrieval.RECENCY_REFERENCE_TIME.get() is None
