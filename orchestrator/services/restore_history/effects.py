@@ -180,6 +180,7 @@ class HistoryEffects:
             state.require_send()
             owned = self._owned_sends.setdefault(id(state), (state, set()))
             owned[1].add(record)
+            _check_time(deadline)
         except BaseException:
             state.block("history_send_unavailable")
             raise

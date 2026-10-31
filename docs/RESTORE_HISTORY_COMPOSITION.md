@@ -166,6 +166,7 @@ Public entry checks process/loop ownership and blocked state before invoking the
 original invocation check or checking K1. The same total absolute deadline is
 frozen before that validation and never extended by supervision. The trusted
 invocation check remains synchronous local validation, not a transport/I/O hook.
+Send rechecks the same deadline after its final invocation check before returning.
 
 For Send, the original native mark still generates a new runtime identity and
 nonce and validates its own `created:true` result. Its private callback durably

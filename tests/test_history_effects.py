@@ -232,3 +232,36 @@ async def test_public_entry_freezes_total_budget_before_callbacks_and_supervisio
         )
     assert len(observed) == 1 and observed[0][0] <= observed[0][1] + 2
     assert s.history._executor is s.history._store is None
+
+
+@pytest.mark.asyncio
+async def test_final_invocation_check_cannot_turn_late_completion_into_success(monkeypatch):
+    from orchestrator.services.restore_history import effects as module
+
+    s = unopened_effects()
+    checks = 0
+    late = False
+    original_time = module._check_time
+
+    def local_check():
+        nonlocal checks, late
+        checks += 1
+        if checks == 2:
+            late = True
+
+    def check_time(deadline):
+        original_time(deadline)
+        if late:
+            raise HistoryError("synthetic_final_check_completed_late", uncertain=True)
+
+    async def supervised(call, deadline):
+        return uuid4()
+
+    monkeypatch.setattr(s.effects, "_run", supervised)
+    monkeypatch.setattr(module, "_check_time", check_time)
+    state = InferenceInvocation(send_check=local_check)
+    with pytest.raises(HistoryError, match="final_check_completed_late"):
+        await s.effects.mark(
+            s.attempt, uuid4(), state, effect_kind="completion", deadline=time.monotonic() + 10
+        )
+    assert checks == 2 and state.uncertainty == "history_send_unavailable"
