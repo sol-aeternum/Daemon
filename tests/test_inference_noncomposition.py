@@ -60,6 +60,7 @@ def test_history_helper_exception_preserves_consumer_and_activation_restrictions
     "source",
     [
         "from orchestrator.services.restore_history.acceptance import AcceptanceProjection",
+        "from orchestrator.services.restore_history.coordination import HistoryCoordinator",
         "import orchestrator.services.restore_history.acceptance as h",
         "from orchestrator.services import restore_history as h",
         "from .services.restore_history.acceptance import AcceptanceProjection as A",
@@ -204,6 +205,46 @@ def test_history_adapter_import_and_construction_start_no_io(monkeypatch):
     assert adapter.acceptor == "synthetic_a"
     assert adapter.worker == "synthetic_w"
     assert acceptance.AcceptanceProjection is not module.AcceptanceProjection
+
+
+def test_history_coordinator_import_and_construction_start_no_io(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from orchestrator.services.restore_history import coordination
+    from orchestrator.services.restore_history.model import Identity
+    from orchestrator.services.restore_history.store import Ownership
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("history coordinator import/construction initiated I/O")
+
+    for owner, attr in (
+        (os, "open"),
+        (fcntl, "flock"),
+        (asyncio, "create_task"),
+        (threading.Thread, "start"),
+        (ThreadPoolExecutor, "__init__"),
+        (asyncpg, "connect"),
+        (asyncpg, "create_pool"),
+        (subprocess, "Popen"),
+        (socket, "socket"),
+    ):
+        monkeypatch.setattr(owner, attr, forbidden)
+    key = "orchestrator.services.restore_history._coordination_import_probe"
+    spec = importlib.util.spec_from_file_location(
+        key, ROOT / "orchestrator/services/restore_history/coordination.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, key, module)
+    spec.loader.exec_module(module)
+    owner = module.HistoryCoordinator(
+        Path("/synthetic/unopened"),
+        Identity(UUID(int=1), "0" * 64),
+        Ownership(1, frozenset({2}), 3),
+    )
+    assert owner._executor is None and owner._store is None
+    assert coordination.HistoryCoordinator is not module.HistoryCoordinator
 
 
 @pytest.mark.parametrize(
