@@ -351,7 +351,9 @@ Fresh preparation requires a zero-call/zero-write preflight bound to the dataset
 source revisions, both formatter identities, remap lineage, caps, rates and cached
 tokenizer. `cost-preflight --fresh` runs on the clean control checkout and reads
 the remapped copy (never the restore target) in one read-only repeatable-read
-transaction, with matching remapped fingerprints before and after. It makes no
+transaction, with matching remapped fingerprints before and after. The copy has no
+marker comment, and marking it would be a write, so it is identified by the lineage's
+database name and OID plus the remapped fingerprint. It makes no
 embedding or provider calls, so it doesn't replay retrieval. Instead,
 `campaign_fresh.superset_preflight` bounds each question by its largest five fact
 lines plus three summary lines under both renderings, the noted-dates header, a

@@ -719,7 +719,6 @@ async def fresh_cost_preflight(args: argparse.Namespace) -> None:
     """
     from orchestrator.eval import campaign_fresh
     from orchestrator.eval.bench_db import (
-        assert_benchmark_database,
         check_benchmark_dsn,
         fingerprint_benchmark_users,
         question_user_id,
@@ -764,7 +763,20 @@ async def fresh_cost_preflight(args: argparse.Namespace) -> None:
     )
     try:
         async with connection.transaction(isolation="repeatable_read", readonly=True):
-            name = await assert_benchmark_database(connection, dsn)
+            # The copy has no marker comment (CREATE DATABASE doesn't copy it), and
+            # marking it would be a write. Identify it exactly instead: lineage name
+            # and OID here, plus the remapped benchmark fingerprint below.
+            identity = await connection.fetchrow(
+                "SELECT current_database() AS name, d.oid AS oid FROM pg_database d"
+                " WHERE d.datname = current_database()"
+            )
+            require(
+                identity is not None
+                and identity["name"] == database
+                and identity["oid"] == lineage["copy"]["oid"],
+                "Connected database is not the lineage's remapped copy",
+            )
+            name = database
             require(
                 await connection.fetchval("SHOW transaction_read_only") == "on",
                 "Preflight transaction is not read-only",
