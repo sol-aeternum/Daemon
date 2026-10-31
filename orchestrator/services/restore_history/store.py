@@ -94,6 +94,7 @@ class HistoryStore:
         self._fds: dict[str, int] = {}
         self._pins: dict[str, tuple[int, int]] = {}
         self._poisoned = False
+        self._operation_thread: int | None = None
         try:
             ownership.validate()
             expected.wire()
@@ -109,6 +110,8 @@ class HistoryStore:
                 self._pins[name] = _inode(info)
                 if name.endswith("LOCK") and info.st_size:
                     raise HistoryError("unsafe_storage")
+            with self._mutex:
+                self._take_lock(self._fds["RUNTIME_LOCK"], fcntl.LOCK_SH, deadline)
             with self._locked(deadline):
                 self._scan(deadline)
         except BaseException as exc:
@@ -217,35 +220,79 @@ class HistoryStore:
         _check_time(deadline)
         return names
 
+    def _take_lock(self, fd: int, mode: int, deadline: float) -> None:
+        while True:
+            _check_time(deadline)
+            try:
+                fcntl.flock(fd, mode | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+            except BaseException:
+                # Interrupted acquisition may have completed in the kernel.
+                self._poisoned = True
+                raise
+
     @contextmanager
-    def _locked(self, deadline: float, outcome: _AppendOutcome | None = None) -> Iterator[None]:
+    def operation(self, *, deadline: float) -> Iterator[None]:
+        """Hold OP across a caller-owned critical window, before native DB locks.
+
+        Synchronous thread-affine scope; append/verify borrow its OP ownership.
+        No transaction or dispatch permission is created by entering this scope.
+        """
+        self._require_owner()
+        if self._operation_thread == threading.get_ident():
+            raise HistoryError("operation_active")
+        if self._poisoned:
+            raise HistoryError("store_poisoned")
+        with self._locked(deadline, operation_scope=True):
+            if self._poisoned:
+                raise HistoryError("store_poisoned")
+            yield
+            if self._poisoned:
+                raise HistoryError("store_poisoned")
+
+    @contextmanager
+    def _locked(
+        self,
+        deadline: float,
+        outcome: _AppendOutcome | None = None,
+        *,
+        operation_scope: bool = False,
+    ) -> Iterator[None]:
         self._require_owner()
         _check_time(deadline)
-        if not self._mutex.acquire(timeout=max(0, deadline - time.monotonic())):
+        borrowed = not operation_scope and self._operation_thread == threading.get_ident()
+        if not borrowed and not self._mutex.acquire(timeout=max(0, deadline - time.monotonic())):
             raise HistoryError("deadline")
         locks = []
         original: BaseException | None = None
         try:
             if self._dir < 0:
                 raise HistoryError("closed")
-            for name in ("OP_LOCK", "APPEND_LOCK"):
-                while True:
-                    _check_time(deadline)
-                    try:
-                        fcntl.flock(self._fds[name], fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        locks.append(self._fds[name])
-                        break
-                    except BlockingIOError:
-                        time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+            names = (
+                ("OP_LOCK",)
+                if operation_scope
+                else (("APPEND_LOCK",) if borrowed else ("OP_LOCK", "APPEND_LOCK"))
+            )
+            for name in names:
+                # Own cleanup before attempting acquisition: cancellation can
+                # arrive after native flock succeeds but before it returns.
+                locks.append(self._fds[name])
+                self._take_lock(self._fds[name], fcntl.LOCK_EX, deadline)
             self._check_pins(deadline)
+            if operation_scope:
+                self._operation_thread = threading.get_ident()
             yield
         except BaseException as exc:
             original = exc
-            if outcome is not None and outcome.attempted:
+            if operation_scope or borrowed or (outcome is not None and outcome.attempted):
                 self._poisoned = True
             raise
         finally:
             cleanup_errors: list[BaseException] = []
+            if operation_scope:
+                self._operation_thread = None
             # A cancellation is an uncertain unlock too. Keep attempting the
             # other held locks and poison before releasing the local mutex.
             for fd in reversed(locks):
@@ -258,11 +305,12 @@ class HistoryStore:
                 try:
                     _check_time(deadline)
                 except BaseException as exc:
-                    if outcome is not None and outcome.attempted:
+                    if operation_scope or borrowed or (outcome is not None and outcome.attempted):
                         self._poisoned = True
                     cleanup_errors.append(exc)
             try:
-                self._mutex.release()
+                if not borrowed:
+                    self._mutex.release()
             except BaseException as exc:
                 self._poisoned = True
                 cleanup_errors.append(exc)
@@ -483,6 +531,8 @@ class HistoryStore:
             self._poisoned = True
             self._close_descriptors()
             return
+        if self._operation_thread == threading.get_ident():
+            raise HistoryError("operation_active")
         with self._mutex:
             self._close_descriptors()
 
