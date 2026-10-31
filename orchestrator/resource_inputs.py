@@ -38,6 +38,7 @@ from orchestrator.history_pagination import HistoryBoundary
 from orchestrator.services.deletion_journal.barrier import _io
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.tasks.store import (
+    _AcceptanceStage,
     CONVERSATION_ACTIVE_INDEX,
     AcceptedTask,
     ConversationBusy,
@@ -812,6 +813,42 @@ class ResourceInputs:
         batch_id: UUID | None = None,
     ) -> AcceptedTask:
         """Actual atomic task/input acceptance. No-key recovery needs original batch ID."""
+        return await self._accept_with_stage(
+            stage=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            new_conversation_title=new_conversation_title,
+            pipeline=pipeline,
+            user_message=user_message,
+            task_input=task_input,
+            request_hash=request_hash,
+            idempotency_key=idempotency_key,
+            assistant_model=assistant_model,
+            request_canonical=request_canonical,
+            captured_generation=captured_generation,
+            max_attempts=max_attempts,
+            batch_id=batch_id,
+        )
+
+    async def _accept_with_stage(
+        self,
+        *,
+        stage: _AcceptanceStage | None,
+        user_id: UUID,
+        conversation_id: UUID | None,
+        new_conversation_title: str | None,
+        pipeline: str,
+        user_message: str,
+        task_input: dict[str, Any],
+        request_hash: str,
+        idempotency_key: str | None,
+        assistant_model: str | None,
+        request_canonical: str,
+        captured_generation: CapturedGeneration | None,
+        max_attempts: int = 2,
+        batch_id: UUID | None = None,
+    ) -> AcceptedTask:
+        """Actual atomic task/input acceptance. No-key recovery needs original batch ID."""
         async with self._slot(user_id):
             # Replay is account-serialized against composed deletion, before NEW effects.
             async with self._account(user_id) as conn:
@@ -839,6 +876,7 @@ class ResourceInputs:
             if not isinstance(batch_id, UUID):
                 raise ResourceError()
             await self._prepare(expected, batch_id, request_canonical)
+            stage_attempted = False
             for retry in (False, True):
                 try:
                     async with self._account(user_id) as conn:
@@ -880,8 +918,13 @@ class ResourceInputs:
                                 user_id,
                                 batch_id,
                             )
+                            if stage is not None:
+                                stage_attempted = True
+                                await stage(conn, pending)
                     return pending
                 except ResourceError as exc:
+                    if stage_attempted:
+                        raise
                     # _account has already discarded/released the exact failed channel.
                     # Inspect only a definite unique-index failure, never unknown COMMIT.
                     cause = exc.__context__

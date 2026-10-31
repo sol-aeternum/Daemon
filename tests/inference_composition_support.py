@@ -149,6 +149,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "orchestrator.services.restore_history",
                                     "InferenceRecovery",
                                     "TaskStore",
+                                    "HistoryAcceptance",
+                                    "_accept_with_stage",
+                                    "_accept_once",
+                                    "retain_pool_cleanup",
                                     "abandoned_pass",
                                     "importlib",
                                     "__import__",
@@ -243,8 +247,76 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if not isinstance(node, ast.Call):
                 continue
             target = name(node.func)
+            if target.endswith(".retain_pool_cleanup") or target == "retain_pool_cleanup":
+                functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing = max(functions, key=lambda f: f.lineno).name if functions else None
+                if (
+                    path != "orchestrator/services/restore_history/composition.py"
+                    or enclosing != "_accept"
+                    or ast.unparse(node.func) != "retain_pool_cleanup"
+                    or node.args
+                    or node.keywords
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved cleanup scope")
+            staged_once = (target.endswith("._accept_once") or target == "_accept_once") and any(
+                k.arg == "stage" for k in node.keywords
+            )
+            if (
+                target.endswith("._accept_with_stage")
+                or target == "_accept_with_stage"
+                or staged_once
+            ):
+                functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing = max(functions, key=lambda f: f.lineno).name if functions else None
+                keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+                function = ast.unparse(node.func)
+                default_only = (
+                    path in ("orchestrator/tasks/store.py", "orchestrator/resource_inputs.py")
+                    and enclosing == "accept"
+                    and function == "self._accept_with_stage"
+                    and keywords.get("stage") == "None"
+                    and None not in keywords
+                )
+                c1_join = (
+                    path == "orchestrator/tasks/store.py"
+                    and enclosing == "_accept_with_stage"
+                    and function == "self._resource_inputs._accept_with_stage"
+                    and keywords.get("stage") == "stage"
+                    and None not in keywords
+                )
+                history_join = (
+                    path == "orchestrator/services/restore_history/composition.py"
+                    and enclosing == "_accept"
+                    and function == "self._tasks._accept_with_stage"
+                    and keywords == {"stage": "stage", None: "options"}
+                )
+                native_join = (
+                    path == "orchestrator/tasks/store.py"
+                    and enclosing == "_accept_with_stage"
+                    and function == "self._accept_once"
+                    and keywords.get("stage") == "stage"
+                    and None not in keywords
+                )
+                if node.args or not (default_only or c1_join or history_join or native_join):
+                    violations.append(f"{path}:{node.lineno}:unapproved history staging seam")
             if not path.startswith("orchestrator/services/restore_history/"):
-                if target.endswith(".AcceptanceProjection") or target == "AcceptanceProjection":
+                if target.endswith(
+                    (".AcceptanceProjection", ".HistoryCoordinator", ".HistoryAcceptance")
+                ) or target in (
+                    "AcceptanceProjection",
+                    "HistoryCoordinator",
+                    "HistoryAcceptance",
+                ):
                     violations.append(f"{path}:{node.lineno}:history adapter construction")
                 if (
                     target in ("importlib.import_module", "__import__")

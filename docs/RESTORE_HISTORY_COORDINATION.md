@@ -4,6 +4,8 @@ Owner-approved source and synthetic-test boundary only. No runtime import,
 construction, configuration, startup hook, native acceptance/send/Stop/output
 change, database transaction, migration, provisioning or activation is installed.
 The rollout tracker remains #477; this slice does not establish its readiness.
+The separately approved [uncalled acceptance composition](RESTORE_HISTORY_COMPOSITION.md)
+uses these owners without installing any production host.
 
 ## Ordering and resource ownership
 

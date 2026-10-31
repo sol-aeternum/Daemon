@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
+
+from orchestrator.services.connection_cleanup import pool_connection, pool_queries
 
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
@@ -196,6 +198,9 @@ class AcceptedTask:
     status: TaskStatus
     #: False when an idempotent replay returned an existing task.
     created: bool
+
+
+_AcceptanceStage = Callable[[Any, AcceptedTask], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -869,12 +874,54 @@ class TaskStore:
         NEW work requires the original server capture; a replay needs no capture.
         The same capture is retained through the bounded busy-conflict retry.
         """
+        return await self._accept_with_stage(
+            stage=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            new_conversation_title=new_conversation_title,
+            pipeline=pipeline,
+            user_message=user_message,
+            task_input=task_input,
+            request_hash=request_hash,
+            idempotency_key=idempotency_key,
+            assistant_model=assistant_model,
+            max_attempts=max_attempts,
+            request_canonical=request_canonical,
+            captured_generation=captured_generation,
+        )
+
+    async def _accept_with_stage(
+        self,
+        *,
+        stage: _AcceptanceStage | None,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
+        new_conversation_title: str | None,
+        pipeline: str,
+        user_message: str,
+        task_input: dict[str, Any],
+        request_hash: str,
+        idempotency_key: str | None,
+        assistant_model: str | None,
+        max_attempts: int = 2,
+        request_canonical: str | None = None,
+        captured_generation: CapturedGeneration | None = None,
+    ) -> AcceptedTask:
+        """Atomically record the conversation turn and its task.
+
+        If the conversation's previous task ended between this transaction's
+        conflict and the follow-up lookup, acceptance is retried once rather
+        than surfacing the stale uniqueness violation.
+        NEW work requires the original server capture; a replay needs no capture.
+        The same capture is retained through the bounded busy-conflict retry.
+        """
         if self._resource_inputs is not getattr(self._memory, "_resource_inputs", None):
             raise ObservationBlocked("resource_composition_refused")
         if self._resource_inputs is not None:
             if request_canonical is None:
                 raise IdempotencyConflict("canonical request required by resource composition")
-            return await self._resource_inputs.accept(
+            return await self._resource_inputs._accept_with_stage(
+                stage=stage,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 new_conversation_title=new_conversation_title,
@@ -891,6 +938,7 @@ class TaskStore:
         for retry in (False, True):
             try:
                 return await self._accept_once(
+                    stage=stage,
                     user_id=user_id,
                     conversation_id=conversation_id,
                     new_conversation_title=new_conversation_title,
@@ -909,9 +957,19 @@ class TaskStore:
                     raise ended.violation from None
         raise AssertionError("unreachable")
 
+    @asynccontextmanager
+    async def _accept_connection(self, *, staging: bool) -> AsyncIterator[Any]:
+        async with pool_connection(self._pool) as conn:
+            # A staged acceptance must own the top-level COMMIT. Releasing a
+            # savepoint inside a pool setup/caller transaction is not durability.
+            if staging and conn.is_in_transaction():
+                raise ObservationBlocked("acceptance_transaction_owner_refused")
+            yield conn
+
     async def _accept_once(
         self,
         *,
+        stage: _AcceptanceStage | None = None,
         user_id: uuid.UUID,
         conversation_id: uuid.UUID | None,
         new_conversation_title: str | None,
@@ -935,6 +993,7 @@ class TaskStore:
             existing = await self._by_key(user_id, idempotency_key, request_hash, request_canonical)
             if existing is not None:
                 return existing
+        stage_attempted = False
         try:
             sealed_input = await self._accept_input(
                 user_id, task_input, request_canonical, captured_generation
@@ -944,7 +1003,7 @@ class TaskStore:
             # Account SHARE precedes every content lock/write on this connection,
             # and survives guard scope exit through the actual transaction commit.
             async with (
-                self._pool.acquire() as conn,
+                self._accept_connection(staging=stage is not None) as conn,
                 conn.transaction(isolation="read_committed"),
                 guard_content_write(conn, captured_generation),
             ):
@@ -962,7 +1021,12 @@ class TaskStore:
                     max_attempts=max_attempts,
                     generation=generation,
                 )
+                if stage is not None:
+                    stage_attempted = True
+                    await stage(conn, pending)
         except WriteGuardRefusal:
+            if stage_attempted:
+                raise
             # A concurrent matching acceptance may have committed after our first
             # lookup but before a fence refused NEW work. Resolve it only after
             # rollback; never refresh the capture or authorize another turn.
@@ -974,6 +1038,8 @@ class TaskStore:
                     return existing
             raise
         except asyncpg.UniqueViolationError as exc:
+            if stage_attempted:
+                raise
             # The transaction rolled back entirely, including the messages.
             if idempotency_key is not None:
                 existing = await self._by_key(
@@ -983,12 +1049,13 @@ class TaskStore:
                     return existing
             constraint = getattr(exc, "constraint_name", None)
             if constraint == CONVERSATION_ACTIVE_INDEX and conversation_id is not None:
-                active = await self._pool.fetchval(
-                    "SELECT id FROM tasks WHERE conversation_id = $1 AND user_id = $2 "
-                    "AND status IN ('queued', 'running')",
-                    conversation_id,
-                    user_id,
-                )
+                async with pool_queries(self._pool) as query:
+                    active = await query.fetchval(
+                        "SELECT id FROM tasks WHERE conversation_id = $1 AND user_id = $2 "
+                        "AND status IN ('queued', 'running')",
+                        conversation_id,
+                        user_id,
+                    )
                 if active is not None:
                     raise ConversationBusy(active) from None
                 raise _ActiveTaskEnded(exc) from None
@@ -1177,23 +1244,24 @@ class TaskStore:
             return await self._resource_inputs.find_by_key(
                 user_id, idempotency_key, request_hash, request_canonical
             )
-        row = await self._pool.fetchrow(
-            "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
-            user_id,
-            idempotency_key,
-        )
-        if row is None:
-            return None
-        if row["request_hash"] != request_hash:
-            # The digest key (auth pepper) may have been rotated since this
-            # task was accepted: compare the canonical request kept in the
-            # encrypted input before declaring a conflict.
-            stored = self._open(row["input_ciphertext"]).get("_request")
-            if request_canonical is None or stored != request_canonical:
-                raise IdempotencyConflict("idempotency key reused for a different request")
-            await self._pool.execute(
-                "UPDATE tasks SET request_hash = $2 WHERE id = $1", row["id"], request_hash
+        async with pool_queries(self._pool) as query:
+            row = await query.fetchrow(
+                "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
+                user_id,
+                idempotency_key,
             )
+            if row is None:
+                return None
+            if row["request_hash"] != request_hash:
+                # The digest key (auth pepper) may have been rotated since this
+                # task was accepted: compare the canonical request kept in the
+                # encrypted input before declaring a conflict.
+                stored = self._open(row["input_ciphertext"]).get("_request")
+                if request_canonical is None or stored != request_canonical:
+                    raise IdempotencyConflict("idempotency key reused for a different request")
+                await query.execute(
+                    "UPDATE tasks SET request_hash = $2 WHERE id = $1", row["id"], request_hash
+                )
         return AcceptedTask(
             task_id=row["id"],
             conversation_id=row["conversation_id"],

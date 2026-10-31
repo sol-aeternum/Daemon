@@ -35,6 +35,35 @@ from tests.test_inference_recovery_postgres import db as db, metadata_cluster as
 from tests.test_compute_runtime import _qualified_policy, _route
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["a", "w"])
+@pytest.mark.parametrize("failure", [False, True])
+async def test_history_scoped_pair_preflight_drains_actual_reset(host, monkeypatch, role, failure):
+    from orchestrator.services.connection_cleanup import retain_pool_cleanup
+    from tests.history_cleanup_support import held_reset
+
+    async def preflight():
+        async with retain_pool_cleanup():
+            await host.bundle.preflight()
+
+    async with held_reset(getattr(host, role), monkeypatch, 1, failure) as (entered, proceed):
+        task = asyncio.create_task(preflight())
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            task.cancel("original pair-preflight cancellation")
+            await asyncio.sleep(0.03)
+            task.cancel("repeated pair-preflight cancellation")
+            await asyncio.sleep(0.03)
+            assert not task.done()
+            proceed.set()
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await task
+            assert caught.value.args == ("original pair-preflight cancellation",)
+        finally:
+            proceed.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 @asynccontextmanager
 async def pools(db, *, a_role="md_acceptor", w_role="md_app"):
     # Both pools are created by this host from the SAME existing owned endpoint.

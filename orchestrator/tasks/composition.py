@@ -28,6 +28,7 @@ from orchestrator.tasks.inference import (
     acceptor_preflight,
 )
 from orchestrator.tasks._invocation import invocation, require_effect
+from orchestrator.services.connection_cleanup import pool_connection
 from orchestrator.tasks.store import TaskStore
 
 _ADMITTED = object()
@@ -404,7 +405,10 @@ class TaskComposition:
         if not self.worker.settings.durable_chat_enabled:
             raise ObservationBlocked("inference_composition_refused")
         async with asyncio.timeout(2):
-            async with self.acceptor._pool.acquire() as a, self.tasks._pool.acquire() as w:
+            async with (
+                pool_connection(self.acceptor._pool) as a,
+                pool_connection(self.tasks._pool) as w,
+            ):
                 await acceptor_preflight(a, expected=self.acceptor_role, other=self.worker_role)
                 await self.recovery.preflight(w)
 

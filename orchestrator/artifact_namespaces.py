@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+from orchestrator.services.connection_cleanup import pool_connection
 from orchestrator.artifact_staging import ArtifactStageError, _Handles
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 from orchestrator.services.account_control.store import Connection, lock_account_control
@@ -115,7 +116,7 @@ class NamespaceController:
         transaction server-side; a later call independently reconciles its outcome.
         Body cancellation reaches here only after any _io work has drained.
         """
-        async with self._pool.acquire() as conn:
+        async with pool_connection(self._pool) as conn:
             try:
                 if conn.is_in_transaction():
                     raise JournalError("conflict")
