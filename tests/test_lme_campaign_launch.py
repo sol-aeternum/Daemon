@@ -19,7 +19,7 @@ import pytest
 from orchestrator.eval import campaign_guard as guard, campaign_restore as restore
 from orchestrator.eval.campaign_sql import validate_sql
 from orchestrator.eval.campaign_validation import paired_result
-from orchestrator.eval import campaign_validation as validation
+from orchestrator.eval import campaign_launch as launch, campaign_validation as validation
 from tests.benchmark_longmemeval.native_fixture import NativePostgres
 from tests.test_lme_campaign_guard import plan as synthetic_plan
 
@@ -141,11 +141,33 @@ def _zero_category_artifacts(size: int):
     return rows, dataset, manifest, checkpoint, score
 
 
-def test_zero_official_category_is_tolerated_only_below_sanity_size():
-    validation.qualification(*_zero_category_artifacts(3))
-    validation.qualification(*_zero_category_artifacts(validation.MIN_SANITY_CATEGORY - 1))
+def test_ratified_v1_still_refuses_any_zero_official_category():
     with pytest.raises(guard.CampaignStopped, match="Zero official category"):
-        validation.qualification(*_zero_category_artifacts(validation.MIN_SANITY_CATEGORY))
+        validation.qualification(*_zero_category_artifacts(3))
+    with pytest.raises(guard.CampaignStopped, match="Zero official category"):
+        validation.qualification(*_zero_category_artifacts(3), rule=validation.RULE_V1)
+
+
+def test_amended_v2_tolerates_zero_only_below_sanity_size():
+    v2 = validation.RULE_V2
+    validation.qualification(*_zero_category_artifacts(3), rule=v2)
+    validation.qualification(*_zero_category_artifacts(validation.MIN_SANITY_CATEGORY - 1), rule=v2)
+    with pytest.raises(guard.CampaignStopped, match="Zero official category"):
+        validation.qualification(*_zero_category_artifacts(validation.MIN_SANITY_CATEGORY), rule=v2)
+    with pytest.raises(guard.CampaignStopped, match="Unknown acceptance rule"):
+        validation.qualification(*_zero_category_artifacts(3), rule="2026-10-31-unratified")
+
+
+def test_plans_bind_and_report_their_rule_version():
+    from orchestrator.eval import campaign_fresh
+
+    assert launch.acceptance_rule({"snapshot": {}}) == validation.RULE_V1
+    fresh_pins = {"fresh_campaign": {"approval": campaign_fresh.APPROVAL}}
+    assert launch.acceptance_rule(fresh_pins) == validation.RULE_V2
+    # The stopped v1 fresh approval predates the amendment and binds v1.
+    assert launch.acceptance_rule({"fresh_campaign": {"approval": {}}}) == validation.RULE_V1
+    with pytest.raises(guard.CampaignStopped, match="Unknown acceptance rule"):
+        validation.paired_result({}, rule="unratified")
 
 
 def test_official_qualification_requires_real_matching_complete_artifacts():
@@ -251,6 +273,12 @@ def test_paired_noise_uses_worst_control_pair_not_favorable_comparator():
     result = paired_result(arms)
     assert result["F"] == 2 and result["threshold"] == 4
     assert result["net_gain"] == 3 and not result["accepted"]
+    assert result["rule"] == validation.RULE_V1
+    amended = paired_result(arms, rule=validation.RULE_V2)
+    assert amended["rule"] == validation.RULE_V2
+    assert {k: v for k, v in amended.items() if k != "rule"} == {
+        k: v for k, v in result.items() if k != "rule"
+    }
 
 
 @pytest.fixture

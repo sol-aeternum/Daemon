@@ -30,6 +30,7 @@ from orchestrator.eval.campaign_guard import (
 from orchestrator.eval.campaign_retry import POLICY
 from orchestrator.eval.campaign_validation import (
     DEV_SHA256,
+    RULE_V2,
     SNAPSHOT_SHA256,
     STATE_SHA256,
     digest_file,
@@ -46,6 +47,7 @@ APPROVAL: dict[str, Any] = {
     "local_maximum_restore_attempts": 4,
     "retry_policy": POLICY,
     "candidate_variable": "noted-dates",
+    "acceptance_rule": RULE_V2,
     "historical_remap_lineage_sha256": "4f77d026dc4336190b5fe26372254c1d653784df76255fdb316a504fde101a91",
 }
 PRIOR: dict[str, Any] = {

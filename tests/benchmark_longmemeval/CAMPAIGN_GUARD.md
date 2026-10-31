@@ -345,9 +345,12 @@ IE-preference, which was judge noise on near-identical answers. v1 is claimed an
 never reused. The current v2 approval
 (`2026-10-31-noted-dates-historical-v2`, directory `campaign-noted-dates-v2`) pins
 the stopped v1 plan as its prior: $21.2519050 prior, $26.7519050 cumulative,
-restores eight through eleven. The sanity check now requires a correct official
-answer only in categories of at least `MIN_SANITY_CATEGORY` (5) questions. Every
-question still needs an official verdict.
+restores eight through eleven. It binds acceptance rule amendment
+`2026-10-31-official-v2` (`ACCEPTANCE_RULE_PROPOSED.md`), under which the sanity
+check requires a correct official answer only in categories of at least
+`MIN_SANITY_CATEGORY` (5) questions. Every question still needs an official
+verdict. Every other plan, including the stopped v1 plan, keeps
+`2026-10-28-official-v1`, where no category may score zero.
 
 Under the sibling lock, activation exclusively creates and fsyncs a private
 `.fresh-approval-<id>.json` claim before creating the campaign directory. Code
