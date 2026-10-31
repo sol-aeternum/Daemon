@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-RENDER_NOTED_DATES = False
+RENDER_NOTED_DATES = True
 
 NOTED_DATES_HEADER = (
     'Dates show when each fact was noted; relative words like "today" refer to that date.'
