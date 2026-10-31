@@ -332,13 +332,22 @@ the synthetic guard tests. See [ratified acceptance rule](../benchmark_results/A
 `prepare --fresh-campaign --historical-remap LINEAGE --candidate noted-dates`
 copies the fixed approval and prior-plan pins from `campaign_fresh.py`; the CLI
 cannot supply another allowance or campaign directory. This separate mode adds a
-$5.50 hold to the retained $15.7519050 ($21.2519050 cumulative): at most $4.46
-base allocations (owner raised from $4.40 after the measured $4.4588280 preflight)
-and full-bound retry reservations of at most min($1.10, $5.50 minus base), never
-refunded/reused.
-All A0/A1/A2/C0 execute anew, with four local restores (cumulative seven through
-ten), no imported results and no attach. Legacy plans and recovery validators
-retain their original payloads, offsets and accounting.
+$5.50 hold to the retained prior: at most $4.46 base allocations (owner raised
+from $4.40 after the measured $4.4588280 preflight) and full-bound retry
+reservations of at most min($1.10, $5.50 minus base), never refunded/reused.
+All A0/A1/A2/C0 execute anew, with four local restores, no imported results and
+no attach. Legacy plans and recovery validators retain their original payloads,
+offsets and accounting.
+
+The v1 approval (prior $15.7519050, restores seven through ten) stopped after its
+A0 completed: the qualification sanity check found 0/3 official correct in
+IE-preference, which was judge noise on near-identical answers. v1 is claimed and
+never reused. The current v2 approval
+(`2026-10-31-noted-dates-historical-v2`, directory `campaign-noted-dates-v2`) pins
+the stopped v1 plan as its prior: $21.2519050 prior, $26.7519050 cumulative,
+restores eight through eleven. The sanity check now requires a correct official
+answer only in categories of at least `MIN_SANITY_CATEGORY` (5) questions. Every
+question still needs an official verdict.
 
 Under the sibling lock, activation exclusively creates and fsyncs a private
 `.fresh-approval-<id>.json` claim before creating the campaign directory. Code

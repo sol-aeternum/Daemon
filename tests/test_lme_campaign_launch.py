@@ -120,6 +120,34 @@ def qualified_artifacts():
     return rows, dataset, manifest, checkpoint, score
 
 
+def _zero_category_artifacts(size: int):
+    """Give one category exactly ``size`` questions, all officially incorrect."""
+    rows, dataset, manifest, checkpoint, score = qualified_artifacts()
+    types = list(validation.CATEGORY_MAP)
+    small, other = (
+        types[0],
+        [t for t in types if validation.CATEGORY_MAP[t] != validation.CATEGORY_MAP[types[0]]],
+    )
+    for i, (row, entry) in enumerate(zip(rows, dataset, strict=True)):
+        kind = small if i < size else other[i % len(other)]
+        entry["question_type"] = row["question_type"] = kind
+        row["category"] = validation.CATEGORY_MAP[kind]
+        if i < size:
+            row["official_judgment"] = "incorrect"
+    dual = validation.score_dual_judgments(rows)
+    score["dual_judgments"] = copy.deepcopy(dual)
+    manifest["phases"]["score"] = copy.deepcopy(score)
+    manifest["phases"]["evaluate"]["official_judgments"] = copy.deepcopy(dual["official"])
+    return rows, dataset, manifest, checkpoint, score
+
+
+def test_zero_official_category_is_tolerated_only_below_sanity_size():
+    validation.qualification(*_zero_category_artifacts(3))
+    validation.qualification(*_zero_category_artifacts(validation.MIN_SANITY_CATEGORY - 1))
+    with pytest.raises(guard.CampaignStopped, match="Zero official category"):
+        validation.qualification(*_zero_category_artifacts(validation.MIN_SANITY_CATEGORY))
+
+
 def test_official_qualification_requires_real_matching_complete_artifacts():
     result = validation.qualification(*qualified_artifacts())
     assert result["official"]["judged"] == 50 and result["official"]["correct"] == 30

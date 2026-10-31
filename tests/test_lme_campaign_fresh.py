@@ -147,10 +147,10 @@ def test_fresh_payload_accounting_and_empty_ledger(approved):
     p = approved.payload
     assert (p["new_reserved_usd"], p["prior_reserved_usd"], p["cumulative_reserved_usd"]) == (
         "5.50",
-        "15.7519050",
         "21.2519050",
+        "26.7519050",
     )
-    assert (p["prior_restore_attempts"], p["maximum_cumulative_restore_attempts"]) == (6, 10)
+    assert (p["prior_restore_attempts"], p["maximum_cumulative_restore_attempts"]) == (7, 11)
     assert p["retry_policy"] == retry.POLICY
     assert "execution_arms" not in p and "separate_capacity_reserved_usd" not in p
     with partial(approved) as c:
@@ -190,7 +190,7 @@ async def test_four_fresh_arms_clean_handoffs_restore_seven_through_ten(approved
             assert not retry.enabled(c)  # A1 cannot select attached_pool.
             await complete_arm(c)
         assert c.state["restore_attempts"] == index + 1
-        assert c.plan["prior_restore_attempts"] + c.state["restore_attempts"] == 7 + index
+        assert c.plan["prior_restore_attempts"] + c.state["restore_attempts"] == 8 + index
         assert c.state["status"] == ("completed" if arm == "C0" else "ready_next_arm")
     assert len(c.state["receipts"]) == 800
     assert len(c.state["attempts"]) == 600
@@ -849,7 +849,7 @@ async def test_fresh_prepare_copies_fixed_approval_and_checks_all_bindings(appro
     prepared = launch.load_plan(args.output)
     assert prepared.pins["fresh_campaign"] == {"approval": fresh.APPROVAL, "prior": fresh.PRIOR}
     assert set(prepared.pins) == fresh.PIN_KEYS
-    assert prepared.payload()["cumulative_reserved_usd"] == "21.2519050"
+    assert prepared.payload()["cumulative_reserved_usd"] == "26.7519050"
     assert "under_cumulative_ten_usd" not in cost  # Legacy preflight is not reused.
     assert connect.await_count == 2  # Mocked control + mocked read-only catalogue transaction.
 
