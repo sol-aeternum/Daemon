@@ -349,10 +349,15 @@ and five-second start spacing. Every retry reserves its complete quoted bound.
 
 Fresh preparation requires a zero-call/zero-write preflight bound to the dataset,
 source revisions, both formatter identities, remap lineage, caps, rates and cached
-tokenizer. `campaign_fresh.cost_preflight` accepts already-retrieved memory inputs
-and measures the maximum of both complete historical reader prompts. No safe
-offline DB retrieval replay helper exists yet: `cost-preflight --fresh` deliberately
-fails closed rather than querying a database or inventing memory inputs. The C0
+tokenizer. `cost-preflight --fresh` runs on the clean control checkout and reads
+the remapped copy (never the restore target) in one read-only repeatable-read
+transaction, with matching remapped fingerprints before and after. It makes no
+embedding or provider calls, so it doesn't replay retrieval. Instead,
+`campaign_fresh.superset_preflight` bounds each question by its largest five fact
+lines plus three summary lines under both renderings, the noted-dates header, a
+fixed 256-byte frame (checked) and 512 boundary tokens, on top of the complete
+historical prompt without memories (Phase 3A method). It also requires every
+qualified A0 memory block to fit inside its bound. Plaintext stays in memory. The C0
 comparability exception requires the declared noted-dates variable and a freshly
 recomputed single-flag formatter pin. Source tests do not authorize paid execution
 or restores; final review, project gates and exact-action Astra approval remain.

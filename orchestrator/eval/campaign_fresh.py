@@ -493,58 +493,6 @@ def bindings(control: str, candidate: str, remap: str, tokenizer_sha256: str) ->
     }
 
 
-def cost_preflight(
-    dataset: Sequence[Mapping[str, Any]],
-    memories: Mapping[str, Any],
-    bound_bindings: Mapping[str, Any],
-    count_tokens: Callable[[str], int],
-) -> dict[str, Any]:
-    """No retrieval: caller supplies already-gathered MemoryContextInputs per ID.
-
-    Measure BOTH complete prompts, including historical runtime datetime, roles,
-    system framing and the fixed send-time envelope allowance (not just memories).
-    """
-    from orchestrator.eval.fact_harness import question_as_of
-    from orchestrator.memory import provenance
-    from orchestrator.memory.injection import render_memory_context
-    from tests.longmemeval.evaluate import build_parity_answer_messages
-
-    require(
-        set(memories) == {row["question_id"] for row in dataset},
-        "Fresh preflight memories missing/extra",
-    )
-    questions = []
-    original = provenance.RENDER_NOTED_DATES
-    try:
-        for row in dataset:
-            counts = []
-            for enabled in (False, True):
-                provenance.RENDER_NOTED_DATES = enabled
-                context = render_memory_context(memories[row["question_id"]])
-                messages = build_parity_answer_messages(
-                    row["question"], context, as_of=question_as_of(row)
-                )
-                counts.append(
-                    64
-                    + sum(
-                        _integer(count_tokens(value))
-                        for message in messages
-                        for value in message.values()
-                    )
-                )
-            questions.append(
-                {"question_id": row["question_id"], "reader_input_token_bound": max(counts)}
-            )
-    finally:
-        provenance.RENDER_NOTED_DATES = original
-    return {
-        "provider_calls": 0,
-        "writes_or_restores": 0,
-        "bindings": dict(bound_bindings),
-        "questions": questions,
-    }
-
-
 def validate_preflight(
     cost: Mapping[str, Any], expected: Mapping[str, Any], ids: Sequence[str]
 ) -> None:
@@ -561,8 +509,99 @@ def validate_preflight(
         _integer(row["reader_input_token_bound"], positive=True)
 
 
-async def preflight_cli(_args: Any) -> None:
-    require(
-        False,
-        "Fresh cost-preflight blocked: offline retrieval replay is not implemented; inject already-retrieved memories into campaign_fresh.cost_preflight",
-    )
+SUPERSET_FIXED_BYTES = 256
+SUPERSET_BOUNDARY_TOKENS = 512
+
+
+def _render(**inputs: Any) -> str:
+    from orchestrator.memory.injection import MemoryContextInputs, render_memory_context
+
+    return render_memory_context(MemoryContextInputs(**inputs), max_tokens=10**9)
+
+
+def _line_bytes(memory: Mapping[str, Any], *, summary: bool) -> int:
+    """Bytes of the one rendered item line (plus newline); the frame is counted once."""
+    lines = _render(**{"summaries" if summary else "retrieved": [memory]}).splitlines()
+    items = [line for line in lines if line.startswith("- ")]
+    require(len(items) <= 1, "Rendered memory spans several item lines")
+    return len(items[0].encode()) + 1 if items else 0
+
+
+def reader_superset_bound(
+    row: Mapping[str, Any],
+    memories: Sequence[Mapping[str, Any]],
+    count_tokens: Callable[[str], int],
+) -> dict[str, int]:
+    """Retrieval-independent reader-input bound over BOTH renderings (no embeddings).
+
+    Like the reviewed Phase 3A preflight: any selected block is at most the largest
+    MAX_MEMORY_ITEMS fact lines plus MAX_SUMMARY_ITEMS summary lines (each token is
+    at least one byte), plus fixed framing and a token-boundary allowance. Every
+    stored row is a fact candidate, so no rank or gold information is used. Static
+    tokens include the historical runtime date block and roles.
+    """
+    from orchestrator.eval.fact_harness import question_as_of
+    from orchestrator.memory import provenance
+    from orchestrator.memory.injection import MAX_MEMORY_ITEMS, MAX_SUMMARY_ITEMS
+    from tests.longmemeval.evaluate import build_parity_answer_messages
+
+    messages = build_parity_answer_messages(row["question"], "", as_of=question_as_of(row))
+    static = 64 + sum(_integer(count_tokens(v)) for m in messages for v in m.values())
+    original = provenance.RENDER_NOTED_DATES
+    blocks = []
+    try:
+        for enabled in (False, True):
+            provenance.RENDER_NOTED_DATES = enabled
+            facts = sorted(memories, key=lambda m: _line_bytes(m, summary=False), reverse=True)
+            summaries = sorted(
+                (m for m in memories if m["category"] == "summary"),
+                key=lambda m: _line_bytes(m, summary=True),
+                reverse=True,
+            )[:MAX_SUMMARY_ITEMS]
+            facts = facts[:MAX_MEMORY_ITEMS]
+            lines = sum(_line_bytes(m, summary=False) for m in facts) + sum(
+                _line_bytes(m, summary=True) for m in summaries
+            )
+            header = len(provenance.NOTED_DATES_HEADER.encode()) + 1 if enabled else 0
+            # Fences, section headings and newlines must fit the fixed allowance.
+            frame = len(_render(retrieved=facts, summaries=summaries).encode()) - lines - header
+            require(frame <= SUPERSET_FIXED_BYTES, "Memory block framing exceeds fixed allowance")
+            blocks.append(lines + header + SUPERSET_FIXED_BYTES)
+    finally:
+        provenance.RENDER_NOTED_DATES = original
+    return {
+        "memory_context_byte_bound": max(blocks),
+        "reader_input_token_bound": static + max(blocks) + SUPERSET_BOUNDARY_TOKENS,
+    }
+
+
+def superset_preflight(
+    dataset: Sequence[Mapping[str, Any]],
+    memories: Mapping[str, Sequence[Mapping[str, Any]]],
+    saved_contexts: Mapping[str, str],
+    bound_bindings: Mapping[str, Any],
+    count_tokens: Callable[[str], int],
+) -> dict[str, Any]:
+    """Pure: caller supplies every stored row per question (decrypted in memory only).
+
+    Soundness check: each qualified A0 memory block (same contents; only timestamps
+    were remapped) must fit inside its question's bound.
+    """
+    ids = [row["question_id"] for row in dataset]
+    require(set(memories) == set(ids) == set(saved_contexts), "Fresh preflight coverage differs")
+    questions = []
+    for row in dataset:
+        qid = row["question_id"]
+        bound = reader_superset_bound(row, memories[qid], count_tokens)
+        require(
+            len(saved_contexts[qid].encode()) <= bound["memory_context_byte_bound"],
+            "Qualified A0 memory block exceeds the superset bound",
+        )
+        questions.append({"question_id": qid, "stored_rows_examined": len(memories[qid]), **bound})
+    return {
+        "provider_calls": 0,
+        "writes_or_restores": 0,
+        "method": "superset-top-lines-v1",
+        "bindings": dict(bound_bindings),
+        "questions": questions,
+    }

@@ -705,6 +705,126 @@ def load_plan(path: Path) -> CampaignPlan:
     return plan
 
 
+PHASE_D_A0_RESULTS = (
+    ROOT / "tests/benchmark_results/longmemeval_phase_d_2026-10-27/eval_a_qualified"
+    "/longmemeval_results.jsonl"
+)
+
+
+async def fresh_cost_preflight(args: argparse.Namespace) -> None:
+    """Zero-call, read-only reader bound on the remapped copy (never the restore target).
+
+    Runs on the clean control checkout. Memory text is decrypted in process memory
+    only; the output holds sizes, digests and bounds, never plaintext.
+    """
+    from orchestrator.eval import campaign_fresh
+    from orchestrator.eval.bench_db import (
+        assert_benchmark_database,
+        check_benchmark_dsn,
+        fingerprint_benchmark_users,
+        question_user_id,
+    )
+    from orchestrator.memory.encryption import ContentEncryption
+
+    actual = git_state(ROOT)
+    require(
+        actual["sha"] == args.control_sha and actual["dirty"] is False,
+        "Fresh preflight must run on the clean control checkout",
+    )
+    lineage_path = args.historical_remap.absolute()
+    lineage_sha256 = digest_file(lineage_path)
+    require(
+        lineage_sha256 == campaign_fresh.APPROVAL["historical_remap_lineage_sha256"],
+        "Fresh remap lineage is not approved",
+    )
+    lineage = json.loads(lineage_path.read_bytes())
+    require(lineage["status"] == "remapped_snapshot_created", "Remap lineage incomplete")
+    database = lineage["copy"]["db"]
+    require(database != DSN.rsplit("/", 1)[1], "Preflight must read the copy, not the target")
+    dsn = DSN.rsplit("/", 1)[0] + "/" + database
+    check_benchmark_dsn(dsn)
+    dataset = load_dev(DEV)
+    encoding, tokenizer_sha256 = tokenizer()
+    bound_bindings = campaign_fresh.bindings(
+        args.control_sha, args.candidate_sha, lineage_sha256, tokenizer_sha256
+    )
+    saved = {
+        row["question_id"]: row["memory_context"]
+        for row in map(json.loads, PHASE_D_A0_RESULTS.read_text().splitlines())
+    }
+    key = fact_harness.get_settings().daemon_encryption_key
+    require(bool(key), "Benchmark encryption key missing")
+    encryption = ContentEncryption(key)
+    container_identity()
+    users = {row["question_id"]: question_user_id(row["question_id"]) for row in dataset}
+    connection = await asyncpg.connect(
+        dsn,
+        timeout=10,
+        server_settings={"default_transaction_read_only": "on", "statement_timeout": "30000"},
+    )
+    try:
+        async with connection.transaction(isolation="repeatable_read", readonly=True):
+            name = await assert_benchmark_database(connection, dsn)
+            require(
+                await connection.fetchval("SHOW transaction_read_only") == "on",
+                "Preflight transaction is not read-only",
+            )
+            before = await fingerprint_benchmark_users(connection, list(users.values()))
+            require(
+                before["sha256"] == lineage["remapped_state_sha256"],
+                "Remapped copy fingerprint differs",
+            )
+            rows = await connection.fetch(
+                "SELECT user_id, content, category, tier, status, valid_to, valid_from,"
+                " created_at, local_only FROM memories WHERE user_id = ANY($1::uuid[])",
+                list(users.values()),
+            )
+            by_user: dict[Any, list[dict[str, Any]]] = {}
+            for row in rows:
+                require(
+                    not (
+                        row["tier"] == "l0"
+                        and row["status"] == "active"
+                        and row["valid_to"] is None
+                        and row["local_only"] is False
+                    ),
+                    "L0 present: the superset bound does not cover a frozen block",
+                )
+                by_user.setdefault(row["user_id"], []).append(
+                    {
+                        "content": encryption.decrypt(row["content"]),
+                        "category": row["category"],
+                        "valid_from": row["valid_from"],
+                        "created_at": row["created_at"],
+                    }
+                )
+            after = await fingerprint_benchmark_users(connection, list(users.values()))
+            require(after == before, "Remapped copy changed during preflight")
+    finally:
+        await connection.close()
+    result = campaign_fresh.superset_preflight(
+        dataset,
+        {qid: by_user.get(user, []) for qid, user in users.items()},
+        {qid: saved[qid] for qid in users},
+        bound_bindings,
+        lambda text: len(encoding.encode_ordinary(text)),
+    )
+    result.update(
+        database_name=name,
+        transaction_read_only=True,
+        fingerprint_before_and_after=before,
+        rows_examined=len(rows),
+        plaintext_exported=False,
+        reader_input_token_bound_total=sum(
+            row["reader_input_token_bound"] for row in result["questions"]
+        ),
+    )
+    with args.output.open("x") as output:
+        json.dump(result, output, indent=2, sort_keys=True)
+        output.write("\n")
+    print(json.dumps({k: v for k, v in result.items() if k != "questions"}, indent=2))
+
+
 async def run_arm(args: argparse.Namespace) -> None:
     plan = load_plan(args.plan)
     verify_replacement_destination(plan, args.campaign)
@@ -875,9 +995,13 @@ def main() -> None:
     )
     preflight = commands.add_parser(
         "cost-preflight",
-        help="Zero-call fresh reader prompt bound computation (offline replay required)",
+        help="Zero-call read-only fresh reader prompt bound on the remapped copy",
     )
     preflight.add_argument("--fresh", action="store_true", required=True)
+    preflight.add_argument("--historical-remap", type=Path, required=True)
+    preflight.add_argument("--output", type=Path, required=True)
+    for name in ("control-sha", "candidate-sha"):
+        preflight.add_argument("--" + name, required=True)
     replacement = commands.add_parser(
         "prepare-replacement", help="Read-only recovery preparation; target stays closed"
     )
@@ -928,11 +1052,10 @@ def main() -> None:
     from orchestrator.eval.campaign_recovery import prepare_second_replacement
     from orchestrator.eval.campaign_retry import prepare as prepare_retry
     from orchestrator.eval.campaign_final_verdict import prepare as prepare_final
-    from orchestrator.eval.campaign_fresh import preflight_cli
 
     operation = {
         "prepare": prepare,
-        "cost-preflight": preflight_cli,
+        "cost-preflight": fresh_cost_preflight,
         "prepare-replacement": prepare_replacement,
         "prepare-second-replacement": prepare_second_replacement,
         "prepare-retry-recovery": prepare_retry,

@@ -455,53 +455,91 @@ def test_c0_formatter_recomputation_preserves_enabled_candidate_flag(approved, m
         launch.noted_dates_candidate_formatter("control", "candidate")
 
 
-def test_reader_preflight_counts_both_complete_historical_prompts(approved, monkeypatch):
+QUESTION = {
+    "question_id": "q",
+    "question": "Where did I go today?",
+    "question_date": "2023/05/02 (Tue) 10:00",
+    "haystack_dates": ["2023/05/01 (Mon) 10:00"],
+}
+
+
+def _rows() -> list[dict[str, Any]]:
+    noted = datetime(2023, 5, 1, tzinfo=UTC)
+    rows = [
+        {"content": "Fictional fact " + "x" * size, "category": "fact", "valid_from": noted}
+        for size in (5, 40, 120, 300, 700, 10, 60)
+    ]
+    rows += [
+        {"content": "Fictional session " + "y" * size, "category": "summary", "valid_from": noted}
+        for size in (20, 90, 200, 400)
+    ]
+    rows.append({"content": "Undated preference", "category": "preference"})
+    return rows
+
+
+def test_superset_bound_covers_every_selection_under_both_renderings() -> None:
+    import itertools
+
+    from orchestrator.eval.fact_harness import question_as_of
     from orchestrator.memory import provenance
     from orchestrator.memory.injection import MemoryContextInputs, render_memory_context
-    from orchestrator.eval.fact_harness import question_as_of
 
-    dataset = [
-        {
-            "question_id": "q",
-            "question": "Where today?",
-            "question_date": "2023/05/02 (Tue) 10:00",
-            "haystack_dates": ["2023/05/01 (Mon) 10:00"],
-        }
-    ]
-    memories = {
-        "q": MemoryContextInputs(
-            retrieved=[
-                {"content": "Fictional place today", "valid_from": datetime(2023, 5, 1, tzinfo=UTC)}
-            ]
-        )
-    }
-    monkeypatch.setattr(launch, "noted_dates_candidate_formatter", lambda *_: {"id": "candidate"})
-    b = fresh.bindings(
-        "control",
-        "candidate",
-        approved.payload["pins"]["historical_remap"]["lineage_sha256"],
-        "tokenizer",
-    )
-    seen = []
+    rows = _rows()
+    bound = fresh.reader_superset_bound(QUESTION, rows, len)
+    summaries = [row for row in rows if row["category"] == "summary"]
+    worst = 0
+    for flag in (False, True):
+        provenance.RENDER_NOTED_DATES = flag
+        try:
+            for facts in itertools.combinations(rows, 5):
+                for chosen in itertools.combinations(summaries, 3):
+                    block = render_memory_context(
+                        MemoryContextInputs(retrieved=list(facts), summaries=list(chosen))
+                    )
+                    assert len(block.encode()) <= bound["memory_context_byte_bound"]
+                    messages = launch.evaluate.build_parity_answer_messages(
+                        QUESTION["question"], block, as_of=question_as_of(QUESTION)
+                    )
+                    worst = max(worst, 64 + sum(len(v) for m in messages for v in m.values()))
+        finally:
+            provenance.RENDER_NOTED_DATES = False
+    assert worst <= bound["reader_input_token_bound"]
+    assert provenance.RENDER_NOTED_DATES is False
 
-    def count(text):
+
+def test_superset_bound_counts_dates_header_and_historical_date_block() -> None:
+    from orchestrator.memory import provenance
+
+    seen: list[str] = []
+
+    def count(text: str) -> int:
         seen.append(text)
         return len(text)
 
-    cost = fresh.cost_preflight(dataset, memories, b, count)
-    original = provenance.RENDER_NOTED_DATES
-    counts = []
-    for flag in (False, True):
-        provenance.RENDER_NOTED_DATES = flag
-        messages = launch.evaluate.build_parity_answer_messages(
-            "Where today?", render_memory_context(memories["q"]), as_of=question_as_of(dataset[0])
-        )
-        counts.append(64 + sum(len(v) for message in messages for v in message.values()))
-    provenance.RENDER_NOTED_DATES = original
-    assert cost["questions"] == [{"question_id": "q", "reader_input_token_bound": max(counts)}]
-    assert any("2023-05-02" in value for value in seen)
-    assert any("noted 2023-05-01" in value for value in seen)
-    assert "system" in seen and "user" in seen
+    dated = fresh.reader_superset_bound(QUESTION, _rows(), count)
+    undated = [{k: v for k, v in row.items() if k != "valid_from"} for row in _rows()]
+    plain = fresh.reader_superset_bound(QUESTION, undated, len)
+    # The five largest lines each gain " (noted 2023-05-01)".
+    gained = 5 * len(" (noted 2023-05-01)")
+    assert dated["memory_context_byte_bound"] - plain["memory_context_byte_bound"] == gained
+    # The header is counted whenever the flag renders it, dated rows or not.
+    longer = provenance.NOTED_DATES_HEADER + "z" * 50
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(provenance, "NOTED_DATES_HEADER", longer)
+        widened = fresh.reader_superset_bound(QUESTION, undated, len)
+    assert widened["memory_context_byte_bound"] - plain["memory_context_byte_bound"] == 50
+    assert any("2023-05-02" in text for text in seen)
+    assert {"system", "user"} <= set(seen)
+
+
+def test_superset_preflight_checks_coverage_and_saved_contexts(approved, monkeypatch) -> None:
+    monkeypatch.setattr(launch, "noted_dates_candidate_formatter", lambda *_: {"id": "candidate"})
+    b = fresh.bindings(
+        "control", "candidate", approved.payload["pins"]["historical_remap"]["lineage_sha256"], "t"
+    )
+    cost = fresh.superset_preflight([QUESTION], {"q": _rows()}, {"q": "small"}, b, len)
+    assert cost["provider_calls"] == cost["writes_or_restores"] == 0
+    assert cost["questions"][0]["stored_rows_examined"] == len(_rows())
     fresh.validate_preflight(cost, b, ["q"])
     for key in b:
         altered = copy.deepcopy(cost)
@@ -513,13 +551,48 @@ def test_reader_preflight_counts_both_complete_historical_prompts(approved, monk
         altered[key] = 1
         with pytest.raises(guard.CampaignStopped):
             fresh.validate_preflight(altered, b, ["q"])
+    with pytest.raises(guard.CampaignStopped, match="exceeds the superset bound"):
+        fresh.superset_preflight([QUESTION], {"q": _rows()}, {"q": "z" * 10_000}, b, len)
+    with pytest.raises(guard.CampaignStopped, match="coverage"):
+        fresh.superset_preflight([QUESTION], {"q": _rows()}, {}, b, len)
+
+
+def _preflight_args(tmp_path: Path, lineage: dict[str, Any]) -> argparse.Namespace:
+    path = tmp_path / "lineage.json"
+    write(path, lineage)
+    return argparse.Namespace(
+        historical_remap=path,
+        output=tmp_path / "cost.json",
+        control_sha="control",
+        candidate_sha="candidate",
+    )
 
 
 @pytest.mark.asyncio
-async def test_preflight_cli_fails_closed_without_replay(approved):
-    with pytest.raises(guard.CampaignStopped, match="offline retrieval replay is not implemented"):
-        await fresh.preflight_cli(argparse.Namespace(fresh=True))
-    approved.forbidden.assert_not_awaited()
+async def test_db_preflight_refuses_before_connecting(tmp_path, monkeypatch) -> None:
+    connect = AsyncMock()
+    monkeypatch.setattr(launch.asyncpg, "connect", connect)
+    lineage = {"status": "remapped_snapshot_created", "copy": {"db": "daemon_lme_bench_remap"}}
+    args = _preflight_args(tmp_path, lineage)
+    monkeypatch.setattr(launch, "git_state", lambda _: {"sha": "control", "dirty": True})
+    with pytest.raises(guard.CampaignStopped, match="clean control checkout"):
+        await launch.fresh_cost_preflight(args)
+    monkeypatch.setattr(launch, "git_state", lambda _: {"sha": "candidate", "dirty": False})
+    with pytest.raises(guard.CampaignStopped, match="clean control checkout"):
+        await launch.fresh_cost_preflight(args)
+    monkeypatch.setattr(launch, "git_state", lambda _: {"sha": "control", "dirty": False})
+    with pytest.raises(guard.CampaignStopped, match="lineage is not approved"):
+        await launch.fresh_cost_preflight(args)
+    target = _preflight_args(tmp_path, {**lineage, "copy": {"db": "daemon_lme_bench"}})
+    monkeypatch.setitem(
+        fresh.APPROVAL,
+        "historical_remap_lineage_sha256",
+        validation.digest_file(target.historical_remap),
+    )
+    with pytest.raises(guard.CampaignStopped, match="copy, not the target"):
+        await launch.fresh_cost_preflight(target)
+    connect.assert_not_awaited()
+    assert not (tmp_path / "cost.json").exists()
 
 
 @pytest.mark.asyncio
