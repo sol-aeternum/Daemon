@@ -707,7 +707,7 @@
       "rationale": "C1 ordered immutable received representation intent tracking before filesystem effects. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs.accept",
+      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._accept_with_stage",
       "kind": "sql_inline", "fingerprint": "4bf57b8de6afd945", "tables": ["resource_input_batches"],
       "unknown": false, "uncovered": true, "category": "content",
       "rationale": "Actual same-account task/message/origin validation before accepted pointer transition; no completed fence. Uncovered."

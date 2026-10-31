@@ -1,7 +1,7 @@
 # H1 acceptance projections — uncalled source candidate
 
 Owner-approved source and synthetic-test boundary only. The required reader
-key-check argument was separately approved. No runtime imports/callers, startup
+key-check argument was separately approved. No production runtime hosts, startup
 composition, HTTP/client change, live binding/role/grant/key, application migration,
 retention activation or dispatch authority is installed. J1 is unchanged.
 
@@ -136,7 +136,7 @@ Opt-in PostgreSQL tests use cached-image network-none fixtures, synthetic roles
 and temporary POSIX H1 directories. Test-only native transaction hooks demonstrate
 SQL staging/rollback, not native runtime H OP_LOCK ordering. The separate uncalled
 ownership boundary in `RESTORE_HISTORY_COORDINATION.md` has synthetic async
-filesystem supervision; this adapter is not wired to it.
+filesystem supervision. The separately approved [uncalled acceptance join](RESTORE_HISTORY_COMPOSITION.md) now composes these source APIs with native acceptance; no production host installs it.
 Faults around real transaction results/COMMIT distinguish server commit/rollback
 from the caller's lost acknowledgement; they do not simulate a real network split.
 Mocked/corrupted response cases test typed-result validation, not SQL privilege
@@ -148,7 +148,7 @@ synthetic PostgreSQL/POSIX evidence, not a private backup rehearsal or live
 qualification. Exact commands/results and failures are retained outside Git.
 
 Remaining: deployed upgrade/ACL qualification;
-native composition of the uncalled H operation/lifetime ownership layer; acceptance/send/Stop/output
+production composition of the uncalled H/native acceptance join; send/Stop/output
 integration and fresh dispatch receipts; stable clients; deletion/retention/J1
 appliers; financial/auth/account/cache continuity; independent restore controls;
 production identity/key/storage provisioning and capacity/retention policy.
