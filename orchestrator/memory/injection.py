@@ -4,9 +4,11 @@ import asyncio
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
+from orchestrator.memory import provenance
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_query_with_metadata,
@@ -210,6 +212,7 @@ async def gather_memory_context_inputs(
     record_side_effects: bool = True,
     log_retrieval: bool = False,
     retrieval_triggered_by: str | None = None,
+    query_reference_time: datetime | None = None,
 ) -> MemoryContextInputs:
     """Read L0 memories, retrieved memories and summaries for one prompt.
 
@@ -218,7 +221,9 @@ async def gather_memory_context_inputs(
     ``query_text``, scopes every source to the question's haystack with
     ``allowed_source_conversation_ids`` and disables ``record_side_effects``
     (trust recording and memory access touches) so evaluation never changes
-    ranking state. The production defaults are unchanged.
+    ranking state. Only its historical-clock mode passes
+    ``query_reference_time``, the "now" for temporal query windows; production
+    leaves it unset. The production defaults are unchanged.
     """
     include_local = str(pipeline or "").strip().lower() == "local"
     allowed = (
@@ -273,6 +278,8 @@ async def gather_memory_context_inputs(
                 retrieval_kwargs["log_retrieval"] = True
             if retrieval_triggered_by is not None:
                 retrieval_kwargs["retrieval_triggered_by"] = retrieval_triggered_by
+            if query_reference_time is not None:
+                retrieval_kwargs["query_reference_time"] = query_reference_time
             retrieved = await retrieve_memories_for_text(
                 store=store,
                 query_text=query_text,
@@ -337,6 +344,7 @@ def render_memory_context(
         l0_block = "\n".join(l0_lines)
 
     memory_lines: list[str] = []
+    memory_suffixes: list[str] = []
     for memory in inputs.retrieved[:MAX_MEMORY_ITEMS]:
         category = str(memory.get("category") or "fact").strip().lower()
         label = (
@@ -349,6 +357,7 @@ def render_memory_context(
         )
         if text:
             memory_lines.append(f"- {label}: {text}")
+            memory_suffixes.append(provenance.noted_suffix(memory))
 
     summary_lines: list[str] = []
     for summary in inputs.summaries[:MAX_SUMMARY_ITEMS]:
@@ -362,6 +371,7 @@ def render_memory_context(
         parts: list[str] = []
         if memories:
             parts.append("About this user:")
+            parts.extend(provenance.header_lines())
             parts.extend(memories)
         if summary_items:
             parts.append("Recent context:")
@@ -378,6 +388,11 @@ def render_memory_context(
         return output
 
     memory_lines = truncate_items(memory_lines, MAX_SINGLE_MEMORY_CHARS)
+    # Dates go on after truncation so a long memory can't cut them off; with the
+    # dormant flag off every suffix is "" and the output is unchanged.
+    memory_lines = [
+        line + suffix for line, suffix in zip(memory_lines, memory_suffixes, strict=True)
+    ]
     summary_lines = truncate_items(summary_lines, MAX_SINGLE_MEMORY_CHARS)
 
     context = render(memory_lines, summary_lines)

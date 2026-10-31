@@ -293,10 +293,69 @@ Before any real run, final source/gate evidence and action-time supervision must
   three controls. Embedding-only scope is approved; historical B is not a qualified
   lexical comparator. No candidate reruns until success.
 
+### Historical-clock corpus (#601 remap) — owner-approved, 2026-10-31
+
+`prepare --historical-remap LINEAGE` plans a campaign on a benchmark-only remapped
+corpus: a copy of the qualified ingest whose stored times were moved onto each
+session's haystack date. Preparation requires that the lineage derives from the
+qualified snapshot/state constants. `--snapshot` must be the lineage's snapshot,
+and `--ingest` must be a derived checkpoint whose `historical_remap` block hash-pins
+this lineage and the original ingest checkpoint. `fact_harness.verify_historical_remap`
+then requires the derived ingest to equal the original except for its
+protected-state fingerprint, which must be the lineage's remapped state.
+Qualification is the original ingest run's manifest; no new qualified manifest
+is written. The live database is still verified against the original state at
+preparation. Arms restore and evaluate the remapped snapshot/state pinned in
+`pins.historical_remap` (`campaign_validation.expected_corpus`). Plans without
+that block keep the original constants, so earlier campaigns verify unchanged.
+
+The runner enables historical-clock mode only from a verified remap source:
+retrieval then also receives `query_reference_time` = the question's as-of time,
+and the manifest records the historical `message_timestamps` parity exception.
+Comparability therefore refuses to mix the two modes, and a resumed run whose
+recorded exceptions differ from its corpus's mode is refused.
+The mode is re-verified wherever it is used: the recorded derived checkpoint must
+be byte-identical, pass the lineage checks and hold exactly the run's ingest phase,
+so an edited resumed checkpoint cannot switch it on. `run_arm` also requires the
+plan's `historical_remap` pin and the run's verified source to agree. The existing
+replacement, retry-attach and final-verdict recovery paths still require the
+original corpus and fail closed for remap plans; a remap campaign has no approved
+recovery path yet.
+
 All final source gates/review and actual-state launch checks remain required. No
 inference, ingest, restore, holdout inspection, source expansion, date adaptation,
 reader-cap change, production deployment or candidate acceptance is established by
 the synthetic guard tests. See [ratified acceptance rule](../benchmark_results/ACCEPTANCE_RULE_PROPOSED.md).
+
+### Single-use fresh historical campaign — 2026-10-31 (#601)
+
+`prepare --fresh-campaign --historical-remap LINEAGE --candidate noted-dates`
+copies the fixed approval and prior-plan pins from `campaign_fresh.py`; the CLI
+cannot supply another allowance or campaign directory. This separate mode adds a
+$5.50 hold to the retained $15.7519050 ($21.2519050 cumulative): at most $4.40
+base allocations and $1.10 full-bound retry reservations, never refunded/reused.
+All A0/A1/A2/C0 execute anew, with four local restores (cumulative seven through
+ten), no imported results and no attach. Legacy plans and recovery validators
+retain their original payloads, offsets and accounting.
+
+Under the sibling lock, activation exclusively creates and fsyncs a private
+`.fresh-approval-<id>.json` claim before creating the campaign directory. Code
+never deletes this claim; a claim without a valid clean handoff cannot bootstrap
+again. Activation, handoff and pre-mutation admission recheck the prior-plan and
+historical-remap digests. Only fully completed, settled arms hand off; interrupted,
+stopped, partial or completed campaigns cannot resume. R1 permits only verified
+transient 429s, at most three attempts, 30/60-second backoff (maximum 120 seconds),
+and five-second start spacing. Every retry reserves its complete quoted bound.
+
+Fresh preparation requires a zero-call/zero-write preflight bound to the dataset,
+source revisions, both formatter identities, remap lineage, caps, rates and cached
+tokenizer. `campaign_fresh.cost_preflight` accepts already-retrieved memory inputs
+and measures the maximum of both complete historical reader prompts. No safe
+offline DB retrieval replay helper exists yet: `cost-preflight --fresh` deliberately
+fails closed rather than querying a database or inventing memory inputs. The C0
+comparability exception requires the declared noted-dates variable and a freshly
+recomputed single-flag formatter pin. Source tests do not authorize paid execution
+or restores; final review, project gates and exact-action Astra approval remain.
 
 ## Source verification — 2026-10-29
 

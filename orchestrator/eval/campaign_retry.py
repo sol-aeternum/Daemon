@@ -67,6 +67,19 @@ def enabled(campaign: Campaign | None) -> bool:
     return campaign is not None and "retry_recovery_lineage" in campaign.plan["pins"]
 
 
+def retry_capable(plan_or_campaign: Campaign | CampaignPlan | Mapping[str, Any] | None) -> bool:
+    """Transport capability only; enabled() deliberately remains attach-only."""
+    if plan_or_campaign is None:
+        return False
+    if isinstance(plan_or_campaign, Mapping):
+        pins = plan_or_campaign["pins"]
+    elif isinstance(plan_or_campaign, CampaignPlan):
+        pins = plan_or_campaign.pins
+    else:
+        pins = plan_or_campaign.plan["pins"]
+    return "retry_recovery_lineage" in pins or "fresh_campaign" in pins
+
+
 def validate_mode(pins: Mapping[str, Any]) -> None:
     require(
         set(pins.get("retry_recovery_lineage", {})) == {"previous_plan", "stopped_ledger"}
@@ -436,6 +449,13 @@ def bootstrap(directory: Path, state: dict[str, Any], inherited: Mapping[str, An
 
 
 def validate_attempts(campaign: Campaign, *, settled: bool = False) -> None:
+    if "fresh_campaign" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_fresh import validate_fresh_attempt_ledger
+
+        validate_fresh_attempt_ledger(
+            campaign.state, campaign.plan, campaign.directory, settled=settled
+        )
+        return
     validate_attempt_ledger(campaign.state, campaign.plan, campaign.directory, settled=settled)
 
 
@@ -600,7 +620,7 @@ def _identity(campaign: Campaign, stage: str, request: Mapping[str, Any]) -> dic
 
 
 async def prepare_attempt(campaign: Campaign, stage: str, request: Mapping[str, Any]) -> None:
-    require(enabled(campaign), "Retry transport is not explicitly enabled")
+    require(retry_capable(campaign), "Retry transport is not explicitly enabled")
     identity = _identity(campaign, stage, request)
     state = campaign.state
     validate_attempts(campaign)
@@ -624,9 +644,27 @@ async def prepare_attempt(campaign: Campaign, stage: str, request: Mapping[str, 
 
         imported = validate_import_resolution(state, campaign.plan, campaign.directory)
         already += Decimal(imported["reserved_usd"])
+    budget = Decimal(campaign.plan["new_reserved_usd"]) - Decimal(campaign.plan["allocated_usd"])
+    if "fresh_campaign" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_fresh import retry_budget
+
+        budget = retry_budget(campaign.plan)
+        logical = (identity["arm"], identity["question_id"], identity["stage"])
+        require(
+            all(
+                (
+                    item["identity"]["arm"],
+                    item["identity"]["question_id"],
+                    item["identity"]["stage"],
+                )
+                != logical
+                or item["identity"] == identity
+                for item in state["attempts"]
+            ),
+            "Fresh retry logical identity/hash changed",
+        )
     require(
-        already + amount
-        <= Decimal(campaign.plan["new_reserved_usd"]) - Decimal(campaign.plan["allocated_usd"]),
+        already + amount <= budget,
         "Retry reservations exceed unchanged envelope headroom",
     )
     item = {
@@ -746,6 +784,7 @@ def retry_delay(exc: BaseException, ordinal: int, *, now: datetime | None = None
 def failed_attempt(
     campaign: Campaign, stage: str, request: Mapping[str, Any], exc: BaseException
 ) -> bool:
+    require(retry_capable(campaign), "Retry transport is not explicitly enabled")
     identity = _identity(campaign, stage, request)
     item = campaign.state["attempts"][-1]
     require(
@@ -777,6 +816,7 @@ def failed_attempt(
 
 
 def complete_attempt(campaign: Campaign, stage: str, request: Mapping[str, Any]) -> None:
+    require(retry_capable(campaign), "Retry transport is not explicitly enabled")
     item = campaign.state["attempts"][-1]
     require(
         item["status"] == "dispatch_pending"
@@ -786,6 +826,8 @@ def complete_attempt(campaign: Campaign, stage: str, request: Mapping[str, Any])
         "Success has no dispatched retry attempt",
     )
     item.update(status="completed", receipt=campaign.state["receipts"][-1]["artifact"])
+    if "fresh_campaign" in campaign.plan["pins"]:
+        validate_attempts(campaign)
     campaign._save()
 
 

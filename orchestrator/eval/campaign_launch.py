@@ -40,8 +40,10 @@ from orchestrator.eval.campaign_restore import (
 from orchestrator.eval.campaign_validation import (
     DEV_SHA256,
     SNAPSHOT_SHA256,
+    STATE_SHA256,
     comparability,
     digest_file,
+    expected_corpus,
     load_dev,
     paired_result,
     qualification,
@@ -183,7 +185,15 @@ def git_bytes(sha: str, path: str) -> bytes:
     ).stdout
 
 
-def verify_common(control: str, candidate: str) -> dict[str, str]:
+RETRIEVAL_CANDIDATE = "orchestrator/memory/retrieval.py"
+PROVENANCE_CANDIDATE = "orchestrator/memory/provenance.py"
+NOTED_DATES_OFF = b"RENDER_NOTED_DATES = False\n"
+NOTED_DATES_ON = b"RENDER_NOTED_DATES = True\n"
+
+
+def verify_common(
+    control: str, candidate: str, candidate_file: str = RETRIEVAL_CANDIDATE
+) -> dict[str, str]:
     common = {}
     for path in COMMON:
         first, second = git_bytes(control, path), git_bytes(candidate, path)
@@ -212,15 +222,73 @@ def verify_common(control: str, candidate: str) -> dict[str, str]:
         text=True,
         timeout=30,
     ).stdout.splitlines()
-    require(
-        changes == ["orchestrator/memory/retrieval.py"],
-        "Candidate contains a second execution variable",
-    )
+    require(changes == [candidate_file], "Candidate contains a second execution variable")
     return common
 
 
+def noted_dates_candidate_formatter(control: str, candidate: str) -> dict[str, Any]:
+    """Formatter identity of a noted-dates candidate whose only change is the flag.
+
+    The candidate's provenance.py must equal control's with exactly the one
+    ``RENDER_NOTED_DATES = False`` line set to True; its identity is then computed
+    here (control checkout) with that flag on, so C0 can be pinned exactly.
+    """
+    first = git_bytes(control, PROVENANCE_CANDIDATE)
+    second = git_bytes(candidate, PROVENANCE_CANDIDATE)
+    require(
+        first.count(NOTED_DATES_OFF) == 1
+        and second == first.replace(NOTED_DATES_OFF, NOTED_DATES_ON),
+        "Noted-dates candidate changes more than the dormant flag",
+    )
+    from orchestrator.memory import provenance
+
+    require(provenance.RENDER_NOTED_DATES is False, "Control checkout has the flag enabled")
+    provenance.RENDER_NOTED_DATES = True
+    try:
+        return fact_harness.memory_formatter_identity()
+    finally:
+        provenance.RENDER_NOTED_DATES = False
+
+
+def arm_formatter(plan: CampaignPlan, arm: str) -> dict[str, Any]:
+    """The formatter pin an arm must match: a declared renderer candidate's for C0."""
+    candidate = plan.pins.get("candidate_formatter")
+    return candidate if arm == "C0" and candidate is not None else plan.pins["formatter"]
+
+
+def formatter_exception(plan: CampaignPlan, arm: str) -> bool:
+    """Only the verified single-flag noted-dates C0 may differ in formatter."""
+    if (
+        arm != "C0"
+        or plan.pins.get("candidate_variable") != "noted-dates"
+        or not plan.pins.get("candidate_formatter")
+    ):
+        return False
+    from orchestrator.memory import provenance
+
+    # Recompute using the control-checkout helper even when called from C0.
+    # Keep that helper's existing refusal contract and restore C0's flag exactly.
+    original = provenance.RENDER_NOTED_DATES
+    provenance.RENDER_NOTED_DATES = False
+    try:
+        require(
+            noted_dates_candidate_formatter(
+                plan.pins["arm_shas"]["A0"], plan.pins["arm_shas"]["C0"]
+            )
+            == plan.pins["candidate_formatter"],
+            "Candidate formatter recomputation differs",
+        )
+    finally:
+        provenance.RENDER_NOTED_DATES = original
+    return True
+
+
 def checkout(plan: CampaignPlan, arm: str) -> None:
-    if "final_verdict_recovery_lineage" in plan.pins:
+    if "fresh_campaign" in plan.pins:
+        from orchestrator.eval.campaign_fresh import APPROVAL, verify
+
+        verify(json.loads(json.dumps(plan.payload())), Path(APPROVAL["directory"]))
+    elif "final_verdict_recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_final_verdict import verify_recovery
 
         require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in final recovery")
@@ -256,7 +324,8 @@ def checkout(plan: CampaignPlan, arm: str) -> None:
     for path, digest in plan.pins["common_files"].items():
         require(digest_file(ROOT / path) == digest, "Common source/config content changed")
     require(
-        fact_harness.memory_formatter_identity() == plan.pins["formatter"], "Formatter pin differs"
+        fact_harness.memory_formatter_identity() == arm_formatter(plan, arm),
+        "Formatter pin differs",
     )
     require(
         [row["question_id"] for row in load_dev(DEV)] == list(plan.question_ids),
@@ -376,6 +445,11 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     Like the sibling lock, this is cooperative operator protection, not a defense
     against a same-UID administrator copying or deleting retained evidence.
     """
+    if "fresh_campaign" in plan.pins:
+        from orchestrator.eval.campaign_fresh import verify
+
+        verify(json.loads(json.dumps(plan.payload())), directory)
+        return
     if "final_verdict_recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_final_verdict import verify_recovery
 
@@ -402,17 +476,83 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     )
 
 
+def _historical_remap_pins(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify a historical-remap lineage against the snapshot and derived ingest checkpoint."""
+    lineage_path = args.historical_remap.resolve()
+    lineage = json.loads(lineage_path.read_bytes())
+    require(lineage.get("status") == "remapped_snapshot_created", "Remap lineage incomplete")
+    require(
+        lineage["source"]["snapshot_sha256"] == SNAPSHOT_SHA256
+        and lineage["source"]["state_sha256"] == STATE_SHA256,
+        "Remap is not derived from the qualified corpus",
+    )
+    require(
+        Path(lineage["snapshot"]["path"]).resolve() == args.snapshot.resolve(),
+        "Snapshot is not the remap lineage's",
+    )
+    derived = fact_harness.load_runner_checkpoint(args.ingest, dataset_path=None)
+    remap = derived.get("historical_remap") or {}
+    require(
+        Path(remap.get("lineage_path", "")).resolve() == lineage_path
+        and remap.get("lineage_sha256") == digest_file(lineage_path),
+        "Ingest checkpoint is not this remap's",
+    )
+    source_manifest = fact_harness.verify_historical_remap(
+        remap, derived["phases"]["ingest"], derived.get("run_id")
+    )
+    return {
+        "lineage_path": str(lineage_path),
+        "lineage_sha256": digest_file(lineage_path),
+        "snapshot_sha256": lineage["snapshot"]["sha256"],
+        "state_sha256": lineage["remapped_state_sha256"],
+        "source_manifest": str(source_manifest),
+    }
+
+
 async def prepare(args: argparse.Namespace) -> None:
+    fresh = getattr(args, "fresh_campaign", False)
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        require(
+            args.historical_remap is not None and args.candidate == "noted-dates",
+            "Fresh campaign requires --historical-remap and --candidate noted-dates",
+        )
+        campaign_fresh.verify_prior()
     dataset = load_dev(DEV)
     effective = environment()
-    require(digest_file(args.snapshot) == SNAPSHOT_SHA256, "Wrong immutable archive")
-    common = verify_common(args.control_sha, args.candidate_sha)
-    cost = json.loads(args.cost_preflight.read_bytes())
-    require(
-        cost["provider_calls"] == cost["writes_or_restores"] == 0
-        and cost["under_cumulative_ten_usd"] is True,
-        "Preflight not read-only/within budget",
+    historical = _historical_remap_pins(args) if args.historical_remap else None
+    snapshot_sha256 = historical["snapshot_sha256"] if historical else SNAPSHOT_SHA256
+    require(digest_file(args.snapshot) == snapshot_sha256, "Wrong immutable archive")
+    noted_dates = getattr(args, "candidate", "retrieval") == "noted-dates"
+    common = verify_common(
+        args.control_sha,
+        args.candidate_sha,
+        PROVENANCE_CANDIDATE if noted_dates else RETRIEVAL_CANDIDATE,
     )
+    cost = json.loads(args.cost_preflight.read_bytes())
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        assert historical is not None
+        require(
+            historical["lineage_sha256"]
+            == campaign_fresh.APPROVAL["historical_remap_lineage_sha256"],
+            "Fresh remap lineage is not approved",
+        )
+        campaign_fresh.validate_preflight(
+            cost,
+            campaign_fresh.bindings(
+                args.control_sha, args.candidate_sha, historical["lineage_sha256"], tokenizer()[1]
+            ),
+            [row["question_id"] for row in dataset],
+        )
+    else:
+        require(
+            cost["provider_calls"] == cost["writes_or_restores"] == 0
+            and cost["under_cumulative_ten_usd"] is True,
+            "Preflight not read-only/within budget",
+        )
     reader = {row["question_id"]: row["reader_input_token_bound"] for row in cost["questions"]}
     limits = {}
     for row in dataset:
@@ -448,7 +588,11 @@ async def prepare(args: argparse.Namespace) -> None:
         == 2,
         "Unexpected reader message shape",
     )
-    source_manifest = args.ingest.parent / "run_manifest.json"
+    source_manifest = (
+        Path(historical["source_manifest"])
+        if historical
+        else args.ingest.parent / "run_manifest.json"
+    )
     source = json.loads(source_manifest.read_bytes())
     require(
         source["baseline_qualified"] is True and source["disqualifications"] == [],
@@ -477,7 +621,6 @@ async def prepare(args: argparse.Namespace) -> None:
         async with connection.transaction(isolation="repeatable_read", readonly=True):
             schema = await catalogue(connection)
             from orchestrator.eval.bench_db import fingerprint_benchmark_users, question_user_id
-            from orchestrator.eval.campaign_validation import STATE_SHA256
 
             fingerprint = await fingerprint_benchmark_users(
                 connection, [question_user_id(row["question_id"]) for row in dataset]
@@ -491,11 +634,23 @@ async def prepare(args: argparse.Namespace) -> None:
         await control.close()
     script_directory = args.output.parent / (args.output.stem + "-restore-script")
     script_directory.mkdir(mode=0o700, exist_ok=False)
-    script = await asyncio.to_thread(render_archive, args.snapshot, script_directory)
+    script = await asyncio.to_thread(
+        render_archive, args.snapshot, script_directory, snapshot_sha256
+    )
     pins = {
         "common_files": common,
         "arm_shas": {arm: args.candidate_sha if arm == "C0" else args.control_sha for arm in ARMS},
         "formatter": fact_harness.memory_formatter_identity(),
+        **(
+            {
+                "candidate_variable": "noted-dates",
+                "candidate_formatter": noted_dates_candidate_formatter(
+                    args.control_sha, args.candidate_sha
+                ),
+            }
+            if noted_dates
+            else {}
+        ),
         "tokenizer_sha256": tokenizer_hash,
         "tokenizer_envelope": {
             "model": "gpt-4o-2024-08-06",
@@ -521,7 +676,24 @@ async def prepare(args: argparse.Namespace) -> None:
         "effective_config": effective,
         "restore_script": {"path": str(script.resolve()), "sha256": digest_file(script)},
     }
+    if historical:
+        # Arms restore and evaluate the remapped corpus; the live database is still
+        # verified above against the original qualified state it derives from.
+        pins["historical_remap"] = {
+            key: historical[key]
+            for key in ("lineage_path", "lineage_sha256", "snapshot_sha256", "state_sha256")
+        }
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        pins["fresh_campaign"] = json.loads(
+            json.dumps({"approval": campaign_fresh.APPROVAL, "prior": campaign_fresh.PRIOR})
+        )
     plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        campaign_fresh.verify(json.loads(json.dumps(plan.payload())))
     require(not args.output.exists(), "Plan output already exists")
     _write(args.output, plan.payload())
 
@@ -586,14 +758,37 @@ async def run_arm(args: argparse.Namespace) -> None:
             score = runner.score()
             manifest = json.loads((output / "run_manifest.json").read_bytes())
             checkpoint = json.loads(runner.checkpoint_path.read_bytes())
-            qualified = qualification(rows, dataset, manifest, checkpoint, score)
+            qualified = qualification(
+                rows, dataset, manifest, checkpoint, score, corpus=expected_corpus(plan.pins)
+            )
+            planned = plan.pins.get("historical_remap")
+            recorded = (manifest.get("ingest_source") or {}).get("historical_remap")
+            require(
+                (planned is None and recorded is None)
+                or (
+                    planned is not None
+                    and recorded is not None
+                    and recorded.get("lineage_sha256") == planned["lineage_sha256"]
+                ),
+                "Run clock mode differs from the plan's corpus",
+            )
             require(
                 manifest["git"]["sha"] == plan.pins["arm_shas"][args.arm],
                 "Manifest execution SHA differs",
             )
+            require(
+                manifest["memory_formatter"] == arm_formatter(plan, args.arm),
+                "Manifest formatter differs from the arm's pin",
+            )
             if args.arm != "A0":
                 first = json.loads((args.campaign / "A0/run_manifest.json").read_bytes())
-                comparability(first, manifest)
+                # A declared renderer candidate differs in formatter by design; it is
+                # pinned exactly above, and every other comparability field still applies.
+                comparability(
+                    first,
+                    manifest,
+                    formatter=not formatter_exception(plan, args.arm),
+                )
             artifacts = {
                 path.name: digest_file(path)
                 for path in (
@@ -661,6 +856,28 @@ def main() -> None:
         prep.add_argument("--" + name, type=Path, required=True)
     for name in ("control-sha", "candidate-sha"):
         prep.add_argument("--" + name, required=True)
+    prep.add_argument(
+        "--candidate",
+        choices=("retrieval", "noted-dates"),
+        default="retrieval",
+        help="Candidate variable: retrieval.py (default) or the dormant noted-dates flag",
+    )
+    prep.add_argument(
+        "--historical-remap",
+        type=Path,
+        default=None,
+        help="Remap lineage JSON: arms restore its snapshot with a derived --ingest checkpoint",
+    )
+    prep.add_argument(
+        "--fresh-campaign",
+        action="store_true",
+        help="Use the single fixed fresh historical noted-dates approval",
+    )
+    preflight = commands.add_parser(
+        "cost-preflight",
+        help="Zero-call fresh reader prompt bound computation (offline replay required)",
+    )
+    preflight.add_argument("--fresh", action="store_true", required=True)
     replacement = commands.add_parser(
         "prepare-replacement", help="Read-only recovery preparation; target stays closed"
     )
@@ -711,9 +928,11 @@ def main() -> None:
     from orchestrator.eval.campaign_recovery import prepare_second_replacement
     from orchestrator.eval.campaign_retry import prepare as prepare_retry
     from orchestrator.eval.campaign_final_verdict import prepare as prepare_final
+    from orchestrator.eval.campaign_fresh import preflight_cli
 
     operation = {
         "prepare": prepare,
+        "cost-preflight": preflight_cli,
         "prepare-replacement": prepare_replacement,
         "prepare-second-replacement": prepare_second_replacement,
         "prepare-retry-recovery": prepare_retry,

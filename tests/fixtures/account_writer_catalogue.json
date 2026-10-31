@@ -2277,6 +2277,50 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "29ba4b4fa90822a9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsyncs the retained single-use benchmark approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "48d4dd05c2fadb25",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Writes the fixed benchmark approval identity and plan hash; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "cf128cb90522b07c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusively creates the non-deleted benchmark approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "d92df3c1c08be543",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes the retained benchmark approval claim; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_guard",
       "qualname": "Campaign.activate",
       "kind": "filesystem_write",
@@ -2407,6 +2451,17 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Flushes private benchmark evidence output; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "noted_dates_candidate_formatter",
+      "kind": "filesystem_write",
+      "fingerprint": "5dbe5928466f9a49",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative scanner candidate for bytes.replace on git source text, not actual file I/O. Explicitly inventoried, no runtime-fence claim. Uncovered."
     },
     {
       "owner_source": "orchestrator.eval.campaign_launch",
@@ -3375,6 +3430,17 @@
       "category": "content",
       "rationale": "Only this queued projection SQL site uses original account currency, snapshot revalidation and the account-first batch commit. Generic entity APIs remain uncovered; not a completed fence.",
       "guard_contract": "tests/test_entity_account_guard_postgres.py"
+    },
+    {
+      "owner_source": "orchestrator.memory.provenance",
+      "qualname": "noted_suffix",
+      "kind": "filesystem_write",
+      "fingerprint": "be49ab5f8932ed84",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative scanner candidate for datetime.replace(tzinfo=UTC), not actual file I/O. Explicitly inventoried, no runtime-fence claim. Uncovered."
     },
     {
       "owner_source": "orchestrator.memory.retrieval",

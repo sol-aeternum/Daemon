@@ -58,7 +58,7 @@ from orchestrator.eval.run_manifest import (
 )
 from orchestrator.entitlements import attestation
 from orchestrator.entitlements.policy import load_inference_policy
-from orchestrator.memory import injection
+from orchestrator.memory import injection, provenance
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.injection import (
     MemoryContextInputs,
@@ -176,6 +176,59 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
     },
 )
 
+# Historical-clock mode: the corpus is a verified benchmark-only remap of a
+# qualified ingest, with every stored time moved onto its session's date.
+HISTORICAL_MESSAGE_TIMESTAMPS = {
+    "id": "message_timestamps",
+    "difference": "Ingested at wall-clock time, then remapped benchmark-only: each user's "
+    "stored times (messages, memories incl. valid_from/valid_to, extraction log, "
+    "conversations) are moved onto that session's haystack date in ingest order. The "
+    "recency clock and retrieval query_reference_time are the question's as-of time.",
+    "impact": "Recency and temporal windows see historical session time, as a user with "
+    "that history would. Extraction still never saw message times, so relative-date "
+    "facts stay unanchored (#601); dedup decisions were made at ingest time.",
+}
+
+
+def parity_exceptions(historical_clock: bool) -> tuple[dict[str, str], ...]:
+    if not historical_clock:
+        return PARITY_EXCEPTIONS
+    return tuple(
+        HISTORICAL_MESSAGE_TIMESTAMPS if item["id"] == "message_timestamps" else item
+        for item in PARITY_EXCEPTIONS
+    )
+
+
+def verify_historical_remap(
+    remap: Mapping[str, Any], derived_ingest: Mapping[str, Any], run_id: Any
+) -> Path:
+    """Check a remapped ingest checkpoint against its lineage; return the source manifest.
+
+    The derived checkpoint must equal the original qualified ingest except for
+    the protected-state fingerprint, which must be the lineage's remapped state.
+    """
+    lineage_path = Path(remap["lineage_path"])
+    original_path = Path(remap["original_checkpoint_path"])
+    if file_sha256(lineage_path) != remap["lineage_sha256"]:
+        raise ValueError("historical remap lineage changed")
+    if file_sha256(original_path) != remap["original_checkpoint_sha256"]:
+        raise ValueError("historical remap source checkpoint changed")
+    lineage = json.loads(lineage_path.read_text())
+    original = load_runner_checkpoint(original_path, dataset_path=None)
+    original_ingest = dict(original["phases"]["ingest"])
+    derived = dict(derived_ingest)
+    remapped_state = derived.pop("state_fingerprint", None) or {}
+    source_state = original_ingest.pop("state_fingerprint", None) or {}
+    if derived != original_ingest or original.get("run_id") != run_id:
+        raise ValueError("historical remap differs from its source ingest beyond state")
+    if (
+        lineage.get("status") != "remapped_snapshot_created"
+        or remapped_state.get("sha256") != lineage.get("remapped_state_sha256")
+        or source_state.get("sha256") != lineage.get("source", {}).get("state_sha256")
+    ):
+        raise ValueError("historical remap lineage does not match the checkpoints")
+    return original_path.parent / MANIFEST_FILENAME
+
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
@@ -282,7 +335,10 @@ def memory_formatter_identity() -> dict[str, Any]:
             injection._normalize_content,
             injection.estimate_tokens,
             injection.compose_system_prompt,
+            provenance.noted_suffix,
+            provenance.header_lines,
         ),
+        "render_noted_dates": provenance.RENDER_NOTED_DATES,
         "output_sha256": _sha256_text(_run_prompt_builder_for_hash()),
     }
 
@@ -930,6 +986,29 @@ def _source_qualification(manifest_path: Path, source_run_id: Any) -> dict[str, 
     }
 
 
+def _historical_clock(checkpoint: Mapping[str, Any]) -> bool:
+    """Historical-clock mode follows the corpus: on only for a verified remap source.
+
+    Re-verified on every call, so a resumed or edited checkpoint can't switch the
+    mode on: the recorded derived checkpoint must be byte-identical, pass
+    ``verify_historical_remap``, and hold exactly this run's ingest phase.
+    """
+    source = checkpoint.get("ingest_source") or {}
+    remap = source.get("historical_remap")
+    if not remap:
+        return False
+    derived_path = Path(source["checkpoint_path"])
+    if file_sha256(derived_path) != source.get("checkpoint_sha256"):
+        raise ValueError("historical remap ingest checkpoint changed")
+    derived = load_runner_checkpoint(derived_path, dataset_path=None)
+    if derived.get("historical_remap") != remap:
+        raise ValueError("historical remap record differs from its ingest checkpoint")
+    verify_historical_remap(remap, derived["phases"]["ingest"], derived.get("run_id"))
+    if derived["phases"]["ingest"] != checkpoint["phases"]["ingest"]:
+        raise ValueError("run's ingest phase differs from its historical remap source")
+    return True
+
+
 def _tally(values: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -1044,7 +1123,12 @@ class LongMemEvalFactRunner:
                 f"{self.checkpoint_path} already holds a different ingest than {self.from_ingest}"
             )
         checkpoint["phases"]["ingest"] = ingest_copy
-        source_manifest = self.from_ingest.parent / MANIFEST_FILENAME
+        remap = source.get("historical_remap")
+        if remap is not None:
+            # Qualification is the original ingest run's; the remap only moved times.
+            source_manifest = verify_historical_remap(remap, ingest_copy, source.get("run_id"))
+        else:
+            source_manifest = self.from_ingest.parent / MANIFEST_FILENAME
         checkpoint["ingest_source"] = {
             "checkpoint_path": str(self.from_ingest),
             "checkpoint_sha256": file_sha256(self.from_ingest),
@@ -1053,6 +1137,8 @@ class LongMemEvalFactRunner:
             "state_fingerprint": ingest_copy.get("state_fingerprint"),
             **_source_qualification(source_manifest, source.get("run_id")),
         }
+        if remap is not None:
+            checkpoint["ingest_source"]["historical_remap"] = dict(remap)
 
     @staticmethod
     def _preflight_database_guard() -> None:
@@ -1133,7 +1219,9 @@ class LongMemEvalFactRunner:
             "embedding": _embedding_route_description(),
             "ingest_source": checkpoint.get("ingest_source"),
             "ingest_snapshot": None,
-            "parity_exceptions": [dict(item) for item in PARITY_EXCEPTIONS],
+            "parity_exceptions": [
+                dict(item) for item in parity_exceptions(_historical_clock(checkpoint))
+            ],
             "invocations": [],
             "phases": {},
         }
@@ -1189,6 +1277,14 @@ class LongMemEvalFactRunner:
                 )
             if checkpoint.get("ingest_source") and not manifest.get("ingest_source"):
                 manifest["ingest_source"] = checkpoint["ingest_source"]
+            expected_exceptions = [
+                dict(item) for item in parity_exceptions(_historical_clock(checkpoint))
+            ]
+            if manifest.get("parity_exceptions") != expected_exceptions:
+                raise ManifestPinError(
+                    "Refusing to resume: this run's clock mode (parity exceptions) differs "
+                    "from its corpus. Start a fresh --output-dir."
+                )
         if self.ingest_snapshot is not None:
             manifest["ingest_snapshot"] = {
                 "path": str(self.ingest_snapshot),
@@ -1225,9 +1321,11 @@ class LongMemEvalFactRunner:
             }
         )
         campaign = current_campaign()
-        if campaign is not None and "retry_recovery_lineage" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_retry import retry_capable
+
+        if campaign is not None and retry_capable(campaign):
             manifest["campaign_retry_policy"] = {
-                "policy": campaign.plan["pins"]["retry_policy"],
+                "policy": campaign.plan["retry_policy"],
                 "plan_sha256": campaign._plan_hash,
                 "protocol": "explicit-opt-in-429; actual attempt histories may differ",
             }
@@ -1797,6 +1895,7 @@ class LongMemEvalFactRunner:
         async with self._phase("evaluate", checkpoint) as (pool, store, manifest):
             manifest["benchmark_users"] = _benchmark_users_record(tuple(streams.values()))
             fingerprint_start = await fingerprint_benchmark_users(pool, user_ids)
+            historical_clock = _historical_clock(checkpoint)
             expected = checkpoint["phases"]["ingest"].get("state_fingerprint")
             state_matches = (
                 expected is None or expected.get("sha256") == fingerprint_start["sha256"]
@@ -1921,6 +2020,7 @@ class LongMemEvalFactRunner:
                         benchmark_mode=self.benchmark_mode,
                         scope_factory=chat_scope,
                         as_of=as_of,
+                        historical_clock=historical_clock,
                     )
                 except Exception as exc:
                     logger.exception("[evaluate] Question %s failed", question_id)

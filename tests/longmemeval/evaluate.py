@@ -347,11 +347,9 @@ async def _call_llm_with_provider_config(
     }
     async with campaign_llm_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
         campaign = current_campaign()
-        retry_mode = (
-            is_benchmark
-            and campaign is not None
-            and "retry_recovery_lineage" in campaign.plan["pins"]
-        )
+        from orchestrator.eval.campaign_retry import retry_capable
+
+        retry_mode = is_benchmark and retry_capable(campaign)
         while True:
             if retry_mode:
                 await receipt.prepare_attempt()
@@ -662,11 +660,13 @@ async def build_parity_memory_context(
     question_text: str,
     allowed_source_conversation_ids: list[uuid.UUID] | None,
     log_retrieval: bool = False,
+    query_reference_time: datetime | None = None,
 ) -> tuple[str, MemoryContextInputs]:
     """Gather and render the memory block exactly as production does for a turn.
 
     The question stands in for the latest user message. Evaluation is read-only:
-    trust recording and access touches are disabled.
+    trust recording and access touches are disabled. ``query_reference_time``
+    (historical-clock mode only) anchors temporal query windows.
     """
     inputs = await gather_memory_context_inputs(
         store,
@@ -677,6 +677,7 @@ async def build_parity_memory_context(
         record_side_effects=False,
         log_retrieval=log_retrieval,
         retrieval_triggered_by=PARITY_RETRIEVAL_TRIGGER,
+        query_reference_time=query_reference_time,
     )
     return render_memory_context(inputs), inputs
 
@@ -755,17 +756,21 @@ async def evaluate_single_parity(
     benchmark_mode: bool = True,
     scope_factory: ScopeFactory | None = None,
     as_of: datetime | None = None,
+    historical_clock: bool = False,
 ) -> dict[str, Any]:
     """Evaluate one question through the production memory prompt surface.
 
     ``scope_factory`` opens the account compute scope a production chat turn
     runs in; only the qualified embedding route needs it. ``as_of`` is the
     question's "now": it pins the recency clock and adds production's runtime
-    date block. It does not set retrieval's ``query_reference_time``: stored
-    timestamps are still ingest time, so historical windows would match nothing.
+    date block. ``historical_clock`` (only for a remapped corpus whose stored
+    times are historical) also anchors retrieval's temporal windows at
+    ``as_of``; on an ingest-time corpus those windows would match nothing.
     """
     if as_of is not None and as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
+    if historical_clock and as_of is None:
+        raise ValueError("historical_clock requires as_of")
     scope = scope_factory() if scope_factory is not None else nullcontext()
     clock = RECENCY_REFERENCE_TIME.set(as_of)
     try:
@@ -776,6 +781,7 @@ async def evaluate_single_parity(
                 question_text=question_text,
                 allowed_source_conversation_ids=allowed_source_conversation_ids,
                 log_retrieval=log_retrieval,
+                query_reference_time=as_of if historical_clock else None,
             )
     finally:
         RECENCY_REFERENCE_TIME.reset(clock)
@@ -819,6 +825,7 @@ async def evaluate_single_parity(
     }
     if as_of is not None:
         result["as_of"] = as_of.isoformat()
+        result["historical_clock"] = historical_clock
     try:
         official = await judge_answer_official(
             question_text,

@@ -25,6 +25,7 @@ from orchestrator.eval.campaign_validation import (
     SNAPSHOT_SHA256,
     STATE_SHA256,
     digest_file,
+    expected_corpus,
     require,
 )
 
@@ -259,8 +260,17 @@ class FixedPool:
         await self.pool.close()
 
 
-def render_archive(snapshot: Path, directory: Path) -> Path:
-    require(digest_file(snapshot) == SNAPSHOT_SHA256, "Immutable snapshot hash differs")
+def _corpus(pins: Mapping[str, Any]) -> tuple[str, str]:
+    """A remap plan's pinned corpus; otherwise this module's original constants."""
+    if "historical_remap" in pins:
+        return expected_corpus(pins)
+    return SNAPSHOT_SHA256, STATE_SHA256
+
+
+def render_archive(snapshot: Path, directory: Path, expected: str | None = None) -> Path:
+    require(
+        digest_file(snapshot) == (expected or SNAPSHOT_SHA256), "Immutable snapshot hash differs"
+    )
     path = directory / "restore.sql"
     with path.open("xb") as out, snapshot.open("rb") as source:
         os.chmod(path, 0o600)
@@ -426,7 +436,8 @@ async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIt
     identity = container_identity()
     artifacts = campaign.directory / arm
     artifacts.mkdir(mode=0o700, exist_ok=False)
-    require(digest_file(snapshot) == SNAPSHOT_SHA256, "Immutable snapshot changed")
+    snapshot_sha256, state_sha256 = _corpus(campaign.plan["pins"])
+    require(digest_file(snapshot) == snapshot_sha256, "Immutable snapshot changed")
     script_pin = campaign.plan["pins"]["restore_script"]
     script = Path(script_pin["path"])
     require(digest_file(script) == script_pin["sha256"], "Reviewed restore script changed")
@@ -535,7 +546,7 @@ async def restored_pool(campaign: Campaign, arm: str, snapshot: Path) -> AsyncIt
             )
             users = [question_user_id(qid) for qid in campaign.plan["question_ids"]]
             fingerprint = await fingerprint_benchmark_users(connections[0], users)
-            require(fingerprint["sha256"] == STATE_SHA256, "Restored protected fingerprint differs")
+            require(fingerprint["sha256"] == state_sha256, "Restored protected fingerprint differs")
             receipt = {
                 "arm": arm,
                 "fingerprint": fingerprint,
