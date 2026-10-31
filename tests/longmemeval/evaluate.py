@@ -334,7 +334,7 @@ async def _call_llm_with_provider_config(
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    from orchestrator.eval.campaign_guard import campaign_call, current_campaign
+    from orchestrator.eval.campaign_guard import campaign_llm_call, current_campaign
 
     # Default-inert measurement hook. Never include credentials/headers in the
     # request identity or retained receipt. All decoding happens inside the call
@@ -344,16 +344,37 @@ async def _call_llm_with_provider_config(
         for key, value in call_params.items()
         if key not in {"api_key", "extra_headers", "timeout"}
     }
-    with campaign_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
-        try:
-            response = await litellm.acompletion(**call_params)
-        except Exception as e:
-            if is_benchmark:
-                raise BenchmarkProviderError(
-                    f"Benchmark-mode {bm_call_key} provider failure: {e}"
-                ) from e
-            logger.error(f"LLM call failed: {e}")
-            return None
+    async with campaign_llm_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
+        campaign = current_campaign()
+        retry_mode = (
+            is_benchmark
+            and campaign is not None
+            and "retry_recovery_lineage" in campaign.plan["pins"]
+        )
+        while True:
+            if retry_mode:
+                await receipt.prepare_attempt()
+            try:
+                response = await litellm.acompletion(**call_params)
+            except Exception as e:
+                if retry_mode:
+                    if receipt.retry_failure(e):
+                        continue
+                    raise BenchmarkProviderError(
+                        "Guarded provider attempt failed; see diagnostics"
+                    ) from e
+                if is_benchmark:
+                    receipt.failure_details(e)
+                    if current_campaign() is not None:
+                        raise BenchmarkProviderError(
+                            "Guarded benchmark provider failure; see diagnostics"
+                        ) from e
+                    raise BenchmarkProviderError(
+                        f"Benchmark-mode {bm_call_key} provider failure: {e}"
+                    ) from e
+                logger.error(f"LLM call failed: {e}")
+                return None
+            break
 
         if current_campaign() is not None:
             model_dump = getattr(response, "model_dump", None)

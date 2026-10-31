@@ -35,6 +35,7 @@ from orchestrator.eval.campaign_restore import (
     render_archive,
     target_identity,
     verify_server,
+    verify_sessions,
 )
 from orchestrator.eval.campaign_validation import (
     DEV_SHA256,
@@ -58,6 +59,7 @@ COMMON = (
     "orchestrator/eval/campaign_validation.py",
     "orchestrator/eval/campaign_sql.py",
     "orchestrator/eval/campaign_launch.py",
+    "orchestrator/eval/campaign_recovery.py",
     "orchestrator/eval/fact_harness.py",
     "orchestrator/memory/embedding.py",
     "orchestrator/memory/embedding_adapter.py",
@@ -218,6 +220,23 @@ def verify_common(control: str, candidate: str) -> dict[str, str]:
 
 
 def checkout(plan: CampaignPlan, arm: str) -> None:
+    if "final_verdict_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_final_verdict import verify_recovery
+
+        require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in final recovery")
+        verify_recovery(json.loads(json.dumps(plan.payload())))
+    elif "retry_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_retry import verify_recovery
+
+        require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in retry recovery")
+        verify_recovery(json.loads(json.dumps(plan.payload())))
+    elif "recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_recovery import verify_recovery
+
+        require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in recovery")
+        verify_recovery(json.loads(json.dumps(plan.payload())))
+    else:
+        verify_replacement_lineage(plan.pins.get("replacement_lineage"))
     actual = git_state(ROOT)
     require(
         actual["sha"] == plan.pins["arm_shas"][arm] and actual["dirty"] is False,
@@ -246,6 +265,141 @@ def checkout(plan: CampaignPlan, arm: str) -> None:
     for name in ("snapshot", "ingest_checkpoint", "ingest_manifest", "restore_script"):
         artifact = plan.pins[name]
         require(digest_file(Path(artifact["path"])) == artifact["sha256"], f"Pinned {name} changed")
+
+
+def verify_replacement_lineage(lineage: Any) -> dict[str, Any]:
+    """Keep failed paid/restore attempts immutable; never load them as resumable."""
+    require(isinstance(lineage, dict), "Replacement lineage required")
+    evidence = {}
+    for name in ("previous_plan", "failed_ledger"):
+        artifact = lineage[name]
+        path = Path(artifact["path"])
+        require(digest_file(path) == artifact["sha256"], f"Replacement {name} changed")
+        evidence[name] = json.loads(path.read_bytes())
+    previous, failed = evidence["previous_plan"], evidence["failed_ledger"]
+    require(
+        previous["prior_reserved_usd"] == "1.7019050"
+        and previous["new_reserved_usd"] == "4.35"
+        and previous["cumulative_reserved_usd"] == "6.0519050"
+        and previous["arms"] == list(ARMS),
+        "Unexpected original reservation/arms",
+    )
+    require(
+        failed["plan"] == previous
+        and failed["status"] == "stopped_reconciliation_required"
+        and failed["failure_admission"] == "closed"
+        and failed["restore_attempts"] == 1
+        and failed["restore_pending"] is None
+        and len(failed["restore_receipts"]) == 1
+        and len(failed["receipts"]) == 6
+        and failed["arm"] == "A0"
+        and failed["arm_index"] == 0
+        and failed["pending"]["arm"] == "A0"
+        and failed["pending"]["stage"] == "judge"
+        and failed["pending"]["question_id"] == previous["question_ids"][1],
+        "Original failure differs; explicit new recovery decision required",
+    )
+    return previous
+
+
+async def prepare_replacement(args: argparse.Namespace) -> None:
+    """Read-only preparation from pinned history while target admission stays closed.
+
+    The inherited catalogue is dated evidence. The unchanged restore boundary
+    remeasures it after opening owned connections and reclosing admission, before
+    DROP; this preparation never claims a fresh target catalogue/fingerprint.
+    """
+    require(not args.output.exists(), "Plan output already exists")
+    lineage = {
+        name: {
+            "path": str(getattr(args, name).resolve()),
+            "sha256": getattr(args, name + "_sha256"),
+        }
+        for name in ("previous_plan", "failed_ledger")
+    }
+    previous = verify_replacement_lineage(lineage)
+    dataset = load_dev(DEV)
+    require(
+        [row["question_id"] for row in dataset] == previous["question_ids"],
+        "Original dev order changed",
+    )
+    pins = json.loads(json.dumps(previous["pins"]))
+    require(environment() == pins["effective_config"], "Original benchmark config changed")
+    require(tokenizer()[1] == pins["tokenizer_sha256"], "Original tokenizer changed")
+    for name in ("snapshot", "ingest_checkpoint", "ingest_manifest", "restore_script"):
+        artifact = pins[name]
+        require(
+            digest_file(Path(artifact["path"])) == artifact["sha256"], f"Original {name} changed"
+        )
+    require(pins["snapshot"]["sha256"] == SNAPSHOT_SHA256, "Unqualified archive")
+    pins["common_files"] = verify_common(args.control_sha, args.candidate_sha)
+    pins["arm_shas"] = {
+        arm: args.candidate_sha if arm == "C0" else args.control_sha for arm in ARMS
+    }
+    pins["route_evidence"] = await asyncio.to_thread(rates)
+    pins["replacement_lineage"] = lineage
+    require(pins["original_allow_connections"] is True, "Original access state differs")
+    container_identity()
+    control = await asyncpg.connect(
+        CONTROL_DSN,
+        timeout=10,
+        command_timeout=30,
+        server_settings={"default_transaction_read_only": "on"},
+    )
+    try:
+        await verify_server(control)
+        identity = await target_identity(control)
+        require(
+            identity["system_identifier"] == pins["server_identifier"]
+            and identity["oid"] == pins["database_oid"]
+            and identity["datallowconn"] is False,
+            "Replacement target identity/admission differs",
+        )
+        await verify_sessions(control, set())
+    finally:
+        await control.close()
+    pins["replacement_preparation"] = {
+        "checked_at": datetime.now(UTC).isoformat(),
+        "target_admission": "closed",
+        "catalogue_evidence": "inherited; mandatory live recheck before DROP",
+        "prior_restore_attempts": 1,
+        "replacement_restore_limit": 4,
+    }
+    verify_replacement_lineage(lineage)
+    plan = CampaignPlan(tuple(previous["question_ids"]), previous["input_limits"], pins)
+    _write(args.output, plan.payload())
+
+
+def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
+    """One fixed successor ledger, not a fresh allowance per output directory.
+
+    Like the sibling lock, this is cooperative operator protection, not a defense
+    against a same-UID administrator copying or deleting retained evidence.
+    """
+    if "final_verdict_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_final_verdict import verify_recovery
+
+        verify_recovery(json.loads(json.dumps(plan.payload())), directory)
+        return
+    if "retry_recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_retry import verify_recovery
+
+        verify_recovery(json.loads(json.dumps(plan.payload())), directory)
+        return
+    if "recovery_lineage" in plan.pins:
+        from orchestrator.eval.campaign_recovery import verify_recovery
+
+        verify_recovery(json.loads(json.dumps(plan.payload())), directory)
+        return
+    lineage = plan.pins.get("replacement_lineage")
+    verify_replacement_lineage(lineage)
+    assert isinstance(lineage, dict)  # Enforced by verify_replacement_lineage above.
+    failed_directory = Path(lineage["failed_ledger"]["path"]).resolve(strict=True).parent
+    expected = failed_directory.with_name(failed_directory.name + "-replacement")
+    require(
+        directory.absolute() == expected and not directory.is_symlink(),
+        "Replacement must use the fixed successor campaign directory",
+    )
 
 
 async def prepare(args: argparse.Namespace) -> None:
@@ -381,6 +535,7 @@ def load_plan(path: Path) -> CampaignPlan:
 
 async def run_arm(args: argparse.Namespace) -> None:
     plan = load_plan(args.plan)
+    verify_replacement_destination(plan, args.campaign)
     checkout(plan, args.arm)
     require(
         environment() == plan.pins["effective_config"],
@@ -408,7 +563,15 @@ async def run_arm(args: argparse.Namespace) -> None:
     with Campaign(
         args.campaign, plan, lambda text: len(encoding.encode_ordinary(text))
     ).activate() as campaign:
-        async with restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"])):
+        from orchestrator.eval.campaign_retry import enabled
+        from orchestrator.eval.campaign_restore import attached_pool
+
+        pool_context = (
+            attached_pool(campaign)
+            if enabled(campaign) and args.arm == "A1"
+            else restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"]))
+        )
+        async with pool_context:
             output = args.campaign / args.arm
             runner = fact_harness.LongMemEvalFactRunner(
                 dataset_path=DEV,
@@ -498,6 +661,46 @@ def main() -> None:
         prep.add_argument("--" + name, type=Path, required=True)
     for name in ("control-sha", "candidate-sha"):
         prep.add_argument("--" + name, required=True)
+    replacement = commands.add_parser(
+        "prepare-replacement", help="Read-only recovery preparation; target stays closed"
+    )
+    for name in ("previous-plan", "failed-ledger", "output"):
+        replacement.add_argument("--" + name, type=Path, required=True)
+    for name in ("previous-plan-sha256", "failed-ledger-sha256", "control-sha", "candidate-sha"):
+        replacement.add_argument("--" + name, required=True)
+    second = commands.add_parser(
+        "prepare-second-replacement", help="Offline exact stopped-A1 recovery preparation only"
+    )
+    for name in ("previous-replacement-plan", "stopped-a1-ledger", "output"):
+        second.add_argument("--" + name, type=Path, required=True)
+    for name in (
+        "previous-replacement-plan-sha256",
+        "stopped-a1-ledger-sha256",
+        "control-sha",
+        "candidate-sha",
+    ):
+        second.add_argument("--" + name, required=True)
+    retry = commands.add_parser(
+        "prepare-retry-recovery", help="Offline exact stopped-official recovery"
+    )
+    for name in ("previous-plan", "stopped-ledger", "output"):
+        retry.add_argument("--" + name, type=Path, required=True)
+    for name in ("previous-plan-sha256", "stopped-ledger-sha256", "control-sha", "candidate-sha"):
+        retry.add_argument("--" + name, required=True)
+    final = commands.add_parser(
+        "prepare-final-verdict-recovery", help="Offline exact completed-verdict import preparation"
+    )
+    for name in ("previous-plan", "stopped-ledger", "attempt-record", "result", "output"):
+        final.add_argument("--" + name, type=Path, required=True)
+    for name in (
+        "previous-plan-sha256",
+        "stopped-ledger-sha256",
+        "attempt-record-sha256",
+        "result-sha256",
+        "control-sha",
+        "candidate-sha",
+    ):
+        final.add_argument("--" + name, required=True)
     run = commands.add_parser(
         "arm", help="One explicitly reviewed arm; never automatic resume/retry"
     )
@@ -505,7 +708,19 @@ def main() -> None:
         run.add_argument("--" + name, type=Path, required=True)
     run.add_argument("--arm", choices=ARMS, required=True)
     args = parser.parse_args()
-    asyncio.run(prepare(args) if args.command == "prepare" else run_arm(args))
+    from orchestrator.eval.campaign_recovery import prepare_second_replacement
+    from orchestrator.eval.campaign_retry import prepare as prepare_retry
+    from orchestrator.eval.campaign_final_verdict import prepare as prepare_final
+
+    operation = {
+        "prepare": prepare,
+        "prepare-replacement": prepare_replacement,
+        "prepare-second-replacement": prepare_second_replacement,
+        "prepare-retry-recovery": prepare_retry,
+        "prepare-final-verdict-recovery": prepare_final,
+        "arm": run_arm,
+    }
+    asyncio.run(operation[args.command](args))
 
 
 if __name__ == "__main__":

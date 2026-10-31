@@ -2326,6 +2326,17 @@
       "rationale": "Strict benchmark evidence atomic replacement; no account-generation fence coverage."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_final_verdict",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "e036dd0f46fe4715",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive final-verdict import evidence directories; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_guard",
       "qualname": "_write",
       "kind": "filesystem_write",
@@ -2390,6 +2401,138 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Benchmark-only prepared-script directory; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "0540cbe60c130f57",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Private benchmark A0 evidence copy open; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "5a35087507b880f4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive private benchmark A0 destination open; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "96634f713ab0c8c4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsync of copied benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "ab4bf8ac783431cc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive inherited benchmark A0 directory creation; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "e226661cfe4f11e3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Copies hash-bound private benchmark evidence bytes; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_recovery",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "fb9b4bf2eabdf5b6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes copied private benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "5a35087507b880f4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive hash-bound benchmark evidence copy; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "89c37f35fedb7daa",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Private benchmark evidence permission setting; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "96634f713ab0c8c4",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Durability flush of copied benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "e226661cfe4f11e3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Copies retained benchmark prefix/receipt bytes; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "_copy",
+      "kind": "filesystem_write",
+      "fingerprint": "fb9b4bf2eabdf5b6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes private retained benchmark evidence; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_retry",
+      "qualname": "bootstrap",
+      "kind": "filesystem_write",
+      "fingerprint": "e036dd0f46fe4715",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusive retry bootstrap evidence directories; no account-generation fence coverage."
     },
     {
       "owner_source": "orchestrator.eval.campaign_restore",

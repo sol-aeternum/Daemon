@@ -1196,6 +1196,13 @@ class LongMemEvalFactRunner:
                 "concurrency": self.concurrency,
             }
         )
+        campaign = current_campaign()
+        if campaign is not None and "retry_recovery_lineage" in campaign.plan["pins"]:
+            manifest["campaign_retry_policy"] = {
+                "policy": campaign.plan["pins"]["retry_policy"],
+                "plan_sha256": campaign._plan_hash,
+                "protocol": "explicit-opt-in-429; actual attempt histories may differ",
+            }
         save_manifest(path, manifest)
         return manifest
 
@@ -1737,6 +1744,17 @@ class LongMemEvalFactRunner:
         question_order = build_question_order(dataset)
 
         campaign = current_campaign()
+        final_recovery = (
+            campaign is not None
+            and "final_verdict_recovery_lineage" in campaign.plan["pins"]
+            and campaign.state["arm"] == "A1"
+        )
+        retry_recovery = (
+            campaign is not None
+            and "retry_recovery_lineage" in campaign.plan["pins"]
+            and campaign.state["arm"] == "A1"
+            and not final_recovery
+        )
         if campaign is not None:
             if (
                 question_order != campaign.plan["question_ids"]
@@ -1762,7 +1780,27 @@ class LongMemEvalFactRunner:
                         "Restore the ingest snapshot (RUNBOOK_LAPTOP.md) before evaluating."
                     )
                 logger.warning("[evaluate] Proceeding on a database that differs from the ingest")
-            self._reconcile_results(checkpoint, question_order, manifest)
+            if final_recovery:
+                from orchestrator.eval.campaign_final_verdict import (
+                    seed_runner,
+                    write_recovery_results,
+                )
+
+                assert campaign is not None
+                seed_runner(campaign, checkpoint, manifest)
+                write_recovery_results(
+                    campaign, self.output_path, ordered_results(evaluate_phase["results"])
+                )
+            elif retry_recovery:
+                from orchestrator.eval.campaign_retry import seed_runner, write_recovery_results
+
+                assert campaign is not None
+                seed_runner(campaign, checkpoint, manifest)
+                write_recovery_results(
+                    campaign, self.output_path, ordered_results(evaluate_phase["results"])
+                )
+            else:
+                self._reconcile_results(checkpoint, question_order, manifest)
             save_runner_checkpoint(self.checkpoint_path, checkpoint)
 
             completed_results: dict[str, dict[str, Any]] = evaluate_phase["results"]
@@ -1778,6 +1816,31 @@ class LongMemEvalFactRunner:
             for idx, entry in enumerate(dataset):
                 question_id = question_order[idx]
                 previous = completed_results.get(question_id)
+                if retry_recovery and idx == 48:
+                    # Must precede generic is_completed_result: the paid generic
+                    # result is complete, but its official judgment is not.
+                    from orchestrator.eval.campaign_retry import (
+                        recover_official,
+                        write_recovery_results,
+                    )
+
+                    assert campaign is not None and previous is not None
+                    self._check_stop()
+                    result = await recover_official(campaign, previous)
+                    completed_results[question_id] = result
+                    write_recovery_results(
+                        campaign,
+                        self.output_path,
+                        [
+                            completed_results[qid]
+                            for qid in question_order
+                            if qid in completed_results
+                        ],
+                    )
+                    save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                    self._heartbeat(manifest)
+                    campaign.finish_question(result)
+                    continue
                 if is_completed_result(previous):
                     continue
                 self._check_stop()
@@ -1862,7 +1925,18 @@ class LongMemEvalFactRunner:
             question_ids = [row["question_id"] for row in ordered_results_list]
             if len(question_ids) != len(set(question_ids)):
                 raise RuntimeError("Duplicate question results after evaluation")
-            atomic_write_jsonl(self.output_path, ordered_results_list)
+            if final_recovery:
+                from orchestrator.eval.campaign_final_verdict import write_recovery_results
+
+                assert campaign is not None
+                write_recovery_results(campaign, self.output_path, ordered_results_list)
+            elif retry_recovery:
+                from orchestrator.eval.campaign_retry import write_recovery_results
+
+                assert campaign is not None
+                write_recovery_results(campaign, self.output_path, ordered_results_list)
+            else:
+                atomic_write_jsonl(self.output_path, ordered_results_list)
             fingerprint_end = await fingerprint_benchmark_users(pool, user_ids)
             errored = [row for row in ordered_results_list if not is_completed_result(row)]
             mark_phase_completed(
@@ -1936,6 +2010,23 @@ class LongMemEvalFactRunner:
             )
 
         payload = build_score_payload(results)
+        campaign = current_campaign()
+        if (
+            campaign is not None
+            and "final_verdict_recovery_lineage" in campaign.plan["pins"]
+            and campaign.state["arm"] == "A1"
+        ):
+            from orchestrator.eval.campaign_final_verdict import validate_prefix
+
+            validate_prefix(campaign, results, load_manifest(self.resolved_manifest_path()) or {})
+        elif (
+            campaign is not None
+            and "retry_recovery_lineage" in campaign.plan["pins"]
+            and campaign.state["arm"] == "A1"
+        ):
+            from orchestrator.eval.campaign_retry import validate_prefix
+
+            validate_prefix(campaign, results, load_manifest(self.resolved_manifest_path()) or {})
         write_json(self.score_path, payload)
         score_phase["accuracy"] = payload["accuracy"]
         score_phase["result_count"] = payload["result_count"]
