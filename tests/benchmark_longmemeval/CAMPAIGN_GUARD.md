@@ -293,6 +293,28 @@ Before any real run, final source/gate evidence and action-time supervision must
   three controls. Embedding-only scope is approved; historical B is not a qualified
   lexical comparator. No candidate reruns until success.
 
+### Historical-clock corpus (#601 remap) — owner-approved, 2026-10-31
+
+`prepare --historical-remap LINEAGE` plans a campaign on a benchmark-only remapped
+corpus: a copy of the qualified ingest whose stored times were moved onto each
+session's haystack date. Preparation requires that the lineage derives from the
+qualified snapshot/state constants. `--snapshot` must be the lineage's snapshot,
+and `--ingest` must be a derived checkpoint whose `historical_remap` block hash-pins
+this lineage and the original ingest checkpoint. `fact_harness.verify_historical_remap`
+then requires the derived ingest to equal the original except for its
+protected-state fingerprint, which must be the lineage's remapped state.
+Qualification is the original ingest run's manifest; no new qualified manifest
+is written. The live database is still verified against the original state at
+preparation. Arms restore and evaluate the remapped snapshot/state pinned in
+`pins.historical_remap` (`campaign_validation.expected_corpus`). Plans without
+that block keep the original constants, so earlier campaigns verify unchanged.
+
+The runner enables historical-clock mode only from a verified remap source:
+retrieval then also receives `query_reference_time` = the question's as-of time,
+and the manifest records the historical `message_timestamps` parity exception.
+Comparability therefore refuses to mix the two modes, and a resumed run whose
+recorded exceptions differ from its corpus's mode is refused.
+
 All final source gates/review and actual-state launch checks remain required. No
 inference, ingest, restore, holdout inspection, source expansion, date adaptation,
 reader-cap change, production deployment or candidate acceptance is established by

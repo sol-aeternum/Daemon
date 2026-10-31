@@ -29,6 +29,18 @@ def digest_file(path: Path) -> str:
     return value.hexdigest()
 
 
+def expected_corpus(pins: Mapping[str, Any]) -> tuple[str, str]:
+    """(snapshot, protected-state) SHA-256 a plan's arms must restore and evaluate.
+
+    Plans without a historical remap use the original qualified corpus constants,
+    so every earlier campaign verifies unchanged.
+    """
+    remap = pins.get("historical_remap")
+    if remap is None:
+        return SNAPSHOT_SHA256, STATE_SHA256
+    return str(remap["snapshot_sha256"]), str(remap["state_sha256"])
+
+
 def require(condition: object, reason: str) -> None:
     if not condition:
         raise CampaignStopped(reason)
@@ -48,8 +60,11 @@ def qualification(
     manifest: Mapping[str, Any],
     checkpoint: Mapping[str, Any],
     score: Mapping[str, Any],
+    *,
+    corpus: tuple[str, str] = (SNAPSHOT_SHA256, STATE_SHA256),
 ) -> dict[str, Any]:
     """Check real artifacts, never accept a bare success flag or generic score."""
+    snapshot_sha256, state_sha256 = corpus
     ids = [str(row["question_id"]) for row in dataset]
     official = require_complete_official_coverage(rows, ids)
     dual = score_dual_judgments(rows)
@@ -101,14 +116,14 @@ def qualification(
     require(manifest.get("git", {}).get("dirty") is False, "Dirty execution code")
     require(manifest.get("dataset", {}).get("sha256") == DEV_SHA256, "Manifest dataset differs")
     require(
-        manifest.get("ingest_snapshot", {}).get("sha256") == SNAPSHOT_SHA256, "Snapshot differs"
+        manifest.get("ingest_snapshot", {}).get("sha256") == snapshot_sha256, "Snapshot differs"
     )
     require(manifest.get("substrate") == "fact", "Wrong substrate")
     require(evaluate.get("state_matches_ingest_at_start") is True, "State mismatch override")
     require(evaluate.get("state_unchanged_by_evaluate") is True, "State mutated during evaluate")
     for key in ("state_fingerprint_start", "state_fingerprint_end"):
         require(
-            evaluate.get(key, {}).get("sha256") == STATE_SHA256, "Protected fingerprint differs"
+            evaluate.get(key, {}).get("sha256") == state_sha256, "Protected fingerprint differs"
         )
     require(evaluate.get("retrieval_modes") == {RETRIEVAL_MODE: 50}, "Retrieval mode/count differs")
     require(

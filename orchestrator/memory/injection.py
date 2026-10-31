@@ -4,6 +4,7 @@ import asyncio
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
@@ -210,6 +211,7 @@ async def gather_memory_context_inputs(
     record_side_effects: bool = True,
     log_retrieval: bool = False,
     retrieval_triggered_by: str | None = None,
+    query_reference_time: datetime | None = None,
 ) -> MemoryContextInputs:
     """Read L0 memories, retrieved memories and summaries for one prompt.
 
@@ -218,7 +220,9 @@ async def gather_memory_context_inputs(
     ``query_text``, scopes every source to the question's haystack with
     ``allowed_source_conversation_ids`` and disables ``record_side_effects``
     (trust recording and memory access touches) so evaluation never changes
-    ranking state. The production defaults are unchanged.
+    ranking state. Only its historical-clock mode passes
+    ``query_reference_time``, the "now" for temporal query windows; production
+    leaves it unset. The production defaults are unchanged.
     """
     include_local = str(pipeline or "").strip().lower() == "local"
     allowed = (
@@ -273,6 +277,8 @@ async def gather_memory_context_inputs(
                 retrieval_kwargs["log_retrieval"] = True
             if retrieval_triggered_by is not None:
                 retrieval_kwargs["retrieval_triggered_by"] = retrieval_triggered_by
+            if query_reference_time is not None:
+                retrieval_kwargs["query_reference_time"] = query_reference_time
             retrieved = await retrieve_memories_for_text(
                 store=store,
                 query_text=query_text,

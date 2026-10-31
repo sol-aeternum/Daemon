@@ -40,8 +40,10 @@ from orchestrator.eval.campaign_restore import (
 from orchestrator.eval.campaign_validation import (
     DEV_SHA256,
     SNAPSHOT_SHA256,
+    STATE_SHA256,
     comparability,
     digest_file,
+    expected_corpus,
     load_dev,
     paired_result,
     qualification,
@@ -402,10 +404,45 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     )
 
 
+def _historical_remap_pins(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify a historical-remap lineage against the snapshot and derived ingest checkpoint."""
+    lineage_path = args.historical_remap.resolve()
+    lineage = json.loads(lineage_path.read_bytes())
+    require(lineage.get("status") == "remapped_snapshot_created", "Remap lineage incomplete")
+    require(
+        lineage["source"]["snapshot_sha256"] == SNAPSHOT_SHA256
+        and lineage["source"]["state_sha256"] == STATE_SHA256,
+        "Remap is not derived from the qualified corpus",
+    )
+    require(
+        Path(lineage["snapshot"]["path"]).resolve() == args.snapshot.resolve(),
+        "Snapshot is not the remap lineage's",
+    )
+    derived = fact_harness.load_runner_checkpoint(args.ingest, dataset_path=None)
+    remap = derived.get("historical_remap") or {}
+    require(
+        Path(remap.get("lineage_path", "")).resolve() == lineage_path
+        and remap.get("lineage_sha256") == digest_file(lineage_path),
+        "Ingest checkpoint is not this remap's",
+    )
+    source_manifest = fact_harness.verify_historical_remap(
+        remap, derived["phases"]["ingest"], derived.get("run_id")
+    )
+    return {
+        "lineage_path": str(lineage_path),
+        "lineage_sha256": digest_file(lineage_path),
+        "snapshot_sha256": lineage["snapshot"]["sha256"],
+        "state_sha256": lineage["remapped_state_sha256"],
+        "source_manifest": str(source_manifest),
+    }
+
+
 async def prepare(args: argparse.Namespace) -> None:
     dataset = load_dev(DEV)
     effective = environment()
-    require(digest_file(args.snapshot) == SNAPSHOT_SHA256, "Wrong immutable archive")
+    historical = _historical_remap_pins(args) if args.historical_remap else None
+    snapshot_sha256 = historical["snapshot_sha256"] if historical else SNAPSHOT_SHA256
+    require(digest_file(args.snapshot) == snapshot_sha256, "Wrong immutable archive")
     common = verify_common(args.control_sha, args.candidate_sha)
     cost = json.loads(args.cost_preflight.read_bytes())
     require(
@@ -448,7 +485,11 @@ async def prepare(args: argparse.Namespace) -> None:
         == 2,
         "Unexpected reader message shape",
     )
-    source_manifest = args.ingest.parent / "run_manifest.json"
+    source_manifest = (
+        Path(historical["source_manifest"])
+        if historical
+        else args.ingest.parent / "run_manifest.json"
+    )
     source = json.loads(source_manifest.read_bytes())
     require(
         source["baseline_qualified"] is True and source["disqualifications"] == [],
@@ -477,7 +518,6 @@ async def prepare(args: argparse.Namespace) -> None:
         async with connection.transaction(isolation="repeatable_read", readonly=True):
             schema = await catalogue(connection)
             from orchestrator.eval.bench_db import fingerprint_benchmark_users, question_user_id
-            from orchestrator.eval.campaign_validation import STATE_SHA256
 
             fingerprint = await fingerprint_benchmark_users(
                 connection, [question_user_id(row["question_id"]) for row in dataset]
@@ -491,7 +531,9 @@ async def prepare(args: argparse.Namespace) -> None:
         await control.close()
     script_directory = args.output.parent / (args.output.stem + "-restore-script")
     script_directory.mkdir(mode=0o700, exist_ok=False)
-    script = await asyncio.to_thread(render_archive, args.snapshot, script_directory)
+    script = await asyncio.to_thread(
+        render_archive, args.snapshot, script_directory, snapshot_sha256
+    )
     pins = {
         "common_files": common,
         "arm_shas": {arm: args.candidate_sha if arm == "C0" else args.control_sha for arm in ARMS},
@@ -521,6 +563,13 @@ async def prepare(args: argparse.Namespace) -> None:
         "effective_config": effective,
         "restore_script": {"path": str(script.resolve()), "sha256": digest_file(script)},
     }
+    if historical:
+        # Arms restore and evaluate the remapped corpus; the live database is still
+        # verified above against the original qualified state it derives from.
+        pins["historical_remap"] = {
+            key: historical[key]
+            for key in ("lineage_path", "lineage_sha256", "snapshot_sha256", "state_sha256")
+        }
     plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
     require(not args.output.exists(), "Plan output already exists")
     _write(args.output, plan.payload())
@@ -586,7 +635,9 @@ async def run_arm(args: argparse.Namespace) -> None:
             score = runner.score()
             manifest = json.loads((output / "run_manifest.json").read_bytes())
             checkpoint = json.loads(runner.checkpoint_path.read_bytes())
-            qualified = qualification(rows, dataset, manifest, checkpoint, score)
+            qualified = qualification(
+                rows, dataset, manifest, checkpoint, score, corpus=expected_corpus(plan.pins)
+            )
             require(
                 manifest["git"]["sha"] == plan.pins["arm_shas"][args.arm],
                 "Manifest execution SHA differs",
@@ -661,6 +712,12 @@ def main() -> None:
         prep.add_argument("--" + name, type=Path, required=True)
     for name in ("control-sha", "candidate-sha"):
         prep.add_argument("--" + name, required=True)
+    prep.add_argument(
+        "--historical-remap",
+        type=Path,
+        default=None,
+        help="Remap lineage JSON: arms restore its snapshot with a derived --ingest checkpoint",
+    )
     replacement = commands.add_parser(
         "prepare-replacement", help="Read-only recovery preparation; target stays closed"
     )
