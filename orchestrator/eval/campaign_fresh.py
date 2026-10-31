@@ -38,8 +38,8 @@ from orchestrator.eval.campaign_validation import (
 )
 
 APPROVAL: dict[str, Any] = {
-    "id": "2026-10-31-noted-dates-historical-v1",
-    "directory": "/home/sol/.local/share/daemon-lme-bench/runs/remap-historical-2026-10-31/campaign-noted-dates-v1",
+    "id": "2026-10-31-noted-dates-historical-v2",
+    "directory": "/home/sol/.local/share/daemon-lme-bench/runs/remap-historical-2026-10-31/campaign-noted-dates-v2",
     "new_reserved_usd": "5.50",
     "maximum_allocated_usd": "4.46",
     "retry_headroom_usd": "1.10",
@@ -49,10 +49,12 @@ APPROVAL: dict[str, Any] = {
     "historical_remap_lineage_sha256": "4f77d026dc4336190b5fe26372254c1d653784df76255fdb316a504fde101a91",
 }
 PRIOR: dict[str, Any] = {
-    "plan_path": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/campaign-plan-replacement-20261030-recovery-retry-final-verdict.json",
-    "plan_sha256": "7a7379f05bcbd2c77811a3f12b92b56a80fc3aa7997c6d47ad530638d715e862",
-    "prior_reserved_usd": "15.7519050",
-    "prior_restore_attempts": 6,
+    # The stopped v1 fresh plan (its A0 stopped at the zero-category sanity check);
+    # its cumulative $21.2519050 and 7 consumed restores carry forward, never reused.
+    "plan_path": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/campaign-plan-fresh-noted-dates-v2-20261031.json",
+    "plan_sha256": "d80e99edfff5e3fecccdcc13934e73d728d2b6d0dc9368c96a402ff261840a78",
+    "prior_reserved_usd": "21.2519050",
+    "prior_restore_attempts": 7,
 }
 PIN_KEYS = frozenset(
     {
