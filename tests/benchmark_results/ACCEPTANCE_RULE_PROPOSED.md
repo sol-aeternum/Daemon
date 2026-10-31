@@ -3,6 +3,9 @@
 **Status: Ratified by the owner on 2026-10-28.** Rule version:
 `2026-10-28-official-v1`. The existing qualification checks and numerical paired-noise,
 category and abstention thresholds below are retained without exemptions.
+One owner-approved amendment, `2026-10-31-official-v2`, applies only to plans that
+explicitly bind it (see [Amendment](#amendment-2026-10-31-official-v2)); every other
+use keeps v1.
 
 **Primary metric:** official category/abstention-aware strict accuracy, with the
 unchanged generic strict series retained as a secondary regression report. This is
@@ -46,7 +49,8 @@ LongMemEval_S run for any public claim.
 5. `phases.evaluate.retrieval_modes` has a single key, and it matches the declared mode
    (`embedding:<model>` or `lexical`).
 6. No category scores 0. Overall accuracy is not below 5% or above 95%. Either result triggers
-   investigation, not acceptance.
+   investigation, not acceptance. (Under the v2 amendment only, the zero-category
+   condition applies to categories of at least 5 questions.)
 7. Every baseline, canonical noise and candidate run covers **exactly the frozen
    50 dev question IDs**, once each, with one binary `official_judgment` (`correct`
    or `incorrect`) per ID. No duplicates, missing/extra IDs or invalid verdicts:
@@ -115,6 +119,26 @@ flips. If no repeat ingest exists, the change can't be accepted on the dev subse
 **Reject or investigate** otherwise. A result inside the noise band is "no measured effect". That
 is a valid finding to record, not a failure to rerun until it passes. Reruns of the candidate alone
 until it clears the bar are not allowed.
+
+## Amendment 2026-10-31-official-v2
+
+Owner-approved on 2026-10-31 for the fresh historical noted-dates campaign (#601).
+It is identical to v1 except §1.6: a category must score above 0 only if it has at
+least 5 questions (`MIN_SANITY_CATEGORY`). Smaller categories may score 0. They are
+still fully covered, because §1.7 requires one binary official verdict per question.
+All other conditions are unchanged: overall accuracy bounds, comparability, the
+decision procedure, the noise threshold and the category and abstention limits.
+
+Reason: the first fresh campaign's A0 completed every call but scored 0/3 on the
+IE-preference category, whose questions are rubric-judged. One of the three answers
+had byte-identical memories and a near-identical answer to the qualified original
+A0, yet the official judge flipped Yes to No. That is judge noise, not broken
+scoring.
+
+Scope: only plans whose fixed approval binds `acceptance_rule: 2026-10-31-official-v2`
+(`orchestrator/eval/campaign_fresh.py` approval `2026-10-31-noted-dates-historical-v2`).
+Those plans report this version in `paired-result.json`. The stopped v1 fresh plan
+and all earlier campaigns remain under v1.
 
 ## 4. Record
 

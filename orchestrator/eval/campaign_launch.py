@@ -18,7 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 from unittest.mock import patch
 
 import asyncpg
@@ -39,6 +39,7 @@ from orchestrator.eval.campaign_restore import (
 )
 from orchestrator.eval.campaign_validation import (
     DEV_SHA256,
+    RULE_V1,
     SNAPSHOT_SHA256,
     STATE_SHA256,
     comparability,
@@ -248,6 +249,11 @@ def noted_dates_candidate_formatter(control: str, candidate: str) -> dict[str, A
         return fact_harness.memory_formatter_identity()
     finally:
         provenance.RENDER_NOTED_DATES = False
+
+
+def acceptance_rule(pins: Mapping[str, Any]) -> str:
+    """The ratified rule version a plan binds: v1 unless its fixed approval says otherwise."""
+    return pins.get("fresh_campaign", {}).get("approval", {}).get("acceptance_rule", RULE_V1)
 
 
 def arm_formatter(plan: CampaignPlan, arm: str) -> dict[str, Any]:
@@ -891,7 +897,13 @@ async def run_arm(args: argparse.Namespace) -> None:
             manifest = json.loads((output / "run_manifest.json").read_bytes())
             checkpoint = json.loads(runner.checkpoint_path.read_bytes())
             qualified = qualification(
-                rows, dataset, manifest, checkpoint, score, corpus=expected_corpus(plan.pins)
+                rows,
+                dataset,
+                manifest,
+                checkpoint,
+                score,
+                corpus=expected_corpus(plan.pins),
+                rule=acceptance_rule(plan.pins),
             )
             planned = plan.pins.get("historical_remap")
             recorded = (manifest.get("ingest_source") or {}).get("historical_remap")
@@ -941,7 +953,10 @@ async def run_arm(args: argparse.Namespace) -> None:
             ]
             for arm in ARMS
         }
-        _write(args.campaign / "paired-result.json", paired_result(arms))
+        _write(
+            args.campaign / "paired-result.json",
+            paired_result(arms, rule=acceptance_rule(plan.pins)),
+        )
         # Only a completely finished, qualified campaign can restore original access.
         state = json.loads((args.campaign / "campaign.json").read_bytes())
         require(

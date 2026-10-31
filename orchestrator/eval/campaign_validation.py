@@ -19,6 +19,12 @@ DEV_SHA256 = "6612e3a03c79b92bab2f1750d4661908e3dc37359715b7fb6b62c6f758bddb34"
 SNAPSHOT_SHA256 = "3fd65416fdc24e845a184d7b8d3e0828811e048cd8341a39fe285fc14dc1f5a1"
 STATE_SHA256 = "251dd9cfed9a20fe6c719f277359a8eecf9505aa0c6d2441ca954e5838fa5c0a"
 RETRIEVAL_MODE = "embedding:openrouter:azure:openai/text-embedding-3-small:1024"
+RULE_V1 = "2026-10-28-official-v1"
+# Owner-approved 2026-10-31 amendment (tests/benchmark_results/ACCEPTANCE_RULE_PROPOSED.md):
+# identical to v1 except the zero-category condition (§1.6) applies only to categories
+# of at least MIN_SANITY_CATEGORY questions. Only plans that bind it use it.
+RULE_V2 = "2026-10-31-official-v2"
+RULES = (RULE_V1, RULE_V2)
 MIN_SANITY_CATEGORY = 5
 
 
@@ -63,8 +69,10 @@ def qualification(
     score: Mapping[str, Any],
     *,
     corpus: tuple[str, str] = (SNAPSHOT_SHA256, STATE_SHA256),
+    rule: str = RULE_V1,
 ) -> dict[str, Any]:
     """Check real artifacts, never accept a bare success flag or generic score."""
+    require(rule in RULES, "Unknown acceptance rule version")
     snapshot_sha256, state_sha256 = corpus
     ids = [str(row["question_id"]) for row in dataset]
     official = require_complete_official_coverage(rows, ids)
@@ -132,13 +140,17 @@ def qualification(
         "Provider fingerprints absent",
     )
     require(0.05 <= official["strict_accuracy"] <= 0.95, "Implausible primary accuracy")
-    categories = dual["official_by_category"].values()
-    # Zero correct in a sizeable category suggests broken scoring. A category under
-    # MIN_SANITY_CATEGORY questions (IE-preference has 3 rubric-judged ones) can
-    # legitimately reach zero through judge noise; see the stopped 2026-10-31 A0.
-    # Every category is still fully judged: official coverage needs a verdict per ID.
+    # v1: no category may score zero. v2 (owner amendment): a category under
+    # MIN_SANITY_CATEGORY questions (IE-preference has 3 rubric-judged ones) may reach
+    # zero through judge noise; see the stopped 2026-10-31 A0. Either way every
+    # category is fully judged: official coverage needs a verdict per ID.
+    minimum = MIN_SANITY_CATEGORY if rule == RULE_V2 else 0
     require(
-        all(item["correct"] > 0 for item in categories if item["total"] >= MIN_SANITY_CATEGORY),
+        all(
+            item["correct"] > 0
+            for item in dual["official_by_category"].values()
+            if item["total"] >= minimum
+        ),
         "Zero official category; investigate",
     )
     require(dual["paired"]["total"] == 50, "Incomplete dual judge pairing")
@@ -165,7 +177,8 @@ def comparability(
     )
 
 
-def paired_result(arms: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
+def paired_result(arms: Mapping[str, list[dict[str, Any]]], rule: str = RULE_V1) -> dict[str, Any]:
+    require(rule in RULES, "Unknown acceptance rule version")
     require(set(arms) == {"A0", "A1", "A2", "C0"}, "Campaign arm coverage differs")
     labels = {
         arm: {row["question_id"]: row["official_judgment"] == "correct" for row in rows}
@@ -199,7 +212,7 @@ def paired_result(arms: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
         len(gains) - len(losses) >= threshold and min(deltas.values()) >= -2 and abstention >= 0
     )
     return {
-        "rule": "2026-10-28-official-v1",
+        "rule": rule,
         "paired_comparator": "A0",
         "control_flips": flips,
         "F": noise,
