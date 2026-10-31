@@ -2454,6 +2454,39 @@
     },
     {
       "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "fresh_cost_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "4e2839cb987d3b94",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create preflight evidence file (sizes, digests, bounds; no plaintext); no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "fresh_cost_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "bd6cbfad3ab215dc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create preflight evidence file (sizes, digests, bounds; no plaintext); no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "fresh_cost_preflight",
+      "kind": "filesystem_write",
+      "fingerprint": "e867790607bbb262",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create preflight evidence file (sizes, digests, bounds; no plaintext); no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
       "qualname": "noted_dates_candidate_formatter",
       "kind": "filesystem_write",
       "fingerprint": "5dbe5928466f9a49",
