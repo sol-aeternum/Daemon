@@ -327,6 +327,36 @@ inference, ingest, restore, holdout inspection, source expansion, date adaptatio
 reader-cap change, production deployment or candidate acceptance is established by
 the synthetic guard tests. See [ratified acceptance rule](../benchmark_results/ACCEPTANCE_RULE_PROPOSED.md).
 
+### Single-use fresh historical campaign — 2026-10-31 (#601)
+
+`prepare --fresh-campaign --historical-remap LINEAGE --candidate noted-dates`
+copies the fixed approval and prior-plan pins from `campaign_fresh.py`; the CLI
+cannot supply another allowance or campaign directory. This separate mode adds a
+$5.50 hold to the retained $15.7519050 ($21.2519050 cumulative): at most $4.40
+base allocations and $1.10 full-bound retry reservations, never refunded/reused.
+All A0/A1/A2/C0 execute anew, with four local restores (cumulative seven through
+ten), no imported results and no attach. Legacy plans and recovery validators
+retain their original payloads, offsets and accounting.
+
+Under the sibling lock, activation exclusively creates and fsyncs a private
+`.fresh-approval-<id>.json` claim before creating the campaign directory. Code
+never deletes this claim; a claim without a valid clean handoff cannot bootstrap
+again. Activation, handoff and pre-mutation admission recheck the prior-plan and
+historical-remap digests. Only fully completed, settled arms hand off; interrupted,
+stopped, partial or completed campaigns cannot resume. R1 permits only verified
+transient 429s, at most three attempts, 30/60-second backoff (maximum 120 seconds),
+and five-second start spacing. Every retry reserves its complete quoted bound.
+
+Fresh preparation requires a zero-call/zero-write preflight bound to the dataset,
+source revisions, both formatter identities, remap lineage, caps, rates and cached
+tokenizer. `campaign_fresh.cost_preflight` accepts already-retrieved memory inputs
+and measures the maximum of both complete historical reader prompts. No safe
+offline DB retrieval replay helper exists yet: `cost-preflight --fresh` deliberately
+fails closed rather than querying a database or inventing memory inputs. The C0
+comparability exception requires the declared noted-dates variable and a freshly
+recomputed single-flag formatter pin. Source tests do not authorize paid execution
+or restores; final review, project gates and exact-action Astra approval remain.
+
 ## Source verification — 2026-10-29
 
 - 236 targeted tests passed, including the real LLM/qualified-embedding hooks,

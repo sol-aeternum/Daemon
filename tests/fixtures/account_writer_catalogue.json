@@ -2277,6 +2277,50 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "29ba4b4fa90822a9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsyncs the retained single-use benchmark approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "48d4dd05c2fadb25",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Writes the fixed benchmark approval identity and plan hash; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "cf128cb90522b07c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Exclusively creates the non-deleted benchmark approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_fresh",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "d92df3c1c08be543",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Flushes the retained benchmark approval claim; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_guard",
       "qualname": "Campaign.activate",
       "kind": "filesystem_write",

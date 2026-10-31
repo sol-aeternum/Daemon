@@ -1321,9 +1321,11 @@ class LongMemEvalFactRunner:
             }
         )
         campaign = current_campaign()
-        if campaign is not None and "retry_recovery_lineage" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_retry import retry_capable
+
+        if campaign is not None and retry_capable(campaign):
             manifest["campaign_retry_policy"] = {
-                "policy": campaign.plan["pins"]["retry_policy"],
+                "policy": campaign.plan["retry_policy"],
                 "plan_sha256": campaign._plan_hash,
                 "protocol": "explicit-opt-in-429; actual attempt histories may differ",
             }

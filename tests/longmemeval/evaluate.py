@@ -347,11 +347,9 @@ async def _call_llm_with_provider_config(
     }
     async with campaign_llm_call(bm_call_key or "unqualified_llm", guarded_request) as receipt:
         campaign = current_campaign()
-        retry_mode = (
-            is_benchmark
-            and campaign is not None
-            and "retry_recovery_lineage" in campaign.plan["pins"]
-        )
+        from orchestrator.eval.campaign_retry import retry_capable
+
+        retry_mode = is_benchmark and retry_capable(campaign)
         while True:
             if retry_mode:
                 await receipt.prepare_attempt()

@@ -256,8 +256,39 @@ def arm_formatter(plan: CampaignPlan, arm: str) -> dict[str, Any]:
     return candidate if arm == "C0" and candidate is not None else plan.pins["formatter"]
 
 
+def formatter_exception(plan: CampaignPlan, arm: str) -> bool:
+    """Only the verified single-flag noted-dates C0 may differ in formatter."""
+    if (
+        arm != "C0"
+        or plan.pins.get("candidate_variable") != "noted-dates"
+        or not plan.pins.get("candidate_formatter")
+    ):
+        return False
+    from orchestrator.memory import provenance
+
+    # Recompute using the control-checkout helper even when called from C0.
+    # Keep that helper's existing refusal contract and restore C0's flag exactly.
+    original = provenance.RENDER_NOTED_DATES
+    provenance.RENDER_NOTED_DATES = False
+    try:
+        require(
+            noted_dates_candidate_formatter(
+                plan.pins["arm_shas"]["A0"], plan.pins["arm_shas"]["C0"]
+            )
+            == plan.pins["candidate_formatter"],
+            "Candidate formatter recomputation differs",
+        )
+    finally:
+        provenance.RENDER_NOTED_DATES = original
+    return True
+
+
 def checkout(plan: CampaignPlan, arm: str) -> None:
-    if "final_verdict_recovery_lineage" in plan.pins:
+    if "fresh_campaign" in plan.pins:
+        from orchestrator.eval.campaign_fresh import APPROVAL, verify
+
+        verify(json.loads(json.dumps(plan.payload())), Path(APPROVAL["directory"]))
+    elif "final_verdict_recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_final_verdict import verify_recovery
 
         require(arm in ("A1", "A2", "C0"), "Inherited A0 cannot execute in final recovery")
@@ -414,6 +445,11 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     Like the sibling lock, this is cooperative operator protection, not a defense
     against a same-UID administrator copying or deleting retained evidence.
     """
+    if "fresh_campaign" in plan.pins:
+        from orchestrator.eval.campaign_fresh import verify
+
+        verify(json.loads(json.dumps(plan.payload())), directory)
+        return
     if "final_verdict_recovery_lineage" in plan.pins:
         from orchestrator.eval.campaign_final_verdict import verify_recovery
 
@@ -474,6 +510,15 @@ def _historical_remap_pins(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def prepare(args: argparse.Namespace) -> None:
+    fresh = getattr(args, "fresh_campaign", False)
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        require(
+            args.historical_remap is not None and args.candidate == "noted-dates",
+            "Fresh campaign requires --historical-remap and --candidate noted-dates",
+        )
+        campaign_fresh.verify_prior()
     dataset = load_dev(DEV)
     effective = environment()
     historical = _historical_remap_pins(args) if args.historical_remap else None
@@ -486,11 +531,28 @@ async def prepare(args: argparse.Namespace) -> None:
         PROVENANCE_CANDIDATE if noted_dates else RETRIEVAL_CANDIDATE,
     )
     cost = json.loads(args.cost_preflight.read_bytes())
-    require(
-        cost["provider_calls"] == cost["writes_or_restores"] == 0
-        and cost["under_cumulative_ten_usd"] is True,
-        "Preflight not read-only/within budget",
-    )
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        assert historical is not None
+        require(
+            historical["lineage_sha256"]
+            == campaign_fresh.APPROVAL["historical_remap_lineage_sha256"],
+            "Fresh remap lineage is not approved",
+        )
+        campaign_fresh.validate_preflight(
+            cost,
+            campaign_fresh.bindings(
+                args.control_sha, args.candidate_sha, historical["lineage_sha256"], tokenizer()[1]
+            ),
+            [row["question_id"] for row in dataset],
+        )
+    else:
+        require(
+            cost["provider_calls"] == cost["writes_or_restores"] == 0
+            and cost["under_cumulative_ten_usd"] is True,
+            "Preflight not read-only/within budget",
+        )
     reader = {row["question_id"]: row["reader_input_token_bound"] for row in cost["questions"]}
     limits = {}
     for row in dataset:
@@ -621,7 +683,17 @@ async def prepare(args: argparse.Namespace) -> None:
             key: historical[key]
             for key in ("lineage_path", "lineage_sha256", "snapshot_sha256", "state_sha256")
         }
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        pins["fresh_campaign"] = json.loads(
+            json.dumps({"approval": campaign_fresh.APPROVAL, "prior": campaign_fresh.PRIOR})
+        )
     plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
+    if fresh:
+        from orchestrator.eval import campaign_fresh
+
+        campaign_fresh.verify(json.loads(json.dumps(plan.payload())))
     require(not args.output.exists(), "Plan output already exists")
     _write(args.output, plan.payload())
 
@@ -715,7 +787,7 @@ async def run_arm(args: argparse.Namespace) -> None:
                 comparability(
                     first,
                     manifest,
-                    formatter=not (args.arm == "C0" and "candidate_formatter" in plan.pins),
+                    formatter=not formatter_exception(plan, args.arm),
                 )
             artifacts = {
                 path.name: digest_file(path)
@@ -796,6 +868,16 @@ def main() -> None:
         default=None,
         help="Remap lineage JSON: arms restore its snapshot with a derived --ingest checkpoint",
     )
+    prep.add_argument(
+        "--fresh-campaign",
+        action="store_true",
+        help="Use the single fixed fresh historical noted-dates approval",
+    )
+    preflight = commands.add_parser(
+        "cost-preflight",
+        help="Zero-call fresh reader prompt bound computation (offline replay required)",
+    )
+    preflight.add_argument("--fresh", action="store_true", required=True)
     replacement = commands.add_parser(
         "prepare-replacement", help="Read-only recovery preparation; target stays closed"
     )
@@ -846,9 +928,11 @@ def main() -> None:
     from orchestrator.eval.campaign_recovery import prepare_second_replacement
     from orchestrator.eval.campaign_retry import prepare as prepare_retry
     from orchestrator.eval.campaign_final_verdict import prepare as prepare_final
+    from orchestrator.eval.campaign_fresh import preflight_cli
 
     operation = {
         "prepare": prepare,
+        "cost-preflight": preflight_cli,
         "prepare-replacement": prepare_replacement,
         "prepare-second-replacement": prepare_second_replacement,
         "prepare-retry-recovery": prepare_retry,
