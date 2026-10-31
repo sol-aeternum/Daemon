@@ -52,6 +52,20 @@ def test_exact_internal_history_seam_not_general_admission():
     assert composition_violations({HISTORY: source.replace("def _accept(", "def install(")})
 
 
+def test_cleanup_scope_is_only_admitted_inside_exact_uncalled_history_owner():
+    source = "async def _accept(self):\n async with retain_pool_cleanup():\n  pass"
+    assert composition_violations({HISTORY: source}) == []
+    for path in ("orchestrator/main.py", "orchestrator/tasks/store.py"):
+        assert composition_violations({path: source})
+    for changed in (
+        source.replace("def _accept(", "def install("),
+        source.replace("retain_pool_cleanup()", "retain_pool_cleanup(pool)"),
+        source.replace("retain_pool_cleanup()", "helper.retain_pool_cleanup()"),
+        "async def _accept(self):\n fn=retain_pool_cleanup\n async with fn():\n  pass",
+    ):
+        assert composition_violations({HISTORY: changed})
+
+
 @pytest.mark.parametrize("method", ["_accept_with_stage", "_accept_once"])
 def test_staging_alias_or_host_call_cannot_activate_callback(method):
     source = f"async def run(self):\n fn = self._tasks.{method}\n await fn(stage=hook)"

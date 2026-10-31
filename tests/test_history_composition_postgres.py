@@ -785,3 +785,39 @@ async def test_received_inputs_cannot_bypass_uncomposed_c1(scenario, field):
         await s.accept.accept(deadline=deadline(), **options)
     assert counts(s) == (0, 0, 0) and entries(s) == ()
     assert s.db.sql("SELECT count(*) FROM resource_references") == "0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target,mode,failure",
+    [
+        pytest.param(target, mode, failure, id=f"{name}-{mode}-{'fail' if failure else 'ok'}")
+        for target, name in ((1, "scan"), (2, "replay"), (3, "accept"))
+        for mode in ("cancel", "deadline")
+        for failure in (False, True)
+    ],
+)
+async def test_native_held_reset_keeps_history_until_release(
+    scenario, monkeypatch, target, mode, failure
+):
+    from tests.history_cleanup_support import held_reset, interrupted_reset
+
+    s = scenario
+    async with held_reset(s.pool, monkeypatch, target, failure) as (entered, proceed):
+        await interrupted_reset(s, submission(s.account), entered, proceed, mode)
+    assert counts(s) == ((1, 1, 2) if target == 3 else (0, 0, 0))
+    assert len(entries(s)) == int(target == 3)
+    if target == 3:
+        async with independent_owner(s) as other:
+            with pytest.raises(HistoryError, match="historical_acceptance"):
+                await other.accept(deadline=deadline(), **submission(s.account))
+
+
+@pytest.mark.asyncio
+async def test_native_reset_failure_after_commit_is_not_success(scenario, monkeypatch):
+    from tests.history_cleanup_support import failed_reset, held_reset
+
+    s = scenario
+    async with held_reset(s.pool, monkeypatch, 3, True) as (entered, proceed):
+        await failed_reset(s, submission(s.account), entered, proceed)
+    assert counts(s) == (1, 1, 2) and len(entries(s)) == 1

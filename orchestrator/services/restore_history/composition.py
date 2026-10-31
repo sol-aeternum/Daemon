@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks._invocation import block
 from orchestrator.tasks.store import AcceptedTask, IdempotencyConflict, TaskStore
 
@@ -161,7 +162,10 @@ class HistoryAcceptance:
     async def _accept(
         self, deadline: float, options: dict[str, Any], lookup: str, request: str
     ) -> AcceptedTask:
-        async with self._history.operation(deadline=deadline) as operation:
+        async with (
+            self._history.operation(deadline=deadline) as operation,
+            retain_pool_cleanup(),
+        ):
             state = await operation.verify()
             for entry in state.entries:
                 data = entry.command.data
@@ -177,7 +181,7 @@ class HistoryAcceptance:
             # H records: this acceptance-only slice cannot qualify their absence
             # from SQL, open restore intervals or an older restored database.
             facts = []
-            async with self._tasks._pool.acquire() as conn:
+            async with pool_connection(self._tasks._pool) as conn:
                 if conn.is_in_transaction():
                     raise HistoryError("acceptance_transaction_owner_refused")
                 async with conn.transaction(isolation="read_committed"):

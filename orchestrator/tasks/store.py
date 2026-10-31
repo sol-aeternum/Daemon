@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from orchestrator.services.connection_cleanup import pool_connection, pool_queries
+
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from orchestrator.services.account_control.guard import (
@@ -957,7 +959,7 @@ class TaskStore:
 
     @asynccontextmanager
     async def _accept_connection(self, *, staging: bool) -> AsyncIterator[Any]:
-        async with self._pool.acquire() as conn:
+        async with pool_connection(self._pool) as conn:
             # A staged acceptance must own the top-level COMMIT. Releasing a
             # savepoint inside a pool setup/caller transaction is not durability.
             if staging and conn.is_in_transaction():
@@ -1047,12 +1049,13 @@ class TaskStore:
                     return existing
             constraint = getattr(exc, "constraint_name", None)
             if constraint == CONVERSATION_ACTIVE_INDEX and conversation_id is not None:
-                active = await self._pool.fetchval(
-                    "SELECT id FROM tasks WHERE conversation_id = $1 AND user_id = $2 "
-                    "AND status IN ('queued', 'running')",
-                    conversation_id,
-                    user_id,
-                )
+                async with pool_queries(self._pool) as query:
+                    active = await query.fetchval(
+                        "SELECT id FROM tasks WHERE conversation_id = $1 AND user_id = $2 "
+                        "AND status IN ('queued', 'running')",
+                        conversation_id,
+                        user_id,
+                    )
                 if active is not None:
                     raise ConversationBusy(active) from None
                 raise _ActiveTaskEnded(exc) from None
@@ -1241,23 +1244,24 @@ class TaskStore:
             return await self._resource_inputs.find_by_key(
                 user_id, idempotency_key, request_hash, request_canonical
             )
-        row = await self._pool.fetchrow(
-            "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
-            user_id,
-            idempotency_key,
-        )
-        if row is None:
-            return None
-        if row["request_hash"] != request_hash:
-            # The digest key (auth pepper) may have been rotated since this
-            # task was accepted: compare the canonical request kept in the
-            # encrypted input before declaring a conflict.
-            stored = self._open(row["input_ciphertext"]).get("_request")
-            if request_canonical is None or stored != request_canonical:
-                raise IdempotencyConflict("idempotency key reused for a different request")
-            await self._pool.execute(
-                "UPDATE tasks SET request_hash = $2 WHERE id = $1", row["id"], request_hash
+        async with pool_queries(self._pool) as query:
+            row = await query.fetchrow(
+                "SELECT * FROM tasks WHERE user_id = $1 AND idempotency_key = $2",
+                user_id,
+                idempotency_key,
             )
+            if row is None:
+                return None
+            if row["request_hash"] != request_hash:
+                # The digest key (auth pepper) may have been rotated since this
+                # task was accepted: compare the canonical request kept in the
+                # encrypted input before declaring a conflict.
+                stored = self._open(row["input_ciphertext"]).get("_request")
+                if request_canonical is None or stored != request_canonical:
+                    raise IdempotencyConflict("idempotency key reused for a different request")
+                await query.execute(
+                    "UPDATE tasks SET request_hash = $2 WHERE id = $1", row["id"], request_hash
+                )
         return AcceptedTask(
             task_id=row["id"],
             conversation_id=row["conversation_id"],

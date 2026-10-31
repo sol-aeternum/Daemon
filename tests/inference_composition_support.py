@@ -152,6 +152,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "HistoryAcceptance",
                                     "_accept_with_stage",
                                     "_accept_once",
+                                    "retain_pool_cleanup",
                                     "abandoned_pass",
                                     "importlib",
                                     "__import__",
@@ -246,6 +247,22 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if not isinstance(node, ast.Call):
                 continue
             target = name(node.func)
+            if target.endswith(".retain_pool_cleanup") or target == "retain_pool_cleanup":
+                functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing = max(functions, key=lambda f: f.lineno).name if functions else None
+                if (
+                    path != "orchestrator/services/restore_history/composition.py"
+                    or enclosing != "_accept"
+                    or ast.unparse(node.func) != "retain_pool_cleanup"
+                    or node.args
+                    or node.keywords
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved cleanup scope")
             staged_once = (target.endswith("._accept_once") or target == "_accept_once") and any(
                 k.arg == "stage" for k in node.keywords
             )

@@ -64,6 +64,21 @@ cancellation cannot detach that owner. Unlike shield-only gate observation, a
 queued child receives cancellation and settles its native asyncio.Lock waiter.
 The repaired #628 physical-work and queued-gate distinctions remain intact.
 
+The scope also retains actual native pool release tasks. asyncpg shields its
+holder reset internally; joining a cancelled acceptance task alone would leave
+that reset detached. A task-affine cleanup scope is entered after H ownership
+and exits before H release. Projection scans, native replay/readback/acceptance,
+the optional A/W preflight, and every participating C1 namespace/account lease
+use the same actual pools with retained release inside that scope. No pool is
+replaced and no runtime host enters the scope. Outside it, the helper delegates
+to original pool acquisition/convenience behavior. Acquisitions stay directly
+cancellable; release tasks are shielded and drained through repeated cancellation
+or deadline expiry. A late reset or failed reset cannot become an acknowledgement
+or readback authority. Cleanup failure poisons that scope even if caught by a
+native fallback; the first body/caller exception remains primary. Scope inheritance
+by another task and nested activation refuse. This does not bound native cleanup
+or introduce an automatic retry, a new release deadline or a force-close policy.
+
 Pool-provided channels already inside a transaction refuse before staged work;
 a nested SAVEPOINT release is never treated as top-level COMMIT. The native
 connection check is staging-only, preserving ordinary native behavior.

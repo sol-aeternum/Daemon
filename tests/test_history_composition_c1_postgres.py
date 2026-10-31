@@ -256,3 +256,56 @@ async def test_c1_real_unique_failure_after_prepare_never_enters_readback(c1_sce
     assert s.db.sql("SELECT count(*) FROM resource_references") == "0"
     assert s.db.sql("SELECT state FROM resource_input_batches") == "preparing"
     assert len(entries(s)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target,mode,failure",
+    [
+        pytest.param(target, mode, failure, id=f"{name}-{mode}-{'fail' if failure else 'ok'}")
+        for target, name in enumerate(
+            (
+                "scan",
+                "replay",
+                "reserve",
+                "prepare-check",
+                "namespace-first",
+                "namespace-second",
+                "prepare-bytes",
+                "final",
+            ),
+            1,
+        )
+        for mode in ("cancel", "deadline")
+        for failure in (False, True)
+    ],
+)
+async def test_c1_held_reset_keeps_history_until_release(
+    c1_scenario, monkeypatch, target, mode, failure
+):
+    from tests.history_cleanup_support import held_reset, interrupted_reset
+
+    s = c1_scenario
+    initial = int(s.db.sql("SELECT count(*) FROM tasks"))
+    async with held_reset(s.pool, monkeypatch, target, failure) as (entered, proceed):
+        await interrupted_reset(s, submission(s.expected), entered, proceed, mode)
+    assert int(s.db.sql("SELECT count(*) FROM tasks")) == initial + int(target == 8)
+    assert s.db.sql("SELECT count(*) FROM task_history_acceptance") == str(int(target == 8))
+    assert len(entries(s)) == int(target == 8)
+    if target == 8:
+        async with independent_owner(s) as other:
+            with pytest.raises(HistoryError, match="historical_acceptance"):
+                await other.accept(deadline=deadline(), **submission(s.expected))
+
+
+@pytest.mark.asyncio
+async def test_c1_reset_failure_after_commit_is_not_success(c1_scenario, monkeypatch):
+    from tests.history_cleanup_support import failed_reset, held_reset
+
+    s = c1_scenario
+    initial = int(s.db.sql("SELECT count(*) FROM tasks"))
+    async with held_reset(s.pool, monkeypatch, 8, True) as (entered, proceed):
+        await failed_reset(s, submission(s.expected), entered, proceed)
+    assert int(s.db.sql("SELECT count(*) FROM tasks")) == initial + 1
+    assert s.db.sql("SELECT count(*) FROM task_history_acceptance") == "1"
+    assert len(entries(s)) == 1

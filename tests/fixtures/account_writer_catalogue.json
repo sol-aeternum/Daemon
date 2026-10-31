@@ -611,6 +611,17 @@
   },
   "writer_sites": [
     {
+      "owner_source": "orchestrator.services.connection_cleanup",
+      "qualname": "retain_pool_cleanup",
+      "kind": "store_write",
+      "fingerprint": "3be710b28a410094",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Task-local ContextVar.reset restores lexical cleanup ownership; no application-data mutation or runtime guard claim. Bounded scanner treats reset as an unknown store write."
+    },
+    {
       "owner_source": "orchestrator.resource_catalog", "qualname": "instant",
       "kind": "filesystem_write", "fingerprint": "237c731376375320", "tables": [],
       "unknown": true, "uncovered": true, "category": "deferred",
@@ -6522,7 +6533,7 @@
       "owner_source": "orchestrator.tasks.store",
       "qualname": "TaskStore._by_key",
       "kind": "sql_inline",
-      "fingerprint": "b7be0f1daa8d10bd",
+      "fingerprint": "d96070f21367ac9f",
       "tables": [
         "tasks"
       ],
