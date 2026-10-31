@@ -314,6 +314,13 @@ retrieval then also receives `query_reference_time` = the question's as-of time,
 and the manifest records the historical `message_timestamps` parity exception.
 Comparability therefore refuses to mix the two modes, and a resumed run whose
 recorded exceptions differ from its corpus's mode is refused.
+The mode is re-verified wherever it is used: the recorded derived checkpoint must
+be byte-identical, pass the lineage checks and hold exactly the run's ingest phase,
+so an edited resumed checkpoint cannot switch it on. `run_arm` also requires the
+plan's `historical_remap` pin and the run's verified source to agree. The existing
+replacement, retry-attach and final-verdict recovery paths still require the
+original corpus and fail closed for remap plans; a remap campaign has no approved
+recovery path yet.
 
 All final source gates/review and actual-state launch checks remain required. No
 inference, ingest, restore, holdout inspection, source expansion, date adaptation,

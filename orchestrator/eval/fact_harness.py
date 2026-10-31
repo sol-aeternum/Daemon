@@ -984,8 +984,26 @@ def _source_qualification(manifest_path: Path, source_run_id: Any) -> dict[str, 
 
 
 def _historical_clock(checkpoint: Mapping[str, Any]) -> bool:
-    """Historical-clock mode follows the corpus: on only for a verified remap source."""
-    return bool((checkpoint.get("ingest_source") or {}).get("historical_remap"))
+    """Historical-clock mode follows the corpus: on only for a verified remap source.
+
+    Re-verified on every call, so a resumed or edited checkpoint can't switch the
+    mode on: the recorded derived checkpoint must be byte-identical, pass
+    ``verify_historical_remap``, and hold exactly this run's ingest phase.
+    """
+    source = checkpoint.get("ingest_source") or {}
+    remap = source.get("historical_remap")
+    if not remap:
+        return False
+    derived_path = Path(source["checkpoint_path"])
+    if file_sha256(derived_path) != source.get("checkpoint_sha256"):
+        raise ValueError("historical remap ingest checkpoint changed")
+    derived = load_runner_checkpoint(derived_path, dataset_path=None)
+    if derived.get("historical_remap") != remap:
+        raise ValueError("historical remap record differs from its ingest checkpoint")
+    verify_historical_remap(remap, derived["phases"]["ingest"], derived.get("run_id"))
+    if derived["phases"]["ingest"] != checkpoint["phases"]["ingest"]:
+        raise ValueError("run's ingest phase differs from its historical remap source")
+    return True
 
 
 def _tally(values: list[str]) -> dict[str, int]:
@@ -1872,6 +1890,7 @@ class LongMemEvalFactRunner:
         async with self._phase("evaluate", checkpoint) as (pool, store, manifest):
             manifest["benchmark_users"] = _benchmark_users_record(tuple(streams.values()))
             fingerprint_start = await fingerprint_benchmark_users(pool, user_ids)
+            historical_clock = _historical_clock(checkpoint)
             expected = checkpoint["phases"]["ingest"].get("state_fingerprint")
             state_matches = (
                 expected is None or expected.get("sha256") == fingerprint_start["sha256"]
@@ -1996,7 +2015,7 @@ class LongMemEvalFactRunner:
                         benchmark_mode=self.benchmark_mode,
                         scope_factory=chat_scope,
                         as_of=as_of,
-                        historical_clock=_historical_clock(checkpoint),
+                        historical_clock=historical_clock,
                     )
                 except Exception as exc:
                     logger.exception("[evaluate] Question %s failed", question_id)

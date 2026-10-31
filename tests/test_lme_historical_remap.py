@@ -307,3 +307,39 @@ def test_prepare_refuses_other_snapshot_or_checkpoint(
     remap["derived"].write_text(json.dumps(derived))
     with pytest.raises(CampaignStopped, match="not this remap"):
         campaign_launch._historical_remap_pins(_prepare_args(remap, snapshot))
+
+
+def test_historical_clock_reverifies_a_resumed_checkpoint(
+    remap: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        fact_harness,
+        "_source_qualification",
+        lambda path, run_id: {"baseline_qualified": True, "disqualifications": []},
+    )
+    runner = fact_harness.LongMemEvalFactRunner(
+        dataset_path=tmp_path / "dev.json",
+        output_path=tmp_path / "out" / "results.jsonl",
+        checkpoint_path=tmp_path / "out" / "checkpoint.json",
+        score_path=tmp_path / "out" / "score.json",
+        from_ingest=remap["derived"],
+    )
+    checkpoint = _checkpoint({"results": {}}, run_id="eval-run")
+    runner._seed_from_ingest(checkpoint)
+    assert fact_harness._historical_clock(checkpoint) is True
+
+    # An edited resumed checkpoint can't keep (or gain) historical mode.
+    edited = json.loads(json.dumps(checkpoint))
+    edited["phases"]["ingest"]["results"]["q1:a"]["status"] = "edited"
+    with pytest.raises(ValueError, match="differs from its historical remap source"):
+        fact_harness._historical_clock(edited)
+    forged = _checkpoint(
+        _ingest("new"),
+        ingest_source={
+            "checkpoint_path": str(remap["derived"]),
+            "checkpoint_sha256": "0" * 64,
+            "historical_remap": remap["block"],
+        },
+    )
+    with pytest.raises(ValueError, match="ingest checkpoint changed"):
+        fact_harness._historical_clock(forged)

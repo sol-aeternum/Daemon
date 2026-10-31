@@ -638,6 +638,17 @@ async def run_arm(args: argparse.Namespace) -> None:
             qualified = qualification(
                 rows, dataset, manifest, checkpoint, score, corpus=expected_corpus(plan.pins)
             )
+            planned = plan.pins.get("historical_remap")
+            recorded = (manifest.get("ingest_source") or {}).get("historical_remap")
+            require(
+                (planned is None and recorded is None)
+                or (
+                    planned is not None
+                    and recorded is not None
+                    and recorded.get("lineage_sha256") == planned["lineage_sha256"]
+                ),
+                "Run clock mode differs from the plan's corpus",
+            )
             require(
                 manifest["git"]["sha"] == plan.pins["arm_shas"][args.arm],
                 "Manifest execution SHA differs",
