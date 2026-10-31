@@ -65,6 +65,32 @@ def test_presentation_adapter_preserves_source_detachment_and_acl():
     assert "resource_presentation_unsafe_default_privileges" in sql and "FROM PUBLIC" in sql
 
 
+@pytest.mark.parametrize(
+    ("prefix", "custom"),
+    [("tasks_test_", False), ("identity_legacy_", False), ("bench_metadata_", True)],
+)
+def test_history_acceptance_adapter_preserves_binding_and_privilege_checks(prefix, custom):
+    schema = prefix + uuid4().hex
+    namespace = f'"{schema}"' if custom else schema
+    path = MIGRATIONS / "056_restore_history_acceptance.sql"
+    original = path.read_text()
+    sql = migration_sql_for_schema(path, schema, schema_prefix=prefix if custom else None)
+    assert "public." not in sql
+    assert f"REFERENCES {namespace}.task_history_binding(history_id) ON DELETE RESTRICT" in sql
+    assert f"t {namespace}.tasks; c {namespace}.task_inference_recovery;" in sql
+    assert f"account {namespace}.entitlement_accounts;" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert f"'{namespace}.task_history_acceptance'::pg_catalog.regclass" in sql
+    assert (
+        f"REVOKE ALL ON {namespace}.task_history_binding,"
+        f"{namespace}.task_history_acceptance FROM PUBLIC;"
+    ) in sql
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+    assert "task_history_unsafe_default_privileges" in sql
+    assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
+    assert path.read_text() == original
+
+
 def test_output_reservation_namespace_adapter_keeps_grantee_and_search_path_exact():
     schema = "tasks_test_" + uuid4().hex
     sql = migration_sql_for_schema(MIGRATIONS / "051_artifact_output_reservations.sql", schema)
