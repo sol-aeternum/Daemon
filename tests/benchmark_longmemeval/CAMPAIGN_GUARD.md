@@ -332,8 +332,10 @@ the synthetic guard tests. See [ratified acceptance rule](../benchmark_results/A
 `prepare --fresh-campaign --historical-remap LINEAGE --candidate noted-dates`
 copies the fixed approval and prior-plan pins from `campaign_fresh.py`; the CLI
 cannot supply another allowance or campaign directory. This separate mode adds a
-$5.50 hold to the retained $15.7519050 ($21.2519050 cumulative): at most $4.40
-base allocations and $1.10 full-bound retry reservations, never refunded/reused.
+$5.50 hold to the retained $15.7519050 ($21.2519050 cumulative): at most $4.46
+base allocations (owner raised from $4.40 after the measured $4.4588280 preflight)
+and full-bound retry reservations of at most min($1.10, $5.50 minus base), never
+refunded/reused.
 All A0/A1/A2/C0 execute anew, with four local restores (cumulative seven through
 ten), no imported results and no attach. Legacy plans and recovery validators
 retain their original payloads, offsets and accounting.

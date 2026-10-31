@@ -609,15 +609,15 @@ async def test_fresh_prepare_requires_exact_explicit_modes(approved, historical,
     approved.forbidden.assert_not_awaited()
 
 
-def test_allocation_boundary_440_and_441(approved):
+def test_allocation_boundary_at_approved_base_cap(approved):
     limits = copy.deepcopy(approved.plan.input_limits)
     total = Decimal(approved.payload["allocated_usd"])
     step = 4 * guard.INPUT_RATE
-    increase = (Decimal("4.40") - total) / step
+    increase = (Decimal("4.46") - total) / step
     assert increase == int(increase)
     limits[approved.plan.question_ids[0]]["answer"] += int(increase)
     p = guard.CampaignPlan(approved.plan.question_ids, limits, approved.plan.pins)
-    assert Decimal(p.payload()["allocated_usd"]) == Decimal("4.40")
+    assert Decimal(p.payload()["allocated_usd"]) == Decimal("4.46")
     limits[approved.plan.question_ids[0]]["answer"] += 1
     with pytest.raises(guard.CampaignStopped, match="allocations exceed"):
         p.payload()
@@ -626,7 +626,7 @@ def test_allocation_boundary_440_and_441(approved):
         p.payload()
 
 
-def budget_ledger(approved, amount):
+def budget_ledger(approved, amount, allocated="4.40"):
     """One synthetic failed first attempt plus a full-bound reserved retry."""
     plan = copy.deepcopy(approved.payload)
     qid = plan["question_ids"][0]
@@ -634,7 +634,7 @@ def budget_ledger(approved, amount):
     tokens = (amount - guard.CAPS["answer"] * guard.OUTPUT_RATE) / guard.INPUT_RATE
     assert tokens == int(tokens)
     plan["input_limits"][qid]["answer"] = int(tokens)
-    plan["allocated_usd"] = "4.40"
+    plan["allocated_usd"] = allocated
     identity = {"arm": "A0", "question_id": qid, "stage": "answer", "request_sha256": "a" * 64}
     path = approved.directory / "failure-0001-attempt-01.json"
     write(
@@ -917,3 +917,18 @@ async def test_fresh_attempt_ledger_rejects_tampering(approved, monkeypatch, tam
             state["retry_reservations"] = []
         with pytest.raises(guard.CampaignStopped):
             fresh.validate_fresh_attempt_ledger(state, c.plan, c.directory)
+
+
+@pytest.mark.parametrize(
+    "amount,accepted", [(Decimal("1.04117"), True), (Decimal("1.0411725"), False)]
+)
+def test_retry_headroom_shrinks_when_base_uses_the_raised_cap(approved, amount, accepted):
+    """Measured base 4.4588280: retries are bounded by the $5.50 ceiling, not 1.10."""
+    approved.directory.mkdir()
+    plan, state = budget_ledger(approved, amount, allocated="4.4588280")
+    assert fresh.retry_budget(plan) == Decimal("1.0411720")
+    if accepted:
+        fresh.validate_fresh_attempt_ledger(state, plan, approved.directory)
+    else:
+        with pytest.raises(guard.CampaignStopped, match="exceed headroom"):
+            fresh.validate_fresh_attempt_ledger(state, plan, approved.directory)

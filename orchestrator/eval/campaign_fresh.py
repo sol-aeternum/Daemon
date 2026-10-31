@@ -41,7 +41,7 @@ APPROVAL: dict[str, Any] = {
     "id": "2026-10-31-noted-dates-historical-v1",
     "directory": "/home/sol/.local/share/daemon-lme-bench/runs/remap-historical-2026-10-31/campaign-noted-dates-v1",
     "new_reserved_usd": "5.50",
-    "maximum_allocated_usd": "4.40",
+    "maximum_allocated_usd": "4.46",
     "retry_headroom_usd": "1.10",
     "local_maximum_restore_attempts": 4,
     "retry_policy": POLICY,
@@ -121,7 +121,7 @@ def payload(plan: CampaignPlan) -> dict[str, Any]:
             total += 4 * amount
     require(
         total <= Decimal(APPROVAL["maximum_allocated_usd"]),
-        "Fresh allocations exceed approved 4.40",
+        "Fresh allocations exceed approved base cap",
     )
     new = Decimal(APPROVAL["new_reserved_usd"])
     prior = Decimal(PRIOR["prior_reserved_usd"])
