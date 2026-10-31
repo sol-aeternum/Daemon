@@ -17,8 +17,9 @@ identity and ownership facts. `projection.py` compares supplied facts without
 reading or repairing a database. Initializers exist only in synthetic test code.
 No actual production path, UID/GID, key or independent expected identity is
 chosen by these modules. Caller-supplied facts are not independently verified
-operator provisioning. No background threads, runtime operation coordinator,
-shared lifetime lock ownership or deadline supervisor is installed.
+operator provisioning. The separately approved uncalled ownership boundary in
+`RESTORE_HISTORY_COORDINATION.md` adds explicit operation/lifetime ownership and
+async supervision; no runtime caller or startup composition is installed.
 
 The design supports cooperating local writers on a trusted single host. Shared
 file writers can corrupt/forge negative history. Actor labels and SHA checksums
@@ -89,11 +90,12 @@ partial/corrupt frames and HEAD.pending block and are retained without promotion
 truncation or repair. `verify` reports validated structure, not an invocation's
 fresh durability ACK or independent financial/authentication continuity.
 
-Each call uses a process-local mutex, OP_LOCK then APPEND_LOCK, nonblocking flock
-and the caller's **absolute monotonic deadline**. Fresh directory enumeration and
+Each direct call uses a process-local mutex, OP_LOCK then APPEND_LOCK, nonblocking flock
+and the caller's **absolute monotonic deadline**. Explicit operation scopes retain
+OP while inner calls take only APPEND_LOCK. Fresh directory enumeration and
 pinned inode checks prevent warmed scans ignoring new pending/unexpected files.
-RUNTIME_LOCK's inode is checked, but this slice does not install runtime lifecycle
-coordination. A store is owned by its creating PID. Inherited `append`, `verify`
+RUNTIME_LOCK is held shared for the store's lifetime and its inode is checked;
+there is no production lifecycle composition. A store is owned by its creating PID. Inherited `append`, `verify`
 and context entry fail with `forked_store` before touching copied mutexes or
 shared flock descriptions. Child `close`/context exit may discard only its own
 inherited descriptor references without acquiring the inherited mutex or issuing
@@ -102,7 +104,8 @@ No lock is held across any provider call; there are no such callers.
 
 Append validates the whole chain and candidate before mutation. It loops short
 writes, fsyncs LOG, exclusively creates/writes/fsyncs HEAD.pending, replaces HEAD,
-fsyncs the directory, checks HEAD/pins/deadline, and releases locks before returning.
+fsyncs the directory, checks HEAD/pins/deadline, and releases its append lock before
+returning. Direct calls also release OP; explicit scopes retain it until scope exit.
 Duplicate operation returns only historical `created=False`. Conflicting operation
 or acceptance identities cannot append. No automatic retry is performed.
 
@@ -144,9 +147,10 @@ passing diagnostics expose the missing coordination; they do not install protect
 SQL projections, production hooks, admission fences or restore qualification.
 
 Remaining: deployed projection upgrade and role qualification;
-complete acceptance/send/Stop/publication integration; async ownership supervision; stable
+complete acceptance/send/Stop/publication integration using the uncalled ownership boundary; stable
 client-key/error behavior; deletion/retention/J1 appliers; financial/auth/account/
 cache continuity evidence; supported restore reconciliation; production key,
 identity/storage provisioning and capacity/latency/retention qualification. No
 original ACL/key/account recovery or exactly-once provider effect is certified.
-H1 success does not resolve #477 or authorize migration/deployment/activation.
+H1 success does not establish the rollout readiness tracked in #477 or authorize
+migration/deployment/activation.
