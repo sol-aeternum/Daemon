@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -145,7 +145,8 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "system_prompt_extras",
         "difference": "The answer prompt is compose_system_prompt(memory_context) plus "
-        "production's runtime date/time block at the question's question_date (read as UTC), "
+        "production's runtime date/time block at the question's as-of time (the later of "
+        "question_date and the last haystack session + 1 minute, read as UTC), "
         "with no preferences, skills index, answer controls or tools.",
         "impact": "The memory block, base Daemon prompt and current-date block match "
         "production; the answer model cannot call memory tools to fetch more.",
@@ -167,8 +168,8 @@ PARITY_EXCEPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "message_timestamps",
         "difference": "Haystack messages and memories are stored at ingest time, not at the "
-        "dataset's session dates. The recency clock is pinned to question_date, and retrieval "
-        "runs with query_reference_time=None.",
+        "dataset's session dates. The recency clock is pinned to the question's as-of time, and "
+        "retrieval runs with query_reference_time=None.",
         "impact": "Stored times are later than every question date, so every memory gets the "
         "freshest recency bucket regardless of run date; temporal windows are off. Source/event "
         "time is lost, so relative-date facts stay unanchored (#601).",
@@ -546,15 +547,27 @@ def _parse_haystack_date(value: Any) -> datetime | None:
         return None
 
 
-def question_as_of(entry: Mapping[str, Any]) -> datetime:
-    """The question's "now": its ``question_date``, read as UTC (the dataset has no zone).
+QUESTION_AFTER_HISTORY = timedelta(minutes=1)
 
-    A timestamp, never an answer or evidence label. Unparsable dates fail the
+
+def question_as_of(entry: Mapping[str, Any]) -> datetime:
+    """The question's "now", read as UTC (the dataset has no zone).
+
+    The later of ``question_date`` and the last haystack session date plus one
+    minute: some LongMemEval questions are dated earlier on the same day than
+    their last sessions, and every session must precede the question. These are
+    timestamps, never answer or evidence labels. Unparsable dates fail the
     question rather than silently falling back to the wall clock.
     """
     parsed = _parse_haystack_date(entry.get("question_date"))
     if parsed is None:
         raise ValueError("question_date missing or unparsable")
+    sessions = [_parse_haystack_date(value) for value in entry.get("haystack_dates") or []]
+    if any(value is None for value in sessions):
+        raise ValueError("haystack_dates contain an unparsable date")
+    latest = max((value for value in sessions if value is not None), default=None)
+    if latest is not None:
+        parsed = max(parsed, latest + QUESTION_AFTER_HISTORY)
     return parsed.replace(tzinfo=UTC)
 
 

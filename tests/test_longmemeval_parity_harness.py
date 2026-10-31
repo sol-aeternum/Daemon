@@ -2182,3 +2182,17 @@ async def test_evaluate_single_parity_pins_recency_clock_during_gather_only(
             as_of=datetime(2023, 3, 1),
         )
     assert retrieval.RECENCY_REFERENCE_TIME.get() is None
+
+
+def test_question_as_of_follows_same_day_sessions_dated_after_the_question() -> None:
+    # LongMemEval dates some sessions later on the question's own day.
+    entry = {
+        "question_date": "2023/03/29 (Wed) 13:43",
+        "haystack_dates": ["2023/03/20 (Mon) 09:00", "2023/03/29 (Wed) 23:49"],
+    }
+    assert fact_harness.question_as_of(entry) == datetime(2023, 3, 29, 23, 50, tzinfo=UTC)
+    entry["haystack_dates"] = ["2023/03/20 (Mon) 09:00"]
+    assert fact_harness.question_as_of(entry) == datetime(2023, 3, 29, 13, 43, tzinfo=UTC)
+    entry["haystack_dates"] = ["2023/03/20 (Mon) 09:00", "not a date"]
+    with pytest.raises(ValueError, match="haystack_dates"):
+        fact_harness.question_as_of(entry)
