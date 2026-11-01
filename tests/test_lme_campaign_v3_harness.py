@@ -33,7 +33,9 @@ NOW = datetime(2023, 5, 20, tzinfo=timezone.utc)
 
 def instance(tmp_path: Path, *, name: str = "campaign") -> guard.Campaign:
     # Tiny synthetic token counter; this is not a tokenizer/reservation qualification.
-    return guard.Campaign(tmp_path / name, synthetic_plan(), lambda _: 1, layout=V3_LAYOUT)
+    return guard.Campaign(
+        tmp_path / name, synthetic_plan(), lambda _: 1, layout=V3_LAYOUT, arms=guard.ARMS
+    )
 
 
 def start(campaign: guard.Campaign) -> None:
@@ -563,7 +565,9 @@ async def test_interruption_stops_without_error_row_adoption_or_replay(
 def test_production_default_resolves_legacy_for_every_plan_mode(tmp_path, fixed_approval, mode):
     plan = synthetic_plan(mode)
     default = guard.Campaign(tmp_path / mode, plan, len)
-    injected = guard.Campaign(tmp_path / f"{mode}-injected", plan, len, layout=V3_LAYOUT)
+    injected = guard.Campaign(
+        tmp_path / f"{mode}-injected", plan, len, layout=V3_LAYOUT, arms=guard.ARMS
+    )
     assert default.layout == layout("legacy")
     assert default.plan == injected.plan
     assert default._plan_hash == injected._plan_hash

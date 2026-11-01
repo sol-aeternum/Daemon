@@ -40,6 +40,37 @@ def test_embedding_rounding_boundary(tokens, expected):
     assert v3_allocation(limits, 2) == Decimal(expected)
 
 
+def test_each_question_embedding_rounds_separately():
+    limits = {
+        "fictional-one": {**LIMITS["fictional"], "embedding": 51},
+        "fictional-two": {**LIMITS["fictional"], "embedding": 51},
+    }
+    # Each 1.02-microdollar embedding rounds to 2, not a pooled 2.04 -> 3.
+    assert v3_allocation(limits, 2) == Decimal("0.107648")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["empty", "missing_stage", "extra_stage", "zero", "negative", "float", "bool", "embedding_cap"],
+)
+def test_allocation_rejects_invalid_bounds(bad):
+    limits: dict[str, dict[str, Any]] = copy.deepcopy(LIMITS)
+    if bad == "empty":
+        limits.clear()
+    elif bad == "missing_stage":
+        del limits["fictional"]["judge"]
+    elif bad == "extra_stage":
+        limits["fictional"]["extra"] = 500
+    elif bad == "embedding_cap":
+        limits["fictional"]["embedding"] = 8001
+    else:
+        limits["fictional"]["answer"] = {"zero": 0, "negative": -1, "float": 500.0, "bool": True}[
+            bad
+        ]
+    with pytest.raises(CampaignStopped):
+        v3_allocation(limits, 2)
+
+
 @pytest.mark.parametrize("count", [0, 1, 3, 5, True, 2.0])
 def test_invalid_arm_counts(count):
     with pytest.raises(CampaignStopped):
@@ -149,6 +180,24 @@ def test_third_failure_is_terminal_and_never_handoff_or_fourth_attempt():
     fourth["ordinal"] = 4
     state["attempts"].append(fourth)
     with pytest.raises(CampaignStopped, match="ordinal"):
+        validate_v3_attempt_ledger(state, retry_budget=Decimal(1), failure_files=files)
+
+
+def test_overlong_receipt_prefix_raises_campaign_stopped():
+    state, files = ledger()
+    state["receipts"] *= 3  # 30 entries exceed the two-arm, one-question capacity of 20.
+    with pytest.raises(CampaignStopped, match="V3 receipt count exceeds layout"):
+        validate_v3_attempt_ledger(state, retry_budget=Decimal(1), failure_files=files)
+
+
+@pytest.mark.parametrize("target", ["receipt", "first_attempt"])
+def test_nonhex_request_hash_raises_campaign_stopped(target):
+    state, files = ledger()
+    if target == "receipt":
+        state["receipts"][0]["request_sha256"] = "g" * 64
+    else:
+        state["attempts"][0]["identity"]["request_sha256"] = "g" * 64
+    with pytest.raises(CampaignStopped, match="Invalid v3 request SHA-256"):
         validate_v3_attempt_ledger(state, retry_budget=Decimal(1), failure_files=files)
 
 

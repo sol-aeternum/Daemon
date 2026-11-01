@@ -285,7 +285,9 @@ class Campaign:
         if self.layout.name == "v3":
             from orchestrator.eval.campaign_v3_plan import validate_v3_arms
 
-            self.arms = ARMS if arms is None else arms
+            if arms is None:
+                raise CampaignStopped("V3 requires an explicit arm sequence")
+            self.arms = arms
             validate_v3_arms(self.arms)
         elif arms is not None:
             raise CampaignStopped("Arm injection requires the v3 layout")

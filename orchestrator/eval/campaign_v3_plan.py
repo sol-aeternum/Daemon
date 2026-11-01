@@ -36,6 +36,13 @@ def _arm_count(arm_count: int) -> None:
     require(type(arm_count) is int and arm_count in (2, 4), "Invalid v3 arm count")
 
 
+def _request_hash(value: Any) -> None:
+    require(
+        isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value),
+        "Invalid v3 request SHA-256",
+    )
+
+
 def _bounds(input_limits: Mapping[str, Mapping[str, int]]) -> tuple[Decimal, Decimal]:
     require(bool(input_limits), "Missing v3 input limits")
     embedding = Decimal(0)
@@ -117,9 +124,14 @@ def validate_v3_attempt_ledger(
     )
     canonical = layout("v3")
     receipts = state["receipts"]
+    require(
+        len(receipts) <= len(arms) * canonical.receipts_per_arm(len(questions)),
+        "V3 receipt count exceeds layout",
+    )
     # Validate the receipt prefix too, including embedding positions and samples.
     for index, entry in enumerate(receipts):
         ai, qi, si = canonical.inverse(index, question_count=len(questions), arm_count=len(arms))
+        _request_hash(entry["request_sha256"])
         require(
             {k: v for k, v in entry.items() if k != "artifact"}
             == canonical.identity(arms[ai], questions[qi], si, entry["request_sha256"])
@@ -157,6 +169,7 @@ def validate_v3_attempt_ledger(
             "V3 attempt identity/sample differs",
         )
         slot = canonical.slots.index((identity["stage"], identity["sample"]))
+        _request_hash(identity["request_sha256"])
         require(
             identity
             == canonical.identity(

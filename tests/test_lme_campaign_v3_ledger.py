@@ -48,6 +48,16 @@ def test_constructor_rejects_noncanonical_arm_sequences(tmp_path, arms):
         campaign(tmp_path, arms=arms)
 
 
+def test_v3_requires_explicit_arms_while_legacy_keeps_default(tmp_path):
+    with pytest.raises(guard.CampaignStopped, match="V3 requires an explicit arm sequence"):
+        guard.Campaign(tmp_path / "v3", synthetic_plan(), len, layout=V3)
+    with pytest.raises(guard.CampaignStopped, match="V3 requires an explicit arm sequence"):
+        campaign(tmp_path, arms=None)
+    legacy = guard.Campaign(tmp_path / "legacy", synthetic_plan(), len)
+    assert legacy.arms == guard.ARMS
+    assert not (tmp_path / "v3").exists()
+
+
 @pytest.mark.parametrize("arms", [PILOT, ("A0", "A1", "A2", "C0")])
 def test_arm_sequence_is_outside_plan_and_persisted_only_for_v3(tmp_path, arms):
     c = campaign(tmp_path, arms=arms)
