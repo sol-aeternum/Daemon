@@ -1,9 +1,12 @@
 """Legacy persisted contracts, captured once from origin/main f9809293.
 
-Every expected digest, amount, initial state, receipt and failure is a literal
-in fixtures/campaign_contract.json, not recomputed by the implementation under
-test. Its provenance records the producing functions and synthetic inputs.
-No approval fixture with temporary paths participates in a hash golden.
+fixtures/campaign_contract.json holds payload/identity digests, accounting and
+rounding amounts, initial states, pending/receipt/failure artifacts, and the real
+APPROVAL/PRIOR/POLICY values, with producing-function/input provenance. Inline
+literals freeze PIN_KEYS, ARMS/STAGES/CAPS, guard holds, recovery execution and
+restore fields, RULES/RETRIEVAL_MODE, writer key sets and substrate. Synthetic
+plan/request/response builders are local; expectations are never recomputed by
+the implementation under test. No temporary-path approval enters a hash golden.
 """
 
 from __future__ import annotations
@@ -21,9 +24,7 @@ from orchestrator.eval import campaign_final_verdict as final, campaign_fresh as
 from orchestrator.eval import campaign_guard as guard
 from orchestrator.eval import campaign_recovery as recovery, campaign_restore as restore
 from orchestrator.eval import campaign_retry as retry, campaign_validation as validation
-from tests.test_lme_campaign_guard import plan as legacy_plan, request, response
 from tests.test_lme_campaign_second_recovery import recovered as recovered
-from tests.test_lme_campaign_second_recovery import pin, write
 
 GOLDEN_PATH = Path(__file__).parent / "fixtures/campaign_contract.json"
 
@@ -77,6 +78,75 @@ PIN_KEYS = {
 
 def golden() -> dict[str, Any]:
     return json.loads(GOLDEN_PATH.read_bytes())
+
+
+def legacy_plan() -> guard.CampaignPlan:
+    # Copied from test_lme_campaign_guard at f9809293; keep hashed inputs local.
+    ids = tuple(f"synthetic-{i}" for i in range(50))
+    return guard.CampaignPlan(
+        ids,
+        {qid: {"embedding": 20, "answer": 500, "judge": 500, "official_judge": 500} for qid in ids},
+        {"source": "synthetic-only", "snapshot": "not-an-execution-approval"},
+    )
+
+
+def request(stage: str = "embedding") -> dict[str, Any]:
+    # Literal transport inputs, independent even of production model/rate constants.
+    if stage == "embedding":
+        return {
+            "route_id": "azure-openrouter-small-1024",
+            "model": "openai/text-embedding-3-small",
+            "endpoint": "https://openrouter.ai/api/v1",
+            "dimensions": 1024,
+            "input": ["fictional query"],
+            "provider": {
+                "only": ["azure"],
+                "order": ["azure"],
+                "allow_fallbacks": False,
+                "data_collection": "deny",
+                "zdr": True,
+                "require_parameters": True,
+            },
+        }
+    return {
+        "model": "openrouter/openai/gpt-4o-2024-08-06",
+        "messages": [{"role": "user", "content": "fictional"}],
+        "temperature": 0,
+        "max_tokens": {"answer": 256, "judge": 256, "official_judge": 10}[stage],
+        "seed": 42,
+        "num_retries": 0,
+        "api_base": "https://openrouter.ai/api/v1",
+        "extra_body": {"provider": {"order": ["azure"], "allow_fallbacks": False}},
+    }
+
+
+def response(stage: str = "embedding") -> dict[str, Any]:
+    # Copied from test_lme_campaign_guard at f9809293, not a live provider response.
+    if stage == "embedding":
+        return {
+            "model": "text-embedding-3-small",
+            "data": [],
+            "usage": {"prompt_tokens": 2, "total_tokens": 2},
+        }
+    return {
+        "model": "openai/gpt-4o-2024-08-06",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "yes"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+    }
+
+
+def write(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(value))
+
+
+def pin(path: Path) -> dict[str, str]:
+    return {"path": str(path), "sha256": validation.digest_file(path)}
 
 
 def synthetic_plan(mode: str = "legacy", *, embedding_tokens: int = 20) -> guard.CampaignPlan:
@@ -227,6 +297,7 @@ def test_before_send_pending_and_embedding_artifact_literals(tmp_path: Path) -> 
 
 def test_before_send_is_the_only_four_key_pending_writer() -> None:
     # Source-backed complement to the actual durable pending golden above.
+    # Limitation: this scan detects only ast.Assign writers with dict literals.
     tree = ast.parse(Path(guard.__file__).read_text())
     writers = []
     for function in ast.walk(tree):
@@ -346,6 +417,26 @@ def test_fresh_retry_index_boundaries(tmp_path: Path, fixed_approval: None, inde
     state["attempts"].pop()
     with pytest.raises(guard.CampaignStopped, match="omits/duplicates completed"):
         fresh.validate_fresh_attempt_ledger(state, payload, tmp_path)
+
+
+def test_embedding_is_not_a_fresh_retry_identity(tmp_path: Path, fixed_approval: None) -> None:
+    state = ledger(1)
+    state["attempts"] = [
+        {
+            "identity": {
+                "arm": "A0",
+                "question_id": "synthetic-0",
+                "stage": "embedding",
+                "request_sha256": "a" * 64,
+            },
+            "receipt_index": 0,
+            "ordinal": 1,
+            "status": "dispatch_pending",
+            "reserved_usd": "0",
+        }
+    ]
+    with pytest.raises(guard.CampaignStopped, match="^Fresh retry attempt identity differs$"):
+        fresh.validate_fresh_attempt_ledger(state, synthetic_plan("fresh").payload(), tmp_path)
 
 
 @pytest.mark.parametrize("change", ["extra", "missing"])
@@ -491,13 +582,6 @@ def test_restore_and_attach_ten_distinct_pids(pids: list[int], kind: str) -> Non
             "identity": {"oid": 7, "system_identifier": "synthetic-server"},
         },
     }
-    assert set(receipt) == {"arm", "fingerprint", "owned_pids", "script_sha256"}
-    assert set(state["attach_receipt"]) == {
-        "fingerprint",
-        "owned_pids",
-        "inherited_restore",
-        "identity",
-    }
     if kind == "retry_attach":
         state["attach_receipt"]["owned_pids"] = pids
     else:
@@ -521,6 +605,8 @@ def test_restore_and_attach_ten_distinct_pids(pids: list[int], kind: str) -> Non
 
 def test_real_receipt_writer_key_sets_and_substrate() -> None:
     # AST-only inspection freezes real writers without executing any DB/restore path.
+    # Limitation: writer scans detect only ast.Assign (dict literals for base receipts),
+    # not update(), dynamic construction, or other forms of mutation.
     tree = ast.parse(Path(restore.__file__).read_text())
     writers = []
     for node in ast.walk(tree):

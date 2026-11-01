@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -141,47 +142,79 @@ def test_reject_unknown_layout_name() -> None:
         layout("schema-1")
 
 
+def test_reject_non_tuple_slots_with_canonical_contents() -> None:
+    class CanonicalList(list[tuple[str, int | None]]):
+        def __eq__(self, other: object) -> bool:
+            return tuple(self) == other
+
+    # Equality cannot cause this rejection: isolate the exact tuple-type guard.
+    slots: Any = CanonicalList(LEGACY)
+    assert slots == LEGACY
+    with pytest.raises(ValueError, match="^Unknown or non-canonical campaign layout$"):
+        CampaignLayout("legacy", slots)
+
+
 @pytest.mark.parametrize("name", ["legacy", "v3"])
 @pytest.mark.parametrize(
-    "arm,question,slot,questions,arms",
+    "arm,question,slot,questions,arms,error",
     [
-        (-1, 0, 0, 50, 4),
-        (4, 0, 0, 50, 4),
-        (0, -1, 0, 50, 4),
-        (0, 50, 0, 50, 4),
-        (0, 0, -1, 50, 4),
-        (0, 0, 10, 50, 4),
-        (0, 0, 0, 0, 4),
-        (0, 0, 0, 50, 0),
-        (True, 0, 0, 50, 4),
+        (-1, 0, 0, 50, 4, "Invalid arm index"),
+        (4, 0, 0, 50, 4, "Invalid arm index"),
+        (0, -1, 0, 50, 4, "Invalid question index"),
+        (0, 50, 0, 50, 4, "Invalid question index"),
+        (0, 0, -1, 50, 4, "Invalid slot index"),
+        (0, 0, 10, 50, 4, "Invalid slot index"),
+        (0, 0, 0, 0, 4, "Invalid question count"),
+        (0, 0, 0, 50, 0, "Invalid arm count"),
+        (True, 0, 0, 50, 4, "Invalid arm index"),
     ],
 )
 def test_index_bounds(
-    name: str, arm: int, question: int, slot: int, questions: int, arms: int
+    name: str, arm: int, question: int, slot: int, questions: int, arms: int, error: str
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=f"^{error}$"):
         layout(name).receipt_index(arm, question, slot, question_count=questions, arm_count=arms)
 
 
 @pytest.mark.parametrize("number", [-1, 800, True])
 def test_inverse_bounds(number: int) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="^Invalid receipt index$"):
         layout("legacy").inverse(number, question_count=50, arm_count=4)
 
 
+@pytest.mark.parametrize("arms,number", [(2, 1000), (4, 2000)])
+def test_v3_inverse_upper_bounds(arms: int, number: int) -> None:
+    assert layout("v3").inverse(number - 1, question_count=50, arm_count=arms) == (arms - 1, 49, 9)
+    with pytest.raises(ValueError, match="^Invalid receipt index$"):
+        layout("v3").inverse(number, question_count=50, arm_count=arms)
+
+
 def test_identity_bounds() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="^Invalid slot index$"):
         layout("legacy").identity("A0", "q", 4, "a" * 64)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="^Invalid slot index$"):
         layout("v3").identity("A0", "q", 10, "a" * 64)
-    for arm, qid, digest in [
-        ("", "q", "a" * 64),
-        ("A0", "", "a" * 64),
-        ("A0", "q", "x" * 64),
-        ("A0", "q", "a"),
-    ]:
-        with pytest.raises(ValueError):
-            layout("v3").identity(arm, qid, 0, digest)
+
+
+@pytest.mark.parametrize("name", ["legacy", "v3"])
+@pytest.mark.parametrize(
+    "arm,qid,digest,error",
+    [
+        ("", "q", "a" * 64, "Invalid arm identity"),
+        (True, "q", "a" * 64, "Invalid arm identity"),
+        (1, "q", "a" * 64, "Invalid arm identity"),
+        ("A0", "", "a" * 64, "Invalid question identity"),
+        ("A0", 1, "a" * 64, "Invalid question identity"),
+        ("A0", "q", None, "Invalid request SHA-256"),
+        ("A0", "q", True, "Invalid request SHA-256"),
+        ("A0", "q", "", "Invalid request SHA-256"),
+        ("A0", "q", "x" * 64, "Invalid request SHA-256"),
+        ("A0", "q", "a", "Invalid request SHA-256"),
+    ],
+)
+def test_identity_string_contract(name: str, arm: Any, qid: Any, digest: Any, error: str) -> None:
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        layout(name).identity(arm, qid, 0, digest)
 
 
 def test_import_hygiene_and_explicit_later_wiring() -> None:
@@ -199,7 +232,9 @@ def test_import_hygiene_and_explicit_later_wiring() -> None:
             elif isinstance(node, ast.Import):
                 if any("campaign_layout" in alias.name for alias in node.names):
                     imports.append(path.name)
-    # PR B flips exactly this assertion when explicit version dispatch is wired.
+    # PR B must update three places when explicit version dispatch is wired:
+    # this import assertion, the fresh-interpreter sys.modules checks below,
+    # and test_bridge_registration_is_deliberately_deferred.
     assert imports == []
     module = ast.parse((directory / "campaign_layout.py").read_text())
     modules = [

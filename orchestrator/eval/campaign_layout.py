@@ -106,9 +106,16 @@ class CampaignLayout:
         self, arm: str, question_id: str, slot_index: int, request_sha256: str
     ) -> dict[str, str | int]:
         _index(slot_index, self.slots_per_question, "slot index")
-        if not arm or not question_id:
-            raise ValueError("Missing arm/question identity")
-        if len(request_sha256) != 64 or any(c not in "0123456789abcdef" for c in request_sha256):
+        if type(arm) is not str or not arm:
+            raise ValueError("Invalid arm identity")
+        if type(question_id) is not str or not question_id:
+            raise ValueError("Invalid question identity")
+        if (
+            type(request_sha256) is not str
+            or not request_sha256
+            or len(request_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in request_sha256)
+        ):
             raise ValueError("Invalid request SHA-256")
         stage, sample = self.slots[slot_index]
         result: dict[str, str | int] = {
