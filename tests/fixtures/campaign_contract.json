@@ -1,0 +1,192 @@
+{
+  "provenance": {
+    "commit": "f9809293",
+    "payloads": "CampaignPlan.payload; synthetic_plan in test_lme_campaign_contract.py, fixed literal APPROVAL/PRIOR for fresh; modes legacy/fresh/retry/recovery/final; embedding=20, LLM=500",
+    "initial_states": "Campaign.activate (guard.py:384-400) plus fresh.initialize, same synthetic plans; approval verify/claim only mocked",
+    "embedding_pending": "Campaign.before_send; test_lme_campaign_guard.request() with fictional query",
+    "embedding_artifact": "Campaign.receive/capture; test_lme_campaign_guard.response(), data=[]",
+    "failure_artifact": "Campaign.failure_details; TimeoutError with fictional private detail",
+    "identity_hashes": "_hash of A0/synthetic-0/stage/request_sha256=a repeated 64 times; embedding receipt-entry, other stages retry identities",
+    "historical_pending": "Campaign.before_send with official_judge request, A0/synthetic-0 at 195 receipts",
+    "constants": "campaign_fresh.py:41-83, campaign_retry.py:51-57; copied real values before monkeypatch",
+    "rounding_allocated_usd": "CampaignPlan.payload, legacy synthetic plan with embedding tokens=1 (0.02 microdollars)"
+  },
+  "constants": {
+    "approval": {
+      "acceptance_rule": "2026-10-31-official-v2",
+      "candidate_variable": "noted-dates",
+      "directory": "/home/sol/.local/share/daemon-lme-bench/runs/remap-historical-2026-10-31/campaign-noted-dates-v2",
+      "historical_remap_lineage_sha256": "4f77d026dc4336190b5fe26372254c1d653784df76255fdb316a504fde101a91",
+      "id": "2026-10-31-noted-dates-historical-v2",
+      "local_maximum_restore_attempts": 4,
+      "maximum_allocated_usd": "4.46",
+      "new_reserved_usd": "5.50",
+      "retry_headroom_usd": "1.10",
+      "retry_policy": {"backoff_seconds": [30, 60], "maximum_attempts": 3, "maximum_wait_seconds": 120, "minimum_start_interval_seconds": 5, "retryable_status": 429}
+    },
+    "prior": {
+      "plan_path": "/home/sol/.local/share/opencode-work/evidence/memory-tuning-20261028/campaign-plan-fresh-noted-dates-v2-20261031.json",
+      "plan_sha256": "d80e99edfff5e3fecccdcc13934e73d728d2b6d0dc9368c96a402ff261840a78",
+      "prior_reserved_usd": "21.2519050",
+      "prior_restore_attempts": 7
+    },
+    "policy": {"backoff_seconds": [30, 60], "maximum_attempts": 3, "maximum_wait_seconds": 120, "minimum_start_interval_seconds": 5, "retryable_status": 429}
+  },
+  "payloads": {
+    "legacy": {"sha256": "f1a0469405c0b01d0ffc2650cfb0b12577d3b692f3d76ebf1eaf00eb330bee06", "fields": {"allocated_usd": "1.7942000", "new_reserved_usd": "4.35", "prior_reserved_usd": "6.0519050", "cumulative_reserved_usd": "10.4019050", "prior_restore_attempts": 1, "maximum_cumulative_restore_attempts": 5}},
+    "fresh": {"sha256": "8daa39fedcea15f152809e57cd9088f117d4d4f35dc0dfe247539f05749448f6", "fields": {"allocated_usd": "1.7942000", "new_reserved_usd": "5.50", "prior_reserved_usd": "21.2519050", "cumulative_reserved_usd": "26.7519050", "prior_restore_attempts": 7, "maximum_cumulative_restore_attempts": 11}},
+    "recovery": {"sha256": "63f365cbd3c058e9457b26607c93769ee0e560f10fb66499ab18a40aee1015e9", "fields": {"allocated_usd": "1.3456500", "new_reserved_usd": "4.35", "prior_reserved_usd": "10.4019050", "cumulative_reserved_usd": "14.7519050", "prior_restore_attempts": 3, "maximum_cumulative_restore_attempts": 6}},
+    "retry": {"sha256": "e3ee61c42801e7da5b721aa54fe433338580d5bcd42c4b1f71a8d25a5b210550", "fields": {"allocated_usd": "1.3456500", "new_reserved_usd": "4.35", "prior_reserved_usd": "10.4019050", "cumulative_reserved_usd": "14.7519050", "prior_restore_attempts": 3, "maximum_cumulative_restore_attempts": 6}},
+    "final": {"sha256": "5d61475465130bc7eeff272fb3f603871234954e7171f48d28e68f9a8feedee9", "fields": {"allocated_usd": "1.3456500", "new_reserved_usd": "4.35", "prior_reserved_usd": "10.4019050", "cumulative_reserved_usd": "14.7519050", "prior_restore_attempts": 3, "maximum_cumulative_restore_attempts": 6}}
+  },
+  "rounding_allocated_usd": "1.7942000",
+  "identity_hashes": {
+    "embedding": "eaba26e89325b0bdb6f1afeeba9a263281e51fdb3f936cf463af1b0afe4878dc",
+    "answer": "35be54239fb974530e2f02cdd65bcd1353e34593b3adfdc05f3eb38ef3029b40",
+    "judge": "6e512726fa4d2e405c003e0cfc82766c80d835946d8dc4ef3b9484b95217f4a9",
+    "official_judge": "de65a4739291240e28d78bd5921dbb347273394a61e7fa55712d020ca5324918"
+  },
+  "embedding_pending": {"arm": "A0", "question_id": "synthetic-0", "request_sha256": "39c695f04f286a56387063ce0b181313b83b744c7361687d2582b84d43570fcc", "stage": "embedding"},
+  "historical_pending": {"arm": "A0", "question_id": "synthetic-0", "request_sha256": "0206bc3362f9f8750e680b13bb7479b128e25259faf1abaf96a20bda12766460", "stage": "official_judge"},
+  "embedding_artifact": {
+    "pending": {"arm": "A0", "question_id": "synthetic-0", "request_sha256": "39c695f04f286a56387063ce0b181313b83b744c7361687d2582b84d43570fcc", "stage": "embedding"},
+    "response": {"data_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "model": "text-embedding-3-small", "usage": {"prompt_tokens": 2, "total_tokens": 2}}
+  },
+  "failure_artifact": {
+    "pending": {"arm": "A0", "question_id": "synthetic-0", "request_sha256": "39c695f04f286a56387063ce0b181313b83b744c7361687d2582b84d43570fcc", "stage": "embedding"},
+    "diagnostics": {"cause_chain": [{"exception_type": "TimeoutError", "http_status_code": null}], "classification": "provider_error"}
+  },
+  "initial_states": {
+    "legacy": {
+      "arm": null, "arm_index": 0, "pending": null, "question": null, "question_index": 0, "receipts": [], "restores": [], "stage_index": 0, "status": "running",
+      "plan_sha256": "f1a0469405c0b01d0ffc2650cfb0b12577d3b692f3d76ebf1eaf00eb330bee06",
+      "plan": {
+        "allocated_usd": "1.7942000", "arms": ["A0", "A1", "A2", "C0"], "cumulative_reserved_usd": "10.4019050", "llm_start_interval_seconds": 5.0, "maximum_cumulative_restore_attempts": 5, "new_reserved_usd": "4.35", "prior_reserved_usd": "6.0519050", "prior_restore_attempts": 1, "schema": 1,
+        "pins": {"snapshot": "not-an-execution-approval", "source": "synthetic-only"},
+        "question_ids": ["synthetic-0", "synthetic-1", "synthetic-2", "synthetic-3", "synthetic-4", "synthetic-5", "synthetic-6", "synthetic-7", "synthetic-8", "synthetic-9", "synthetic-10", "synthetic-11", "synthetic-12", "synthetic-13", "synthetic-14", "synthetic-15", "synthetic-16", "synthetic-17", "synthetic-18", "synthetic-19", "synthetic-20", "synthetic-21", "synthetic-22", "synthetic-23", "synthetic-24", "synthetic-25", "synthetic-26", "synthetic-27", "synthetic-28", "synthetic-29", "synthetic-30", "synthetic-31", "synthetic-32", "synthetic-33", "synthetic-34", "synthetic-35", "synthetic-36", "synthetic-37", "synthetic-38", "synthetic-39", "synthetic-40", "synthetic-41", "synthetic-42", "synthetic-43", "synthetic-44", "synthetic-45", "synthetic-46", "synthetic-47", "synthetic-48", "synthetic-49"],
+        "input_limits": {
+          "synthetic-0": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-1": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-2": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-3": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-4": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-5": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-6": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-7": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-8": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-9": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-10": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-11": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-12": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-13": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-14": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-15": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-16": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-17": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-18": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-19": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-20": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-21": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-22": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-23": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-24": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-25": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-26": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-27": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-28": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-29": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-30": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-31": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-32": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-33": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-34": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-35": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-36": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-37": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-38": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-39": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-40": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-41": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-42": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-43": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-44": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-45": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-46": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-47": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-48": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-49": {"answer":500,"embedding":20,"judge":500,"official_judge":500}
+        }
+      }
+    },
+    "fresh": {
+      "arm": null, "arm_index": 0, "attach_pending": null, "attempts": [], "pending": null, "qualifications": [], "question": null, "question_index": 0, "receipts": [], "restore_attempts": 0, "restore_pending": null, "restore_receipts": [], "restores": [], "retry_reservations": [], "stage_index": 0, "status": "running",
+      "plan_sha256": "8daa39fedcea15f152809e57cd9088f117d4d4f35dc0dfe247539f05749448f6",
+      "plan": {
+        "allocated_usd": "1.7942000", "arms": ["A0", "A1", "A2", "C0"], "cumulative_reserved_usd": "26.7519050", "llm_start_interval_seconds": 5.0, "maximum_cumulative_restore_attempts": 11, "new_reserved_usd": "5.50", "prior_reserved_usd": "21.2519050", "prior_restore_attempts": 7, "schema": 1,
+        "retry_policy": {"backoff_seconds": [30, 60], "maximum_attempts": 3, "maximum_wait_seconds": 120, "minimum_start_interval_seconds": 5, "retryable_status": 429},
+        "pins": {
+          "arm_shas": {"A0": "control", "A1": "control", "A2": "control", "C0": "candidate"},
+          "candidate_formatter": {"id": "synthetic-candidate"}, "candidate_variable": "noted-dates", "catalogue_sha256": "synthetic", "common_files": "synthetic", "database_oid": "synthetic", "effective_config": "synthetic", "formatter": "synthetic",
+          "fresh_campaign": {
+            "approval": {"acceptance_rule": "2026-10-31-official-v2", "candidate_variable": "noted-dates", "directory": "/synthetic/campaign", "historical_remap_lineage_sha256": "synthetic-lineage", "id": "synthetic-contract", "local_maximum_restore_attempts": 4, "maximum_allocated_usd": "4.46", "new_reserved_usd": "5.50", "retry_headroom_usd": "1.10", "retry_policy": {"backoff_seconds": [30, 60], "maximum_attempts": 3, "maximum_wait_seconds": 120, "minimum_start_interval_seconds": 5, "retryable_status": 429}},
+            "prior": {"plan_path": "/synthetic/prior.json", "plan_sha256": "synthetic-prior", "prior_reserved_usd": "21.2519050", "prior_restore_attempts": 7}
+          },
+          "historical_remap": {"lineage_sha256": "synthetic-lineage"}, "ingest_checkpoint": "synthetic", "ingest_manifest": "synthetic", "original_allow_connections": "synthetic", "restore_script": "synthetic", "route_evidence": "synthetic", "server_identifier": "synthetic", "snapshot": "synthetic", "tokenizer_envelope": "synthetic", "tokenizer_sha256": "synthetic"
+        },
+        "question_ids": ["synthetic-0", "synthetic-1", "synthetic-2", "synthetic-3", "synthetic-4", "synthetic-5", "synthetic-6", "synthetic-7", "synthetic-8", "synthetic-9", "synthetic-10", "synthetic-11", "synthetic-12", "synthetic-13", "synthetic-14", "synthetic-15", "synthetic-16", "synthetic-17", "synthetic-18", "synthetic-19", "synthetic-20", "synthetic-21", "synthetic-22", "synthetic-23", "synthetic-24", "synthetic-25", "synthetic-26", "synthetic-27", "synthetic-28", "synthetic-29", "synthetic-30", "synthetic-31", "synthetic-32", "synthetic-33", "synthetic-34", "synthetic-35", "synthetic-36", "synthetic-37", "synthetic-38", "synthetic-39", "synthetic-40", "synthetic-41", "synthetic-42", "synthetic-43", "synthetic-44", "synthetic-45", "synthetic-46", "synthetic-47", "synthetic-48", "synthetic-49"],
+        "input_limits": {
+          "synthetic-0": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-1": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-2": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-3": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-4": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-5": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-6": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-7": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-8": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-9": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-10": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-11": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-12": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-13": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-14": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-15": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-16": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-17": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-18": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-19": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-20": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-21": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-22": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-23": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-24": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-25": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-26": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-27": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-28": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-29": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-30": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-31": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-32": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-33": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-34": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-35": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-36": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-37": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-38": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-39": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-40": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-41": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-42": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-43": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-44": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-45": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-46": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-47": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-48": {"answer":500,"embedding":20,"judge":500,"official_judge":500},
+          "synthetic-49": {"answer":500,"embedding":20,"judge":500,"official_judge":500}
+        }
+      }
+    }
+  }
+}
