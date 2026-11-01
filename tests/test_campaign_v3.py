@@ -230,6 +230,56 @@ def test_empty_abstention_is_not_zero_accuracy() -> None:
     assert v3.v3_summaries(result)["abstention_subset"]["official"]["strict_accuracy"] is None
 
 
+def test_partial_labels_cannot_form_a_generic_strict_majority() -> None:
+    result = rows()
+    for sample in result[0]["samples"][:2]:
+        sample["judgment"] = "partially_correct"
+    aggregate(result[0])
+    assert [sample["judgment"] for sample in result[0]["samples"]] == [
+        "partially_correct",
+        "partially_correct",
+        "incorrect",
+    ]
+    assert result[0]["generic_strict_majority"] == "incorrect"
+    v3.validate_v3_rows(result, dataset())
+    result[0]["generic_strict_majority"] = "correct"
+    with pytest.raises(CampaignStopped, match="^V3 generic strict majority differs$"):
+        v3.validate_v3_rows(result, dataset())
+
+
+@pytest.mark.parametrize(
+    "count,expected,passes", [(30, Fraction(1, 5), True), (31, Fraction(31, 150), False)]
+)
+def test_partial_labels_count_as_strict_disagreements(
+    count: int, expected: Fraction, passes: bool
+) -> None:
+    result = rows()
+    samples = [sample for row in result for sample in row["samples"]]
+    correct_samples = [sample for sample in samples if sample["official_judgment"] == "correct"]
+    for sample in correct_samples[:count]:
+        sample["judgment"] = "partially_correct"
+    for row in result:
+        aggregate(row)
+    summary = v3.v3_summaries(result)
+    assert summary["paired"]["strict_disagreements"] == count
+    assert ratio(summary["paired"]["strict_disagreement_rate"]) == expected
+    partial_as_correct_rate = Fraction(
+        sum(
+            (sample["judgment"] in {"correct", "partially_correct"})
+            != (sample["official_judgment"] == "correct")
+            for sample in samples
+        ),
+        150,
+    )
+    assert partial_as_correct_rate == Fraction(0, 1)
+    assert partial_as_correct_rate != expected
+    if passes:
+        assert v3.qualification_v3(result, dataset()) == summary
+    else:
+        with pytest.raises(CampaignStopped, match="^Judge disagreement exceeds 20 percent$"):
+            v3.qualification_v3(result, dataset())
+
+
 @pytest.mark.parametrize("count,passes", [(30, True), (31, False)])
 def test_per_sample_disagreement_boundary(count: int, passes: bool) -> None:
     result = rows()
@@ -369,8 +419,15 @@ def test_calibration_direction_and_investigate(direction: str) -> None:
 
 
 @pytest.mark.parametrize("mode", ["pilot", "candidate"])
-@pytest.mark.parametrize("change", ["arm", "id", "category"])
-def test_cross_arm_coverage_and_categories(mode: str, change: str) -> None:
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        ("arm", "^Campaign arm coverage differs$"),
+        ("id", "^Paired identities differ$"),
+        ("category", "^Paired categories differ$"),
+    ],
+)
+def test_cross_arm_coverage_and_categories(mode: str, change: str, message: str) -> None:
     arms = candidate()
     if mode == "pilot":
         arms = {key: arms[key] for key in ("A0", "A1")}
@@ -380,7 +437,7 @@ def test_cross_arm_coverage_and_categories(mode: str, change: str) -> None:
         arms["A1"][0]["question_id"] = "unknown"
     else:
         arms["A1"][0]["category"] = "MR"
-    with pytest.raises(CampaignStopped, match="coverage|identities|categories"):
+    with pytest.raises(CampaignStopped, match=message):
         if mode == "pilot":
             v3.pilot_report(arms)
         else:
@@ -396,6 +453,7 @@ def test_cross_arm_coverage_and_categories(mode: str, change: str) -> None:
         {"identity": " ", "sha256": "a" * 64},
         {"identity": 1, "sha256": "a" * 64},
         {"identity": "id", "sha256": "z" * 64},
+        {"identity": "id", "sha256": "A" * 64},
         {"identity": "id", "sha256": "a" * 63},
         {"identity": "id", "sha256": None},
         {**PIN, "passed": True},

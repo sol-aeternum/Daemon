@@ -246,7 +246,7 @@ def paired_result_v3(
         and isinstance(pilot_report_pin.get("identity"), str)
         and bool(pilot_report_pin["identity"].strip())
         and isinstance(pilot_report_pin.get("sha256"), str)
-        and re.fullmatch(r"[0-9a-fA-F]{64}", pilot_report_pin["sha256"]) is not None,
+        and re.fullmatch(r"[0-9a-f]{64}", pilot_report_pin["sha256"]) is not None,
         "Invalid passed pilot report pin",
     )
     labels, categories, evidence = _arm_labels(arms, {*_CONTROLS, "C0"})
