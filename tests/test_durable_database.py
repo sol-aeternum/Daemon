@@ -60,7 +60,11 @@ async def test_clean_migrations_and_clone_commit_rollback_ddl_isolation():
                         ("vector", "public"),
                     }
                     for conn in (first, second):
-                        for table in ("task_history_binding", "task_history_acceptance"):
+                        for table in (
+                            "task_history_binding",
+                            "task_history_acceptance",
+                            "task_history_projection",
+                        ):
                             assert await conn.fetchval(
                                 "SELECT to_regclass($1) IS NOT NULL", f"{template.schema}.{table}"
                             )
@@ -79,6 +83,11 @@ async def test_clean_migrations_and_clone_commit_rollback_ddl_isolation():
                             "task_history_check_caller",
                             "task_history_acceptance_project",
                             "task_history_acceptance_page",
+                            "task_history_decode_effect",
+                            "task_history_project_frame",
+                            "task_history_send_project",
+                            "task_history_stop_project",
+                            "task_history_page",
                         }
                         assert all(r["proconfig"] == ["search_path=pg_catalog"] for r in functions)
                         assert all("public." not in r["definition"] for r in functions)
@@ -101,7 +110,7 @@ async def test_clean_migrations_and_clone_commit_rollback_ddl_isolation():
                                 "CROSS JOIN LATERAL aclexplode("
                                 "coalesce(c.relacl,acldefault('r',c.relowner))) a "
                                 "WHERE n.nspname=$1 "
-                                "AND c.relname IN ('task_history_binding','task_history_acceptance') "
+                                "AND c.relname IN ('task_history_binding','task_history_acceptance','task_history_projection') "
                                 "AND a.grantee<>c.relowner",
                                 template.schema,
                             )

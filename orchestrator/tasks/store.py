@@ -2261,6 +2261,12 @@ class TaskStore:
     # ------------------------------------------------------------------ #
 
     async def request_cancel(self, user_id: uuid.UUID, task_id: uuid.UUID) -> CancelOutcome:
+        return await self._request_cancel_with_stage(user_id, task_id, stage=None)
+
+    async def _request_cancel_with_stage(
+        self, user_id: uuid.UUID, task_id: uuid.UUID, *, stage: Any
+    ) -> CancelOutcome:
+        """Private H seam; original guards/mutations and one top-level COMMIT."""
         async with control_transaction(self._pool, refusals=(TaskNotFound,)) as conn:
             preliminary = await conn.fetchrow(
                 "SELECT * FROM tasks WHERE id=$1 AND user_id=$2", task_id, user_id
@@ -2280,7 +2286,10 @@ class TaskStore:
                 await self._control_end(
                     conn, row, TaskStatus.CANCELLED, "cancelled", end_attempt=False
                 )
-                return CancelOutcome(TaskStatus.CANCELLED, accepted=True)
+                outcome = CancelOutcome(TaskStatus.CANCELLED, accepted=True)
+                if stage is not None:
+                    await stage(conn, row, outcome)
+                return outcome
             if status is TaskStatus.RUNNING:
                 if row["cancel_requested_at"] is None:
                     await conn.execute(
@@ -2289,7 +2298,10 @@ class TaskStore:
                         task_id,
                     )
                     await self._append_event(conn, task_id, "cancel_requested")
-                return CancelOutcome(TaskStatus.RUNNING, accepted=True)
+                outcome = CancelOutcome(TaskStatus.RUNNING, accepted=True)
+                if stage is not None:
+                    await stage(conn, row, outcome)
+                return outcome
             return CancelOutcome(status, accepted=False)
 
     async def delete_conversation(

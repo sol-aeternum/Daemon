@@ -118,6 +118,10 @@ class AcceptanceProjection:
     rows are historical facts only. No connection/resource is retained.
     """
 
+    _catalog = CATALOG
+    _kinds: tuple[type[Any], ...] = (AcceptPrepare,)
+    _reader = "SELECT * FROM public.task_history_acceptance_page($1,$2,$3)"
+
     def __init__(self, expected: Identity, *, acceptor: str, worker: str) -> None:
         if (
             type(expected) is not Identity
@@ -159,7 +163,7 @@ class AcceptanceProjection:
                             raise HistoryError("projection_principal_refused")
                     else:
                         raise HistoryError("projection_principal_refused")
-                if await conn.fetchval(CATALOG, self.acceptor, self.worker) is not True:
+                if await conn.fetchval(self._catalog, self.acceptor, self.worker) is not True:
                     raise HistoryError("projection_catalog_refused")
             if asyncio.get_running_loop().time() >= deadline:
                 raise HistoryError("projection_deadline")
@@ -194,7 +198,7 @@ class AcceptanceProjection:
             if (
                 type(row["seq"]) is not int
                 or not 1 <= row["seq"] <= MAX_RECORDS
-                or not isinstance(entry.command.data, AcceptPrepare)
+                or type(entry.command.data) not in self._kinds
                 or entry.history_id != self.expected.history_id
                 or (row["history_id"], row["seq"], row["record_id"], row["digest"])
                 != (entry.history_id, entry.seq, entry.command.record_id, entry.digest)
@@ -209,7 +213,7 @@ class AcceptanceProjection:
     async def _page(self, conn: Any, after_seq: int, deadline: float) -> tuple[ProjectionFact, ...]:
         self._time(deadline)
         rows = await conn.fetch(
-            "SELECT * FROM public.task_history_acceptance_page($1,$2,$3)",
+            self._reader,
             self.expected.history_id,
             after_seq,
             self.expected.key_check,

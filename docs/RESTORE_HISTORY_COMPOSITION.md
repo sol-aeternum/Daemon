@@ -127,6 +127,93 @@ The pre-existing uncomposed native diagnostic still demonstrates its gap. The
 new source does not intercept callers that bypass this isolated join. Runtime
 composition, authenticated client/key compatibility, historical observation,
 production retention/J1 appliers, independent restore controls, financial/auth/
-cache continuity, send/Stop/output, deployment and enablement remain outstanding.
+cache continuity, runtime Send/Stop/output, deployment and enablement remain outstanding.
 No result or history/projection receipt is dispatch permission; no exactly-once
 external effect, remote cessation or live daily-driver readiness is claimed.
+
+## Uncalled Send/Stop extension (057)
+
+`HistoryEffects` is an explicit synthetic collaborator, never installed by HTTP,
+worker startup or a client. The original `InferenceRecovery.mark`,
+`TaskStore.request_cancel` and terminal completion defaults remain uncomposed.
+The closed 044–050 migration runner does not include 057. Applying this source
+to any application database remains a separate operational decision.
+
+057 adds one immutable, non-cascading common projection index for the existing
+H1 `ACCEPT_PREPARE`, `SEND_POSSIBLE` and `STOP_INTENT` frames. It retains the
+original acceptance account/key uniqueness table. Its owner-only upgrade copies
+existing acceptance frames after validating every semantic column; it neither
+prunes nor repairs missing history. No roles, service grants, binding data or
+credentials are created. A alone writes acceptance; W alone writes Send/Stop;
+A/W read the same bounded combined page. Neither gets direct table mutation or
+private decoder/helper execution. These records contain personal identity and
+possible-effect metadata; live retention/deletion policy is still unapproved.
+The old 056 `AcceptanceProjection` profile stays strict. The explicit
+`HistoryProjection` profile qualifies all ten functions, immutable table shape,
+current principal and closed ACLs on the acquired connection. Acceptance using
+that profile compares all three kinds, never drops Send/Stop to obtain parity.
+
+Each joined operation holds H OP before acquiring native account/lifecycle/task
+locks or a transaction. Append locking remains short. Full H/SQL parity and the
+independent identity/key-check metadata must match first; unresolved restores,
+missing/extra facts and historical matching keys still refuse, with no repair,
+readback promotion or automatic retry. A cancelled logical gate waiter settles
+directly. Actual filesystem work and native pool-holder reset are drained before
+OP release even after cancellation/deadline. The 2-second total Send/Stop budget
+includes admission, SQL, H fsync and cleanup; stricter native limits remain.
+Logical expiry never promises bounded kernel cleanup.
+Public entry checks process/loop ownership and blocked state before invoking the
+original invocation check or checking K1. The same total absolute deadline is
+frozen before that validation and never extended by supervision. The trusted
+invocation check remains synchronous local validation, not a transport/I/O hook.
+Send rechecks the same deadline after its final invocation check before returning.
+
+For Send, the original native mark still generates a new runtime identity and
+nonce and validates its own `created:true` result. Its private callback durably
+appends H and stages the exact Send projection on that SAME native transaction.
+Only a confirmed top-level COMMIT, actual connection release and H release can
+return None. Scoped control transactions refuse an inherited transaction rather
+than treating SAVEPOINT release as COMMIT. Outside the H cleanup scope, the
+original connection ownership behavior is unchanged. A Send records only that an
+effect may happen: no provider/network call runs under H. The trusted caller
+labels the closed effect kind; this slice does not invent a mapping from billing
+operation names to transport kinds.
+
+An earlier Send from a reconstructed invocation refuses. Locally retained record
+IDs are only a negative historical filter for the same original live invocation;
+each subsequent distinct call must still pass a fresh native mark, reservation,
+nonce, H append, projection and COMMIT. No record, returned value or local set is
+reusable dispatch permission. Any uncertain outcome blocks the object and original
+invocation; a fresh wrapper/state cannot adopt historical Send as permission.
+
+For Stop, the backend supplies K1 for that call; worker Send never receives it
+or A credentials. Native cancellation retains its control/W connection and
+original account/task/origin guards. Only an accepted cancellation appends Stop
+and stages its projection inside that same transaction. The projection preserves native negative control eligibility after suspension or
+generation advancement rather than applying fresh content/send admission rules.
+Its original authenticated task/coverage generation stays unchanged. This grants
+no positive content, dispatch, financial settlement or restored-account authority.
+A historical Stop refuses; there is no new historical observation/acknowledgement
+API. A terminal native
+`accepted:false` result adds no Stop record and is not a durable Stop confirmation.
+Stop before mark refuses new sends. Send before Stop preserves possible-effect
+uncertainty; it cannot revoke an already admitted call atomically across a provider
+boundary or guarantee remote cessation/billing cancellation.
+
+The narrow uncalled terminal `complete` fence serializes with Stop and reuses
+native claim/epoch/current-authority checks. If Stop wins, terminal success cannot
+publish. If completion wins and commits first, later Stop observes native terminal
+state and cannot retroactively cancel it. This is no streaming, partial-output,
+artifact or independently retained output-continuity implementation.
+
+The static noncomposition inventory admits only the exact `InferenceRecovery`
+type import in `effects.py`, exact private native staging calls and cleanup scopes
+inside its three joined methods. `ADMITTED` is unchanged; consumer construction,
+installation, alternate hosts and runtime H imports remain prohibited. Positive,
+negative and no-I/O tests discriminate that boundary. This is a bounded source
+inventory, not an arbitrary Python execution sandbox.
+
+Synthetic tests exercise the joined boundary and real PostgreSQL/POSIX ownership;
+exact executed counts and failed receipts are reported separately. They do not
+qualify production trust, provisioning, restore dispositions, financial/auth/cache
+continuity, clients or runtime rollout. #477 remains open.

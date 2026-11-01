@@ -30,6 +30,58 @@ def imports_lifecycle(text):
     )
 
 
+def assert_history_identity_only(text):
+    """Only H's exact data-type import; no lifecycle consumer or activation."""
+    tree = ast.parse(text)
+    imports = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.ImportFrom)
+        and n.level == 0
+        and n.module == "orchestrator.attempt_lifecycle"
+        and [(a.name, a.asname) for a in n.names] == [("AttemptIdentity", None)]
+    ]
+    assert len(imports) == 1
+    tree.body.remove(imports[0])
+    remaining = ast.unparse(tree)
+    assert not imports_lifecycle(remaining)
+    assert "attempt_lifecycle" not in remaining
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "AttemptIdentity":
+            parent = parents[node]
+            assert (isinstance(parent, ast.arg) and parent.annotation is node) or isinstance(
+                parent, ast.Compare
+            )
+        if isinstance(node, ast.Call):
+            assert not (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"register", "close", "readback"}
+            )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "from orchestrator.attempt_lifecycle import assert_open",
+        "from orchestrator.attempt_lifecycle import AttemptIdentity as Alias",
+        "import orchestrator.attempt_lifecycle as lifecycle",
+        "AttemptIdentity(a,b,c,d,e,f,g,h)",
+        "Alias=AttemptIdentity\nAlias(a,b,c,d,e,f,g,h)",
+        "__import__('orchestrator.attempt_lifecycle')",
+        "adapter.register(value)",
+        "adapter.close(value)",
+        "adapter.readback(value)",
+        "conn.execute('SELECT public.attempt_lifecycle_register($1,$2)')",
+    ],
+)
+def test_history_identity_exception_cannot_activate_lifecycle(extra):
+    good = "from orchestrator.attempt_lifecycle import AttemptIdentity\nasync def check(identity: AttemptIdentity):\n return type(identity) is AttemptIdentity"
+    assert_history_identity_only(good)
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good + "\n" + extra)
+
+
 def assert_composition_catalogue_only(text):
     """Exact factory may inspect names/types, not import or invoke lifecycle APIs."""
     assert not imports_lifecycle(text)
@@ -130,7 +182,13 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                     for n in ast.walk(ast.parse(text))
                 )
                 continue
-            assert not imports_lifecycle(text), str(path)
+            if (
+                path.relative_to(root).as_posix()
+                == "orchestrator/services/restore_history/effects.py"
+            ):
+                assert_history_identity_only(text)
+            else:
+                assert not imports_lifecycle(text), str(path)
             if path.relative_to(root).as_posix() == "orchestrator/tasks/composition.py":
                 assert_composition_catalogue_only(text)
             else:

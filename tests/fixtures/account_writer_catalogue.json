@@ -9,6 +9,12 @@
     "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
+    "task_history_projection": {
+      "category": "control",
+      "owner_source": "migrations/057_restore_history_effects.sql",
+      "ownership_path": "root:task_history_binding <- task_history_projection",
+      "rationale": "Approved closed H1 acceptance/send/Stop metadata, including account/task identities and possible-effect tuples. No content, cascade, pruning, live retention activation or dispatch permission. Uncalled synthetic boundary only; uncovered."
+    },
     "task_history_binding": {
       "category": "control",
       "owner_source": "migrations/056_restore_history_acceptance.sql",
@@ -383,6 +389,7 @@
     }
   },
   "fk_edges": {
+    "task_history_projection": ["task_history_binding"],
     "resource_presentations": ["messages", "users"],
     "resource_input_batches": ["tasks", "users"],
     "resource_input_intents": ["resource_input_batches"],
@@ -546,6 +553,7 @@
     ]
   },
   "ownership_paths": {
+    "task_history_projection": "root:task_history_binding <- task_history_projection",
     "resource_presentations": "root:users <- conversations <- messages <- resource_presentations | root:users <- messages <- resource_presentations | root:users <- resource_presentations",
     "resource_input_batches": "root:users <- conversations <- messages <- tasks <- resource_input_batches | root:users <- conversations <- tasks <- resource_input_batches | root:users <- messages <- tasks <- resource_input_batches | root:users <- resource_input_batches | root:users <- tasks <- resource_input_batches",
     "resource_input_intents": "root:users <- conversations <- messages <- tasks <- resource_input_batches <- resource_input_intents | root:users <- conversations <- tasks <- resource_input_batches <- resource_input_intents | root:users <- messages <- tasks <- resource_input_batches <- resource_input_intents | root:users <- resource_input_batches <- resource_input_intents | root:users <- tasks <- resource_input_batches <- resource_input_intents",
@@ -7041,7 +7049,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore.request_cancel",
+      "qualname": "TaskStore._request_cancel_with_stage",
       "kind": "sql_inline",
       "fingerprint": "9f06a75dd75acc27",
       "tables": [
@@ -7407,6 +7415,50 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.acceptance",
+      "qualname": "AcceptanceProjection._page",
+      "kind": "sql_unresolvable",
+      "fingerprint": "43ad79f11b98094f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Dynamic closed H1 projection SQL is outside bounded static SQL resolution. Source-only qualified Send/Stop metadata join; no ordinary content permission, runtime activation or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.acceptance",
+      "qualname": "AcceptanceProjection.qualify",
+      "kind": "sql_unresolvable",
+      "fingerprint": "7b8bd9b8f4f9a64e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Dynamic closed H1 projection SQL is outside bounded static SQL resolution. Source-only qualified Send/Stop metadata join; no ordinary content permission, runtime activation or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.effects_projection",
+      "qualname": "HistoryProjection.stage_effect",
+      "kind": "sql_unresolvable",
+      "fingerprint": "6b3c1d50b4695a6e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Dynamic closed H1 projection SQL is outside bounded static SQL resolution. Source-only qualified Send/Stop metadata join; no ordinary content permission, runtime activation or restore readiness."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.effects_projection",
+      "qualname": "_replace",
+      "kind": "filesystem_write",
+      "fingerprint": "f5ade7553cd57ee5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Pure string replacement of fixed SQL catalog source; conservative scanner treats replace as a filesystem candidate. No filesystem access or runtime activation."
     }
   ]
 }
