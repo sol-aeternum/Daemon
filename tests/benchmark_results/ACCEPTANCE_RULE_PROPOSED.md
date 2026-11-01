@@ -5,7 +5,9 @@
 category and abstention thresholds below are retained without exemptions.
 One owner-approved amendment, `2026-10-31-official-v2`, applies only to plans that
 explicitly bind it (see [Amendment](#amendment-2026-10-31-official-v2)); every other
-use keeps v1.
+use keeps v1. A second, `2026-11-01-paired-sign-v3`, has owner-approved parameters
+but no implementation yet, so no plan can bind it (see
+[Amendment v3](#amendment-2026-11-01-paired-sign-v3)).
 
 **Primary metric:** official category/abstention-aware strict accuracy, with the
 unchanged generic strict series retained as a secondary regression report. This is
@@ -139,6 +141,139 @@ Scope: only plans whose fixed approval binds `acceptance_rule: 2026-10-31-offici
 (`orchestrator/eval/campaign_fresh.py` approval `2026-10-31-noted-dates-historical-v2`).
 Those plans report this version in `paired-result.json`. The stopped v1 fresh plan
 and all earlier campaigns remain under v1.
+
+## Amendment 2026-11-01-paired-sign-v3
+
+Status: **parameters owner-approved on 2026-11-01; not yet bindable.** v3 has two
+plan modes:
+
+- **Pilot mode** may be bound once the k-sample harness and the paired test
+  below are implemented, reviewed and merged, and the pilot run itself is
+  separately approved. It produces a pilot report, never an acceptance
+  verdict.
+- **Candidate mode** may be bound only after that, and only when the plan pins
+  a passed pilot report (see Pilot requirement).
+
+Until then every campaign stays on v1 or v2.
+
+**Scope.** Evaluate-only campaigns only. v3 builds on v2 and keeps v2's §1.6
+change. Ingest-change campaigns are not covered: they stay on v1 or v2 in full,
+with one answer sample per question and `max(4, 2G)`.
+
+**Samples.** For each question, every arm makes k = 3 answer calls. All three use
+the identical request and route as v1: the pinned config (temperature 0, seed 42)
+and §2's identical model and provider, so comparability is unchanged. Samples can differ only through serving
+nondeterminism. Each sample is judged separately by the official judge, with the
+generic judge kept as the secondary series. Separate judging means majority
+scoring also averages over judge variability on near-identical answers. The
+sample index is ledger metadata only; it never enters the prompt or the provider
+request.
+
+The generic series maps each sample to binary strict (`correct` = 1;
+`partially_correct` and `incorrect` = 0) and reports the majority of those. It never sets an accuracy outcome or replaces the
+official series. The existing generic/official disagreement validity gate still
+applies, per sample (see Coverage).
+
+**Coverage (replaces §1.7's single-verdict wording for v3 plans).** A run is
+valid only if every frozen ID has exactly 3 completed answer samples, each with
+one binary official verdict: 150 sample verdicts and 50 majority labels. Summaries
+report both levels (sample `judged == total == 150`, majority
+`judged == total == 50`, `missing == 0`). Results stay one row per question, each
+with exactly 3 sample records. The implementation extends the offline coverage
+check to validate the sample records. Question-level invariants (result count,
+paired totals, accuracy bounds, §1.6) use the 50 majority rows. The per-sample
+gate below uses the 150 sample records.
+
+- A failed answer call may be retried only as the plan's retry policy allows.
+  Today that is bounded HTTP 429 retries, where a plan pins them. If any sample
+  has no completed answer after that, the run is invalid.
+- A missing judge verdict on a saved answer is reconciled from that saved
+  answer, as §1.7 already requires. Acceptance stays blocked until then.
+- A majority is never taken from fewer than 3 labels.
+- The code's generic/official strict-disagreement gate (currently ≤ 20%) is
+  computed per sample.
+
+**Outcome.** A question's strict outcome is the majority of its 3 official
+labels, which cannot tie. F, category and abstention checks, including v2's
+§1.6, use majority labels.
+
+**§3 criterion 1, replaced.** Compare the candidate with the paired comparator
+(control A0) on majority labels. Let *w* be the questions the candidate gets right
+and the comparator wrong, and *l* the reverse. Criterion 1 holds only if both:
+
+- net gain *w* − *l* ≥ 3;
+- the one-sided exact sign test P(X ≥ *w*), X ~ Binomial(*w* + *l*, 0.5), is
+  ≤ 0.05.
+
+Criteria 2–4 (category loss at most 2, no net abstention loss, both modes) are
+unchanged. v3 is stricter than v1 for some outcomes: with *l* = 0 it needs
+*w* ≥ 5, while v1 with F = 0 accepts a net gain of 3.
+
+**Candidate shape.** A candidate-mode plan has exactly three control arms, A0,
+A1 and A2, at the control source, plus one candidate arm, C0. A0 is the
+comparator.
+
+**Calibration.** For every control pair, run the test with each arm as the
+candidate in turn (6 ordered comparisons for 3 controls). If any meets
+criterion 1, the campaign result is "investigate", not accept. F is still
+computed and reported, but no longer sets the threshold.
+
+**Record (adds to §4 for v3 plans).** Every v3 result file records its plan mode,
+and per-sample and majority official labels per question.
+
+- **Pilot mode** also records the four pilot rates and the pass or fail result.
+- **Candidate mode** also records *w*, *l*, the sign-test p-value, every
+  control-pair calibration result, and the identity and hash of the passed pilot
+  report its plan pins.
+
+**Reason.** With F ≈ p·n, the `max(3, 2F)` bar stays at a net gain rate of about
+2p at any sample size. An effect below that rate fails however large the dev set
+is. In Phase 3B ([report](memory_phase3b_2026-11-01.md)), C0's 8% net gain
+faced a bar of about 12% (2p, with p ≈ 6%). The sign test's required margin grows
+with √(*w* + *l*) rather than with n, so consistent effects become decidable as the
+dev set grows. In Phase 3B, retrieved
+context was identical across controls. An offline pass over the retained raw
+answers (not in the committed evidence index) found that byte-identical answers
+never received different official labels across control runs (0 of 74
+question-pairs), and every control flip came with a different answer. That is
+consistent with answer sampling being a major source of noise. It does not
+separate answer sampling from judge variability on differing or near-identical
+answers, which separate per-sample judging also averages over.
+
+**Pilot requirement.** Before any candidate-mode plan binds v3, a separately
+approved pilot-mode run must complete with exactly two control arms, A0 and A1,
+at the control source with k = 3. It reports, on official labels:
+
+- **matched-sample flip rate** (the gate's per-sample rate): the share of the
+  150 (question, sample i) pairs where A0's sample i and A1's sample i differ;
+- **majority-label flip rate:** the share of the 50 questions whose majority
+  labels differ;
+- **all-cross-pairs flip rate,** report-only: the share of the 450 pairs
+  (A0 sample i, A1 sample j) that differ;
+- how often a question's 3 samples within an arm are byte-identical.
+
+The pilot passes if and only if the majority-label flip rate is strictly below
+the matched-sample flip rate. The other reported figures have no role in the
+pass decision. Equal rates fail, because they show no reduction. For
+example, one question with A0 = [0,0,0] against A1 = [1,1,1], one with both arms
+at [0,0,1] and 48 at [0,0,0] give 1/50 = 2% against 3/150 = 2%, which fails.
+Otherwise v3's candidate mode is not bound without revisiting k or the sample
+design.
+
+**Limitations.** Record these with any v3 result:
+
+- The sign test treats questions as independent paired units. Questions that
+  share haystack sessions, and repeated candidate selection on the same dev set,
+  can make its nominal 0.05 optimistic.
+- Majority-of-3 correctness is a different estimand from single-answer
+  production quality. A v3 acceptance is evidence about the candidate's effect
+  under majority scoring, not a measured production accuracy.
+- Earlier results are not rescored. The v2 rejection of the noted-dates
+  candidate stands.
+
+This amendment authorizes no run. Each v3 run needs its own approval, which states
+its budget and every restore, including each arm's standard baseline restore.
+Dev-set expansion and holdout use also need their own approval.
 
 ## 4. Record
 
