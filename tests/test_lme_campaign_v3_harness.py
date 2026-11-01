@@ -27,6 +27,7 @@ from tests.test_lme_campaign_contract import (
 )
 
 V3_LAYOUT = layout("v3")
+LEGACY_LAYOUT = layout("legacy")
 NOW = datetime(2023, 5, 20, tzinfo=timezone.utc)
 
 
@@ -346,6 +347,55 @@ def test_v3_completion_never_raises_for_malformed_or_partial_rows(bad):
     assert fact_harness.is_completed_result({"judgment": "correct"}) is True
 
 
+@pytest.mark.parametrize(
+    "row,expected",
+    [
+        ({"judgment": "correct"}, True),
+        ({"judgment": "incorrect", "official_judge_status": "failed"}, True),
+        ({"judgment": "partially_correct"}, True),
+        ({"judgment": "correct", "error": "fictional"}, False),
+        ({"judgment": "correct", "error": ""}, False),
+        ({"question_id": "synthetic-0"}, False),
+        ({"judgment": None}, False),
+        (None, False),
+    ],
+)
+def test_explicit_legacy_layout_preserves_completion(row, expected):
+    default = fact_harness.is_completed_result(row)
+    assert default is expected
+    assert fact_harness.is_completed_result(row, layout=LEGACY_LAYOUT) is default
+
+
+def test_single_v3_row_validator_accepts_completed_row():
+    assert campaign_v3.validate_v3_row(completed_row()) is None
+
+
+@pytest.mark.parametrize(
+    "bad,message",
+    [
+        ("row_error", "V3 question has an error"),
+        ("sample_error", "V3 sample has an error"),
+        ("official_status", "V3 official judge is not completed"),
+        ("official_aggregate", "V3 official majority differs"),
+        ("generic_aggregate", "V3 generic strict majority differs"),
+    ],
+)
+def test_single_v3_row_validator_reports_specific_failure(bad, message):
+    row = completed_row()
+    if bad == "row_error":
+        row["error"] = "fictional"
+    elif bad == "sample_error":
+        row["samples"][1]["error"] = "fictional"
+    elif bad == "official_status":
+        row["samples"][1]["official_judge_status"] = "failed"
+    elif bad == "official_aggregate":
+        row["official_majority"] = "incorrect"
+    elif bad == "generic_aggregate":
+        row["generic_strict_majority"] = "incorrect"
+    with pytest.raises(guard.CampaignStopped, match=f"^{message}$"):
+        campaign_v3.validate_v3_row(row)
+
+
 def runner(tmp_path: Path) -> fact_harness.LongMemEvalFactRunner:
     return fact_harness.LongMemEvalFactRunner(
         dataset_path=tmp_path / "fictional-dataset.json",
@@ -353,6 +403,50 @@ def runner(tmp_path: Path) -> fact_harness.LongMemEvalFactRunner:
         checkpoint_path=tmp_path / "checkpoint.json",
         score_path=tmp_path / "score.json",
     )
+
+
+@pytest.mark.parametrize("checkpoint_complete", [False, True])
+def test_explicit_legacy_layout_preserves_reconciliation(
+    tmp_path, monkeypatch, checkpoint_complete
+):
+    monkeypatch.setattr(fact_harness, "utc_now_iso", lambda: "synthetic-time")
+    complete = {"question_id": "synthetic-0", "run_id": "synthetic-run", "judgment": "correct"}
+    error = {
+        "question_id": "synthetic-1",
+        "run_id": "synthetic-run",
+        "judgment": "incorrect",
+        "error": "fictional",
+    }
+    missing = {"question_id": "synthetic-2", "run_id": "synthetic-run"}
+    duplicate = {**complete, "error": "later fictional error"}
+    results = []
+    for name, selected_layout in (("default", None), ("legacy", LEGACY_LAYOUT)):
+        directory = tmp_path / name
+        directory.mkdir()
+        target = runner(directory)
+        target.output_path.write_text(
+            "".join(json.dumps(row) + "\n" for row in (complete, error, missing, duplicate))
+        )
+        initial = (
+            {"synthetic-0": {**complete, "hypothesis": "previously saved"}}
+            if checkpoint_complete
+            else {}
+        )
+        checkpoint = {"run_id": "synthetic-run", "phases": {"evaluate": {"results": initial}}}
+        manifest: dict[str, Any] = {}
+        target._reconcile_results(
+            checkpoint,
+            ["synthetic-0", "synthetic-1", "synthetic-2"],
+            manifest,
+            layout=selected_layout,
+        )
+        # Legacy reconciliation retains incomplete rows too, unlike v3 adoption.
+        saved = checkpoint["phases"]["evaluate"]["results"]
+        assert saved["synthetic-1"] == error and saved["synthetic-2"] == missing
+        assert "error" not in saved["synthetic-0"]
+        assert ("hypothesis" in saved["synthetic-0"]) is checkpoint_complete
+        results.append((checkpoint, manifest, target.output_path.read_bytes()))
+    assert results[0] == results[1]
 
 
 @pytest.mark.parametrize(
