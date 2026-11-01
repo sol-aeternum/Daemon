@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
+from orchestrator.eval.campaign_layout import CampaignLayout
 from orchestrator.memory.embedding import embed_query
 from orchestrator.config import get_settings
 from orchestrator.memory.injection import (
@@ -743,6 +744,92 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+async def _evaluate_parity_samples(
+    question_id: str,
+    question_text: str,
+    reference: str,
+    category: str,
+    memory_context: str,
+    inputs: MemoryContextInputs,
+    messages: list[dict[str, str]],
+    *,
+    layout: CampaignLayout,
+    benchmark_mode: bool,
+    as_of: datetime | None,
+    historical_clock: bool,
+) -> dict[str, Any]:
+    """Test-injected v3 only: one retrieval, then ordered independent observations."""
+    question_type = {value: key for key, value in CATEGORY_MAP.items()}.get(category, category)
+    samples = []
+    for stage, sample_index in layout.slots:
+        if stage != "answer":
+            continue
+        hypothesis, answer_usage = await _answer_with_messages(
+            messages, benchmark_mode=benchmark_mode
+        )
+        answer_fingerprint = last_benchmark_fingerprint("answer") if benchmark_mode else None
+        answer_metadata = get_benchmark_tracking().get("answer", {}) if benchmark_mode else {}
+        sample = {
+            "sample": sample_index,
+            "hypothesis": hypothesis,
+            "answer_usage": answer_usage,
+            "answer_fingerprint": answer_fingerprint,
+            "answer_finish_reason": answer_metadata.get("finish_reason"),
+            "answer_raw_output": answer_metadata.get("raw_output"),
+            "answer_max_tokens": ANSWER_MAX_TOKENS,
+        }
+        judgment, judge_usage = await _judge_with_usage(
+            question_text, hypothesis, reference, benchmark_mode=benchmark_mode
+        )
+        judge_fingerprint = last_benchmark_fingerprint("judge") if benchmark_mode else None
+        judge_metadata = get_benchmark_tracking().get("judge", {}) if benchmark_mode else {}
+        sample.update(
+            judgment=judgment,
+            judge_usage=judge_usage,
+            judge_fingerprint=judge_fingerprint,
+            judge_raw_output=judge_metadata.get("raw_output"),
+            judge_finish_reason=judge_metadata.get("finish_reason"),
+        )
+        # Unlike the additive legacy metric, any v3 official failure is fatal.
+        official = await judge_answer_official(
+            question_text,
+            hypothesis,
+            reference,
+            question_id=question_id,
+            question_type=question_type,
+            benchmark_mode=benchmark_mode,
+        )
+        sample.update(official)
+        sample["official_judge_status"] = "completed"
+        samples.append(sample)
+    result = {
+        "question_id": question_id,
+        "question": question_text,
+        "reference": reference,
+        "category": category,
+        "memories_used": len(inputs.retrieved),
+        "l0_used": len(inputs.l0_memories),
+        "summaries_used": len(inputs.summaries),
+        "retrieval_mode": inputs.retrieval_mode,
+        "memory_context": memory_context,
+        "memory_context_sha256": _sha256_text(memory_context),
+        "system_prompt_sha256": _sha256_text(messages[0]["content"]),
+        "question_type": question_type,
+        "samples": samples,
+        "label_aggregation": "majority_of_3",
+        "official_majority": "correct"
+        if sum(sample["official_judgment"] == "correct" for sample in samples) >= 2
+        else "incorrect",
+        "generic_strict_majority": "correct"
+        if sum(sample["judgment"] == "correct" for sample in samples) >= 2
+        else "incorrect",
+    }
+    if as_of is not None:
+        result["as_of"] = as_of.isoformat()
+        result["historical_clock"] = historical_clock
+    return result
+
+
 async def evaluate_single_parity(
     store: MemoryStore,
     question_id: str,
@@ -757,6 +844,7 @@ async def evaluate_single_parity(
     scope_factory: ScopeFactory | None = None,
     as_of: datetime | None = None,
     historical_clock: bool = False,
+    layout: CampaignLayout | None = None,
 ) -> dict[str, Any]:
     """Evaluate one question through the production memory prompt surface.
 
@@ -786,6 +874,20 @@ async def evaluate_single_parity(
     finally:
         RECENCY_REFERENCE_TIME.reset(clock)
     messages = build_parity_answer_messages(question_text, memory_context, as_of=as_of)
+    if layout is not None and layout.name == "v3":
+        return await _evaluate_parity_samples(
+            question_id,
+            question_text,
+            reference,
+            category,
+            memory_context,
+            inputs,
+            messages,
+            layout=layout,
+            benchmark_mode=benchmark_mode,
+            as_of=as_of,
+            historical_clock=historical_clock,
+        )
     hypothesis, answer_usage = await _answer_with_messages(messages, benchmark_mode=benchmark_mode)
     answer_fingerprint = last_benchmark_fingerprint("answer") if benchmark_mode else None
     answer_metadata = get_benchmark_tracking().get("answer", {}) if benchmark_mode else {}
