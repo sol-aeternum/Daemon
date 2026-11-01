@@ -161,8 +161,8 @@ change. Ingest-change campaigns are not covered: they stay on v1 or v2 in full,
 with one answer sample per question and `max(4, 2G)`.
 
 **Samples.** For each question, every arm makes k = 3 answer calls. All three use
-the identical request and route as v1 (§2: same model, temperature 0, seed 42 and
-provider), so comparability is unchanged. Samples can differ only through serving
+the identical request and route as v1: the pinned config (temperature 0, seed 42)
+and §2's identical model and provider, so comparability is unchanged. Samples can differ only through serving
 nondeterminism. Each sample is judged separately by the official judge, with the
 generic judge kept as the secondary series. Separate judging means majority
 scoring also averages over judge variability on near-identical answers. The
@@ -170,15 +170,19 @@ sample index is ledger metadata only; it never enters the prompt or the provider
 request.
 
 The generic series maps each sample to binary strict (`correct` = 1;
-`partially_correct` and `incorrect` = 0) and reports the majority of those. It is
-report-only and never enters a decision.
+`partially_correct` and `incorrect` = 0) and reports the majority of those. It never sets an accuracy outcome or replaces the
+official series. The existing generic/official disagreement validity gate still
+applies, per sample (see Coverage).
 
 **Coverage (replaces §1.7's single-verdict wording for v3 plans).** A run is
 valid only if every frozen ID has exactly 3 completed answer samples, each with
 one binary official verdict: 150 sample verdicts and 50 majority labels. Summaries
 report both levels (sample `judged == total == 150`, majority
-`judged == total == 50`, `missing == 0`). The offline coverage check and the
-manifest cross-checks apply at both levels.
+`judged == total == 50`, `missing == 0`). Results stay one row per question, each
+with exactly 3 sample records. The implementation extends the offline coverage
+check to validate the sample records. Question-level invariants (result count,
+paired totals, accuracy bounds, §1.6) use the 50 majority rows. The per-sample
+gate below uses the 150 sample records.
 
 - A failed answer call may be retried only as the plan's retry policy allows.
   Today that is bounded HTTP 429 retries, where a plan pins them. If any sample
@@ -205,14 +209,22 @@ Criteria 2–4 (category loss at most 2, no net abstention loss, both modes) are
 unchanged. v3 is stricter than v1 for some outcomes: with *l* = 0 it needs
 *w* ≥ 5, while v1 with F = 0 accepts a net gain of 3.
 
+**Candidate shape.** A candidate-mode plan has exactly three control arms, A0,
+A1 and A2, at the control source, plus one candidate arm, C0. A0 is the
+comparator.
+
 **Calibration.** For every control pair, run the test with each arm as the
 candidate in turn (6 ordered comparisons for 3 controls). If any meets
 criterion 1, the campaign result is "investigate", not accept. F is still
 computed and reported, but no longer sets the threshold.
 
-**Record (adds to §4 for v3 plans).** The dated result file also holds per-sample
-and majority official labels per question, *w*, *l* and the sign-test p-value,
-and every control-pair calibration result.
+**Record (adds to §4 for v3 plans).** Every v3 result file records its plan mode,
+and per-sample and majority official labels per question.
+
+- **Pilot mode** also records the four pilot rates and the pass or fail result.
+- **Candidate mode** also records *w*, *l*, the sign-test p-value, every
+  control-pair calibration result, and the identity and hash of the passed pilot
+  report its plan pins.
 
 **Reason.** With F ≈ p·n, the `max(3, 2F)` bar stays at a net gain rate of about
 2p at any sample size. An effect below that rate fails however large the dev set
@@ -240,8 +252,9 @@ at the control source with k = 3. It reports, on official labels:
   (A0 sample i, A1 sample j) that differ;
 - how often a question's 3 samples within an arm are byte-identical.
 
-The pilot passes only if the majority-label flip rate is strictly below the
-matched-sample flip rate. Equal rates fail, because they show no reduction. For
+The pilot passes if and only if the majority-label flip rate is strictly below
+the matched-sample flip rate. The other reported figures have no role in the
+pass decision. Equal rates fail, because they show no reduction. For
 example, one question with A0 = [0,0,0] against A1 = [1,1,1], one with both arms
 at [0,0,1] and 48 at [0,0,0] give 1/50 = 2% against 3/150 = 2%, which fails.
 Otherwise v3's candidate mode is not bound without revisiting k or the sample
@@ -258,8 +271,9 @@ design.
 - Earlier results are not rescored. The v2 rejection of the noted-dates
   candidate stands.
 
-Not authorized by this amendment: any paid pilot or campaign, restores, a dev-set
-expansion or holdout use. Each needs its own approval.
+This amendment authorizes no run. Each v3 run needs its own approval, which states
+its budget and every restore, including each arm's standard baseline restore.
+Dev-set expansion and holdout use also need their own approval.
 
 ## 4. Record
 
