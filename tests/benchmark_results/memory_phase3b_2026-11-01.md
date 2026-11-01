@@ -30,10 +30,16 @@ stopped (below), and before any v2 arm ran. The default rule remains
 `2026-10-28-official-v1`.
 
 **Stopped v1 run.** The first attempt of this campaign ran A0 (200 calls, no
-retries). It then stopped with `Zero official category; investigate`: official
-33/50, IE-preference 0/3. IE-preference has only three questions, so the v1 check
-can stop a run on noise. The v1 ledger and results are retained unchanged and
-were not replayed or reused.
+retries). Its qualification check then raised `CampaignStopped: Zero official
+category; investigate`: official 33/50, IE-preference 0/3. IE-preference has only
+three questions, so the v1 check can stop a run on noise.
+
+The v1 ledger records the stop as `Restore/owned pool failed; admission closed;
+reconciliation required`. The restore guard's exception handler
+(`orchestrator/eval/campaign_restore.py:561–578`) wraps the whole arm, so it
+records every in-arm failure with that generic reason. The run log, pinned in the
+evidence index, keeps the actual exception. The v1 ledger and results are
+retained unchanged and were not replayed or reused.
 
 ## Result
 
@@ -118,12 +124,41 @@ results as an end-to-end product temporal gain.
 - Holdout payload: uninspected. No production change, merge of the candidate or
   deployment.
 
-Raw evidence is retained outside Git under task evidence and the benchmark runs
-directory:
+### Evidence index
 
-- the v2 campaign ledger, receipts and `paired-result.json`;
-- the stopped v1 ledger;
-- per-arm action reviews and live-state captures;
-- `paired-flips-v2-A0-A1-20261101.md`.
+[`memory_phase3b_2026-11-01_evidence.json`][index] is the committed, sanitized
+record of this campaign. It contains no prompts, answers, references or memory
+text. It pins:
+
+- **Revisions:** control `b729817555a86ccfaf887cb120d87d3d5b7e52f9`, candidate
+  `b114dc3d6af040da813cb1a2eb4f5f97341869f5`.
+- **Plan and ledger:** plan `c0db3058…a7d206`, final v2 ledger `4c1987a8…cb6ae`
+  and `paired-result.json` `00c21a2e…dae60`.
+- **Snapshot and restores:** the remapped snapshot, remap lineage, ingest
+  checkpoint and manifest, restore script, catalogue, database OID and server
+  identity. Each arm's restored-state fingerprint (`5cb6ab14…` for all four).
+- **Per-arm qualification:** source SHA, code hash, run id, dataset hash, the
+  ledger's qualification artifact hashes (manifest, results, score,
+  checkpoint), scores by category, action-review hashes and provider-reported
+  cost.
+- **Per-question record:** for each of the 50 dev questions, the official label
+  and `memory_context_sha256` for every arm, plus the C0 context-equality
+  check.
+- **The stopped v1 run:** its ledger hash, generic ledger reason, and run-log
+  hash with the raised exception, so it cannot be confused with v2 A0.
+
+A generator outside Git (`build_phase3b_evidence_index.py`, sha256
+`38c326d6…a997af`) builds the index offline from the retained artifacts. It
+fails unless:
+
+- every file hash matches the ledger and plan pins;
+- every score matches a per-question recount;
+- all control contexts are equal;
+- the control flips, gains, losses, net gain and threshold it recomputes equal
+  the code-computed `paired-result.json`.
+
+Two runs gave byte-identical output. Raw ledgers, receipts, logs, reviews and
+`paired-flips-v2-A0-A1-20261101.md` remain outside Git at the paths in the index.
 
 [#601]: https://github.com/sol-aeternum/Daemon/issues/601
+[index]: memory_phase3b_2026-11-01_evidence.json
