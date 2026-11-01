@@ -285,7 +285,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:8",
-            "frontend/__tests__/progressive-research-setup.ts:57",
+            "frontend/__tests__/progressive-research-setup.ts:61",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:222",
             "frontend/e2e/run-ui-qualification.mjs:11",
@@ -300,7 +300,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:7",
-            "frontend/__tests__/progressive-research-setup.ts:56",
+            "frontend/__tests__/progressive-research-setup.ts:60",
             "frontend/e2e/p02-cookie-coordination.spec.ts:295",
             "frontend/e2e/renderer-crash.ts:221",
             "frontend/e2e/run-ui-qualification.mjs:10",
@@ -315,7 +315,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:11",
-            "frontend/__tests__/progressive-research-setup.ts:46",
+            "frontend/__tests__/progressive-research-setup.ts:50",
             "frontend/e2e/renderer-crash.ts:215",
             "frontend/e2e/run-ui-qualification.mjs:16",
         ),
@@ -358,7 +358,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/e2e/cache-fixture-environment.mjs:9",
-            "frontend/__tests__/progressive-research-setup.ts:58",
+            "frontend/__tests__/progressive-research-setup.ts:62",
             "frontend/e2e/run-ui-qualification.mjs:12",
         ),
         reason=(
@@ -370,7 +370,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "TMP": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/__tests__/progressive-research-setup.ts:59",
+            "frontend/__tests__/progressive-research-setup.ts:63",
             "frontend/e2e/run-ui-qualification.mjs:13",
         ),
         reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
@@ -378,7 +378,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "TEMP": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/__tests__/progressive-research-setup.ts:60",
+            "frontend/__tests__/progressive-research-setup.ts:64",
             "frontend/e2e/run-ui-qualification.mjs:14",
         ),
         reason="test-only backend transcript subprocess retains managed temporary storage; not application configuration",
@@ -386,7 +386,7 @@ FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
     "PYTHONPYCACHEPREFIX": NonFieldConsumer(
         kind="frontend-source",
         sources=(
-            "frontend/__tests__/progressive-research-setup.ts:61",
+            "frontend/__tests__/progressive-research-setup.ts:65",
             "frontend/e2e/run-ui-qualification.mjs:15",
         ),
         reason="test-only backend transcript subprocess retains task-owned Python bytecode storage; not application configuration",

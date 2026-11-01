@@ -203,7 +203,7 @@ seams. Research checkpoint/resume is deferred slice 2
 
 No stored golden transcript substitutes for the backend in the cross-language test.
 Vitest global setup generates fresh transcripts once before concurrent test workers,
-with an explicit 10-second subprocess/aggregate setup budget and in-memory injection.
+with an explicit 30-second subprocess/aggregate setup budget and in-memory injection.
 The UI assertions retain their default deadlines. Setup timeout or invalid output
 fails the gate; no persisted transcript is reused. This also requires the locked
 Python fixture environment for filtered Vitest invocations.

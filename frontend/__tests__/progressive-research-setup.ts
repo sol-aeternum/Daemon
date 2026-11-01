@@ -34,10 +34,14 @@ declare module 'vitest' {
   }
 }
 
+// Explicit failing setup deadline. The backend run is ~3.3s, of which ~2.8s is
+// importing LiteLLM (via orchestrator.daemon -> compute_runtime); host load
+// slows it ~3x, past the old 10s hook budget (#563). 30s keeps that margin.
+export const SETUP_BUDGET_MS = 30_000;
+
 // Run once before competing jsdom workers start. This is a fresh real backend
 // execution on EVERY invocation, never a disk cache or stored golden transcript.
-// Keep the previous hook's 10s budget as an explicit failing setup deadline;
-// test/hook deadlines and suite concurrency remain unchanged.
+// Test/hook deadlines and suite concurrency remain unchanged.
 export default function setup(project: TestProject) {
   const started = performance.now();
   const root = path.resolve(project.config.root, '..');
@@ -68,18 +72,18 @@ export default function setup(project: TestProject) {
       cwd: root,
       env,
       encoding: 'utf8',
-      timeout: 10_000,
+      timeout: SETUP_BUDGET_MS,
       maxBuffer: 4 * 1024 * 1024,
     }),
   ) as DeliveryTranscripts;
   const elapsed = performance.now() - started;
-  if (elapsed >= 10_000) {
+  if (elapsed >= SETUP_BUDGET_MS) {
     throw new Error(
-      'Progressive research backend setup exceeded its 10000ms budget',
+      `Progressive research backend setup exceeded its ${SETUP_BUDGET_MS}ms budget`,
     );
   }
   project.provide('progressiveResearch', transcripts);
   console.info(
-    `Progressive research backend setup: ${Math.round(elapsed)}ms (budget 10000ms)`,
+    `Progressive research backend setup: ${Math.round(elapsed)}ms (budget ${SETUP_BUDGET_MS}ms)`,
   );
 }
