@@ -156,6 +156,15 @@ plan modes:
 
 Until then every campaign stays on v1 or v2.
 
+B2a implements test-injected k = 3 harness sampling and guard receipt identity,
+not a production selector. `Campaign(..., layout=...)` is outside the persisted
+plan; all existing production plan modes still default to LEGACY. Synthetic
+tests cover completed samples, majority rows and stop-without-replay failures.
+B2b still owns v3 approval/pins, payload and hold arithmetic, retry ledgers,
+launch, bridge registration and finalisation. In particular the existing payload
+reserves only one slice per stage, not three sampled LLM calls; B2a must not be
+used to launch a v3 campaign.
+
 **Scope.** Evaluate-only campaigns only. v3 builds on v2 and keeps v2's §1.6
 change. Ingest-change campaigns are not covered: they stay on v1 or v2 in full,
 with one answer sample per question and `max(4, 2G)`.

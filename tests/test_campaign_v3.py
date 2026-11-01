@@ -529,15 +529,22 @@ def test_v3_unreachable_and_legacy_consumers_fail_closed() -> None:
     with pytest.raises(KeyError, match="official_judgment"):
         legacy.paired_result(candidate())
     directory = Path(legacy.__file__).parent
-    for path in directory.glob("campaign*.py"):
+    importers = set()
+    for path in directory.glob("*.py"):
         if path.name == "campaign_v3.py":
             continue
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Import):
-                assert not any("campaign_v3" in alias.name for alias in node.names), path
+                if any("campaign_v3" in alias.name for alias in node.names):
+                    importers.add(path.name)
             elif isinstance(node, ast.ImportFrom):
-                assert "campaign_v3" not in (node.module or ""), path
-                assert not any(alias.name == "campaign_v3" for alias in node.names), path
+                if "campaign_v3" in (node.module or "") or any(
+                    alias.name == "campaign_v3" for alias in node.names
+                ):
+                    importers.add(path.name)
+    # B2a wires v3; production unreachability is now enforced by the
+    # resolver-returns-LEGACY test. No other importer is permitted.
+    assert importers == {"campaign_guard.py", "fact_harness.py"}
 
 
 def test_v3_does_not_call_legacy_scoring_or_import_layout() -> None:

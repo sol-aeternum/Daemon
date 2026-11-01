@@ -22,6 +22,8 @@ import tempfile
 import time
 from typing import Any, AsyncIterator, Callable, Iterator, Mapping
 
+from orchestrator.eval import campaign_layout
+
 ARMS = ("A0", "A1", "A2", "C0")
 STAGES = ("embedding", "answer", "judge", "official_judge")
 CAPS = {"embedding": 0, "answer": 256, "judge": 256, "official_judge": 10}
@@ -267,8 +269,17 @@ class Campaign:
     the action-time restore guard must separately establish that exclusion.
     """
 
-    def __init__(self, directory: Path, plan: CampaignPlan, count_tokens: Callable[[str], int]):
+    def __init__(
+        self,
+        directory: Path,
+        plan: CampaignPlan,
+        count_tokens: Callable[[str], int],
+        *,
+        layout: campaign_layout.CampaignLayout | None = None,
+    ):
         self.directory = directory
+        # Test-only injection, outside the frozen plan/hash and all production selectors.
+        self.layout = layout or campaign_layout.layout("legacy")
         # Freeze caller-owned mutable data before any network activity.
         self.plan: dict[str, Any] = json.loads(_json(plan.payload()))
         self._plan_hash = _hash(self.plan)
@@ -558,14 +569,29 @@ class Campaign:
             "stage": stage,
             "request_sha256": _hash(request),
         }
-        historical = self.state.get("historical_pending")
-        if historical is not None and len(self.state["receipts"]) == 195:
-            if self.state["pending"] != historical:
-                self.fail("Recovered official request differs from historical pending hash")
+        if self.layout.name == "v3":
+            sample = self.layout.slots[self.state["stage_index"]][1]
+            if sample is not None:
+                self.state["pending"]["sample"] = sample
+        else:
+            historical = self.state.get("historical_pending")
+            if historical is not None and len(self.state["receipts"]) == 195:
+                if self.state["pending"] != historical:
+                    self.fail("Recovered official request differs from historical pending hash")
         self._save()
 
     def _validate_request(self, stage: str, request: dict[str, Any]) -> None:
-        if (
+        if self.layout.name == "v3":
+            index = self.state["stage_index"]
+            if (
+                self.state["pending"] is not None
+                or self.state["question"] is None
+                or not 0 <= index < self.layout.slots_per_question
+                or stage != self.layout.slots[index][0]
+                or self.state.get("historical_pending") is not None
+            ):
+                raise CampaignStopped("Unexpected/concurrent send")
+        elif (
             self.state["pending"] is not None
             or self.state["question"] is None
             or self.state["stage_index"] >= len(STAGES)
@@ -743,7 +769,21 @@ class Campaign:
 
     def finish_question(self, result: Mapping[str, Any]) -> None:
         self._check()
-        if (
+        if self.layout.name == "v3":
+            from orchestrator.eval.campaign_v3 import validate_v3_row
+
+            if (
+                self.state["pending"]
+                or self.state["stage_index"] != self.layout.slots_per_question
+                or result.get("question_id") != self.state["question"]
+            ):
+                self.fail("Question lacks complete canonical evidence")
+            try:
+                validate_v3_row(result)
+            except Exception:
+                self.stop("Question lacks complete canonical evidence")
+                raise
+        elif (
             self.state["pending"]
             or self.state["stage_index"] != len(STAGES)
             or result.get("question_id") != self.state["question"]

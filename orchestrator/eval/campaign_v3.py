@@ -32,6 +32,58 @@ def _majority(samples: Sequence[Mapping[str, Any]], field: str) -> str:
     return "correct" if sum(item[field] == "correct" for item in samples) >= 2 else "incorrect"
 
 
+def _validate_row_contract(row: Mapping[str, Any]) -> None:
+    require(isinstance(row, Mapping), "Invalid v3 result row")
+    qid = row.get("question_id")
+    require(isinstance(qid, str) and qid, "Invalid v3 question identity")
+    require(
+        isinstance(row.get("category"), str) and bool(row["category"]),
+        "V3 category missing",
+    )
+    for field in ("official_judgment", "judgment", "hypothesis"):
+        require(field not in row, f"V3 forbids top-level {field}")
+    require(row.get("label_aggregation") == "majority_of_3", "V3 aggregation differs")
+    raw_samples = row.get("samples")
+    require(
+        isinstance(raw_samples, list) and len(raw_samples) == 3,
+        "V3 requires exactly 3 samples",
+    )
+    samples: list[dict[str, Any]] = row["samples"]
+    for index, sample in enumerate(samples, 1):
+        require(isinstance(sample, dict), "Invalid v3 sample record")
+        require(
+            type(sample.get("sample")) is int and sample["sample"] == index,
+            "V3 sample indices must be 1, 2, 3 in order",
+        )
+        require(isinstance(sample.get("hypothesis"), str), "V3 sample hypothesis missing")
+        require(sample.get("judgment") in _GENERIC, "Generic label missing")
+        require(sample.get("official_judgment") in _BINARY, "Official label missing")
+    require(
+        row.get("official_majority") == _majority(samples, "official_judgment"),
+        "V3 official majority differs",
+    )
+    require(
+        row.get("generic_strict_majority") == _majority(samples, "judgment"),
+        "V3 generic strict majority differs",
+    )
+
+
+def validate_v3_row(row: Mapping[str, Any]) -> None:
+    """Validate a completed harness question, without claiming 50-ID coverage.
+
+    B1's pure scoring contract is unchanged; runtime completion additionally
+    requires explicit completed official calls and no harness/sample errors.
+    """
+    _validate_row_contract(row)
+    require("error" not in row, "V3 question has an error")
+    for sample in row["samples"]:
+        require("error" not in sample, "V3 sample has an error")
+        require(
+            sample.get("official_judge_status") == "completed",
+            "V3 official judge is not completed",
+        )
+
+
 def validate_v3_rows(
     rows: Sequence[Mapping[str, Any]], dataset: Sequence[Mapping[str, Any]]
 ) -> None:
@@ -47,40 +99,8 @@ def validate_v3_rows(
     require(len(rows) == 50, "V3 coverage requires exactly one row per frozen dev ID")
     observed = []
     for row in rows:
-        require(isinstance(row, Mapping), "Invalid v3 result row")
-        qid = row.get("question_id")
-        require(isinstance(qid, str) and qid, "Invalid v3 question identity")
-        observed.append(qid)
-        require(
-            isinstance(row.get("category"), str) and bool(row["category"]),
-            "V3 category missing",
-        )
-        for field in ("official_judgment", "judgment", "hypothesis"):
-            require(field not in row, f"V3 forbids top-level {field}")
-        require(row.get("label_aggregation") == "majority_of_3", "V3 aggregation differs")
-        raw_samples = row.get("samples")
-        require(
-            isinstance(raw_samples, list) and len(raw_samples) == 3,
-            "V3 requires exactly 3 samples",
-        )
-        samples: list[dict[str, Any]] = row["samples"]
-        for index, sample in enumerate(samples, 1):
-            require(isinstance(sample, dict), "Invalid v3 sample record")
-            require(
-                type(sample.get("sample")) is int and sample["sample"] == index,
-                "V3 sample indices must be 1, 2, 3 in order",
-            )
-            require(isinstance(sample.get("hypothesis"), str), "V3 sample hypothesis missing")
-            require(sample.get("judgment") in _GENERIC, "Generic label missing")
-            require(sample.get("official_judgment") in _BINARY, "Official label missing")
-        require(
-            row.get("official_majority") == _majority(samples, "official_judgment"),
-            "V3 official majority differs",
-        )
-        require(
-            row.get("generic_strict_majority") == _majority(samples, "judgment"),
-            "V3 generic strict majority differs",
-        )
+        _validate_row_contract(row)
+        observed.append(row["question_id"])
     require(len(set(observed)) == 50 and set(observed) == set(ids), "Paired identities differ")
 
 

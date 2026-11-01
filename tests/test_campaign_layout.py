@@ -235,7 +235,8 @@ def test_import_hygiene_and_explicit_later_wiring() -> None:
     # PR B must update three places when explicit version dispatch is wired:
     # this import assertion, the fresh-interpreter sys.modules checks below,
     # and test_bridge_registration_is_deliberately_deferred.
-    assert imports == []
+    # B2a wires only the guard's explicit test injection, not bridge/finalisation.
+    assert imports == ["campaign_guard.py"]
     module = ast.parse((directory / "campaign_layout.py").read_text())
     modules = [
         node.module or "" for node in ast.walk(module) if isinstance(node, ast.ImportFrom)
@@ -253,9 +254,10 @@ def test_import_hygiene_and_explicit_later_wiring() -> None:
             "-c",
             "import sys; from orchestrator.eval import campaign_guard as guard; "
             "assert guard.current_campaign() is None; "
-            "assert 'orchestrator.eval.campaign_layout' not in sys.modules; "
+            "assert 'orchestrator.eval.campaign_layout' in sys.modules; "
             "assert not any(name.startswith('orchestrator.eval.campaign_') "
-            "and name != 'orchestrator.eval.campaign_guard' for name in sys.modules)",
+            "and name not in {'orchestrator.eval.campaign_guard', "
+            "'orchestrator.eval.campaign_layout'} for name in sys.modules)",
         ],
         cwd=directory.parent.parent,
         capture_output=True,

@@ -46,6 +46,7 @@ from orchestrator.eval.durable_io import (
 )
 from orchestrator.eval.interrupts import StopController
 from orchestrator.eval.campaign_guard import current_campaign
+from orchestrator.eval.campaign_layout import CampaignLayout
 from orchestrator.eval.run_manifest import (
     MANIFEST_FILENAME,
     check_code_pin,
@@ -847,12 +848,22 @@ async def reset_canonical_benchmark(
     )
 
 
-def is_completed_result(result: object) -> bool:
+def is_completed_result(result: object, *, layout: CampaignLayout | None = None) -> bool:
     """Base/generic observation is complete without a top-level harness error.
 
     A failed/missing additive official metric never permits automatic replay of
     the saved reader/generic calls; its coverage is reported separately.
     """
+    if layout is not None and layout.name == "v3":
+        from orchestrator.eval.campaign_v3 import validate_v3_row
+
+        try:
+            if not isinstance(result, dict):
+                return False
+            validate_v3_row(result)
+        except Exception:
+            return False
+        return True
     return (
         isinstance(result, dict)
         and "error" not in result
@@ -1806,6 +1817,8 @@ class LongMemEvalFactRunner:
         checkpoint: dict[str, Any],
         question_order: list[str],
         manifest: dict[str, Any],
+        *,
+        layout: CampaignLayout | None = None,
     ) -> None:
         """Make the results file and checkpoint agree before resuming.
 
@@ -1829,17 +1842,20 @@ class LongMemEvalFactRunner:
                 continue
             if question_id in from_file:
                 duplicates += 1
-                if is_completed_result(from_file[question_id]):
+                if is_completed_result(from_file[question_id], layout=layout):
                     continue
             from_file[question_id] = row
         adopted = 0
         for question_id, row in from_file.items():
             current = results.get(question_id)
-            if is_completed_result(current):
+            if is_completed_result(current, layout=layout):
                 continue
-            if is_completed_result(row) or current is None:
+            if layout is not None and layout.name == "v3":
+                if not is_completed_result(row, layout=layout):
+                    continue
+            if is_completed_result(row, layout=layout) or current is None:
                 results[question_id] = row
-                adopted += int(is_completed_result(row))
+                adopted += int(is_completed_result(row, layout=layout))
         ordered = [results[qid] for qid in question_order if qid in results]
         atomic_write_jsonl(self.output_path, ordered)
         if file_rows or results:
@@ -1849,8 +1865,12 @@ class LongMemEvalFactRunner:
                     "file_rows": len(file_rows),
                     "duplicates_dropped": duplicates,
                     "adopted_from_file": adopted,
-                    "completed": sum(1 for row in ordered if is_completed_result(row)),
-                    "errored": sum(1 for row in ordered if not is_completed_result(row)),
+                    "completed": sum(
+                        1 for row in ordered if is_completed_result(row, layout=layout)
+                    ),
+                    "errored": sum(
+                        1 for row in ordered if not is_completed_result(row, layout=layout)
+                    ),
                 }
             )
 
@@ -1870,6 +1890,7 @@ class LongMemEvalFactRunner:
         question_order = build_question_order(dataset)
 
         campaign = current_campaign()
+        layout = campaign.layout if campaign is not None else None
         final_recovery = (
             campaign is not None
             and "final_verdict_recovery_lineage" in campaign.plan["pins"]
@@ -1927,7 +1948,7 @@ class LongMemEvalFactRunner:
                     campaign, self.output_path, ordered_results(evaluate_phase["results"])
                 )
             else:
-                self._reconcile_results(checkpoint, question_order, manifest)
+                self._reconcile_results(checkpoint, question_order, manifest, layout=layout)
             save_runner_checkpoint(self.checkpoint_path, checkpoint)
 
             completed_results: dict[str, dict[str, Any]] = evaluate_phase["results"]
@@ -1937,7 +1958,11 @@ class LongMemEvalFactRunner:
             logger.info(
                 "[evaluate] Starting LongMemEval evaluation for %s questions (%s already complete)",
                 len(question_order),
-                sum(1 for row in completed_results.values() if is_completed_result(row)),
+                sum(
+                    1
+                    for row in completed_results.values()
+                    if is_completed_result(row, layout=layout)
+                ),
             )
 
             for idx, entry in enumerate(dataset):
@@ -1968,7 +1993,7 @@ class LongMemEvalFactRunner:
                     self._heartbeat(manifest)
                     campaign.finish_question(result)
                     continue
-                if is_completed_result(previous):
+                if is_completed_result(previous, layout=layout):
                     continue
                 self._check_stop()
                 if campaign is not None:
@@ -2021,8 +2046,12 @@ class LongMemEvalFactRunner:
                         scope_factory=chat_scope,
                         as_of=as_of,
                         historical_clock=historical_clock,
+                        layout=layout,
                     )
                 except Exception as exc:
+                    if layout is not None and layout.name == "v3":
+                        # Preserve receipts/pending, never fabricate or replay a sample.
+                        raise
                     logger.exception("[evaluate] Question %s failed", question_id)
                     result = {
                         "question_id": question_id,
@@ -2039,7 +2068,9 @@ class LongMemEvalFactRunner:
                 append_jsonl_record(self.output_path, result)
                 completed_results[question_id] = result
                 evaluate_phase["completed_count"] = sum(
-                    1 for row in completed_results.values() if is_completed_result(row)
+                    1
+                    for row in completed_results.values()
+                    if is_completed_result(row, layout=layout)
                 )
                 evaluate_phase["updated_at"] = utc_now_iso()
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)
@@ -2069,7 +2100,9 @@ class LongMemEvalFactRunner:
             else:
                 atomic_write_jsonl(self.output_path, ordered_results_list)
             fingerprint_end = await fingerprint_benchmark_users(pool, user_ids)
-            errored = [row for row in ordered_results_list if not is_completed_result(row)]
+            errored = [
+                row for row in ordered_results_list if not is_completed_result(row, layout=layout)
+            ]
             mark_phase_completed(
                 checkpoint,
                 "evaluate",

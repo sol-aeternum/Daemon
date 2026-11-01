@@ -1,4 +1,4 @@
-"""Inert campaign layouts; no execution mode or schema-based dispatch.
+"""Canonical campaign layouts; no execution mode or schema-based dispatch.
 
 The legacy receipt stride is 4 slots x 50 questions = 200 per arm. These
 legacy-only sites need explicit version dispatch before v3 can execute:
@@ -6,9 +6,10 @@ campaign_fresh.py:295,440,454,471; campaign_guard.py:562,771;
 campaign_recovery.py:339,345; campaign_retry.py:883,891;
 campaign_final_verdict.py:685; campaign_restore.py:344.
 
-Allocation arm count is independent of receipt stride. Nothing in the existing
-campaign runtime selects this module. In particular, payload["schema"] is not
-a layout selector.
+Allocation arm count is independent of receipt stride. Campaign defaults to the
+legacy layout; B2a's v3 sampling is reachable only by explicit test injection.
+Production launch, retry and finalisation remain legacy. In particular,
+payload["schema"] is not a layout selector.
 """
 
 from __future__ import annotations
