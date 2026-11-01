@@ -236,7 +236,8 @@ def test_import_hygiene_and_explicit_later_wiring() -> None:
     # this import assertion, the fresh-interpreter sys.modules checks below,
     # and test_bridge_registration_is_deliberately_deferred.
     # B2a wires only the guard's explicit test injection, not bridge/finalisation.
-    assert imports == ["campaign_guard.py"]
+    # B2b1's pure ledger auditor uses canonical slot indices; no production selector.
+    assert sorted(imports) == ["campaign_guard.py", "campaign_v3_plan.py"]
     module = ast.parse((directory / "campaign_layout.py").read_text())
     modules = [
         node.module or "" for node in ast.walk(module) if isinstance(node, ast.ImportFrom)

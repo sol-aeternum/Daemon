@@ -498,7 +498,35 @@ def ordered_results(results_by_key: dict[str, dict[str, Any]]) -> list[dict[str,
     return [results_by_key[key] for key in results_by_key]
 
 
-def build_score_payload(results: list[dict[str, Any]]) -> dict[str, Any]:
+def build_score_payload(
+    results: list[dict[str, Any]], *, layout: CampaignLayout | None = None
+) -> dict[str, Any]:
+    if layout is not None and layout.name == "v3":
+        from orchestrator.eval.campaign_v3 import validate_v3_row, v3_summaries
+
+        for row in results:
+            validate_v3_row(row)
+        summaries = v3_summaries(results)
+        return {
+            "substrate": BENCHMARK_SUBSTRATE,
+            "benchmark_name": BENCHMARK_NAME,
+            "generated_at": utc_now_iso(),
+            "result_count": len(results),
+            "accuracy": {
+                category: counts["strict_accuracy"]
+                for category, counts in summaries["official_by_category"].items()
+            },
+            "strict_accuracy": summaries["majority"]["strict_accuracy"],
+            "category_counts": summaries["official_by_category"],
+            "error_count": 0,
+            "errored_question_ids": [],
+            "dual_judgments": {
+                "official": summaries["majority"],
+                "generic": summaries["generic_strict_majority"],
+                "paired": summaries["paired"],
+            },
+            "v3_summaries": summaries,
+        }
     accuracy = score_accuracy(results)
     judgments = ("correct", "partially_correct", "incorrect")
     category_counts: dict[str, dict[str, int]] = {}
@@ -524,6 +552,39 @@ def build_score_payload(results: list[dict[str, Any]]) -> dict[str, Any]:
         "error_count": len(errored),
         "errored_question_ids": errored,
         "dual_judgments": score_dual_judgments(results),
+    }
+
+
+def _v3_evaluate_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """No legacy top-level usage/label fallback; partial rows cannot claim a score."""
+    from orchestrator.eval.campaign_guard import CampaignStopped
+    from orchestrator.eval.campaign_v3 import validate_v3_row, v3_summaries
+
+    try:
+        for row in results:
+            validate_v3_row(row)
+        summaries = v3_summaries(results)
+    except (CampaignStopped, KeyError, TypeError, ValueError):
+        return {"v3_summary_status": "invalid_incomplete_rows", "official_judgments": None}
+    samples = [sample for row in results for sample in row["samples"]]
+    return {
+        "v3_summary_status": "completed",
+        "v3_summaries": summaries,
+        "answer_usage": _sum_usage(samples, "answer_usage"),
+        "judge_usage": _sum_usage(samples, "judge_usage"),
+        "official_judge_usage": _sum_usage(samples, "official_judge_usage"),
+        "official_judgments": summaries["majority"],
+        "official_judge_failed": 0,
+        "official_judge_fingerprints": _tally(
+            [str(sample.get("official_judge_fingerprint")) for sample in samples]
+        ),
+        "answer_finish_reasons": _tally(
+            [str(sample.get("answer_finish_reason")) for sample in samples]
+        ),
+        "provider_fingerprints": {
+            call: _tally([str(sample.get(f"{call}_fingerprint")) for sample in samples])
+            for call in ("answer", "judge")
+        },
     }
 
 
@@ -2123,25 +2184,42 @@ class LongMemEvalFactRunner:
                 "retrieval_modes": _tally(
                     [str(row.get("retrieval_mode")) for row in ordered_results_list]
                 ),
-                "answer_usage": _sum_usage(ordered_results_list, "answer_usage"),
-                "judge_usage": _sum_usage(ordered_results_list, "judge_usage"),
-                "official_judge_usage": _sum_usage(ordered_results_list, "official_judge_usage"),
-                "official_judgments": score_dual_judgments(ordered_results_list)["official"],
-                "official_judge_failed": sum(
-                    row.get("official_judge_status") == "failed" for row in ordered_results_list
+                **(
+                    _v3_evaluate_summary(ordered_results_list)
+                    if layout is not None and layout.name == "v3"
+                    else {
+                        "answer_usage": _sum_usage(ordered_results_list, "answer_usage"),
+                        "judge_usage": _sum_usage(ordered_results_list, "judge_usage"),
+                        "official_judge_usage": _sum_usage(
+                            ordered_results_list, "official_judge_usage"
+                        ),
+                        "official_judgments": score_dual_judgments(ordered_results_list)[
+                            "official"
+                        ],
+                        "official_judge_failed": sum(
+                            row.get("official_judge_status") == "failed"
+                            for row in ordered_results_list
+                        ),
+                        "official_judge_fingerprints": _tally(
+                            [
+                                str(row.get("official_judge_fingerprint"))
+                                for row in ordered_results_list
+                            ]
+                        ),
+                        "answer_finish_reasons": _tally(
+                            [str(row.get("answer_finish_reason")) for row in ordered_results_list]
+                        ),
+                        "provider_fingerprints": {
+                            call: _tally(
+                                [
+                                    str(row.get(f"{call}_fingerprint"))
+                                    for row in ordered_results_list
+                                ]
+                            )
+                            for call in ("answer", "judge")
+                        },
+                    }
                 ),
-                "official_judge_fingerprints": _tally(
-                    [str(row.get("official_judge_fingerprint")) for row in ordered_results_list]
-                ),
-                "answer_finish_reasons": _tally(
-                    [str(row.get("answer_finish_reason")) for row in ordered_results_list]
-                ),
-                "provider_fingerprints": {
-                    call: _tally(
-                        [str(row.get(f"{call}_fingerprint")) for row in ordered_results_list]
-                    )
-                    for call in ("answer", "judge")
-                },
                 "compute_spend": spend,
             }
             if fingerprint_start["sha256"] != fingerprint_end["sha256"]:
@@ -2173,8 +2251,9 @@ class LongMemEvalFactRunner:
                 f"or provide results at {self.output_path}."
             )
 
-        payload = build_score_payload(results)
         campaign = current_campaign()
+        layout = campaign.layout if campaign is not None else None
+        payload = build_score_payload(results, layout=layout)
         if (
             campaign is not None
             and "final_verdict_recovery_lineage" in campaign.plan["pins"]
@@ -2216,7 +2295,10 @@ class LongMemEvalFactRunner:
             }
             save_manifest(manifest_path, manifest)
 
-        print_results(results, payload["accuracy"])
+        if layout is not None and layout.name == "v3":
+            print_results(results, payload["accuracy"], layout=layout)
+        else:
+            print_results(results, payload["accuracy"])
         logger.info("[score] Summary written to %s", self.score_path)
         return payload
 
