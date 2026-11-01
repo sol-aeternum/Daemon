@@ -144,12 +144,15 @@ and all earlier campaigns remain under v1.
 
 ## Amendment 2026-11-01-paired-sign-v3
 
-Status: **parameters owner-approved on 2026-11-01; not yet bindable.** A plan may
-bind this version only after both:
+Status: **parameters owner-approved on 2026-11-01; not yet bindable.** v3 has two
+plan modes:
 
-1. the k-sample harness and the paired test below are implemented, reviewed and
-   merged;
-2. a separately approved control-only pilot passes (see Pilot requirement).
+- **Pilot mode** may be bound once the k-sample harness and the paired test
+  below are implemented, reviewed and merged, and the pilot run itself is
+  separately approved. It produces a pilot report, never an acceptance
+  verdict.
+- **Candidate mode** may be bound only after that, and only when the plan pins
+  a passed pilot report (see Pilot requirement).
 
 Until then every campaign stays on v1 or v2.
 
@@ -162,7 +165,13 @@ the identical request and route as v1 (§2: same model, temperature 0, seed 42 a
 provider), so comparability is unchanged. Samples can differ only through serving
 nondeterminism. Each sample is judged separately by the official judge, with the
 generic judge kept as the secondary series. Separate judging means majority
-scoring also averages over judge variability on near-identical answers.
+scoring also averages over judge variability on near-identical answers. The
+sample index is ledger metadata only; it never enters the prompt or the provider
+request.
+
+The generic series maps each sample to binary strict (`correct` = 1;
+`partially_correct` and `incorrect` = 0) and reports the majority of those. It is
+report-only and never enters a decision.
 
 **Coverage (replaces §1.7's single-verdict wording for v3 plans).** A run is
 valid only if every frozen ID has exactly 3 completed answer samples, each with
@@ -219,16 +228,35 @@ consistent with answer sampling being a major source of noise. It does not
 separate answer sampling from judge variability on differing or near-identical
 answers, which separate per-sample judging also averages over.
 
-**Pilot requirement.** Before any candidate campaign binds v3, a separately
-approved control-only pilot (at least two control arms, k = 3) must report:
+**Pilot requirement.** Before any candidate-mode plan binds v3, a separately
+approved pilot-mode run must complete with exactly two control arms, A0 and A1,
+at the control source with k = 3. It reports, on official labels:
 
-- how often a question's 3 samples are byte-identical;
-- the per-sample official flip rate between control arms;
-- the majority-label flip rate between control arms.
+- **matched-sample flip rate** (the gate's per-sample rate): the share of the
+  150 (question, sample i) pairs where A0's sample i and A1's sample i differ;
+- **majority-label flip rate:** the share of the 50 questions whose majority
+  labels differ;
+- **all-cross-pairs flip rate,** report-only: the share of the 450 pairs
+  (A0 sample i, A1 sample j) that differ;
+- how often a question's 3 samples within an arm are byte-identical.
 
 The pilot passes only if the majority-label flip rate is strictly below the
-per-sample flip rate measured in the same pilot. Otherwise v3 is not bound
-without revisiting k or the sample design.
+matched-sample flip rate. Equal rates fail, because they show no reduction. For
+example, one question with A0 = [0,0,0] against A1 = [1,1,1], one with both arms
+at [0,0,1] and 48 at [0,0,0] give 1/50 = 2% against 3/150 = 2%, which fails.
+Otherwise v3's candidate mode is not bound without revisiting k or the sample
+design.
+
+**Limitations.** Record these with any v3 result:
+
+- The sign test treats questions as independent paired units. Questions that
+  share haystack sessions, and repeated candidate selection on the same dev set,
+  can make its nominal 0.05 optimistic.
+- Majority-of-3 correctness is a different estimand from single-answer
+  production quality. A v3 acceptance is evidence about the candidate's effect
+  under majority scoring, not a measured production accuracy.
+- Earlier results are not rescored. The v2 rejection of the noted-dates
+  candidate stands.
 
 Not authorized by this amendment: any paid pilot or campaign, restores, a dev-set
 expansion or holdout use. Each needs its own approval.
