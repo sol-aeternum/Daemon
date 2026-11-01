@@ -1,8 +1,10 @@
 """Canonical campaign layouts; no execution mode or schema-based dispatch.
 
-The legacy receipt stride is 4 slots x 50 questions = 200 per arm. Remaining
-legacy-only stride/index sites need v3 dispatch in B2b (rechecked after B2a):
-- campaign_guard.py:811: finish_arm's index * 200 receipt count.
+The legacy receipt stride is 4 slots x 50 questions = 200 per arm. B2b1 adds
+generic v3 arm completion using receipts_per_arm. The following sites remain
+legacy-only and unreachable for v3: Campaign.activate rejects fresh, recovery,
+retry, final-verdict and replacement lineage pins before lineage verification.
+- campaign_guard.py: finish_arm's recovery-only index * 200 receipt count.
 - campaign_fresh.py:295-297,440,454,471: attempt index and arm receipt counts.
 - campaign_recovery.py:119-124,339,345: receipt identities and handoff count/manifest.
 - campaign_retry.py:883,891,1038: handoff count/manifest and recovery completion.
@@ -12,7 +14,8 @@ legacy-only stride/index sites need v3 dispatch in B2b (rechecked after B2a):
 Allocation arm count is independent of receipt stride. Campaign defaults to the
 legacy layout; B2a's v3 sampling is reachable only by explicit test injection.
 Production launch, retry and finalisation remain legacy. In particular,
-payload["schema"] is not a layout selector.
+payload["schema"] is not a layout selector. Fresh-style handoff and retry wiring
+are deferred to B2b2; B2b1's v3 allocation/attempt validation is pure and unbound.
 """
 
 from __future__ import annotations

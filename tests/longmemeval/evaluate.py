@@ -978,7 +978,35 @@ def score_accuracy(results: list[dict[str, Any]]) -> dict[str, float]:
     return accuracy
 
 
-def print_results(results: list[dict[str, Any]], accuracy: dict[str, float]) -> None:
+def print_results(
+    results: list[dict[str, Any]],
+    accuracy: dict[str, Any],
+    *,
+    layout: CampaignLayout | None = None,
+) -> None:
+    if layout is not None and layout.name == "v3":
+        from orchestrator.eval.campaign_v3 import validate_v3_row, v3_summaries
+
+        for row in results:
+            validate_v3_row(row)
+        summaries = v3_summaries(results)
+        print("\nV3 EVALUATION RESULTS (official majority-of-3)")
+        for level in ("majority", "samples"):
+            counts = summaries[level]
+            print(
+                f"Official {level}: {counts['correct']}/{counts['total']} "
+                f"({counts['strict_accuracy']['display']})"
+            )
+        for category, counts in summaries["official_by_category"].items():
+            print(f"  {category}: {counts['strict_accuracy']['display']}")
+        for row in results:
+            print(f"[{row['category']}] {row['question_id']}: {row['official_majority']}")
+            for sample in row["samples"]:
+                print(
+                    f"  Sample {sample['sample']}: {sample['official_judgment']} "
+                    f"Hypothesis: {sample['hypothesis'][:60]}..."
+                )
+        return
     print("\n" + "=" * 80)
     print("EVALUATION RESULTS")
     print("=" * 80)

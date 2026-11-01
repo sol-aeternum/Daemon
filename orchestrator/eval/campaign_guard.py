@@ -276,10 +276,19 @@ class Campaign:
         count_tokens: Callable[[str], int],
         *,
         layout: campaign_layout.CampaignLayout | None = None,
+        arms: tuple[str, ...] | None = None,
     ):
         self.directory = directory
         # Test-only injection, outside the frozen plan/hash and all production selectors.
         self.layout = layout or campaign_layout.layout("legacy")
+        self.arms = ARMS
+        if self.layout.name == "v3":
+            from orchestrator.eval.campaign_v3_plan import validate_v3_arms
+
+            self.arms = ARMS if arms is None else arms
+            validate_v3_arms(self.arms)
+        elif arms is not None:
+            raise CampaignStopped("Arm injection requires the v3 layout")
         # Freeze caller-owned mutable data before any network activity.
         self.plan: dict[str, Any] = json.loads(_json(plan.payload()))
         self._plan_hash = _hash(self.plan)
@@ -348,6 +357,20 @@ class Campaign:
     def activate(self) -> Iterator[Campaign]:
         if self._live or current_campaign() is not None:
             raise CampaignStopped("Nested campaign activation refused")
+        if self.layout.name == "v3":
+            from orchestrator.eval.campaign_retry import retry_capable
+
+            if retry_capable(self) or any(
+                key in self.plan["pins"]
+                for key in (
+                    "fresh_campaign",
+                    "recovery_lineage",
+                    "retry_recovery_lineage",
+                    "final_verdict_recovery_lineage",
+                    "replacement_lineage",
+                )
+            ):
+                raise CampaignStopped("V3 cannot use legacy lineage or retry pins")
         # The shared sibling lock prevents parallel campaigns in this evidence root.
         # The operator pins this root for the benchmark, never a DB-restored path.
         parent = self.directory.parent.resolve(strict=True)
@@ -369,7 +392,9 @@ class Campaign:
                     or saved.get("restore_pending") is not None
                     or saved.get("question") is not None
                     or saved.get("arm") is not None
-                    or not 0 < saved.get("arm_index", 0) < len(ARMS)
+                    or saved.get("layout", "legacy") != self.layout.name
+                    or (self.layout.name == "v3" and saved.get("arms") != list(self.arms))
+                    or not 0 < saved.get("arm_index", 0) < len(self.arms)
                 ):
                     raise CampaignStopped("Only a clean completed-arm handoff may continue")
                 if inherited is not None:
@@ -405,6 +430,8 @@ class Campaign:
                     "receipts": [],
                     "restores": [],
                 }
+                if self.layout.name == "v3":
+                    self.state.update(layout="v3", arms=list(self.arms))
                 if "fresh_campaign" in self.plan["pins"]:
                     from orchestrator.eval.campaign_fresh import initialize
 
@@ -434,7 +461,7 @@ class Campaign:
             ):
                 self.fail("Incomplete campaign; reconcile rather than resume")
             self.state["status"] = (
-                "completed" if self.state["arm_index"] == len(ARMS) else "ready_next_arm"
+                "completed" if self.state["arm_index"] == len(self.arms) else "ready_next_arm"
             )
             if "fresh_campaign" in self.plan["pins"]:
                 from orchestrator.eval.campaign_fresh import validate_handoff
@@ -480,7 +507,7 @@ class Campaign:
                 or len(self.state["restores"]) != index - 1
             ):
                 self.fail("Recovery arm requires a new verified restore")
-        if index >= len(ARMS) or arm != ARMS[index] or self.state["arm"] is not None:
+        if index >= len(self.arms) or arm != self.arms[index] or self.state["arm"] is not None:
             self.fail("Unexpected or repeated arm")
         if dict(verified_pins) != self.plan["pins"] or not restore:
             self.fail("Actual pins or restore evidence missing/mismatched")
@@ -832,6 +859,16 @@ class Campaign:
             or not qualification
         ):
             self.fail("Arm incomplete or not qualified")
+        if self.layout.name == "v3":
+            index = self.state["arm_index"]
+            if (
+                not 0 <= index < len(self.arms)
+                or len(self.state["receipts"])
+                != (index + 1) * self.layout.receipts_per_arm(len(self.plan["question_ids"]))
+                or len(self.state.get("qualifications", [])) != index
+                or self.state["arm"] != self.arms[index]
+            ):
+                self.fail("V3 arm lacks full execution/qualification evidence")
         self.state.setdefault("qualifications", []).append(dict(qualification))
         self.state.update(arm=None, arm_index=self.state["arm_index"] + 1)
         self._save()
