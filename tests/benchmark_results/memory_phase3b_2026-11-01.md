@@ -104,9 +104,13 @@ results as an end-to-end product temporal gain.
 2. Any further temporal work belongs to a separately approved design, such as
    option B source-time anchoring at ingest. That needs a fresh qualified
    baseline, its own noise measurement and explicit budget and restore limits.
-3. A larger evaluation sample would shrink the noise band relative to the
-   effect. It needs a new approved dev expansion that keeps the dev/holdout
-   separation.
+3. A larger evaluation sample alone does not shrink the noise band relative to
+   the effect. With F ≈ p·n, the `max(3, 2F)` bar stays at a net gain rate of
+   about 2p, roughly 12% here, at any n. A larger sample helps only for effects
+   above that rate, or combined with a test whose margin grows with √n
+   (amendment v3). Any expansion needs a new approved dev design that keeps the
+   dev/holdout separation. (Corrected 2026-11-01; the original wording said a
+   larger sample would shrink the band.)
 
 ## Accounting and retained evidence
 
