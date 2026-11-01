@@ -13,7 +13,7 @@ import {
 // feeds the actual Next bridge and AI SDK client reducer. No servers, sockets,
 // database, Redis instance, provider transport or stored golden SSE transcript.
 // Global setup freshly produces acknowledged and uncertain transcripts before worker contention,
-// bounded by the same 10s setup deadline. Missing setup cannot fall back to a cache.
+// bounded by the same 30s setup deadline. Missing setup cannot fall back to a cache.
 
 async function bridge(frames: string[], taskId: string) {
   vi.stubGlobal(

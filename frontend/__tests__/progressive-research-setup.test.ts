@@ -41,7 +41,7 @@ it('fails setup on subprocess timeout rather than providing partial or cached ev
   expect(execFileSync).toHaveBeenCalledWith(
     path.join(fixtureRoot, '.uv-venv', 'bin/python'),
     ['-m', 'tests.progressive_research_support'],
-    expect.objectContaining({ timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }),
+    expect.objectContaining({ timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
   );
 });
 
@@ -59,17 +59,17 @@ it.each([
     expect(execFileSync).toHaveBeenCalledWith(
       expectedPython,
       ['-m', 'tests.progressive_research_support'],
-      expect.objectContaining({ timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }),
+      expect.objectContaining({ timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
     );
     expect(p.provide).toHaveBeenCalledOnce();
   },
 );
 
-it('also fails when total setup exceeds the old hook budget', () => {
+it('also fails when total setup exceeds the setup budget', () => {
   const p = project();
-  vi.mocked(performance.now).mockReturnValueOnce(0).mockReturnValueOnce(10_001);
+  vi.mocked(performance.now).mockReturnValueOnce(0).mockReturnValueOnce(30_001);
   vi.mocked(execFileSync).mockReturnValue('{}');
-  expect(() => setup(p as unknown as TestProject)).toThrow('10000ms budget');
+  expect(() => setup(p as unknown as TestProject)).toThrow('30000ms budget');
   expect(p.provide).not.toHaveBeenCalled();
 });
 
