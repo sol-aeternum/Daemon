@@ -8,6 +8,7 @@ import json
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
+import uuid
 
 import asyncpg
 from cryptography.fernet import Fernet
@@ -33,7 +34,15 @@ def summaries(probes=1):
             "coverage": {f"q{pos}": 1.0 for pos in range(50)},
             "coverage_causes": {},
             "rendered_tokens": 100,
-            "distractors": {"added": 0, "plausible_support": 0},
+            "distractors": {"added": 0, "plausible_support": 0, "own_plausible_support": 0},
+            "distractor_measured_ids": ["q0"],
+            "distractor_measured_questions": 1,
+            "distractors_by_question": {
+                f"q{pos}": {"added": 0, "plausible_support": 0, "own_plausible_support": 0}
+                if pos == 0
+                else None
+                for pos in range(50)
+            },
         }
         for config in rules.configurations(probes)
     }
@@ -100,11 +109,14 @@ def test_single_variable_beats_multiple_and_width_only_is_eligible():
     width = rules.Configuration(10, "harness", 10)
     qualify(rows, multi)
     qualify(rows, width)
-    rows[width.key].update(rendered_tokens=150, distractors={"added": 2, "plausible_support": 1})
+    payload = {"added": 2, "plausible_support": 1, "own_plausible_support": 0}
+    rows[width.key].update(rendered_tokens=150, distractors=payload)
+    rows[width.key]["distractors_by_question"]["q0"] = dict(payload)
     result = decide(rows)
     assert result["minimal"] == width.key
     assert result["candidates"][0]["token_delta"] == 50
-    assert result["candidates"][0]["distractor_deltas"] == {"added": 2, "plausible_support": 1}
+    assert result["candidates"][0]["distractor_deltas"] == payload
+    assert result["candidates"][0]["distractor_measured_questions"] == 1
     assert rules.Configuration(25, "harness", 5).sort_key(1) < width.sort_key(1)
 
 
@@ -215,6 +227,8 @@ class FakeConnection(synthetic.FakePool):
         self.wrong_probes100 = False
         self.fingerprint_drift = False
         self.fingerprint_reads = 0
+        self.empty_retrieval_user: uuid.UUID | None = None
+        self.empty_retrieval_limit = 25
 
     @asynccontextmanager
     async def transaction(self, *, isolation, readonly):
@@ -267,11 +281,19 @@ class FakeConnection(synthetic.FakePool):
             return [{"user_id": user, "count": 20} for user in args[0]]
         if " AS bm25_score" in sql:
             self.bm25_limits.append(args[5])
+            if args[0] == self.empty_retrieval_user and args[5] == self.empty_retrieval_limit:
+                return []
             rows = [row for row in self.rows if row["user_id"] == args[0]]
             return [
                 {**row, "bm25_score": (pos + 1) / 100} for pos, row in list(enumerate(rows))[::-1]
             ][: args[5]]
         rows = await super().fetch(sql, *args)
+        if (
+            " AS similarity" in sql
+            and args[0] == self.empty_retrieval_user
+            and args[5] == self.empty_retrieval_limit
+        ):
+            return []
         if (
             self.wrong_probes100
             and " AS similarity" in sql
@@ -541,6 +563,8 @@ async def test_full_audit_production_path_baseline_grid_components_reports_and_z
         store,
         controls,
     ):
+        # Exercise an overreach question without the _abs suffix as well.
+        monkeypatch.setattr(sweep, "ABSTENTION_OVERREACH", (*sweep.ABSTENTION_OVERREACH, "q02"))
         raw, clean = await audit.audit_snapshot(
             reader,
             store,
@@ -553,6 +577,21 @@ async def test_full_audit_production_path_baseline_grid_components_reports_and_z
         assert len(clean["rankings"]) == len(clean["stability"]) == 50
         assert len(clean["plans"]) == 12
         assert all(len(question["configs"]) == expected_count for question in clean["questions"])
+        measured = {
+            entry["question_id"]
+            for entry in inputs.dataset
+            if entry["question_id"].endswith("_abs")
+            or entry["question_id"] in sweep.ABSTENTION_OVERREACH
+        }
+        for question in clean["questions"]:
+            for metrics in question["configs"].values():
+                assert (metrics["distractors"] is not None) == (question["question_id"] in measured)
+        for summary in clean["summaries"].values():
+            assert summary["distractor_measured_questions"] == len(measured)
+            assert summary["empty_retrievals"] == 0
+        baseline = clean["summaries"][rules.BASELINE.key]["distractors"]
+        assert baseline["added"] == baseline["plausible_support"] == 0
+        assert baseline["own_plausible_support"] > 0
         # Each configuration is gathered separately; extra vector reads are T1
         # and the explicit gather20/rank50 mismatch probes, never cached grids.
         assert connection.vector_limits[:50] == [10] * 50
@@ -579,6 +618,9 @@ async def test_full_audit_production_path_baseline_grid_components_reports_and_z
             "decide_exactness()",
             "no separate BM25",
             "NONE_OF_THE_ABOVE is retained as a safety net but is unreachable",
+            "Measured questions",
+            "own plausible support independently measures",
+            "Empty retrievals",
         ):
             assert section in report
         sweep.validate_sanitized(clean)
@@ -755,3 +797,259 @@ def test_shared_output_sanitizer_rejects_text_and_preserves_raw_digest(tmp_path)
     for value in ({"content": "hidden"}, {"plan": "SQL contains prose"}):
         with pytest.raises(ValueError):
             sweep.validate_sanitized(value)
+
+
+def test_summarize_grid_keeps_unmeasured_none_and_counts_only_measured_questions():
+    candidate = rules.Configuration(25, "harness", 5)
+    questions = []
+    for pos in range(50):
+        qid = f"q{pos}"
+        metrics = exposure.measure(
+            injection.MemoryContextInputs(retrieved=[synthetic.memory(0)]),
+            target_ids=[],
+            gold_conversation_ids=[],
+            source_conversations={},
+            ranking=[],
+        )
+        metrics.update(
+            empty_retrieval=False,
+            distractors={"added": 0, "plausible_support": 0, "own_plausible_support": 2}
+            if pos < 2
+            else None,
+        )
+        current = deepcopy(metrics)
+        if pos < 2:
+            current["distractors"] = {
+                "added": 3,
+                "plausible_support": 1,
+                "own_plausible_support": 4,
+            }
+        questions.append(
+            {
+                "question_id": qid,
+                "distractors_measured": pos < 2,
+                "source_conversations": {},
+                "configs": {rules.BASELINE.key: metrics, candidate.key: current},
+            }
+        )
+    baseline = rules.summarize_grid(questions, rules.BASELINE)
+    result = rules.summarize_grid(questions, candidate)
+    assert result["distractor_measured_questions"] == 2
+    assert result["distractors"] == {"added": 6, "plausible_support": 2, "own_plausible_support": 8}
+    assert result["distractors_by_question"]["q2"] is None
+    assert baseline["distractors"] == {
+        "added": 0,
+        "plausible_support": 0,
+        "own_plausible_support": 4,
+    }
+    rows = summaries()
+    for row in rows.values():
+        row.update(
+            {
+                key: baseline[key]
+                for key in (
+                    "distractors",
+                    "distractors_by_question",
+                    "distractor_measured_ids",
+                    "distractor_measured_questions",
+                )
+            }
+        )
+    rows[candidate.key].update(
+        {
+            key: result[key]
+            for key in (
+                "distractors",
+                "distractors_by_question",
+                "distractor_measured_ids",
+                "distractor_measured_questions",
+            )
+        }
+    )
+    qualify(rows, candidate)
+    selected = decide(rows)["candidates"][0]
+    assert selected["distractor_measured_questions"] == 2
+    assert selected["distractor_deltas"] == {
+        "added": 6,
+        "plausible_support": 2,
+        "own_plausible_support": 4,
+    }
+    for question in questions:
+        question["distractors_measured"] = False
+        for metrics in question["configs"].values():
+            metrics["distractors"] = None
+    unmeasured = rules.summarize_grid(questions, candidate)
+    assert unmeasured["distractors"] is None
+    assert unmeasured["distractor_measured_questions"] == 0
+
+
+@pytest.mark.parametrize("config", [rules.BASELINE, rules.Configuration(25, "harness", 5)])
+@pytest.mark.parametrize("missing", ["none", "payload", "field", "aggregate", "unmeasured"])
+def test_decide_rejects_missing_measured_payload_even_when_config_does_not_qualify(config, missing):
+    rows = summaries()
+    row = rows[config.key]
+    if missing == "none":
+        row["distractors_by_question"]["q0"] = None
+    elif missing == "payload":
+        row["distractors_by_question"].pop("q0")
+    elif missing == "field":
+        row["distractors_by_question"]["q0"].pop("plausible_support")
+    elif missing == "aggregate":
+        row["distractors"]["added"] = 1
+    else:
+        row["distractors_by_question"]["q1"] = {
+            "added": 0,
+            "plausible_support": 0,
+            "own_plausible_support": 0,
+        }
+    with pytest.raises(ValueError):
+        decide(rows)
+
+
+def test_zero_measured_cohort_produces_none_deltas_not_fictitious_zeros():
+    rows = summaries()
+    candidate = rules.Configuration(25, "harness", 5)
+    for row in rows.values():
+        row.update(
+            distractors=None,
+            distractor_measured_ids=[],
+            distractor_measured_questions=0,
+            distractors_by_question={qid: None for qid in row["coverage"]},
+        )
+    qualify(rows, candidate)
+    selected = decide(rows)["candidates"][0]
+    assert selected["distractor_deltas"] is None
+    assert selected["distractor_measured_questions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_nonbaseline_empty_candidates_are_recorded_and_reported(configured, monkeypatch):
+    async with environment(monkeypatch) as (inputs, connection, reader, store, controls):
+        entry = inputs.dataset[10]
+        connection.empty_retrieval_user = question_user_id(entry["question_id"])
+        with sweep.no_providers():
+            block, gathered, queries, scored = await audit.gather(
+                store,
+                reader,
+                inputs,
+                entry,
+                [1.0, 2.0],
+                pool=25,
+                k=10,
+            )
+        assert block == "" and gathered.retrieved == scored == []
+        assert set(queries) == {"vector", "bm25"}
+        _, clean = await audit.audit_snapshot(
+            reader,
+            store,
+            inputs,
+            controls,
+            {"harness": 1, "campaign": 1, "sweep": 1},
+        )
+        for summary in clean["summaries"].values():
+            assert summary["empty_retrievals"] == (1 if summary["config"]["pool"] == 25 else 0)
+        question = next(
+            row for row in clean["questions"] if row["question_id"] == entry["question_id"]
+        )
+        empty = question["configs"][rules.Configuration(25, "harness", 10).key]
+        assert empty["empty_retrieval"] and empty["retrieved_ids"] == []
+        assert empty["distractors"] is None
+        clean.update(git_sha="b" * 40, raw_sha256="c" * 64, connection_recipes={})
+        report = audit.render_report(clean)
+        assert "Empty retrievals" in report
+        for key, summary in clean["summaries"].items():
+            if summary["config"]["pool"] == 25:
+                line = next(line for line in report.splitlines() if line.startswith(f"| {key} |"))
+                assert line.split(" | ")[7] == "1"
+        sweep.validate_sanitized(clean)
+
+
+@pytest.mark.asyncio
+async def test_empty_baseline_is_fatal_before_the_remaining_grid(configured, monkeypatch):
+    async with environment(monkeypatch) as (inputs, connection, reader, store, controls):
+        connection.empty_retrieval_user = question_user_id(inputs.dataset[0]["question_id"])
+        connection.empty_retrieval_limit = 10
+        with pytest.raises(ValueError, match="Empty baseline retrieval"):
+            await audit.audit_snapshot(
+                reader,
+                store,
+                inputs,
+                controls,
+                {"harness": 1, "campaign": 1, "sweep": 1},
+            )
+        assert connection.vector_limits == connection.bm25_limits == [10]
+        assert retrieval.INITIAL_VECTOR_CANDIDATES == 10 and injection.MAX_MEMORY_ITEMS == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["setup", "body"])
+async def test_failed_transaction_restore_preserves_original_exception_before_and_after_yield(
+    configured, monkeypatch, phase
+):
+    async with environment(monkeypatch, pilot=False) as (_, connection, _, _, controls):
+        execute = connection.execute
+        aborted = False
+        original = RuntimeError("original diagnostic failure")
+
+        async def fail_restore(sql):
+            nonlocal aborted
+            if aborted:
+                raise asyncpg.InFailedSQLTransactionError("transaction aborted")
+            if phase == "setup":
+                aborted = True
+                raise original
+            await execute(sql)
+
+        monkeypatch.setattr(connection, "execute", fail_restore)
+        with pytest.raises(RuntimeError) as captured:
+            async with controls.mode("exact"):
+                aborted = True
+                raise original
+        assert captured.value is original
+        assert original.__notes__ == ["SET LOCAL restore failed: InFailedSQLTransactionError"]
+
+
+@pytest.mark.asyncio
+async def test_restore_failure_without_original_exception_still_fails_closed(
+    configured, monkeypatch
+):
+    async with environment(monkeypatch, pilot=False) as (_, connection, _, _, controls):
+        execute = connection.execute
+        fail = False
+
+        async def fail_restore(sql):
+            if fail:
+                raise asyncpg.InFailedSQLTransactionError("transaction aborted")
+            await execute(sql)
+
+        monkeypatch.setattr(connection, "execute", fail_restore)
+        with pytest.raises(asyncpg.InFailedSQLTransactionError):
+            async with controls.mode("exact"):
+                fail = True
+
+
+def test_missing_ranks_consumes_real_exposure_measure_target_schema():
+    visible = synthetic.memory(0)
+    absent = synthetic.memory(1)
+    mids = [str(visible["id"]), str(absent["id"])]
+    metrics = exposure.measure(
+        injection.MemoryContextInputs(retrieved=[visible]),
+        target_ids=mids,
+        gold_conversation_ids=[],
+        source_conversations={},
+        ranking=[visible],
+    )
+    questions = {"q": {"configs": {rules.Configuration(100, "exact", 10).key: metrics}}}
+    rankings = [
+        {
+            "question_id": "q",
+            "exact_cosine_ranks": dict(zip(mids, [1, 101], strict=True)),
+            "bm25_ranks": dict(zip(mids, [2, None], strict=True)),
+        }
+    ]
+    assert audit.missing_ranks(questions, {"q": mids}, rankings) == [
+        {"question_id": "q", "memory_id": mids[1], "exact_cosine_rank": 101, "bm25_rank": None},
+    ]
+    metrics["targets"][mids[1]].pop("rendered")
+    with pytest.raises(KeyError, match="rendered"):
+        audit.missing_ranks(questions, {"q": mids}, rankings)

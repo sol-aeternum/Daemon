@@ -103,14 +103,47 @@ def summarize_grid(questions: Sequence[Mapping[str, Any]], config: Configuration
         )
     summary = exposure.summarize(adapted)[exposure.CANDIDATE_KS[0]]
     summary["config"] = asdict(config)
-    summary["distractors"] = {
-        name: sum(
-            (question["configs"][config.key].get("distractors") or {}).get(name, 0)
-            for question in questions
-        )
-        for name in ("added", "plausible_support")
+    summary["empty_retrievals"] = sum(
+        question["configs"][config.key]["empty_retrieval"] for question in questions
+    )
+    summary["distractor_measured_ids"] = sorted(
+        question["question_id"] for question in questions if question["distractors_measured"]
+    )
+    summary["distractor_measured_questions"] = len(summary["distractor_measured_ids"])
+    summary["distractors_by_question"] = {
+        question["question_id"]: question["configs"][config.key]["distractors"]
+        for question in questions
     }
+    summary["distractors"] = _measured_distractors(summary, summary["distractor_measured_ids"])
     return summary
+
+
+def _measured_distractors(
+    row: Mapping[str, Any], measured_ids: Sequence[str]
+) -> dict[str, int] | None:
+    """Validate the measured cohort, preserving None outside it (never zero-fill)."""
+    measured = set(measured_ids)
+    if (
+        len(measured) != len(measured_ids)
+        or row["distractor_measured_ids"] != sorted(measured)
+        or row["distractor_measured_questions"] != len(measured)
+        or set(row["distractors_by_question"]) != set(row["coverage"])
+        or not measured <= set(row["coverage"])
+    ):
+        raise ValueError("Distractor measurement cohort mismatch")
+    totals = {"added": 0, "plausible_support": 0, "own_plausible_support": 0}
+    for qid, payload in row["distractors_by_question"].items():
+        if qid not in measured:
+            if payload is not None:
+                raise ValueError("Unmeasured distractors must remain None")
+            continue
+        if not isinstance(payload, Mapping) or any(
+            type(payload.get(name)) is not int or payload[name] < 0 for name in totals
+        ):
+            raise ValueError(f"Missing or invalid measured distractor payload: {qid}")
+        for name in totals:
+            totals[name] += payload[name]
+    return totals if measured else None
 
 
 def decide_exactness(
@@ -133,6 +166,9 @@ def decide_exactness(
     baseline = summaries[BASELINE.key]
     if len(baseline["coverage"]) != exposure.QUESTION_COUNT:
         raise ValueError("Require 50 baseline questions")
+    baseline_distractors = _measured_distractors(baseline, baseline["distractor_measured_ids"])
+    if baseline["distractors"] != baseline_distractors:
+        raise ValueError("Baseline distractor aggregate differs from measured payloads")
     flags: set[str] = set()
     if (
         any(value != EXPECTED_PROBES for value in connection_probes.values())
@@ -142,6 +178,9 @@ def decide_exactness(
     candidates = []
     for config in sorted(configs, key=lambda item: item.sort_key(connection_probes["harness"])):
         row = summaries[config.key]
+        distractors = _measured_distractors(row, baseline["distractor_measured_ids"])
+        if row["distractors"] != distractors:
+            raise ValueError("Distractor aggregate differs from measured payloads")
         if not 0 <= row["cases_strict"] <= row["cases_pre_budget"] <= exposure.CASE_COUNT:
             raise ValueError("Require 0 <= R <= P <= 5")
         if row["target_budget_dropped"] < 0:
@@ -162,10 +201,12 @@ def decide_exactness(
                     "id": config.key,
                     "config": asdict(config),
                     "token_delta": row["rendered_tokens"] - baseline["rendered_tokens"],
+                    "distractor_measured_questions": row["distractor_measured_questions"],
                     "distractor_deltas": {
-                        name: row["distractors"][name] - baseline["distractors"][name]
-                        for name in ("added", "plausible_support")
-                    },
+                        name: distractors[name] - baseline_distractors[name] for name in distractors
+                    }
+                    if distractors is not None and baseline_distractors is not None
+                    else None,
                 }
             )
         if row["cases_pre_budget"] >= REQUIRED_CASES and row["target_budget_dropped"] > 0:

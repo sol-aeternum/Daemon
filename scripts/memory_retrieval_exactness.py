@@ -131,10 +131,19 @@ class LocalSettings:
             for name in ENABLE_SETTINGS:
                 await self.set_local(name, "off" if mode == "exact" else self.originals[name])
             yield
-        finally:
-            for name in ENABLE_SETTINGS:
-                await self.set_local(name, self.originals[name])
-            await self.set_local("ivfflat.probes", self.original_probes)
+        except BaseException as error:
+            try:
+                await self.restore()
+            except BaseException as restore_error:
+                error.add_note(f"SET LOCAL restore failed: {type(restore_error).__name__}")
+            raise
+        else:
+            await self.restore()
+
+    async def restore(self) -> None:
+        for name in ENABLE_SETTINGS:
+            await self.set_local(name, self.originals[name])
+        await self.set_local("ivfflat.probes", self.original_probes)
 
 
 @asynccontextmanager
@@ -218,7 +227,9 @@ async def gather(
             if gathered.retrieval_mode in {"failed", "none", "lexical"}:
                 raise ValueError("Production parity retrieval failed")
             queries = reader.queries(start)
-            if not scored or any("final_score" not in row for row in scored):
+            if (gathered.retrieved and not scored) or any(
+                "final_score" not in row for row in scored
+            ):
                 raise ValueError("Production scorer components unavailable")
             return block, gathered, queries, scored
     finally:
@@ -403,14 +414,22 @@ def grid_measure(
         if injection.render_memory_context(gathered) != block:
             raise ValueError("Production gather/render self-check failed")
         rows = exposure.rendered_memory_rows(gathered, block)
-        added = [
+        visible = [
             {"id": row["id"], "content": text}
             for row, text in zip(rows, exposure.rendered_memory_texts(block), strict=True)
-            if str(row["id"]) not in baseline_rendered
         ]
+        added = [row for row in visible if str(row["id"]) not in baseline_rendered]
+        if config == rules.BASELINE:
+            added = []
     metrics["block_sha256"] = sweep.digest_bytes(block.encode())
+    metrics["empty_retrieval"] = not gathered.retrieved
     metrics["distractors"] = (
-        exposure.distractor_counts(entry["question"], added)
+        {
+            **exposure.distractor_counts(entry["question"], added),
+            "own_plausible_support": exposure.distractor_counts(entry["question"], visible)[
+                "plausible_support"
+            ],
+        }
         if qid.endswith("_abs") or qid in sweep.ABSTENTION_OVERREACH
         else None
     )
@@ -504,6 +523,27 @@ async def mismatch_audit(
     return raw, clean
 
 
+def missing_ranks(
+    questions: Mapping[str, Mapping[str, Any]],
+    targets: Mapping[str, Sequence[str]],
+    rankings: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Read the real exposure.measure target schema; missing fields fail closed."""
+    largest = rules.Configuration(100, "exact", 10).key
+    by_question = {row["question_id"]: row for row in rankings}
+    return [
+        {
+            "question_id": qid,
+            "memory_id": mid,
+            "exact_cosine_rank": by_question[qid]["exact_cosine_ranks"][mid],
+            "bm25_rank": by_question[qid]["bm25_ranks"][mid],
+        }
+        for qid, mids in targets.items()
+        for mid in mids
+        if not questions[qid]["configs"][largest]["targets"][mid]["rendered"]
+    ]
+
+
 async def audit_snapshot(
     reader: RecordingReader,
     store: Any,
@@ -580,14 +620,16 @@ async def audit_snapshot(
                     pool=10,
                     k=5,
                 )
+                if not gathered.retrieved:
+                    raise ValueError(f"Empty baseline retrieval: {qid}; refusing remaining audit")
                 metrics = grid_measure(
                     gathered, block, inputs, entry, source_map, rules.BASELINE, set()
                 )
-                if metrics["distractors"] is not None:
-                    metrics["distractors"] = {"added": 0, "plausible_support": 0}
                 vector, log_ids, comparison = vectors[qid]
                 questions[qid] = {
                     "question_id": qid,
+                    "distractors_measured": qid.endswith("_abs")
+                    or qid in sweep.ABSTENTION_OVERREACH,
                     "configs": {rules.BASELINE.key: metrics},
                     "source_conversations": {
                         mid: source_map[mid]
@@ -689,25 +731,12 @@ async def audit_snapshot(
     summaries = {
         config.key: rules.summarize_grid(list(questions.values()), config) for config in configs
     }
-    largest = rules.Configuration(100, "exact", 10).key
-    missing_ranks = [
-        {
-            "question_id": qid,
-            "memory_id": mid,
-            "exact_cosine_rank": next(row for row in t1 if row["question_id"] == qid)[
-                "exact_cosine_ranks"
-            ][mid],
-            "bm25_rank": next(row for row in t1 if row["question_id"] == qid)["bm25_ranks"][mid],
-        }
-        for qid, mids in inputs.targets.items()
-        for mid in mids
-        if not questions[qid]["configs"][largest]["targets"][mid]["rendered"]
-    ]
+    missing_target_ranks = missing_ranks(questions, inputs.targets, t1)
     decision = rules.decide_exactness(
         summaries,
         connection_probes=connection_probes,
         plan_shape_differences=differences,
-        missing_target_ranks=missing_ranks,
+        missing_target_ranks=missing_target_ranks,
     )
     decision["flags"] = sorted(decision["flags"])
     aggregate_recall = {
@@ -780,7 +809,7 @@ async def audit_snapshot(
         "summaries": summaries,
         "stability": stability,
         "mismatches": mismatches,
-        "missing_target_ranks": missing_ranks,
+        "missing_target_ranks": missing_target_ranks,
         "decision": decision,
         "settings_statement_count": len(controls.statements),
         "settings_statements_sha256": sweep.digest_bytes(json.dumps(controls.statements).encode()),
@@ -895,6 +924,7 @@ def render_report(data: Mapping[str, Any]) -> str:
         f"Window: `{data['vector_window']['from']}` through `{data['vector_window']['until']}` (inclusive).",
         "Pool override: INITIAL_VECTOR_CANDIDATES, shared by vector and BM25. There is no separate BM25 constant. Source constants remain pool=10 and MAX_MEMORY_ITEMS=5.",
         f"Baseline pilot rendered-block hash matches: {data['pilot_matches']}/{data['pilot_total']}; failure aborts before the rest of the grid.",
+        "An empty baseline retrieval is fatal even if frozen memories or summaries leave a nonempty rendered block; legitimate empty non-baseline retrievals are recorded and counted per configuration.",
         "",
         "## Input pins",
         "",
@@ -964,14 +994,20 @@ def render_report(data: Mapping[str, Any]) -> str:
             "",
             f"Configurations: {data['grid_count']}; duplicate probes10 collapsed: {data['collapsed_probes10']}.",
             "Coverage and COVERAGE_REGRESSION causes reuse exposure.py unchanged. Gold-session coverage is a proxy, not answer-fact exposure. Abstention distractors reuse the sweep rule and are warnings, not decision vetoes.",
+            "Distractors are measured only for _abs and abstention-overreach questions; unmeasured payloads stay None, not zero. Every aggregate and candidate delta uses only that fixed measured cohort, with its question count reported. Baseline added rows and added-row plausible support are zero by definition (relative to itself); own plausible support independently measures all of the baseline's visible memory rows using the same lexical proxy.",
             "",
-            "| Configuration | Strict /5 | Pre-budget /5 | Coverage losses | Target drops | Total drops | Tokens | Added distractors | Plausible support |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| Configuration | Strict /5 | Pre-budget /5 | Coverage losses | Target drops | Total drops | Tokens | Empty retrievals | Measured questions | Added distractors | Added plausible support | Own plausible support |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ]
     )
     for key, row in data["summaries"].items():
+        distractors = row["distractors"]
+        counts = [
+            str(distractors[name]) if distractors is not None else "not measured"
+            for name in ("added", "plausible_support", "own_plausible_support")
+        ]
         lines.append(
-            f"| {key} | {row['cases_strict']} | {row['cases_pre_budget']} | {len(row['coverage_losses'])} | {row['target_budget_dropped']} | {row['budget_dropped']} | {row['rendered_tokens']} | {row['distractors']['added']} | {row['distractors']['plausible_support']} |"
+            f"| {key} | {row['cases_strict']} | {row['cases_pre_budget']} | {len(row['coverage_losses'])} | {row['target_budget_dropped']} | {row['budget_dropped']} | {row['rendered_tokens']} | {row['empty_retrievals']} | {row['distractor_measured_questions']} | {' | '.join(counts)} |"
         )
     lines.extend(
         [
