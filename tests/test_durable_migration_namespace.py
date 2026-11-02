@@ -83,6 +83,20 @@ def test_presentation_adapter_preserves_source_detachment_and_acl():
     assert "resource_presentation_unsafe_default_privileges" in sql and "FROM PUBLIC" in sql
 
 
+def test_output_presentation_adapter_keeps_types_acl_and_ownership():
+    schema = "tasks_test_" + uuid4().hex
+    path = MIGRATIONS / "058_resource_output_presentations.sql"
+    original = path.read_text()
+    sql = migration_sql_for_schema(path, schema)
+    assert "public." not in sql
+    assert f"RETURNS {schema}.tasks" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert "pg_catalog.regprocedure" in sql and "pg_catalog.jsonb" in sql
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+    assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
+    assert path.read_text() == original
+
+
 @pytest.mark.parametrize(
     ("prefix", "custom"),
     [("tasks_test_", False), ("identity_legacy_", False), ("bench_metadata_", True)],

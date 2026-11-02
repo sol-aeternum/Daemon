@@ -63,6 +63,7 @@ def migration_sql_for_schema(path: Path, schema: str, *, schema_prefix: str | No
         "055_resource_presentations.sql",
         "056_restore_history_acceptance.sql",
         "057_restore_history_effects.sql",
+        "058_resource_output_presentations.sql",
     ):
         return sql
     return sql.replace("public.", namespace + ".").replace(

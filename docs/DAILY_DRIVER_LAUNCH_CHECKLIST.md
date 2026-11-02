@@ -56,3 +56,11 @@ currently selects that trusted publisher for the W-only worker. Before artifact
 composition, explicitly choose and qualify its database authority rather than
 implicitly handing W an A/publisher credential or widening grants. This source
 slice changes neither role/grant design nor artifact behavior. #477 stays open.
+
+The subsequent approved backend-owned artifact design is being implemented in
+bounded source slices. `058_resource_output_presentations.sql` supplies only
+the separate P presentation capability described in
+[output authority](RESOURCE_OUTPUT_AUTHORITY.md). No P login/grant, artifact mount,
+socket or runtime publisher is installed. Catalog/file authority, the split output
+collaborator, local authentication and artifact restore evidence remain outstanding;
+this source SQL does not remove the observation-only barrier or complete #477.
