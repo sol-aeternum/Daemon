@@ -737,10 +737,14 @@ async def prepare_v3_pilot(args: argparse.Namespace) -> None:
                 indent=2,
             )
         )
-    except BaseException:
+    except BaseException as failure:
         # A plan this invocation published (even if a later durability step
-        # raised) references the script, so the directory stays.
-        published = output_was_absent and args.output.exists()
+        # raised) references the script, so the directory stays. The atomic
+        # link failing with FileExistsError proves this invocation did not
+        # publish it (a concurrent writer did).
+        published = (
+            output_was_absent and args.output.exists() and not isinstance(failure, FileExistsError)
+        )
         if created_script_directory and not published:
             # Only this invocation's directory is disposable. Cleanup must never
             # replace the original failure, even if filesystem removal fails.

@@ -569,6 +569,23 @@ async def test_failure_after_plan_publication_keeps_referenced_script(preparatio
 
 
 @pytest.mark.asyncio
+async def test_concurrent_plan_writer_still_cleans_owned_script(preparation, monkeypatch):
+    p = preparation
+    directory = p.args.output.parent / (p.args.output.stem + "-restore-script")
+    link = launch.os.link
+
+    def racing_link(temporary, final):
+        Path(final).write_text('{"concurrent": true}\n')
+        return link(temporary, final)
+
+    monkeypatch.setattr(launch.os, "link", racing_link)
+    with pytest.raises(FileExistsError, match="Pilot evidence already exists"):
+        await launch.prepare(p.args)
+    assert not directory.exists()
+    assert json.loads(p.args.output.read_bytes()) == {"concurrent": True}
+
+
+@pytest.mark.asyncio
 async def test_prepare_never_removes_preexisting_script_directory(preparation):
     p = preparation
     directory = p.args.output.parent / (p.args.output.stem + "-restore-script")
