@@ -18,6 +18,10 @@ app principal and unchanged `OutputReservations` wrapper. That transaction must
 commit and release before publication; an R0 receipt does not grant storage access.
 No new roles or grants are created, and no production principal is selected here.
 
+The separate [P presentation SQL capability](RESOURCE_OUTPUT_AUTHORITY.md) begins
+the subsequently approved backend-owned publication design. It does not replace
+this trusted C1 implementation, change A/W privileges or install a runtime host.
+
 Publication reads the actual committed job/intent and authenticates its retained
 descriptor. In its own READ COMMITTED transaction it takes account advisory and
 entitlement UPDATE locks, guards the original account generation, scans the actual
