@@ -15,8 +15,11 @@ existing split A/W and J1 configuration even when new durable work is disabled.
 Common backend/worker fields are `DIR`, `EXPECTED_FILE`, `OPERATOR_UID`,
 `BACKEND_UID`, `WORKER_UID`, `GROUP_GID`, `KEY_GID`, each with the
 `DAEMON_RESTORE_HISTORY_` prefix. The backend alone receives `KEY_FILE`.
-Paths are canonical absolute paths. Backend and worker UIDs are distinct,
-nonroot canonical decimal identifiers; the operator may be root. History and
+Paths are canonical absolute paths. Operator, backend and worker UIDs must all
+be distinct, validated before file I/O, including direct profile construction.
+Backend and worker UIDs are nonroot canonical decimal identifiers; the operator
+may be root or a separate nonroot UID. Key-group exclusion does not remove file
+owner access, so an operator/service collision is refused. History and
 key groups are distinct. The actual effective/real UID and group membership
 must match the selected service. W must not belong to the key group or receive
 the key path, including through a shared dotenv file. Compose omission alone is

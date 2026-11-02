@@ -66,6 +66,11 @@ class HistoryConfiguration:
     key_gid: int
     key_file: Path | None = field(repr=False)
 
+    def __post_init__(self) -> None:
+        # Owner permissions bypass group exclusion, including for the K1 file.
+        if len({self.operator_uid, self.backend_uid, self.worker_uid}) != 3:
+            raise HistoryError("history_configuration_required")
+
     @property
     def ownership(self) -> Ownership:
         return Ownership(
@@ -106,8 +111,7 @@ def configured_history(
         _path(settings.daemon_restore_history_key_file) if service == "http" else None,
     )
     if (
-        result.backend_uid == result.worker_uid
-        or result.group_gid == result.key_gid
+        result.group_gid == result.key_gid
         or result.expected_file.is_relative_to(result.directory)
         or (result.key_file is not None and result.key_file.is_relative_to(result.directory))
         or result.expected_file == result.key_file

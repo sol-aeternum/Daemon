@@ -19,7 +19,10 @@ import pytest_asyncio
 from orchestrator import db as database
 from orchestrator import main
 from orchestrator.services.restore_history import runtime, read_supervisor
-from orchestrator.services.restore_history.configuration import HistoryMaterial
+from orchestrator.services.restore_history.configuration import (
+    HistoryConfiguration,
+    HistoryMaterial,
+)
 from orchestrator.services.restore_history.model import HistoryError
 from orchestrator.services.restore_history.read_supervisor import HistoryReadSupervisor
 from orchestrator.services.deletion_journal.store import initialize
@@ -63,7 +66,7 @@ async def host(effects, tmp_path, monkeypatch):
     values = {
         "dir": str(s.path),
         "expected_file": str(tmp_path / "operator" / "expected"),
-        "operator_uid": str(os.getuid()),
+        "operator_uid": "0",
         "backend_uid": str(os.getuid()),
         "worker_uid": str(os.getuid() + 1),
         "group_gid": str(os.getgid()),
@@ -79,6 +82,11 @@ async def host(effects, tmp_path, monkeypatch):
         loads.append(service)
         return HistoryMaterial(s.identity, KEY if service == "http" else None)
 
+    # The profile validates a distinct operator; this single-UID fixture owns
+    # its temporary POSIX files as the test user. Map only the store ownership
+    # to that known fixture, without relaxing configuration UID validation.
+    # Real operator/service filesystem separation remains a deployment gate.
+    monkeypatch.setattr(HistoryConfiguration, "ownership", property(lambda _: s.ownership))
     monkeypatch.setattr(runtime, "load_material", material)
     monkeypatch.setattr(database, "ContentEncryption", lambda _: s.tasks._enc)
     return SimpleNamespace(s=s, settings=value, loads=loads)

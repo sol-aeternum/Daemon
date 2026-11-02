@@ -1,6 +1,7 @@
 """Closed startup and ingress contracts; synthetic resources, no provisioning."""
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 import time
 from typing import Any, cast
@@ -70,6 +71,37 @@ def test_empty_selection_and_partial_selection_are_distinct():
 def test_config_profile_refuses_ambiguous_authority_or_paths(field, value):
     with pytest.raises(HistoryError):
         configured_history(selected(**{field: value}), "http")
+
+
+@pytest.mark.parametrize("service", ["http", "worker"])
+@pytest.mark.parametrize("operator_uid", ["1001", "1002"])
+def test_operator_service_uid_collision_refuses_before_io(monkeypatch, service, operator_uid):
+    monkeypatch.setattr("os.open", lambda *a, **kw: pytest.fail("collision started file I/O"))
+    value = selected(daemon_restore_history_operator_uid=operator_uid)
+    if service == "worker":
+        value.daemon_restore_history_key_file = None
+    with pytest.raises(HistoryError, match="history_configuration_required"):
+        configured_history(value, service)
+
+
+@pytest.mark.parametrize("operator_uid", [0, 1005])
+@pytest.mark.parametrize("service", ["http", "worker"])
+def test_root_or_distinct_operator_is_supported(operator_uid, service):
+    value = selected(daemon_restore_history_operator_uid=str(operator_uid))
+    if service == "worker":
+        value.daemon_restore_history_key_file = None
+    config = configured_history(value, service)
+    assert config is not None and config.operator_uid == operator_uid
+    assert len({config.operator_uid, config.backend_uid, config.worker_uid}) == 3
+
+
+@pytest.mark.parametrize("service", ["http", "worker"])
+def test_direct_profile_cannot_reintroduce_operator_service_collision(monkeypatch, service):
+    config = configured_history(selected(), "http")
+    assert config is not None
+    monkeypatch.setattr("os.open", lambda *a, **kw: pytest.fail("collision started file I/O"))
+    with pytest.raises(HistoryError, match="history_configuration_required"):
+        replace(config, operator_uid=config.backend_uid if service == "http" else config.worker_uid)
 
 
 def test_worker_never_loads_backend_key_even_when_common_profile_is_invalid(monkeypatch):

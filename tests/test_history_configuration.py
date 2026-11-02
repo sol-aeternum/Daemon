@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from orchestrator.config import Settings
 from orchestrator.services.restore_history import configuration
 from orchestrator.services.restore_history.model import HistoryError, Identity, canonical, key_check
 from tests.restore_history_support import HISTORY, KEY
@@ -203,3 +204,33 @@ def test_descriptor_close_failure_cannot_return_material_or_skip_other_closes(fi
     with pytest.raises(HistoryError, match="configuration_cleanup_uncertain"):
         secret(key, expected)
     assert key_closed and later_closed
+
+
+def test_owner_key_permissions_require_worker_uid_separation(files, monkeypatch):
+    folder, metadata, key, _ = files
+    worker_uid = os.geteuid()
+    history_gid = os.getegid()
+    key_gid = history_gid + 1
+    # Actual private fixture permissions give this UID owner read/write access;
+    # excluding a modeled service from the key group cannot remove owner access.
+    assert key.stat().st_uid == worker_uid
+    assert key.stat().st_mode & 0o777 == 0o640
+    with key.open("r+b") as stream:
+        assert stream.read() == KEY
+    value = Settings.model_construct(
+        daemon_restore_history_dir=str(folder / "history"),
+        daemon_restore_history_expected_file=str(metadata),
+        daemon_restore_history_operator_uid=str(worker_uid),
+        daemon_restore_history_backend_uid=str(worker_uid + 2),
+        daemon_restore_history_worker_uid=str(worker_uid),
+        daemon_restore_history_group_gid=str(history_gid),
+        daemon_restore_history_key_gid=str(key_gid),
+        daemon_restore_history_key_file=None,
+    )
+    monkeypatch.setattr(os, "getuid", lambda: worker_uid)
+    monkeypatch.setattr(os, "geteuid", lambda: worker_uid)
+    monkeypatch.setattr(os, "getegid", lambda: history_gid)
+    monkeypatch.setattr(os, "getgroups", lambda: [history_gid])
+    monkeypatch.setattr(os, "open", lambda *a, **kw: pytest.fail("collision started file I/O"))
+    with pytest.raises(HistoryError, match="history_configuration_required"):
+        configuration.configured_history(value, "worker")
