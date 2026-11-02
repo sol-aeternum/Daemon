@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import asynccontextmanager
 import copy
 from datetime import UTC, datetime, timedelta
@@ -10,8 +11,10 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, call as mock_call
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, Mock, call as mock_call
 
+import litellm
 import pytest
 
 from orchestrator.eval import bench_db, campaign_guard as guard, campaign_launch as launch
@@ -19,58 +22,254 @@ from orchestrator.eval import campaign_restore as restore, campaign_retry as ret
 from orchestrator.eval import campaign_v3 as v3, campaign_v3_pilot as pilot, fact_harness
 from orchestrator.eval import campaign_validation as validation
 from orchestrator.eval.campaign_layout import layout
-from tests.test_lme_campaign_guard import response, send
-from tests.test_lme_campaign_launch import qualified_artifacts
-from tests.test_lme_campaign_retry import call, fake_time, llm
-from tests.test_lme_campaign_v3_harness import completed_row
+from tests.test_lme_campaign_guard import response
+from tests.test_lme_campaign_retry import fake_time
+from tests.test_lme_campaign_v3_harness import FakeTransport
 from tests.test_lme_campaign_v3_pilot import approved as approved, write
+from tests.test_longmemeval_parity_harness import BenchRuntime
+
+Evidence = tuple[
+    list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]
+]
 
 
-def artifacts(arm="A0", corpus=None):
-    legacy, dataset, manifest, checkpoint, _ = qualified_artifacts()
-    rows = []
-    for entry, old in zip(dataset, legacy, strict=True):
-        entry["question"] = "fictional question " + entry["question_id"]
-        entry["question_date"] = "2023/05/02 (Tue) 10:00"
-        row = completed_row()
-        row.update(
-            question_id=entry["question_id"],
-            question=entry["question"],
-            reference=entry["answer"],
-            question_type=entry["question_type"],
-            category=old["category"],
-            official_majority=old["official_judgment"],
-            generic_strict_majority=old["judgment"],
+def synthetic_dataset():
+    types = list(validation.CATEGORY_MAP)
+    return [
+        {
+            "question_id": f"q{i}",
+            "question": f"fictional question q{i}",
+            "answer": "fixture",
+            "question_type": types[i % len(types)],
+            "question_date": "2023/05/02 (Tue) 10:00",
+            "haystack_session_ids": [f"fictional-session-{i}"],
+            "haystack_dates": ["2023/05/01 (Mon) 09:00"],
+            "haystack_sessions": [[{"role": "user", "content": "Fictional history: fixture."}]],
+        }
+        for i in range(50)
+    ]
+
+
+class PilotTransport(FakeTransport):
+    """Only retrieval/embedding and provider responses are synthetic, not result rows."""
+
+    async def complete(self, **kwargs):
+        campaign = guard.current_campaign()
+        assert campaign is not None
+        pending = copy.deepcopy(campaign.state["pending"])
+        self.calls.append(copy.deepcopy(kwargs))
+        self.pendings.append(pending)
+        index = int(pending["question_id"][1:])
+        flipped = pending["arm"] == "A1" and index == 0 and pending["sample"] == 1
+        correct = index < 30 and not flipped
+        stage = pending["stage"]
+        text = (
+            ("different fictional answer" if flipped else "fixture")
+            if stage == "answer"
+            else (
+                ("CORRECT" if correct else "INCORRECT")
+                if stage == "judge"
+                else ("yes" if correct else "no")
+            )
         )
-        for sample in row["samples"]:
-            sample.update(judgment=old["judgment"], official_judgment=old["official_judgment"])
-        rows.append(row)
-    if arm == "A1":
-        rows[0]["samples"][0].update(
-            judgment="incorrect",
-            official_judgment="incorrect",
-            hypothesis="different fictional answer",
+        result = response(stage)
+        result["choices"][0]["message"]["content"] = text
+        result["system_fingerprint"] = "fixture-" + stage
+        return result
+
+
+def install_runner_runtime(monkeypatch, state):
+    # Reuse the existing DB/account/attestation fakes, retaining the real _phase,
+    # manifest lifecycle, checkpoint loaders and evaluate/score implementations.
+    from cryptography.fernet import Fernet
+
+    printer = fact_harness.print_results
+    store, encryption = fact_harness.MemoryStore, fact_harness.ContentEncryption
+    runtime = BenchRuntime(monkeypatch, fingerprints=[{"sha256": state}], git_sha="control")
+    runtime.settings.daemon_encryption_key = Fernet.generate_key().decode()
+    monkeypatch.setattr(fact_harness, "print_results", printer)
+    monkeypatch.setattr(fact_harness, "MemoryStore", store)
+    monkeypatch.setattr(fact_harness, "ContentEncryption", encryption)
+    fake = PilotTransport(monkeypatch)
+    transport = AsyncMock(side_effect=fake.complete)
+    monkeypatch.setattr(litellm, "acompletion", transport)
+    return runtime, fake, transport
+
+
+def synthetic_ingest(directory, dataset_path, state):
+    """Supply a pre-existing synthetic ingest; never invent evaluate/score phases."""
+    directory.mkdir()
+    source = fact_harness.LongMemEvalFactRunner(
+        dataset_path=dataset_path,
+        output_path=directory / "results.jsonl",
+        checkpoint_path=directory / "checkpoint.json",
+        score_path=directory / "score.json",
+    )
+    checkpoint = source.load_checkpoint()
+    checkpoint["phases"]["ingest"]["results"] = {
+        fact_harness.ingest_result_key(stream.question_id, session.corpus_key): {
+            "question_id": stream.question_id,
+            "corpus_key": session.corpus_key,
+            "conversation_id": str(stream.user_id),
+            "status": "complete",
+        }
+        for stream in fact_harness.build_question_streams(json.loads(dataset_path.read_bytes()))
+        for session in stream.sessions
+    }
+    checkpoint["phases"]["ingest"]["state_fingerprint"] = {"sha256": state}
+    fact_harness.mark_phase_completed(checkpoint, "ingest", completed_count=50)
+    fact_harness.save_runner_checkpoint(source.checkpoint_path, checkpoint)
+    fact_harness.save_manifest(source.resolved_manifest_path(), source._new_manifest(checkpoint))
+    return source, checkpoint
+
+
+def persisted_artifacts(directory, dataset_path) -> Evidence:
+    return (
+        fact_harness.read_jsonl_records(directory / "longmemeval_results.jsonl", repair=False),
+        json.loads(dataset_path.read_bytes()),
+        json.loads((directory / "run_manifest.json").read_bytes()),
+        json.loads((directory / "longmemeval_checkpoint.json").read_bytes()),
+        json.loads((directory / "longmemeval_score.json").read_bytes()),
+    )
+
+
+@pytest.fixture(scope="module")
+def recorded_producer(tmp_path_factory):
+    """Generate once through real writers; negative tests mutate independent copies."""
+    root = tmp_path_factory.mktemp("v3-real-producer")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        install_runner_runtime(monkeypatch, validation.STATE_SHA256)
+        monkeypatch.setattr(fact_harness, "memory_formatter_identity", lambda: {"id": "control"})
+        dataset_path = root / "dataset.json"
+        write(dataset_path, synthetic_dataset())
+        snapshot = root / "snapshot"
+        snapshot.write_bytes(b"fictional corpus, never restored")
+        source, _ = synthetic_ingest(root / "source", dataset_path, validation.STATE_SHA256)
+        ids = tuple(row["question_id"] for row in synthetic_dataset())
+        plan = guard.CampaignPlan(
+            ids,
+            {
+                qid: {"embedding": 100, "answer": 500, "judge": 500, "official_judge": 500}
+                for qid in ids
+            },
+            {"source": "fictional producer regression"},
         )
-    # The B2b1 production summary paths, not a handwritten sampled manifest.
-    manifest["phases"]["evaluate"].update(fact_harness._v3_evaluate_summary(rows))
-    score = fact_harness.build_score_payload(rows, layout=layout("v3"))
-    manifest["phases"]["score"] = copy.deepcopy(score)
-    if corpus:
-        manifest["ingest_snapshot"]["sha256"] = corpus[0]
-        for key in ("state_fingerprint_start", "state_fingerprint_end"):
-            manifest["phases"]["evaluate"][key]["sha256"] = corpus[1]
-    return rows, dataset, manifest, checkpoint, score
+
+        async def produce(mode):
+            campaign = guard.Campaign(
+                root / ("campaign-" + mode),
+                plan,
+                lambda _: 1,
+                layout=layout(mode),
+                arms=("A0", "A1") if mode == "v3" else None,
+            )
+            directory = root / (mode + "-A0")
+            target = fact_harness.LongMemEvalFactRunner(
+                dataset_path=dataset_path,
+                output_path=directory / "longmemeval_results.jsonl",
+                checkpoint_path=directory / "longmemeval_checkpoint.json",
+                score_path=directory / "longmemeval_score.json",
+                from_ingest=source.checkpoint_path,
+                ingest_snapshot=snapshot,
+                force_retrieval_logging=True,
+            )
+            with campaign.activate():
+                campaign.database_pool = MagicMock(close=AsyncMock())
+                campaign.start_arm("A0", verified_pins=plan.pins, restore={"fixture": True})
+                await target.evaluate()
+                target.score()
+                campaign.finish_arm(qualification={"fixture": "real producer"})
+
+        async def produce_both():
+            await produce("v3")
+            await produce("legacy")
+
+        asyncio.run(produce_both())
+        return SimpleNamespace(
+            evidence=persisted_artifacts(root / "v3-A0", dataset_path),
+            legacy_evidence=persisted_artifacts(root / "legacy-A0", dataset_path),
+            dataset_sha256=validation.digest_file(dataset_path),
+            corpus=(validation.digest_file(snapshot), validation.STATE_SHA256),
+        )
 
 
-def test_qualification_accepts_b2b1_manifest_and_score():
-    evidence = artifacts()
+@pytest.fixture
+def producer_artifacts(recorded_producer, monkeypatch):
+    monkeypatch.setattr(pilot, "DEV_SHA256", recorded_producer.dataset_sha256)
+    monkeypatch.setattr(validation, "DEV_SHA256", recorded_producer.dataset_sha256)
+    return copy.deepcopy(recorded_producer)
+
+
+@pytest.mark.asyncio
+async def test_qualification_accepts_real_runner_manifest_and_score(execution):
+    p = execution.preparation
+    await launch.prepare(p.args)
+    await run(execution, "A0")
+    evidence = persisted_artifacts(Path(pilot.APPROVAL["directory"]) / "A0", launch.DEV)
     qualified = pilot.qualification(
-        *evidence, corpus=(validation.SNAPSHOT_SHA256, validation.STATE_SHA256)
+        *evidence, corpus=validation.expected_corpus(launch.load_plan(p.args.output).pins)
     )
     assert qualified["v3"] == v3.v3_summaries(evidence[0])
     assert qualified["v3"]["samples"]["judged"] == 150
     assert qualified["v3"]["majority"]["judged"] == 50
     assert qualified["extraction_failures"] == 0
+    assert execution.transport.await_count == 450
+    assert execution.retrieval.retrieval.await_count == 50
+    assert evidence[2]["phases"]["score"]["v3_summaries"] == evidence[4]["v3_summaries"]
+    assert evidence[2]["phases"]["score"]["score_sha256"] == validation.digest_file(
+        Path(pilot.APPROVAL["directory"]) / "A0/longmemeval_score.json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_legacy_score_phase_and_fresh_dispatch_are_byte_identical(tmp_path, monkeypatch):
+    install_runner_runtime(monkeypatch, validation.STATE_SHA256)
+    dataset_path = tmp_path / "dataset.json"
+    write(dataset_path, synthetic_dataset())
+    source, _ = synthetic_ingest(tmp_path / "source", dataset_path, validation.STATE_SHA256)
+
+    async def complete(**kwargs):
+        result = response("answer")
+        result["choices"][0]["message"]["content"] = (
+            "yes" if kwargs["max_tokens"] == 10 else "CORRECT"
+        )
+        return result
+
+    monkeypatch.setattr(litellm, "acompletion", complete)
+    monkeypatch.setattr(fact_harness, "utc_now_iso", lambda: "2026-11-02T00:00:00+00:00")
+    target = fact_harness.LongMemEvalFactRunner(
+        dataset_path=dataset_path,
+        output_path=tmp_path / "run/results.jsonl",
+        checkpoint_path=tmp_path / "run/checkpoint.json",
+        score_path=tmp_path / "run/score.json",
+        from_ingest=source.checkpoint_path,
+    )
+    await target.evaluate()
+    target.score()
+    legacy = json.loads(target.resolved_manifest_path().read_bytes())["phases"]["score"]
+    assert set(legacy) == {
+        "completed_at",
+        "score_path",
+        "score_sha256",
+        "strict_accuracy",
+        "baseline_qualified",
+        "result_count",
+        "error_count",
+        "dual_judgments",
+    }
+    # Fresh execution resolves the legacy layout. Inject only that score-time
+    # selector; do not fabricate either phase or grant fresh launch authority.
+    monkeypatch.setattr(
+        fact_harness,
+        "current_campaign",
+        lambda: SimpleNamespace(
+            layout=layout("legacy"), plan={"pins": {"fresh_campaign": {}}}, state={"arm": "A0"}
+        ),
+    )
+    target.score()
+    fresh = json.loads(target.resolved_manifest_path().read_bytes())["phases"]["score"]
+    assert guard._json(fresh) == guard._json(legacy)
+    assert "v3_summaries" not in fresh
 
 
 # Each unchanged manifest/checkpoint/artifact check has its own refusal and
@@ -126,7 +325,7 @@ COMMON_CORRUPTIONS = [
 @pytest.mark.parametrize(
     "name,index,path,value", COMMON_CORRUPTIONS, ids=[c[0] for c in COMMON_CORRUPTIONS]
 )
-def test_qualification_refusal_parity(name, index, path, value):
+def test_qualification_refusal_parity(name, index, path, value, producer_artifacts):
     reasons = {
         "score_errors": "Score errors",
         "artifact_errors": "Score errors",
@@ -155,7 +354,11 @@ def test_qualification_refusal_parity(name, index, path, value):
         "answer_fingerprint": "Provider fingerprints absent",
         "judge_fingerprint": "Provider fingerprints absent",
     }
-    for evidence, sampled in ((qualified_artifacts(), False), (artifacts(), True)):
+    cases: list[tuple[Evidence, bool]] = [
+        (producer_artifacts.legacy_evidence, False),
+        (producer_artifacts.evidence, True),
+    ]
+    for evidence, sampled in cases:
         target = evidence[index]
         for key in path[:-1]:
             target = target[key]
@@ -174,11 +377,9 @@ def test_qualification_refusal_parity(name, index, path, value):
         reason = summaries[name] if name in summaries else reasons[name]
         with pytest.raises(guard.CampaignStopped, match=reason):
             if sampled:
-                pilot.qualification(
-                    *evidence, corpus=(validation.SNAPSHOT_SHA256, validation.STATE_SHA256)
-                )
+                pilot.qualification(*evidence, corpus=producer_artifacts.corpus)
             else:
-                validation.qualification(*evidence)
+                validation.qualification(*evidence, corpus=producer_artifacts.corpus)
 
 
 @pytest.mark.parametrize(
@@ -189,21 +390,21 @@ def test_qualification_refusal_parity(name, index, path, value):
         (4, ("v3_summaries",)),
     ],
 )
-def test_v3_summary_refusals(index, path):
-    evidence = artifacts()
+def test_v3_summary_refusals(index, path, producer_artifacts):
+    evidence = producer_artifacts.evidence
     target = evidence[index]
     for key in path[:-1]:
         target = target[key]
     target[path[-1]] = {}
     with pytest.raises(guard.CampaignStopped, match="summary differs"):
-        pilot.qualification(*evidence, corpus=(validation.SNAPSHOT_SHA256, validation.STATE_SHA256))
+        pilot.qualification(*evidence, corpus=producer_artifacts.corpus)
 
 
 @pytest.mark.parametrize(
     "bad", ["sample_status", "sample_error", "coverage", "majority", "disagreement"]
 )
-def test_v3_row_level_refusals(bad):
-    evidence = artifacts()
+def test_v3_row_level_refusals(bad, producer_artifacts):
+    evidence = producer_artifacts.evidence
     rows = evidence[0]
     if bad == "sample_status":
         rows[0]["samples"][0]["official_judge_status"] = "failed"
@@ -228,7 +429,7 @@ def test_v3_row_level_refusals(bad):
         "disagreement": "Judge disagreement exceeds 20 percent",
     }[bad]
     with pytest.raises(guard.CampaignStopped, match=reason):
-        pilot.qualification(*evidence, corpus=(validation.SNAPSHOT_SHA256, validation.STATE_SHA256))
+        pilot.qualification(*evidence, corpus=producer_artifacts.corpus)
 
 
 class Connection:
@@ -249,7 +450,7 @@ class Connection:
 @pytest.fixture
 def preparation(approved, monkeypatch):
     root = approved.directory.parent
-    dataset = artifacts()[1]
+    dataset = synthetic_dataset()
     source = root / "source.json"
     write(source, {"baseline_qualified": True, "disqualifications": []})
     ingest = root / "ingest.json"
@@ -276,7 +477,7 @@ def preparation(approved, monkeypatch):
     monkeypatch.setattr(
         launch,
         "tokenizer",
-        lambda: (SimpleNamespace(name="o200k_base", encode_ordinary=list), "tokenizer"),
+        lambda: (SimpleNamespace(name="o200k_base", encode_ordinary=lambda _: [0]), "tokenizer"),
     )
     historical = {**approved.plan.pins["historical_remap"], "source_manifest": str(source)}
     monkeypatch.setattr(launch, "_historical_remap_pins", lambda _: historical)
@@ -830,14 +1031,34 @@ def execution(preparation, monkeypatch):
             return instant.astimezone(tz)
 
     monkeypatch.setattr(launch, "datetime", ReviewClock)
-    transport = llm(monkeypatch, [])
-
-    def reply(**_):
-        active = guard.current_campaign()
-        assert active is not None
-        return response(active.state["pending"]["stage"])
-
-    transport.side_effect = reply
+    runtime, retrieval, transport = install_runner_runtime(
+        monkeypatch, p.historical["state_sha256"]
+    )
+    root = p.args.output.parent
+    dataset_path = root / "dataset.json"
+    write(dataset_path, p.dataset)
+    dataset_sha256 = validation.digest_file(dataset_path)
+    monkeypatch.setattr(launch, "DEV", dataset_path)
+    monkeypatch.setattr(launch, "DEV_SHA256", dataset_sha256)
+    monkeypatch.setattr(pilot, "DEV_SHA256", dataset_sha256)
+    monkeypatch.setattr(validation, "DEV_SHA256", dataset_sha256)
+    p.cost["bindings"] = pilot.bindings("control", p.historical["lineage_sha256"], "tokenizer")
+    write(p.args.cost_preflight, p.cost)
+    source, original = synthetic_ingest(
+        root / "source-ingest", dataset_path, validation.STATE_SHA256
+    )
+    derived = copy.deepcopy(original)
+    derived["phases"]["ingest"]["state_fingerprint"] = {"sha256": p.historical["state_sha256"]}
+    derived["historical_remap"] = {
+        **{key: p.historical[key] for key in ("lineage_path", "lineage_sha256")},
+        "original_checkpoint_path": str(source.checkpoint_path),
+        "original_checkpoint_sha256": validation.digest_file(source.checkpoint_path),
+    }
+    fact_harness.save_runner_checkpoint(p.args.ingest, derived)
+    p.historical["source_manifest"] = str(source.resolved_manifest_path())
+    alternate_pin = root / "alternate-config-pin.json"
+    alternate_pin.write_bytes(fact_harness.BENCHMARK_CONFIG_PIN_PATH.read_bytes())
+    pool = MagicMock(close=AsyncMock())
     monkeypatch.setattr(launch, "checkout", Mock())
     monkeypatch.setattr(
         retry, "enabled", Mock(side_effect=AssertionError("No enabled() lookup on v3"))
@@ -873,51 +1094,14 @@ def execution(preparation, monkeypatch):
         }
         campaign.restored(arm, receipt)
         campaign.start_arm(arm, verified_pins=campaign.plan["pins"], restore=receipt)
+        campaign.database_pool = pool
+        if arm == "A1" and fault.get("compare"):
+            monkeypatch.setattr(fact_harness, "BENCHMARK_CONFIG_PIN_PATH", alternate_pin)
         yield
         completed.append(copy.deepcopy(campaign.state))
 
     monkeypatch.setattr(launch, "restored_pool", restored)
 
-    class Runner:
-        def __init__(self, **kwargs):
-            self.output_path: Path = kwargs["output_path"]
-            self.checkpoint_path: Path = kwargs["checkpoint_path"]
-            self.score_path: Path = kwargs["score_path"]
-            self.arm = self.output_path.parent.name
-            self.evidence = artifacts(
-                self.arm, (p.historical["snapshot_sha256"], p.historical["state_sha256"])
-            )
-
-        async def evaluate(self):
-            campaign = guard.current_campaign()
-            assert isinstance(campaign, guard.Campaign)
-            self.output_path.parent.mkdir()
-            for row in self.evidence[0]:
-                campaign.begin_question(row["question_id"])
-                send("embedding")
-                for stage, _ in campaign.layout.slots[1:]:
-                    await call(stage)
-                campaign.finish_question(row)
-            manifest = self.evidence[2]
-            manifest["git"].update(sha="control")
-            manifest["memory_formatter"] = {"id": "control"}
-            manifest["ingest_source"]["historical_remap"] = p.historical
-            manifest["config_pin"] = (
-                "different" if self.arm == "A1" and fault.get("compare") else "same"
-            )
-            manifest["routes"] = dict.fromkeys(
-                ("answer", "judge", "official_judge", "inference_policy", "model_routing"), "same"
-            )
-            write(self.output_path.parent / "run_manifest.json", manifest)
-            write(self.checkpoint_path, self.evidence[3])
-            self.output_path.write_text("\n".join(json.dumps(r) for r in self.evidence[0]) + "\n")
-            return self.evidence[0]
-
-        def score(self):
-            write(self.score_path, self.evidence[4])
-            return self.evidence[4]
-
-    monkeypatch.setattr(fact_harness, "LongMemEvalFactRunner", Runner)
     return SimpleNamespace(
         preparation=p,
         transport=transport,
@@ -926,6 +1110,9 @@ def execution(preparation, monkeypatch):
         completed=completed,
         fault=fault,
         comparator=comparator,
+        runtime=runtime,
+        retrieval=retrieval,
+        pool=pool,
     )
 
 
@@ -960,6 +1147,8 @@ async def test_real_guard_prepare_a0_a1_report_and_reopen(execution):
     assert len(state["qualifications"]) == 2 and state["final_reopen"] == "completed"
     assert execution.restores == ["A0", "A1"] and execution.factory.call_count == 2
     assert execution.transport.await_count == 900
+    assert execution.retrieval.retrieval.await_count == 100
+    assert execution.pool.close.await_count == 2
     assert [len(s["receipts"]) for s in execution.completed] == [500, 1000]
     report = json.loads((directory / "pilot-report.json").read_bytes())
     assert report["mode"] == "pilot" and report["rule"] == v3.RULE_V3
