@@ -95,6 +95,10 @@ class CampaignPlan:
     pins: Mapping[str, Any]
 
     def payload(self) -> dict[str, Any]:
+        if "v3_campaign" in self.pins:
+            from orchestrator.eval.campaign_v3_pilot import payload
+
+            return payload(self)
         if "fresh_campaign" in self.pins:
             from orchestrator.eval.campaign_fresh import payload
 
@@ -328,6 +332,10 @@ class Campaign:
             raise CampaignStopped("Campaign inactive/stopped; no automatic replay")
 
     def _recovery_check(self) -> dict[str, Any] | None:
+        if "v3_campaign" in self.plan["pins"]:
+            from orchestrator.eval.campaign_v3_pilot import verify
+
+            return verify(self.plan, self.directory)
         if "fresh_campaign" in self.plan["pins"]:
             from orchestrator.eval.campaign_fresh import verify
 
@@ -359,10 +367,14 @@ class Campaign:
     def activate(self) -> Iterator[Campaign]:
         if self._live or current_campaign() is not None:
             raise CampaignStopped("Nested campaign activation refused")
-        if self.layout.name == "v3":
-            from orchestrator.eval.campaign_retry import retry_capable
+        if "v3_campaign" in self.plan["pins"]:
+            from orchestrator.eval.campaign_v3_pilot import ARMS as PILOT_ARMS, validate_mode
 
-            if retry_capable(self) or any(
+            validate_mode(self.plan["pins"])
+            if self.layout.name != "v3" or self.arms != PILOT_ARMS:
+                raise CampaignStopped("V3 pilot requires explicit V3 layout and pilot arms")
+        if self.layout.name == "v3":
+            if any(
                 key in self.plan["pins"]
                 for key in (
                     "fresh_campaign",
@@ -373,6 +385,13 @@ class Campaign:
                 )
             ):
                 raise CampaignStopped("V3 cannot use legacy lineage or retry pins")
+            if "v3_campaign" not in self.plan["pins"]:
+                # Preserve B2b1's unbound test-injection safeguard. Production
+                # v3 uses only the exact pin/layout/arms admission above.
+                from orchestrator.eval.campaign_retry import retry_capable
+
+                if retry_capable(self):
+                    raise CampaignStopped("V3 cannot use unbound retry capability")
         # The shared sibling lock prevents parallel campaigns in this evidence root.
         # The operator pins this root for the benchmark, never a DB-restored path.
         parent = self.directory.parent.resolve(strict=True)
@@ -400,7 +419,9 @@ class Campaign:
                 ):
                     raise CampaignStopped("Only a clean completed-arm handoff may continue")
                 if inherited is not None:
-                    if "fresh_campaign" in self.plan["pins"]:
+                    if "v3_campaign" in self.plan["pins"]:
+                        from orchestrator.eval.campaign_v3_pilot import validate_handoff
+                    elif "fresh_campaign" in self.plan["pins"]:
                         from orchestrator.eval.campaign_fresh import validate_handoff
                     elif "final_verdict_recovery_lineage" in self.plan["pins"]:
                         from orchestrator.eval.campaign_final_verdict import validate_handoff
@@ -413,7 +434,11 @@ class Campaign:
                 self.state = saved
                 self.state["status"] = "running"
             else:
-                if "fresh_campaign" in self.plan["pins"]:
+                if "v3_campaign" in self.plan["pins"]:
+                    from orchestrator.eval.campaign_v3_pilot import claim
+
+                    claim(self.plan, self.directory)
+                elif "fresh_campaign" in self.plan["pins"]:
                     from orchestrator.eval.campaign_fresh import claim
 
                     claim(self.plan, self.directory)
@@ -434,7 +459,11 @@ class Campaign:
                 }
                 if self.layout.name == "v3":
                     self.state.update(layout="v3", arms=list(self.arms))
-                if "fresh_campaign" in self.plan["pins"]:
+                if "v3_campaign" in self.plan["pins"]:
+                    from orchestrator.eval.campaign_v3_pilot import initialize
+
+                    initialize(self.state)
+                elif "fresh_campaign" in self.plan["pins"]:
                     from orchestrator.eval.campaign_fresh import initialize
 
                     initialize(self.state)
@@ -465,7 +494,11 @@ class Campaign:
             self.state["status"] = (
                 "completed" if self.state["arm_index"] == len(self.arms) else "ready_next_arm"
             )
-            if "fresh_campaign" in self.plan["pins"]:
+            if "v3_campaign" in self.plan["pins"]:
+                from orchestrator.eval.campaign_v3_pilot import validate_handoff
+
+                validate_handoff(self.directory, self.state, inherited or {})
+            elif "fresh_campaign" in self.plan["pins"]:
                 from orchestrator.eval.campaign_fresh import validate_handoff
 
                 validate_handoff(self.directory, self.state, inherited or {})
@@ -491,7 +524,16 @@ class Campaign:
         """
         self._check()
         index = self.state["arm_index"]
-        if "fresh_campaign" in self.plan["pins"]:
+        if "v3_campaign" in self.plan["pins"]:
+            if (
+                self.state.get("restore_pending") is not None
+                or self.state.get("restore_attempts") != index + 1
+                or len(self.state.get("restore_receipts", [])) != index + 1
+                or len(self.state["restores"]) != index
+                or self.state["restore_receipts"][-1] != dict(restore)
+            ):
+                self.fail("V3 arm requires a new verified restore")
+        elif "fresh_campaign" in self.plan["pins"]:
             if (
                 self.state.get("restore_pending") is not None
                 or self.state.get("restore_attempts") != index + 1
@@ -522,7 +564,11 @@ class Campaign:
         self._check()
         try:
             self._recovery_check()  # Under sibling lock, immediately before mutation admission.
-            if "fresh_campaign" in self.plan["pins"]:
+            if "v3_campaign" in self.plan["pins"]:
+                from orchestrator.eval.campaign_v3_pilot import before_restore
+
+                before_restore(self)
+            elif "fresh_campaign" in self.plan["pins"]:
                 from orchestrator.eval.campaign_fresh import before_restore
 
                 before_restore(self)
@@ -543,8 +589,8 @@ class Campaign:
             index < offset
             or self.plan["prior_restore_attempts"] + index - offset + 1
             > self.plan["maximum_cumulative_restore_attempts"]
-            or index >= len(ARMS)
-            or ARMS[index] != arm
+            or index >= len(self.arms)
+            or self.arms[index] != arm
             or self.state["arm"] is not None
             or self.state.get("restore_pending") is not None
             or self.state.get("restore_attempts", 0) != index - offset
@@ -829,7 +875,11 @@ class Campaign:
     def finish_arm(self, *, qualification: Mapping[str, Any]) -> None:
         """Bind external full acceptance/manifest checks; never substitute for them."""
         self._check()
-        if "recovery_lineage" in self.plan["pins"]:
+        if "v3_campaign" in self.plan["pins"]:
+            from orchestrator.eval.campaign_v3_pilot import validate_completion
+
+            validate_completion(self)
+        elif "recovery_lineage" in self.plan["pins"]:
             index = self.state["arm_index"]
             if (
                 not 1 <= index < len(ARMS)

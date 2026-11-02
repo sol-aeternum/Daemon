@@ -253,6 +253,11 @@ def noted_dates_candidate_formatter(control: str, candidate: str) -> dict[str, A
 
 def acceptance_rule(pins: Mapping[str, Any]) -> str:
     """The ratified rule version a plan binds: v1 unless its fixed approval says otherwise."""
+    if "v3_campaign" in pins:
+        from orchestrator.eval.campaign_v3_pilot import APPROVAL, validate_mode
+
+        validate_mode(pins)
+        return APPROVAL["acceptance_rule"]
     return pins.get("fresh_campaign", {}).get("approval", {}).get("acceptance_rule", RULE_V1)
 
 
@@ -290,7 +295,12 @@ def formatter_exception(plan: CampaignPlan, arm: str) -> bool:
 
 
 def checkout(plan: CampaignPlan, arm: str) -> None:
-    if "fresh_campaign" in plan.pins:
+    if "v3_campaign" in plan.pins:
+        from orchestrator.eval.campaign_v3_pilot import APPROVAL, verify
+
+        require(arm in ("A0", "A1"), "V3 pilot executes only A0/A1")
+        verify(json.loads(json.dumps(plan.payload())), Path(APPROVAL["directory"]))
+    elif "fresh_campaign" in plan.pins:
         from orchestrator.eval.campaign_fresh import APPROVAL, verify
 
         verify(json.loads(json.dumps(plan.payload())), Path(APPROVAL["directory"]))
