@@ -81,12 +81,18 @@ def test_effect_staging_seams_allow_only_default_none_and_exact_uncalled_join(
     assert composition_violations({"orchestrator/main.py": joined})
 
 
-@pytest.mark.parametrize("method", ["_mark", "_cancel", "_complete"])
+@pytest.mark.parametrize("method", ["_mark", "_cancel", "_complete", "_write_partial"])
 def test_cleanup_scope_is_inside_exact_uncalled_effect_methods(method):
     source = f"async def {method}(self):\n async with retain_pool_cleanup():\n  pass"
     assert composition_violations({EFFECTS: source}) == []
     assert composition_violations({EFFECTS: source.replace(method, "activate")})
     assert composition_violations({"orchestrator/tasks/store.py": source})
+    assert composition_violations(
+        {EFFECTS: source.replace("retain_pool_cleanup()", "retain_pool_cleanup(extra=True)")}
+    )
+    assert composition_violations(
+        {EFFECTS: source.replace("retain_pool_cleanup()", "alias.retain_pool_cleanup()")}
+    )
 
 
 @pytest.mark.parametrize("symbol", ["HistoryProjection", "HistoryEffects"])
@@ -170,7 +176,7 @@ def unopened_effects():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["send", "stop"])
+@pytest.mark.parametrize("method", ["send", "stop", "partial", "complete"])
 @pytest.mark.parametrize("damage", ["pid", "loop", "blocked"])
 async def test_owner_refusal_precedes_invocation_callback_or_key_work(monkeypatch, method, damage):
     s = unopened_effects()
@@ -194,16 +200,33 @@ async def test_owner_refusal_precedes_invocation_callback_or_key_work(monkeypatc
             await s.effects.mark(
                 s.attempt, uuid4(), state, effect_kind="completion", deadline=time.monotonic() + 10
             )
-        else:
+        elif method == "stop":
             await s.effects.request_cancel(
                 s.account, s.task, key=KEY, deadline=time.monotonic() + 10
+            )
+        elif method == "partial":
+            await s.effects.write_partial(
+                s.task,
+                1,
+                binding=cast(Claim, None),
+                content="synthetic",
+                delta_seq=1,
+                deadline=time.monotonic() + 10,
+            )
+        else:
+            await s.effects.complete(
+                s.task,
+                1,
+                binding=cast(Claim, None),
+                content="synthetic",
+                deadline=time.monotonic() + 10,
             )
     assert calls == []
     assert s.history._executor is s.history._store is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["send", "stop", "complete"])
+@pytest.mark.parametrize("method", ["send", "stop", "partial", "complete"])
 async def test_public_entry_freezes_total_budget_before_callbacks_and_supervision(
     monkeypatch, method
 ):
@@ -226,6 +249,10 @@ async def test_public_entry_freezes_total_budget_before_callbacks_and_supervisio
         )
     elif method == "stop":
         await s.effects.request_cancel(s.account, s.task, key=KEY, deadline=limit)
+    elif method == "partial":
+        await s.effects.write_partial(
+            s.task, 1, binding=cast(Claim, None), content="synthetic", delta_seq=1, deadline=limit
+        )
     else:
         await s.effects.complete(
             s.task, 1, binding=cast(Claim, None), content="synthetic", deadline=limit

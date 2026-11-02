@@ -290,17 +290,65 @@ class HistoryEffects:
         _check_time(deadline)
         return result
 
+    async def write_partial(
+        self,
+        task: UUID,
+        epoch: int,
+        *,
+        binding: Claim,
+        content: str,
+        delta_seq: int,
+        deadline: float,
+    ) -> None:
+        """Guard native durable text publication, not live transport delivery."""
+        deadline = self._admission_deadline(deadline)
+        await self._run(
+            lambda limit: self._write_partial(task, epoch, binding, content, delta_seq, limit),
+            deadline,
+        )
+
+    async def _write_partial(
+        self, task: UUID, epoch: int, binding: Claim, content: str, delta_seq: int, deadline: float
+    ) -> None:
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            accepted = self._accepted(state, binding.origin.account_id, task)
+            if accepted.account_generation != binding.origin.generation:
+                raise HistoryError("effects_origin_refused")
+            self._no_stop(state, task)
+            # Preserve the original claim/account/lease/Stop fences and top-level
+            # COMMIT. The native body owns its transaction; no result readback.
+            await self._tasks.write_partial(
+                task, epoch, binding=binding, content=content, delta_seq=delta_seq
+            )
+            _check_time(deadline)
+        _check_time(deadline)
+
     async def complete(
-        self, task: UUID, epoch: int, *, binding: Claim, content: str, deadline: float
+        self,
+        task: UUID,
+        epoch: int,
+        *,
+        binding: Claim,
+        content: str,
+        deadline: float,
+        message_fields: dict[str, Any] | None = None,
     ) -> TaskStatus:
-        """Narrow terminal race fence; no streaming/artifact/output-history claim."""
+        """Native terminal text/fields under H; no artifact or transport install."""
         deadline = self._admission_deadline(deadline)
         return await self._run(
-            lambda limit: self._complete(task, epoch, binding, content, limit), deadline
+            lambda limit: self._complete(task, epoch, binding, content, message_fields, limit),
+            deadline,
         )
 
     async def _complete(
-        self, task: UUID, epoch: int, binding: Claim, content: str, deadline: float
+        self,
+        task: UUID,
+        epoch: int,
+        binding: Claim,
+        content: str,
+        message_fields: dict[str, Any] | None,
+        deadline: float,
     ) -> TaskStatus:
         async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
             state = await self._parity(operation, deadline)
@@ -308,7 +356,9 @@ class HistoryEffects:
             if accepted.account_generation != binding.origin.generation:
                 raise HistoryError("effects_origin_refused")
             self._no_stop(state, task)
-            result = await self._tasks.complete(task, epoch, content=content, binding=binding)
+            result = await self._tasks.complete(
+                task, epoch, content=content, message_fields=message_fields, binding=binding
+            )
             _check_time(deadline)
         _check_time(deadline)
         return result
