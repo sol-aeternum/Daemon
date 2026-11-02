@@ -716,6 +716,8 @@ async def prepare_v3_pilot(args: argparse.Namespace) -> None:
         pilot.verify(json.loads(json.dumps(payload)))
         require(not args.output.exists(), "Plan output already exists")
         write_pilot_evidence(args.output, payload)
+        # The published plan now references this script; it must never be removed.
+        created_script_directory = False
         print(
             json.dumps(
                 {
