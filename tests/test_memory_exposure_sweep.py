@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 import json
+import os
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from unittest.mock import Mock
 import uuid
@@ -159,13 +162,14 @@ def test_decide_gap_example_is_coverage_regression(cause):
 def test_decide_budget_precedes_coverage_and_none_comparison():
     rows = summaries()
     rows[10].update(cases_strict=4, cases_pre_budget=4)
-    rows[10]["coverage"]["q0"] = None
+    rows[10]["coverage"]["q0"] = 0.0
     rows[10]["coverage_causes"]["q0"] = "prefix_instability"
     rows[15].update(cases_pre_budget=4, target_budget_dropped=1)
     assert exposure.decide(rows)["outcome"] == "BUDGET_LIMITED"
     assert exposure.coverage_losses({"q": None}, {"q": None}) == []
-    assert exposure.coverage_losses({"q": None}, {"q": 0.0}) == ["q"]
-    assert exposure.coverage_losses({"q": 0.0}, {"q": None}) == ["q"]
+    for before, after in ((None, 0.0), (0.0, None)):
+        with pytest.raises(ValueError, match="availability changed"):
+            exposure.coverage_losses({"q": before}, {"q": after})
 
 
 def test_investigate_implies_every_rendered_count_below_four():
@@ -303,6 +307,7 @@ class FakePool:
         self.vector_limits = []
         self.retrievals = 0
         self.encryption = encryption
+        self.drop_prefix_user: uuid.UUID | None = None
         for entry in dataset:
             user = question_user_id(entry["question_id"])
             for pos in range(20):
@@ -343,7 +348,10 @@ class FakePool:
         if "AS similarity" in sql:
             self.retrievals += 1
             self.vector_limits.append(args[5])
-            return [row for row in self.rows if row["user_id"] == args[0]][: args[5]]
+            rows = [row for row in self.rows if row["user_id"] == args[0]]
+            if args[0] == self.drop_prefix_user and args[5] > 10:
+                rows = rows[1:]
+            return rows[: args[5]]
         if "FROM memories" in sql or "FROM entities" in sql:
             return []
         raise AssertionError(sql)
@@ -403,6 +411,7 @@ async def synthetic_inputs():
         dimensions=2,
         fingerprint=fp["sha256"],
         shas={"dataset": "a" * 64},
+        route_id="synthetic-selected-route",
     )
     return inputs, pool, MemoryStore(cast(asyncpg.Pool, pool), encryption)
 
@@ -527,7 +536,7 @@ def local_input_files(tmp_path, monkeypatch):
             ingest_result_key(entry["question_id"], build_corpus_key(entry["haystack_sessions"][0]))
         ] = {"conversation_id": str(uuid.uuid5(question_user_id(entry["question_id"]), "session"))}
     checkpoint = {"phases": {"ingest": {"results": results}}}
-    manifest = {"embedding": {"route_id": "synthetic-route"}}
+    manifest = {"embedding": {"route_id": "synthetic-selected-route"}}
     ingest = {
         "phases": {
             "ingest": {"memory_embeddings": {embedding_adapter.STORAGE_MODEL: {"memories": 1000}}}
@@ -581,6 +590,7 @@ def local_input_files(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setattr(sweep, "INDEX", index_path)
+    monkeypatch.setattr(sweep, "PHASE3B_INDEX_SHA256", sweep.digest_bytes(index_path.read_bytes()))
     monkeypatch.setattr(sweep, "CASES", paths["cases"])
     args = argparse.Namespace(
         **{name: paths[name] for name in paths if name != "cases"},
@@ -679,3 +689,311 @@ async def test_reports_all_four_outcomes_deterministic_and_pilot_matches(configu
     clean["decision"]["outcome"] = "BUDGET_LIMITED"
     with pytest.raises(ValueError, match="Saved decision"):
         sweep.render_report(clean, prior)
+
+
+def test_blank_l0_prefix_uses_exact_renderer_skip_rule():
+    frozen = memory(4, "frozen")
+    inputs = injection.MemoryContextInputs(
+        l0_memories=[memory(2, ""), memory(3, "\t\n "), frozen], retrieved=[memory(0)]
+    )
+    block = injection.render_memory_context(inputs)
+    assert [
+        row["id"] for row in exposure.rendered_memory_rows(inputs, block, require_complete=True)
+    ] == [frozen["id"], memory(0)["id"]]
+    result = exposure.measure(
+        inputs,
+        target_ids=[str(frozen["id"])],
+        gold_conversation_ids=[],
+        source_conversations={},
+        ranking=[],
+    )
+    assert result["target_exposed"] and result["budget_dropped"] == 0
+
+
+def test_unbounded_renderer_contract_mismatch_is_not_a_budget_drop(monkeypatch):
+    original = injection.render_memory_context
+
+    def changed_renderer(inputs, max_tokens=injection.DEFAULT_MAX_TOKENS):
+        return original(inputs, max_tokens=max_tokens).replace("- Fact:", "- NewLabel:")
+
+    monkeypatch.setattr(injection, "render_memory_context", changed_renderer)
+    with pytest.raises(ValueError, match="Renderer section contract"):
+        measure([memory(0)], targets=[str(memory(0)["id"])])
+
+
+def test_coverage_regression_smallest_k_with_different_rendered_counts():
+    rows = summaries()
+    rows[10].update(cases_strict=3, cases_pre_budget=3)
+    rows[15].update(cases_strict=4, cases_pre_budget=4)
+    rows[20].update(cases_strict=5, cases_pre_budget=5)
+    for k in (15, 20):
+        rows[k]["coverage"]["q0"] = 0.0
+        rows[k]["coverage_causes"]["q0"] = "prefix_instability"
+    assert exposure.decide(rows)["outcome"] == "COVERAGE_REGRESSION"
+    assert exposure.decide(rows)["k"] == 15
+
+
+def test_propose_15_precedes_coverage_loss_10():
+    rows = summaries()
+    for k in (10, 15):
+        rows[k].update(cases_strict=4, cases_pre_budget=4)
+    rows[10]["coverage"]["q0"] = 0.0
+    rows[10]["coverage_causes"]["q0"] = "prefix_instability"
+    assert exposure.decide(rows)["outcome"] == "PROPOSE_WIDTH_CAMPAIGN"
+    assert exposure.decide(rows)["k"] == 15
+
+
+@pytest.mark.parametrize("cause", [None, "unknown"])
+def test_missing_and_unknown_coverage_cause_raise_value_error(cause):
+    rows = summaries()
+    rows[10].update(cases_strict=4, cases_pre_budget=4)
+    rows[10]["coverage"]["q0"] = 0.0
+    if cause is not None:
+        rows[10]["coverage_causes"]["q0"] = cause
+    with pytest.raises(ValueError, match="attribution"):
+        exposure.decide(rows)
+
+
+def test_negative_budget_drop_rejected():
+    rows = summaries()
+    rows[10]["target_budget_dropped"] = -1
+    with pytest.raises(ValueError, match="Negative"):
+        exposure.decide(rows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["route", "fallback", "query_model", "storage_model", "effective_storage"]
+)
+async def test_embedding_context_mismatches_stop_before_retrieval(configured, monkeypatch, failure):
+    inputs, pool, store = await synthetic_inputs()
+    if failure == "route":
+        inputs.route_id = "different"
+    elif failure == "fallback":
+        monkeypatch.setattr(
+            sweep.embedding,
+            "get_configured_embedding_fallback_storage_models",
+            lambda: ("other-space",),
+        )
+    elif failure == "query_model":
+        inputs.model = "different-model"
+    elif failure == "storage_model":
+        inputs.storage_model = "different-space"
+    else:
+        monkeypatch.setattr(
+            sweep.embedding, "get_primary_embedding_storage_model", lambda: "different-space"
+        )
+    with pytest.raises(ValueError):
+        await sweep.sweep_snapshot(pool, store, inputs)
+    assert pool.retrievals == 0
+
+
+def test_output_roots_aliases_and_forbidden_targets(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(sweep, "ROOT", root)
+    with pytest.raises(ValueError, match="outside"):
+        sweep.validate_output_paths(root / "raw.json", tmp_path / "safe.json")
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    with pytest.raises(ValueError, match="outside"):
+        sweep.validate_output_paths(alias / "raw.json", tmp_path / "safe.json")
+    for sanitized, report in (
+        (root / ".git" / "bad.json", None),
+        (tmp_path / "safe.json", tmp_path / "holdout" / "bad.md"),
+    ):
+        with pytest.raises(ValueError, match="Forbidden"):
+            sweep.validate_output_paths(tmp_path / "raw.json", sanitized, report)
+
+
+def test_exclusive_outputs_are_private_at_creation_and_do_not_follow_symlinks(
+    tmp_path, monkeypatch
+):
+    original = os.open
+    opened = []
+
+    def checked_open(path, flags, mode=0o777):
+        assert flags == os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+        assert mode == 0o600
+        descriptor = original(path, flags, mode)
+        assert os.fstat(descriptor).st_mode & 0o777 == 0o600
+        opened.append(path)
+        return descriptor
+
+    monkeypatch.setattr(sweep.os, "open", checked_open)
+    raw, sanitized = tmp_path / "raw.json", tmp_path / "clean.json"
+    sweep.write_outputs(raw, sanitized, {"content": "fictional"}, {"id": "safe"})
+    assert opened == [raw, sanitized]
+    target = tmp_path / "target"
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(FileExistsError):
+        sweep.write_new_file(link, b"refused")
+    assert not target.exists()
+
+
+def test_index_pin_checked_before_deriving_other_paths(tmp_path, monkeypatch):
+    args = local_input_files(tmp_path, monkeypatch)
+    index = json.loads(sweep.INDEX.read_text())
+    index["arms"]["A1"]["dataset_sha256"] = "0" * 64
+    sweep.INDEX.write_text(json.dumps(index))
+    args.dataset = tmp_path / "does-not-exist"
+    with pytest.raises(ValueError, match="Input pin mismatch: index.json"):
+        sweep.prepare_inputs(args)
+
+
+def test_provider_guard_preserves_original_exception_and_adds_attempt_note():
+    original = RuntimeError("original failure")
+    with pytest.raises(RuntimeError) as caught:
+        with sweep.no_providers() as guard:
+            try:
+                guard.refuse()
+            except sweep.ProviderAccessDenied:
+                pass
+            raise original
+    assert caught.value is original
+    assert original.__notes__ == ["Forbidden provider/compute attempts: 1"]
+    with pytest.raises(sweep.ProviderAccessDenied, match="Nonzero"):
+        with sweep.no_providers() as guard:
+            try:
+                guard.refuse()
+            except sweep.ProviderAccessDenied:
+                pass
+
+
+def test_pilot_manifest_assumptions_verified_unverified_and_mismatch():
+    unknown = sweep.pilot_provenance(None, "model", "route")
+    assert all(
+        unknown[key] == "unverified"
+        for key in ("width_status", "historical_clock_status", "model_status", "route_status")
+    )
+    manifest = {
+        "max_memory_items": 5,
+        "historical_clock": True,
+        "embedding": {"model": "model", "route_id": "route"},
+    }
+    known = sweep.pilot_provenance(manifest, "model", "route")
+    assert all(
+        known[key] == "verified"
+        for key in ("width_status", "historical_clock_status", "model_status", "route_status")
+    )
+    manifest["max_memory_items"] = 10
+    assert sweep.pilot_provenance(manifest, "model", "route")["width_status"] == "mismatch"
+    assert (
+        sweep.pilot_provenance(
+            {"parity_exceptions": [sweep.HISTORICAL_MESSAGE_TIMESTAMPS]}, "model", "route"
+        )["historical_clock_status"]
+        == "verified"
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["PROPOSE_WIDTH_CAMPAIGN", "BUDGET_LIMITED", "COVERAGE_REGRESSION", "INVESTIGATE_RETRIEVAL"],
+)
+def test_full_script_path_writes_all_outputs_for_each_outcome(
+    tmp_path, monkeypatch, configured, outcome
+):
+    args = local_input_files(tmp_path, monkeypatch)
+    entries = dataset()
+    key = Fernet.generate_key().decode()
+    encryption = ContentEncryption(key)
+    pool = FakePool(entries, encryption)
+    for row in pool.logs:
+        row["query_embedding"] = json.dumps([1.0] + [0.0] * 1023)
+    cases = json.loads(sweep.CASES.read_text())
+    if outcome in {"BUDGET_LIMITED", "COVERAGE_REGRESSION"}:
+        position = "18" if outcome == "BUDGET_LIMITED" else "12"
+        for case in cases["cases"]:
+            case["source_memories"] = [
+                {"id": str(uuid.uuid5(question_user_id(case["question_id"]), position))}
+            ]
+        sweep.CASES.write_text(json.dumps(cases))
+    if outcome == "BUDGET_LIMITED":
+        for row in pool.rows:
+            row["content"] = encryption.encrypt("x" * 600)
+    elif outcome == "INVESTIGATE_RETRIEVAL":
+        targets = {case["source_memories"][0]["id"] for case in cases["cases"]}
+        for row in pool.rows:
+            if str(row["id"]) in targets:
+                row["similarity"] = -1.0
+    elif outcome == "COVERAGE_REGRESSION":
+        user = question_user_id(entries[10]["question_id"])
+        pool.drop_prefix_user = user
+        for row in pool.rows:
+            if row["user_id"] == user and row["id"] != uuid.uuid5(user, "0"):
+                row["source_conversation_id"] = uuid.uuid5(user, "other")
+    fp = asyncio.run(
+        fingerprint_benchmark_users(pool, [question_user_id(row["question_id"]) for row in entries])
+    )
+    index = json.loads(sweep.INDEX.read_text())
+    index["arms"]["A1"]["restore"]["fingerprint_sha256"] = fp["sha256"]
+    sweep.INDEX.write_text(json.dumps(index))
+    monkeypatch.setattr(sweep, "PHASE3B_INDEX_SHA256", sweep.digest_bytes(sweep.INDEX.read_bytes()))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/daemon_lme_bench_synthetic")
+    monkeypatch.setenv("DAEMON_ENCRYPTION_KEY", key)
+
+    class Connection:
+        closed = False
+
+        @asynccontextmanager
+        async def transaction(self, **kwargs):
+            assert kwargs == {"isolation": "repeatable_read", "readonly": True}
+            yield
+
+        async def fetch(self, *args):
+            return await pool.fetch(*args)
+
+        async def fetchrow(self, *args):
+            return await pool.fetchrow(*args)
+
+        async def fetchval(self, sql, *args):
+            return "on" if sql == "SHOW transaction_read_only" else await pool.fetchval(sql, *args)
+
+        async def close(self):
+            self.closed = True
+
+    connection = Connection()
+
+    async def connect(*args, **kwargs):
+        assert kwargs["server_settings"]["default_transaction_read_only"] == "on"
+        return connection
+
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    prior = tmp_path / "prior.json"
+    prior.write_text(
+        json.dumps(
+            {"zero_call_diagnostic": "synthetic prior", "v3_pilot": "synthetic failed pilot"}
+        )
+    )
+    raw, sanitized, report = tmp_path / "raw.json", tmp_path / "clean.json", tmp_path / "report.md"
+    argv = []
+    for name in (
+        "dataset",
+        "ingest_checkpoint",
+        "ingest_manifest",
+        "phase3b_manifest",
+        "pilot_results",
+    ):
+        argv.extend([f"--{name.replace('_', '-')}", str(getattr(args, name))])
+    argv.extend(
+        [
+            "--raw-out",
+            str(raw),
+            "--sanitized-out",
+            str(sanitized),
+            "--report-out",
+            str(report),
+            "--prior-evidence",
+            str(prior),
+        ]
+    )
+    assert sweep.main(argv) == 0
+    saved = json.loads(sanitized.read_text())
+    sweep.validate_sanitized(saved)
+    assert saved["decision"]["outcome"] == outcome
+    assert saved["raw_sha256"] == sweep.digest_bytes(raw.read_bytes())
+    assert saved["provider_calls"] == 0 and connection.closed
+    assert outcome in report.read_text() and "unverified" in report.read_text()
+    for path in (raw, sanitized, report):
+        assert path.stat().st_mode & 0o777 == 0o600

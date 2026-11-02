@@ -81,7 +81,7 @@ def distractor_counts(
 
 
 def rendered_memory_rows(
-    inputs: injection.MemoryContextInputs, block: str
+    inputs: injection.MemoryContextInputs, block: str, *, require_complete: bool = False
 ) -> list[dict[str, object]]:
     """Recover IDs from the actual renderer's prefix-only removal behaviour.
 
@@ -110,11 +110,27 @@ def rendered_memory_rows(
     eligible = [
         memory
         for memory in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]
-        if str(memory.get("content") or "").strip()
+        if injection._truncate_to_chars(
+            injection._normalize_content(memory.get("content")), injection.MAX_SINGLE_MEMORY_CHARS
+        )
     ]
-    if retrieved_count > len(eligible) or frozen_count > len(inputs.l0_memories):
+    eligible_l0 = [
+        memory
+        for memory in inputs.l0_memories
+        if injection._truncate_to_chars(
+            injection._normalize_content(memory.get("content")), injection.MAX_L0_CHARS
+        )
+    ]
+    if (
+        retrieved_count > len(eligible)
+        or frozen_count > len(eligible_l0)
+        or (
+            require_complete
+            and (retrieved_count != len(eligible) or frozen_count != len(eligible_l0))
+        )
+    ):
         raise ValueError("Renderer section contract changed")
-    return [*inputs.l0_memories[:frozen_count], *eligible[:retrieved_count]]
+    return [*eligible_l0[:frozen_count], *eligible[:retrieved_count]]
 
 
 def rendered_memory_texts(block: str) -> list[str]:
@@ -157,7 +173,7 @@ def measure(
     # A second render disables only the budget, retaining all formatter limits.
     # Thus blank content and normal width slicing are not called budget drops.
     unbounded = injection.render_memory_context(inputs, max_tokens=10**12)
-    pre_rows = rendered_memory_rows(inputs, unbounded)
+    pre_rows = rendered_memory_rows(inputs, unbounded, require_complete=True)
     pre_ids = [str(row["id"]) for row in pre_rows]
     dropped = [mid for mid in pre_ids if mid not in set(rendered)]
     retrieved_ids = [str(row["id"]) for row in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]]
@@ -200,9 +216,9 @@ def coverage_losses(
     losses = []
     for qid, before in baseline.items():
         after = current[qid]
-        if (before is None) != (after is None) or (
-            before is not None and after is not None and after < before
-        ):
+        if (before is None) != (after is None):
+            raise ValueError(f"Gold coverage availability changed with width: {qid}")
+        if before is not None and after is not None and after < before:
             losses.append(qid)
     return sorted(losses)
 
@@ -245,7 +261,7 @@ def decide(per_k_summary: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:
     for k in CANDIDATE_KS:
         row = per_k_summary[k]
         if row["cases_strict"] >= REQUIRED_CASES and row["target_budget_dropped"] == 0:
-            causes = {qid: row["coverage_causes"][qid] for qid in losses[k]}
+            causes = {qid: row.get("coverage_causes", {}).get(qid) for qid in losses[k]}
             if any(
                 cause not in {"prefix_instability", "non_target_budget_drop"}
                 for cause in causes.values()

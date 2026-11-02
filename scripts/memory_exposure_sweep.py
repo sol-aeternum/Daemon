@@ -37,7 +37,12 @@ from orchestrator.eval.bench_db import (
     fingerprint_benchmark_users,
     question_user_id,
 )
-from orchestrator.eval.fact_harness import build_corpus_key, ingest_result_key, question_as_of
+from orchestrator.eval.fact_harness import (
+    HISTORICAL_MESSAGE_TIMESTAMPS,
+    build_corpus_key,
+    ingest_result_key,
+    question_as_of,
+)
 from orchestrator.memory import embedding, embedding_adapter, injection, retrieval
 from orchestrator.memory.embedding import EmbeddingVectorResult
 from orchestrator.memory.encryption import ContentEncryption
@@ -46,6 +51,7 @@ from tests.longmemeval.evaluate import build_parity_memory_context
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = ROOT / "tests/benchmark_results/memory_phase3b_2026-11-01_evidence.json"
+PHASE3B_INDEX_SHA256 = "3fe6e32efc329719728ade67fc677dfe7195688f8afdb3b147b3cc31ebac3043"
 CASES = ROOT / "tests/benchmark_results/failure_triage_phase2_2026-10-28/cases.json"
 ABSTENTION_OVERREACH = ("f685340e_abs", "gpt4_93159ced_abs", "gpt4_372c3eed_abs")
 ABSTENTION_SOURCE = "tests/benchmark_results/failure_triage_phase2_2026-10-28.md:132"
@@ -105,7 +111,11 @@ def no_providers() -> Iterator[ProviderGuard]:
                 stack.enter_context(patch.object(module, name, guard.refuse))
         try:
             yield guard
-        finally:
+        except BaseException as error:
+            if guard.attempted_calls:
+                error.add_note(f"Forbidden provider/compute attempts: {guard.attempted_calls}")
+            raise
+        else:
             if guard.attempted_calls:
                 raise ProviderAccessDenied("Nonzero forbidden-call attempts")
 
@@ -215,7 +225,47 @@ class SweepInputs:
     dimensions: int
     fingerprint: str
     shas: dict[str, str]
+    route_id: str
     pilot_hashes: dict[str, str] = field(default_factory=dict)
+    pilot_provenance: dict[str, Any] = field(default_factory=dict)
+
+
+def pilot_provenance(
+    manifest: Mapping[str, Any] | None, model: str, route_id: str
+) -> dict[str, Any]:
+    """Explicit assumptions; verify only facts the pilot manifest actually exposes."""
+    manifest = manifest or {}
+    width = manifest.get(
+        "max_memory_items", manifest.get("memory_formatter", {}).get("max_memory_items")
+    )
+    historical = manifest.get("historical_clock")
+    if historical is None:
+        timing = next(
+            (
+                item
+                for item in manifest.get("parity_exceptions", [])
+                if item.get("id") == "message_timestamps"
+            ),
+            None,
+        )
+        if timing is not None:
+            historical = timing == HISTORICAL_MESSAGE_TIMESTAMPS
+    recorded = manifest.get("embedding", {})
+    recorded_model = recorded.get("model", recorded.get("query_embedding_model"))
+
+    def status(actual: Any, expected: Any) -> str:
+        return "unverified" if actual is None else "verified" if actual == expected else "mismatch"
+
+    return {
+        "assumed_width": exposure.BASELINE_K,
+        "width_status": status(width, exposure.BASELINE_K),
+        "assumed_historical_clock": True,
+        "historical_clock_status": status(historical, True),
+        "assumed_model": model,
+        "model_status": status(recorded_model, model),
+        "assumed_route_id": route_id,
+        "route_status": status(recorded.get("route_id"), route_id),
+    }
 
 
 def pilot_hashes(path: Path) -> dict[str, str]:
@@ -241,7 +291,7 @@ def pilot_hashes(path: Path) -> dict[str, str]:
 
 def prepare_inputs(args: argparse.Namespace) -> SweepInputs:
     """Local-only pin checks; no DB, settings, credentials or transport access."""
-    index = json.loads(_input_bytes(INDEX))
+    index = pinned_json(INDEX, PHASE3B_INDEX_SHA256)
     arm = index["arms"][args.phase3b_arm]
     manifest = pinned_json(args.phase3b_manifest, arm["artifacts_sha256"]["run_manifest.json"])
     ingest_manifest = pinned_json(args.ingest_manifest, index["pins"]["ingest_manifest_sha256"])
@@ -254,7 +304,8 @@ def prepare_inputs(args: argparse.Namespace) -> SweepInputs:
         raise ValueError("Unexpected dev question identities")
     # The selected adapter's model/storage identity is recorded in the pinned
     # ingest manifest; unlike legacy Settings.embedding_query_model, it describes
-    # actual dispatch. No live route matching or provider approval is performed.
+    # actual dispatch. Live retrieval must retain that selected space with no
+    # fallbacks; no provider approval/dispatch is performed by this diagnostic.
     spaces = ingest_manifest["phases"]["ingest"]["memory_embeddings"]
     if set(spaces) != {embedding_adapter.STORAGE_MODEL} or not manifest["embedding"]["route_id"]:
         raise ValueError("Unsupported or ambiguous pinned embedding identity")
@@ -284,6 +335,14 @@ def prepare_inputs(args: argparse.Namespace) -> SweepInputs:
             )
         }
         gold[qid] = [str(sessions[str(sid)]) for sid in entry.get("answer_session_ids", [])]
+    pilot_manifest_path = (
+        getattr(args, "pilot_manifest", None) or args.pilot_results.parent / "run_manifest.json"
+    )
+    pilot_manifest_bytes = (
+        _input_bytes(pilot_manifest_path) if pilot_manifest_path.exists() else None
+    )
+    if getattr(args, "pilot_manifest", None) and pilot_manifest_bytes is None:
+        raise ValueError("Explicit pilot manifest missing")
     return SweepInputs(
         dataset=dataset,
         targets=targets,
@@ -291,18 +350,45 @@ def prepare_inputs(args: argparse.Namespace) -> SweepInputs:
         model=embedding_adapter.MODEL,
         storage_model=embedding_adapter.STORAGE_MODEL,
         dimensions=embedding_adapter.DIMENSIONS,
+        route_id=manifest["embedding"]["route_id"],
         fingerprint=arm["restore"]["fingerprint_sha256"],
         shas={
-            "evidence_index": digest_bytes(_input_bytes(INDEX)),
+            "evidence_index": PHASE3B_INDEX_SHA256,
             "cases": digest_bytes(_input_bytes(CASES)),
             "dataset": arm["dataset_sha256"],
             "ingest_checkpoint": index["pins"]["ingest_checkpoint_sha256"],
             "ingest_manifest": index["pins"]["ingest_manifest_sha256"],
             "phase3b_manifest": arm["artifacts_sha256"]["run_manifest.json"],
             "pilot_results": digest_bytes(_input_bytes(args.pilot_results)),
+            **(
+                {"pilot_manifest": digest_bytes(pilot_manifest_bytes)}
+                if pilot_manifest_bytes is not None
+                else {}
+            ),
         },
         pilot_hashes=pilot_hashes(args.pilot_results),
+        pilot_provenance=pilot_provenance(
+            json.loads(pilot_manifest_bytes) if pilot_manifest_bytes is not None else None,
+            embedding_adapter.MODEL,
+            manifest["embedding"]["route_id"],
+        ),
     )
+
+
+def verify_embedding_context(inputs: SweepInputs) -> None:
+    """Fail closed before any retrieval; selected routes suppress fallback sends."""
+    route_id = embedding.get_selected_embedding_route_id()
+    if not inputs.route_id or route_id != inputs.route_id:
+        raise ValueError("Selected embedding route differs from Phase 3B")
+    if embedding.get_configured_embedding_fallback_storage_models() != ():
+        raise ValueError("Embedding fallback storage models must be empty")
+    if embedding_adapter.MODEL != inputs.model:
+        raise ValueError("Effective query embedding model differs from pinned/logged model")
+    if (
+        embedding.get_primary_embedding_storage_model() != inputs.storage_model
+        or inputs.storage_model != embedding_adapter.STORAGE_MODEL
+    ):
+        raise ValueError("Effective embedding storage space differs from pinned ingest space")
 
 
 async def sweep_snapshot(
@@ -311,6 +397,7 @@ async def sweep_snapshot(
     """All vectors and targets are verified before the first retrieval/output."""
     if injection.MAX_MEMORY_ITEMS != exposure.BASELINE_K:
         raise ValueError("MAX_MEMORY_ITEMS must start at 5")
+    verify_embedding_context(inputs)
     users = {row["question_id"]: question_user_id(row["question_id"]) for row in inputs.dataset}
     before = await fingerprint_benchmark_users(reader, list(users.values()))
     if before["sha256"] != inputs.fingerprint:
@@ -503,6 +590,8 @@ async def sweep_snapshot(
         "pilot_matches": sum(question["pilot_match"] is True for question in questions),
         "pilot_recoverable": sum(question["pilot_match"] is not None for question in questions),
         "pilot_total": len(questions),
+        "pilot_self_check": inputs.pilot_provenance
+        or pilot_provenance(None, inputs.model, inputs.route_id),
     }
     return {"questions": raw_questions}, sanitized
 
@@ -539,18 +628,35 @@ def write_outputs(
     data = (json.dumps(raw, indent=2, sort_keys=True, default=str, allow_nan=False) + "\n").encode()
     sanitized = {**sanitized, "raw_sha256": digest_bytes(data)}
     validate_sanitized(sanitized)
-    if (
-        raw_path.resolve() == sanitized_path.resolve()
-        or raw_path.exists()
-        or sanitized_path.exists()
-    ):
+    validate_output_paths(raw_path, sanitized_path)
+    write_new_file(raw_path, data)
+    write_new_file(
+        sanitized_path,
+        (json.dumps(sanitized, indent=2, sort_keys=True, allow_nan=False) + "\n").encode(),
+    )
+
+
+def validate_output_paths(
+    raw_path: Path, sanitized_path: Path, report_path: Path | None = None
+) -> None:
+    paths = [path for path in (raw_path, sanitized_path, report_path) if path is not None]
+    resolved = [path.resolve() for path in paths]
+    if resolved[0].is_relative_to(ROOT.resolve()):
+        raise ValueError("Raw output must be outside the git repository root")
+    if len(set(resolved)) != len(resolved):
         raise ValueError("Output paths must be distinct and new")
-    with raw_path.open("xb") as handle:
-        os.chmod(raw_path, 0o600)
+    for path, destination in zip(paths, resolved, strict=True):
+        if "holdout" in str(destination).casefold() or ".git" in destination.parts:
+            raise ValueError("Forbidden output destination")
+        if path.exists() or path.is_symlink():
+            raise ValueError("Output paths must be distinct and new")
+
+
+def write_new_file(path: Path, data: bytes) -> None:
+    """Exclusive, no-follow, owner-only creation: plaintext is never world-readable."""
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
         handle.write(data)
-    with sanitized_path.open("x", encoding="utf-8") as handle:
-        json.dump(sanitized, handle, indent=2, sort_keys=True, allow_nan=False)
-        handle.write("\n")
 
 
 def render_report(data: Mapping[str, Any], prior: Mapping[str, Any]) -> str:
@@ -633,6 +739,7 @@ def render_report(data: Mapping[str, Any], prior: Mapping[str, Any]) -> str:
             "## Prefix stability and pilot self-check",
             "",
             f"k=5 pilot block hash matches: {data['pilot_matches']}/{data['pilot_total']}; recoverable: {data['pilot_recoverable']}/{data['pilot_total']}. Mismatches are findings, not stops.",
+            f"Pilot comparison assumptions: width={data['pilot_self_check']['assumed_width']} ({data['pilot_self_check']['width_status']}); historical clock=True ({data['pilot_self_check']['historical_clock_status']}); model=`{data['pilot_self_check']['assumed_model']}` ({data['pilot_self_check']['model_status']}); route=`{data['pilot_self_check']['assumed_route_id']}` ({data['pilot_self_check']['route_status']}). Unverified means the pilot manifest does not expose the fact; hash equality alone is not provenance verification.",
             "",
             "| k | Stable top-5 /50 | Unstable IDs |",
             "|---|---|---|",
@@ -741,6 +848,11 @@ def parser() -> argparse.ArgumentParser:
     ):
         result.add_argument(f"--{name}", type=Path, required=True)
     result.add_argument("--phase3b-arm", choices=("A0", "A1"), default="A1")
+    result.add_argument(
+        "--pilot-manifest",
+        type=Path,
+        help="Defaults to run_manifest.json beside pilot results; absent facts remain unverified",
+    )
     result.add_argument("--dry-run", action="store_true")
     result.add_argument("--report-out", type=Path)
     result.add_argument(
@@ -753,9 +865,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if bool(args.report_out) != bool(args.prior_evidence):
         raise ValueError("Report and prior evidence arguments must be paired")
-    for path in (args.raw_out, args.sanitized_out, args.report_out):
-        if path is not None and path.exists():
-            raise ValueError("Outputs must not already exist")
+    validate_output_paths(args.raw_out, args.sanitized_out, args.report_out)
     inputs = prepare_inputs(args)
     if args.dry_run:
         print("Dry-run: input pins verified; no DB/provider access or output")
@@ -768,8 +878,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.report_out:
         saved = json.loads(args.sanitized_out.read_text())
         prior = json.loads(_input_bytes(args.prior_evidence))
-        with args.report_out.open("x", encoding="utf-8") as handle:
-            handle.write(render_report(saved, prior))
+        write_new_file(args.report_out, render_report(saved, prior).encode())
     print(
         f"Completed: zero provider calls; pilot matches {sanitized['pilot_matches']}/50; {sanitized['decision']['outcome']}"
     )
