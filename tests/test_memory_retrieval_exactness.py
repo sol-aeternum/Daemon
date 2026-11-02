@@ -213,14 +213,17 @@ def test_baseline_is_not_a_candidate_and_invalid_decision_inputs_fail_closed():
 
 
 class FakeConnection(synthetic.FakePool):
-    def __init__(self, dataset, encryption, probes=1):
+    def __init__(self, dataset, encryption, probes=1, *, probes_before_load: str | None = None):
         super().__init__(dataset, encryption)
         self.settings = {
-            "ivfflat.probes": str(probes),
+            "ivfflat.probes": probes_before_load if probes_before_load is not None else str(probes),
             **{name: "on" for name in audit.ENABLE_SETTINGS},
         }
         self.in_transaction = False
         self.statements = []
+        self.probe_reads = []
+        self.vector_loaded = False
+        self.probes_before_load = probes_before_load
         self.bm25_limits = []
         self.closed = False
         self.force_bad_exact_plan = False
@@ -312,10 +315,26 @@ class FakeConnection(synthetic.FakePool):
 
     async def fetchval(self, sql, *args) -> Any:
         assert self.in_transaction
+        self.probe_reads.append(sql)
         if sql == "SHOW transaction_read_only":
             return "on"
         if sql == "SHOW transaction_isolation":
             return "repeatable read"
+        if sql == "SELECT current_setting('ivfflat.probes', true)":
+            return (
+                self.settings["ivfflat.probes"] if self.vector_loaded else self.probes_before_load
+            )
+        if sql == "SELECT NULL::vector":
+            if not self.vector_loaded and self.probes_before_load is not None:
+                self.settings["ivfflat.probes"] = self.probes_before_load
+            self.vector_loaded = True
+            return None
+        if sql == "SHOW ivfflat.probes" and not self.vector_loaded:
+            if self.probes_before_load is None:
+                raise asyncpg.UndefinedObjectError(
+                    'unrecognized configuration parameter "ivfflat.probes"'
+                )
+            return self.probes_before_load
         if sql.startswith("SHOW "):
             return self.settings[sql.removeprefix("SHOW ")]
         if "FROM pg_extension" in sql:
@@ -605,6 +624,9 @@ async def test_full_audit_production_path_baseline_grid_components_reports_and_z
             git_sha="b" * 40,
             raw_sha256="c" * 64,
             connection_recipes={"campaign": {"recipe_only": True}},
+            connection_probe_details={
+                name: controls.probe_details() for name in ("harness", "campaign", "sweep")
+            },
         )
         report = audit.render_report(clean)
         assert report == audit.render_report(clean)
@@ -621,6 +643,7 @@ async def test_full_audit_production_path_baseline_grid_components_reports_and_z
             "Measured questions",
             "own plausible support independently measures",
             "Empty retrievals",
+            '"probes_before_load": null',
         ):
             assert section in report
         sweep.validate_sanitized(clean)
@@ -671,7 +694,11 @@ async def test_live_connection_recipes_are_source_equivalent_without_campaign_si
 ):
     inputs, _, _ = await synthetic.synthetic_inputs()
     encryption = ContentEncryption(Fernet.generate_key().decode())
-    connections = [FakeConnection(inputs.dataset, encryption, probes) for probes in (1, 10, 2)]
+    connections = [
+        FakeConnection(inputs.dataset, encryption),
+        FakeConnection(inputs.dataset, encryption, 10, probes_before_load="10"),
+        FakeConnection(inputs.dataset, encryption, 2),
+    ]
     pool_calls, connect_calls = [], []
 
     class Pool:
@@ -713,7 +740,7 @@ async def test_live_connection_recipes_are_source_equivalent_without_campaign_si
     monkeypatch.setattr(asyncpg, "create_pool", create_pool)
     monkeypatch.setattr(asyncpg, "connect", connect)
     monkeypatch.setattr(audit, "audit_snapshot", fake_audit)
-    _, clean = await audit.run_live(inputs, concurrency=3)
+    raw, clean = await audit.run_live(inputs, concurrency=3)
     assert pool_calls == [
         ((), {"dsn": dsn, "min_size": 2, "max_size": 14}),
         (
@@ -741,6 +768,15 @@ async def test_live_connection_recipes_are_source_equivalent_without_campaign_si
         )
     ]
     assert clean["connection_recipes"]["campaign"]["recipe_only"]
+    assert (
+        raw["connection_probe_details"]
+        == clean["connection_probe_details"]
+        == {
+            "harness": {"probes_before_load": None, "probes": 1},
+            "campaign": {"probes_before_load": "10", "probes": 10},
+            "sweep": {"probes_before_load": None, "probes": 2},
+        }
+    )
     assert all(connection.closed and not connection.statements for connection in connections)
 
 
@@ -954,7 +990,14 @@ async def test_nonbaseline_empty_candidates_are_recorded_and_reported(configured
         empty = question["configs"][rules.Configuration(25, "harness", 10).key]
         assert empty["empty_retrieval"] and empty["retrieved_ids"] == []
         assert empty["distractors"] is None
-        clean.update(git_sha="b" * 40, raw_sha256="c" * 64, connection_recipes={})
+        clean.update(
+            git_sha="b" * 40,
+            raw_sha256="c" * 64,
+            connection_recipes={},
+            connection_probe_details={
+                name: controls.probe_details() for name in ("harness", "campaign", "sweep")
+            },
+        )
         report = audit.render_report(clean)
         assert "Empty retrievals" in report
         for key, summary in clean["summaries"].items():
@@ -1053,3 +1096,42 @@ def test_missing_ranks_consumes_real_exposure_measure_target_schema():
     metrics["targets"][mids[1]].pop("rendered")
     with pytest.raises(KeyError, match="rendered"):
         audit.missing_ranks(questions, {"q": mids}, rankings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_load,effective", [(None, 1), ("10", 10)])
+async def test_lazy_pgvector_probe_load_and_readonly_statement_allowlist(pre_load, effective):
+    encryption = ContentEncryption(Fernet.generate_key().decode())
+    connection = FakeConnection([], encryption, probes_before_load=pre_load)
+    async with connection.transaction(isolation="repeatable_read", readonly=True):
+        if pre_load is None:
+            with pytest.raises(asyncpg.UndefinedObjectError):
+                await connection.fetchval("SHOW ivfflat.probes")
+        else:
+            assert await connection.fetchval("SHOW ivfflat.probes") == "10"
+    assert not connection.vector_loaded
+    connection.probe_reads.clear()
+    async with audit.readonly_snapshot(connection) as controls:
+        assert controls.probes_before_load == pre_load
+        assert controls.probes == controls.original_probes == effective
+        assert controls.probe_details() == {"probes_before_load": pre_load, "probes": effective}
+        sweep.validate_sanitized(controls.probe_details())
+        assert connection.vector_loaded
+        # Every read in this narrowly scoped probe is explicitly allowlisted;
+        # the type-load no-op is a read, never a settings statement.
+        allowlisted_reads = [
+            "SHOW transaction_read_only",
+            "SHOW transaction_isolation",
+            "SELECT current_setting('ivfflat.probes', true)",
+            "SELECT NULL::vector",
+            "SHOW ivfflat.probes",
+            *(f"SHOW {name}" for name in audit.ENABLE_SETTINGS),
+        ]
+        assert connection.probe_reads == allowlisted_reads
+        async with controls.mode("probes10"):
+            assert connection.settings["ivfflat.probes"] == "10"
+        assert connection.settings["ivfflat.probes"] == str(effective)
+        assert controls.probes_before_load == pre_load
+        assert controls.statements == connection.statements
+        assert all(sql.startswith("SET LOCAL ") for sql in controls.statements)
+        assert "SELECT NULL::vector" not in controls.statements

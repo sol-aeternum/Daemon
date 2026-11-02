@@ -95,13 +95,24 @@ class RecordingReader(sweep.SnapshotReader):
 class LocalSettings:
     """Only allowlisted SET LOCAL statements, inside a verified RO/RR scope."""
 
-    def __init__(self, connection: Any, originals: dict[str, str], probes: int):
+    def __init__(
+        self,
+        connection: Any,
+        originals: dict[str, str],
+        probes: int,
+        *,
+        probes_before_load: str | None,
+    ):
         self.connection = connection
         self.originals = originals
         self.probes = probes
         self.original_probes = probes
+        self.probes_before_load = probes_before_load
         self.active = True
         self.statements: list[str] = []
+
+    def probe_details(self) -> dict[str, Any]:
+        return {"probes_before_load": self.probes_before_load, "probes": self.original_probes}
 
     async def set_local(self, name: str, value: int | str) -> None:
         if not self.active:
@@ -154,11 +165,17 @@ async def readonly_snapshot(connection: Any) -> AsyncIterator[LocalSettings]:
             or await connection.fetchval("SHOW transaction_isolation") != "repeatable read"
         ):
             raise ValueError("Require read-only repeatable-read transaction")
+        pre_load = await connection.fetchval("SELECT current_setting('ivfflat.probes', true)")
+        if pre_load is not None and not isinstance(pre_load, str):
+            raise ValueError("Invalid pre-load probes setting")
+        # GUC registration is backend-local and lazy. Preserve any custom
+        # placeholder before loading the type; do not set a value to load it.
+        await connection.fetchval("SELECT NULL::vector")
         probes = int(await connection.fetchval("SHOW ivfflat.probes"))
         originals = {
             name: str(await connection.fetchval(f"SHOW {name}")) for name in ENABLE_SETTINGS
         }
-        controls = LocalSettings(connection, originals, probes)
+        controls = LocalSettings(connection, originals, probes, probes_before_load=pre_load)
         try:
             yield controls
         finally:
@@ -818,11 +835,11 @@ async def audit_snapshot(
     return raw, clean
 
 
-async def connection_probe(pool: Any) -> int:
+async def connection_probe(pool: Any) -> dict[str, Any]:
     try:
         async with pool.acquire() as connection:
             async with readonly_snapshot(connection) as controls:
-                return controls.probes
+                return controls.probe_details()
     finally:
         await pool.close()
 
@@ -862,16 +879,19 @@ async def run_live(
         )
         try:
             async with readonly_snapshot(connection) as controls:
-                probes = {
+                probe_details = {
                     "harness": harness_probes,
                     "campaign": campaign_probes,
-                    "sweep": controls.probes,
+                    "sweep": controls.probe_details(),
                 }
+                probes = {name: details["probes"] for name, details in probe_details.items()}
                 reader = RecordingReader(connection)
                 store = MemoryStore(
                     cast(asyncpg.Pool, reader), ContentEncryption(settings.daemon_encryption_key)
                 )
                 raw, clean = await audit_snapshot(reader, store, inputs, controls, probes)
+                raw["connection_probe_details"] = probe_details
+                clean["connection_probe_details"] = probe_details
                 clean["connection_recipes"] = {
                     "harness": {
                         "min_size": 2,
@@ -917,6 +937,7 @@ def render_report(data: Mapping[str, Any]) -> str:
         "Diagnostic only; not a candidate or campaign authorization. Zero provider calls and cost.",
         "No restore, admission, DDL, ANALYZE or session SET. Settings use SET LOCAL within read-only repeatable-read transactions.",
         "The three connection recipes are sampled serially. The campaign recipe is reproduced without invoking campaign restore/admission.",
+        "Each connection records current_setting('ivfflat.probes', true) before loading pgvector: None means the setting was not yet registered or set. SELECT NULL::vector then loads the backend-local library without a write or DDL; the subsequent SHOW records effective probes. Decisions and SET LOCAL restores use that effective integer, not the pre-load placeholder.",
         "Fingerprint equality inside one snapshot does not detect concurrent commits outside that snapshot.",
         f"Git: `{data['git_sha']}`. Raw SHA256: `{data['raw_sha256']}`.",
         f"Fingerprint before: `{data['fingerprint_before']}`; after: `{data['fingerprint_after']}`.",
@@ -937,6 +958,7 @@ def render_report(data: Mapping[str, Any]) -> str:
     ]
     for key in (
         "connection_probes",
+        "connection_probe_details",
         "connection_recipes",
         "execution_facts",
         "plans",
