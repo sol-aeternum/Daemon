@@ -181,11 +181,16 @@ async def test_missing_projection_refuses_before_native_partial(effects, monkeyp
     elif kind == "stop":
         await s.effects.request_cancel(s.account, s.claim.task_id, key=KEY, deadline=deadline())
     # Owned fixture owner models an older SQL snapshot; immutable guards restored.
-    s.db.sql(
-        "ALTER TABLE task_history_projection DISABLE TRIGGER task_history_projection_immutable; "
-        "DELETE FROM task_history_projection WHERE seq=" + ("1" if kind == "accept" else "2") + "; "
-        "ALTER TABLE task_history_projection ENABLE TRIGGER task_history_projection_immutable;"
-    )
+    async with s.db.connection() as conn, conn.transaction():
+        await conn.execute(
+            "ALTER TABLE task_history_projection DISABLE TRIGGER task_history_projection_immutable"
+        )
+        await conn.execute(
+            "DELETE FROM task_history_projection WHERE seq=$1", 1 if kind == "accept" else 2
+        )
+        await conn.execute(
+            "ALTER TABLE task_history_projection ENABLE TRIGGER task_history_projection_immutable"
+        )
 
     async def forbidden(*args, **kwargs):
         pytest.fail("missing H projection reached native output")
