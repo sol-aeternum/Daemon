@@ -110,3 +110,11 @@ separate draft; seeded refund setup does not claim debit passed on this branch.
 This is partial qualification: full retention/GC, attestation insertion/negative
 sequence cases, device-revoke routes and operational restore remain outstanding.
 The existing independent-dispatch/restore and #477 gates are not waived.
+
+## Selected H observation-only host
+
+[H startup](RESTORE_HISTORY_RUNTIME.md) now wraps paired qualification with
+independent H/W identity and parity checks before native recovery writes, and
+retains actual pool reset completion. Selected workers deliberately refuse
+startup after qualification: the observation-only backend is not execution
+readiness. Unselected services must prove H schema absence before recovery.

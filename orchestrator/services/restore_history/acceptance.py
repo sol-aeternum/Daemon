@@ -1,4 +1,4 @@
-"""Uncalled current-connection qualification for the H1 SQL source candidate.
+"""Current-connection qualification for H1 protected projections.
 
 No pool, transaction, history lock, filesystem work or runtime admission is owned
 here. Results are staged/observed metadata only, never native COMMIT acknowledgement,

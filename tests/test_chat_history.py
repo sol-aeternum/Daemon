@@ -91,6 +91,8 @@ def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
                 mocked.return_value = []
         mock_store.get_entity_by_lookup_key.return_value = None
     app_state = MagicMock(spec=AppState)
+    app_state.history_runtime = None
+    app_state.settings = get_settings()
     app_state.memory_store = mock_store
     app_state.redis = None
     app_state.db_pool = object()

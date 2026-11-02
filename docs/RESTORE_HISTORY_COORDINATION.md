@@ -1,11 +1,15 @@
-# H1 operation and asynchronous ownership — uncalled source slice
+# H1 operation and asynchronous ownership
 
-Owner-approved source and synthetic-test boundary only. No runtime import,
-construction, configuration, startup hook, native acceptance/send/Stop/output
-change, database transaction, migration, provisioning or activation is installed.
+Owner-approved ownership boundary. Mutating acceptance/send/Stop/output joins
+remain uncalled; the separately approved observation-only host installs reads
+and startup/shutdown ownership only. No live provisioning or activation.
 The rollout tracker remains #477; this slice does not establish its readiness.
 The separately approved [uncalled acceptance composition](RESTORE_HISTORY_COMPOSITION.md)
 uses these owners without installing any production host.
+
+The later [observation-only startup](RESTORE_HISTORY_RUNTIME.md) installs a
+read-only host. Its explicit read-owner renewal exception never clears or
+replaces a blocked mutating coordinator. No mutating runtime is activated.
 
 ## Ordering and resource ownership
 

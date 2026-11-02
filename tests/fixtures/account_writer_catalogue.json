@@ -5676,7 +5676,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Imported native W role SELECT is outside cross-module SQL resolution. Uncalled acceptance projection candidate only; no runtime content fence or restore readiness."
+      "rationale": "Imported native W role SELECT is outside cross-module SQL resolution. Projection preflight used by later observation-only startup/reads; mutation joins remain unactivated; no runtime content fence or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5687,7 +5687,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5698,7 +5698,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5709,7 +5709,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5720,7 +5720,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5731,7 +5731,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5742,7 +5742,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5753,7 +5753,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5764,7 +5764,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5775,7 +5775,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.restore_history.store",
@@ -5786,7 +5786,7 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Uncalled H1 prototype; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
+      "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
       "owner_source": "orchestrator.services.web_snapshots",
@@ -7602,6 +7602,105 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Pure string replacement of fixed SQL catalog source; conservative scanner treats replace as a filesystem candidate. No filesystem access or runtime activation."
+    },
+    {
+      "owner_source": "orchestrator.db",
+      "qualname": "init_app_state",
+      "kind": "filesystem_write",
+      "fingerprint": "ad5c74add4f09bc7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.configuration",
+      "qualname": "_close",
+      "kind": "filesystem_write",
+      "fingerprint": "10d2948714ba3b32",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.configuration",
+      "qualname": "_parent",
+      "kind": "filesystem_write",
+      "fingerprint": "2be5d36637db25ee",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.configuration",
+      "qualname": "_parent",
+      "kind": "filesystem_write",
+      "fingerprint": "90642d86bb974d86",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.configuration",
+      "qualname": "_read",
+      "kind": "filesystem_write",
+      "fingerprint": "f241e33faa221297",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.read_supervisor",
+      "qualname": "HistoryReadSupervisor._prepare",
+      "kind": "filesystem_write",
+      "fingerprint": "9edb18dfb032f911",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.runtime",
+      "qualname": "HistoryRuntime.install_reader",
+      "kind": "filesystem_write",
+      "fingerprint": "488646700096ac42",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.runtime",
+      "qualname": "HistoryRuntime.open",
+      "kind": "filesystem_write",
+      "fingerprint": "01fa74d5e4c9bcc5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.worker.worker",
+      "qualname": "on_startup",
+      "kind": "filesystem_write",
+      "fingerprint": "3f8544aa3ac38541",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
     }
   ]
 }

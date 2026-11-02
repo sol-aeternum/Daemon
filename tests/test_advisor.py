@@ -246,6 +246,8 @@ async def test_advisor_cycle_coding_domain_emits_advisor_start_and_end(
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -349,6 +351,8 @@ async def test_advisor_cycle_graphics_domain(client: AsyncClient, monkeypatch):
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -450,6 +454,8 @@ async def test_advisor_cycle_reasoning_domain(client: AsyncClient, monkeypatch):
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -551,6 +557,8 @@ async def test_advisor_cycle_research_domain(client: AsyncClient, monkeypatch):
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -652,6 +660,8 @@ async def test_advisor_cycle_general_domain(client: AsyncClient, monkeypatch):
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -713,6 +723,8 @@ async def test_advisor_budget_exhausted_returns_budget_exhausted_status(
 
     mock_store = _FakeMemoryStore(advisor_call_count=10)  # Already at limit
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -812,6 +824,8 @@ async def test_advisor_timeout_handling_graceful_degradation(client: AsyncClient
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -899,6 +913,8 @@ async def test_advisor_graceful_degradation_on_nested_error(client: AsyncClient,
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -1038,6 +1054,8 @@ async def test_advisor_depth_cap_rejected_when_already_in_advisor_scope(
 
     mock_store = _FakeMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -1140,6 +1158,8 @@ async def test_failed_advisor_call_does_not_increment_budget(client: AsyncClient
     from orchestrator import daemon as daemon_module
 
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = budget_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -1232,6 +1252,8 @@ async def test_timeout_advisor_call_does_not_increment_budget(client: AsyncClien
 
     budget_store = TrackingMemoryStore(advisor_call_count=0)
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = budget_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -1355,6 +1377,8 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
 
     mock_store = TrackingMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state
@@ -1513,6 +1537,8 @@ async def test_advisor_trace_stored_with_message_not_in_context(client: AsyncCli
 
     mock_store = CaptureMemoryStore()
     mock_app_state = MagicMock()
+    mock_app_state.history_runtime = None
+    mock_app_state.settings = get_settings()
     mock_app_state.memory_store = mock_store
     mock_app_state.redis = None
     app.state.app_state = mock_app_state

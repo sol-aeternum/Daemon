@@ -59,6 +59,7 @@ async def authenticated_app(monkeypatch):
         yield connection
 
     app_state = MagicMock()
+    app_state.history_runtime = None
     app_state.settings = settings
     app_state.task_acceptor_pool = None
     app_state.task_composition = None

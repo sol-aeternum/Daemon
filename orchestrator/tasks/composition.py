@@ -469,7 +469,7 @@ async def qualify_task_composition(
     recovery = InferenceRecovery(worker_pool)
     # Validate the ENTIRE pair before either J1 barrier may initialize a binding.
     async with asyncio.timeout(2):
-        async with acceptor_pool.acquire() as a, worker_pool.acquire() as w:
+        async with pool_connection(acceptor_pool) as a, pool_connection(worker_pool) as w:
             ai, wi = await _connection_identity(a), await _connection_identity(w)
             if ai[1:] != wi[1:] or ai[0] == wi[0]:
                 raise ObservationBlocked("inference_database_refused")
@@ -544,7 +544,7 @@ async def qualify_worker_composition(
     recovery = InferenceRecovery(worker_pool)
     recovery.principals = (worker_role, acceptor_role)
     async with asyncio.timeout(2):
-        async with worker_pool.acquire() as w:
+        async with pool_connection(worker_pool) as w:
             wi = await _connection_identity(w)
             if wi[0] != worker_role:
                 raise ObservationBlocked("inference_principal_refused")

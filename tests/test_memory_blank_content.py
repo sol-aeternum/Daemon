@@ -56,9 +56,11 @@ async def auth_client(monkeypatch):
 
     store = AsyncMock()
     state = MagicMock(spec=AppState)
+    state.history_runtime = None
+    state.settings = get_settings()
     state.memory_store = store
     state.redis = None
-    app.state.app_state = state
+    monkeypatch.setattr(app.state, "app_state", state, raising=False)
 
     async def app_state() -> AppState:
         return state

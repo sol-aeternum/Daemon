@@ -1,6 +1,6 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `dadb550c282b627bab09862ecf6d5007d8f5ee58` (main verified
+Source checkpoint: `fd8b62a0f5c7ff80be702a6493c892b973fadf54` (main verified
 before publication). This checklist separates merged source, synthetic
 qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
@@ -29,6 +29,15 @@ dispatch continuity, and has not been repeated.
 
 The original SQL-only by-key gap is reproduced by retained diagnostics: missing
 SQL was not proof the request had never been accepted. This slice implements
-the owner-approved H-aware read/client contract, with explicit synthetic reader
-injection; production startup still does not install H. Its source tests cannot
+the owner-approved H-aware read/client contract, with the separately approved observation-only backend startup described below. Its source tests cannot
 substitute for authenticated runtime composition or deployed/browser acceptance.
+
+## Observation-only startup source update
+
+Based on merged historical observation `b1cb9b9e`, the next source slice installs
+the backend reader and lifecycle under the explicit [interim observation-only
+contract](RESTORE_HISTORY_RUNTIME.md). Producer ingress and background/worker
+execution remain unavailable whenever H is selected. This is not deployed
+acceptance: authenticated acceptance/Send/Stop/output composition, real identities,
+keys, restricted grants, schema upgrade and restore/launch qualification remain
+unchecked operational gates. #477 stays open. Benchmark qualification is separate.

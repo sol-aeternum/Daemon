@@ -69,6 +69,7 @@ from orchestrator.services.identity import (
 )
 from orchestrator.catalog import selectable_model_ids
 from orchestrator.council.sse import stream_council, stream_council_interview_response
+from orchestrator.services.restore_history.ingress import HistoryObservationOnlyMiddleware
 from orchestrator.config import (
     HostSecurityConfigError,
     HostedIdentityConfigError,
@@ -296,54 +297,58 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     cleanup_task = None
     cleanup_shutdown_event = None
 
-    if state.db_pool is not None:
-        await initialize_development_pepper(settings, state.db_pool)
-        if state.memory_store is not None:
+    try:
+        if state.db_pool is not None and state.history_runtime is None:
+            await initialize_development_pepper(settings, state.db_pool)
+            if state.memory_store is not None:
+                try:
+                    backfilled = await state.memory_store.backfill_memory_content_hashes()
+                    if backfilled:
+                        logger.info("Backfilled content_hash for %s current memories", backfilled)
+                except Exception:
+                    logger.warning("Failed to backfill memory content hashes")
+            asyncio.create_task(_backfill_skill_projections(state.db_pool))
+            asyncio.create_task(_sync_repo_skills(state.db_pool))
+            # Monitored inference routes are admitted from the ZDR attestation snapshot,
+            # and this process runs its own ZDR checks so it enforces revocations itself.
+            from orchestrator.entitlements import attestation
+
+            await attestation.start(state.db_pool)
+            await _check_first_boot_setup(state)
+
             try:
-                backfilled = await state.memory_store.backfill_memory_content_hashes()
-                if backfilled:
-                    logger.info("Backfilled content_hash for %s current memories", backfilled)
+                deleted = await cleanup_stale_sessions(
+                    state.db_pool,
+                    settings.daemon_session_cleanup_grace_days,
+                    settings.daemon_session_cleanup_max_delete_fraction,
+                )
+                if deleted > 0:
+                    logger.info("Startup session cleanup deleted %d stale sessions", deleted)
             except Exception:
-                logger.warning("Failed to backfill memory content hashes")
-        asyncio.create_task(_backfill_skill_projections(state.db_pool))
-        asyncio.create_task(_sync_repo_skills(state.db_pool))
-        # Monitored inference routes are admitted from the ZDR attestation snapshot,
-        # and this process runs its own ZDR checks so it enforces revocations itself.
-        from orchestrator.entitlements import attestation
+                logger.warning("Startup session cleanup failed")
 
-        await attestation.start(state.db_pool)
-        await _check_first_boot_setup(state)
-
-        try:
-            deleted = await cleanup_stale_sessions(
+            cleanup_task, cleanup_shutdown_event = await start_session_cleanup_task(
                 state.db_pool,
                 settings.daemon_session_cleanup_grace_days,
+                settings.daemon_session_cleanup_interval_seconds,
                 settings.daemon_session_cleanup_max_delete_fraction,
             )
-            if deleted > 0:
-                logger.info("Startup session cleanup deleted %d stale sessions", deleted)
-        except Exception:
-            logger.warning("Startup session cleanup failed")
 
-        cleanup_task, cleanup_shutdown_event = await start_session_cleanup_task(
-            state.db_pool,
-            settings.daemon_session_cleanup_grace_days,
-            settings.daemon_session_cleanup_interval_seconds,
-            settings.daemon_session_cleanup_max_delete_fraction,
-        )
+        elif state.db_pool is not None:
+            await initialize_development_pepper(settings, state.db_pool)
+            await _check_first_boot_setup(state)
+        yield
+    finally:
+        if cleanup_shutdown_event is not None:
+            cleanup_shutdown_event.set()
+        if cleanup_task is not None:
+            await asyncio.shield(cleanup_task)
+        if state.db_pool is not None and state.history_runtime is None:
+            from orchestrator.entitlements import attestation
 
-    yield
-
-    if cleanup_shutdown_event is not None:
-        cleanup_shutdown_event.set()
-    if cleanup_task is not None:
-        await asyncio.shield(cleanup_task)
-    if state.db_pool is not None:
-        from orchestrator.entitlements import attestation
-
-        await attestation.stop()
-    await close_app_state(state)
-    logger.info("AppState shut down")
+            await attestation.stop()
+        await close_app_state(state)
+        logger.info("AppState shut down")
 
 
 async def _backfill_skill_projections(db_pool: asyncpg.Pool) -> None:
@@ -3199,6 +3204,8 @@ app.include_router(auth_setup_router)
 # None until the first request, so we build it eagerly here and wrap the
 # resulting stack (which already has ``ServerErrorMiddleware`` on the
 # outside) with our outer security-headers pass.
+
+app.add_middleware(HistoryObservationOnlyMiddleware, application=app)
 _built_stack = app.build_middleware_stack()
 app.middleware_stack = _OuterSecurityHeadersMiddleware(_built_stack)
 

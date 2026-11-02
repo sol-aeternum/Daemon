@@ -30,6 +30,14 @@ from orchestrator.services.deletion_journal.barrier import (
     require_recovery_barrier,
 )
 from orchestrator.services.deletion_journal.errors import JournalError
+from orchestrator.services.restore_history.configuration import configured_history
+from orchestrator.services.restore_history.model import HistoryError
+from orchestrator.services.restore_history.runtime import (
+    HistoryRuntime,
+    physical_completion,
+    require_unselected_history,
+    startup_deadline,
+)
 
 from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
@@ -90,6 +98,48 @@ async def on_startup(ctx: WorkerContext) -> None:
     app_settings = get_settings()
     apply_resolved_database_url(app_settings)
     composed = task_startup_selected(app_settings, "worker")
+    history_config = configured_history(app_settings, "worker")
+    validate_database_credentials(app_settings)
+    configured_journal(app_settings)
+    if not app_settings.database_url:
+        raise JournalError("database_required")
+    if history_config is not None:
+        if not composed:
+            raise HistoryError("history_configuration_required")
+        # ARQ does not enter its job loop after a failed on_startup. Never
+        # publish ctx stores, initialize background jobs or acknowledge Stop.
+        history = HistoryRuntime(history_config, app_settings)
+        pool = None
+        deadline = startup_deadline()
+        try:
+            await history.open(deadline=deadline, service="worker")
+            try:
+                pool = asyncpg.create_pool(dsn=app_settings.database_url, min_size=1, max_size=10)
+                await physical_completion(pool, deadline=deadline)
+            except Exception:
+                raise JournalError("database_required") from None
+            db_pool = pool
+            encryption = ContentEncryption(app_settings.daemon_encryption_key)
+            async with history.qualify_before_recovery(pool, deadline=deadline):
+                await qualify_worker_composition(
+                    enabled=True,
+                    worker_pool=db_pool,
+                    encryption=encryption,
+                    settings=app_settings,
+                    acceptor_role=app_settings.daemon_task_acceptor_role,
+                    worker_role=app_settings.daemon_task_worker_role,
+                )
+            raise HistoryError("history_observation_only")
+        except BaseException as original:
+            for call in (
+                *([pool.close()] if pool is not None else []),
+                history.aclose(deadline=startup_deadline()),
+            ):
+                try:
+                    await physical_completion(call, deadline=startup_deadline())
+                except BaseException as cleanup:
+                    original.add_note("Worker startup cleanup: " + type(cleanup).__name__)
+            raise
     ctx["settings"] = app_settings
     shared_counter = ctx.get("redis")
     set_shared_encryption_failure_counter(
@@ -103,12 +153,6 @@ async def on_startup(ctx: WorkerContext) -> None:
     ctx["task_store"] = None
     ctx["task_composition"] = None
 
-    validate_database_credentials(app_settings)
-    configured_journal(app_settings)
-
-    if not app_settings.database_url:
-        raise JournalError("database_required")
-
     try:
         db_pool = await asyncpg.create_pool(
             dsn=app_settings.database_url,
@@ -118,6 +162,9 @@ async def on_startup(ctx: WorkerContext) -> None:
     except Exception:
         raise JournalError("database_required") from None
     try:
+        if not composed:
+            await require_legacy_task_schema(db_pool)
+        await require_unselected_history(db_pool)
         if composed:
             bundle = await qualify_worker_composition(
                 enabled=True,
@@ -135,7 +182,6 @@ async def on_startup(ctx: WorkerContext) -> None:
             ctx["store"] = bundle.memory
             ctx["task_store"] = bundle.tasks
         else:
-            await require_legacy_task_schema(db_pool)
             await require_recovery_barrier(db_pool, app_settings)
         ctx["db_pool"] = db_pool
         await initialize_development_pepper(app_settings, db_pool)

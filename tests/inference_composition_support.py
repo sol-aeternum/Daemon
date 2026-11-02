@@ -83,6 +83,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         "_task_composition",
                         "task_composition",
                         "history_observation",
+                        "history_runtime",
                     ):
                         default = (
                             path in ("orchestrator/tasks/store.py", "orchestrator/memory/store.py")
@@ -110,7 +111,28 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                             and isinstance(node.value, ast.Name)
                             and node.value.id == "bundle"
                         )
-                        if not default and not factory_binding and not host_binding:
+                        read_host_binding = (
+                            path == "orchestrator/db.py"
+                            and id(node) in host_nodes
+                            and node.value is not None
+                            and (
+                                (
+                                    ast.unparse(target) == "state.history_runtime"
+                                    and ast.unparse(node.value)
+                                    == "HistoryRuntime(history_config, settings)"
+                                )
+                                or (
+                                    ast.unparse(target) == "state.history_observation"
+                                    and ast.unparse(node.value) == "state.history_runtime.reader"
+                                )
+                            )
+                        )
+                        if (
+                            not default
+                            and not factory_binding
+                            and not host_binding
+                            and not read_host_binding
+                        ):
                             violations.append(
                                 f"{path}:{node.lineno}:unapproved composition binding"
                             )
@@ -250,15 +272,49 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         and [(item.name, item.asname) for item in node.names]
                         == [("HistoryObservation", None)]
                     )
+                    startup_imports = {
+                        ("orchestrator/db.py", "configuration"): {"configured_history"},
+                        ("orchestrator/db.py", "model"): {"HistoryError"},
+                        ("orchestrator/db.py", "runtime"): {
+                            "HistoryRuntime",
+                            "physical_completion",
+                            "require_unselected_history",
+                            "startup_deadline",
+                        },
+                        ("orchestrator/worker/worker.py", "configuration"): {"configured_history"},
+                        ("orchestrator/worker/worker.py", "model"): {"HistoryError"},
+                        ("orchestrator/worker/worker.py", "runtime"): {
+                            "HistoryRuntime",
+                            "physical_completion",
+                            "require_unselected_history",
+                            "startup_deadline",
+                        },
+                        ("orchestrator/main.py", "ingress"): {"HistoryObservationOnlyMiddleware"},
+                        ("orchestrator/routes/tasks.py", "read_supervisor"): {
+                            "HistoryReadSupervisor"
+                        },
+                    }
+                    startup_read_only = (
+                        isinstance(node, ast.ImportFrom)
+                        and node.level == 0
+                        and (node.module or "").startswith("orchestrator.services.restore_history.")
+                        and {item.name for item in node.names}
+                        == startup_imports.get((path, (node.module or "").rsplit(".", 1)[-1]))
+                        and all(item.asname is None for item in node.names)
+                    )
                     if isinstance(node, ast.ImportFrom):
                         module = modules[0]
                         imported = [module + "." + item.name for item in node.names]
                     else:
                         imported = modules
-                    if not observation_reader and any(
-                        m == "orchestrator.services.restore_history"
-                        or m.startswith("orchestrator.services.restore_history.")
-                        for m in imported
+                    if (
+                        not observation_reader
+                        and not startup_read_only
+                        and any(
+                            m == "orchestrator.services.restore_history"
+                            or m.startswith("orchestrator.services.restore_history.")
+                            for m in imported
+                        )
                     ):
                         violations.append(f"{path}:{node.lineno}:uncalled history importer")
                 if (
@@ -287,6 +343,14 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
+                        (
+                            "orchestrator/services/restore_history/read_supervisor.py",
+                            "qualify_read_history",
+                        ),
+                        (
+                            "orchestrator/services/restore_history/runtime.py",
+                            "qualify_before_recovery",
+                        ),
                     }
                     or ast.unparse(node.func) != "retain_pool_cleanup"
                     or node.args
@@ -419,6 +483,8 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ".HistoryProjection",
                         ".HistoryEffects",
                         ".HistoryObservation",
+                        ".HistoryReadSupervisor",
+                        ".HistoryRuntime",
                     )
                 ) or target in (
                     "AcceptanceProjection",
@@ -427,8 +493,26 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     "HistoryProjection",
                     "HistoryEffects",
                     "HistoryObservation",
+                    "HistoryReadSupervisor",
+                    "HistoryRuntime",
                 ):
-                    violations.append(f"{path}:{node.lineno}:history adapter construction")
+                    read_host = (
+                        target == "orchestrator.services.restore_history.runtime.HistoryRuntime"
+                        and id(node) in host_nodes
+                        and (
+                            (
+                                path == "orchestrator/db.py"
+                                and ast.unparse(node) == "HistoryRuntime(history_config, settings)"
+                            )
+                            or (
+                                path == "orchestrator/worker/worker.py"
+                                and ast.unparse(node)
+                                == "HistoryRuntime(history_config, app_settings)"
+                            )
+                        )
+                    )
+                    if not read_host:
+                        violations.append(f"{path}:{node.lineno}:history adapter construction")
                 if (
                     target in ("importlib.import_module", "__import__")
                     and node.args

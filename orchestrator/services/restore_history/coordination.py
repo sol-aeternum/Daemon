@@ -1,4 +1,4 @@
-"""Uncalled H1 lock/async ownership boundary; no native transaction integration.
+"""H1 lock/async ownership boundary; explicit hosts own native integration.
 
 Constructor is inert. Explicit open/operation/close own one serial filesystem
 worker. Logical failure drains physical work before propagating; kernel cleanup

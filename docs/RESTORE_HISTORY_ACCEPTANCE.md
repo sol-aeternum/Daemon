@@ -1,9 +1,10 @@
-# H1 acceptance projections — uncalled source candidate
+# H1 acceptance projections
 
-Owner-approved source and synthetic-test boundary only. The required reader
-key-check argument was separately approved. No production runtime hosts, startup
-composition, HTTP/client change, live binding/role/grant/key, application migration,
-retention activation or dispatch authority is installed. J1 is unchanged.
+Owner-approved source and synthetic-test boundary. The required reader key-check
+argument was separately approved. The [observation-only host](RESTORE_HISTORY_RUNTIME.md)
+now uses read qualification/parity; validating mutation joins remain uncalled.
+No live binding/role/grant/key, application migration, retention activation or
+dispatch authority is installed. J1's protocol is unchanged.
 
 ## Payload and migration allocation
 

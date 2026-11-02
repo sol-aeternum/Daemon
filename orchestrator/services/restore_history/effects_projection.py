@@ -1,4 +1,4 @@
-"""Uncalled 057 projection profile; same closed H1 fields, no execution permit.
+"""057 projection profile; closed H1 fields, no execution permit.
 
 The legacy 056 profile stays strict. This explicit profile reads acceptance,
 send and Stop together and retains A-only acceptance / W-only effects writes.

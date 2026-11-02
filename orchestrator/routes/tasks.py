@@ -27,6 +27,7 @@ from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
 from orchestrator.tasks.composition import TaskComposition
 from orchestrator.services.account_control.transaction import ObservationBlocked
 from orchestrator.services.restore_history.observation import HistoryObservation
+from orchestrator.services.restore_history.read_supervisor import HistoryReadSupervisor
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -213,7 +214,7 @@ async def get_task_by_key(
         raise HTTPException(status_code=404, detail="Task not found", headers=headers)
     reader = getattr(app_state, "history_observation", None)
     if reader is not None:
-        if type(reader) is not HistoryObservation:
+        if type(reader) not in (HistoryObservation, HistoryReadSupervisor):
             raise unavailable()
         try:
             if (
