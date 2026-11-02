@@ -439,10 +439,26 @@ def test_pilot_evidence_is_exclusive(tmp_path):
     path = tmp_path / "evidence.json"
     launch.write_pilot_evidence(path, {"initial": True})
     before = path.read_bytes()
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FileExistsError, match="Pilot evidence already exists: .*evidence.json"):
         launch.write_pilot_evidence(path, {"replacement": True})
     assert path.read_bytes() == before
     assert set(tmp_path.iterdir()) == {path}
+
+
+def test_pilot_evidence_temp_unlink_failure_never_masks_outcome(tmp_path, monkeypatch):
+    path = tmp_path / "report.json"
+
+    def stuck(temporary):
+        raise OSError("injected unlink failure")
+
+    monkeypatch.setattr(launch.os, "unlink", stuck)
+    launch.write_pilot_evidence(path, {"value": True})
+    assert json.loads(path.read_bytes()) == {"value": True}
+    failure = OSError("injected link failure")
+    monkeypatch.setattr(launch.os, "link", Mock(side_effect=failure))
+    with pytest.raises(OSError, match="injected link failure") as error:
+        launch.write_pilot_evidence(tmp_path / "other.json", {"value": False})
+    assert error.value is failure
 
 
 def test_pilot_evidence_write_failure_leaves_no_artifacts(tmp_path, monkeypatch):
@@ -532,6 +548,22 @@ async def test_late_prepare_failure_cleans_only_owned_directory_and_reruns(
     plan = launch.load_plan(p.args.output)
     assert directory.is_dir()
     assert plan.pins["restore_script"]["sha256"] == validation.digest_file(
+        directory / "restore.sql"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failure_after_plan_publication_keeps_referenced_script(preparation, monkeypatch):
+    p = preparation
+    directory = p.args.output.parent / (p.args.output.stem + "-restore-script")
+    failure = OSError("injected directory fsync failure after link")
+    monkeypatch.setattr(launch, "_sync_directory", Mock(side_effect=failure))
+    with pytest.raises(OSError, match="directory fsync failure after link") as error:
+        await launch.prepare(p.args)
+    assert error.value is failure
+    assert p.args.output.exists() and directory.is_dir()
+    plan = json.loads(p.args.output.read_bytes())
+    assert plan["pins"]["restore_script"]["sha256"] == validation.digest_file(
         directory / "restore.sql"
     )
 

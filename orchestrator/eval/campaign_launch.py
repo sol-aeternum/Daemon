@@ -704,6 +704,7 @@ async def prepare_v3_pilot(args: argparse.Namespace) -> None:
     # it never reads restore_script. Refusals here leave no output artifacts.
     plan.payload()
     created_script_directory = False
+    output_was_absent = False
     try:
         script_directory.mkdir(mode=0o700, exist_ok=False)
         created_script_directory = True
@@ -715,6 +716,7 @@ async def prepare_v3_pilot(args: argparse.Namespace) -> None:
         payload = plan.payload()
         pilot.verify(json.loads(json.dumps(payload)))
         require(not args.output.exists(), "Plan output already exists")
+        output_was_absent = True
         write_pilot_evidence(args.output, payload)
         # The published plan now references this script; it must never be removed.
         created_script_directory = False
@@ -736,7 +738,10 @@ async def prepare_v3_pilot(args: argparse.Namespace) -> None:
             )
         )
     except BaseException:
-        if created_script_directory:
+        # A plan this invocation published (even if a later durability step
+        # raised) references the script, so the directory stays.
+        published = output_was_absent and args.output.exists()
+        if created_script_directory and not published:
             # Only this invocation's directory is disposable. Cleanup must never
             # replace the original failure, even if filesystem removal fails.
             shutil.rmtree(script_directory, ignore_errors=True)
@@ -962,9 +967,17 @@ def write_pilot_evidence(path: Path, value: Mapping[str, Any]) -> None:
             output.write("\n")
             output.flush()
             os.fsync(output.fileno())
-        os.link(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise FileExistsError(f"Pilot evidence already exists: {path}") from None
     finally:
-        os.unlink(temporary)
+        # A leftover hidden temp is harmless; never let its removal mask the
+        # original failure or a completed publication.
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
     _sync_directory(path.parent)
 
 
