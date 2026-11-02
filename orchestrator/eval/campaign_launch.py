@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 from typing import Any, Mapping
 from unittest.mock import patch
 
@@ -25,7 +27,7 @@ import asyncpg
 import httpx
 
 from orchestrator.eval import fact_harness
-from orchestrator.eval.campaign_guard import ARMS, Campaign, CampaignPlan, _write
+from orchestrator.eval.campaign_guard import ARMS, Campaign, CampaignPlan, _sync_directory, _write
 from orchestrator.eval.campaign_restore import (
     CONTROL_DSN,
     DSN,
@@ -701,33 +703,42 @@ async def prepare_v3_pilot(args: argparse.Namespace) -> None:
     # Owner-adjudicated D2: payload checks pin shape, prior, cap and envelope;
     # it never reads restore_script. Refusals here leave no output artifacts.
     plan.payload()
-    script_directory.mkdir(mode=0o700, exist_ok=False)
-    script = await asyncio.to_thread(
-        render_archive, args.snapshot, script_directory, snapshot_sha256
-    )
-    pins["restore_script"] = {"path": str(script.resolve()), "sha256": digest_file(script)}
-    plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
-    payload = plan.payload()
-    pilot.verify(json.loads(json.dumps(payload)))
-    require(not args.output.exists(), "Plan output already exists")
-    write_pilot_evidence(args.output, payload)
-    print(
-        json.dumps(
-            {
-                key: payload[key]
-                for key in (
-                    "allocated_usd",
-                    "new_reserved_usd",
-                    "prior_reserved_usd",
-                    "cumulative_reserved_usd",
-                    "prior_restore_attempts",
-                    "maximum_cumulative_restore_attempts",
-                )
-            }
-            | {"retry_budget_usd": str(pilot.retry_budget(payload))},
-            indent=2,
+    created_script_directory = False
+    try:
+        script_directory.mkdir(mode=0o700, exist_ok=False)
+        created_script_directory = True
+        script = await asyncio.to_thread(
+            render_archive, args.snapshot, script_directory, snapshot_sha256
         )
-    )
+        pins["restore_script"] = {"path": str(script.resolve()), "sha256": digest_file(script)}
+        plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
+        payload = plan.payload()
+        pilot.verify(json.loads(json.dumps(payload)))
+        require(not args.output.exists(), "Plan output already exists")
+        write_pilot_evidence(args.output, payload)
+        print(
+            json.dumps(
+                {
+                    key: payload[key]
+                    for key in (
+                        "allocated_usd",
+                        "new_reserved_usd",
+                        "prior_reserved_usd",
+                        "cumulative_reserved_usd",
+                        "prior_restore_attempts",
+                        "maximum_cumulative_restore_attempts",
+                    )
+                }
+                | {"retry_budget_usd": str(pilot.retry_budget(payload))},
+                indent=2,
+            )
+        )
+    except BaseException:
+        if created_script_directory:
+            # Only this invocation's directory is disposable. Cleanup must never
+            # replace the original failure, even if filesystem removal fails.
+            shutil.rmtree(script_directory, ignore_errors=True)
+        raise
 
 
 async def prepare(args: argparse.Namespace) -> None:
@@ -941,10 +952,18 @@ PHASE_D_A0_RESULTS = (
 
 
 def write_pilot_evidence(path: Path, value: Mapping[str, Any]) -> None:
-    """Pilot plan/report evidence must never replace an existing artifact."""
-    with path.open("x") as output:
-        json.dump(value, output, indent=2, sort_keys=True)
-        output.write("\n")
+    """Durably publish a complete pilot artifact, without replacing an existing one."""
+    fd, temporary = tempfile.mkstemp(prefix=".pilot-evidence-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(value, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+    finally:
+        os.unlink(temporary)
+    _sync_directory(path.parent)
 
 
 async def fresh_cost_preflight(args: argparse.Namespace) -> None:

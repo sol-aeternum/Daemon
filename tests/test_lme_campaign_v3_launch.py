@@ -10,7 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call as mock_call
 
 import pytest
 
@@ -127,12 +127,52 @@ COMMON_CORRUPTIONS = [
     "name,index,path,value", COMMON_CORRUPTIONS, ids=[c[0] for c in COMMON_CORRUPTIONS]
 )
 def test_qualification_refusal_parity(name, index, path, value):
+    reasons = {
+        "score_errors": "Score errors",
+        "artifact_errors": "Score errors",
+        "score_count": "Score count differs",
+        "artifact_count": "Score count differs",
+        "ingest_incomplete": "ingest incomplete",
+        "evaluate_incomplete": "evaluate incomplete",
+        "score_incomplete": "score incomplete",
+        "extraction_failed": "Ingest extraction failures",
+        "empty_ingest": "Ingest extraction failures",
+        "checkpoint_rollback": "Unproven ingest rollback",
+        "manifest_rollback": "Unproven ingest rollback",
+        "unqualified": "Run unqualified",
+        "disqualified": "Run unqualified",
+        "code_pin_changes": "Code changed during run",
+        "ingest_source": "Ingest source unqualified",
+        "dirty": "Dirty execution code",
+        "dataset": "Manifest dataset differs",
+        "snapshot": "Snapshot differs",
+        "substrate": "Wrong substrate",
+        "state_start": "State mismatch override",
+        "state_unchanged": "State mutated during evaluate",
+        "state_fingerprint_start": "Protected fingerprint differs",
+        "state_fingerprint_end": "Protected fingerprint differs",
+        "retrieval": "Retrieval mode/count differs",
+        "answer_fingerprint": "Provider fingerprints absent",
+        "judge_fingerprint": "Provider fingerprints absent",
+    }
     for evidence, sampled in ((qualified_artifacts(), False), (artifacts(), True)):
         target = evidence[index]
         for key in path[:-1]:
             target = target[key]
         target[path[-1]] = copy.deepcopy(value)
-        with pytest.raises(guard.CampaignStopped):
+        summaries = {
+            "evaluate_summary": "Evaluate v3 summary differs"
+            if sampled
+            else "Evaluate official summary differs",
+            "score_summary": "Score manifest v3 summary differs"
+            if sampled
+            else "Score manifest dual summary differs",
+            "artifact_summary": "Score artifact v3 summary differs"
+            if sampled
+            else "Score artifact dual summary differs",
+        }
+        reason = summaries[name] if name in summaries else reasons[name]
+        with pytest.raises(guard.CampaignStopped, match=reason):
             if sampled:
                 pilot.qualification(
                     *evidence, corpus=(validation.SNAPSHOT_SHA256, validation.STATE_SHA256)
@@ -180,7 +220,14 @@ def test_v3_row_level_refusals(bad):
                     "incorrect" if sample["official_judgment"] == "correct" else "correct"
                 )
             row["generic_strict_majority"] = row["samples"][0]["judgment"]
-    with pytest.raises(guard.CampaignStopped):
+    reason = {
+        "sample_status": "V3 official judge is not completed",
+        "sample_error": "V3 sample has an error",
+        "coverage": "V3 coverage requires exactly one row per frozen dev ID",
+        "majority": "V3 official majority differs",
+        "disagreement": "Judge disagreement exceeds 20 percent",
+    }[bad]
+    with pytest.raises(guard.CampaignStopped, match=reason):
         pilot.qualification(*evidence, corpus=(validation.SNAPSHOT_SHA256, validation.STATE_SHA256))
 
 
@@ -292,7 +339,9 @@ async def test_prepare_exact_pins_allocation_real_script_and_exclusive_write(pre
     assert plan.pins["restore_script"]["sha256"] == validation.digest_file(script)
     assert plan.pins["restore_script"]["sha256"] != "0" * 64
     assert plan.payload()["allocated_usd"] == "3.7010500"
-    assert p.prior.call_count >= 3
+    p.prior.assert_called_with()
+    assert all(record == mock_call() for record in p.prior.call_args_list)
+    assert plan.pins["v3_campaign"]["prior"] == pilot.PRIOR
     assert p.connect.await_count == 2 and p.connection.closed
     assert all(
         c.kwargs["server_settings"]["default_transaction_read_only"] == "on"
@@ -331,9 +380,15 @@ async def test_prepare_target_state(preparation, state):
     p = preparation
     p.fingerprint["sha256"] = state
     if state == "other":
+        before = set(p.args.output.parent.iterdir())
         with pytest.raises(guard.CampaignStopped, match="protected fingerprint"):
             await launch.prepare(p.args)
         p.renderer.assert_not_called()
+        assert not p.args.output.exists()
+        assert set(p.args.output.parent.iterdir()) == before
+        p.fingerprint["sha256"] = validation.STATE_SHA256
+        await launch.prepare(p.args)
+        assert launch.load_plan(p.args.output).pins["original_allow_connections"] is True
     else:
         await launch.prepare(p.args)
 
@@ -369,7 +424,12 @@ def test_pilot_control_requires_clean_checkout(tmp_path, monkeypatch, fault):
     if fault == "dotenv":
         (tmp_path / ".env").write_text("# fictional, no credentials\n")
     if fault:
-        with pytest.raises(guard.CampaignStopped):
+        reason = (
+            "Dotenv checkout is not eligible"
+            if fault == "dotenv"
+            else "Untracked or changed pilot control checkout"
+        )
+        with pytest.raises(guard.CampaignStopped, match=reason):
             launch.pilot_checkout_clean()
     else:
         launch.pilot_checkout_clean()
@@ -382,6 +442,114 @@ def test_pilot_evidence_is_exclusive(tmp_path):
     with pytest.raises(FileExistsError):
         launch.write_pilot_evidence(path, {"replacement": True})
     assert path.read_bytes() == before
+    assert set(tmp_path.iterdir()) == {path}
+
+
+def test_pilot_evidence_write_failure_leaves_no_artifacts(tmp_path, monkeypatch):
+    failure = OSError("injected evidence write failure")
+
+    def broken_dump(value, output, **kwargs):
+        output.write('{"truncated":')
+        raise failure
+
+    monkeypatch.setattr(launch.json, "dump", broken_dump)
+    with pytest.raises(OSError, match="injected evidence write failure") as error:
+        launch.write_pilot_evidence(tmp_path / "plan.json", {"value": True})
+    assert error.value is failure
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_pilot_evidence_byte_exact_durable_publish(tmp_path, monkeypatch):
+    path = tmp_path / "report.json"
+    value = {"z": "snow \u2603", "a": 1}
+    expected = b'{\n  "a": 1,\n  "z": "snow \\u2603"\n}\n'
+    events = []
+    fsync, link, unlink = launch.os.fsync, launch.os.link, launch.os.unlink
+
+    def synced(fd):
+        events.append("fsync")
+        return fsync(fd)
+
+    def published(temporary, final):
+        assert Path(temporary).parent == path.parent
+        assert Path(temporary).stat().st_mode & 0o777 == 0o600
+        assert Path(temporary).read_bytes() == expected
+        events.append("link")
+        return link(temporary, final)
+
+    def removed(temporary):
+        events.append("unlink")
+        return unlink(temporary)
+
+    monkeypatch.setattr(launch.os, "fsync", synced)
+    monkeypatch.setattr(launch.os, "link", published)
+    monkeypatch.setattr(launch.os, "unlink", removed)
+    launch.write_pilot_evidence(path, value)
+    assert path.read_bytes() == expected
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert set(tmp_path.iterdir()) == {path}
+    assert events == ["fsync", "link", "unlink", "fsync"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["render", "second_payload", "verify", "plan_write"])
+async def test_late_prepare_failure_cleans_only_owned_directory_and_reruns(
+    preparation, monkeypatch, stage
+):
+    p = preparation
+    before = set(p.args.output.parent.iterdir())
+    directory = p.args.output.parent / (p.args.output.stem + "-restore-script")
+    failure = RuntimeError("injected " + stage)
+    with monkeypatch.context() as patch:
+        if stage == "render":
+
+            def broken_render(snapshot, directory, digest):
+                (directory / "partial.sql").write_text("-- partial fictional script\n")
+                raise failure
+
+            patch.setattr(launch, "render_archive", broken_render)
+        elif stage == "second_payload":
+            original = guard.CampaignPlan.payload
+            calls = []
+
+            def payload(plan):
+                calls.append(plan)
+                if len(calls) == 2:
+                    raise failure
+                return original(plan)
+
+            patch.setattr(guard.CampaignPlan, "payload", payload)
+        elif stage == "verify":
+            patch.setattr(pilot, "verify", Mock(side_effect=failure))
+        else:
+            patch.setattr(launch, "write_pilot_evidence", Mock(side_effect=failure))
+        with pytest.raises(RuntimeError, match="injected " + stage) as error:
+            await launch.prepare(p.args)
+        assert error.value is failure
+    assert not directory.exists() and not p.args.output.exists()
+    assert set(p.args.output.parent.iterdir()) == before
+    await launch.prepare(p.args)
+    plan = launch.load_plan(p.args.output)
+    assert directory.is_dir()
+    assert plan.pins["restore_script"]["sha256"] == validation.digest_file(
+        directory / "restore.sql"
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_never_removes_preexisting_script_directory(preparation):
+    p = preparation
+    directory = p.args.output.parent / (p.args.output.stem + "-restore-script")
+    directory.mkdir()
+    preserved = directory / "preserved.sql"
+    preserved.write_text("-- pre-existing fictional script\n")
+    before = set(p.args.output.parent.iterdir())
+    with pytest.raises(FileExistsError):
+        await launch.prepare(p.args)
+    assert set(p.args.output.parent.iterdir()) == before
+    assert preserved.read_text() == "-- pre-existing fictional script\n"
+    assert set(directory.iterdir()) == {preserved}
+    p.renderer.assert_not_called()
 
 
 def test_bindings_shape_and_preflight_validation(monkeypatch):
@@ -408,7 +576,9 @@ def test_bindings_shape_and_preflight_validation(monkeypatch):
     for bound in (True, 0, -1, 1.5):
         bad = copy.deepcopy(good)
         bad["questions"][0]["reader_input_token_bound"] = bound
-        with pytest.raises(guard.CampaignStopped):
+        with pytest.raises(
+            guard.CampaignStopped, match="Missing or invalid integer usage/allocation"
+        ):
             pilot.validate_preflight(bad, bindings, ["q"])
 
 
@@ -568,7 +738,13 @@ async def test_preflight_refuses_before_connect(preparation, monkeypatch, fault)
             "historical_remap_lineage_sha256",
             validation.digest_file(args.historical_remap),
         )
-    with pytest.raises(guard.CampaignStopped):
+    reason = {
+        "lineage": "Fresh remap lineage is not approved",
+        "candidate": "V3 preflight cannot mix candidate or legacy mode",
+        "source": "Fresh preflight must run on the clean control checkout",
+        "target": "Preflight must read the copy, not the target",
+    }[fault]
+    with pytest.raises(guard.CampaignStopped, match=reason):
         await launch.fresh_cost_preflight(args)
     p.connect.assert_not_awaited()
 
@@ -584,7 +760,7 @@ def action_review(path, plan_path, actual_arm, **overrides):
             "arm": actual_arm,
             "review_session": "synthetic-review",
             "live_state_evidence_sha256": "synthetic-state",
-            "reviewed_at": datetime.now(UTC).isoformat(),
+            "reviewed_at": launch.datetime.now(UTC).isoformat(),
             **overrides,
         },
     )
@@ -594,6 +770,17 @@ def action_review(path, plan_path, actual_arm, **overrides):
 def execution(preparation, monkeypatch):
     p = preparation
     fake_time(monkeypatch)
+    origin = guard.time.monotonic()
+
+    class ReviewClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = datetime(2026, 11, 2, tzinfo=UTC) + timedelta(
+                seconds=guard.time.monotonic() - origin
+            )
+            return instant.astimezone(tz)
+
+    monkeypatch.setattr(launch, "datetime", ReviewClock)
     transport = llm(monkeypatch, [])
 
     def reply(**_):
@@ -778,15 +965,20 @@ async def test_action_review_refusals(execution, fault):
     await launch.prepare(p.args)
     changes = {
         "wrong_arm": {"arm": "A1"},
-        "expired": {"reviewed_at": (datetime.now(UTC) - timedelta(seconds=901)).isoformat()},
-        "future": {"reviewed_at": (datetime.now(UTC) + timedelta(seconds=60)).isoformat()},
+        "expired": {"reviewed_at": (launch.datetime.now(UTC) - timedelta(seconds=901)).isoformat()},
+        "future": {"reviewed_at": (launch.datetime.now(UTC) + timedelta(seconds=1)).isoformat()},
         "wrong_source": {"source_sha": "wrong"},
         "wrong_plan": {"plan_sha256": "wrong"},
     }[fault]
     # Do not pass the review's wrong arm as the actual arm argument.
     review = p.args.output.parent / "review.json"
     action_review(review, p.args.output, "A0", **changes)
-    with pytest.raises(guard.CampaignStopped):
+    reason = (
+        "Action-state review expired"
+        if fault in ("expired", "future")
+        else "Action review not bound to this plan/source/arm/state"
+    )
+    with pytest.raises(guard.CampaignStopped, match=reason):
         await launch.run_arm(
             argparse.Namespace(
                 plan=p.args.output,
@@ -795,6 +987,25 @@ async def test_action_review_refusals(execution, fault):
                 action_review=review,
             )
         )
+    assert execution.restores == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age", [0, 900])
+async def test_action_review_accepts_exact_ttl_boundary(execution, monkeypatch, age):
+    p = execution.preparation
+    await launch.prepare(p.args)
+    accepted = RuntimeError("review accepted before campaign activation")
+    factory = Mock(side_effect=accepted)
+    monkeypatch.setattr(pilot, "campaign_for", factory)
+    with pytest.raises(RuntimeError, match="review accepted before campaign activation") as error:
+        await run(
+            execution,
+            "A0",
+            reviewed_at=(launch.datetime.now(UTC) - timedelta(seconds=age)).isoformat(),
+        )
+    assert error.value is accepted
+    factory.assert_called_once()
     assert execution.restores == []
 
 
