@@ -201,11 +201,12 @@ Stop before mark refuses new sends. Send before Stop preserves possible-effect
 uncertainty; it cannot revoke an already admitted call atomically across a provider
 boundary or guarantee remote cessation/billing cancellation.
 
-The narrow uncalled terminal `complete` fence serializes with Stop and reuses
+The uncalled terminal `complete` fence serializes with Stop and reuses
 native claim/epoch/current-authority checks. If Stop wins, terminal success cannot
 publish. If completion wins and commits first, later Stop observes native terminal
-state and cannot retroactively cancel it. This is no streaming, partial-output,
-artifact or independently retained output-continuity implementation.
+state and cannot retroactively cancel it. The durable text extension below adds
+partial output; live streaming, artifact and independently retained output
+continuity remain uncomposed.
 
 The static noncomposition inventory admits only the exact `InferenceRecovery`
 type import in `effects.py`, exact private native staging calls and cleanup scopes
@@ -218,3 +219,42 @@ Synthetic tests exercise the joined boundary and real PostgreSQL/POSIX ownership
 exact executed counts and failed receipts are reported separately. They do not
 qualify production trust, provisioning, restore dispositions, financial/auth/cache
 continuity, clients or runtime rollout. #477 remains open.
+
+## Durable text publication boundary
+
+The same uncalled `HistoryEffects` join now covers native `write_partial` and
+carries existing native `message_fields` through terminal `complete`. This is
+SQL text/field publication, not live token delivery or artifact publication.
+There is no new H record kind, protected table, output backfill, content store,
+API response or runtime collaborator installation. The observation-only ingress
+and worker barrier remain unchanged.
+
+H operation ownership and the retained cleanup scope precede complete H/SQL
+parity, exact original acceptance/account/generation matching and negative Stop
+checks. The original TaskStore claim/epoch/account/current-generation/lease and
+invocation checks still own the actual output transaction. Only known native
+COMMIT, actual pool reset and H release within the existing absolute two-second
+logical operation budget can return success. Native TransactionUnavailable phase
+information is retained; committed-result-unavailable cannot become a second
+write or readback success. Cancellation, deadlines and cleanup failure block the
+same owner monotonically and drain underlying SQL/filesystem work before H exits.
+
+A Stop that wins H prevents later partial or terminal publication. Partial text
+committed before Stop remains available; it is not retroactively erased. H carries
+no output contents or independently acknowledged terminal receipt: a restored
+older SQL result is not repaired or reconstructed. Existing possible-send
+history still cannot authorize re-execution. No Redis/network/provider work is
+performed under this output scope. Live delta/progress transport, full runner
+composition, financial/account/file restore qualification and activation remain
+separate gates. Terminal message fields preserve the native contract; they do
+not create a pinned artifact publication or reference by themselves.
+
+The closed source inventory adds only the exact `_write_partial` method in the
+existing effects module to retained-cleanup scope admission. `ADMITTED`, imports,
+consumer construction, injection and runtime activation restrictions are unchanged.
+Discriminating negative tests reject foreign methods/modules, aliases and extra
+cleanup arguments. Synthetic PostgreSQL/POSIX tests cover Stop ordering, missing
+acceptance/Send/Stop projections, original native authority, both server branches
+under lost COMMIT acknowledgement, actual held reset through repeated cancellation
+and deadline, cleanup failure and H release loss. Exact executed counts/receipts
+are reported separately; no live acceptance is claimed.

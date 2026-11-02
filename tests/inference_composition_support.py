@@ -343,6 +343,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
+                        ("orchestrator/services/restore_history/effects.py", "_write_partial"),
                         (
                             "orchestrator/services/restore_history/read_supervisor.py",
                             "qualify_read_history",
