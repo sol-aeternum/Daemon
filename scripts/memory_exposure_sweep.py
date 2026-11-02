@@ -14,6 +14,7 @@ import asyncio
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import hashlib
 import json
 import math
@@ -145,9 +146,34 @@ def _vector(value: object, dimensions: int) -> list[float]:
     return vector
 
 
+def utc_timestamp(value: str) -> datetime:
+    """CLI timestamps must be explicit ISO-8601 UTC, not local or naive times."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(None):
+        raise ValueError("Vector window timestamps must explicitly specify UTC")
+    return parsed.astimezone(UTC)
+
+
+def validate_vector_window(vector_from: datetime, vector_until: datetime) -> None:
+    for value in (vector_from, vector_until):
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(None):
+            raise ValueError("Vector window timestamps must explicitly specify UTC")
+    if vector_until < vector_from:
+        raise ValueError("Vector window end precedes its start")
+
+
 def select_logged_vector(
-    rows: Sequence[Mapping[str, Any]], *, user_id: uuid.UUID, text: str, model: str, dimensions: int
-) -> tuple[list[float], list[str]]:
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    user_id: uuid.UUID,
+    text: str,
+    model: str,
+    dimensions: int,
+    vector_from: datetime,
+    vector_until: datetime,
+) -> tuple[list[float], list[str], dict[str, int | float]]:
+    """Use exactly the pilot-window row; compare other rows without exporting them."""
+    validate_vector_window(vector_from, vector_until)
     matches = [
         row
         for row in rows
@@ -155,13 +181,38 @@ def select_logged_vector(
         and row["query_text"] == text
         and row["query_embedding_model"] == model
     ]
-    if not matches:
-        raise ValueError(f"No matching logged vector for user {user_id}")
-    vectors = [_vector(row["query_embedding"], dimensions) for row in matches]
-    ids = sorted(str(row["log_id"]) for row in matches)
-    if any(vector != vectors[0] for vector in vectors[1:]):
-        raise ValueError(f"Conflicting logged vectors for user {user_id}: {','.join(ids)}")
-    return vectors[0], ids
+    in_window = []
+    outside = []
+    for row in matches:
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        if not isinstance(created_at, datetime) or created_at.tzinfo is None:
+            raise ValueError(f"Invalid logged timestamp for user {user_id}")
+        (in_window if vector_from <= created_at <= vector_until else outside).append(row)
+    if len(in_window) != 1:
+        raise ValueError(
+            f"Expected exactly one in-window vector for user {user_id}; found {len(in_window)}"
+        )
+    chosen = in_window[0]
+    vector = _vector(chosen["query_embedding"], dimensions)
+    comparisons = [_vector(row["query_embedding"], dimensions) for row in outside]
+    return (
+        vector,
+        [str(chosen["log_id"])],
+        {
+            "out_of_window_rows": len(outside),
+            "identical_out_of_window": sum(other == vector for other in comparisons),
+            "max_abs_diff": max(
+                (
+                    abs(left - right)
+                    for other in comparisons
+                    for left, right in zip(vector, other, strict=True)
+                ),
+                default=0.0,
+            ),
+        },
+    )
 
 
 @contextmanager
@@ -226,6 +277,8 @@ class SweepInputs:
     fingerprint: str
     shas: dict[str, str]
     route_id: str
+    vector_from: datetime
+    vector_until: datetime
     pilot_hashes: dict[str, str] = field(default_factory=dict)
     pilot_provenance: dict[str, Any] = field(default_factory=dict)
 
@@ -291,6 +344,7 @@ def pilot_hashes(path: Path) -> dict[str, str]:
 
 def prepare_inputs(args: argparse.Namespace) -> SweepInputs:
     """Local-only pin checks; no DB, settings, credentials or transport access."""
+    validate_vector_window(args.vector_from, args.vector_until)
     index = pinned_json(INDEX, PHASE3B_INDEX_SHA256)
     arm = index["arms"][args.phase3b_arm]
     manifest = pinned_json(args.phase3b_manifest, arm["artifacts_sha256"]["run_manifest.json"])
@@ -351,6 +405,8 @@ def prepare_inputs(args: argparse.Namespace) -> SweepInputs:
         storage_model=embedding_adapter.STORAGE_MODEL,
         dimensions=embedding_adapter.DIMENSIONS,
         route_id=manifest["embedding"]["route_id"],
+        vector_from=args.vector_from,
+        vector_until=args.vector_until,
         fingerprint=arm["restore"]["fingerprint_sha256"],
         shas={
             "evidence_index": PHASE3B_INDEX_SHA256,
@@ -398,6 +454,7 @@ async def sweep_snapshot(
     if injection.MAX_MEMORY_ITEMS != exposure.BASELINE_K:
         raise ValueError("MAX_MEMORY_ITEMS must start at 5")
     verify_embedding_context(inputs)
+    validate_vector_window(inputs.vector_from, inputs.vector_until)
     users = {row["question_id"]: question_user_id(row["question_id"]) for row in inputs.dataset}
     before = await fingerprint_benchmark_users(reader, list(users.values()))
     if before["sha256"] != inputs.fingerprint:
@@ -436,13 +493,15 @@ async def sweep_snapshot(
             text=parity_query_text(entry["question"]),
             model=inputs.model,
             dimensions=inputs.dimensions,
+            vector_from=inputs.vector_from,
+            vector_until=inputs.vector_until,
         )
     questions = []
     raw_questions = []
     with no_providers() as guard:
         for entry in inputs.dataset:
             qid = entry["question_id"]
-            vector, log_ids = vectors[qid]
+            vector, log_ids, comparison = vectors[qid]
             result = EmbeddingVectorResult(
                 embedding=vector,
                 provider="azure-openrouter",
@@ -545,6 +604,7 @@ async def sweep_snapshot(
                     },
                     "vector_match_count": len(log_ids),
                     "vector_log_ids": log_ids,
+                    **comparison,
                     "vector_sha256": digest_bytes(
                         json.dumps(vector, separators=(",", ":")).encode()
                     ),
@@ -580,6 +640,14 @@ async def sweep_snapshot(
         "embedding_model": inputs.model,
         "storage_model": inputs.storage_model,
         "dimensions": inputs.dimensions,
+        "vector_window": {
+            "from": inputs.vector_from.isoformat(),
+            "until": inputs.vector_until.isoformat(),
+        },
+        "questions_with_differing_out_of_window_rows": sum(
+            question["identical_out_of_window"] < question["out_of_window_rows"]
+            for question in questions
+        ),
         "duplicate_rule": exposure.DUPLICATE_RULE,
         "exact_duplicate_rule": exposure.EXACT_DUPLICATE_RULE,
         "distractor_rule": exposure.DISTRACTOR_RULE,
@@ -686,7 +754,8 @@ def render_report(data: Mapping[str, Any], prior: Mapping[str, Any]) -> str:
             "## Calls and cost",
             "",
             f"Provider calls: {data['provider_calls']}; embedding: {data['embedding_calls']}; chat: {data['chat_calls']}; cost: USD {data['provider_cost_usd']} (zero calls, not a token-price estimate).",
-            "Query vectors reused from retrieval_log; exact normalized-question/model match, identical duplicate rows only.",
+            "Query vectors reused from retrieval_log; exact normalized-question/model match and exactly one row in the inclusive pilot A1 window.",
+            f"Pinned vector window: [{data['vector_window']['from']}, {data['vector_window']['until']}]. Questions with differing out-of-window rows: {data['questions_with_differing_out_of_window_rows']}/{len(data['questions'])}.",
             f"Model: `{data['embedding_model']}`; storage: `{data['storage_model']}`; dimensions: {data['dimensions']}.",
             "",
             "## Prior evidence",
@@ -848,6 +917,8 @@ def parser() -> argparse.ArgumentParser:
     ):
         result.add_argument(f"--{name}", type=Path, required=True)
     result.add_argument("--phase3b-arm", choices=("A0", "A1"), default="A1")
+    result.add_argument("--vector-from", type=utc_timestamp, required=True)
+    result.add_argument("--vector-until", type=utc_timestamp, required=True)
     result.add_argument(
         "--pilot-manifest",
         type=Path,

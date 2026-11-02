@@ -28,6 +28,9 @@ from orchestrator.memory.store import MemoryStore
 from scripts import memory_exposure_sweep as sweep
 from tests.longmemeval.evaluate import build_parity_memory_context
 
+VECTOR_FROM = datetime(2026, 11, 2, 9, 55, 58, tzinfo=UTC)
+VECTOR_UNTIL = datetime(2026, 11, 2, 10, 34, 15, tzinfo=UTC)
+
 
 def memory(index: int, content: str = "Ari likes tea") -> dict[str, Any]:
     return {"id": uuid.UUID(int=index + 1), "content": content, "category": "fact"}
@@ -239,7 +242,7 @@ def test_summary_attributes_prefix_vs_non_target_budget_loss():
     }
 
 
-def test_logged_vector_matches_exact_text_user_model_and_duplicates():
+def test_logged_vector_matches_exact_text_user_model_and_window():
     user = uuid.UUID(int=10)
     row = {
         "log_id": "one",
@@ -247,28 +250,46 @@ def test_logged_vector_matches_exact_text_user_model_and_duplicates():
         "query_text": "Ari tea?",
         "query_embedding_model": "model",
         "query_embedding": "[1,2]",
+        "created_at": datetime(2026, 11, 2, 10, 0, tzinfo=UTC),
     }
-    vector, ids = sweep.select_logged_vector(
-        [row, {**row, "log_id": "two"}], user_id=user, text="Ari tea?", model="model", dimensions=2
+    old = {**row, "log_id": "two", "created_at": datetime(2026, 10, 30, tzinfo=UTC)}
+    vector, ids, stats = sweep.select_logged_vector(
+        [row, old],
+        user_id=user,
+        text="Ari tea?",
+        model="model",
+        dimensions=2,
+        vector_from=VECTOR_FROM,
+        vector_until=VECTOR_UNTIL,
     )
-    assert vector == [1.0, 2.0] and ids == ["one", "two"]
+    assert vector == [1.0, 2.0] and ids == ["one"]
+    assert stats == {"out_of_window_rows": 1, "identical_out_of_window": 1, "max_abs_diff": 0.0}
     for field, value in (
         ("user_id", uuid.UUID(int=11)),
         ("query_text", "Ari  tea?"),
         ("query_embedding_model", "wrong"),
     ):
-        with pytest.raises(ValueError, match="No matching"):
+        with pytest.raises(ValueError, match=f"user {user}; found 0"):
             sweep.select_logged_vector(
-                [{**row, field: value}], user_id=user, text="Ari tea?", model="model", dimensions=2
+                [{**row, field: value}],
+                user_id=user,
+                text="Ari tea?",
+                model="model",
+                dimensions=2,
+                vector_from=VECTOR_FROM,
+                vector_until=VECTOR_UNTIL,
             )
-    with pytest.raises(ValueError, match="one,two"):
-        sweep.select_logged_vector(
-            [row, {**row, "log_id": "two", "query_embedding": "[1,3]"}],
-            user_id=user,
-            text="Ari tea?",
-            model="model",
-            dimensions=2,
-        )
+    vector, ids, stats = sweep.select_logged_vector(
+        [row, {**old, "query_embedding": "[1,3]"}],
+        user_id=user,
+        text="Ari tea?",
+        model="model",
+        dimensions=2,
+        vector_from=VECTOR_FROM,
+        vector_until=VECTOR_UNTIL,
+    )
+    assert vector == [1.0, 2.0] and ids == ["one"]
+    assert stats == {"out_of_window_rows": 1, "identical_out_of_window": 0, "max_abs_diff": 1.0}
     for value in ("[0,0]", "[1]", "[NaN,1]", "[true,1]"):
         with pytest.raises(ValueError):
             sweep.select_logged_vector(
@@ -277,6 +298,8 @@ def test_logged_vector_matches_exact_text_user_model_and_duplicates():
                 text="Ari tea?",
                 model="model",
                 dimensions=2,
+                vector_from=VECTOR_FROM,
+                vector_until=VECTOR_UNTIL,
             )
 
 
@@ -332,6 +355,7 @@ class FakePool:
                     "query_text": sweep.parity_query_text(entry["question"]),
                     "query_embedding_model": embedding_adapter.MODEL,
                     "query_embedding": "[1,2]",
+                    "created_at": datetime(2026, 11, 2, 10, 0, tzinfo=UTC),
                 }
             )
 
@@ -412,6 +436,8 @@ async def synthetic_inputs():
         fingerprint=fp["sha256"],
         shas={"dataset": "a" * 64},
         route_id="synthetic-selected-route",
+        vector_from=VECTOR_FROM,
+        vector_until=VECTOR_UNTIL,
     )
     return inputs, pool, MemoryStore(cast(asyncpg.Pool, pool), encryption)
 
@@ -596,6 +622,8 @@ def local_input_files(tmp_path, monkeypatch):
         **{name: paths[name] for name in paths if name != "cases"},
         phase3b_arm="A1",
         pilot_results=pilot,
+        vector_from=VECTOR_FROM,
+        vector_until=VECTOR_UNTIL,
     )
     return args
 
@@ -618,6 +646,10 @@ def test_input_pins_mapping_and_dry_run_without_db_or_provider(tmp_path, monkeyp
         argv.extend([f"--{name.replace('_', '-')}", str(getattr(args, name))])
     argv.extend(
         [
+            "--vector-from",
+            VECTOR_FROM.isoformat(),
+            "--vector-until",
+            VECTOR_UNTIL.isoformat(),
             "--raw-out",
             str(tmp_path / "raw.json"),
             "--sanitized-out",
@@ -978,6 +1010,10 @@ def test_full_script_path_writes_all_outputs_for_each_outcome(
         argv.extend([f"--{name.replace('_', '-')}", str(getattr(args, name))])
     argv.extend(
         [
+            "--vector-from",
+            VECTOR_FROM.isoformat(),
+            "--vector-until",
+            VECTOR_UNTIL.isoformat(),
             "--raw-out",
             str(raw),
             "--sanitized-out",
@@ -994,6 +1030,110 @@ def test_full_script_path_writes_all_outputs_for_each_outcome(
     assert saved["decision"]["outcome"] == outcome
     assert saved["raw_sha256"] == sweep.digest_bytes(raw.read_bytes())
     assert saved["provider_calls"] == 0 and connection.closed
+    assert saved["vector_window"] == {
+        "from": VECTOR_FROM.isoformat(),
+        "until": VECTOR_UNTIL.isoformat(),
+    }
+    assert saved["questions_with_differing_out_of_window_rows"] == 0
+    assert all(
+        question["out_of_window_rows"] == 0 and question["max_abs_diff"] == 0.0
+        for question in saved["questions"]
+    )
     assert outcome in report.read_text() and "unverified" in report.read_text()
+    assert (
+        VECTOR_FROM.isoformat() in report.read_text()
+        and VECTOR_UNTIL.isoformat() in report.read_text()
+    )
     for path in (raw, sanitized, report):
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_logged_window_requires_exactly_one_row_even_when_vectors_identical(count):
+    user = uuid.UUID(int=10)
+    row = {
+        "log_id": "a",
+        "user_id": user,
+        "query_text": "tea",
+        "query_embedding_model": "model",
+        "query_embedding": "[1,2]",
+        "created_at": VECTOR_FROM,
+    }
+    rows = [{**row, "created_at": datetime(2026, 10, 30, tzinfo=UTC)}]
+    rows.extend({**row, "log_id": str(pos)} for pos in range(count))
+    with pytest.raises(ValueError, match=f"user {user}; found {count}"):
+        sweep.select_logged_vector(
+            rows,
+            user_id=user,
+            text="tea",
+            model="model",
+            dimensions=2,
+            vector_from=VECTOR_FROM,
+            vector_until=VECTOR_UNTIL,
+        )
+
+
+@pytest.mark.parametrize("created_at", [VECTOR_FROM, VECTOR_UNTIL])
+def test_vector_window_includes_both_endpoints(created_at):
+    user = uuid.UUID(int=10)
+    row = {
+        "log_id": "a",
+        "user_id": user,
+        "query_text": "tea",
+        "query_embedding_model": "model",
+        "query_embedding": "[1,2]",
+        "created_at": created_at,
+    }
+    vector, ids, stats = sweep.select_logged_vector(
+        [row],
+        user_id=user,
+        text="tea",
+        model="model",
+        dimensions=2,
+        vector_from=VECTOR_FROM,
+        vector_until=VECTOR_UNTIL,
+    )
+    assert vector == [1.0, 2.0] and ids == ["a"]
+    assert stats == {"out_of_window_rows": 0, "identical_out_of_window": 0, "max_abs_diff": 0.0}
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-11-02T10:00:00", "2026-11-02T10:00:00+01:00", "not-a-date"]
+)
+def test_vector_window_requires_explicit_utc(value):
+    with pytest.raises(ValueError):
+        sweep.utc_timestamp(value)
+
+
+def test_vector_window_utc_and_order_validation():
+    assert sweep.utc_timestamp("2026-11-02T09:55:58Z") == VECTOR_FROM
+    with pytest.raises(ValueError, match="precedes"):
+        sweep.validate_vector_window(VECTOR_UNTIL, VECTOR_FROM)
+
+
+@pytest.mark.asyncio
+async def test_outside_vector_statistics_and_aggregate_are_numeric_and_sanitized(configured):
+    inputs, pool, store = await synthetic_inputs()
+    first, _, third = pool.logs[:3]
+    old = datetime(2026, 10, 30, tzinfo=UTC)
+    pool.logs.extend(
+        [
+            {**first, "log_id": "old-identical", "created_at": old},
+            {**first, "log_id": "old-different", "created_at": old, "query_embedding": "[1.25,2]"},
+            {
+                **third,
+                "log_id": "old-different-third",
+                "created_at": old,
+                "query_embedding": "[1,2.1]",
+            },
+        ]
+    )
+    _, clean = await sweep.sweep_snapshot(pool, store, inputs)
+    assert clean["questions"][0]["out_of_window_rows"] == 2
+    assert clean["questions"][0]["identical_out_of_window"] == 1
+    assert clean["questions"][0]["max_abs_diff"] == 0.25
+    assert clean["questions"][2]["max_abs_diff"] == pytest.approx(0.1)
+    assert clean["questions_with_differing_out_of_window_rows"] == 2
+    assert all(type(question["max_abs_diff"]) is float for question in clean["questions"])
+    sweep.validate_sanitized(clean)
+    assert "old-different" not in json.dumps(clean)
