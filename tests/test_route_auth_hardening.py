@@ -93,6 +93,8 @@ async def authenticated_client(monkeypatch):
     pool.acquire = MagicMock(side_effect=lambda: mock_acquire())
 
     app_state = MagicMock()
+    app_state.history_runtime = None
+    app_state.settings = get_settings()
     app_state.db_pool = pool
     app_state.redis = None
     app_state.memory_store = None

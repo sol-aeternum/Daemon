@@ -12,6 +12,7 @@ from uuid import UUID
 import asyncpg
 
 from orchestrator.config import Settings
+from orchestrator.services.connection_cleanup import pool_connection
 
 from .errors import JournalError
 from .model import JournalState
@@ -156,7 +157,7 @@ async def _barrier(
     pool: asyncpg.Pool, settings: Settings, *, initialize_binding: bool = True
 ) -> None:
     config = configured_journal(settings)
-    async with pool.acquire() as connection:
+    async with pool_connection(pool) as connection:
         locked = False
         try:
             # A cancelled lock query may have succeeded before its response was

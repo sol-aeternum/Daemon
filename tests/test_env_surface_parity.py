@@ -109,7 +109,7 @@ AMBIENT_SUBCONFIG_CLASSES: tuple[type[BaseSettings], ...] = (
 
 # Inventory pins. A change here is a deliberate review trigger: the coverage
 # test reports the resolved name of the new field in the same run.
-EXPECTED_SETTINGS_FIELD_COUNT = 132
+EXPECTED_SETTINGS_FIELD_COUNT = 140
 EXPECTED_VIDEO_PRICING_FIELD_COUNT = 6
 
 # --------------------------------------------------------------------------
@@ -446,6 +446,7 @@ SECURITY_CRITICAL: dict[str, str] = {
 # dotenv file could previously be used. Unifying the two lists is therefore a
 # separate, explicit decision and is not implied by this gate.
 SERVICE_ROLE_EXCEPTIONS: dict[str, str] = {
+    "DAEMON_RESTORE_HISTORY_KEY_FILE": "Backend-only K1 path; worker rejects it before I/O and must not receive the key group or file via shared dotenv/mounts.",
     "DAEMON_TASK_ACCEPTOR_DATABASE_URL": (
         "backend-only acceptor capability; worker startup explicitly refuses this credential"
     ),
@@ -1927,7 +1928,7 @@ def test_service_role_exceptions_are_exactly_the_ten_backend_only_keys() -> None
     backend = set(surface.compose.service_environment.get("backend", {}))
     worker = set(surface.compose.service_environment.get("worker", {}))
     assert set(SERVICE_ROLE_EXCEPTIONS) == backend - worker
-    assert len(SERVICE_ROLE_EXCEPTIONS) == 10
+    assert len(SERVICE_ROLE_EXCEPTIONS) == 11
     for name, reason in SERVICE_ROLE_EXCEPTIONS.items():
         assert reason.strip(), name
 

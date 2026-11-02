@@ -122,3 +122,12 @@ stream/artifact output fences, provisioning and deployed/browser acceptance
 remain outstanding in the [launch checklist](DAILY_DRIVER_LAUNCH_CHECKLIST.md).
 No live schema/credentials/grants, private storage/key provisioning, deployment,
 durable flag activation, provider calls or exactly-once effects are established.
+
+## Later observation-only startup
+
+The approved [runtime lifecycle](RESTORE_HISTORY_RUNTIME.md) installs a dedicated
+read-only supervisor in actual backend startup. It permits a later explicit read
+to replace a failed owner only after demonstrated physical closure and complete
+requalification, never by retrying the failed lookup or clearing a writer. The
+original direct collaborator remains available to isolated fixtures. The runtime
+host admits only its closed audited ingress and refuses producer/worker activity.

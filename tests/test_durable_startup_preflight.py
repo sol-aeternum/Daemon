@@ -247,3 +247,45 @@ async def test_only_positive_pre050_catalog_evidence_allows_unconfigured_legacy_
         else:
             await worker.on_shutdown(result)
     host.pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_first_backend_pool_failure_keeps_connection_values_private(host):
+    host.connect.side_effect = OSError("synthetic-sensitive-connection-value")
+    with pytest.raises(JournalError, match="database_required") as caught:
+        await db.init_app_state(host.settings)
+    assert "sensitive" not in str(caught.value)
+    host.barrier.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["credential", "missing-url"])
+async def test_h_worker_preserves_native_credentials_and_target_checks_before_io(
+    host, monkeypatch, failure
+):
+    from tests.test_history_runtime import selected
+    from orchestrator.services.restore_history.configuration import SETTING_FIELDS
+
+    select(host)
+    profile = selected(daemon_restore_history_key_file=None)
+    for field in SETTING_FIELDS:
+        setattr(host.settings, field, getattr(profile, field))
+
+    async def forbidden(*a, **kw):
+        pytest.fail("history I/O preceded native credential/target guards")
+
+    monkeypatch.setattr(worker.HistoryRuntime, "open", forbidden)
+    if failure == "credential":
+
+        def reject(_):
+            raise ValueError("synthetic credential rejection")
+
+        monkeypatch.setattr(worker, "validate_database_credentials", reject)
+        expected = ValueError
+    else:
+        host.settings.database_url = None
+        expected = JournalError
+    with pytest.raises(expected):
+        await worker.on_startup({})
+    host.connect.assert_not_awaited()
+    host.barrier.assert_not_awaited()

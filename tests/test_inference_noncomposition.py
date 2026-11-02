@@ -280,3 +280,37 @@ def test_only_exact_approved_startup_factory_invocations_are_admitted(site, func
     assert any(
         "factory activation" in finding for finding in composition_violations({site: source})
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "orchestrator/db.py",
+        "orchestrator/worker/worker.py",
+        "orchestrator/main.py",
+        "orchestrator/routes/tasks.py",
+    ],
+)
+@pytest.mark.parametrize(
+    "symbol", ["HistoryAcceptance", "HistoryEffects", "HistoryCoordinator", "HistoryProjection"]
+)
+def test_observation_startup_does_not_admit_mutating_imports_or_construction(path, symbol):
+    source = (
+        f"from orchestrator.services.restore_history.composition import {symbol}\nowner={symbol}()"
+    )
+    assert composition_violations({path: source})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from orchestrator.services.restore_history.runtime import HistoryRuntime as Alias\n",
+        "import orchestrator.services.restore_history.runtime as runtime\n",
+        "from orchestrator.services.restore_history.runtime import *\n",
+        "from orchestrator.services.restore_history.runtime import HistoryRuntime, HistoryEffects\n",
+        "state.history_observation = supplied\n",
+        "async def other():\n    state.history_runtime = HistoryRuntime(history_config, settings)\n",
+    ],
+)
+def test_startup_read_exception_does_not_allow_alias_or_foreign_binding(source):
+    assert composition_violations({"orchestrator/db.py": source})

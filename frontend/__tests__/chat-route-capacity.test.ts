@@ -224,3 +224,26 @@ describe('chat bridge routing', () => {
     ).not.toHaveProperty('route_class');
   });
 });
+
+it('preserves an observation-only refusal without trying a fallback backend', async () => {
+  const detail = {
+    code: 'history_unavailable',
+    task_id: null,
+    retry_safe: false,
+  };
+  const fetcher = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ detail }), {
+      status: 503,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      },
+    }),
+  );
+  vi.stubGlobal('fetch', fetcher);
+  const response = await POST(chatRequest());
+  expect(response.status).toBe(503);
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  expect(await response.json()).toEqual({ detail });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});

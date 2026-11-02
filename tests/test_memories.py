@@ -102,6 +102,7 @@ async def auth_client(monkeypatch):
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     """Create a mock AppState with optional memory store."""
     app_state = MagicMock(spec=AppState)
+    app_state.history_runtime = None
     app_state.settings = get_settings()
     app_state.memory_store = mock_store
     app_state.redis = None
@@ -822,6 +823,7 @@ async def test_post_memories_dream_device_no_user_id_enqueues_own(client, monkey
 
     try:
         app.state.app_state = MagicMock()
+        app.state.app_state.history_runtime = None
         app.state.app_state.db_pool = pool
         app.state.app_state.redis = mock_redis
         app.state.app_state.memory_store = None
@@ -880,6 +882,7 @@ async def test_post_memories_dream_device_different_user_forbidden(client, monke
 
     try:
         app.state.app_state = MagicMock()
+        app.state.app_state.history_runtime = None
         app.state.app_state.db_pool = pool
         app.state.app_state.redis = mock_redis
         app.state.app_state.memory_store = None
@@ -934,6 +937,7 @@ async def test_post_memories_dream_device_own_user_id_succeeds(client, monkeypat
 
     try:
         app.state.app_state = MagicMock()
+        app.state.app_state.history_runtime = None
         app.state.app_state.db_pool = pool
         app.state.app_state.redis = mock_redis
         app.state.app_state.memory_store = None

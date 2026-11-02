@@ -174,6 +174,17 @@ class Settings(BaseSettings):
     daemon_task_acceptor_role: str | None = None
     daemon_task_worker_role: str | None = None
 
+    # Explicit H observation-only startup. Identity/ownership is supplied
+    # independently of SQL and shared history; no automatic provisioning.
+    daemon_restore_history_dir: str | None = None
+    daemon_restore_history_expected_file: str | None = None
+    daemon_restore_history_operator_uid: str | None = None
+    daemon_restore_history_backend_uid: str | None = None
+    daemon_restore_history_worker_uid: str | None = None
+    daemon_restore_history_group_gid: str | None = None
+    daemon_restore_history_key_gid: str | None = None
+    daemon_restore_history_key_file: str | None = Field(default=None, repr=False)
+
     @property
     def sse_keepalive_interval_s(self) -> float:
         return (
