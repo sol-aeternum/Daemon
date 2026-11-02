@@ -262,7 +262,7 @@ export async function POST(req: Request) {
     } catch {
       // A suggestion may already have been claimed and persisted. Never send
       // it again to another backend after an uncertain transport failure.
-      if (suggestion_id) break;
+      if (suggestion_id || proxyHeaders.has('Idempotency-Key')) break;
       // Try the next configured backend. A transport error can name internal
       // hosts and ports, so nothing from it is surfaced to the browser.
     }
@@ -270,6 +270,22 @@ export async function POST(req: Request) {
 
   const responseHeaders = new Headers();
   responseHeaders.set('Cache-Control', 'no-store');
+  if (backendRes && (backendRes.status === 409 || backendRes.status === 503)) {
+    const recovery = await backendRes
+      .clone()
+      .json()
+      .catch(() => null);
+    if (
+      recovery?.detail?.retry_safe === false &&
+      (recovery.detail.code === 'restore_recovery_required' ||
+        recovery.detail.code === 'history_unavailable')
+    ) {
+      return Response.json(recovery, {
+        status: backendRes.status,
+        headers: responseHeaders,
+      });
+    }
+  }
   if (backendRes) {
     backendRes.headers.forEach((value, key) => {
       if (key.toLowerCase() === 'set-cookie') {

@@ -139,10 +139,12 @@ export async function readScopedHistory(
     getAuthHeaders,
     fetch: fetcher = fetch,
     timeoutMs = 12000,
+    readErrorBody = false,
   }: {
     getAuthHeaders: () => Promise<Record<string, string>>;
     fetch?: typeof fetch;
     timeoutMs?: number;
+    readErrorBody?: boolean;
   },
 ): Promise<{ status: number; data: unknown }> {
   lease.assertCurrent();
@@ -171,7 +173,8 @@ export async function readScopedHistory(
       lease.assertCurrent();
       if (controller.signal.aborted) throw controller.signal.reason;
       if (response.status === 404 && index < candidates.length - 1) continue;
-      const data: unknown = response.ok ? await response.json() : null;
+      const data: unknown =
+        response.ok || readErrorBody ? await response.json() : null;
       lease.assertCurrent();
       if (controller.signal.aborted) throw controller.signal.reason;
       return { status: response.status, data };

@@ -704,6 +704,13 @@ async def test_exact_marker_checks_cannot_be_replaced_by_sequence_presence(env, 
 
 
 TITLE_GUARD_IMPORTS = {
+    # Approved historical observation reuses the original-generation read
+    # fence only. No new generation capture or deletion/reset request/phase API.
+    "orchestrator/services/restore_history/observation.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
     # Approved explicit isolated C1 composition only. Exact guard/lock/refusal
     # symbols, never deletion/reset request or phase mutation APIs.
     "orchestrator/artifact_namespaces.py": {
@@ -888,6 +895,22 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
 @pytest.mark.parametrize(
     "path,extra",
     [
+        (
+            "orchestrator/services/restore_history/observation.py",
+            "from orchestrator.services.account_control.guard import capture_generation",
+        ),
+        (
+            "orchestrator/services/restore_history/observation.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/services/restore_history/observation.py",
+            "from orchestrator.services.account_control.store import lock_account_control",
+        ),
+        (
+            "orchestrator/services/restore_history/observation.py",
+            "from orchestrator.services.account_control.transaction import control_transaction",
+        ),
         (
             "orchestrator/resource_inputs.py",
             "from orchestrator.services.account_control.store import record_request_facts",

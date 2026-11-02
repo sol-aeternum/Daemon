@@ -97,8 +97,9 @@ Therefore **every historical matching H key refuses as historical evidence**;
 a different request conflicts. Even matching committed SQL cannot distinguish an
 acknowledged prior response from a lost response. A new owner cannot use readback
 to promote that ambiguity, recreate work after rollback, refresh generation or
-replace an operation ID. This source supplies no historical-observation/client
-response contract. The ordinary, uncomposed native replay API is unchanged and
+replace an operation ID. The separate [historical-observation boundary](RESTORE_HISTORY_OBSERVATION.md)
+now supplies the approved read/client contract; this acceptance path still
+refuses historical work. The ordinary, uncomposed native replay API is unchanged and
 is not protected merely because this source module exists.
 
 ## Synthetic evidence and limits
@@ -125,7 +126,7 @@ cases ran.
 
 The pre-existing uncomposed native diagnostic still demonstrates its gap. The
 new source does not intercept callers that bypass this isolated join. Runtime
-composition, authenticated client/key compatibility, historical observation,
+composition, deployed client/key and historical-observation qualification,
 production retention/J1 appliers, independent restore controls, financial/auth/
 cache continuity, runtime Send/Stop/output, deployment and enablement remain outstanding.
 No result or history/projection receipt is dispatch permission; no exactly-once

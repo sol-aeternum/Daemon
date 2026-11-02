@@ -26,6 +26,11 @@ import {
 } from '@/lib/conversationPager';
 import { HistoryScope, readScopedHistory } from '@/lib/historyScope';
 import {
+  historyRecoveryCode,
+  historyRecoveryMessage,
+} from '@/lib/historyRecovery';
+import { blockSubmission, clearSubmissionBlock } from '@/lib/pendingSubmission';
+import {
   compareConversationBoundary,
   parseConversationHistoryPage,
   parseMessageHistoryPage,
@@ -264,6 +269,11 @@ const EMPTY_MESSAGE_HISTORY: MessageHistorySnapshot<Conversation> = {
 const emptyMessageHistory = () => EMPTY_MESSAGE_HISTORY;
 
 export function useConversationHistory() {
+  const [taskRecoveryProblem, setTaskRecoveryProblem] = useState<{
+    generation: number;
+    key: string;
+    message: string;
+  } | null>(null);
   const authGeneration = useAuthGeneration();
   const [searchQuery, setSearchQueryState] = useState('');
   const [search, setSearch] = useState<SearchState>(IDLE_SEARCH);
@@ -1000,13 +1010,40 @@ export function useConversationHistory() {
       try {
         const result = await readScopedHistory(
           lease,
-          apiCandidates(`/tasks/by-key/${encodeURIComponent(key)}`),
-          { getAuthHeaders },
+          apiCandidates(`/tasks/by-key/${encodeURIComponent(key)}`).slice(0, 1),
+          { getAuthHeaders, readErrorBody: true },
         );
         lease.assertCurrent();
+        const code = historyRecoveryCode(result.data);
+        if (code) {
+          blockSubmission(key, code);
+          setTaskRecoveryProblem({
+            generation: lease.generation,
+            key,
+            message: historyRecoveryMessage(code),
+          });
+          return undefined;
+        }
         if (result.status === 404) return null;
         if (result.status !== 200) return undefined;
         const task = result.data as Record<string, unknown>;
+        if (task.status === 'needs_attention') {
+          blockSubmission(key, 'inference_dispatch_unresolved');
+          setTaskRecoveryProblem({
+            generation: lease.generation,
+            key,
+            message: historyRecoveryMessage('inference_dispatch_unresolved'),
+          });
+        } else if (
+          typeof task.id === 'string' &&
+          typeof task.conversation_id === 'string' &&
+          typeof task.status === 'string'
+        ) {
+          clearSubmissionBlock(key);
+          setTaskRecoveryProblem((previous) =>
+            previous?.key === key ? null : previous,
+          );
+        }
         return typeof task.id === 'string' &&
           typeof task.conversation_id === 'string' &&
           typeof task.status === 'string'
@@ -1102,6 +1139,10 @@ export function useConversationHistory() {
     refreshCurrentConversation,
     cancelTask,
     taskForKey,
+    taskRecoveryProblem:
+      taskRecoveryProblem?.generation === getAuthGeneration()
+        ? taskRecoveryProblem.message
+        : null,
     taskStatus,
     switchConversation,
     fetchConversationById,

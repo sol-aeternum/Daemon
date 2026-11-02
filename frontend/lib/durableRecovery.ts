@@ -51,7 +51,7 @@ type ReconcileDeps = {
   /** The submission belongs to the task's conversation (a new chat's is named). */
   promote: (key: string, conversationId: string) => void;
   open: (conversationId: string) => void;
-  /** No task exists for the key (after the retries): it was never accepted. */
+  /** No task was found at the read boundary; this is not permission to resend. */
   notFound?: (key: string) => void;
   /** Show the server's copy of the open conversation's turn for this task. */
   showSaved: (taskId: string) => Promise<void>;
@@ -91,7 +91,7 @@ export async function reconcileSubmission(
   if (task === null) deps.notFound?.(key);
   if (!task || !current()) return;
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
-    deps.settle(key);
+    if (task.status !== 'needs_attention') deps.settle(key);
   } else {
     // Record first: that clears the composer still holding the submission,
     // which is found under the conversation it was sent from (``null`` for

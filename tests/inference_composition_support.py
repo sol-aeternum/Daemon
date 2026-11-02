@@ -82,6 +82,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         "_composition",
                         "_task_composition",
                         "task_composition",
+                        "history_observation",
                     ):
                         default = (
                             path in ("orchestrator/tasks/store.py", "orchestrator/memory/store.py")
@@ -151,6 +152,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "TaskStore",
                                     "HistoryAcceptance",
                                     "HistoryEffects",
+                                    "HistoryObservation",
                                     "HistoryProjection",
                                     "_owned",
                                     "_accept_with_stage",
@@ -240,12 +242,20 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                 # H1 remains an uncalled source slice. Internal package imports
                 # compose its definitions, never admit an external runtime host.
                 if not path.startswith("orchestrator/services/restore_history/"):
+                    observation_reader = (
+                        path == "orchestrator/routes/tasks.py"
+                        and isinstance(node, ast.ImportFrom)
+                        and node.level == 0
+                        and node.module == "orchestrator.services.restore_history.observation"
+                        and [(item.name, item.asname) for item in node.names]
+                        == [("HistoryObservation", None)]
+                    )
                     if isinstance(node, ast.ImportFrom):
                         module = modules[0]
                         imported = [module + "." + item.name for item in node.names]
                     else:
                         imported = modules
-                    if any(
+                    if not observation_reader and any(
                         m == "orchestrator.services.restore_history"
                         or m.startswith("orchestrator.services.restore_history.")
                         for m in imported
@@ -273,6 +283,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     (path, enclosing)
                     not in {
                         ("orchestrator/services/restore_history/composition.py", "_accept"),
+                        ("orchestrator/services/restore_history/observation.py", "_lookup"),
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
@@ -407,6 +418,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ".HistoryAcceptance",
                         ".HistoryProjection",
                         ".HistoryEffects",
+                        ".HistoryObservation",
                     )
                 ) or target in (
                     "AcceptanceProjection",
@@ -414,6 +426,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     "HistoryAcceptance",
                     "HistoryProjection",
                     "HistoryEffects",
+                    "HistoryObservation",
                 ):
                     violations.append(f"{path}:{node.lineno}:history adapter construction")
                 if (
@@ -426,7 +439,8 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if (
                 path not in ADMITTED
                 and any(
-                    keyword.arg in ("inference_recovery", "cover_new_inference")
+                    keyword.arg
+                    in ("inference_recovery", "cover_new_inference", "history_observation")
                     for keyword in node.keywords
                 )
                 and not admitted_call

@@ -7,12 +7,13 @@ another account is reported exactly like a missing one (404).
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -25,6 +26,7 @@ from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
 from orchestrator.tasks.composition import TaskComposition
 from orchestrator.services.account_control.transaction import ObservationBlocked
+from orchestrator.services.restore_history.observation import HistoryObservation
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -192,19 +194,87 @@ def task_out(snapshot: TaskSnapshot) -> TaskOut:
 @router.get("/by-key/{idempotency_key}", response_model=TaskOut)
 async def get_task_by_key(
     idempotency_key: str,
+    response: Response,
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> TaskOut:
-    """The caller's task created with this idempotency key.
+    """Observe the original task; no acknowledgement, replay or send authority."""
+    headers = {"Cache-Control": "no-store"}
+    response.headers.update(headers)
 
-    Lets a client that stopped or lost a request before learning the task id
-    find out whether the server accepted it (404: it did not, or not yet).
-    """
+    def unavailable() -> HTTPException:
+        return HTTPException(
+            status_code=503,
+            detail={"code": "history_unavailable", "task_id": None, "retry_safe": False},
+            headers=headers,
+        )
+
     if not IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
-        raise HTTPException(status_code=404, detail="Task not found")
-    snapshot = await task_store(app_state).task_for_key(auth.user_id, idempotency_key)
+        raise HTTPException(status_code=404, detail="Task not found", headers=headers)
+    reader = getattr(app_state, "history_observation", None)
+    if reader is not None:
+        if type(reader) is not HistoryObservation:
+            raise unavailable()
+        try:
+            if (
+                type(reader._tasks) is not TaskStore
+                or reader._tasks._pool is not app_state.db_pool
+                or reader._tasks._memory is not app_state.memory_store
+            ):
+                raise unavailable()
+            if (
+                getattr(app_state, "task_composition", None) is not None
+                or getattr(app_state.memory_store, "_task_composition", None) is not None
+                or getattr(app_state.memory_store, "_resource_inputs", None) is not None
+                or reader._tasks._composition is not None
+                or reader._tasks._resource_inputs is not None
+            ) and task_store(app_state) is not reader._tasks:
+                raise unavailable()
+            observed = await reader.lookup(auth, idempotency_key, deadline=time.monotonic() + 5.0)
+        except Exception:
+            raise unavailable() from None
+        if observed.kind == "denied":
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired access token", headers=headers
+            )
+        if observed.kind == "unavailable":
+            raise unavailable()
+        if observed.kind == "recovery":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "restore_recovery_required",
+                    "task_id": str(observed.task_id) if observed.task_id else None,
+                    "retry_safe": False,
+                },
+                headers=headers,
+            )
+        if observed.kind == "task" and observed.snapshot is not None:
+            return task_out(observed.snapshot)
+        if observed.kind != "unknown":
+            raise unavailable()
+        raise HTTPException(status_code=404, detail="Task not found", headers=headers)
+    # Preserve pre-H deployments, but never manufacture SQL-only absence when
+    # protected H schema exists or that catalog evidence cannot be obtained.
+    # Startup does not initialize/install H in this source slice.
+    try:
+        if (
+            app_state.db_pool is None
+            or await app_state.db_pool.fetchval(
+                "SELECT to_regclass('public.task_history_binding') IS NOT NULL"
+            )
+            is not False
+        ):
+            raise unavailable()
+        snapshot = await task_store(app_state).task_for_key(auth.user_id, idempotency_key)
+    except HTTPException as error:
+        if error.status_code == 503:
+            raise unavailable() from None
+        raise
+    except Exception:
+        raise unavailable() from None
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="Task not found", headers=headers)
     return task_out(snapshot)
 
 
