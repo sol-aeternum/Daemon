@@ -526,9 +526,11 @@ def test_checkout_v3_dispatch_and_unchanged_tail(approved, monkeypatch):
     forbidden.assert_not_called()
     state.assert_called_once()
     assert launch.arm_formatter(approved.plan, "A1") == approved.plan.pins["formatter"]
-    # B2b3 must add destination dispatch; this deliberately remains closed.
-    with pytest.raises(AssertionError, match="No replacement dispatch"):
-        launch.verify_replacement_destination(approved.plan, approved.directory)
+    # B2b3 now dispatches the destination to the same v3 verifier.
+    verify.reset_mock()
+    launch.verify_replacement_destination(approved.plan, approved.directory)
+    verify.assert_called_once_with(approved.payload, approved.directory)
+    forbidden.assert_not_called()
 
 
 def test_claim_directory_and_partial_claim_refused(approved, tmp_path):

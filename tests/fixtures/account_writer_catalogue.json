@@ -2527,6 +2527,105 @@
       "rationale": "Benchmark-only prepared-script directory; no account fence coverage."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "prepare_v3_pilot",
+      "kind": "filesystem_write",
+      "fingerprint": "342caffb4509d530",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only prepared-script directory; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "prepare_v3_pilot",
+      "kind": "filesystem_write",
+      "fingerprint": "61f553756a10f07d",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only cleanup of this invocation's prepared-script directory; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "1306987bbcdc729a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "4e6c27f11b704b39",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "53ee9867cb55da3f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "4e2839cb987d3b94",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "5aab86f3f7e7b415",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "ab542b67d6c14cfe",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_launch",
+      "qualname": "write_pilot_evidence",
+      "kind": "filesystem_write",
+      "fingerprint": "b70a93d8581340a3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Benchmark-only exclusive-create pilot plan/report evidence file; no account fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_recovery",
       "qualname": "bootstrap",
       "kind": "filesystem_write",

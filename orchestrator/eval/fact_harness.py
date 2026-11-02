@@ -2292,6 +2292,11 @@ class LongMemEvalFactRunner:
                 "result_count": payload["result_count"],
                 "error_count": payload["error_count"],
                 "dual_judgments": payload["dual_judgments"],
+                **(
+                    {"v3_summaries": payload["v3_summaries"]}
+                    if layout is not None and layout.name == "v3"
+                    else {}
+                ),
             }
             save_manifest(manifest_path, manifest)
 

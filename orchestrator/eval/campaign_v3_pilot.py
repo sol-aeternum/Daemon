@@ -1,7 +1,7 @@
-"""Fixed, single-use v3 pilot approval; no CLI, provider or restore execution.
+"""Fixed, single-use v3 pilot approval, bindings and artifact qualification.
 
 Claims use the existing cooperative same-UID operator trust model. This pilot
-is not benchmark-runnable until the separately reviewed B2b3 launcher wiring.
+is exposed only through campaign_launch's explicitly selected v3 pilot path.
 """
 
 from __future__ import annotations
@@ -11,15 +11,20 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from orchestrator.eval import campaign_fresh, campaign_v3, campaign_v3_plan
 from orchestrator.eval.campaign_guard import (
     LLM_START_INTERVAL,
+    CAPS,
+    EMBEDDING_RATE,
+    INPUT_RATE,
+    OUTPUT_RATE,
     Campaign,
     CampaignPlan,
     _hash,
     _json,
+    _integer,
     _sync_directory,
 )
 from orchestrator.eval.campaign_layout import layout
@@ -27,6 +32,8 @@ from orchestrator.eval.campaign_retry import POLICY
 from orchestrator.eval.campaign_validation import (
     SNAPSHOT_SHA256,
     STATE_SHA256,
+    DEV_SHA256,
+    RETRIEVAL_MODE,
     expected_corpus,
     require,
 )
@@ -66,6 +73,147 @@ LEGACY_MODE_PINS = frozenset(
         "replacement_lineage",
     }
 )
+
+
+def bindings(control: str, remap: str, tokenizer_sha256: str) -> dict[str, Any]:
+    from orchestrator.eval import fact_harness
+
+    return {
+        "mode": "pilot",
+        "dev_sha256": DEV_SHA256,
+        "control_sha": control,
+        "control_formatter": fact_harness.memory_formatter_identity(),
+        "remap_lineage_sha256": remap,
+        "caps": dict(CAPS),
+        "rates": {
+            "input": str(INPUT_RATE),
+            "output": str(OUTPUT_RATE),
+            "embedding": str(EMBEDDING_RATE),
+        },
+        "tokenizer_sha256": tokenizer_sha256,
+    }
+
+
+def validate_preflight(
+    cost: Mapping[str, Any], expected: Mapping[str, Any], ids: Sequence[str]
+) -> None:
+    require(
+        type(cost.get("provider_calls")) is int
+        and cost["provider_calls"] == 0
+        and type(cost.get("writes_or_restores")) is int
+        and cost["writes_or_restores"] == 0
+        and cost.get("bindings") == expected
+        and [row["question_id"] for row in cost["questions"]] == list(ids),
+        "V3 preflight read-only/bindings/question coverage differs",
+    )
+    for row in cost["questions"]:
+        _integer(row["reader_input_token_bound"], positive=True)
+
+
+def qualification(
+    rows: list[dict[str, Any]],
+    dataset: Sequence[Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+    checkpoint: Mapping[str, Any],
+    score: Mapping[str, Any],
+    *,
+    corpus: tuple[str, str],
+) -> dict[str, Any]:
+    """Manifest/checkpoint parity with campaign_validation, plus sampled v3 gates.
+
+    Source line references below name campaign_validation.py on the B2b2 base.
+    All unchanged checks read the same fields; only the judgment summaries use
+    B2b1's v3 summaries (150 samples, 50 majorities, sample disagreement).
+    """
+    summaries = campaign_v3.qualification_v3(rows, dataset)
+    for row in rows:
+        campaign_v3.validate_v3_row(row)
+    snapshot_sha256, state_sha256 = corpus
+    phases = manifest.get("phases", {})
+    evaluated, scored = phases.get("evaluate", {}), phases.get("score", {})
+    # Source 95-97: B2b1 replaces official/dual summaries with v3 at both phases/artifact.
+    require(
+        evaluated.get("v3_summaries") == summaries
+        and evaluated.get("official_judgments") == summaries["majority"],
+        "Evaluate v3 summary differs",
+    )
+    dual = {
+        "official": summaries["majority"],
+        "generic": summaries["generic_strict_majority"],
+        "paired": summaries["paired"],
+    }
+    require(
+        scored.get("v3_summaries") == summaries and scored.get("dual_judgments") == dual,
+        "Score manifest v3 summary differs",
+    )
+    require(
+        score.get("v3_summaries") == summaries and score.get("dual_judgments") == dual,
+        "Score artifact v3 summary differs",
+    )
+    # Source 98-99: still one result per question, never 150 result rows.
+    require(scored.get("error_count") == score.get("error_count") == 0, "Score errors")
+    require(scored.get("result_count") == score.get("result_count") == 50, "Score count differs")
+    # Source 100-104: the same three checkpoint phases must be completed.
+    for phase in ("ingest", "evaluate", "score"):
+        require(
+            checkpoint.get("phases", {}).get(phase, {}).get("status") == "completed",
+            f"{phase} incomplete",
+        )
+    # Source 105-108: same ingest session denominator and strict <1% threshold.
+    ingest = checkpoint["phases"]["ingest"]
+    sessions = list(ingest.get("results", {}).values())
+    failures = sum(row.get("status") == "extraction_failed" for row in sessions)
+    require(bool(sessions) and failures / len(sessions) < 0.01, "Ingest extraction failures")
+    # Source 109-115: both checkpoint and manifest rollback evidence.
+    require(
+        all(
+            row.get("restored_pre_session_state") is True
+            for row in [*ingest.get("ingest_rollbacks", []), *manifest.get("ingest_rollbacks", [])]
+        ),
+        "Unproven ingest rollback",
+    )
+    # Source 116-119: same run qualification and disqualification fields.
+    require(
+        manifest.get("baseline_qualified") is True and manifest.get("disqualifications") == [],
+        "Run unqualified",
+    )
+    # Source 120: same code-pin changes inventory.
+    require(not manifest.get("code_pin_changes"), "Code changed during run")
+    # Source 121-124: same source-ingest qualification.
+    require(
+        manifest.get("ingest_source", {}).get("baseline_qualified") is True,
+        "Ingest source unqualified",
+    )
+    # Source 125: same execution git dirty flag.
+    require(manifest.get("git", {}).get("dirty") is False, "Dirty execution code")
+    # Source 126: same frozen dataset hash.
+    require(manifest.get("dataset", {}).get("sha256") == DEV_SHA256, "Manifest dataset differs")
+    # Source 127-129: plan-selected remapped snapshot, not the original corpus literal.
+    require(
+        manifest.get("ingest_snapshot", {}).get("sha256") == snapshot_sha256, "Snapshot differs"
+    )
+    # Source 130: same fact substrate.
+    require(manifest.get("substrate") == "fact", "Wrong substrate")
+    # Source 131-132: same evaluate state assertions.
+    require(evaluated.get("state_matches_ingest_at_start") is True, "State mismatch override")
+    require(evaluated.get("state_unchanged_by_evaluate") is True, "State mutated during evaluate")
+    # Source 133-136: same start/end fingerprints, against the plan's remapped corpus.
+    for key in ("state_fingerprint_start", "state_fingerprint_end"):
+        require(
+            evaluated.get(key, {}).get("sha256") == state_sha256, "Protected fingerprint differs"
+        )
+    # Source 137: one retrieval/embedding per question, still 50, not per sample.
+    require(
+        evaluated.get("retrieval_modes") == {RETRIEVAL_MODE: 50}, "Retrieval mode/count differs"
+    )
+    # Source 138-141: same runtime answer/judge provider fingerprints.
+    require(
+        all(evaluated.get("provider_fingerprints", {}).get(key) for key in ("answer", "judge")),
+        "Provider fingerprints absent",
+    )
+    # Source 142-159: qualification_v3 above uses 50-row majority accuracy/category
+    # sanity and complete 150-sample pairing/disagreement, never paired.total == 50.
+    return {"v3": summaries, "extraction_failures": failures}
 
 
 def validate_mode(pins: Mapping[str, Any]) -> None:
