@@ -77,6 +77,11 @@ def retry_capable(plan_or_campaign: Campaign | CampaignPlan | Mapping[str, Any] 
         pins = plan_or_campaign.pins
     else:
         pins = plan_or_campaign.plan["pins"]
+    if "v3_campaign" in pins:
+        from orchestrator.eval.campaign_v3_pilot import validate_mode
+
+        validate_mode(pins)
+        return True
     return "retry_recovery_lineage" in pins or "fresh_campaign" in pins
 
 
@@ -449,6 +454,11 @@ def bootstrap(directory: Path, state: dict[str, Any], inherited: Mapping[str, An
 
 
 def validate_attempts(campaign: Campaign, *, settled: bool = False) -> None:
+    if "v3_campaign" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_v3_pilot import validate_attempt_ledger as validate_v3
+
+        validate_v3(campaign.state, campaign.plan, campaign.directory, settled=settled)
+        return
     if "fresh_campaign" in campaign.plan["pins"]:
         from orchestrator.eval.campaign_fresh import validate_fresh_attempt_ledger
 
@@ -645,7 +655,26 @@ async def prepare_attempt(campaign: Campaign, stage: str, request: Mapping[str, 
         imported = validate_import_resolution(state, campaign.plan, campaign.directory)
         already += Decimal(imported["reserved_usd"])
     budget = Decimal(campaign.plan["new_reserved_usd"]) - Decimal(campaign.plan["allocated_usd"])
-    if "fresh_campaign" in campaign.plan["pins"]:
+    if "v3_campaign" in campaign.plan["pins"]:
+        from orchestrator.eval.campaign_v3_pilot import retry_budget
+
+        budget = retry_budget(campaign.plan)
+        logical = (identity["arm"], identity["question_id"], identity["stage"], identity["sample"])
+        require(
+            all(
+                (
+                    item["identity"]["arm"],
+                    item["identity"]["question_id"],
+                    item["identity"]["stage"],
+                    item["identity"]["sample"],
+                )
+                != logical
+                or item["identity"] == identity
+                for item in state["attempts"]
+            ),
+            "V3 retry logical identity/hash changed",
+        )
+    elif "fresh_campaign" in campaign.plan["pins"]:
         from orchestrator.eval.campaign_fresh import retry_budget
 
         budget = retry_budget(campaign.plan)
@@ -792,6 +821,12 @@ def failed_attempt(
         "Failure has no dispatched attempt",
     )
     delay = retry_delay(exc, item["ordinal"])
+    if "v3_campaign" in campaign.plan["pins"] and delay is not None:
+        # V3's pure audit requires integer waits. Round up, never shorten a
+        # provider's fractional Retry-After date or change legacy retry timing.
+        from math import ceil
+
+        delay = ceil(delay)
     path = (
         campaign.directory
         / f"failure-{item['receipt_index']:04d}-attempt-{item['ordinal']:02d}.json"
@@ -809,6 +844,8 @@ def failed_attempt(
         status="failed_429" if delay is not None else "terminal_failed",
         failure={"path": str(path), "sha256": digest_file(path)},
     )
+    if "v3_campaign" in campaign.plan["pins"]:
+        item["failure"]["path"] = path.name
     if delay is not None:
         item["next_wait_seconds"] = delay
     campaign._save()
@@ -826,7 +863,9 @@ def complete_attempt(campaign: Campaign, stage: str, request: Mapping[str, Any])
         "Success has no dispatched retry attempt",
     )
     item.update(status="completed", receipt=campaign.state["receipts"][-1]["artifact"])
-    if "fresh_campaign" in campaign.plan["pins"]:
+    if "v3_campaign" in campaign.plan["pins"]:
+        validate_attempts(campaign)
+    elif "fresh_campaign" in campaign.plan["pins"]:
         validate_attempts(campaign)
     campaign._save()
 

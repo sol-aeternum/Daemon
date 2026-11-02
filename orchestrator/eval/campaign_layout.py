@@ -3,7 +3,7 @@
 The legacy receipt stride is 4 slots x 50 questions = 200 per arm. B2b1 adds
 generic v3 arm completion using receipts_per_arm. The following sites remain
 legacy-only and unreachable for v3: Campaign.activate rejects fresh, recovery,
-retry, final-verdict and replacement lineage pins before lineage verification.
+retry-recovery, final-verdict and replacement lineage pins before verification.
 - campaign_guard.py: finish_arm's recovery-only index * 200 receipt count.
 - campaign_fresh.py:295-297,440,454,471: attempt index and arm receipt counts.
 - campaign_recovery.py:119-124,339,345: receipt identities and handoff count/manifest.
@@ -13,9 +13,11 @@ retry, final-verdict and replacement lineage pins before lineage verification.
 
 Allocation arm count is independent of receipt stride. Campaign defaults to the
 legacy layout; B2a's v3 sampling is reachable only by explicit test injection.
-Production launch, retry and finalisation remain legacy. In particular,
-payload["schema"] is not a layout selector. Fresh-style handoff and retry wiring
-are deferred to B2b2; B2b1's v3 allocation/attempt validation is pure and unbound.
+The exact v3_campaign pilot pin binds B2b2's factory, hold, sampled retry ledger
+and fresh-style handoff. Unbound test injection remains available; the CLI,
+restore-pool launcher wiring and finalisation await B2b3. In particular,
+payload["schema"] is never a layout selector. B2b1's allocation/attempt audit
+remains pure; campaign_v3_pilot supplies its budget and direct failure inventory.
 """
 
 from __future__ import annotations

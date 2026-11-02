@@ -237,7 +237,12 @@ def test_import_hygiene_and_explicit_later_wiring() -> None:
     # and test_bridge_registration_is_deliberately_deferred.
     # B2a wires only the guard's explicit test injection, not bridge/finalisation.
     # B2b1's pure ledger auditor uses canonical slot indices; no production selector.
-    assert sorted(imports) == ["campaign_guard.py", "campaign_v3_plan.py"]
+    # B2b2's pinned pilot factory explicitly constructs the canonical v3 layout.
+    assert sorted(imports) == [
+        "campaign_guard.py",
+        "campaign_v3_pilot.py",
+        "campaign_v3_plan.py",
+    ]
     module = ast.parse((directory / "campaign_layout.py").read_text())
     modules = [
         node.module or "" for node in ast.walk(module) if isinstance(node, ast.ImportFrom)

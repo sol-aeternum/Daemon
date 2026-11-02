@@ -542,9 +542,15 @@ def test_v3_unreachable_and_legacy_consumers_fail_closed() -> None:
                     alias.name == "campaign_v3" for alias in node.names
                 ):
                     importers.add(path.name)
-    # B2a wires v3; production unreachability is now enforced by the
-    # resolver-returns-LEGACY test. No other importer is permitted.
-    assert importers == {"campaign_guard.py", "fact_harness.py"}
+    # B2b2 adds the pinned pilot factory and exact-pin launch/retry dispatch.
+    # Production CLI unreachability remains enforced by the legacy resolver test.
+    assert importers == {
+        "campaign_guard.py",
+        "campaign_launch.py",
+        "campaign_retry.py",
+        "campaign_v3_pilot.py",
+        "fact_harness.py",
+    }
 
 
 def test_v3_does_not_call_legacy_scoring_or_import_layout() -> None:

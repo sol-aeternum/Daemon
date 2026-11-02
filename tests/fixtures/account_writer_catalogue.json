@@ -2879,6 +2879,50 @@
       "rationale": "Scanner open candidate is read-only pinned SQL validation; no account fence coverage."
     },
     {
+      "owner_source": "orchestrator.eval.campaign_v3_pilot",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "29ba4b4fa90822a9",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsyncs the retained single-use v3 pilot approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_v3_pilot",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "48d4dd05c2fadb25",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsyncs the retained single-use v3 pilot approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_v3_pilot",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "cf128cb90522b07c",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsyncs the retained single-use v3 pilot approval claim; no account-generation fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.eval.campaign_v3_pilot",
+      "qualname": "claim",
+      "kind": "filesystem_write",
+      "fingerprint": "d92df3c1c08be543",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fsyncs the retained single-use v3 pilot approval claim; no account-generation fence coverage."
+    },
+    {
       "owner_source": "orchestrator.eval.campaign_validation",
       "qualname": "digest_file",
       "kind": "filesystem_write",
