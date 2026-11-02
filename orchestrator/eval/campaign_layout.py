@@ -12,10 +12,12 @@ retry-recovery, final-verdict and replacement lineage pins before verification.
 - campaign_restore.py:344: recovered-arm attach receipt count.
 
 Allocation arm count is independent of receipt stride. Campaign defaults to the
-legacy layout; B2a's v3 sampling is reachable only by explicit test injection.
-The exact v3_campaign pilot pin binds B2b2's factory, hold, sampled retry ledger
-and fresh-style handoff. Unbound test injection remains available; the CLI,
-restore-pool launcher wiring and finalisation await B2b3. In particular,
+legacy layout. The exact v3_campaign pilot pin binds B2b2's factory, hold,
+sampled retry ledger and fresh-style handoff. B2b3 exposes --v3-pilot preflight
+and prepare, then separately reviewed A0/A1 restores and execution. Qualification
+combines manifest/checkpoint/corpus parity with v3 sample/majority gates; A1
+writes an exclusive pilot report and runs the normal final reopen guards.
+Candidate-mode pilot comparability/binding is still deferred to B3. In particular,
 payload["schema"] is never a layout selector. B2b1's allocation/attempt audit
 remains pure; campaign_v3_pilot supplies its budget and direct failure inventory.
 """

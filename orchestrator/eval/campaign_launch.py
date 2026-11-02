@@ -227,6 +227,25 @@ def verify_common(
     return common
 
 
+def pilot_common(control: str) -> dict[str, str]:
+    """Pin control-only measurement/config files; a pilot has no candidate diff."""
+    return {path: hashlib.sha256(git_bytes(control, path)).hexdigest() for path in COMMON}
+
+
+def pilot_checkout_clean() -> None:
+    """git_state's dirty flag covers tracked files only; pilots forbid untracked too."""
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=30,
+    )
+    require(not status.stdout.strip(), "Untracked or changed pilot control checkout")
+    require(not (ROOT / ".env").exists(), "Dotenv checkout is not eligible")
+
+
 def noted_dates_candidate_formatter(control: str, candidate: str) -> dict[str, Any]:
     """Formatter identity of a noted-dates candidate whose only change is the flag.
 
@@ -461,6 +480,11 @@ def verify_replacement_destination(plan: CampaignPlan, directory: Path) -> None:
     Like the sibling lock, this is cooperative operator protection, not a defense
     against a same-UID administrator copying or deleting retained evidence.
     """
+    if "v3_campaign" in plan.pins:
+        from orchestrator.eval.campaign_v3_pilot import verify
+
+        verify(json.loads(json.dumps(plan.payload())), directory)
+        return
     if "fresh_campaign" in plan.pins:
         from orchestrator.eval.campaign_fresh import verify
 
@@ -525,7 +549,191 @@ def _historical_remap_pins(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+async def prepare_v3_pilot(args: argparse.Namespace) -> None:
+    """Read-only preparation; validate full pin shape and budget before any output."""
+    from orchestrator.eval import campaign_v3_pilot as pilot
+    from orchestrator.eval.bench_db import fingerprint_benchmark_users, question_user_id
+
+    require(
+        args.historical_remap is not None
+        and not getattr(args, "fresh_campaign", False)
+        and getattr(args, "candidate", None) is None
+        and getattr(args, "candidate_sha", None) is None,
+        "V3 pilot requires --historical-remap and no candidate or legacy mode",
+    )
+    require(not args.output.exists(), "Plan output already exists")
+    actual = git_state(ROOT)
+    require(
+        actual["sha"] == args.control_sha and actual["dirty"] is False,
+        "V3 preparation must run on the clean control checkout",
+    )
+    pilot_checkout_clean()
+    pilot.verify_prior()
+    dataset = load_dev(DEV)
+    effective = environment()
+    historical = _historical_remap_pins(args)
+    require(
+        historical["lineage_sha256"] == pilot.APPROVAL["historical_remap_lineage_sha256"],
+        "V3 remap lineage is not approved",
+    )
+    snapshot_sha256 = historical["snapshot_sha256"]
+    require(digest_file(args.snapshot) == snapshot_sha256, "Wrong immutable archive")
+    encoding, tokenizer_hash = tokenizer()
+    cost = json.loads(args.cost_preflight.read_bytes())
+    pilot.validate_preflight(
+        cost,
+        pilot.bindings(args.control_sha, historical["lineage_sha256"], tokenizer_hash),
+        [row["question_id"] for row in dataset],
+    )
+    reader = {row["question_id"]: row["reader_input_token_bound"] for row in cost["questions"]}
+    limits = {
+        row["question_id"]: {
+            "embedding": len(row["question"].encode()),
+            "answer": reader[row["question_id"]],
+            "judge": len(
+                evaluate.build_generic_judge_prompt(row["question"], "", row["answer"]).encode()
+            )
+            + 64
+            + 256,
+            "official_judge": len(
+                build_official_prompt(
+                    row["question_type"],
+                    row["question"],
+                    row["answer"],
+                    "",
+                    question_id=row["question_id"],
+                ).encode()
+            )
+            + 64
+            + 256,
+        }
+        for row in dataset
+    }
+    require(
+        encoding.name == "o200k_base" and 3 * 2 + 3 <= 64, "Tokenizer/envelope contract differs"
+    )
+    require(
+        max(len(evaluate.build_parity_answer_messages(row["question"], "")) for row in dataset)
+        == 2,
+        "Unexpected reader message shape",
+    )
+    source_manifest = Path(historical["source_manifest"])
+    source = json.loads(source_manifest.read_bytes())
+    require(
+        source["baseline_qualified"] is True and source["disqualifications"] == [],
+        "Ingest source not qualified",
+    )
+    require(
+        json.loads(args.ingest.read_bytes())["dataset_sha256"] == DEV_SHA256,
+        "Ingest dataset differs",
+    )
+    current_rates = await asyncio.to_thread(rates)
+    container_identity()
+    control = await asyncpg.connect(
+        CONTROL_DSN,
+        timeout=10,
+        command_timeout=30,
+        server_settings={"default_transaction_read_only": "on"},
+    )
+    connection = None
+    try:
+        await verify_server(control)
+        identity = await target_identity(control)
+        require(
+            identity["datallowconn"] is True, "Preparation requires original open benchmark state"
+        )
+        connection = await asyncpg.connect(
+            DSN,
+            timeout=10,
+            command_timeout=30,
+            server_settings={"default_transaction_read_only": "on"},
+        )
+        async with connection.transaction(isolation="repeatable_read", readonly=True):
+            schema = await catalogue(connection)
+            fingerprint = await fingerprint_benchmark_users(
+                connection, [question_user_id(row["question_id"]) for row in dataset]
+            )
+            require(
+                fingerprint["sha256"] in {STATE_SHA256, historical["state_sha256"]},
+                "Preparation protected fingerprint differs",
+            )
+    finally:
+        if connection is not None:
+            await connection.close()
+        await control.close()
+
+    script_directory = args.output.parent / (args.output.stem + "-restore-script")
+    pins = {
+        "common_files": pilot_common(args.control_sha),
+        "arm_shas": {arm: args.control_sha for arm in pilot.ARMS},
+        "formatter": fact_harness.memory_formatter_identity(),
+        "tokenizer_sha256": tokenizer_hash,
+        "tokenizer_envelope": {
+            "model": "gpt-4o-2024-08-06",
+            "per_message": 3,
+            "reply_primer": 3,
+            "allocated": 64,
+            "source": "https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken",
+        },
+        "server_identifier": identity["system_identifier"],
+        "database_oid": identity["oid"],
+        "catalogue_sha256": schema,
+        "original_allow_connections": identity["datallowconn"],
+        "snapshot": {"path": str(args.snapshot.resolve()), "sha256": snapshot_sha256},
+        "ingest_checkpoint": {
+            "path": str(args.ingest.resolve()),
+            "sha256": digest_file(args.ingest),
+        },
+        "ingest_manifest": {
+            "path": str(source_manifest.resolve()),
+            "sha256": digest_file(source_manifest),
+        },
+        "route_evidence": current_rates,
+        "effective_config": effective,
+        "restore_script": {"path": "<pending>", "sha256": "0" * 64},
+        "historical_remap": {
+            key: historical[key]
+            for key in ("lineage_path", "lineage_sha256", "snapshot_sha256", "state_sha256")
+        },
+        "v3_campaign": json.loads(json.dumps({"approval": pilot.APPROVAL, "prior": pilot.PRIOR})),
+    }
+    plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
+    # Owner-adjudicated D2: payload checks pin shape, prior, cap and envelope;
+    # it never reads restore_script. Refusals here leave no output artifacts.
+    plan.payload()
+    script_directory.mkdir(mode=0o700, exist_ok=False)
+    script = await asyncio.to_thread(
+        render_archive, args.snapshot, script_directory, snapshot_sha256
+    )
+    pins["restore_script"] = {"path": str(script.resolve()), "sha256": digest_file(script)}
+    plan = CampaignPlan(tuple(row["question_id"] for row in dataset), limits, pins)
+    payload = plan.payload()
+    pilot.verify(json.loads(json.dumps(payload)))
+    require(not args.output.exists(), "Plan output already exists")
+    write_pilot_evidence(args.output, payload)
+    print(
+        json.dumps(
+            {
+                key: payload[key]
+                for key in (
+                    "allocated_usd",
+                    "new_reserved_usd",
+                    "prior_reserved_usd",
+                    "cumulative_reserved_usd",
+                    "prior_restore_attempts",
+                    "maximum_cumulative_restore_attempts",
+                )
+            }
+            | {"retry_budget_usd": str(pilot.retry_budget(payload))},
+            indent=2,
+        )
+    )
+
+
 async def prepare(args: argparse.Namespace) -> None:
+    if getattr(args, "v3_pilot", False):
+        await prepare_v3_pilot(args)
+        return
     fresh = getattr(args, "fresh_campaign", False)
     if fresh:
         from orchestrator.eval import campaign_fresh
@@ -732,13 +940,20 @@ PHASE_D_A0_RESULTS = (
 )
 
 
+def write_pilot_evidence(path: Path, value: Mapping[str, Any]) -> None:
+    """Pilot plan/report evidence must never replace an existing artifact."""
+    with path.open("x") as output:
+        json.dump(value, output, indent=2, sort_keys=True)
+        output.write("\n")
+
+
 async def fresh_cost_preflight(args: argparse.Namespace) -> None:
     """Zero-call, read-only reader bound on the remapped copy (never the restore target).
 
     Runs on the clean control checkout. Memory text is decrypted in process memory
     only; the output holds sizes, digests and bounds, never plaintext.
     """
-    from orchestrator.eval import campaign_fresh
+    from orchestrator.eval import campaign_fresh, campaign_v3_pilot
     from orchestrator.eval.bench_db import (
         check_benchmark_dsn,
         fingerprint_benchmark_users,
@@ -746,15 +961,29 @@ async def fresh_cost_preflight(args: argparse.Namespace) -> None:
     )
     from orchestrator.memory.encryption import ContentEncryption
 
+    pilot = getattr(args, "v3_pilot", False)
+    if pilot:
+        require(
+            not getattr(args, "fresh", False)
+            and not getattr(args, "fresh_campaign", False)
+            and getattr(args, "candidate_sha", None) is None
+            and getattr(args, "candidate", None) is None,
+            "V3 preflight cannot mix candidate or legacy mode",
+        )
     actual = git_state(ROOT)
     require(
         actual["sha"] == args.control_sha and actual["dirty"] is False,
         "Fresh preflight must run on the clean control checkout",
     )
+    if pilot:
+        pilot_checkout_clean()
     lineage_path = args.historical_remap.absolute()
     lineage_sha256 = digest_file(lineage_path)
     require(
-        lineage_sha256 == campaign_fresh.APPROVAL["historical_remap_lineage_sha256"],
+        lineage_sha256
+        == (campaign_v3_pilot.APPROVAL if pilot else campaign_fresh.APPROVAL)[
+            "historical_remap_lineage_sha256"
+        ],
         "Fresh remap lineage is not approved",
     )
     lineage = json.loads(lineage_path.read_bytes())
@@ -765,9 +994,14 @@ async def fresh_cost_preflight(args: argparse.Namespace) -> None:
     check_benchmark_dsn(dsn)
     dataset = load_dev(DEV)
     encoding, tokenizer_sha256 = tokenizer()
-    bound_bindings = campaign_fresh.bindings(
-        args.control_sha, args.candidate_sha, lineage_sha256, tokenizer_sha256
-    )
+    if pilot:
+        bound_bindings = campaign_v3_pilot.bindings(
+            args.control_sha, lineage_sha256, tokenizer_sha256
+        )
+    else:
+        bound_bindings = campaign_fresh.bindings(
+            args.control_sha, args.candidate_sha, lineage_sha256, tokenizer_sha256
+        )
     saved = {
         row["question_id"]: row["memory_context"]
         for row in map(json.loads, PHASE_D_A0_RESULTS.read_text().splitlines())
@@ -859,7 +1093,12 @@ async def fresh_cost_preflight(args: argparse.Namespace) -> None:
 
 
 async def run_arm(args: argparse.Namespace) -> None:
+    from orchestrator.eval import campaign_v3_pilot
+
     plan = load_plan(args.plan)
+    pilot = "v3_campaign" in plan.pins
+    if pilot:
+        require(args.arm in ("A0", "A1"), "V3 pilot executes only A0/A1")
     verify_replacement_destination(plan, args.campaign)
     checkout(plan, args.arm)
     require(
@@ -885,17 +1124,24 @@ async def run_arm(args: argparse.Namespace) -> None:
     age = (datetime.now(UTC) - datetime.fromisoformat(review["reviewed_at"])).total_seconds()
     require(0 <= age <= 900, "Action-state review expired")
     dataset = load_dev(DEV)
-    with Campaign(
-        args.campaign, plan, lambda text: len(encoding.encode_ordinary(text))
-    ).activate() as campaign:
-        from orchestrator.eval.campaign_retry import enabled
-        from orchestrator.eval.campaign_restore import attached_pool
-
-        pool_context = (
-            attached_pool(campaign)
-            if enabled(campaign) and args.arm == "A1"
-            else restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"]))
+    if pilot:
+        instance = campaign_v3_pilot.campaign_for(
+            args.campaign, plan, lambda text: len(encoding.encode_ordinary(text))
         )
+    else:
+        instance = Campaign(args.campaign, plan, lambda text: len(encoding.encode_ordinary(text)))
+    with instance.activate() as campaign:
+        if pilot:
+            pool_context = restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"]))
+        else:
+            from orchestrator.eval.campaign_retry import enabled
+            from orchestrator.eval.campaign_restore import attached_pool
+
+            pool_context = (
+                attached_pool(campaign)
+                if enabled(campaign) and args.arm == "A1"
+                else restored_pool(campaign, args.arm, Path(plan.pins["snapshot"]["path"]))
+            )
         async with pool_context:
             output = args.campaign / args.arm
             runner = fact_harness.LongMemEvalFactRunner(
@@ -911,15 +1157,20 @@ async def run_arm(args: argparse.Namespace) -> None:
             score = runner.score()
             manifest = json.loads((output / "run_manifest.json").read_bytes())
             checkpoint = json.loads(runner.checkpoint_path.read_bytes())
-            qualified = qualification(
-                rows,
-                dataset,
-                manifest,
-                checkpoint,
-                score,
-                corpus=expected_corpus(plan.pins),
-                rule=acceptance_rule(plan.pins),
-            )
+            if pilot:
+                qualified = campaign_v3_pilot.qualification(
+                    rows, dataset, manifest, checkpoint, score, corpus=expected_corpus(plan.pins)
+                )
+            else:
+                qualified = qualification(
+                    rows,
+                    dataset,
+                    manifest,
+                    checkpoint,
+                    score,
+                    corpus=expected_corpus(plan.pins),
+                    rule=acceptance_rule(plan.pins),
+                )
             planned = plan.pins.get("historical_remap")
             recorded = (manifest.get("ingest_source") or {}).get("historical_remap")
             require(
@@ -946,7 +1197,7 @@ async def run_arm(args: argparse.Namespace) -> None:
                 comparability(
                     first,
                     manifest,
-                    formatter=not formatter_exception(plan, args.arm),
+                    formatter=True if pilot else not formatter_exception(plan, args.arm),
                 )
             artifacts = {
                 path.name: digest_file(path)
@@ -958,7 +1209,41 @@ async def run_arm(args: argparse.Namespace) -> None:
                 )
             }
             campaign.finish_arm(qualification={"artifacts": artifacts, **qualified})
-    if args.arm == "C0":
+    if pilot:
+        if args.arm != "A1":
+            return
+        from orchestrator.eval.campaign_v3 import pilot_report
+
+        arms = {
+            arm: [
+                json.loads(line)
+                for line in (args.campaign / arm / "longmemeval_results.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            for arm in ("A0", "A1")
+        }
+        write_pilot_evidence(
+            args.campaign / "pilot-report.json",
+            {
+                **pilot_report(arms),
+                "plan_sha256": digest_file(args.plan),
+                "artifacts": {
+                    arm: {
+                        name: digest_file(args.campaign / arm / name)
+                        for name in (
+                            "longmemeval_results.jsonl",
+                            "longmemeval_checkpoint.json",
+                            "longmemeval_score.json",
+                            "run_manifest.json",
+                        )
+                    }
+                    for arm in ("A0", "A1")
+                },
+                "campaign_ledger_sha256": digest_file(args.campaign / "campaign.json"),
+            },
+        )
+    elif args.arm == "C0":
         arms = {
             arm: [
                 json.loads(line)
@@ -972,6 +1257,7 @@ async def run_arm(args: argparse.Namespace) -> None:
             args.campaign / "paired-result.json",
             paired_result(arms, rule=acceptance_rule(plan.pins)),
         )
+    if pilot or args.arm == "C0":
         # Only a completely finished, qualified campaign can restore original access.
         state = json.loads((args.campaign / "campaign.json").read_bytes())
         require(
@@ -1016,12 +1302,12 @@ def main() -> None:
     )
     for name in ("snapshot", "ingest", "cost-preflight", "output"):
         prep.add_argument("--" + name, type=Path, required=True)
-    for name in ("control-sha", "candidate-sha"):
-        prep.add_argument("--" + name, required=True)
+    prep.add_argument("--control-sha", required=True)
+    prep.add_argument("--candidate-sha")
     prep.add_argument(
         "--candidate",
         choices=("retrieval", "noted-dates"),
-        default="retrieval",
+        default=None,
         help="Candidate variable: retrieval.py (default) or the dormant noted-dates flag",
     )
     prep.add_argument(
@@ -1035,15 +1321,17 @@ def main() -> None:
         action="store_true",
         help="Use the single fixed fresh historical noted-dates approval",
     )
+    prep.add_argument("--v3-pilot", action="store_true", help="Use the fixed v3 control pilot")
     preflight = commands.add_parser(
         "cost-preflight",
         help="Zero-call read-only fresh reader prompt bound on the remapped copy",
     )
-    preflight.add_argument("--fresh", action="store_true", required=True)
+    preflight.add_argument("--fresh", action="store_true")
+    preflight.add_argument("--v3-pilot", action="store_true")
     preflight.add_argument("--historical-remap", type=Path, required=True)
     preflight.add_argument("--output", type=Path, required=True)
-    for name in ("control-sha", "candidate-sha"):
-        preflight.add_argument("--" + name, required=True)
+    preflight.add_argument("--control-sha", required=True)
+    preflight.add_argument("--candidate-sha")
     replacement = commands.add_parser(
         "prepare-replacement", help="Read-only recovery preparation; target stays closed"
     )
@@ -1091,6 +1379,23 @@ def main() -> None:
         run.add_argument("--" + name, type=Path, required=True)
     run.add_argument("--arm", choices=ARMS, required=True)
     args = parser.parse_args()
+    if args.command in ("prepare", "cost-preflight"):
+        if args.v3_pilot:
+            if (
+                args.candidate_sha is not None
+                or getattr(args, "candidate", None) is not None
+                or getattr(args, "fresh_campaign", False)
+                or getattr(args, "fresh", False)
+                or args.historical_remap is None
+            ):
+                parser.error("--v3-pilot requires --historical-remap and no candidate/legacy mode")
+        else:
+            if args.candidate_sha is None:
+                parser.error("--candidate-sha is required outside --v3-pilot")
+            if args.command == "cost-preflight" and not args.fresh:
+                parser.error("cost-preflight requires --fresh or --v3-pilot")
+            if args.command == "prepare" and args.candidate is None:
+                args.candidate = "retrieval"
     from orchestrator.eval.campaign_recovery import prepare_second_replacement
     from orchestrator.eval.campaign_retry import prepare as prepare_retry
     from orchestrator.eval.campaign_final_verdict import prepare as prepare_final
