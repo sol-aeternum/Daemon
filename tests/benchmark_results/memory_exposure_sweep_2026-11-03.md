@@ -129,9 +129,15 @@ Loss attribution is prefix_instability when any baseline memory from a lost gold
 - **Vector window.** This was a method choice, not a threshold. It was recorded
   before the successful run, after the first run stopped on differing logged
   duplicates. Each question has two logged vectors: one from 2026-10-30 and one
-  from the v3 pilot A1 run. 47 of the 50 pairs are byte-identical; 3 differ only by
-  provider float jitter (cosine ≥ 0.9999995). The A1 vector is the one behind the
-  A1 prompts, which the k=5 self-check reproduced 50/50.
+  from the v3 pilot A1 run. 47 of the 50 pairs have equal decoded float lists. The
+  other 3 differ only by provider float jitter: the evidence records a maximum
+  absolute difference of 1.8e-4, and a separate read-only check by the primary,
+  not recorded in the evidence, found cosine ≥ 0.9999995. The A1 vector is the
+  one behind the A1 prompts, which the k=5 self-check reproduced 50/50.
+- **Window bounds.** These are supplied by the operator, not derived by the code.
+  The start is the A1 run-start record and the end is the A1 manifest's evaluate
+  `completed_at`. The evidence records the bounds, and the code only enforces
+  exactly one row in that window.
 - **Units.** The `Tokens` and `Effective items` columns are totals across the 50
   questions. Per question, k=5 averages about 149 estimated tokens and k=20 about
   516.
