@@ -26,7 +26,10 @@ import {
   recordSubmissionTask,
   settlePendingSubmission,
   unresolvedSubmissions,
+  submissionBlock,
+  blockSubmission,
 } from '../lib/pendingSubmission';
+import { historyRecoveryMessage } from '../lib/historyRecovery';
 import {
   acceptSubmission,
   heldResendStatus,
@@ -428,6 +431,7 @@ function ChatContent() {
     refreshCurrentConversation,
     cancelTask,
     taskForKey,
+    taskRecoveryProblem,
     taskStatus,
     switchConversation,
     setConversationModel,
@@ -444,6 +448,10 @@ function ChatContent() {
     refreshConversations,
     conversationLoadFailure,
   } = useConversationHistoryContext();
+
+  useEffect(() => {
+    if (taskRecoveryProblem) showError(taskRecoveryProblem);
+  }, [taskRecoveryProblem, showError]);
 
   const [activeModel, setActiveModel] = useState<string>('auto');
   // The choice as of the latest render, for the new-chat id assignment.
@@ -571,6 +579,11 @@ function ChatContent() {
   // request. With no task for its key, it is dropped, and the owner told.
   const dropIncompleteHeld = useCallback(
     (key: string): boolean => {
+      const blocked = submissionBlock(key);
+      if (blocked) {
+        showError(historyRecoveryMessage(blocked));
+        return true;
+      }
       if (!heldSubmission(key) || heldSubmissionComplete(key)) return false;
       settleSubmission(key);
       showError(
@@ -805,6 +818,16 @@ function ChatContent() {
         }
       }
       const taskStatusSeen = getDaemonTaskStatus(message);
+      if (
+        taskStatusSeen === 'needs_attention' &&
+        activeSubmissionKeyRef.current &&
+        chatRequestGenerationRef.current === getAuthGeneration()
+      ) {
+        blockSubmission(
+          activeSubmissionKeyRef.current,
+          'inference_dispatch_unresolved',
+        );
+      }
       const outcomeKnown =
         !rejection &&
         ((!isAbort && !isDisconnect && !isError) ||
@@ -1084,6 +1107,8 @@ function ChatContent() {
           status &&
           TERMINAL_TASK_STATUSES.has(status)
         ) {
+          if (status === 'needs_attention')
+            blockSubmission(key, 'inference_dispatch_unresolved');
           finishSubmission(key);
         }
       });
@@ -3037,6 +3062,7 @@ const UNRESOLVED_MIN_AGE_MS = 60_000;
  * draft. Whatever the composer shows (perhaps that draft, put back) stays.
  */
 function settleSubmission(key: string): void {
+  if (submissionBlock(key)) return;
   settlePendingSubmission(key);
   releaseSubmission(key);
 }
@@ -3046,6 +3072,7 @@ function settleSubmission(key: string): void {
  * finished): forget its key, and the draft that still holds it.
  */
 function finishSubmission(key: string): void {
+  if (submissionBlock(key)) return;
   settlePendingSubmission(key);
   acceptSubmission(key);
 }
@@ -3057,6 +3084,7 @@ function finishSubmission(key: string): void {
  */
 function recordSubmission(key: string, taskId: string): void {
   recordSubmissionTask(key, taskId);
+  if (submissionBlock(key)) return;
   acceptSubmission(key);
 }
 

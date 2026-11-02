@@ -20,7 +20,10 @@
  *   load and otherwise expire after ``PENDING_SUBMISSION_TTL_MS``.
  */
 
+import type { HistoryRecoveryCode } from './historyRecovery';
+
 const ITEM_PREFIX = 'daemon.pendingSubmission.v5:';
+const blockedInMemory = new Map<string, HistoryRecoveryCode>();
 /** Older formats (content fingerprints) are removed on sight. */
 const LEGACY_PREFIXES = [
   'daemon.pendingSubmission.v3:',
@@ -46,6 +49,7 @@ export type PendingSubmission = SubmissionMeta & {
   createdAt: number;
   /** The durable task the backend created for it, once known. */
   taskId?: string;
+  historyBlocked?: HistoryRecoveryCode;
 };
 
 function storage(): Storage | null {
@@ -147,6 +151,7 @@ function migrateLegacy(
 function entries(
   store: Storage,
   now: number,
+  expire = true,
 ): Array<[string, PendingSubmission]> {
   const found: Array<[string, PendingSubmission]> = [];
   const itemKeys: string[] = [];
@@ -167,7 +172,12 @@ function entries(
       continue;
     }
     const entry = readEntry(store, itemKey);
-    if (!entry || now - entry.createdAt >= PENDING_SUBMISSION_TTL_MS) {
+    if (
+      !entry ||
+      (expire &&
+        !entry.historyBlocked &&
+        now - entry.createdAt >= PENDING_SUBMISSION_TTL_MS)
+    ) {
       store.removeItem(itemKey);
       continue;
     }
@@ -206,6 +216,45 @@ export function pendingSubmission(key: string): PendingSubmission | null {
     return readEntry(store, ITEM_PREFIX + key);
   } catch {
     return null;
+  }
+}
+
+/** Keep negative recovery state even if this tab cannot write browser storage. */
+export function blockSubmission(key: string, code: HistoryRecoveryCode): void {
+  blockedInMemory.set(key, code);
+  const store = storage();
+  if (!store) return;
+  try {
+    const entry = readEntry(store, ITEM_PREFIX + key);
+    if (entry)
+      store.setItem(
+        ITEM_PREFIX + key,
+        JSON.stringify({ ...entry, historyBlocked: code }),
+      );
+  } catch {
+    // In-memory refusal still prevents this tab from resending.
+  }
+}
+
+export function submissionBlock(key: string): HistoryRecoveryCode | null {
+  return (
+    blockedInMemory.get(key) ?? pendingSubmission(key)?.historyBlocked ?? null
+  );
+}
+
+/** Only a successful original-task lookup may clear a recovery refusal. */
+export function clearSubmissionBlock(key: string): void {
+  blockedInMemory.delete(key);
+  const store = storage();
+  if (!store) return;
+  try {
+    const entry = readEntry(store, ITEM_PREFIX + key);
+    if (entry) {
+      delete entry.historyBlocked;
+      store.setItem(ITEM_PREFIX + key, JSON.stringify(entry));
+    }
+  } catch {
+    // A retained storage refusal fails closed for future sends.
   }
 }
 
@@ -271,6 +320,19 @@ export function finishedSubmissionKeys(
   isTerminal: (status: string) => boolean,
 ): string[] {
   const latest = conversation.latestTask;
+  if (latest?.status === 'needs_attention') {
+    const store = storage();
+    try {
+      if (store)
+        for (const [key, entry] of entries(store, Date.now(), false)) {
+          if (entry.taskId === latest.id && entry.scope === conversation.id)
+            blockSubmission(key, 'inference_dispatch_unresolved');
+        }
+    } catch {
+      /* unavailable storage is not a completed-outcome receipt */
+    }
+    return [];
+  }
   if (
     !latest ||
     !isTerminal(latest.status) ||
@@ -281,7 +343,9 @@ export function finishedSubmissionKeys(
   if (!store) return [];
   try {
     return entries(store, Date.now()).flatMap(([key, entry]) =>
-      entry.taskId === latest.id && entry.scope === conversation.id
+      !submissionBlock(key) &&
+      entry.taskId === latest.id &&
+      entry.scope === conversation.id
         ? [key]
         : [],
     );
@@ -312,6 +376,7 @@ export function pendingTasksIn(
 
 /** Forget one submission once its outcome is known; others stay pending. */
 export function settlePendingSubmission(key: string): void {
+  if (submissionBlock(key)) return;
   try {
     const store = storage();
     store?.removeItem(ITEM_PREFIX + key);
@@ -324,6 +389,7 @@ export function settlePendingSubmission(key: string): void {
 
 /** Forget every pending submission (sign-in or sign-out). */
 export function clearPendingSubmissions(): void {
+  blockedInMemory.clear();
   const store = storage();
   if (!store) return;
   try {

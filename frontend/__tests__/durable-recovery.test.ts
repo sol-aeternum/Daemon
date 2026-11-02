@@ -80,17 +80,26 @@ describe('reconcileSubmission', () => {
     }
   });
   it('settles the key of a task that already finished', async () => {
-    for (const status of [
-      'completed',
-      'failed',
-      'cancelled',
-      'needs_attention',
-    ]) {
+    for (const status of ['completed', 'failed', 'cancelled']) {
       const d = deps({ id: 't', conversationId: 'conv-a', status }, ['conv-a']);
       await reconcileSubmission('k1', d);
       expect(d.settle).toHaveBeenCalledWith('k1');
       expect(d.showSaved).toHaveBeenCalledWith('t');
     }
+  });
+
+  it('shows a needs-attention result without settling or replacing its original submission', async () => {
+    const d = deps(
+      { id: 'task', conversationId: 'conv-a', status: 'needs_attention' },
+      ['conv-a'],
+    );
+    const notFound = vi.fn();
+    await reconcileSubmission('original', { ...d, notFound });
+    expect(d.settle).not.toHaveBeenCalled();
+    expect(d.record).not.toHaveBeenCalled();
+    expect(d.promote).not.toHaveBeenCalled();
+    expect(notFound).not.toHaveBeenCalled();
+    expect(d.showSaved).toHaveBeenCalledWith('task');
   });
 
   it('keeps the key of a task that is still running', async () => {

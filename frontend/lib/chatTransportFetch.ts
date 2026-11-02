@@ -1,6 +1,12 @@
 import { getAuthGeneration, getAuthHeader, refreshIfNeeded } from './auth';
 import { isolateSuggestionBody } from './suggestionSubmission';
-import { pendingSubmission, registerSubmission } from './pendingSubmission';
+import {
+  blockSubmission,
+  pendingSubmission,
+  registerSubmission,
+  submissionBlock,
+} from './pendingSubmission';
+import { historyRecoveryCode, historyRecoveryMessage } from './historyRecovery';
 
 export const DURABLE_CLIENT_FEATURES = ['task-cancel', 'task-reset'];
 
@@ -65,6 +71,8 @@ export async function chatTransportFetch(
       ? body.idempotency_key
       : crypto.randomUUID();
   body.idempotency_key = key;
+  const blocked = submissionBlock(key);
+  if (blocked) throw new Error(historyRecoveryMessage(blocked));
   const recorded = pendingSubmission(key);
   if (recorded) {
     // A resend of a request the backend may already have accepted replays it
@@ -93,7 +101,22 @@ export async function chatTransportFetch(
     });
   }
   scope.onSubmissionKey?.(body.idempotency_key as string, scope.conversationId);
-  return send(requestInput, init, body);
+  const response = await send(requestInput, init, body);
+  assertCurrent();
+  if (response.status === 409 || response.status === 503) {
+    const code = historyRecoveryCode(
+      await response
+        .clone()
+        .json()
+        .catch(() => null),
+    );
+    assertCurrent();
+    if (code) {
+      blockSubmission(key, code);
+      throw new Error(historyRecoveryMessage(code));
+    }
+  }
+  return response;
 }
 
 function send(

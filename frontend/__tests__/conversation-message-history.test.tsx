@@ -2,6 +2,12 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useLayoutEffect } from 'react';
 import { useConversationHistory } from '../hooks/useConversationHistory';
+import { createAuthTestStorage } from './helpers/authCookieEnvironment';
+import {
+  clearPendingSubmissions,
+  pendingSubmission,
+  registerSubmission,
+} from '../lib/pendingSubmission';
 
 const state = vi.hoisted(() => ({
   id: '00000000-0000-0000-0000-000000009999',
@@ -85,6 +91,8 @@ function Probe() {
   );
 }
 beforeEach(() => {
+  vi.stubGlobal('localStorage', createAuthTestStorage());
+  clearPendingSubmissions();
   state.id = A;
   state.generation = 1;
 });
@@ -100,6 +108,49 @@ const account = () =>
   });
 
 describe('selected history provider integration', () => {
+  it.each([409, 503])(
+    'keeps a %s lookup unknown, visible and scoped, without endpoint fallback',
+    async (status) => {
+      registerSubmission('held', {
+        scope: A,
+        requestConversationId: A,
+        model: 'original',
+        provider: null,
+      });
+      const code =
+        status === 409 ? 'restore_recovery_required' : 'history_unavailable';
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), 'http://test');
+        if (url.pathname === '/conversations') return list();
+        if (url.pathname.startsWith('/tasks/by-key/'))
+          return json(
+            { detail: { code, task_id: id(99), retry_safe: false } },
+            status,
+          );
+        return json(detail(A, [1, 2]));
+      });
+      vi.stubGlobal('fetch', fetcher);
+      render(<Probe />);
+      await screen.findByText('selected:Selected A');
+      let found: unknown;
+      await act(async () => {
+        found = await latest.taskForKey('held');
+      });
+      expect(found).toBeUndefined();
+      expect(pendingSubmission('held')).toMatchObject({
+        historyBlocked: code,
+        model: 'original',
+      });
+      expect(latest.taskRecoveryProblem).toMatch(/retained/);
+      expect(
+        fetcher.mock.calls.filter(([input]) =>
+          String(input).includes('/tasks/by-key/'),
+        ),
+      ).toHaveLength(1);
+      account();
+      await waitFor(() => expect(latest.taskRecoveryProblem).toBeNull());
+    },
+  );
   it('keeps older display rows separate from follower/SDK tail reads', async () => {
     const requests: URL[] = [];
     const responses = [

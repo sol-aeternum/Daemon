@@ -38,6 +38,8 @@ class AppState:
     # Backend owns A's pool; ordinary state and task control always use W.
     task_acceptor_pool: asyncpg.Pool | None = field(default=None)
     task_composition: TaskComposition | None = field(default=None)
+    # Only an explicitly qualified read collaborator; startup does not install H.
+    history_observation: object | None = field(default=None)
 
 
 async def init_app_state(settings: Settings) -> AppState:
