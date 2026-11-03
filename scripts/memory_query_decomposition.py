@@ -11,6 +11,7 @@ import asyncio
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
@@ -19,6 +20,7 @@ import subprocess
 import time
 from typing import Any, cast
 from unittest.mock import patch
+import uuid
 
 import asyncpg
 
@@ -407,6 +409,23 @@ def validate_sanitized(value: dict[str, Any]) -> None:
         raise ValueError("Sanitized evidence exceeds 500 KiB")
 
 
+def jsonable(value: Any) -> Any:
+    """Normalise DB-native values for the frozen canonical writer (raw/failure only).
+
+    Retrieved memory rows carry ``created_at`` datetimes (and may carry UUID or
+    Decimal values); ``rules.canonical`` is frozen and plain-JSON only.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (uuid.UUID, Decimal)):
+        return str(value)
+    return value
+
+
 def write_outputs(
     raw_path: Path,
     clean_path: Path,
@@ -415,7 +434,7 @@ def write_outputs(
     clean: dict[str, Any],
 ) -> None:
     sweep.validate_output_paths(raw_path, clean_path, report_path)
-    data = rules.canonical(raw)
+    data = rules.canonical(jsonable(raw))
     clean = {**clean, "raw_sha256": sweep.digest_bytes(data)}
     validate_sanitized(clean)
     report = render_report(clean) if report_path else None
@@ -982,7 +1001,7 @@ async def run_live(args: argparse.Namespace) -> None:
             }
         write_outputs(args.raw_out, args.sanitized_out, args.report_out, raw, clean)
         print(
-            f"Completed {args.command}; raw SHA256 {sweep.digest_bytes(rules.canonical(raw))}; charged bound USD {accounting.total}"
+            f"Completed {args.command}; raw SHA256 {sweep.digest_bytes(rules.canonical(jsonable(raw)))}; charged bound USD {accounting.total}"
         )
     except BaseException as error:
         # Preserve uncertain/partial attempts; never auto-resume or replay them.
@@ -1008,7 +1027,7 @@ async def run_live(args: argparse.Namespace) -> None:
                 failure["audit_error_type"] = type(audit_error).__name__
                 error.add_note(f"Failure-path audit failed: {type(audit_error).__name__}")
         if not args.raw_out.exists():
-            sweep.write_new_file(args.raw_out, rules.canonical(failure))
+            sweep.write_new_file(args.raw_out, rules.canonical(jsonable(failure)))
         raise
     finally:
         await observer.close()

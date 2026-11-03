@@ -1001,3 +1001,37 @@ def test_rejected_route_reports_attestation_reasons(
     monkeypatch.setattr(cli, "load_inference_policy", lambda: policy)
     with pytest.raises(ValueError, match="zdr_attestation_unknown"):
         (cli.verify_chat_route if kind == "chat" else cli.verify_embedding_route)()
+
+
+def test_raw_outputs_serialize_db_native_values(tmp_path: Path) -> None:
+    """Regression: retrieved rows carry datetimes; the frozen canonical writer is plain JSON."""
+    import uuid as _uuid
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    moment = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+    ident = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+    raw = {
+        "questions": [
+            {
+                "configs": {
+                    "generated_round_robin_k10": {
+                        "retrieved": [{"created_at": moment, "id": ident, "score": Decimal("0.5")}]
+                    }
+                },
+                "as_of": date(2026, 11, 2),
+            }
+        ]
+    }
+    with pytest.raises(TypeError):
+        cli.rules.canonical(raw)
+    data = cli.rules.canonical(cli.jsonable(raw))
+    loaded = json.loads(data)
+    row = loaded["questions"][0]["configs"]["generated_round_robin_k10"]["retrieved"][0]
+    assert row == {"created_at": moment.isoformat(), "id": str(ident), "score": "0.5"}
+    assert loaded["questions"][0]["as_of"] == "2026-11-02"
+    # Inputs are not mutated.
+    assert (
+        raw["questions"][0]["configs"]["generated_round_robin_k10"]["retrieved"][0]["created_at"]
+        is moment
+    )
