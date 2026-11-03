@@ -387,7 +387,7 @@ for (const slug of ['profile', 'memory']) {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await page.waitForLoadState('networkidle');
     await fixtureReady(page, slug, fixtures);
-    const surface = await captureSurface(page, true);
+    const surface = await captureSurface(page, true, testInfo);
     captureDiagnostics.assertClean();
     await testInfo.attach('capture-surface.json', {
       body: JSON.stringify({ surface, fixtures }, null, 2),
@@ -448,6 +448,7 @@ for (const theme of ['dark', 'light']) {
       const surface = await captureSurface(
         page,
         ['profile', 'memory'].includes(target.slug),
+        testInfo,
       );
       await testInfo.attach('capture-surface.json', {
         body: JSON.stringify({ surface, fixtures }, null, 2),
