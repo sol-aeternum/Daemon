@@ -87,7 +87,9 @@ pruning, recovery/adoption or deletion policy is selected here.
 
 ## Remaining launch gates
 
-Restricted complete namespace inventory and append reservation/read collaborators,
+Complete P namespace inventory is supplied separately by
+[060](RESOURCE_OUTPUT_NAMESPACE_INVENTORY.md); it is observation only and adds no
+file authority. Restricted append reservation/read collaborators,
 trusted split input/output composition, backend-owned storage/transport admission,
 current-generation authentication and full Send/Stop/partial/terminal/artifact
 integration still need implementation/qualification. Then require supported
