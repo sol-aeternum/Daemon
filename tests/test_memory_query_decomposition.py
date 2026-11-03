@@ -705,6 +705,10 @@ async def test_sent_malformed_receipt_retains_ceiling_in_failure_artifact(
     monkeypatch.setattr(cli, "check_benchmark_dsn", lambda dsn: None)
     monkeypatch.setattr(cli, "verify_chat_route", lambda: object())
     monkeypatch.setattr(cli, "chat_ceiling", lambda request, route: ceiling)
+    monkeypatch.setattr(cli, "verify_embedding_route", lambda: None)
+    monkeypatch.setattr(
+        cli.attestation, "check_once", AsyncMock(return_value={"routes": 2, "confirmed": 2})
+    )
     monkeypatch.setattr(cli, "question_as_of", lambda entry: datetime(2026, 11, 3, tzinfo=UTC))
     monkeypatch.setattr(cli, "fingerprint", AsyncMock(return_value="5cb6ab14-synthetic"))
     monkeypatch.setattr(cli, "table_stats", AsyncMock(return_value={}))
@@ -743,3 +747,221 @@ async def test_sent_malformed_receipt_retains_ceiling_in_failure_artifact(
     assert failure["receipts"] == accounting.records
     assert failure["receipts"][0]["kind"] == kind
     assert Decimal(failure["receipts"][0]["charged_bound_usd"]) == ceiling
+
+
+def fake_attested_phase(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, phase: str, rejected: str | None
+) -> Any:
+    events: list[str] = []
+    counts = {"routes": 2, "confirmed": 2, "revoked": 0}
+    captured: dict[str, Any] = {}
+    dataset = [
+        {"question_id": f"synthetic-{index}", "question": f"Synthetic question {index}"}
+        for index in range(50)
+    ]
+    questions = [
+        {
+            "question_id": row["question_id"],
+            "queries": ["Synthetic sub-query" if index == 0 else row["question"]],
+            "retries_429": 0,
+            "parse_retries": 0,
+        }
+        for index, row in enumerate(dataset)
+    ]
+    expected = "5cb6ab14-synthetic"
+    oracle = tmp_path / "oracle.json"
+    oracle.write_text("{}")
+    args = argparse.Namespace(
+        command=phase,
+        oracle=oracle,
+        oracle_sha=cli.sweep.digest_bytes(oracle.read_bytes()),
+        generation=tmp_path / "generation.json",
+        generation_sha="g" * 64,
+        dry_run=False,
+        raw_out=tmp_path / "raw.json",
+        sanitized_out=tmp_path / "sanitized.json",
+        report_out=None,
+    )
+    inputs = SimpleNamespace(
+        dataset=dataset,
+        fingerprint=expected,
+        shas={"dataset": "d" * 64},
+        targets={},
+        vector_from=cli.exactness.VECTOR_FROM,
+        vector_until=cli.exactness.VECTOR_UNTIL,
+    )
+
+    @asynccontextmanager
+    async def scope(*args: Any, **kwargs: Any):
+        yield SimpleNamespace(execute=AsyncMock())
+
+    pool = SimpleNamespace(acquire=scope, close=AsyncMock())
+    observer = SimpleNamespace(
+        close=AsyncMock(), transaction=scope, fetchval=AsyncMock(return_value="on")
+    )
+
+    async def attest(actual_pool: Any) -> dict[str, int]:
+        assert actual_pool is pool
+        events.append("attestation")
+        return counts
+
+    async def fingerprint(*args: Any, **kwargs: Any) -> str:
+        events.append("fingerprint")
+        return expected
+
+    async def stats(*args: Any, **kwargs: Any) -> dict[str, list[int]]:
+        events.append("table_stats")
+        return {"public.inference_route_attestations": [2 if "attestation" in events else 0, 0, 0]}
+
+    def verify_chat() -> object:
+        events.append("chat_route")
+        if rejected == "chat":
+            raise ValueError("Decomposition route unapproved: zdr_attestation_unknown")
+        return object()
+
+    def verify_embedding() -> None:
+        events.append("embedding_route")
+        if rejected == "embedding":
+            raise ValueError("Embedding route unapproved: zdr_attestation_unknown")
+
+    async def generate(question: str, as_of: str, qid: str, accounting: Any) -> Any:
+        events.append("provider")
+        return next(row for row in questions if row["question_id"] == qid)
+
+    async def embed(*args: Any, **kwargs: Any) -> list[float]:
+        events.append("provider")
+        return [1.0] * 1024
+
+    def save(raw_path: Any, clean_path: Any, report_path: Any, raw: Any, clean: Any) -> None:
+        captured.update(raw=raw, sanitized=clean)
+
+    monkeypatch.setattr(cli, "freeze_check", lambda: events.append("freeze") or "f" * 64)
+    monkeypatch.setattr(cli, "require_committed", lambda path: None)
+    monkeypatch.setattr(cli, "load_generation_inputs", lambda args: (dataset, expected, "d" * 64))
+    monkeypatch.setattr(cli.sweep, "prepare_inputs", lambda args: inputs)
+    monkeypatch.setattr(
+        cli.sweep,
+        "pinned_json",
+        lambda *unused: {
+            "frozen_sha256": "f" * 64,
+            "oracle_sha256": args.oracle_sha,
+            "dataset_sha256": "d" * 64,
+            "phase": "generate",
+            "fingerprint_before": expected,
+            "fingerprint_after": expected,
+            "questions": questions,
+            "receipts": [],
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "validate_oracle",
+        lambda *args: {row["question_id"]: [row["question"]] for row in dataset[:5]},
+    )
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database_url="synthetic-benchmark",
+            daemon_encryption_key="fictional",
+            retrieval_logging_enabled=False,
+            retrieval_logging_debug=False,
+        ),
+    )
+    monkeypatch.setattr(cli, "check_benchmark_dsn", lambda dsn: None)
+    monkeypatch.setattr(cli.asyncpg, "create_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(cli.asyncpg, "connect", AsyncMock(return_value=observer))
+    monkeypatch.setattr(cli, "fingerprint", fingerprint)
+    monkeypatch.setattr(cli, "table_stats", stats)
+    monkeypatch.setattr(cli.attestation, "check_once", AsyncMock(side_effect=attest))
+    monkeypatch.setattr(
+        cli.attestation, "start", AsyncMock(side_effect=AssertionError("Background loop forbidden"))
+    )
+    monkeypatch.setattr(cli, "verify_chat_route", verify_chat)
+    monkeypatch.setattr(cli, "verify_embedding_route", verify_embedding)
+    monkeypatch.setattr(
+        cli.embedding,
+        "get_selected_embedding_route_id",
+        lambda: events.append("embedding_selection") or cli.EMBEDDING_ROUTE,
+    )
+    monkeypatch.setattr(
+        cli.embedding, "get_configured_embedding_fallback_storage_models", lambda: ()
+    )
+    monkeypatch.setattr(
+        cli.sweep, "verify_embedding_context", lambda inputs: events.append("embedding_context")
+    )
+    monkeypatch.setattr(cli.compute_runtime, "account_compute", scope)
+    monkeypatch.setattr(cli, "generate_one", generate)
+    monkeypatch.setattr(cli, "embed_subquery", embed)
+    monkeypatch.setattr(cli, "question_as_of", lambda entry: datetime(2026, 11, 3, tzinfo=UTC))
+    monkeypatch.setattr(cli, "ContentEncryption", lambda key: object())
+    monkeypatch.setattr(cli, "measure_snapshot", AsyncMock(return_value=({}, {"questions": []})))
+    monkeypatch.setattr(cli, "git", lambda *args: b"synthetic-commit")
+    monkeypatch.setattr(cli, "write_outputs", save)
+    return args, events, counts, captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["generate", "measure"])
+@pytest.mark.parametrize("rejected", [None, "chat", "embedding"])
+async def test_attestation_once_before_routes_each_live_phase(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, phase: str, rejected: str | None
+) -> None:
+    args, events, counts, captured = fake_attested_phase(monkeypatch, tmp_path, phase, rejected)
+    if rejected:
+        with pytest.raises(ValueError, match="zdr_attestation_unknown"):
+            await cli.run_live(args)
+        assert "provider" not in events
+        failure = json.loads(args.raw_out.read_text())
+        assert failure["attestation_counts"] == counts
+        assert failure["table_changes"] == {"public.inference_route_attestations": [2, 0, 0]}
+    else:
+        await cli.run_live(args)
+        assert captured["raw"]["attestation_counts"] == counts
+        assert captured["sanitized"]["attestation_counts"] == counts
+        assert captured["sanitized"]["accounting"]["attestation_counts"] == counts
+        assert captured["sanitized"]["table_changes"] == {
+            "public.inference_route_attestations": [2, 0, 0]
+        }
+        assert (
+            events.index("attestation")
+            < events.index("embedding_selection")
+            < events.index("provider")
+        )
+    assert events[:5] == ["freeze", "fingerprint", "table_stats", "attestation", "chat_route"]
+    assert events.count("attestation") == 1
+    cast(Any, cli.attestation.check_once).assert_awaited_once()
+    cast(Any, cli.attestation.start).assert_not_called()
+
+
+def test_attestation_allowlist_is_narrow() -> None:
+    assert (
+        cli.WRITE_ALLOWLIST["public.inference_route_attestations"]
+        == "orchestrator/entitlements/attestation.py:494"
+    )
+    before = {"public.inference_route_attestations": [0, 0, 0], "public.memories": [0, 0, 0]}
+    after = {"public.inference_route_attestations": [2, 0, 0], "public.memories": [0, 0, 0]}
+    assert cli.check_table_writes(before, after) == {
+        "public.inference_route_attestations": [2, 0, 0]
+    }
+    after["public.memories"] = [1, 0, 0]
+    with pytest.raises(ValueError, match="Unapproved table writes: public.memories"):
+        cli.check_table_writes(before, after)
+
+
+@pytest.mark.parametrize("kind", ["chat", "embedding"])
+def test_rejected_route_reports_attestation_reasons(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    route = SimpleNamespace(
+        is_approved=lambda requirements: False,
+        rejection_reasons=lambda requirements: ("zdr_attestation_unknown",),
+    )
+    policy = SimpleNamespace(
+        requirements=object(),
+        routes={generation.ROUTE_ID: route},
+        embedding_route=lambda route_id: route,
+    )
+    monkeypatch.setattr(cli, "load_inference_policy", lambda: policy)
+    with pytest.raises(ValueError, match="zdr_attestation_unknown"):
+        (cli.verify_chat_route if kind == "chat" else cli.verify_embedding_route)()

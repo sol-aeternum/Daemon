@@ -24,6 +24,7 @@ import asyncpg
 
 from orchestrator import compute_runtime
 from orchestrator.config import get_settings
+from orchestrator.entitlements import attestation
 from orchestrator.entitlements.policy import load_inference_policy
 from orchestrator.eval import decomposition as rules
 from orchestrator.eval import decomposition_generation as generation
@@ -52,6 +53,8 @@ WRITE_ALLOWLIST = {
     "public.entitlement_usage_periods": "orchestrator/entitlements/store.py:88,168,383",
     "public.entitlement_accounts": "orchestrator/entitlements/store.py:198,217;orchestrator/entitlements/service.py:908",
     "public.retrieval_log": "orchestrator/memory/store.py:3624",
+    # Production one-shot startup attestation: orchestrator/entitlements/attestation.py:494.
+    "public.inference_route_attestations": "orchestrator/entitlements/attestation.py:494",
 }
 
 
@@ -79,7 +82,12 @@ def verify_chat_route() -> Any:
     policy = load_inference_policy()
     route = policy.routes.get(generation.ROUTE_ID)
     if route is None or not route.is_approved(policy.requirements):
-        raise ValueError("Decomposition route unapproved")
+        reasons = (
+            route.rejection_reasons(policy.requirements)
+            if route is not None
+            else ("route_missing",)
+        )
+        raise ValueError(f"Decomposition route unapproved: {','.join(reasons)}")
     expected = {
         "only": ["azure/eu"],
         "order": ["azure/eu"],
@@ -99,6 +107,17 @@ def verify_chat_route() -> Any:
     ):
         raise ValueError("Decomposition route/pinning/ZDR mismatch")
     return route
+
+
+def verify_embedding_route() -> None:
+    policy = load_inference_policy()
+    route = policy.embedding_route(EMBEDDING_ROUTE)
+    reasons = (
+        route.rejection_reasons(policy.requirements) if route is not None else ("route_missing",)
+    )
+    if reasons:
+        raise ValueError(f"Embedding route unapproved: {','.join(reasons)}")
+    embedding_adapter.approved_route(EMBEDDING_ROUTE)
 
 
 def receipt_dict(response: Any) -> dict[str, Any]:
@@ -791,7 +810,6 @@ async def run_live(args: argparse.Namespace) -> None:
             raise ValueError("Require exactly one generation per dev question")
         oracle = validate_oracle(args.oracle, args.oracle_sha, inputs.targets)
         accounting = Accounting(prior["receipts"])
-        sweep.verify_embedding_context(inputs)
     if args.dry_run:
         print("Dry-run: committed pins checked; no DB/provider access")
         return
@@ -799,12 +817,6 @@ async def run_live(args: argparse.Namespace) -> None:
     check_benchmark_dsn(settings.database_url)
     if settings.retrieval_logging_enabled or settings.retrieval_logging_debug:
         raise ValueError("Retrieval logging must be disabled")
-    if (
-        embedding.get_selected_embedding_route_id() != EMBEDDING_ROUTE
-        or embedding.get_configured_embedding_fallback_storage_models() != ()
-    ):
-        raise ValueError("Embedding route/fallback mismatch")
-    verify_chat_route()
     # One writer backend permits forcing its own statistics flush after settlement.
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=1)
     observer = await asyncpg.connect(
@@ -813,10 +825,21 @@ async def run_live(args: argparse.Namespace) -> None:
     qids = [entry["question_id"] for entry in dataset]
     raw: dict[str, Any] = {}
     stats_before = None
+    attestation_counts: dict[str, int] = {}
     rows: list[dict[str, Any]] = []
     try:
         before = await fingerprint(observer, qids, expected)
         stats_before = await table_stats(observer)
+        attestation_counts = await attestation.check_once(pool)
+        verify_chat_route()
+        verify_embedding_route()
+        if (
+            embedding.get_selected_embedding_route_id() != EMBEDDING_ROUTE
+            or embedding.get_configured_embedding_fallback_storage_models() != ()
+        ):
+            raise ValueError("Embedding route/fallback mismatch")
+        if inputs is not None:
+            sweep.verify_embedding_context(inputs)
         with no_answers_or_judges():
             if args.command == "generate":
                 raw = {"phase": "generate", "questions": rows, "receipts": accounting.records}
@@ -900,6 +923,7 @@ async def run_live(args: argparse.Namespace) -> None:
             "fingerprint_before": before,
             "fingerprint_after": after,
             "git_sha": git("rev-parse", "HEAD").decode().strip(),
+            "attestation_counts": attestation_counts,
         }
         raw.update(common)
         raw["table_stats_before"], raw["table_stats_after"] = stats_before, stats_after
@@ -913,7 +937,10 @@ async def run_live(args: argparse.Namespace) -> None:
                     for key, value in json.loads(rules.frozen_design()).items()
                     if key.endswith("sha256")
                 },
-                "accounting": accounting_summary(accounting),
+                "accounting": {
+                    **accounting_summary(accounting),
+                    "attestation_counts": attestation_counts,
+                },
                 "table_changes": changes,
                 "write_allowlist": sorted(WRITE_ALLOWLIST),
                 "answer_transports": 0,
@@ -961,6 +988,7 @@ async def run_live(args: argparse.Namespace) -> None:
             "receipts": accounting.records,
             "partial": raw,
             "error_type": type(error).__name__,
+            "attestation_counts": attestation_counts,
         }
         if stats_before is not None:
             try:
@@ -1002,7 +1030,8 @@ def render_report(data: Mapping[str, Any]) -> str:
         "USD cap: reported costs plus conservative unknown-attempt ceilings, checked before each send.",
         "Chat ceiling: ceil((production_input_bound * prompt_rate + max_tokens * output_rate) / 1e6) micro-USD; embedding uses UTF-8 input_bound and pinned input rate.",
         f"Fingerprint before/after: `{data['fingerprint_before']}` / `{data['fingerprint_after']}`",
-        "All pg_stat_user_tables counters inspected; only explicitly source-derived ledger tables and retrieval_log allowed. Denial encounters are not allowlisted.",
+        "All pg_stat_user_tables counters inspected; only explicitly source-derived ledger tables, retrieval_log and inference_route_attestations allowed. Denial encounters are not allowlisted.",
+        "Startup uses one production attestation.check_once on the writable benchmark pool per phase (two free public listing GETs); counts are recorded in accounting. No attestation.start or background loop.",
         "One writer backend forces its own next statistics flush; concurrent unrelated writes can conservatively fail the audit. Statistics are not a transactional write-provenance proof.",
         "Read-only repeatable-read retrieval; historical question clock; original vectors reused, never embedded.",
         "No answer or judge transport constructed; construction/dispatch guards active.",
