@@ -407,3 +407,20 @@ def test_catalog_function_json_stays_in_schema_scanner_grammar(tmp_path):
     # Exercise the actual production payload without broadening scanner grammar.
     graph = discover_tables(migrations)
     assert graph.tables == {} and graph.edges == {}
+
+
+@pytest.mark.parametrize("prefix,custom", [("tasks_test_", False), ("bench_metadata_", True)])
+def test_complete_inventory_adapter_preserves_binding_types_and_closed_acl(prefix, custom):
+    schema = prefix + uuid4().hex
+    path = MIGRATIONS / "060_resource_output_namespace_inventory.sql"
+    original = path.read_text()
+    sql = migration_sql_for_schema(path, schema, schema_prefix=prefix if custom else None)
+    namespace = f'"{schema}"' if custom else schema
+    assert "public." not in sql
+    assert f"FROM {namespace}.deletion_journal_applied" in sql
+    assert f"FROM {namespace}.artifact_namespaces" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert "pg_catalog.regprocedure" in sql and "pg_catalog.int4" in sql
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+    assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
+    assert path.read_text() == original

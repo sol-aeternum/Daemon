@@ -21,12 +21,12 @@ import asyncpg
 
 from orchestrator.services.connection_cleanup import pool_connection
 from orchestrator.artifact_staging import ArtifactStageError, _Handles
+from orchestrator.namespace_inventory import inventory_from_rows, namespace_states
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 from orchestrator.services.account_control.store import Connection, lock_account_control
 from orchestrator.services.deletion_journal.barrier import _io
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.deletion_journal.mixed_store import MixedJournal, MixedView
-from orchestrator.services.deletion_journal.model import Entry
 from orchestrator.services.deletion_journal.namespace_candidate import (
     NamespaceCommand,
     NamespaceCreateFields,
@@ -139,51 +139,16 @@ class NamespaceController:
         return view
 
     async def _inventory(self, conn: Connection, view: MixedView) -> dict[str, str]:
-        if (
-            await conn.fetchval(
-                "SELECT journal_id FROM deletion_journal_binding WHERE singleton=true"
-            )
-            != self._journal_id
-        ):
+        binding = await conn.fetchval(
+            "SELECT journal_id FROM deletion_journal_binding WHERE singleton=true"
+        )
+        if not isinstance(binding, UUID) or binding != self._journal_id:
             raise JournalError("marker_mismatch")
-        entries = {entry.seq: entry for entry in view.entries}
-        marked: set[int] = set()
-        for row in await conn.fetch("SELECT * FROM deletion_journal_applied"):
-            entry = entries.get(row["seq"])
-            operation = entry.command.operation_id if isinstance(entry, Entry) else None
-            if (
-                entry is None
-                or row["journal_id"] != entry.journal_id
-                or row["event_id"] != entry.event_id
-                or row["account_id"] != entry.command.account_id
-                or row["operation_id"] != operation
-                or bytes(row["entry_digest"]) != entry.digest
-            ):
-                raise JournalError("marker_mismatch")
-            marked.add(entry.seq)
-        # Complete history is inspected before any DB projection or physical effect.
-        if any(not isinstance(entry, NamespaceEntry) for entry in view.entries):
-            raise JournalError("recovery_required")
-        represented: set[int] = set()
-        states: dict[str, str] = {}
-        for row in await conn.fetch("SELECT * FROM artifact_namespaces"):
-            birth = entries.get(row["birth_seq"])
-            if not isinstance(birth, NamespaceEntry) or (
-                row["journal_id"] != birth.journal_id
-                or row["birth_event_id"] != birth.event_id
-                or row["account_id"] != birth.command.account_id
-                or row["generation"] != birth.command.fields.generation
-                or row["namespace"] != birth.command.fields.namespace
-                or bytes(row["birth_digest"]) != birth.digest
-                or bytes(row["command_digest"]) != birth.command_digest
-                or birth.seq not in marked
-            ):
-                raise JournalError("marker_mismatch")
-            represented.add(birth.seq)
-            states[row["namespace"]] = row["state"]
-        if represented != marked:
-            raise JournalError("marker_mismatch")
-        return states
+        markers = await conn.fetch("SELECT * FROM deletion_journal_applied")
+        namespaces = await conn.fetch("SELECT * FROM artifact_namespaces")
+        return namespace_states(
+            self._journal_id, view, inventory_from_rows(binding, markers, namespaces)
+        )
 
     async def ensure_namespace(self, expected: CapturedGeneration) -> NamespaceObservation:
         if type(expected) is not CapturedGeneration:
