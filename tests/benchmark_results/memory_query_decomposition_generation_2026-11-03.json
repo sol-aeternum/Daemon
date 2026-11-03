@@ -1,0 +1,1090 @@
+{
+  "accounting": {
+    "attempts": [
+      {
+        "ceiling_usd": "0.002127",
+        "charged_bound_usd": "0.00005225",
+        "cost_usd": "0.00005225",
+        "kind": "chat",
+        "latency_ms": 3578.8258819957264,
+        "question_id": "b86304ba",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00212",
+        "charged_bound_usd": "0.00005962",
+        "cost_usd": "0.00005962",
+        "kind": "chat",
+        "latency_ms": 2037.195351003902,
+        "question_id": "8550ddae",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002116",
+        "charged_bound_usd": "0.00003718",
+        "cost_usd": "0.00003718",
+        "kind": "chat",
+        "latency_ms": 1351.4051499951165,
+        "question_id": "86f00804",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002115",
+        "charged_bound_usd": "0.00004169",
+        "cost_usd": "0.00004169",
+        "kind": "chat",
+        "latency_ms": 1648.2759490027092,
+        "question_id": "19b5f2b3",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00212",
+        "charged_bound_usd": "0.00004653",
+        "cost_usd": "0.00004653",
+        "kind": "chat",
+        "latency_ms": 1711.528655985603,
+        "question_id": "caf9ead2",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002159",
+        "charged_bound_usd": "0.00005401",
+        "cost_usd": "0.00005401",
+        "kind": "chat",
+        "latency_ms": 2022.5664760218933,
+        "question_id": "fca762bc",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002138",
+        "charged_bound_usd": "0.00005093",
+        "cost_usd": "0.00005093",
+        "kind": "chat",
+        "latency_ms": 1779.6386680274736,
+        "question_id": "4388e9dd",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002144",
+        "charged_bound_usd": "0.00005599",
+        "cost_usd": "0.00005599",
+        "kind": "chat",
+        "latency_ms": 1934.3237759894691,
+        "question_id": "e8a79c70",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00215",
+        "charged_bound_usd": "0.00005467",
+        "cost_usd": "0.00005467",
+        "kind": "chat",
+        "latency_ms": 1918.3607010054402,
+        "question_id": "d596882b",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00214",
+        "charged_bound_usd": "0.00005016",
+        "cost_usd": "0.00005016",
+        "kind": "chat",
+        "latency_ms": 1267.6350139954593,
+        "question_id": "71a3fd6b",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00212",
+        "charged_bound_usd": "0.00004532",
+        "cost_usd": "0.00004532",
+        "kind": "chat",
+        "latency_ms": 1740.130201971624,
+        "question_id": "28dc39ac",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002122",
+        "charged_bound_usd": "0.00006039",
+        "cost_usd": "0.00006039",
+        "kind": "chat",
+        "latency_ms": 2198.0270280037075,
+        "question_id": "ba358f49",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002121",
+        "charged_bound_usd": "0.00004818",
+        "cost_usd": "0.00004818",
+        "kind": "chat",
+        "latency_ms": 1872.372855024878,
+        "question_id": "6cb6f249",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002127",
+        "charged_bound_usd": "0.00005687",
+        "cost_usd": "0.00005687",
+        "kind": "chat",
+        "latency_ms": 1842.1956399979535,
+        "question_id": "2318644b",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002124",
+        "charged_bound_usd": "0.00007887",
+        "cost_usd": "0.00007887",
+        "kind": "chat",
+        "latency_ms": 2046.5981460001785,
+        "question_id": "1192316e",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002142",
+        "charged_bound_usd": "0.00006292",
+        "cost_usd": "0.00006292",
+        "kind": "chat",
+        "latency_ms": 1750.9667199919932,
+        "question_id": "8c18457d",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002123",
+        "charged_bound_usd": "0.00006116",
+        "cost_usd": "0.00006116",
+        "kind": "chat",
+        "latency_ms": 2353.025691001676,
+        "question_id": "gpt4_4edbafa2",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002122",
+        "charged_bound_usd": "0.00006457",
+        "cost_usd": "0.00006457",
+        "kind": "chat",
+        "latency_ms": 1695.3022310044616,
+        "question_id": "6613b389",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002119",
+        "charged_bound_usd": "0.00005852",
+        "cost_usd": "0.00005852",
+        "kind": "chat",
+        "latency_ms": 1903.9531279995572,
+        "question_id": "gpt4_af6db32f",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002122",
+        "charged_bound_usd": "0.00004631",
+        "cost_usd": "0.00004631",
+        "kind": "chat",
+        "latency_ms": 1325.6292199948803,
+        "question_id": "gpt4_b0863698",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002127",
+        "charged_bound_usd": "0.00004444",
+        "cost_usd": "0.00004444",
+        "kind": "chat",
+        "latency_ms": 1724.4770910183433,
+        "question_id": "852ce960",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002121",
+        "charged_bound_usd": "0.00004455",
+        "cost_usd": "0.00004455",
+        "kind": "chat",
+        "latency_ms": 1324.298622988863,
+        "question_id": "6a1eabeb",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002123",
+        "charged_bound_usd": "0.00005335",
+        "cost_usd": "0.00005335",
+        "kind": "chat",
+        "latency_ms": 1948.9164529950358,
+        "question_id": "5831f84d",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00213",
+        "charged_bound_usd": "0.00005918",
+        "cost_usd": "0.00005918",
+        "kind": "chat",
+        "latency_ms": 2046.7310060048476,
+        "question_id": "f685340e",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002126",
+        "charged_bound_usd": "0.00004829",
+        "cost_usd": "0.00004829",
+        "kind": "chat",
+        "latency_ms": 1690.7004209933802,
+        "question_id": "184da446",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002124",
+        "charged_bound_usd": "0.00004796",
+        "cost_usd": "0.00004796",
+        "kind": "chat",
+        "latency_ms": 1810.0813630153425,
+        "question_id": "f685340e_abs",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002118",
+        "charged_bound_usd": "0.00004125",
+        "cost_usd": "0.00004125",
+        "kind": "chat",
+        "latency_ms": 1886.2608670024201,
+        "question_id": "982b5123_abs",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002125",
+        "charged_bound_usd": "0.00007876",
+        "cost_usd": "0.00007876",
+        "kind": "chat",
+        "latency_ms": 1772.559431992704,
+        "question_id": "gpt4_93159ced_abs",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002123",
+        "charged_bound_usd": "0.00005148",
+        "cost_usd": "0.00005148",
+        "kind": "chat",
+        "latency_ms": 1848.23227400193,
+        "question_id": "80ec1f4f_abs",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002134",
+        "charged_bound_usd": "0.00006028",
+        "cost_usd": "0.00006028",
+        "kind": "chat",
+        "latency_ms": 2158.3095529931597,
+        "question_id": "gpt4_372c3eed_abs",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002117",
+        "charged_bound_usd": "0.00004334",
+        "cost_usd": "0.00004334",
+        "kind": "chat",
+        "latency_ms": 1311.2220980110578,
+        "question_id": "ad7109d1",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00216",
+        "charged_bound_usd": "0.00006545",
+        "cost_usd": "0.00006545",
+        "kind": "chat",
+        "latency_ms": 1334.0034529974218,
+        "question_id": "2bf43736",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002126",
+        "charged_bound_usd": "0.00016335",
+        "cost_usd": "0.00016335",
+        "kind": "chat",
+        "latency_ms": 3381.2463360081892,
+        "question_id": "75f70248",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002124",
+        "charged_bound_usd": "0.00007007",
+        "cost_usd": "0.00007007",
+        "kind": "chat",
+        "latency_ms": 2465.4634979960974,
+        "question_id": "a3332713",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002138",
+        "charged_bound_usd": "0.0000682",
+        "cost_usd": "0.0000682",
+        "kind": "chat",
+        "latency_ms": 1983.1642879871652,
+        "question_id": "0bb5a684",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002124",
+        "charged_bound_usd": "0.00005291",
+        "cost_usd": "0.00005291",
+        "kind": "chat",
+        "latency_ms": 1897.6453370123636,
+        "question_id": "0977f2af",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002118",
+        "charged_bound_usd": "0.00004356",
+        "cost_usd": "0.00004356",
+        "kind": "chat",
+        "latency_ms": 1429.838081006892,
+        "question_id": "c5e8278d",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002144",
+        "charged_bound_usd": "0.00005577",
+        "cost_usd": "0.00005577",
+        "kind": "chat",
+        "latency_ms": 1436.02821501554,
+        "question_id": "c4f10528",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002126",
+        "charged_bound_usd": "0.00010153",
+        "cost_usd": "0.00010153",
+        "kind": "chat",
+        "latency_ms": 1856.7991569871083,
+        "question_id": "0a34ad58",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.00212",
+        "charged_bound_usd": "0.00004532",
+        "cost_usd": "0.00004532",
+        "kind": "chat",
+        "latency_ms": 1214.2129180138,
+        "question_id": "92a0aa75",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002127",
+        "charged_bound_usd": "0.00004818",
+        "cost_usd": "0.00004818",
+        "kind": "chat",
+        "latency_ms": 2247.322118986631,
+        "question_id": "gpt4_65aabe59",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002121",
+        "charged_bound_usd": "0.00005687",
+        "cost_usd": "0.00005687",
+        "kind": "chat",
+        "latency_ms": 2179.3740699940827,
+        "question_id": "3ba21379",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002123",
+        "charged_bound_usd": "0.00004004",
+        "cost_usd": "0.00004004",
+        "kind": "chat",
+        "latency_ms": 1607.1976489911322,
+        "question_id": "545bd2b5",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002151",
+        "charged_bound_usd": "0.00004851",
+        "cost_usd": "0.00004851",
+        "kind": "chat",
+        "latency_ms": 1739.095571974758,
+        "question_id": "1de5cff2",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002126",
+        "charged_bound_usd": "0.00009317",
+        "cost_usd": "0.00009317",
+        "kind": "chat",
+        "latency_ms": 2464.684402977582,
+        "question_id": "09d032c9",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002129",
+        "charged_bound_usd": "0.0000572",
+        "cost_usd": "0.0000572",
+        "kind": "chat",
+        "latency_ms": 1834.7613039950375,
+        "question_id": "cc06de0d",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002125",
+        "charged_bound_usd": "0.00013002",
+        "cost_usd": "0.00013002",
+        "kind": "chat",
+        "latency_ms": 2917.3812579829246,
+        "question_id": "gpt4_93159ced",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002117",
+        "charged_bound_usd": "0.00004301",
+        "cost_usd": "0.00004301",
+        "kind": "chat",
+        "latency_ms": 1387.9483310156502,
+        "question_id": "59524333",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002123",
+        "charged_bound_usd": "0.00005797",
+        "cost_usd": "0.00005797",
+        "kind": "chat",
+        "latency_ms": 1649.1944360022899,
+        "question_id": "25e5aa4f",
+        "status": "received"
+      },
+      {
+        "ceiling_usd": "0.002146",
+        "charged_bound_usd": "0.00004587",
+        "cost_usd": "0.00004587",
+        "kind": "chat",
+        "latency_ms": 1313.7539029994514,
+        "question_id": "7a8d0b71",
+        "status": "received"
+      }
+    ],
+    "attestation_counts": {
+      "attested": 9,
+      "check_failed": 0,
+      "revoked": 0,
+      "routes": 9
+    },
+    "charged_bound_usd": "0.00294602",
+    "chat_attempts": 50,
+    "cost_per_question_usd": {
+      "0977f2af": "0.00005291",
+      "09d032c9": "0.00009317",
+      "0a34ad58": "0.00010153",
+      "0bb5a684": "0.0000682",
+      "1192316e": "0.00007887",
+      "184da446": "0.00004829",
+      "19b5f2b3": "0.00004169",
+      "1de5cff2": "0.00004851",
+      "2318644b": "0.00005687",
+      "25e5aa4f": "0.00005797",
+      "28dc39ac": "0.00004532",
+      "2bf43736": "0.00006545",
+      "3ba21379": "0.00005687",
+      "4388e9dd": "0.00005093",
+      "545bd2b5": "0.00004004",
+      "5831f84d": "0.00005335",
+      "59524333": "0.00004301",
+      "6613b389": "0.00006457",
+      "6a1eabeb": "0.00004455",
+      "6cb6f249": "0.00004818",
+      "71a3fd6b": "0.00005016",
+      "75f70248": "0.00016335",
+      "7a8d0b71": "0.00004587",
+      "80ec1f4f_abs": "0.00005148",
+      "852ce960": "0.00004444",
+      "8550ddae": "0.00005962",
+      "86f00804": "0.00003718",
+      "8c18457d": "0.00006292",
+      "92a0aa75": "0.00004532",
+      "982b5123_abs": "0.00004125",
+      "a3332713": "0.00007007",
+      "ad7109d1": "0.00004334",
+      "b86304ba": "0.00005225",
+      "ba358f49": "0.00006039",
+      "c4f10528": "0.00005577",
+      "c5e8278d": "0.00004356",
+      "caf9ead2": "0.00004653",
+      "cc06de0d": "0.0000572",
+      "d596882b": "0.00005467",
+      "e8a79c70": "0.00005599",
+      "f685340e": "0.00005918",
+      "f685340e_abs": "0.00004796",
+      "fca762bc": "0.00005401",
+      "gpt4_372c3eed_abs": "0.00006028",
+      "gpt4_4edbafa2": "0.00006116",
+      "gpt4_65aabe59": "0.00004818",
+      "gpt4_93159ced": "0.00013002",
+      "gpt4_93159ced_abs": "0.00007876",
+      "gpt4_af6db32f": "0.00005852",
+      "gpt4_b0863698": "0.00004631"
+    },
+    "embedding_calls": 0,
+    "embedding_calls_per_question": {},
+    "generation_latency_ms_p50": 1838.4784719964955,
+    "generation_latency_ms_p95": 2714.018265988851,
+    "provider_cost_usd": "0.00294602",
+    "unknown_cost_attempts": 0
+  },
+  "added_query_share": 0.82,
+  "answer_transports": 0,
+  "attestation_counts": {
+    "attested": 9,
+    "check_failed": 0,
+    "revoked": 0,
+    "routes": 9
+  },
+  "dataset_sha256": "6612e3a03c79b92bab2f1750d4661908e3dc37359715b7fb6b62c6f758bddb34",
+  "design_hashes": {
+    "decomposition_sha256": "d38b079bc4d47d2e0f315c5b11cfb5d32a9a52ea748f17867a8d9d8c578c0fb4",
+    "generation_sha256": "2415a49f4208e3472e43d0d5632b7f2c0226f6123f6be46f0dec490eb79bfa79",
+    "prompt_sha256": "79f69f54c7fc8aeed13392a845f020659125ae216a4a867eb08c8f97f2de0df0"
+  },
+  "fingerprint_after": "5cb6ab14f2eb6bf11bb5e4c5ed164a08b70d0fb92155918d006be4f630b874f3",
+  "fingerprint_before": "5cb6ab14f2eb6bf11bb5e4c5ed164a08b70d0fb92155918d006be4f630b874f3",
+  "frozen_sha256": "ab002ad69c69e9f2398e215eab6e93c35b32c6f72587c8a6f5d27015367e0d96",
+  "generation_429_retries": 0,
+  "generation_parse_retries": 0,
+  "git_sha": "644994330018c48e15a9e915d9a00f0756ddc053",
+  "judge_transports": 0,
+  "logical_generation_calls": 50,
+  "oracle_sha256": "204dbaf8625298bb23c4db874c2559bca31e8e65efb33bfa8f17c2b6a13d07a0",
+  "phase": "generate",
+  "query_count_distribution": {
+    "1": 43,
+    "2": 7
+  },
+  "questions": [
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "b86304ba",
+      "request_sha256": "bfb54c1d7c45020a63b410fe23fb05882295c30d9ff098f523a22e94f44df881",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "8550ddae",
+      "request_sha256": "bb0d865eb05361627029bfb3312cb1829053326d16c549991e9c699d293e5f7b",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "86f00804",
+      "request_sha256": "9f2ad02aa03dafba23a7fe2f8807f8d6fd022e57cb3975e31319832cf88d9ba1",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "19b5f2b3",
+      "request_sha256": "41cdce01a6cfa41c87ecd11d31c19bd89d6b8b728e20b429e58174629c45459c",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "caf9ead2",
+      "request_sha256": "dad2ab1c06f30078dfb8c204bf20ac0bc758897c11fe2a7cb32a36562fed5726",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "fca762bc",
+      "request_sha256": "d53489041219acb559c99038a1c3ff6857e0b33347d6d26117e331b26a5c6747",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "4388e9dd",
+      "request_sha256": "6f7af84a545630bc4de79b1d0cc6a62c279bd36a242ff2e2af0bcdf046ee4d3d",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "e8a79c70",
+      "request_sha256": "a77f0666f7c310f8f059d99b65c8f7f96c126bb2be462e0b0012fb5138e3ed5f",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "d596882b",
+      "request_sha256": "32c9262221266f51b1a2fcb5a532b7e426a9c41f63d0c284bcf3aaff40f23696",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "71a3fd6b",
+      "request_sha256": "aa4823e0d9fbd9d310bdd60c9ddd0350f01d5b3280cadf106ba506c90257670d",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "28dc39ac",
+      "request_sha256": "455f6530c62fba01b5674dc5ba81b1d361d33ee73871e6bf64c7f8668e87bb5f",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "ba358f49",
+      "request_sha256": "c5c0030c582a620e36b565312f2908cee262ece901a42fbe2374c16df63da65b",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "6cb6f249",
+      "request_sha256": "036ea4c62e2320cd2dd61ba60181869a1c42b53875a3ee8169ed6abb37c5d79b",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "2318644b",
+      "request_sha256": "8ea6f31c31131628700846cb9ede3e108addb275047b17fe7f2dd6799d8b956c",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "1192316e",
+      "request_sha256": "3d1d4a22abe02bb6a58edb8692445e2a122bd1475ef393538ee89f409ca38238",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "8c18457d",
+      "request_sha256": "79f08998f4177ec77adc5f3bc35bd596cba98d211ee23bd2930c022b0fa2d693",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_4edbafa2",
+      "request_sha256": "e80dde5f458768cbe85488812133d796d656861674b3eab4533843b71a1384a4",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "6613b389",
+      "request_sha256": "d4deca12bd3289ad482b5c2d2aa396bacd94ef01c154c7e591a4e79ae5fc9d07",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_af6db32f",
+      "request_sha256": "29364f2cec04626e94895fd579a252cd2db7e24c0cb4edb6a3292e2c7bc6197e",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_b0863698",
+      "request_sha256": "0ad014ddfcdecc6a77f4c0324d82417d796a078a926c14fa3e8d4c5fbd1a3502",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "852ce960",
+      "request_sha256": "823fda8d402db406c5d348dac3a1a42127a2f8b6af0106836992834a9be19328",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "6a1eabeb",
+      "request_sha256": "48878c2f3fc8694c6240281285b9f5085ba56a815268e30edcc8c4e19b9be0f1",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "5831f84d",
+      "request_sha256": "82d6fdf6ce2dc33fec33265bae539a79c0a1a0f5094e8a4c1ff6a088e347ee1c",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "f685340e",
+      "request_sha256": "d9ca3dbc0db3144e4c016761f7e86a035a604828827c3448775723d58f81151d",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "184da446",
+      "request_sha256": "0e3bdb0110a26a866be8c99ec9a32fbeae5f851f9fb4c78fe4dfaf77f52c7a32",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "f685340e_abs",
+      "request_sha256": "afe4b067dc9c52543688009fc300973d555b5629a059809ffb25561d71e6dbfe",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "982b5123_abs",
+      "request_sha256": "d622b2367e95ec6baf6319b6344fba7ba427822bc3781cd3cc8d5023c0a31769",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_93159ced_abs",
+      "request_sha256": "60886d32a9bd798f834eddabdf0a673ae1dbc05a440a1f99a2f25992ce69e9ae",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "80ec1f4f_abs",
+      "request_sha256": "ec34a9273405635660144c8319c6100ef1f2e97d67257afa04b869db15929a00",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_372c3eed_abs",
+      "request_sha256": "098db295473b1309cddfafa4a877273c999a8948aee802f1457e1730eb79fff6",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "ad7109d1",
+      "request_sha256": "edf88a344b6c077f40051518c5e87918dc0f870cce65c43b4450c5e8c458472a",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "2bf43736",
+      "request_sha256": "2cee3602b0524935fbebfdbbe0c03138f6b6d7834faf520967df3cb285675ee6",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "75f70248",
+      "request_sha256": "b0709500b4e71908e4b105c7d2e6d6f86d329599e6ade4d3bd3cc8858efea85a",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "a3332713",
+      "request_sha256": "7f2f110667cd42d4c25f8041287cf32d99b9fa430aaa956575d6dad0d4ad9ba9",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "0bb5a684",
+      "request_sha256": "b1f285d0103e81aff5946e974786f2237f1abea315d97162cbc619dda76519e3",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "0977f2af",
+      "request_sha256": "7963911c0c97284c7780ab29988fea0636bc1cf9a7472cf36ead6c1b317ab4bb",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "c5e8278d",
+      "request_sha256": "cb1b76a6e1b252b8f3918d6de044b2e74249e6e528f74eec71c7ea710e700b94",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "c4f10528",
+      "request_sha256": "77aa43600bd4ffeb6fef2ad96d8451a82e95509ba888b261ff49977feeb0c06f",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "0a34ad58",
+      "request_sha256": "999ae7c139e3b75aabb181848581b50487ca1a35eea10fa15c4c12d7fc0ba45f",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "92a0aa75",
+      "request_sha256": "511ed143a141e59116bc3fdf5280e4f2e0b9148959251454737dfa0dcd89b791",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_65aabe59",
+      "request_sha256": "b8613607d40f0fc0de8ba4f00531cf272163e2f6e0da5e1583c740045a6f5b62",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "3ba21379",
+      "request_sha256": "5591f2dc40c2a6e16ec1399e1c6b06752e58aaa88b0b843909f52fd5ab7538b0",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "545bd2b5",
+      "request_sha256": "87e7cd63d64be723228e8ce682c8fdf30e45e4e0aad8b9fcdc6e3e1ad139975c",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "1de5cff2",
+      "request_sha256": "58d0b39e3e8ff9d0a686f9af540ac454631092c12d68d452987e0a11dc908e34",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "09d032c9",
+      "request_sha256": "b37c0b0f4c466140750efeffb3ea9f6ef14f8dc63411cec64c81bcaa4aae6bc3",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "cc06de0d",
+      "request_sha256": "cd10b4ce34e4b9db025a64f2783571df9c459b7291a6301ec85dcacb997d0b11",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "gpt4_93159ced",
+      "request_sha256": "e7bad1be463c93cc3ada8dff3f6d2f6eaeb9acc594e04276d118f380e3bc2f1c",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "59524333",
+      "request_sha256": "efebc8846fad8dde42a2154814275eadff65f85eb451740e88aeed4c3c601414",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "25e5aa4f",
+      "request_sha256": "ffe9dbc8fa785879e64b58a46230e207919e82f0bc429bb6f603fc949d95c3c8",
+      "retries_429": 0
+    },
+    {
+      "attempts": 1,
+      "parse_retries": 0,
+      "question_id": "7a8d0b71",
+      "request_sha256": "1d46d2437e726e531eddb3179c1444cd11d442f0cca34b5afea19809f3e30b99",
+      "retries_429": 0
+    }
+  ],
+  "raw_sha256": "79a6066ea70e5d48dc0c7981ce8c987d5b465f90f030af408fea27e002e2b9c6",
+  "schema": "daemon-query-decomposition/1",
+  "sub_queries": {
+    "generated": {
+      "0977f2af": [
+        "What new kitchen gadget did I invest in before getting the Air Fryer?"
+      ],
+      "09d032c9": [
+        "What phone model and operating system does the user use?"
+      ],
+      "0a34ad58": [
+        "What transportation preferences, concerns, or accessibility needs has the user shared about getting around Tokyo?"
+      ],
+      "0bb5a684": [
+        "When did I attend the workshop titled \u201cEffective Communication in the Workplace\u201d?",
+        "When was the team meeting I was preparing for?"
+      ],
+      "1192316e": [
+        "How long does the user take to get ready before work?",
+        "How long does the user's commute to work take?"
+      ],
+      "184da446": [
+        "How many pages of 'A Short History of Nearly Everything' have I read so far?"
+      ],
+      "19b5f2b3": [
+        "How long was the user in Japan for?"
+      ],
+      "1de5cff2": [
+        "Which high-end fashion brand uses wild rubber sourced from the Amazon rainforest?"
+      ],
+      "2318644b": [
+        "What did I spend per night on accommodations in Hawaii and in Tokyo?"
+      ],
+      "25e5aa4f": [
+        "Where did the user complete their Bachelor's degree in Computer Science?"
+      ],
+      "28dc39ac": [
+        "How many total hours has the user spent playing games?"
+      ],
+      "2bf43736": [
+        "Which chapter of Part II of Tanqueray's Spiritual Life treatise discusses vocal prayer and meditation?"
+      ],
+      "3ba21379": [
+        "What type of vehicle model is the user currently working on?"
+      ],
+      "4388e9dd": [
+        "What was Andy wearing in the comedy movie scene script you wrote?"
+      ],
+      "545bd2b5": [
+        "What is my average daily screen time on Instagram?"
+      ],
+      "5831f84d": [
+        "How many Crash Course videos did I watch in the past few weeks?"
+      ],
+      "59524333": [
+        "What time do I usually go to the gym?"
+      ],
+      "6613b389": [
+        "What is my anniversary date?",
+        "When did Rachel get engaged?"
+      ],
+      "6a1eabeb": [
+        "What was my personal best time in the charity 5K run?"
+      ],
+      "6cb6f249": [
+        "How many days did I take social media breaks in total?"
+      ],
+      "71a3fd6b": [
+        "What phone number for the Speyer tourism board was previously provided to the user?"
+      ],
+      "75f70248": [
+        "What is known about the user's living room that could trigger sneezing, such as dust, mold, pets, plants, carpets, or recent changes?"
+      ],
+      "7a8d0b71": [
+        "DHL Wellness Retreats campaign plan budget allocated for influencer marketing"
+      ],
+      "80ec1f4f_abs": [
+        "Which different museums or galleries did I visit in December, and how many unique places were there?"
+      ],
+      "852ce960": [
+        "What amount was I pre-approved for when I got my mortgage from Wells Fargo?"
+      ],
+      "8550ddae": [
+        "What type of cocktail recipe did I try last weekend?"
+      ],
+      "86f00804": [
+        "What book am I currently reading?"
+      ],
+      "8c18457d": [
+        "What date did I buy a gift for my brother's graduation ceremony?",
+        "What date did I buy a birthday gift for my best friend?"
+      ],
+      "92a0aa75": [
+        "When did I start working in my current role?"
+      ],
+      "982b5123_abs": [
+        "When did I book the Airbnb in Sacramento?"
+      ],
+      "a3332713": [
+        "How much did I spend on gifts for my coworker?",
+        "How much did I spend on gifts for my brother?"
+      ],
+      "ad7109d1": [
+        "What is the speed of my new internet plan?"
+      ],
+      "b86304ba": [
+        "How much did I pay for the painting of a sunset?"
+      ],
+      "ba358f49": [
+        "What is my date of birth or current age?",
+        "When is my friend Rachel getting married?"
+      ],
+      "c4f10528": [
+        "What is the name of the restaurant in Cihampelas Walk, Bandung, that serves great Nasi Goreng?"
+      ],
+      "c5e8278d": [
+        "What was my last name before I changed it?"
+      ],
+      "caf9ead2": [
+        "How long did it take the user to move to the new apartment?"
+      ],
+      "cc06de0d": [
+        "What were the taxi ride cost and train fare for my daily commute, and how much more expensive was the taxi?"
+      ],
+      "d596882b": [
+        "Which vegan eatery with multiple locations throughout New York City did I recommend to the user previously?"
+      ],
+      "e8a79c70": [
+        "How many eggs were specified for the classic French omelette recipe in the previous conversation?"
+      ],
+      "f685340e": [
+        "How often did I previously play tennis with my friends at the local park?",
+        "How often do I currently play tennis with my friends at the local park?"
+      ],
+      "f685340e_abs": [
+        "How often does the user play table tennis with friends at the local park?"
+      ],
+      "fca762bc": [
+        "Which language learning app did the user ask about that uses mnemonics to help learners memorize words and phrases?"
+      ],
+      "gpt4_372c3eed_abs": [
+        "How many years did I spend in formal education from high school through completing my Master's degree?"
+      ],
+      "gpt4_4edbafa2": [
+        "What date did I attend the first BBQ event in June?"
+      ],
+      "gpt4_65aabe59": [
+        "Which did I set up first: the smart thermostat or the mesh network system?"
+      ],
+      "gpt4_93159ced": [
+        "How long had I been working before starting my current job at NovaTech, based on my employment history?"
+      ],
+      "gpt4_93159ced_abs": [
+        "What is my employment history, including how long I had been working before starting my current job at Google?"
+      ],
+      "gpt4_af6db32f": [
+        "When did I watch the Super Bowl?"
+      ],
+      "gpt4_b0863698": [
+        "What date did I participate in the 5K charity run?"
+      ]
+    },
+    "oracle": {}
+  },
+  "table_changes": {
+    "public.entitlement_reservations": [
+      50,
+      50,
+      0
+    ],
+    "public.entitlement_usage_periods": [
+      0,
+      100,
+      0
+    ],
+    "public.inference_route_attestations": [
+      9,
+      0,
+      0
+    ]
+  },
+  "write_allowlist": [
+    "public.entitlement_accounts",
+    "public.entitlement_reservations",
+    "public.entitlement_usage_periods",
+    "public.inference_route_attestations",
+    "public.retrieval_log"
+  ]
+}
