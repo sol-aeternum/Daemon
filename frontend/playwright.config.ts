@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { screenshotFontLaunchOptions } from './e2e/screenshot-fonts.cjs';
 
 export default defineConfig({
   testDir: './e2e',
@@ -7,6 +8,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:3100',
     trace: 'retain-on-failure',
+    launchOptions: screenshotFontLaunchOptions(),
   },
   projects: [
     {

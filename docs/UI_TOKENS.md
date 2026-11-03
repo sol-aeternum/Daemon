@@ -32,6 +32,33 @@ document contents or dynamic inline measurements.
 
 `npm run test:browser -- --project=design-tokens` checks eight pages in both
 themes, including label sizes, touch sizing, overflow, and screenshot baselines.
+
+Linux browser tests use the checked-in **Noto Sans 2.015** hinted TTF faces under
+`frontend/e2e/fonts/`, matching the existing references. The release URLs, archive
+checksums and individual font checksums are pinned in `manifest.json`; `OFL.txt`
+retains the upstream license. Regular/Medium/Bold and their italics reproduce the
+reference environment's weight selection (600 uses Bold). Noto Sans Mono 2.014
+Regular supplies the chat keyboard hint; Liberation Sans 2.1.5 Regular supplies
+missing arrow glyphs. Their upstream licenses are retained beside the fonts.
+No fonts are downloaded
+at test runtime. Update this test-only dependency only with separately reviewed
+visual evidence; a font update does not authorize PNG replacement.
+
+The Playwright launcher verifies the font bytes and gives Chromium only the fixed
+`FONTCONFIG_FILE` pointing to `fonts.conf` and a checkout-local `XDG_CACHE_HOME`.
+That config loads only these local faces, explicitly pins antialiasing, slight
+hinting and the LCD filter, and uses a checkout-local ignored cache. Host font
+packages, user fontconfig,
+and caller font overrides cannot select a different system font. It applies to
+both the default development inventory and complete qualification on Linux; app
+CSS, production assets and deployment configuration are unchanged. Other platforms
+retain their native browser environment and cannot qualify the Linux references.
+Each design-token capture writes a retained `resolved-fonts.json`, including on
+passing tests, with the browser version and Chromium CDP's actual resolved font
+families, PostScript names, custom-font flags and glyph counts from text nodes.
+The same font evidence is attached to `capture-surface.json`.
+The computed CSS stack and `document.fonts.ready` alone do not identify a face.
+
 For owner-approved combined qualification, run from `frontend/`:
 `npm run test:browser:qualification -- /absolute/retained/output-root`.
 The command runs the intact DevTools runtime-observability case on an owned
