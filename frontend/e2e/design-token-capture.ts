@@ -1,5 +1,12 @@
-import { expect, type Page, type Request } from '@playwright/test';
+import {
+  expect,
+  type Page,
+  type Request,
+  type TestInfo,
+} from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import { test as base } from './online-ui-fixture';
+import { resolvedFonts } from './font-diagnostics';
 import {
   isAcknowledgedPrefetchCancellation,
   isAcknowledgedRscPrefetch,
@@ -218,7 +225,11 @@ export const test = base.extend<{
   ],
 });
 
-export async function captureSurface(page: Page, nestedScroller: boolean) {
+export async function captureSurface(
+  page: Page,
+  nestedScroller: boolean,
+  testInfo: TestInfo,
+) {
   await page.evaluate(() => document.fonts.ready);
   await expect(
     page.getByRole('button', { name: 'Open Next.js Dev Tools', exact: true }),
@@ -297,5 +308,20 @@ export async function captureSurface(page: Page, nestedScroller: boolean) {
     await measure(),
     'Capture geometry must be stable across animation frames',
   ).toEqual(surface);
-  return surface;
+  const platformFonts = await resolvedFonts(page);
+  expect(platformFonts, 'Chromium resolved font evidence').not.toHaveLength(0);
+  const path = testInfo.outputPath('resolved-fonts.json');
+  await writeFile(
+    path,
+    JSON.stringify(
+      { browserVersion: page.context().browser()?.version(), platformFonts },
+      null,
+      2,
+    ),
+  );
+  await testInfo.attach('resolved-fonts.json', {
+    path,
+    contentType: 'application/json',
+  });
+  return { ...surface, platformFonts };
 }
