@@ -96,7 +96,10 @@ def verify_chat_route() -> Any:
         "data_collection": "deny",
         "zdr": True,
     }
-    actual = route.transport_payload(policy.requirements)["extra_body"]["provider"]
+    actual = dict(route.transport_payload(policy.requirements)["extra_body"]["provider"])
+    # transport_payload always adds the route's own price ceiling (policy.py:997);
+    # pin it separately so the privacy/pinning fields still compare exactly.
+    max_price = actual.pop("max_price", None)
     if (
         route.route_id != generation.ROUTE_ID
         or route.model != generation.MODEL
@@ -104,6 +107,7 @@ def verify_chat_route() -> Any:
         or route.endpoint != embedding_adapter.ENDPOINT
         or actual != expected
         or route.price_ceiling is None
+        or max_price != route.price_ceiling.as_max_price()
     ):
         raise ValueError("Decomposition route/pinning/ZDR mismatch")
     return route

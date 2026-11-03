@@ -461,14 +461,18 @@ def test_route_validation_negative_paths(monkeypatch: pytest.MonkeyPatch) -> Non
         "data_collection": "deny",
         "zdr": True,
     }
+    ceiling = SimpleNamespace(as_max_price=lambda: {"prompt": "0.22", "completion": "0.825"})
     route = SimpleNamespace(
         route_id=generation.ROUTE_ID,
         model=generation.MODEL,
         provider="openrouter",
         endpoint=cli.embedding_adapter.ENDPOINT,
-        price_ceiling=object(),
+        price_ceiling=ceiling,
         is_approved=lambda req: True,
-        transport_payload=lambda req: {"extra_body": {"provider": options}},
+        # Real transport_payload always carries max_price (policy.py:997).
+        transport_payload=lambda req: {
+            "extra_body": {"provider": {**options, "max_price": ceiling.as_max_price()}}
+        },
     )
     monkeypatch.setattr(
         cli,
@@ -499,6 +503,38 @@ def test_route_validation_negative_paths(monkeypatch: pytest.MonkeyPatch) -> Non
         with pytest.raises(ValueError):
             cli.verify_chat_route()
         options[key] = previous
+    # A max_price that differs from the route's own ceiling is refused.
+    payload = route.transport_payload
+    route.transport_payload = lambda req: {
+        "extra_body": {"provider": {**options, "max_price": {"prompt": "9"}}}
+    }
+    with pytest.raises(ValueError):
+        cli.verify_chat_route()
+    route.transport_payload = payload
+
+
+def test_chat_route_accepts_real_production_payload_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shape regression: the live payload from the real policy file, sans attestation."""
+    monkeypatch.setenv("DAEMON_INFERENCE_POLICY", "config/inference_policy.production.json")
+    real = cli.load_inference_policy().routes[generation.ROUTE_ID]
+    assert real.price_ceiling is not None
+    payload = real.transport.as_transport_kwargs()
+    payload["extra_body"]["provider"]["max_price"] = real.price_ceiling.as_max_price()
+    route = SimpleNamespace(
+        route_id=real.route_id,
+        model=real.model,
+        provider=real.provider,
+        endpoint=real.endpoint,
+        price_ceiling=real.price_ceiling,
+        is_approved=lambda req: True,
+        transport_payload=lambda req: payload,
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_inference_policy",
+        lambda: SimpleNamespace(routes={generation.ROUTE_ID: route}, requirements=object()),
+    )
+    assert cli.verify_chat_route() is route
 
 
 @pytest.mark.asyncio
