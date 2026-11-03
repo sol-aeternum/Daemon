@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from orchestrator.memory import injection
@@ -80,16 +81,8 @@ def distractor_counts(
     }
 
 
-def rendered_memory_rows(
-    inputs: injection.MemoryContextInputs, block: str, *, require_complete: bool = False
-) -> list[dict[str, object]]:
-    """Recover IDs from the actual renderer's prefix-only removal behaviour.
-
-    Content is normalized to a single line by production. Count rendered lines
-    within each production section, then associate them with the corresponding
-    input prefix. This never searches for memory text substrings (which would
-    misattribute duplicates). It also includes retained L0 rows.
-    """
+def _section_counts(block: str) -> tuple[int, int]:
+    """Count rendered (retrieved, frozen) rows per production section."""
     section = ""
     retrieved_count = 0
     frozen_count = 0
@@ -107,6 +100,20 @@ def rendered_memory_rows(
                 r"^- (?:Fact|Project|Preference|Important): ", line
             ):
                 retrieved_count += 1
+    return retrieved_count, frozen_count
+
+
+def rendered_memory_rows(
+    inputs: injection.MemoryContextInputs, block: str, *, require_complete: bool = False
+) -> list[dict[str, object]]:
+    """Recover IDs from the actual renderer's prefix-only removal behaviour.
+
+    Content is normalized to a single line by production. Count rendered lines
+    within each production section, then associate them with the corresponding
+    input prefix. This never searches for memory text substrings (which would
+    misattribute duplicates). It also includes retained L0 rows.
+    """
+    retrieved_count, frozen_count = _section_counts(block)
     eligible = [
         memory
         for memory in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]
@@ -121,12 +128,30 @@ def rendered_memory_rows(
             injection._normalize_content(memory.get("content")), injection.MAX_L0_CHARS
         )
     ]
+    expected_frozen = len(eligible_l0)
+    if require_complete:
+        # The renderer trims frozen rows against its own L0_TOKEN_BUDGET,
+        # independently of max_tokens and of the retrieved rows. Derive the
+        # legitimately retained frozen prefix from an L0-only production render
+        # instead of reimplementing the trim, so genuine drift still fails closed.
+        l0_only = injection.render_memory_context(
+            replace(inputs, retrieved=[], summaries=[]), max_tokens=10**12
+        )
+        expected_frozen = _section_counts(l0_only)[1]
+        # Only an L0 block that actually exceeds the renderer's L0 budget may
+        # legitimately lose rows; otherwise a shortfall is formatter drift.
+        if expected_frozen > len(eligible_l0) or (
+            expected_frozen < len(eligible_l0)
+            and injection.estimate_tokens(injection._format_l0_block(inputs.l0_memories))
+            <= injection.L0_TOKEN_BUDGET
+        ):
+            raise ValueError("Renderer section contract changed")
     if (
         retrieved_count > len(eligible)
         or frozen_count > len(eligible_l0)
         or (
             require_complete
-            and (retrieved_count != len(eligible) or frozen_count != len(eligible_l0))
+            and (retrieved_count != len(eligible) or frozen_count != expected_frozen)
         )
     ):
         raise ValueError("Renderer section contract changed")

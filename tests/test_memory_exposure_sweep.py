@@ -753,6 +753,57 @@ def test_unbounded_renderer_contract_mismatch_is_not_a_budget_drop(monkeypatch):
         measure([memory(0)], targets=[str(memory(0)["id"])])
 
 
+def _l0_trimmed(inputs):
+    full = injection._format_l0_block(inputs.l0_memories)
+    return injection.estimate_tokens(full) > injection.L0_TOKEN_BUDGET
+
+
+def test_single_over_budget_l0_memory_is_measured_not_rejected():
+    """Regression (#654 P2): a valid 600-char frozen memory exceeds L0_TOKEN_BUDGET."""
+    long_l0 = memory(5, " ".join(["word"] * 300))  # ~600 chars, >200 tokens
+    inputs = injection.MemoryContextInputs(l0_memories=[long_l0], retrieved=[memory(0)])
+    assert _l0_trimmed(inputs)
+    block = injection.render_memory_context(inputs, max_tokens=10**12)
+    rows = exposure.rendered_memory_rows(inputs, block, require_complete=True)
+    assert memory(0)["id"] in [row["id"] for row in rows]
+    result = exposure.measure(
+        inputs,
+        target_ids=[str(memory(0)["id"])],
+        gold_conversation_ids=[],
+        source_conversations={},
+        ranking=[],
+    )
+    assert result["target_exposed"] and result["budget_dropped"] == 0
+
+
+def test_several_l0_rows_over_budget_l0_only_and_mixed():
+    l0 = [memory(10 + index, " ".join([f"w{index}"] * 60)) for index in range(6)]
+    for retrieved in ([], [memory(0), memory(1)]):
+        inputs = injection.MemoryContextInputs(l0_memories=l0, retrieved=retrieved)
+        assert _l0_trimmed(inputs)
+        block = injection.render_memory_context(inputs, max_tokens=10**12)
+        rows = exposure.rendered_memory_rows(inputs, block, require_complete=True)
+        frozen_ids = [row["id"] for row in rows if row["id"] in {m["id"] for m in l0}]
+        # The renderer keeps a strict prefix of the frozen rows; it never reorders.
+        assert 0 < len(frozen_ids) < len(l0)
+        assert frozen_ids == [m["id"] for m in l0[: len(frozen_ids)]]
+        assert [row["id"] for row in rows][len(frozen_ids) :] == [m["id"] for m in retrieved]
+
+
+def test_frozen_format_drift_within_l0_budget_still_fails_closed(monkeypatch):
+    original = injection.render_memory_context
+
+    def changed_renderer(inputs, max_tokens=injection.DEFAULT_MAX_TOKENS):
+        return original(inputs, max_tokens=max_tokens).replace("\n- ", "\n* ")
+
+    inputs = injection.MemoryContextInputs(l0_memories=[memory(2, "frozen")], retrieved=[memory(0)])
+    assert not _l0_trimmed(inputs)
+    monkeypatch.setattr(injection, "render_memory_context", changed_renderer)
+    block = injection.render_memory_context(inputs, max_tokens=10**12)
+    with pytest.raises(ValueError, match="Renderer section contract"):
+        exposure.rendered_memory_rows(inputs, block, require_complete=True)
+
+
 def test_coverage_regression_smallest_k_with_different_rendered_counts():
     rows = summaries()
     rows[10].update(cases_strict=3, cases_pre_budget=3)
