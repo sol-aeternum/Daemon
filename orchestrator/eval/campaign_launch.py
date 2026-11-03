@@ -1296,40 +1296,44 @@ async def run_arm(args: argparse.Namespace) -> None:
             paired_result(arms, rule=acceptance_rule(plan.pins)),
         )
     if pilot or args.arm == "C0":
-        # Only a completely finished, qualified campaign can restore original access.
-        state = json.loads((args.campaign / "campaign.json").read_bytes())
+        await _reopen_database(plan, args.campaign)
+
+
+async def _reopen_database(plan: CampaignPlan, directory: Path) -> None:
+    # Only a completely finished, qualified campaign can restore original access.
+    state = json.loads((directory / "campaign.json").read_bytes())
+    require(
+        state["status"] == "completed"
+        and not state.get("restore_pending")
+        and not state["pending"],
+        "Incomplete campaign cannot reopen database",
+    )
+    state["final_reopen"] = "pending"
+    _write(directory / "campaign.json", state)
+    control = await asyncpg.connect(CONTROL_DSN, timeout=10, command_timeout=30)
+    try:
+        await verify_server(control)
+        identity = await target_identity(control)
         require(
-            state["status"] == "completed"
-            and not state.get("restore_pending")
-            and not state["pending"],
-            "Incomplete campaign cannot reopen database",
+            identity["system_identifier"] == plan.pins["server_identifier"]
+            and identity["oid"] == plan.pins["database_oid"],
+            "Final target differs",
         )
-        state["final_reopen"] = "pending"
-        _write(args.campaign / "campaign.json", state)
-        control = await asyncpg.connect(CONTROL_DSN, timeout=10, command_timeout=30)
-        try:
-            await verify_server(control)
-            identity = await target_identity(control)
-            require(
-                identity["system_identifier"] == plan.pins["server_identifier"]
-                and identity["oid"] == plan.pins["database_oid"],
-                "Final target differs",
+        require(
+            await control.fetchval(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname='daemon_lme_bench'"
             )
-            require(
-                await control.fetchval(
-                    "SELECT count(*) FROM pg_stat_activity WHERE datname='daemon_lme_bench'"
-                )
-                == 0,
-                "Owned pool not closed",
-            )
-            require(
-                plan.pins["original_allow_connections"] is True, "Original connection state differs"
-            )
-            await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS true")
-            state["final_reopen"] = "completed"
-            _write(args.campaign / "campaign.json", state)
-        finally:
-            await control.close()
+            == 0,
+            "Owned pool not closed",
+        )
+        require(
+            plan.pins["original_allow_connections"] is True, "Original connection state differs"
+        )
+        await control.execute("ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS true")
+        state["final_reopen"] = "completed"
+        _write(directory / "campaign.json", state)
+    finally:
+        await control.close()
 
 
 def main() -> None:
