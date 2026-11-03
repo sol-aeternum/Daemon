@@ -122,15 +122,33 @@ a decision: oracle sub-queries are contaminated and can never promote.
   one sub-query finds at rank 1. The latter scores 1/61, while an item ranked
   3rd and 8th scores 1/63 + 1/68. Facts that only a sub-query surfaces are
   therefore pushed below the top 10.
-- This explanation is the primary's interpretation of the attribution table;
-  it was not separately tested.
+- This mechanism is the primary's interpretation. The per-case table below
+  shows the effect directly: the same sub-queries, with only the merge changed.
+  The arithmetic is not otherwise tested.
 
 **Model-generated sub-queries.**
 - 43 of 50 questions got exactly one sub-query, and 7 got two. 82% added a
   query that differs from the original.
-- For `1192316e`, `6613b389` and `0bb5a684`, the generated sub-queries do
-  retrieve every target, at ranks 1–9 (e.g. `0bb5a684`: the meeting facts at
-  ranks 1 and 4 under sub-query 2). The merge limits these three.
+- For `1192316e`, `6613b389` and `0bb5a684`, the generated sub-queries
+  retrieve every target within depth 10, at ranks 1–8 (e.g. `0bb5a684`: the
+  meeting facts at ranks 1 and 4 under sub-query 2).
+- **Per-case strict exposure** (named targets rendered out of named targets).
+  The primary computed this from the raw output (sha `4a1f9a8b…`, outside Git)
+  and `cases.json`; rendered equals retrieved here, because D = 0 everywhere.
+
+  | Configuration | 28dc39ac | 1192316e | 6613b389 | 0bb5a684 | 0a34ad58 |
+  |---|---|---|---|---|---|
+  | original_k5 | 2/6 | 1/2 | 1/3 | 1/3 | 0/3 |
+  | generated_rrf_k10 | 4/6 | 2/2 | 1/3 | 1/3 | 0/3 |
+  | generated_round_robin_k10 | 4/6 | 2/2 | 3/3 | 3/3 | 0/3 |
+  | generated_union_rescore_k10 | 3/6 | 2/2 | 3/3 | 3/3 | 1/3 |
+  | oracle_rrf_k10 | 6/6 | 2/2 | 2/3 | 1/3 | 0/3 |
+  | oracle_round_robin_k10 | 6/6 | 2/2 | 3/3 | 3/3 | 3/3 |
+
+  With the **same** generated sub-queries, RRF fully exposes 1 case and
+  round-robin fully exposes 3: `6613b389` and `0bb5a684` go from 1/3 to 3/3.
+  So for those two cases the merge, not the sub-queries, is the binding
+  constraint.
 - For `28dc39ac`, the model produced one query that misses both Last of Us
   facts.
 - For `0a34ad58` (Tokyo preferences), it finds only `3bb5fed7`, at rank 9.
@@ -168,8 +186,17 @@ latency would dominate; the cost is negligible.
   output. No result was seen. The owner approved one rerun after an offline
   fix. That brings oracle embeddings to 24 in total, against the original cap
   of 15.
-- **Totals:** 120 embedding calls; total spend ≈ USD 0.00298, against the cap
-  of USD 0.10.
+- **Totals:** the generated Accounting block above covers **this (rerun)
+  `measure` only**: 60 embeddings, plus the generation chat cost carried in
+  (USD 0.00296158). Across both measure runs there were 120 embedding calls,
+  and total spend was ≈ USD 0.00298 (0.00296158 + 60 × ≈ 2.59e-7 for the
+  crashed run), against the cap of USD 0.10.
+- **The oracle-embedding overrun** (24 against 15) is an owner ruling recorded
+  in the pre-registration file.
+- **`vetoed: false`** in the decision JSON means there was no qualifying primary
+  to veto. The veto only applies when the primary would otherwise qualify.
+- **The RRF constant 60** and the tie-breaks are in the frozen design file
+  (`ab002ad6…`).
 - **Fingerprint:** `5cb6ab14…` before and after every phase.
 - **Tables written:** only the ledger and attestation tables, all allowlisted.
 - **Self-checks:** the baseline matched the pilot blocks 50/50, and the
