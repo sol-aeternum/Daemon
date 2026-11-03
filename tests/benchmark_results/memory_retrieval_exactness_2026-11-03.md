@@ -29043,8 +29043,10 @@ Written by the primary (Opus) after the live run. The generated sections above a
   - In every T0 plan (3 questions, vector and BM25, probes 1 and 10), the planner
     chose an exact `idx_memories_user_id` bitmap scan plus sort, **never
     IVFFlat**. Per-user memory counts are 393–617.
-  - T1 recall against the brute-force reference is 1.0 at every probes setting,
-    for all 50 questions.
+  - T1 recall against the brute-force reference, for all 50 questions at every
+    probes setting: recall@10 is 1.0, and recall@50 at LIMIT 100 is 1.0. Recall@50
+    at LIMIT 10 is 0.2, which is the definitional ceiling of 10/50, not a
+    shortfall.
   - In T2, the harness, probes10 and exact rows are identical at every pool and
     width.
   - So prior campaigns' retrieval was effectively exact, and the probes gap did
@@ -29056,8 +29058,9 @@ Written by the primary (Opus) after the live run. The generated sections above a
   - Pool size and exactness change nothing: every config exposes 0/5 cases at
     k=5 and 1/5 at k=10. Exact search with pool 100 and k=10 exposes 1/5.
   - The 9 missing target memories have exact cosine ranks 14–33, and **none has
-    any BM25 match**. All-terms BM25 contributes nothing here: `bm25_normalized`
-    is 0 throughout T3.
+    any BM25 match**. All-terms BM25 barely participates: in T3,
+    `bm25_normalized` is non-zero only for one item in each of the 4 pool sizes
+    for one question (`c5e8278d`) out of 50, and is 0 everywhere else.
   - Common-set composite order did not change with pool size (T3), so mechanism
     2 (pool-dependent BM25 normalisation) is inert on this corpus.
 - **The sweep's rank/render mismatches.** The generated section reports
@@ -29067,12 +29070,14 @@ Written by the primary (Opus) after the live run. The generated sections above a
   - Candidates are cut by **raw cosine** at `vector_limit = max(10, k)` *before*
     the composite rescoring (vector similarity, confidence, recency and source
     boosts).
-  - `0770505d` has exact cosine rank 16. At k=15 (limit 15) it is not a
-    candidate. At k=20 it is, and rescores to 12th (gather20 rank 12 = rank50
-    rank 12).
-  - `07c6d26d` has cosine rank 19. At k=20 it rescores to 19th and is rendered.
-    At limit 50, two candidates from beyond cosine rank 20 outscore it on the
-    composite, giving rank 21.
+  - `0770505d` has exact cosine rank 16. Under that cut it would fall outside
+    the limit-15 pool at k=15. This audit did not test k=15, but it is consistent
+    with the sweep rendering it only at k=20. At k=20 it is a candidate and
+    rescores to 12th (gather20 rank 12 = rank50 rank 12).
+  - `07c6d26d` has cosine rank 19. At k=20 it rescores to 19th and is rendered;
+    at limit 50 it is 21st. The likely cause is that two candidates from beyond
+    cosine rank 20 outscore it on the composite. That is inferred from the rank
+    shift; the evidence does not record which candidates they are.
   - Both are consistent with the T1 cosine ranks and the T2 grid. Widening the
     pool at k ≤ 10 still exposes nothing new.
 - **Proposed next step (not built, not run).** This is a query-decomposition
