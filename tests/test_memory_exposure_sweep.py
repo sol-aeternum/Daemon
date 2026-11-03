@@ -773,7 +773,10 @@ def test_single_over_budget_l0_memory_is_measured_not_rejected():
         source_conversations={},
         ranking=[],
     )
-    assert result["target_exposed"] and result["budget_dropped"] == 0
+    # The over-budget frozen row is trimmed by L0_TOKEN_BUDGET: a (non-target) budget drop.
+    assert result["target_exposed"]
+    assert result["budget_dropped"] == 1 and result["target_budget_dropped"] == 0
+    assert result["budget_dropped_ids"] == [str(long_l0["id"])]
 
 
 def test_several_l0_rows_over_budget_l0_only_and_mixed():
@@ -817,6 +820,33 @@ def test_frozen_only_format_drift_fails_closed(monkeypatch, drift, over_budget, 
         assert "- Fact:" in block  # the retrieved section is not what drifted
     with pytest.raises(ValueError, match="Renderer section contract"):
         exposure.rendered_memory_rows(inputs, block, require_complete=True)
+
+
+def test_l0_budget_trimmed_target_counts_as_budget_drop():
+    """A frozen target trimmed by L0_TOKEN_BUDGET is pre-budget AND budget-dropped."""
+    l0 = [memory(10 + index, " ".join([f"w{index}"] * 60)) for index in range(6)]
+    inputs = injection.MemoryContextInputs(l0_memories=l0, retrieved=[memory(0)])
+    retained = exposure._expected_retained_l0(inputs, len(l0))
+    assert 0 < retained < len(l0)
+    trimmed_target = str(l0[-1]["id"])
+    kept_target = str(l0[0]["id"])
+    result = exposure.measure(
+        inputs,
+        target_ids=[trimmed_target, kept_target],
+        gold_conversation_ids=[],
+        source_conversations={},
+        ranking=[],
+    )
+    assert result["target_pre_budget"] is True
+    assert result["targets"][trimmed_target] == {
+        "rendered": False,
+        "rank": None,
+        "budget_dropped": True,
+    }
+    assert result["targets"][kept_target]["rendered"] is True
+    assert result["target_budget_dropped"] == 1
+    assert trimmed_target in result["budget_dropped_ids"]
+    assert result["target_exposed"] is False
 
 
 def test_single_over_budget_l0_row_raised_on_old_strict_check():

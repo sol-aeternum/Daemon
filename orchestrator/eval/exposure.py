@@ -102,6 +102,17 @@ def _section_counts(block: str) -> tuple[int, int]:
     return retrieved_count, frozen_count
 
 
+def _eligible_l0(inputs: injection.MemoryContextInputs) -> list[dict[str, object]]:
+    """Frozen rows the renderer would print (blank/normalize-empty rows are skipped)."""
+    return [
+        memory
+        for memory in inputs.l0_memories
+        if injection._truncate_to_chars(
+            injection._normalize_content(memory.get("content")), injection.MAX_L0_CHARS
+        )
+    ]
+
+
 def _expected_retained_l0(inputs: injection.MemoryContextInputs, eligible: int) -> int:
     """Frozen rows the renderer legitimately keeps under its own L0_TOKEN_BUDGET.
 
@@ -143,13 +154,7 @@ def rendered_memory_rows(
             injection._normalize_content(memory.get("content")), injection.MAX_SINGLE_MEMORY_CHARS
         )
     ]
-    eligible_l0 = [
-        memory
-        for memory in inputs.l0_memories
-        if injection._truncate_to_chars(
-            injection._normalize_content(memory.get("content")), injection.MAX_L0_CHARS
-        )
-    ]
+    eligible_l0 = _eligible_l0(inputs)
     expected_frozen = len(eligible_l0)
     if require_complete:
         expected_frozen = _expected_retained_l0(inputs, len(eligible_l0))
@@ -208,6 +213,15 @@ def measure(
     pre_rows = rendered_memory_rows(inputs, unbounded, require_complete=True)
     pre_ids = [str(row["id"]) for row in pre_rows]
     dropped = [mid for mid in pre_ids if mid not in set(rendered)]
+    # Frozen rows removed by the renderer's own L0_TOKEN_BUDGET are absent from
+    # both renders, so the diff above misses them. They were in the pre-budget
+    # input and removed by a token budget: count them as budget drops, so a
+    # trimmed frozen target is never "pre-budget but neither rendered nor dropped".
+    eligible_l0 = _eligible_l0(inputs)
+    retained_l0 = _expected_retained_l0(inputs, len(eligible_l0))
+    dropped += [
+        str(row["id"]) for row in eligible_l0[retained_l0:] if str(row["id"]) not in rendered
+    ]
     retrieved_ids = [str(row["id"]) for row in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]]
     pre_retrieved = set(retrieved_ids) | {str(row["id"]) for row in inputs.l0_memories}
     gold = set(gold_conversation_ids)
