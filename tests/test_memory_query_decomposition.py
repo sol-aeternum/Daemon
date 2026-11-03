@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -278,6 +280,8 @@ def test_cost_cap_and_missing_receipts() -> None:
     for receipt in (
         {},
         {"usage": {}},
+        {"usage": None},
+        {"usage": []},
         {"usage": {"cost": "NaN"}},
         {"usage": {"cost": -1}},
         {"usage": {"cost": True}},
@@ -637,3 +641,105 @@ async def test_embedding_cost_capture_with_fake_production_path(
     with pytest.raises(Exception):
         await cli.embed_subquery("Synthetic query", "synthetic", accounting)
     assert accounting.records[-1]["cost_usd"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["chat", "embedding"])
+@pytest.mark.parametrize("malformed", ["usage_null", "usage_nonmapping", "model_dump_failure"])
+async def test_sent_malformed_receipt_retains_ceiling_in_failure_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, malformed: str
+) -> None:
+    accounting = cli.Accounting()
+    ceiling = Decimal(".001")
+
+    def assert_recorded() -> None:
+        assert len(accounting.records) == 1
+        assert accounting.records[0]["cost_usd"] is None
+        assert Decimal(accounting.records[0]["charged_bound_usd"]) == ceiling
+
+    class BrokenDump:
+        def model_dump(self, **kwargs: Any) -> Any:
+            assert_recorded()
+            raise RuntimeError("synthetic receipt normalization failure")
+
+    receipt = (
+        BrokenDump()
+        if malformed == "model_dump_failure"
+        else {"usage": None if malformed == "usage_null" else []}
+    )
+
+    async def sent(*args: Any, **kwargs: Any) -> Any:
+        assert_recorded()  # The ceiling exists even before dispatch returns.
+        return receipt
+
+    @asynccontextmanager
+    async def scope(*args: Any, **kwargs: Any):
+        yield SimpleNamespace(execute=AsyncMock())
+
+    oracle = tmp_path / "oracle.json"
+    oracle.write_text("{}")
+    raw_out = tmp_path / "failure.json"
+    args = argparse.Namespace(
+        command="generate",
+        oracle=oracle,
+        oracle_sha=cli.sweep.digest_bytes(oracle.read_bytes()),
+        dry_run=False,
+        raw_out=raw_out,
+    )
+    dataset = [{"question_id": "synthetic", "question": "Synthetic question?"}]
+    pool = SimpleNamespace(acquire=scope, close=AsyncMock())
+    observer = SimpleNamespace(close=AsyncMock())
+    monkeypatch.setattr(cli, "Accounting", lambda *args: accounting)
+    monkeypatch.setattr(cli, "freeze_check", lambda: "f" * 64)
+    monkeypatch.setattr(cli, "require_committed", lambda path: None)
+    monkeypatch.setattr(
+        cli, "load_generation_inputs", lambda args: (dataset, "5cb6ab14-synthetic", "d" * 64)
+    )
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database_url="synthetic", retrieval_logging_enabled=False, retrieval_logging_debug=False
+        ),
+    )
+    monkeypatch.setattr(cli, "check_benchmark_dsn", lambda dsn: None)
+    monkeypatch.setattr(cli, "verify_chat_route", lambda: object())
+    monkeypatch.setattr(cli, "chat_ceiling", lambda request, route: ceiling)
+    monkeypatch.setattr(cli, "question_as_of", lambda entry: datetime(2026, 11, 3, tzinfo=UTC))
+    monkeypatch.setattr(cli, "fingerprint", AsyncMock(return_value="5cb6ab14-synthetic"))
+    monkeypatch.setattr(cli, "table_stats", AsyncMock(return_value={}))
+    monkeypatch.setattr(cli.asyncpg, "create_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(cli.asyncpg, "connect", AsyncMock(return_value=observer))
+    monkeypatch.setattr(cli.compute_runtime, "account_compute", scope)
+    monkeypatch.setattr(
+        cli.embedding, "get_selected_embedding_route_id", lambda: cli.EMBEDDING_ROUTE
+    )
+    monkeypatch.setattr(
+        cli.embedding, "get_configured_embedding_fallback_storage_models", lambda: ()
+    )
+    if kind == "chat":
+        monkeypatch.setattr(cli.compute_runtime, "guarded_completion", sent)
+    else:
+        route = SimpleNamespace(estimate_microusd=lambda tokens: 1000)
+        monkeypatch.setattr(cli.embedding_adapter, "approved_route", lambda route_id: route)
+        monkeypatch.setattr(cli.embedding_adapter, "_post", sent)
+
+        async def embed(text: str) -> Any:
+            await cast(Any, cli.embedding_adapter._post)(None, route, [text], "fictional", {})
+            raise AssertionError("Malformed receipt must stop before releasing vectors")
+
+        monkeypatch.setattr(cli.embedding, "embed_query_with_metadata", embed)
+
+        async def embed_in_phase(question: str, as_of: str, qid: str, ledger: Any) -> Any:
+            return await cli.embed_subquery("Synthetic sub-query", qid, ledger)
+
+        monkeypatch.setattr(cli, "generate_one", embed_in_phase)
+    with pytest.raises(ValueError, match="Provider-reported cost unavailable: synthetic"):
+        await cli.run_live(args)
+    assert_recorded()
+    assert accounting.records[0]["status"] == "cost_missing"
+    failure = json.loads(raw_out.read_text())
+    assert failure["status"] == "failed"
+    assert failure["receipts"] == accounting.records
+    assert failure["receipts"][0]["kind"] == kind
+    assert Decimal(failure["receipts"][0]["charged_bound_usd"]) == ceiling

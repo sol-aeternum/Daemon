@@ -105,11 +105,15 @@ def receipt_dict(response: Any) -> dict[str, Any]:
     value = response if isinstance(response, dict) else response.model_dump(mode="json")
     if not isinstance(value, dict):
         raise ValueError("Missing provider receipt")
+    json.dumps(value, allow_nan=False)  # Failure artifacts must remain serializable.
     return value
 
 
 def reported_cost(receipt: Mapping[str, Any]) -> Decimal:
-    raw = receipt.get("usage", {}).get("cost")
+    usage = receipt.get("usage")
+    if not isinstance(usage, Mapping):
+        raise ValueError("Provider-reported cost missing")
+    raw = usage.get("cost")
     if type(raw) not in (str, float, int):
         raise ValueError("Provider-reported cost missing")
     try:
@@ -145,39 +149,60 @@ class Accounting:
         ):
             raise ValueError("USD 0.10 cumulative worst-case cap would be exceeded")
 
-    def add(
+    def start(
         self,
         *,
         kind: str,
         qid: str,
         ceiling: Decimal,
         started: float,
-        receipt: dict[str, Any] | None,
         status: str,
-    ) -> None:
-        cost_error = None
+    ) -> dict[str, Any]:
+        self.before(ceiling)
+        record = {
+            "kind": kind,
+            "question_id": qid,
+            "status": status,
+            "latency_ms": 0.0,
+            "ceiling_usd": str(ceiling),
+            "cost_usd": None,
+            "charged_bound_usd": str(ceiling),
+            "receipt": None,
+        }
+        self.records.append(record)
+        record["latency_ms"] = (time.perf_counter() - started) * 1000
+        return record
+
+    def finish(
+        self, record: dict[str, Any], *, receipt: Any, status: str, started: float
+    ) -> dict[str, Any] | None:
+        record["status"] = status
+        record["latency_ms"] = (time.perf_counter() - started) * 1000
+        if receipt is None:
+            if status == "received":
+                record["status"] = "cost_missing"
+            return None  # Unknown send outcome: retain the already-recorded ceiling.
         try:
-            actual = reported_cost(receipt) if receipt is not None else None
-        except ValueError as error:
-            actual, cost_error = None, error
-        self.records.append(
-            {
-                "kind": kind,
-                "question_id": qid,
-                "status": status,
-                "latency_ms": (time.perf_counter() - started) * 1000,
-                "ceiling_usd": str(ceiling),
-                "cost_usd": str(actual) if actual is not None else None,
-                "charged_bound_usd": str(actual if actual is not None else ceiling),
-                "receipt": receipt,
-            }
-        )
-        if cost_error is not None:
-            raise ValueError(f"Provider-reported cost unavailable: {qid}") from cost_error
-        if actual is not None and actual > ceiling:
-            raise ValueError(f"Provider cost exceeds request ceiling: {qid}")
+            normalized = receipt_dict(receipt)
+            record["receipt"] = normalized
+            actual = reported_cost(normalized)
+        except Exception as error:
+            record["status"] = "cost_missing"
+            raise ValueError(
+                f"Provider-reported cost unavailable: {record['question_id']}"
+            ) from error
+        record["cost_usd"] = record["charged_bound_usd"] = str(actual)
+        if actual > Decimal(record["ceiling_usd"]):
+            raise ValueError(f"Provider cost exceeds request ceiling: {record['question_id']}")
         if self.total > Decimal(rules.COST_CAP_USD):
             raise ValueError("Provider cost exceeded cumulative cap")
+        return normalized
+
+    def add(
+        self, *, kind: str, qid: str, ceiling: Decimal, started: float, receipt: Any, status: str
+    ) -> None:
+        record = self.start(kind=kind, qid=qid, ceiling=ceiling, started=started, status=status)
+        self.finish(record, receipt=receipt, status=status, started=started)
 
 
 def chat_ceiling(request: dict[str, Any], route: Any) -> Decimal:
@@ -216,15 +241,16 @@ async def generate_one(
         accounting.before(ceiling)
         started = time.perf_counter()
         attempts += 1
+        attempt = accounting.start(
+            kind="chat", qid=qid, ceiling=ceiling, started=started, status="pending"
+        )
         try:
             response = await (dispatch or compute_runtime.guarded_completion)(
                 _route_id=generation.ROUTE_ID, _exact_model=True, **json.loads(request_bytes)
             )
         except compute_runtime.ComputeUnavailable as error:
-            accounting.add(
-                kind="chat",
-                qid=qid,
-                ceiling=ceiling,
+            accounting.finish(
+                attempt,
                 started=started,
                 receipt=None,
                 status=f"http_{error.status_code}" if error.status_code else "failed",
@@ -235,24 +261,24 @@ async def generate_one(
                 continue
             raise ValueError(f"Generation dispatch stopped: {qid}") from error
         except Exception as error:
-            accounting.add(
-                kind="chat",
-                qid=qid,
-                ceiling=ceiling,
+            accounting.finish(
+                attempt,
                 started=started,
                 receipt=None,
                 status="failed",
             )
             raise ValueError(f"Generation dispatch stopped: {qid}") from error
-        receipt = receipt_dict(response)
-        accounting.add(
-            kind="chat",
-            qid=qid,
-            ceiling=ceiling,
+        except BaseException:
+            accounting.finish(attempt, receipt=None, status="failed", started=started)
+            raise
+        receipt = accounting.finish(
+            attempt,
             started=started,
-            receipt=receipt,
+            receipt=response,
             status="received",
         )
+        if receipt is None:
+            raise ValueError(f"Provider-reported cost unavailable: {qid}")
         try:
             choices = receipt["choices"]
             if (
@@ -469,28 +495,29 @@ async def embed_subquery(text: str, qid: str, accounting: Accounting) -> list[fl
             raise sweep.ProviderAccessDenied("Unexpected embedding dispatch")
         accounting.before(ceiling)
         started = time.perf_counter()
+        attempt = accounting.start(
+            kind="embedding", qid=qid, ceiling=ceiling, started=started, status="pending"
+        )
         try:
             receipt = await original(client, fresh, texts, key, options)
         except BaseException:
-            accounting.add(
-                kind="embedding",
-                qid=qid,
-                ceiling=ceiling,
+            accounting.finish(
+                attempt,
                 started=started,
                 receipt=None,
                 status="failed",
             )
             raise
         received = True
-        accounting.add(
-            kind="embedding",
-            qid=qid,
-            ceiling=ceiling,
+        normalized = accounting.finish(
+            attempt,
             started=started,
-            receipt=receipt_dict(receipt),
+            receipt=receipt,
             status="received",
         )
-        return receipt
+        if normalized is None:
+            raise ValueError(f"Provider-reported cost unavailable: {qid}")
+        return normalized
 
     accounting.before(ceiling)
     with patch.object(embedding_adapter, "_post", observed):
