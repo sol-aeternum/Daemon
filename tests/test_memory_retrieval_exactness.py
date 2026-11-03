@@ -13,6 +13,7 @@ import uuid
 import asyncpg
 from cryptography.fernet import Fernet
 import pytest
+import pytest_asyncio
 
 from orchestrator.eval import exposure
 from orchestrator.eval import retrieval_exactness as rules
@@ -1135,3 +1136,167 @@ async def test_lazy_pgvector_probe_load_and_readonly_statement_allowlist(pre_loa
         assert controls.statements == connection.statements
         assert all(sql.startswith("SET LOCAL ") for sql in controls.statements)
         assert "SELECT NULL::vector" not in controls.statements
+
+
+@pytest_asyncio.fixture
+async def full_summary_evidence(configured, monkeypatch, tmp_path):
+    """Synthetic source-shaped evidence, never the private live corpus."""
+    async with environment(monkeypatch) as (inputs, _, reader, store, controls):
+        with sweep.no_providers():
+            _, full = await audit.audit_snapshot(
+                reader, store, inputs, controls, {"harness": 1, "campaign": 1, "sweep": 1}
+            )
+    raw = tmp_path / "raw.json"
+    raw.write_bytes(b"{}\n")
+    full.update(
+        git_sha="b" * 40,
+        raw_sha256=sweep.digest_bytes(raw.read_bytes()),
+        connection_recipes={},
+        connection_probe_details={
+            name: {"probes_before_load": None, "probes": 1}
+            for name in ("harness", "campaign", "sweep")
+        },
+    )
+    source = tmp_path / "full.json"
+    source.write_text(json.dumps(full))
+    notes = tmp_path / "notes.md"
+    notes.write_bytes(b"## Primary notes\n\nSynthetic original: 50 questions.\n\n\n")
+    return full, source, raw, notes
+
+
+@pytest.mark.asyncio
+async def test_summarize_cli_is_offline_deterministic_and_preserves_all_figures(
+    full_summary_evidence, monkeypatch, tmp_path, capsys
+):
+    full, source, raw, notes = full_summary_evidence
+    forbidden = Mock(side_effect=AssertionError("Live access forbidden"))
+    for module, name in (
+        (asyncpg, "connect"),
+        (asyncpg, "create_pool"),
+        (audit, "run_live"),
+        (sweep, "prepare_inputs"),
+    ):
+        monkeypatch.setattr(module, name, forbidden)
+    report, evidence = tmp_path / "report.md", tmp_path / "compact.json"
+    args = [
+        "summarize",
+        "--full-evidence",
+        str(source),
+        "--raw",
+        str(raw),
+        "--primary-notes",
+        str(notes),
+        "--report-out",
+        str(report),
+        "--evidence-out",
+        str(evidence),
+    ]
+    before = {path: path.read_bytes() for path in (source, raw, notes)}
+    assert audit.main(args) == 0
+    first = report.read_bytes(), evidence.read_bytes()
+    assert audit.main(args) == 0
+    assert first == (report.read_bytes(), evidence.read_bytes())
+    assert all(path.read_bytes() == data for path, data in before.items())
+    compact = json.loads(evidence.read_bytes())
+    assert compact["decision"] == full["decision"]
+    assert report.read_bytes().endswith(notes.read_bytes())
+    assert "components" not in evidence.read_text()
+    assert "per_user" not in compact["execution_facts"]["dev_user_counts"]
+    assert len(first[0].splitlines()) <= 400 and len(first[1]) <= 500_000
+    assert "Verified: all compact JSON fields" in capsys.readouterr().out
+    forbidden.assert_not_called()
+    for key in (
+        "provider_calls",
+        "decision",
+        "stability_summary",
+        "target_ranks",
+        "per_question_recall",
+    ):
+        changed = deepcopy(compact)
+        changed[key] = "tampered"
+        with pytest.raises(ValueError, match="Compact figures"):
+            audit.verify_compact(
+                full, changed, report.read_text(), notes.read_text(), full_path=source, raw_path=raw
+            )
+    with pytest.raises(ValueError, match="Report figures"):
+        audit.verify_compact(
+            full,
+            compact,
+            report.read_text().replace("Provider calls: 0", "Provider calls: 1"),
+            notes.read_text(),
+            full_path=source,
+            raw_path=raw,
+        )
+    raw.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="Raw SHA256"):
+        audit.main(args)
+    assert first == (report.read_bytes(), evidence.read_bytes())
+
+
+@pytest.mark.asyncio
+async def test_summary_preserves_exceptions_unknown_union_and_nonzero_components(
+    full_summary_evidence,
+):
+    full, _, _, _ = full_summary_evidence
+    qid = full["rankings"][0]["question_id"]
+    full["rankings"][0]["approximations"][0]["recall10"] = 0.5
+    stable = full["stability"][0]
+    stable["comparisons"][0]["order_changed"] = True
+    stable["fixed_union_order_observable"] = False
+    stable["fixed_union_order_changed"] = None
+    next(iter(next(iter(stable["components"].values())).values()))["bm25_normalized"] = 0.2
+    compact = audit.compact_projection(full)
+    assert compact["recall_exceptions"][0]["question_id"] == qid
+    summary = compact["stability_summary"]["questions"][0]
+    assert summary["any_pair_order_changed"] and summary["any_nonzero_bm25_normalized"]
+    assert summary["fixed_union_order_changed"] is None
+    assert not summary["fixed_union_order_observable"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("access", ["db", "transport", "provider"])
+async def test_summary_guard_refuses_live_access(
+    full_summary_evidence, monkeypatch, tmp_path, access
+):
+    _, source, raw, notes = full_summary_evidence
+
+    def accidental_access(full):
+        if access == "db":
+            _ = asyncpg.connect("postgresql://synthetic.invalid")
+        elif access == "transport":
+            import socket
+
+            socket.getaddrinfo("synthetic.invalid", 443)
+        else:
+            import httpx
+
+            httpx.Client()
+        return {}
+
+    monkeypatch.setattr(audit, "compact_projection", accidental_access)
+    report, evidence = tmp_path / "report.md", tmp_path / "compact.json"
+    with pytest.raises((AssertionError, sweep.ProviderAccessDenied)):
+        audit.main(
+            [
+                "summarize",
+                "--full-evidence",
+                str(source),
+                "--raw",
+                str(raw),
+                "--primary-notes",
+                str(notes),
+                "--report-out",
+                str(report),
+                "--evidence-out",
+                str(evidence),
+            ]
+        )
+    assert not report.exists() and not evidence.exists()
+
+
+def test_summary_primary_notes_requires_exactly_one_section():
+    notes = "## Primary notes\n\nOriginal.\n\n"
+    assert audit.primary_notes("header\n" + notes) == notes
+    for invalid in ("No notes", notes + notes):
+        with pytest.raises(ValueError, match="exactly one"):
+            audit.primary_notes(invalid)

@@ -13,10 +13,13 @@ from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+import hashlib
 import json
+from pathlib import Path
 import re
 import statistics
 import subprocess
+import sys
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -1078,6 +1081,397 @@ def render_report(data: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+COMPACT_FIELDS = (
+    "schema",
+    "git_sha",
+    "fingerprint_before",
+    "fingerprint_after",
+    "input_shas",
+    "provider_calls",
+    "embedding_calls",
+    "chat_calls",
+    "provider_cost_usd",
+    "vector_window",
+    "clock",
+    "transaction",
+    "pilot_matches",
+    "pilot_total",
+    "pilot_provenance",
+    "pool_constant",
+    "separate_bm25_pool_constant",
+    "pool_start",
+    "pool_end",
+    "width_start",
+    "width_end",
+    "grid_count",
+    "collapsed_probes10",
+    "connection_probes",
+    "connection_probe_details",
+    "connection_recipes",
+    "settings_statement_count",
+    "settings_statements_sha256",
+    "probes100_verifications",
+    "plan_shape_differences",
+    "recall_means",
+    "summaries",
+    "missing_target_ranks",
+    "decision",
+)
+
+
+def primary_notes(text: str) -> str:
+    """Accept the original report or an extracted section; preserve its bytes."""
+    marker = "## Primary notes\n"
+    if text.count(marker) != 1:
+        raise ValueError("Require exactly one Primary notes section")
+    return text[text.index(marker) :]
+
+
+def compact_projection(full: Mapping[str, Any]) -> dict[str, Any]:
+    """Only copy results or derive summaries; never rerun retrieval/scoring."""
+    compact = {key: full[key] for key in COMPACT_FIELDS}
+    facts = full["execution_facts"]
+    counts = list(facts["dev_user_counts"]["per_user"].values())
+    count_summary = {
+        "count": len(counts),
+        "min": min(counts),
+        "median": statistics.median(counts),
+        "max": max(counts),
+    }
+    if count_summary != {k: v for k, v in facts["dev_user_counts"].items() if k != "per_user"}:
+        raise ValueError("Per-user count summary differs from full evidence")
+    compact["execution_facts"] = {**facts, "dev_user_counts": count_summary}
+    compact["plans"] = [{k: v for k, v in row.items() if k != "shape"} for row in full["plans"]]
+    compact["target_ranks"] = [
+        {key: row[key] for key in ("question_id", "exact_cosine_ranks", "bm25_ranks")}
+        for row in full["rankings"]
+    ]
+    compact["per_question_recall"] = [
+        {
+            "question_id": row["question_id"],
+            "approximations": [
+                {k: v for k, v in approximation.items() if k != "ids"}
+                for approximation in row["approximations"]
+            ],
+        }
+        for row in full["rankings"]
+    ]
+    compact["recall_exceptions"] = [
+        {"question_id": row["question_id"], **approximation}
+        for row in compact["per_question_recall"]
+        for approximation in row["approximations"]
+        if any(
+            approximation[metric]
+            != full["recall_means"][f"{approximation['mode']}_{approximation['limit']}"][metric]
+            for metric in ("recall10", "recall50")
+        )
+    ]
+    stability = [
+        {
+            "question_id": row["question_id"],
+            "any_pair_order_changed": any(pair["order_changed"] for pair in row["comparisons"]),
+            "fixed_union_order_observable": row["fixed_union_order_observable"],
+            "fixed_union_order_changed": row["fixed_union_order_changed"],
+            "any_nonzero_bm25_normalized": any(
+                component["bm25_normalized"] != 0
+                for pool in row["components"].values()
+                for component in pool.values()
+            ),
+        }
+        for row in full["stability"]
+    ]
+    nonzero = [row["question_id"] for row in stability if row["any_nonzero_bm25_normalized"]]
+    compact["stability_summary"] = {
+        "questions": stability,
+        "nonzero_bm25_question_count": len(nonzero),
+        "nonzero_bm25_questions": nonzero,
+    }
+    compact["mismatches"] = [
+        {k: v for k, v in row.items() if k != "components"} for row in full["mismatches"]
+    ]
+    return compact
+
+
+def render_compact_report(data: Mapping[str, Any], notes: str) -> str:
+    """Every generated data cell is a compact-evidence value or a list length."""
+    lines = [
+        "# Memory retrieval exactness and candidate-pool audit — compact evidence",
+        "",
+        "Diagnostic only; no candidate, campaign or deployment authorization. Offline summary; no DB/provider access.",
+        "The original Primary notes below are preserved verbatim, including their historical size description.",
+        f"Git: `{data['git_sha']}`.",
+        f"Fingerprint before: `{data['fingerprint_before']}`; after: `{data['fingerprint_after']}`.",
+        f"Provider calls: {data['provider_calls']}; embedding: {data['embedding_calls']}; chat: {data['chat_calls']}; cost USD {data['provider_cost_usd']}.",
+        f"Window: `{data['vector_window']['from']}` through `{data['vector_window']['until']}` (inclusive).",
+        f"Clock: `{data['clock']}`; transaction: `{data['transaction']}`.",
+        "Fingerprint equality within a snapshot does not detect concurrent commits outside it.",
+        f"Pilot rendered-block matches: {data['pilot_matches']}/{data['pilot_total']}.",
+        f"Full sanitized evidence (outside Git): `{data['full_evidence_path']}`",
+        f"Full evidence SHA256: `{data['full_evidence_sha256']}`",
+        f"Raw output (outside Git; hashed only): `{data['raw_path']}`",
+        f"Raw SHA256: `{data['raw_sha256']}`",
+        "",
+        "## Input pins",
+        "",
+    ]
+    lines.extend(f"- {key}: `{value}`" for key, value in sorted(data["input_shas"].items()))
+    lines.extend(["", "## T0 — execution facts", ""])
+    for key in (
+        "connection_probes",
+        "connection_probe_details",
+        "connection_recipes",
+        "execution_facts",
+    ):
+        lines.append(f"- {key}: `{json.dumps(data[key], sort_keys=True)}`")
+    lines.extend(
+        [
+            "",
+            "Pre-load null means the setting was not registered/set before backend-local pgvector load; effective probes drive decisions.",
+            "Per-user counts above are summary only. No per-user list or plan-node dump is committed.",
+            "",
+            "| Question | Kind | Mode | Index | IVFFlat used | Shape SHA prefix |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    for row in data["plans"]:
+        lines.append(
+            f"| {row['question_id']} | {row['kind']} | {row['mode']} | {', '.join(row['indexes']) or 'none'} | {row['ivfflat_used']} | {row['shape_sha256'][:12]} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"Plan-shape differences: `{json.dumps(data['plan_shape_differences'])}`.",
+            "",
+            "## T1 — exact versus approximate ranking",
+            "",
+            "Exact reference retains captured production eligibility filters; index scans are disabled locally.",
+            f"Exact/probes100 verifications: {data['probes100_verifications']}.",
+            "Recall denominator is min(k, exact eligible rows); empty-reference recall is unity. A shorter LIMIT bounds recall at a larger k.",
+            "",
+            "| Mode / LIMIT | Recall@10 | Recall@50 |",
+            "|---|---|---|",
+        ]
+    )
+    for key, row in data["recall_means"].items():
+        lines.append(f"| {key} | {row['recall10']} | {row['recall50']} |")
+    lines.extend(
+        [
+            "",
+            "Every per-question recall equals its aggregate: "
+            + (
+                "yes."
+                if not data["recall_exceptions"]
+                else f"no; exceptions: `{json.dumps(data['recall_exceptions'], sort_keys=True)}`."
+            ),
+            "",
+            "### Named target ranks",
+            "",
+            "| Question | Memory | Exact cosine rank | BM25 rank |",
+            "|---|---|---|---|",
+        ]
+    )
+    for row in data["target_ranks"]:
+        for mid, rank in row["exact_cosine_ranks"].items():
+            lines.append(f"| {row['question_id']} | {mid} | {rank} | {row['bm25_ranks'][mid]} |")
+    lines.extend(
+        [
+            "",
+            "## T2 — production gather/render grid",
+            "",
+            f"Configurations: {data['grid_count']}; duplicate probes10 collapsed: {data['collapsed_probes10']}.",
+            "Pool override is INITIAL_VECTOR_CANDIDATES, shared by vector and BM25; no separate BM25 constant.",
+            "Coverage is a gold-session proxy, not answer-fact exposure. Distractors are warnings, not decision vetoes.",
+            "Distractor aggregates use only the fixed measured cohort; unmeasured values remain null, not zero. Baseline added rows/support are relative to itself; own plausible support is independent.",
+            "",
+            "| Configuration | Strict /5 | Pre-budget /5 | Coverage losses | Target drops | Total drops | Tokens | Empty retrievals | Measured questions | Added distractors | Added plausible support | Own plausible support |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+    )
+    for key, row in data["summaries"].items():
+        distractors = row["distractors"]
+        counts = [
+            str(distractors[name]) if distractors is not None else "not measured"
+            for name in ("added", "plausible_support", "own_plausible_support")
+        ]
+        lines.append(
+            f"| {key} | {row['cases_strict']} | {row['cases_pre_budget']} | {len(row['coverage_losses'])} | {row['target_budget_dropped']} | {row['budget_dropped']} | {row['rendered_tokens']} | {row['empty_retrievals']} | {row['distractor_measured_questions']} | {' | '.join(counts)} |"
+        )
+    lines.extend(["", "### Coverage-loss summary", ""])
+    for key, row in data["summaries"].items():
+        lines.append(
+            f"- {key}: losses `{json.dumps(row['coverage_losses'])}`; causes `{json.dumps(row['coverage_causes'], sort_keys=True)}`."
+        )
+    lines.extend(
+        [
+            "",
+            "## T3 — exact-search pool stability summary",
+            "",
+            "Order changes compare common-set order for every observed pool pair, not imputed full-union order. Missing union members make full-union order unknown. Component changes alone are not causal proof.",
+            "",
+            "| Question | Order changed for any pool pair |",
+            "|---|---|",
+        ]
+    )
+    for row in data["stability_summary"]["questions"]:
+        lines.append(f"| {row['question_id']} | {row['any_pair_order_changed']} |")
+    stable = data["stability_summary"]
+    lines.extend(
+        [
+            "",
+            f"Questions with any non-zero bm25_normalized: {stable['nonzero_bm25_question_count']}; IDs: `{json.dumps(stable['nonzero_bm25_questions'])}`.",
+            "",
+            "## Gather20 versus rank50 mismatches",
+            "",
+            "Explanation is copied, not inferred from correlated ranks or scores.",
+            "",
+            "| Question | Memory | Mode | Gather20 rank | Rank50 rank | Gather vector limit | Rank vector limit | Gather20 rendered | Explanation |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+    )
+    for row in data["mismatches"]:
+        lines.append(
+            f"| {row['question_id']} | {row['memory_id']} | {row['mode']} | {row['gather20_rank']} | {row['rank50']} | {row['gather_vector_limit']} | {row['rank_vector_limit']} | {row['gather20_rendered']} | {row['explanation']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Decision — decide_exactness()",
+            "",
+            "```json",
+            json.dumps(data["decision"], indent=2, sort_keys=True),
+            "```",
+            "",
+        ]
+    )
+    return "\n".join(lines) + "\n" + primary_notes(notes)
+
+
+def verify_compact(
+    full: Mapping[str, Any],
+    compact: Mapping[str, Any],
+    report: str,
+    notes: str,
+    *,
+    full_path: Path,
+    raw_path: Path,
+) -> str:
+    """Check every copied/derived field and the complete rendered report, not samples."""
+    with full_path.open("rb") as handle:
+        full_sha = hashlib.file_digest(handle, "sha256").hexdigest()
+    with raw_path.open("rb") as handle:
+        raw_sha = hashlib.file_digest(handle, "sha256").hexdigest()
+    if raw_sha != full["raw_sha256"]:
+        raise ValueError("Raw SHA256 differs from full evidence pin")
+    expected = {
+        **compact_projection(full),
+        "full_evidence_path": str(full_path.resolve()),
+        "full_evidence_sha256": full_sha,
+        "raw_path": str(raw_path.resolve()),
+        "raw_sha256": raw_sha,
+    }
+    if compact != expected:
+        raise ValueError("Compact figures differ from full evidence projection")
+    decision = rules.decide_exactness(
+        full["summaries"],
+        connection_probes=full["connection_probes"],
+        plan_shape_differences=full["plan_shape_differences"],
+        missing_target_ranks=full["missing_target_ranks"],
+    )
+    decision["flags"] = sorted(decision["flags"])
+    if decision != compact["decision"]:
+        raise ValueError("Decision or flags differ from full evidence/recomputed decision")
+    for key, means in full["recall_means"].items():
+        samples = [
+            a
+            for row in full["rankings"]
+            for a in row["approximations"]
+            if f"{a['mode']}_{a['limit']}" == key
+        ]
+        for metric, mean in means.items():
+            if statistics.mean(a[metric] for a in samples) != mean:
+                raise ValueError("Recall aggregate differs from per-question values")
+    if report != render_compact_report(expected, notes):
+        raise ValueError("Report figures differ from verified compact evidence")
+    if primary_notes(report) != primary_notes(notes):
+        raise ValueError("Primary notes changed")
+    if (
+        len(report.splitlines()) > 400
+        or len(json.dumps(compact, indent=2, sort_keys=True).encode()) + 1 > 500_000
+    ):
+        raise ValueError("Compact output exceeds line/byte budget")
+    return (
+        "Verified: all compact JSON fields and generated report figures match full evidence "
+        "or deterministic derivations; recall aggregates recomputed; decision/flags identical; "
+        "Primary notes verbatim; input SHA256 pins verified; no DB/provider access."
+    )
+
+
+def summarize_main(argv: Sequence[str]) -> int:
+    """Offline-only entry point; raw is hashed, never decoded or surfaced."""
+    result = argparse.ArgumentParser(
+        description="Deterministic offline exactness summary (always verified)"
+    )
+    for name in ("full-evidence", "raw", "primary-notes", "report-out", "evidence-out"):
+        result.add_argument(f"--{name}", type=Path, required=True)
+    args = result.parse_args(argv)
+    inputs = [args.full_evidence, args.raw, args.primary_notes]
+    outputs = [args.report_out, args.evidence_out]
+    resolved = [path.resolve() for path in [*inputs, *outputs]]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("Inputs and outputs must be distinct")
+    if any("holdout" in str(path).casefold() or ".git" in path.parts for path in resolved):
+        raise ValueError("Forbidden evidence/output path")
+    if any(path.is_relative_to(sweep.ROOT.resolve()) for path in resolved[:2]):
+        raise ValueError("Full evidence and raw must remain outside Git")
+
+    # Refuse real DB, transport, provider and live-input access even if a future
+    # summary helper accidentally tries it. No live settings/input preparation.
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Summarize mode forbids DB/network/live access")
+
+    with (
+        sweep.no_providers() as guard,
+        patch.object(asyncpg, "connect", forbidden),
+        patch.object(asyncpg, "create_pool", forbidden),
+        patch("socket.socket.connect", forbidden),
+        patch("socket.socket.connect_ex", forbidden),
+        patch("socket.getaddrinfo", forbidden),
+        patch.object(sweep, "prepare_inputs", forbidden),
+    ):
+        full = json.loads(args.full_evidence.read_bytes())
+        sweep.validate_sanitized(full)
+        notes = args.primary_notes.read_bytes().decode("utf-8")
+        compact = compact_projection(full)
+        compact.update(
+            full_evidence_path=str(args.full_evidence.resolve()),
+            full_evidence_sha256=sweep.digest_bytes(args.full_evidence.read_bytes()),
+            raw_path=str(args.raw.resolve()),
+            raw_sha256=full["raw_sha256"],
+        )
+        report = render_compact_report(compact, notes)
+        verification = verify_compact(
+            full, compact, report, notes, full_path=args.full_evidence, raw_path=args.raw
+        )
+        if guard.attempted_calls:
+            raise AssertionError("Nonzero provider attempts")
+        # Intentional replacements of the two selected artifacts; never the inputs.
+        args.report_out.write_bytes(report.encode("utf-8"))
+        args.evidence_out.write_text(
+            json.dumps(compact, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        )
+        # Check the serialized files, not just the in-memory proposal.
+        verify_compact(
+            full,
+            json.loads(args.evidence_out.read_bytes()),
+            args.report_out.read_bytes().decode("utf-8"),
+            notes,
+            full_path=args.full_evidence,
+            raw_path=args.raw,
+        )
+    print(verification)
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = sweep.parser()
     result.description = __doc__
@@ -1087,7 +1481,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "summarize":
+        return summarize_main(arguments[1:])
+    args = parser().parse_args(arguments)
     if args.prior_evidence is not None:
         raise ValueError("This audit does not use --prior-evidence")
     sweep.validate_output_paths(args.raw_out, args.sanitized_out, args.report_out)
