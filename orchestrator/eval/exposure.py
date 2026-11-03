@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from typing import Any
 
 from orchestrator.memory import injection
@@ -103,6 +102,29 @@ def _section_counts(block: str) -> tuple[int, int]:
     return retrieved_count, frozen_count
 
 
+def _expected_retained_l0(inputs: injection.MemoryContextInputs, eligible: int) -> int:
+    """Frozen rows the renderer legitimately keeps under its own L0_TOKEN_BUDGET.
+
+    ``render_memory_context`` trims the L0 block independently of ``max_tokens``
+    and of the retrieved rows, popping whole lines from the end while the block
+    exceeds ``L0_TOKEN_BUDGET`` (but never the header). This oracle replays that
+    line-count arithmetic over ``_format_l0_block``'s own lines. It never parses
+    rendered output, so drift in how frozen rows are printed (header text, row
+    prefix) still produces a count mismatch and fails closed.
+    """
+    block = injection._format_l0_block(inputs.l0_memories)
+    if not block:
+        return 0
+    lines = block.split("\n")
+    if len(lines) - 1 != eligible:
+        raise ValueError("Renderer section contract changed")
+    while (
+        injection.estimate_tokens("\n".join(lines)) > injection.L0_TOKEN_BUDGET and len(lines) > 1
+    ):
+        lines.pop()
+    return len(lines) - 1
+
+
 def rendered_memory_rows(
     inputs: injection.MemoryContextInputs, block: str, *, require_complete: bool = False
 ) -> list[dict[str, object]]:
@@ -130,22 +152,7 @@ def rendered_memory_rows(
     ]
     expected_frozen = len(eligible_l0)
     if require_complete:
-        # The renderer trims frozen rows against its own L0_TOKEN_BUDGET,
-        # independently of max_tokens and of the retrieved rows. Derive the
-        # legitimately retained frozen prefix from an L0-only production render
-        # instead of reimplementing the trim, so genuine drift still fails closed.
-        l0_only = injection.render_memory_context(
-            replace(inputs, retrieved=[], summaries=[]), max_tokens=10**12
-        )
-        expected_frozen = _section_counts(l0_only)[1]
-        # Only an L0 block that actually exceeds the renderer's L0 budget may
-        # legitimately lose rows; otherwise a shortfall is formatter drift.
-        if expected_frozen > len(eligible_l0) or (
-            expected_frozen < len(eligible_l0)
-            and injection.estimate_tokens(injection._format_l0_block(inputs.l0_memories))
-            <= injection.L0_TOKEN_BUDGET
-        ):
-            raise ValueError("Renderer section contract changed")
+        expected_frozen = _expected_retained_l0(inputs, len(eligible_l0))
     if (
         retrieved_count > len(eligible)
         or frozen_count > len(eligible_l0)

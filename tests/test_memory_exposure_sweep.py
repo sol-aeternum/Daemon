@@ -790,18 +790,44 @@ def test_several_l0_rows_over_budget_l0_only_and_mixed():
         assert [row["id"] for row in rows][len(frozen_ids) :] == [m["id"] for m in retrieved]
 
 
-def test_frozen_format_drift_within_l0_budget_still_fails_closed(monkeypatch):
-    original = injection.render_memory_context
-
-    def changed_renderer(inputs, max_tokens=injection.DEFAULT_MAX_TOKENS):
-        return original(inputs, max_tokens=max_tokens).replace("\n- ", "\n* ")
-
-    inputs = injection.MemoryContextInputs(l0_memories=[memory(2, "frozen")], retrieved=[memory(0)])
-    assert not _l0_trimmed(inputs)
-    monkeypatch.setattr(injection, "render_memory_context", changed_renderer)
-    block = injection.render_memory_context(inputs, max_tokens=10**12)
+@pytest.mark.parametrize(
+    "drift",
+    [
+        lambda text: text.replace("[FROZEN MEMORIES]", "[PINNED MEMORIES]"),
+        lambda text: "\n".join(
+            "* " + line[2:] if line.startswith("- ") and "Fact:" not in line else line
+            for line in text.split("\n")
+        ),
+    ],
+    ids=["frozen-header", "frozen-row-prefix"],
+)
+@pytest.mark.parametrize("over_budget", [False, True])
+@pytest.mark.parametrize("with_retrieved", [False, True])
+def test_frozen_only_format_drift_fails_closed(monkeypatch, drift, over_budget, with_retrieved):
+    """Drift confined to frozen rows (retrieved '- Fact:' lines untouched) must raise."""
+    if over_budget:
+        l0 = [memory(10 + index, " ".join([f"w{index}"] * 60)) for index in range(6)]
+    else:
+        l0 = [memory(2, "frozen")]
+    retrieved = [memory(0)] if with_retrieved else []
+    inputs = injection.MemoryContextInputs(l0_memories=l0, retrieved=retrieved)
+    assert _l0_trimmed(inputs) is over_budget
+    block = drift(injection.render_memory_context(inputs, max_tokens=10**12))
+    if with_retrieved:
+        assert "- Fact:" in block  # the retrieved section is not what drifted
     with pytest.raises(ValueError, match="Renderer section contract"):
         exposure.rendered_memory_rows(inputs, block, require_complete=True)
+
+
+def test_single_over_budget_l0_row_raised_on_old_strict_check():
+    """The header is a line, so one over-budget row is popped and 0 frozen rows remain."""
+    long_l0 = memory(5, " ".join(["word"] * 300))
+    inputs = injection.MemoryContextInputs(l0_memories=[long_l0])
+    block = injection.render_memory_context(inputs, max_tokens=10**12)
+    assert "- word" not in block  # the only frozen row was trimmed by the L0 budget
+    assert exposure._expected_retained_l0(inputs, 1) == 0
+    # The old strict check (frozen rows == eligible rows) therefore raised here.
+    assert exposure._section_counts(block)[1] == 0
 
 
 def test_coverage_regression_smallest_k_with_different_rendered_counts():
