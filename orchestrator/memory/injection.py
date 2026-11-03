@@ -182,6 +182,13 @@ class MemoryContextInputs:
     retrieved: list[dict[str, object]] = field(default_factory=list)
     summaries: list[dict[str, object]] = field(default_factory=list)
     retrieval_mode: str = "none"
+    retrieved_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.retrieved_limit is not None and (
+            type(self.retrieved_limit) is not int or self.retrieved_limit < MAX_MEMORY_ITEMS
+        ):
+            raise ValueError(f"retrieved_limit must be None or an integer >= {MAX_MEMORY_ITEMS}")
 
 
 def _derive_query_text(recent_messages: list[dict[str, Any]]) -> str:
@@ -345,7 +352,7 @@ def render_memory_context(
 
     memory_lines: list[str] = []
     memory_suffixes: list[str] = []
-    for memory in inputs.retrieved[:MAX_MEMORY_ITEMS]:
+    for memory in inputs.retrieved[: (inputs.retrieved_limit or MAX_MEMORY_ITEMS)]:
         category = str(memory.get("category") or "fact").strip().lower()
         label = (
             category.title()

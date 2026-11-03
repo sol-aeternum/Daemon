@@ -1,0 +1,231 @@
+# Multi-query memory retrieval — M1
+
+Status: default-off implementation design for #601, PR-1 items B1–B3. Not route
+approval, benchmark authorisation, production enablement or an efficacy claim.
+This document is written before implementation. Runtime wiring and evaluation
+must be verified separately; the implementation ledger below distinguishes them.
+
+## Problem and evidence
+
+Multi-fact questions need several stored facts. One whole-message embedding can
+miss those facts even when production retrieval mechanics work correctly.
+The [zero-call exposure sweep](../../tests/benchmark_results/memory_exposure_sweep_2026-11-03.md)
+found strict exposure of 0/5 omission cases at width 5, 1/5 at width 10 and 3/5
+at width 20. It concluded `INVESTIGATE_RETRIEVAL`, not a width campaign; wider
+single-query retrieval also introduced abstention distractors.
+
+The owner-supplied summaries of PR #656 and PR #659 are development evidence,
+not a fresh acceptance set. Oracle component queries at depth 10 exposed 2/5
+cases with RRF versus 5/5 with round-robin; model-generated queries exposed 1/5
+versus 3/5. RRF lets an original-query result bury a fact found by only one
+component. Consequently M1 has **no RRF**.
+
+The omission cases `28dc39ac`, `1192316e`, `6613b389`, `0bb5a684` and `0a34ad58`
+are spent evidence. Any later use must be labelled smoke coverage, never fresh
+acceptance. The quota, sub-query cap, depth and timeout below are priors chosen
+partly with sight of these spent development cases. Acceptance needs fresh data.
+
+## Target algorithm
+
+1. Preserve today's original-query embedding and production top-5 retrieval.
+2. Concurrently ask an injected `SubqueryProvider` for zero to three component
+   queries. Production uses guarded inference; tests/evaluation can pin fakes.
+   Prompt v2 and its JSON schema are versioned module constants with hash tests.
+   Input is only the latest user message and the as-of date: no transcript,
+   retrieved memories, account identifier or answer-bearing benchmark payload.
+3. Components seek distinct facts, not paraphrases of the whole message. A
+   single-fact question yields an empty list. Reject malformed envelopes,
+   non-string/blank items, excess items and the unchanged whole message.
+4. Bound decomposition by the configured timeout, measured from its start, not
+   an extra timeout started after baseline retrieval completes. On refusal,
+   timeout, error, parse failure or an empty list, retain the exact baseline.
+5. Batch-embed all accepted components in **one query-embedding call**. Preserve
+   query/storage model metadata and existing accounting safeguards; do not use
+   document embeddings as query embeddings. Retrieve each at depth 10 via
+   `retrieve_memories_for_text`, preserving scope, locality and historical clock.
+6. Merge deterministically, then render through the existing formatter and
+   token budget. Failure in the added branch must never erase a good baseline.
+   Cancellation and accounting-integrity errors retain their existing safeguards;
+   fail-open does not authorise hiding an unsettled provider charge or retrying it.
+
+### Merge interface
+
+`additive` is the production candidate. Begin with the baseline list unchanged
+and in order. In component order, append up to `quota` new IDs from each
+component's depth-10 list, skipping IDs already present, including duplicates
+across components. Stop at `5 + quota × n_sub`. The baseline is a prefix, not
+a list to re-rank or re-score. Do not increase either global retrieval constant.
+
+`round_robin` is evaluation-only comparison behind the same merge interface:
+visit the original list and each component list cyclically, consuming the next
+unseen ID, under the same overall cap. It does not promise baseline-prefix
+preservation. It must not become the default through an evaluation result alone.
+
+### Explicitly authorised renderer change
+
+`MemoryContextInputs.retrieved_limit: int | None = None` is an opt-in item-limit
+override, not a token-budget override. Reject booleans, non-integers and values
+below the current `MAX_MEMORY_ITEMS`. The renderer retains its signature and
+changes only its retrieved-row slice to
+`inputs.retrieved[: (inputs.retrieved_limit or MAX_MEMORY_ITEMS)]`.
+`None` continues to read the global at call time, so in-process evaluation width
+overrides still work. Labels, truncation, L0 handling and token-budget removal
+are unchanged. Only flag-on retrieval that appended at least one new result may
+set the override to `5 + quota × n_sub`; all baseline/fail-open paths leave it
+`None`. The exposure ID mirror and pre-budget metrics must use the same width.
+
+Additive preserves retrieved baseline IDs, but renderer-budget interactions still
+need measurement: longer prompts can change which summaries fit, and prefix
+preservation is not permission to waive the zero-regression exposure gate.
+
+### Side effects and trajectory logging
+
+With multi-query enabled, defer access touches and trust recording until the
+final rendered set is known. Record each retained memory once, not once per
+retrieval arm. Evaluation disables both. Do not change flag-off ranking or its
+existing side-effect call contract. The custom render budget must also determine
+the set used for side effects, not only the default budget.
+
+Retrieval-log rows distinguish `original` and `sub:<i>` query roles, with stable
+zero-based component indices. Roles inherit the query log's access/retention
+boundary; never add raw query text to metrics or exception logs. The current
+`MemoryStore.log_retrieval` at `orchestrator/memory/store.py:3605–3644` passes
+`query_text` directly to SQL. This source is **not evidence that query logs are
+encrypted**. Do not claim encryption that is absent, silently retrofit it in
+this PR or expand retention. The primary must settle how the packet's encryption
+requirement applies before the logging implementation changes.
+
+## Routing, reasoning and privacy
+
+Use a dedicated proposed `memory_decomposition` profile. Reusing `background`
+with a reasoning override would change extraction, which currently uses Luna
+at its default medium effort. Add only the new profile, Luna suitability and a
+profile-specific `reasoning_effort: none` preset (off, supported by its existing
+ladder). Existing profiles, candidate groups and effective presets stay unchanged.
+
+Profile placement grants no route permission (`model_routing.py:10–18`). Pin
+the proposed decomposition route through the existing guarded-completion
+`_route_id` control (`compute_runtime.py:2326–2338`), inside
+`routing_context(profile, …)` as extraction does. A model-only shortlist could
+select the already-approved `luna-azure-eu` route, which is not permission to
+run this proposal. No approved decomposition route means baseline-only operation,
+even if the flag is enabled. Attestation, account entitlement, reservation and
+settlement remain on the existing guarded path; no direct client or new provider.
+
+Propose a separately named Luna/OpenRouter route with a pinned `azure/eu`
+provider, `sort: latency`, the existing Luna price ceilings as **proposal-only
+ceilings**, and `approved: false`. Availability, approval and operator review
+must truthfully remain unverified; this design grants none of them.
+
+Transport validation needs an additive, policy-owned mode supporting optional
+`sort: latency | throughput` and a nonempty multi-provider `provider_only`
+allowlist. Reject `:` model variants for routes using either feature. Keep ZDR
+true, data collection denied, required parameters true, fallbacks false and a
+pinned maximum price. Legacy routes retain identical validation and serialized
+payloads; sorting must not silently alter an existing provider-order contract.
+Multi-provider support must not widen monitored attestation: it currently pins
+one baseline provider (`policy.py:1355–1359`, `attestation.py:218–239`). The
+precise new transport validation branch requires primary/Astra supervision and
+independent pre-change review before implementation. No approvals change here.
+
+Decomposition and component embedding require **exactly** `pipeline == "cloud"`.
+Local, missing, unknown or merely cloud-like values never authorise cloud
+decomposition. Match the existing embedding locality rule in
+`gather_memory_context_inputs`; do not infer cloud permission from missing local
+flags. Source-conversation scope and local-only filtering apply to every arm.
+This preserves DEC12's Z-only runtime and AC07/AC11 authority/data boundaries.
+
+## Settings proposal
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `memory_multi_query_enabled` | `false` | Default-off runtime gate |
+| `memory_multi_query_merge` | `additive` | `additive` or evaluation-only `round_robin` |
+| `memory_decomposition_timeout_ms` | `1500` | Positive decomposition deadline |
+| `memory_subquery_quota` | `3` | Positive unseen results per component |
+| `memory_max_subqueries` | `3` | Bounded to 0–3, matching the schema |
+| `memory_decomposition_profile` | `memory_decomposition` | Dedicated minimal/off reasoning profile |
+
+Document each new environment key in `.env.example` and wire it into both
+backend and worker in `docker-compose.yml`. Update the explicit settings count
+in the env-parity test in the same change; add no wildcard exclusions. No
+dependencies, commercial plan, SSE event or unrelated entitlement changes.
+No feature-matrix row is warranted: this is default-off internal retrieval
+infrastructure, not a promoted user-visible client capability.
+
+## Latency, cost and failure behaviour
+
+Let B be baseline latency, D decomposition time, T its deadline, E batch
+embedding and R component retrieval. With successful parallel decomposition the
+critical path is approximately `max(B, D) + E + R`; if retrieval arms run in
+parallel, R is their maximum, otherwise their sum. A decomposition-only failure
+adds at most `max(0, min(D, T) - B)` before baseline rendering, excluding cleanup.
+Time out/cancel and await owned work; do not leave a provider task running after
+the gather finishes. Measure decomposition, batch embedding and sub-retrieval
+durations with existing monotonic-time/logging conventions, without query text.
+Added end-to-end p50/p95 must be measured in M2, not inferred from this formula.
+
+The #659 development measurement on `luna-azure-eu` used **medium**, not the
+proposed off/minimal reasoning: about USD 0.00006 per decomposition call and
+USD 0.00000026 per embedding, with generation p50 1.84 s and p95 2.71 s.
+Incremental helper cost is approximately `0.00006 + n_sub × 0.00000026` USD
+(at three components, USD 0.00006078), excluding answer-prompt growth, provider
+price differences, failed-call charges and retries. Those are estimates, not
+approved spend. A 1500 ms prior may discard many medium-effort calls. The old
+prompt produced one paraphrase for 43/50 questions, motivating a new prompt
+that requests distinct fact components or an empty list.
+
+Fail-open conditions include disabled flag, non-cloud locality, no approved
+route, no usable user message, provider refusal/error, timeout, malformed JSON,
+schema failure, empty components, embedding failure, retrieval failure and no
+new IDs. Each must preserve the exact baseline rendered bytes and leave the
+item-limit override unset. No automatic provider fallback, changed ranker,
+second generation pass or permission widening is implied.
+
+## Evaluation and enablement gates
+
+1. **M1 offline:** only synthetic fakes; no provider calls, databases, ingest or
+   holdout payload. Freeze prompt/schema hashes. Test batching, locality,
+   deterministic merging, prefix/cap/de-duplication, query roles, side effects,
+   all fail-open paths and legacy policy/payload identity. Use a fake clock for
+   timeout tests. The full existing parity matrix is 1,944 cases from
+   `tests/test_memory_context_parity.py`: pipeline (3), embedding selector (2),
+   outcome (3), L0 (3), retrieved rows (3), summaries (2), messages (3), budgets
+   (2), plus early returns, all 18 production/harness combinations and formatter
+   identity tests. Preserve noted-date goldens and all exposure exactness/sweep
+   tests. Renderer `None` remains identical to the pre-change implementation;
+   explicit 8-row and constrained-budget cases verify the authorised seam.
+2. **M1.5 latency bake-off:** at most three ZDR model candidates, each with
+   minimal/off reasoning and one pinned provider with `sort: latency`; at most
+   one throughput arm. Make 50 calls per arm on dev-50 after separate approval.
+   Record TTFT and total p50/p95, serving provider and cost; discard generated
+   sub-queries. The owner selects the route and a timeout near its p95.
+3. **M2 exposure:** on fresh dev2, compare baseline with additive using one
+   frozen generation pass and the production gather/renderer, with optional
+   pinned `SubqueryProvider` injection in `build_parity_memory_context`.
+   Pre-register an exposure-gain threshold **before any dev2 output**, zero
+   exposure regressions on dev-50 (verify despite the additive prefix property),
+   abstention distractor delta, trigger rate and added latency. An exposure-gate
+   entry point uses `orchestrator/eval/exposure.py`, not a replacement ranker.
+   The numeric gain threshold is not set by examining these spent dev cases.
+4. **M3 answers:** a separately authorised answer campaign under v2. No v3
+   restore, retry or campaign authority is granted by this design.
+5. **Production:** separate owner enablement decision, possibly opt-in per
+   account, after route approval and fresh evaluation evidence. This PR ships
+   no approved decomposition route and makes no live benchmark run.
+
+Open question: can a cheap deterministic pre-filter avoid generation on
+single-fact turns? Defer until M2 trigger-rate data exists; do not tune a
+heuristic against the five spent omission cases now.
+
+## Implementation ledger
+
+| Item | Artifact | Status / acceptance |
+|---|---|---|
+| B1 | This design | Written first; no runtime approval implied |
+| Renderer seam | `injection.py`, `exposure.py`, offline tests | Opt-in/default-preserving; test evidence reported separately |
+| B2 | `multi_query.py`, settings, gather, policy, logs | Not implemented; requires primary pre-change supervision/review |
+| B3 | Parity injection and exposure gate | Not implemented; follows B2 |
+
+No live evaluation, holdout access, provider spend or database connection is
+part of this M1 implementation work.

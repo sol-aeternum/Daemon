@@ -149,7 +149,7 @@ def rendered_memory_rows(
     retrieved_count, frozen_count = _section_counts(block)
     eligible = [
         memory
-        for memory in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]
+        for memory in inputs.retrieved[: (inputs.retrieved_limit or injection.MAX_MEMORY_ITEMS)]
         if injection._truncate_to_chars(
             injection._normalize_content(memory.get("content")), injection.MAX_SINGLE_MEMORY_CHARS
         )
@@ -222,7 +222,10 @@ def measure(
     dropped += [
         str(row["id"]) for row in eligible_l0[retained_l0:] if str(row["id"]) not in rendered
     ]
-    retrieved_ids = [str(row["id"]) for row in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]]
+    retrieved_ids = [
+        str(row["id"])
+        for row in inputs.retrieved[: (inputs.retrieved_limit or injection.MAX_MEMORY_ITEMS)]
+    ]
     pre_retrieved = set(retrieved_ids) | {str(row["id"]) for row in inputs.l0_memories}
     gold = set(gold_conversation_ids)
     covered = {source_conversations.get(mid) for mid in rendered} & gold
