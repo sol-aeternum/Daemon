@@ -9,6 +9,7 @@ import copy
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,7 +26,7 @@ from orchestrator.eval.campaign_layout import layout
 from tests.test_lme_campaign_guard import response
 from tests.test_lme_campaign_retry import fake_time
 from tests.test_lme_campaign_v3_harness import FakeTransport
-from tests.test_lme_campaign_v3_pilot import approved as approved, write
+from tests.test_lme_campaign_v3_pilot import approved as approved, make_approved, write
 from tests.test_longmemeval_parity_harness import BenchRuntime
 
 Evidence = tuple[
@@ -449,6 +450,10 @@ class Connection:
 
 @pytest.fixture
 def preparation(approved, monkeypatch):
+    return make_preparation(approved, monkeypatch)
+
+
+def make_preparation(approved, monkeypatch):
     root = approved.directory.parent
     dataset = synthetic_dataset()
     source = root / "source.json"
@@ -1018,6 +1023,10 @@ def action_review(path, plan_path, actual_arm, **overrides):
 
 @pytest.fixture
 def execution(preparation, monkeypatch):
+    return make_execution(preparation, monkeypatch)
+
+
+def make_execution(preparation, monkeypatch):
     p = preparation
     fake_time(monkeypatch)
     origin = guard.time.monotonic()
@@ -1260,42 +1269,140 @@ async def test_a1_comparability_failure_stays_closed(execution):
     p.connection.execute.assert_not_awaited()
 
 
+@pytest.fixture(scope="module")
+def recorded_reopen(tmp_path_factory):
+    """Real two-arm evidence, generated once with durable writes and no live services."""
+    root = tmp_path_factory.mktemp("v3-reopen-producer")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        execution = make_execution(
+            make_preparation(make_approved(root, monkeypatch), monkeypatch), monkeypatch
+        )
+        p = execution.preparation
+        original_writer = launch.write_pilot_evidence
+        recorded = {}
+
+        def report(path, value):
+            original_writer(path, value)
+            if path.name == "pilot-report.json":
+                recorded["ledger"] = (path.parent / "campaign.json").read_bytes()
+
+        monkeypatch.setattr(launch, "write_pilot_evidence", report)
+
+        async def produce():
+            await launch.prepare(p.args)
+            await run(execution, "A0")
+            await run(execution, "A1")
+
+        asyncio.run(produce())
+        directory = Path(pilot.APPROVAL["directory"])
+        state = json.loads(recorded["ledger"])
+        assert state["status"] == "completed" and len(state["receipts"]) == 1000
+        assert len(state["qualifications"]) == 2 and "final_reopen" not in state
+        assert execution.transport.await_count == 900
+        assert execution.retrieval.retrieval.await_count == 100
+        assert execution.pool.close.await_count == 2
+        p.connection.execute.assert_awaited_once_with(
+            "ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS true"
+        )
+        return SimpleNamespace(
+            directory=directory,
+            ledger=recorded["ledger"],
+            plan=launch.load_plan(p.args.output),
+            identity=copy.deepcopy(p.identity),
+            hashes={
+                path.relative_to(directory): validation.digest_file(path)
+                for path in directory.rglob("*")
+                if path.is_file()
+            },
+        )
+
+
+@pytest.fixture
+def reopen_target(recorded_reopen, tmp_path, monkeypatch):
+    """Copy bytes (never hardlink), and isolate mutable plans, identities and mocks."""
+    recorded = recorded_reopen
+    directory = tmp_path / "campaign"
+    shutil.copytree(recorded.directory, directory)
+    (directory / "campaign.json").write_bytes(recorded.ledger)
+    connection = Connection()
+    connect = AsyncMock(return_value=connection)
+    identity = copy.deepcopy(recorded.identity)
+    original_plan = copy.deepcopy(recorded.plan)
+    original_identity = copy.deepcopy(recorded.identity)
+    monkeypatch.setattr(launch.asyncpg, "connect", connect)
+    monkeypatch.setattr(launch, "verify_server", AsyncMock())
+    monkeypatch.setattr(launch, "target_identity", AsyncMock(return_value=identity))
+    yield SimpleNamespace(
+        directory=directory,
+        plan=copy.deepcopy(recorded.plan),
+        identity=identity,
+        connection=connection,
+        connect=connect,
+    )
+    assert recorded.plan == original_plan and recorded.identity == original_identity
+    assert recorded.hashes == {
+        path.relative_to(recorded.directory): validation.digest_file(path)
+        for path in recorded.directory.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_reopen_evidence_copies_are_independent(reopen_target, recorded_reopen, tmp_path):
+    first = reopen_target
+    second = tmp_path / "second-copy"
+    shutil.copytree(first.directory, second)
+    for relative in recorded_reopen.hashes:
+        assert validation.digest_file(first.directory / relative) == validation.digest_file(
+            second / relative
+        )
+        assert (first.directory / relative).stat().st_ino != (second / relative).stat().st_ino
+        assert (first.directory / relative).stat().st_ino != (
+            recorded_reopen.directory / relative
+        ).stat().st_ino
+    # Exercise both in-place modification and deletion, which must not reach siblings.
+    receipt = next(first.directory.glob("receipt-*.json"))
+    relative = receipt.relative_to(first.directory)
+    original = (second / relative).read_bytes()
+    receipt.write_bytes(b"tampered fictional receipt")
+    (first.directory / "pilot-report.json").unlink()
+    first.plan.pins["original_allow_connections"] = False
+    first.identity["oid"] = "wrong"
+    assert (second / relative).read_bytes() == original
+    assert (recorded_reopen.directory / relative).read_bytes() == original
+    assert (second / "pilot-report.json").is_file()
+    assert recorded_reopen.plan.pins["original_allow_connections"] is True
+    assert recorded_reopen.identity["oid"] == 1
+
+
+@pytest.mark.asyncio
+async def test_copied_complete_campaign_can_reopen(reopen_target):
+    p = reopen_target
+    await launch._reopen_database(p.plan, p.directory)
+    p.connection.execute.assert_awaited_once_with(
+        "ALTER DATABASE daemon_lme_bench ALLOW_CONNECTIONS true"
+    )
+    assert json.loads((p.directory / "campaign.json").read_bytes())["final_reopen"] == "completed"
+    assert p.connection.closed
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fault", ["status", "pending", "restore_pending", "identity", "oid", "connections", "original"]
 )
-async def test_final_reopen_guards_leave_target_closed(execution, monkeypatch, fault):
-    p = execution.preparation
-    await launch.prepare(p.args)
-    await run(execution, "A0")
-    original_writer = launch.write_pilot_evidence
-    original_loader = launch.load_plan
-    loaded = []
+async def test_final_reopen_guards_leave_target_closed(reopen_target, fault):
+    p = reopen_target
+    if fault in ("status", "pending", "restore_pending"):
+        ledger = p.directory / "campaign.json"
+        state = json.loads(ledger.read_bytes())
+        state[fault] = "not completed" if fault == "status" else {"unresolved": True}
+        write(ledger, state)
+    elif fault in ("identity", "oid"):
+        p.identity["system_identifier" if fault == "identity" else "oid"] = "wrong"
+    elif fault == "connections":
+        p.connection.fetchval.return_value = 1
+    elif fault == "original":
+        p.plan.pins["original_allow_connections"] = False
 
-    def load(path):
-        plan = original_loader(path)
-        loaded.append(plan)
-        return plan
-
-    monkeypatch.setattr(launch, "load_plan", load)
-
-    def report(path, value):
-        original_writer(path, value)
-        if path.name != "pilot-report.json":
-            return
-        if fault in ("status", "pending", "restore_pending"):
-            ledger = path.parent / "campaign.json"
-            state = json.loads(ledger.read_bytes())
-            state[fault] = "not completed" if fault == "status" else {"unresolved": True}
-            write(ledger, state)
-        elif fault in ("identity", "oid"):
-            p.identity["system_identifier" if fault == "identity" else "oid"] = "wrong"
-        elif fault == "connections":
-            p.connection.fetchval.return_value = 1
-        elif fault == "original":
-            loaded[-1].pins["original_allow_connections"] = False
-
-    monkeypatch.setattr(launch, "write_pilot_evidence", report)
     expected = {
         "status": "Incomplete campaign",
         "pending": "Incomplete campaign",
@@ -1306,5 +1413,12 @@ async def test_final_reopen_guards_leave_target_closed(execution, monkeypatch, f
         "original": "Original connection state differs",
     }[fault]
     with pytest.raises(guard.CampaignStopped, match=expected):
-        await run(execution, "A1")
+        await launch._reopen_database(p.plan, p.directory)
     p.connection.execute.assert_not_awaited()
+    state = json.loads((p.directory / "campaign.json").read_bytes())
+    assert state.get("final_reopen") != "completed"
+    if fault in ("status", "pending", "restore_pending"):
+        p.connect.assert_not_awaited()
+    else:
+        assert state["final_reopen"] == "pending"
+        assert p.connection.closed

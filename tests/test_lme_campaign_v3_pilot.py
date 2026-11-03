@@ -60,6 +60,10 @@ def test_frozen_approval_and_prior_literals():
 
 @pytest.fixture
 def approved(tmp_path, monkeypatch):
+    return make_approved(tmp_path, monkeypatch)
+
+
+def make_approved(tmp_path, monkeypatch):
     prior = tmp_path / "prior-plan.json"
     write(prior, {"synthetic": "v2 plan"})
     ledger = tmp_path / "prior-ledger.json"

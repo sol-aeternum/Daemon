@@ -244,3 +244,53 @@ baseline CI `40633084741`, that is 46.7% less pytest time, 31.2% shorter longest
 job and 23.9% less summed runner time. Frontend now limits the critical path;
 its unchanged non-blocking browser inventory took 360 s (32 passed / 21 failed).
 These are measurements of the initial head, not the subsequent review repair.
+
+## Campaign reopen fault cases — 2026-11-03
+
+Baseline: main `4fc3909f`. Seven `test_final_reopen_guards_leave_target_closed`
+cases each constructed both 50-question, three-sample pilot arms before injecting
+one fault. Each construction made 900 mocked LLM calls and wrote 1,000 genuine
+receipts through the real campaign/runner code. This repeated setup dominated
+tests of the final database-reopen checks.
+
+The reopen block is now a private helper called at the same point in `run_arm`.
+Its body is unchanged apart from naming the directory argument. The original
+full prepare/A0/A1/report/reopen integration test remains. The fault cases use a
+module-local producer that runs the real two-arm pipeline once, including real
+serialization, durable writes, qualification, report publication and reopening.
+It records the completed ledger immediately before reopening; each case receives
+fresh filesystem copies of that evidence, a deep-copied plan and identity, and
+new connection mocks. Copies never use hardlinks. No cross-session cache,
+provider calls, database restores or live data are involved.
+
+All seven original faults and expected failure messages remain: incomplete
+status, pending inference, pending restore, wrong server identity, wrong database
+OID, open connections and a changed original admission state. The fault cases
+also require that reopening never enables admission, that incomplete ledgers never
+connect, and that later refusals persist a pending reopen and close the control
+connection. A positive copied-evidence case checks successful reopening; a
+separate isolation case modifies and deletes copied artifacts and mutates its
+plan/identity while checking sibling/source integrity. Each case checks the
+producer's file hashes, plan and identity at teardown.
+
+Same-host, sequential comparison, Python 3.14.8 with the same locked dependencies
+and the identical seven-case pytest selection: **209.84 s before, 31.79 s after**
+(84.9% lower, including fixture generation). Both runs passed all seven cases.
+These are focused local measurements, not a paired full-suite or hosted-CI
+speedup claim. The pytest temporary directory was on the host's `/tmp` tmpfs;
+CPU versus durable disk-write cost on hosted runners remains unmeasured.
+
+Raw XML, logs, the external mutation probe and an AST-equivalence check are kept
+outside the source tree in the task's `evidence/` directory. Initial execution-
+sandbox attempts stalled on asyncio thread wakeups and were interrupted; they
+are preserved separately and excluded from timings. Valid samples ran outside
+that restriction in the same environment. The publication wrapper, required
+gates, timeouts and unrelated lease deadline tests are unchanged. To avoid two
+full local qualifications for publication, invoke `scripts/pr_create.sh` once
+after focused validation; it already runs the mandatory full gate set.
+
+Validation of both affected modules passed: **144 tests in 129.53 s**, including
+the retained full integration and new isolation/success cases. An external,
+in-memory mutation probe independently disabled each case's expected guard;
+all seven cases failed with `DID NOT RAISE`, proving the negative cases detect
+loss of their protections. Production files were unchanged for that probe.
