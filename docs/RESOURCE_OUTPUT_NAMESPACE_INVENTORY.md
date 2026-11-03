@@ -31,9 +31,11 @@ No metadata from this global inventory may be exposed to a worker or user client
 
 ## Independent parity, not effect authority
 
-`orchestrator.namespace_inventory` provides immutable typed observations, closed
-bounded JSON decoding and the parity check shared with the trusted C1 namespace
-controller. The optional supplied-connection read helper is uncalled at runtime;
+`orchestrator.namespace_inventory` provides immutable typed observations and closed
+bounded JSON decoding. The shared parity check stays in the already-admitted
+trusted namespace owner (`orchestrator.artifact_namespaces`); the packet module
+imports no account-control store, mixed journal or namespace candidate. Existing
+noncomposition guard allowlists and assertions are unchanged. The optional supplied-connection read helper is uncalled at runtime;
 it owns no pool, transaction, retry or filesystem work. It cannot attest cleanup,
 COMMIT, current lifecycle, bytes, physical readiness or publication authority.
 Its caller must retain actual SQL cleanup through cancellation before H release.

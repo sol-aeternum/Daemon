@@ -7,8 +7,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from orchestrator.namespace_inventory import namespace_states, read_output_inventory
+from orchestrator.namespace_inventory import read_output_inventory
 from orchestrator.services.account_control.guard import CapturedGeneration
+from orchestrator.artifact_namespaces import namespace_states
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.deletion_journal.mixed_store import MixedJournal
 from tests import test_resource_output_catalog_postgres as c

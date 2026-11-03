@@ -17,9 +17,9 @@ from orchestrator.namespace_inventory import (
     NamespaceProjection,
     decode_inventory,
     inventory_from_rows,
-    namespace_states,
     read_output_inventory,
 )
+from orchestrator.artifact_namespaces import namespace_states
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.deletion_journal.mixed_store import MixedView
 from orchestrator.services.deletion_journal.namespace_candidate import (

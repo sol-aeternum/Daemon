@@ -21,17 +21,78 @@ import asyncpg
 
 from orchestrator.services.connection_cleanup import pool_connection
 from orchestrator.artifact_staging import ArtifactStageError, _Handles
-from orchestrator.namespace_inventory import inventory_from_rows, namespace_states
+from orchestrator.namespace_inventory import NamespaceInventory, inventory_from_rows
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 from orchestrator.services.account_control.store import Connection, lock_account_control
 from orchestrator.services.deletion_journal.barrier import _io
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.deletion_journal.mixed_store import MixedJournal, MixedView
+from orchestrator.services.deletion_journal.model import Entry
 from orchestrator.services.deletion_journal.namespace_candidate import (
     NamespaceCommand,
     NamespaceCreateFields,
     NamespaceEntry,
 )
+
+
+def namespace_states(
+    expected_journal: UUID, view: MixedView, inventory: NamespaceInventory
+) -> dict[str, str]:
+    """Shared legacy parity, not a transferable namespace/effect permit.
+
+    Preserve known unapplied births as unapplied: only SQL-projected states are
+    returned. This never projects one, and a publisher still needs its own ready
+    namespace plus current H/native/physical qualification under owned lifetimes.
+    """
+    if not isinstance(expected_journal, UUID) or inventory.journal_id != expected_journal:
+        raise JournalError("marker_mismatch")
+    if view.container_version != 2:
+        raise JournalError("recovery_required")
+    entries = {entry.seq: entry for entry in view.entries}
+    if len(entries) != len(view.entries) or any(
+        e.journal_id != expected_journal for e in view.entries
+    ):
+        raise JournalError("marker_mismatch")
+    marked: set[int] = set()
+    for row in inventory.markers:
+        entry = entries.get(row.seq)
+        operation = entry.command.operation_id if isinstance(entry, Entry) else None
+        if (
+            entry is None
+            or row.seq in marked
+            or row.journal_id != entry.journal_id
+            or row.event_id != entry.event_id
+            or row.account_id != entry.command.account_id
+            or row.operation_id != operation
+            or row.entry_digest != entry.digest
+        ):
+            raise JournalError("marker_mismatch")
+        marked.add(row.seq)
+    if any(not isinstance(entry, NamespaceEntry) for entry in view.entries):
+        raise JournalError("recovery_required")
+    represented: set[int] = set()
+    states: dict[str, str] = {}
+    for row in inventory.namespaces:
+        birth = entries.get(row.birth_seq)
+        if (
+            not isinstance(birth, NamespaceEntry)
+            or row.birth_seq in represented
+            or row.namespace in states
+            or row.journal_id != birth.journal_id
+            or row.birth_event_id != birth.event_id
+            or row.account_id != birth.command.account_id
+            or row.generation != birth.command.fields.generation
+            or row.namespace != birth.command.fields.namespace
+            or row.birth_digest != birth.digest
+            or row.command_digest != birth.command_digest
+            or birth.seq not in marked
+        ):
+            raise JournalError("marker_mismatch")
+        represented.add(birth.seq)
+        states[row.namespace] = row.state
+    if represented != marked:
+        raise JournalError("marker_mismatch")
+    return states
 
 
 @dataclass(frozen=True, slots=True)

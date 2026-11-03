@@ -1,4 +1,4 @@
-"""Closed read-only inventory observations and existing C1 namespace parity.
+"""Closed read-only namespace inventory observations.
 
 No journal/file I/O, initialization, repair, transaction/pool ownership, H
 installation or execution authority. A verified view must come from the trusted
@@ -14,11 +14,9 @@ import re
 from typing import Any
 from uuid import UUID
 
-from orchestrator.services.account_control.store import Connection
+import asyncpg
+import asyncpg.pool
 from orchestrator.services.deletion_journal.errors import JournalError
-from orchestrator.services.deletion_journal.mixed_store import MixedView
-from orchestrator.services.deletion_journal.model import Entry
-from orchestrator.services.deletion_journal.namespace_candidate import NamespaceEntry
 
 MAX_INVENTORY_RECORDS = 10000  # Same qualification ceiling as the C1 catalog scan.
 _INT64_MAX = 2**63 - 1
@@ -163,66 +161,6 @@ def inventory_from_rows(
         raise JournalError("marker_mismatch") from None
 
 
-def namespace_states(
-    expected_journal: UUID, view: MixedView, inventory: NamespaceInventory
-) -> dict[str, str]:
-    """Shared legacy parity, not a transferable namespace/effect permit.
-
-    Preserve known unapplied births as unapplied: only SQL-projected states are
-    returned. This never projects one, and a publisher still needs its own ready
-    namespace plus current H/native/physical qualification under owned lifetimes.
-    """
-    if not isinstance(expected_journal, UUID) or inventory.journal_id != expected_journal:
-        raise JournalError("marker_mismatch")
-    if view.container_version != 2:
-        raise JournalError("recovery_required")
-    entries = {entry.seq: entry for entry in view.entries}
-    if len(entries) != len(view.entries) or any(
-        e.journal_id != expected_journal for e in view.entries
-    ):
-        raise JournalError("marker_mismatch")
-    marked: set[int] = set()
-    for row in inventory.markers:
-        entry = entries.get(row.seq)
-        operation = entry.command.operation_id if isinstance(entry, Entry) else None
-        if (
-            entry is None
-            or row.seq in marked
-            or row.journal_id != entry.journal_id
-            or row.event_id != entry.event_id
-            or row.account_id != entry.command.account_id
-            or row.operation_id != operation
-            or row.entry_digest != entry.digest
-        ):
-            raise JournalError("marker_mismatch")
-        marked.add(row.seq)
-    if any(not isinstance(entry, NamespaceEntry) for entry in view.entries):
-        raise JournalError("recovery_required")
-    represented: set[int] = set()
-    states: dict[str, str] = {}
-    for row in inventory.namespaces:
-        birth = entries.get(row.birth_seq)
-        if (
-            not isinstance(birth, NamespaceEntry)
-            or row.birth_seq in represented
-            or row.namespace in states
-            or row.journal_id != birth.journal_id
-            or row.birth_event_id != birth.event_id
-            or row.account_id != birth.command.account_id
-            or row.generation != birth.command.fields.generation
-            or row.namespace != birth.command.fields.namespace
-            or row.birth_digest != birth.digest
-            or row.command_digest != birth.command_digest
-            or birth.seq not in marked
-        ):
-            raise JournalError("marker_mismatch")
-        represented.add(birth.seq)
-        states[row.namespace] = row.state
-    if represented != marked:
-        raise JournalError("marker_mismatch")
-    return states
-
-
 def _closed_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -318,7 +256,10 @@ def decode_inventory(payload: str, expected_journal: UUID, record_limit: int) ->
 
 
 async def read_output_inventory(
-    conn: Connection, expected_journal: UUID, *, record_limit: int
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    expected_journal: UUID,
+    *,
+    record_limit: int,
 ) -> NamespaceInventory:
     """Uncalled read adapter: no pool, retries, transaction control or file I/O."""
     if (
