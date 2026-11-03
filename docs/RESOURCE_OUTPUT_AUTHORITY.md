@@ -94,3 +94,9 @@ socket/filesystem provisioning, live migrations and deployment require their own
 operational approvals. H lacks individual artifact publication history; artifact
 restore evidence/reconciliation and lifecycle qualification remain release gates.
 This slice must not be presented as artifact activation or live restore safety.
+
+
+The next source-only slice supplies the separate bounded catalog snapshot, admission
+and stage entrypoints in `059_resource_output_catalog.sql`; see
+[catalog authority](RESOURCE_OUTPUT_CATALOG.md). It reuses these P exclusions
+without changing 058 or installing a runtime publisher. No actual P grants are made.

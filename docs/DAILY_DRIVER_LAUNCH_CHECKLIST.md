@@ -1,17 +1,17 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `192a085a510ae84e45f34e648f758455a72a7cea` (main verified
-before the durable text-output source slice). This checklist separates merged source, synthetic
-qualification and deployed acceptance. The independent memory evaluation lane is
+Source checkpoint: `7290a1cb3aa7317a79bd91a5d05d789733c1727b` (main verified
+before the restricted catalog-authority source slice). This checklist separates
+merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
 
 | Gate | Current evidence | Release requirement still outstanding |
 | --- | --- | --- |
-| Protected acceptance, Send and Stop | #625/#628/#631/#637 merged; [composition boundary](RESTORE_HISTORY_COMPOSITION.md), immutable 056/057 projections and original native fences | Approved historical observation/client source is implemented; authenticated H runtime composition remains; no history record is execution authority |
-| Cross-device reopen and uncertain work | Existing owner-scoped task APIs/observer preserve persisted results; focused reconnect diagnostics exercise actual device access checks on synthetic SQL/POSIX fixtures | H-aware source responses/client refusal are implemented in this slice (RESTORE_HISTORY_OBSERVATION.md); deployed cross-device and held-key acceptance still require qualification |
-| Stop and publication races | #637's isolated Send/Stop and terminal-completion fence is merged; the next source slice adds H-ordered durable partial text and native terminal fields, with no runtime install | Authenticated runtime wiring and streamed/partial/artifact publication qualification; Stop prevents subsequent local admission/publication, not guaranteed remote cessation or billing cancellation |
-| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–057 need their own reviewed execution scope, not incidental inclusion in the closed runner |
+| Protected acceptance, Send and Stop | #625/#628/#631/#637 merged; [composition boundary](RESTORE_HISTORY_COMPOSITION.md), immutable 056/057 projections and original native fences | Historical observation/client source is merged in #650; authenticated H runtime composition remains; no history record is execution authority |
+| Cross-device reopen and uncertain work | Existing owner-scoped task APIs/observer preserve persisted results; focused reconnect diagnostics exercise actual device access checks on synthetic SQL/POSIX fixtures | H-aware source responses/client refusal are merged in #650 (RESTORE_HISTORY_OBSERVATION.md); deployed cross-device and held-key acceptance still require qualification |
+| Stop and publication races | #637 Send/Stop and #653 H-ordered durable partial text/native terminal fences are merged, with no runtime execution install | Authenticated runtime wiring and streamed/partial/artifact publication qualification; Stop prevents subsequent local admission/publication, not guaranteed remote cessation or billing cancellation |
+| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–059 need their own reviewed execution scope, not incidental inclusion in the closed runner |
 | Principal/storage/startup binding | Separate backend A/W and W-only worker startup is merged; [startup contract](TASK_STARTUP_COMPOSITION.md) | Reviewed live credentials, exact grants, private H/J1 storage/key identity, service-specific access and a pinned deployed source; no credentials/grants/storage are provisioned by this checklist |
 | Restart and recovery | Prior isolated PostgreSQL/POSIX and service-startup tests cover specific boundaries | Pinned-runtime restart/reconnect check with original task/results and truthful uncertain outcomes; observed container source/flags/identity read back after any separately approved deployment |
 | Restored database | H/protected SQL mismatch detection exists in isolated joins; historical evidence does not authorize replay | Supported offline restore barrier/reconciliation, independently retained acceptance/possible-send/Stop evidence, and financial/auth/key/account/file continuity; neither schema equality nor matching J1 alone is restore readiness |
@@ -34,8 +34,8 @@ substitute for authenticated runtime composition or deployed/browser acceptance.
 
 ## Observation-only startup source update
 
-Based on merged historical observation `b1cb9b9e`, the next source slice installs
-the backend reader and lifecycle under the explicit [interim observation-only
+Main includes #650 historical observation and #652 backend reader/lifecycle
+installation under the explicit [interim observation-only
 contract](RESTORE_HISTORY_RUNTIME.md). Producer ingress and background/worker
 execution remain unavailable whenever H is selected. This is not deployed
 acceptance: authenticated acceptance/Send/Stop/output composition, real identities,
@@ -43,7 +43,7 @@ keys, restricted grants, schema upgrade and restore/launch qualification remain
 unchecked operational gates. #477 stays open. Benchmark qualification is separate.
 
 
-## Next source dependency and unresolved artifact authority
+## Remaining runtime and artifact authority
 
 Durable text publication uses the existing W TaskStore transaction and H/SQL
 parity without adding an output-history protocol. Authenticated acceptance,
@@ -52,15 +52,25 @@ this dependency does not relax the observation-only barrier.
 
 C1's `ResourceStore.publish_output` is a trusted injected publication pool, while
 `ResourceCSV` separately uses restricted output reservations. No runtime host
-currently selects that trusted publisher for the W-only worker. Before artifact
-composition, explicitly choose and qualify its database authority rather than
-implicitly handing W an A/publisher credential or widening grants. This source
-slice changes neither role/grant design nor artifact behavior. #477 stays open.
+currently selects that trusted publisher for the W-only worker. The approved
+backend-owned P design supplies the separate SQL boundary in 058 and this
+source-only 059 continuation. Complete and qualify the split output
+collaborator before artifact composition; do not hand W an A/P credential, C1
+mount or broader grants. No runtime publisher is installed. #477 stays open.
 
 The subsequent approved backend-owned artifact design is being implemented in
 bounded source slices. `058_resource_output_presentations.sql` supplies only
 the separate P presentation capability described in
 [output authority](RESOURCE_OUTPUT_AUTHORITY.md). No P login/grant, artifact mount,
-socket or runtime publisher is installed. Catalog/file authority, the split output
-collaborator, local authentication and artifact restore evidence remain outstanding;
+socket or runtime publisher is installed. Full namespace/file authority, the split
+output collaborator, local authentication and artifact restore evidence remain
+outstanding;
 this source SQL does not remove the observation-only barrier or complete #477.
+
+
+Source continuation after main `7290a1cb`: 059 supplies restricted P catalog
+observation/admission/staging for existing reserved output/append intents
+([catalog contract](RESOURCE_OUTPUT_CATALOG.md)). Both 058/059 remain uncalled.
+Full namespace inventory, trusted file verification/output collaborator, local
+transport, artifact restore evidence and authenticated runtime composition remain
+outstanding. No live migration/ACL/configuration or launch status is changed.
