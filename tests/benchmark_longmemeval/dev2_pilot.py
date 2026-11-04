@@ -22,9 +22,10 @@ import hashlib
 import json
 import math
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from tests.benchmark_longmemeval.dev2 import (
     QuestionAggregate,
@@ -342,6 +343,397 @@ def main(argv: Sequence[str] | None = None) -> None:
         size=args.size,
         seed=args.seed,
     )
+
+
+# --- Pilot runtime instrumentation -------------------------------------------
+#
+# Everything below is injected-only: no process, database, network or provider
+# call is made here. Counters return numbers (or IDs already present in an
+# injected checkpoint); the runner never logs question or session text.
+
+STOP_SPEND: Final[str] = "spend_cap"
+STOP_RATE_LIMIT: Final[str] = "rate_limit_loop"
+STOP_EXTRACTION: Final[str] = "extraction_failed"
+# Hard gate: an arm with at least one failed session and >= 1% failures stops.
+FAILED_RATE_GATE: Final[float] = 0.01
+
+SessionExtractor = Callable[[Mapping[str, Any], str], tuple[Sequence[str], Sequence[str]]]
+
+
+class ProcessHandle(Protocol):
+    """The two methods ``run_arm`` needs from an injected child process."""
+
+    def poll(self) -> int | None: ...
+
+    def wait(self) -> int: ...
+
+
+def count_rate_limits(log_lines: Iterable[str]) -> dict[str, int]:
+    """Count ``attempt_outcome`` lines by ``failure_category``.
+
+    Only JSON object lines carrying ``"event": "attempt_outcome"`` are read;
+    every other line (junk, partial writes, other events) is ignored. The result
+    is a plain ``{category: count}`` mapping and carries no message text.
+    """
+    counts: Counter[str] = Counter()
+    for line in log_lines:
+        if not isinstance(line, str):
+            continue
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict) or payload.get("event") != "attempt_outcome":
+            continue
+        category = payload.get("failure_category")
+        if isinstance(category, str) and category:
+            counts[category] += 1
+    return dict(sorted(counts.items()))
+
+
+def _record_container(checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the per-question mapping of a runner checkpoint, or ``{}``.
+
+    ``fact_harness`` keeps per-question state in ``results``; older runners may
+    use ``questions``. Both are accepted so a shape delta is not fatal.
+    """
+    if not isinstance(checkpoint, Mapping):
+        return {}
+    for key in ("results", "questions"):
+        container = checkpoint.get(key)
+        if isinstance(container, Mapping):
+            return container
+    return {}
+
+
+def default_session_extractor(
+    checkpoint: Mapping[str, Any], question_id: str
+) -> tuple[Sequence[str], Sequence[str]]:
+    """Best-effort reader for one checkpoint record.
+
+    Provisional: the exact per-question layout of ``results`` is not established
+    from the runner lines available when this module was written
+    (``fact_harness.py`` 1700-1755 describe a ``pending`` entry with
+    ``corpus_key``/``started_at``/``state_fingerprint``/optional ``failure`` and
+    an ``ingest_failures`` manifest list, not the completed record). This
+    extractor therefore understands the shape implied by those lines — a
+    ``sessions`` sequence of IDs or ``{"session_id", "status"}`` mappings, plus a
+    ``failures``/``ingest_failures`` sequence — and raises ``ValueError`` rather
+    than reporting zeros when it does not recognise the record. Pass an explicit
+    ``extract`` to ``session_invariants`` when the real shape is confirmed.
+    """
+    record = _record_container(checkpoint).get(question_id)
+    if not isinstance(record, Mapping):
+        raise ValueError("checkpoint has no record for this question")
+    raw_sessions = record.get("sessions")
+    if raw_sessions is None:
+        raw_sessions = ()
+    if isinstance(raw_sessions, (str, bytes)) or not isinstance(raw_sessions, Sequence):
+        raise ValueError("checkpoint sessions must be a sequence")
+    completed: list[str] = []
+    failed: list[str] = []
+    for item in raw_sessions:
+        if isinstance(item, str):
+            completed.append(item)
+            continue
+        if not isinstance(item, Mapping):
+            raise ValueError("checkpoint sessions must be IDs or mappings")
+        session_id = item.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("checkpoint sessions need a session_id")
+        status = item.get("status")
+        if status in (None, "complete", "completed", "ok"):
+            completed.append(session_id)
+        else:
+            failed.append(session_id)
+    raw_failures = record.get("failures")
+    if raw_failures is None:
+        raw_failures = record.get("ingest_failures")
+    if raw_failures is None:
+        raw_failures = ()
+    if isinstance(raw_failures, (str, bytes)) or not isinstance(raw_failures, Sequence):
+        raise ValueError("checkpoint failures must be a sequence")
+    for item in raw_failures:
+        if isinstance(item, str):
+            failed.append(item)
+        elif isinstance(item, Mapping) and isinstance(item.get("session_id"), str):
+            failed.append(str(item["session_id"]))
+        else:
+            raise ValueError("checkpoint failures must be IDs or mappings")
+    return completed, failed
+
+
+def checkpoint_invariants(
+    checkpoint: Mapping[str, Any], *, extract: SessionExtractor | None = None
+) -> dict[str, Any]:
+    """Invariants for every question present in ``checkpoint``."""
+    return session_invariants(checkpoint, list(_record_container(checkpoint)), extract=extract)
+
+
+def session_invariants(
+    checkpoint: Mapping[str, Any],
+    question_ids: Collection[str],
+    *,
+    extract: SessionExtractor | None = None,
+) -> dict[str, Any]:
+    """Per-question session counts, failed counts and duplicate detection.
+
+    ``extract`` returns ``(session_ids, failed_session_ids)`` for one question
+    and defaults to :func:`default_session_extractor`. Duplicates are repeated
+    session IDs *within* a question. ``completed`` is ``sessions - failed``.
+    """
+    reader: SessionExtractor = extract or default_session_extractor
+    per_question: dict[str, dict[str, int]] = {}
+    total = 0
+    failed_total = 0
+    duplicates = 0
+    for question_id in question_ids:
+        sessions, failed_ids = reader(checkpoint, question_id)
+        ids = [str(value) for value in sessions]
+        counts = Counter(ids)
+        duplicate_count = sum(count - 1 for count in counts.values() if count > 1)
+        duplicates += duplicate_count
+        total += len(ids)
+        failed_total += len(failed_ids)
+        per_question[question_id] = {
+            "sessions": len(ids),
+            "failed": len(failed_ids),
+            "completed": len(ids) - len(failed_ids),
+            "duplicate_sessions": duplicate_count,
+        }
+    return {
+        "questions": per_question,
+        "total_sessions": total,
+        "failed_sessions": failed_total,
+        "completed_sessions": total - failed_total,
+        "duplicate_sessions": duplicates,
+    }
+
+
+def failed_rate(invariants: Mapping[str, Any]) -> float:
+    """Failed sessions divided by all sessions; ``0.0`` when there are none."""
+    total = int(invariants.get("total_sessions", 0))
+    if total <= 0:
+        return 0.0
+    return int(invariants.get("failed_sessions", 0)) / total
+
+
+def verify_resume(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    expected_sessions: int | Mapping[str, int],
+) -> list[str]:
+    """Compare invariants before and after a resume. Empty list means pass.
+
+    Violations, in order: any duplicate session record after resume, any
+    completed session lost, a session count that differs from
+    ``expected_sessions`` (a total, or per question ID), or more
+    ``extraction_failed`` sessions than before.
+    """
+    violations: list[str] = []
+    duplicates = int(after.get("duplicate_sessions", 0))
+    if duplicates > 0:
+        violations.append(f"resume duplicated {duplicates} session record(s)")
+    lost = int(before.get("completed_sessions", 0)) - int(after.get("completed_sessions", 0))
+    if lost > 0:
+        violations.append(f"resume lost {lost} completed session(s)")
+    if isinstance(expected_sessions, int):
+        observed = int(after.get("total_sessions", 0))
+        if observed != expected_sessions:
+            violations.append(
+                f"session count {observed} does not match expected {expected_sessions}"
+            )
+    else:
+        observed_questions = after.get("questions", {})
+        for question_id, expected in sorted(expected_sessions.items()):
+            record = observed_questions.get(question_id)
+            actual = int(record["sessions"]) if isinstance(record, Mapping) else 0
+            if actual != expected:
+                violations.append(
+                    f"question {question_id} has {actual} sessions, expected {expected}"
+                )
+        if not isinstance(observed_questions, Mapping):
+            violations.append("resumed checkpoint has no per-question records")
+    extra_failures = int(after.get("failed_sessions", 0)) - int(before.get("failed_sessions", 0))
+    if extra_failures > 0:
+        violations.append(f"resume added {extra_failures} extraction_failed session(s)")
+    return violations
+
+
+@dataclass(frozen=True)
+class StopRule:
+    """Stopping limits for one arm: spend cap, safety margin, 429 tolerance."""
+
+    cap_usd: float
+    margin_usd: float
+    max_rate_limited: int
+
+    def __post_init__(self) -> None:
+        for name in ("cap_usd", "margin_usd"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be a finite nonnegative number")
+        if self.cap_usd <= 0:
+            raise ValueError("cap_usd must be positive")
+        if self.margin_usd >= self.cap_usd:
+            raise ValueError("margin_usd must be smaller than cap_usd")
+        if (
+            isinstance(self.max_rate_limited, bool)
+            or not isinstance(self.max_rate_limited, int)
+            or self.max_rate_limited < 0
+        ):
+            raise ValueError("max_rate_limited must be a nonnegative integer")
+
+    @property
+    def spend_threshold_usd(self) -> float:
+        return self.cap_usd - self.margin_usd
+
+
+def _resource_bounds(samples: Sequence[Mapping[str, float]]) -> dict[str, dict[str, float]]:
+    bounds: dict[str, dict[str, float]] = {}
+    for sample in samples:
+        for name, value in sample.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                continue
+            number = float(value)
+            current = bounds.get(name)
+            if current is None:
+                bounds[name] = {"min": number, "max": number}
+            else:
+                if number < current["min"]:
+                    current["min"] = number
+                if number > current["max"]:
+                    current["max"] = number
+    return bounds
+
+
+def _gate_reason(
+    spend_usd: float,
+    invariants: Mapping[str, Any],
+    rate_limits: Mapping[str, int],
+    stop_rule: StopRule,
+) -> str | None:
+    if spend_usd >= stop_rule.spend_threshold_usd:
+        return STOP_SPEND
+    if int(rate_limits.get("rate_limited", 0)) > stop_rule.max_rate_limited:
+        return STOP_RATE_LIMIT
+    failed = int(invariants.get("failed_sessions", 0))
+    if failed >= 1 and failed_rate(invariants) >= FAILED_RATE_GATE:
+        return STOP_EXTRACTION
+    return None
+
+
+def run_arm(
+    *,
+    command: Sequence[str],
+    spawn: Callable[[Sequence[str]], ProcessHandle],
+    read_spend_usd: Callable[[], float],
+    read_log_lines: Callable[[], Sequence[str]],
+    read_checkpoint: Callable[[], Mapping[str, Any]],
+    sample_resources: Callable[[], Mapping[str, float]],
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    poll_seconds: float,
+    stop_rule: StopRule,
+    interrupt_after_completed: int | None = None,
+    send_interrupt: Callable[[ProcessHandle], None],
+    grace_seconds: float = 60.0,
+) -> dict[str, Any]:
+    """Spawn one ingest arm, poll it, and stop it on a documented trigger.
+
+    Every side effect is injected. The loop samples resources and reads spend,
+    log counts and checkpoint invariants each poll. One SIGINT is sent when the
+    spend threshold ``cap_usd - margin_usd`` is reached (``spend_cap``), when
+    ``rate_limited`` exceeds ``max_rate_limited`` (``rate_limit_loop``), or when
+    at least one session has failed and the failed rate is >= 1%
+    (``extraction_failed``). If ``interrupt_after_completed`` is set, one SIGINT
+    is sent once that many questions completed and the run is marked
+    ``interrupted_for_resume`` with no stop reason. A second SIGINT is sent at
+    most once, only after ``grace_seconds`` with the child still alive, and is
+    recorded. The result carries numbers and reason codes only.
+    """
+    if poll_seconds <= 0 or not math.isfinite(poll_seconds):
+        raise ValueError("poll_seconds must be a positive finite number")
+    if grace_seconds < 0 or not math.isfinite(grace_seconds):
+        raise ValueError("grace_seconds must be a nonnegative finite number")
+    if interrupt_after_completed is not None and interrupt_after_completed < 1:
+        raise ValueError("interrupt_after_completed must be at least 1")
+
+    started = clock()
+    spend_before = float(read_spend_usd())
+    samples: list[Mapping[str, float]] = []
+    interrupts: list[dict[str, Any]] = []
+    stop_reason: str | None = None
+    interrupted = False
+    first_interrupt_at: float | None = None
+    second_sent = False
+    process = spawn(list(command))
+
+    while process.poll() is None:
+        samples.append(sample_resources())
+        now = clock()
+        if first_interrupt_at is not None:
+            if not second_sent and now - first_interrupt_at >= grace_seconds:
+                send_interrupt(process)
+                second_sent = True
+                interrupts.append({"at_seconds": round(now - started, 3), "kind": "grace"})
+        else:
+            invariants = checkpoint_invariants(read_checkpoint())
+            rate_limits = count_rate_limits(read_log_lines())
+            reason: str | None = None
+            resumed = False
+            if (
+                interrupt_after_completed is not None
+                and int(invariants.get("completed_sessions", 0)) >= interrupt_after_completed
+            ):
+                resumed = True
+            else:
+                reason = _gate_reason(float(read_spend_usd()), invariants, rate_limits, stop_rule)
+            if resumed or reason is not None:
+                send_interrupt(process)
+                first_interrupt_at = now
+                if resumed:
+                    interrupted = True
+                    kind = "resume"
+                else:
+                    stop_reason = reason
+                    kind = "stop"
+                interrupts.append({"at_seconds": round(now - started, 3), "kind": kind})
+        sleep(poll_seconds)
+
+    exit_code = process.wait()
+    samples.append(sample_resources())
+    elapsed = max(clock() - started, 0.0)
+    spend_after = float(read_spend_usd())
+    final_invariants = checkpoint_invariants(read_checkpoint())
+    final_rates = count_rate_limits(read_log_lines())
+    completed = int(final_invariants.get("completed_sessions", 0))
+    hours = elapsed / 3600.0
+    return {
+        "wall_seconds": elapsed,
+        "exit_code": exit_code,
+        "stop_reason": stop_reason,
+        "interrupted_for_resume": interrupted,
+        "interrupts": interrupts,
+        "spend_before_usd": spend_before,
+        "spend_after_usd": spend_after,
+        "spend_usd": spend_after - spend_before,
+        "rate_limits": final_rates,
+        "rate_limited_events": int(final_rates.get("rate_limited", 0)),
+        "resource_samples": _resource_bounds(samples),
+        "completed_sessions": completed,
+        "failed_sessions": int(final_invariants.get("failed_sessions", 0)),
+        "sessions_per_hour": completed / hours if hours > 0 else 0.0,
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover
