@@ -2,6 +2,8 @@
 
 import asyncio
 import ast
+import hashlib
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,12 +14,15 @@ import uuid
 
 import pytest
 
-from orchestrator import compute_runtime, model_routing
+from orchestrator import config, compute_runtime, model_routing
 from orchestrator.entitlements import attestation
+from orchestrator.entitlements.policy import load_inference_policy
 from orchestrator.memory import injection
+from orchestrator.memory import multi_query as mq
 from orchestrator.memory.retrieval import RECENCY_REFERENCE_TIME
 from tests.test_memory_context_parity import USER_ID, CONVERSATION_ID, RecordingStore, FakeTrust
 from tests.test_multi_query import _approved
+from tests.test_multi_query_profile import legacy_routing_document
 from tests.test_production_inference_policy import (
     REVIEWED,
     _attested as _attested,
@@ -251,6 +256,77 @@ async def test_enabled_arms_start_concurrently(setup, monkeypatch):
         subquery_provider=ConcurrentProvider(),
     )
     assert baseline_started.is_set() and decomposition_started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_missing_optional_profile_fails_open_before_completion(
+    setup, monkeypatch, production_policy, mocked_dispatch
+):
+    service, send = mocked_dispatch
+    _approved(monkeypatch, production_policy)
+    routing = model_routing.parse_model_routing(legacy_routing_document())
+    monkeypatch.setattr(model_routing, "load_model_routing", lambda: routing)
+    context = Mock(wraps=model_routing.routing_context)
+    completion = AsyncMock(side_effect=AssertionError("Absent profile must prevent completion"))
+    monkeypatch.setattr(mq, "routing_context", context)
+    monkeypatch.setattr(mq, "guarded_completion", completion)
+    setup.settings.memory_multi_query_enabled = False
+    baseline = await injection.build_memory_context(Store(), CONVERSATION_ID)
+    setup.settings.memory_multi_query_enabled = True
+    with model_routing.routing_context("background") as parent:
+        assert await injection.build_memory_context(Store(), CONVERSATION_ID) == baseline
+        assert model_routing.current_routing() is parent
+        assert parent.selected_model is None
+    assert baseline
+    context.assert_called_once_with("memory_decomposition")
+    completion.assert_not_awaited()
+    send.assert_not_awaited()
+    service.reserve.assert_not_awaited()
+    setup.batch.assert_not_awaited()
+    assert all(call.get("query_role") in (None, "original") for call in setup.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "name,semantic_hash",
+    [
+        (
+            "inference_policy.json",
+            "04546b167631e9e490551b2bbc394589602c926babf15aea1147f4c30eebaeaf",
+        ),
+        (
+            "inference_policy.production.json",
+            "6b52ed0becd1be8c53dcc91cac662f1215f808a92954aeea4a21ac1615028b54",
+        ),
+    ],
+)
+async def test_deployment_owned_legacy_policy_needs_no_proposal_or_transport_fields(
+    setup, monkeypatch, tmp_path, enabled, name, semantic_hash
+):
+    raw = json.loads((Path(__file__).resolve().parents[1] / "config" / name).read_text())
+    raw["routes"] = [r for r in raw["routes"] if r["route_id"] != mq.DECOMPOSITION_ROUTE_ID]
+    # Whole-document semantic identity with origin/main at this rebase.
+    assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == semantic_hash
+    assert all("multi_provider" not in r["privacy"]["transport"] for r in raw["routes"])
+    path = tmp_path / name
+    path.write_text(json.dumps(raw))
+    monkeypatch.setenv("DAEMON_INFERENCE_POLICY", str(path))
+    settings = cast(Any, config.Settings)(_env_file=None, memory_multi_query_enabled=enabled)
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    policy = load_inference_policy()
+    assert policy.source_path == str(path)
+    assert policy.route(mq.DECOMPOSITION_ROUTE_ID) is None
+    assert set(policy.routes) == {r["route_id"] for r in raw["routes"]}
+    completion = AsyncMock(side_effect=AssertionError("A missing pin must never be substituted"))
+    monkeypatch.setattr(mq, "guarded_completion", completion)
+    setup.settings.memory_multi_query_enabled = False
+    baseline = await injection.build_memory_context(Store(), CONVERSATION_ID)
+    setup.settings.memory_multi_query_enabled = enabled
+    assert await injection.build_memory_context(Store(), CONVERSATION_ID) == baseline
+    assert baseline
+    completion.assert_not_awaited()
+    setup.batch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

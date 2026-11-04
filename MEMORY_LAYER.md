@@ -355,7 +355,7 @@ exact cloud pipeline, through a separately pinned, unapproved decomposition
 route. Enabled gather is read-only; the async production wrapper records touches
 and trust once after its actual render. The item-limit override preserves the
 existing token budget. Component log rows store an empty query and no vector,
-with a nullable query role; original-query plaintext is pre-existing (#663).
+with a nullable query role (migration 061); original-query plaintext is pre-existing (#663).
 See [the design and offline evaluation gates](docs/memory/multi_query_retrieval.md).
 
 ### 10. Queued entity projection

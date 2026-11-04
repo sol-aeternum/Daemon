@@ -365,8 +365,8 @@ def test_original_vector_reader_ignores_component_rows(role):
 def test_query_role_migration_preserves_original_not_null_contract():
     root = Path(__file__).resolve().parents[1]
     original = (root / "migrations/025_create_retrieval_log.sql").read_text()
-    up = (root / "migrations/060_retrieval_query_role.sql").read_text()
-    down = (root / "migrations/rollback/060_retrieval_query_role.down.sql").read_text()
+    up = (root / "migrations/061_retrieval_query_role.sql").read_text()
+    down = (root / "migrations/rollback/061_retrieval_query_role.down.sql").read_text()
     assert "query_text TEXT NOT NULL" in original
     assert "ADD COLUMN query_role TEXT" in up
     assert "query_role IS NULL" in up and "^sub:[0-9]+$" in up

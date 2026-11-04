@@ -26,8 +26,10 @@ not certify account privacy settings or endpoint hosting location.
 
 Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`, `memory_decomposition`.
 
-`memory_decomposition` is a default-off M1 helper, not a chat candidate. Its
-profile-specific Luna preset is `reasoning_effort: none`; background/extraction
+`memory_decomposition` is an optional, default-off M1 helper, not a chat candidate.
+Deployment-owned files with only the original five profiles remain valid; an
+absent helper profile prevents decomposition sends and retains baseline memory.
+Its profile-specific Luna preset is `reasoning_effort: none`; background/extraction
 stays medium. Its caller additionally pins `memory-decomposition-luna-azure-eu`,
 an unapproved proposal in both shipped policies, never the approved general Luna
 route. No existing profile candidates or route approvals change. See

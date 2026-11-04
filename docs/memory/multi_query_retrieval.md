@@ -120,6 +120,13 @@ with a reasoning override would change extraction, which currently uses Luna
 at its default medium effort. Add only the new profile, Luna suitability and a
 profile-specific `reasoning_effort: none` preset (off, supported by its existing
 ladder). Existing profiles, candidate groups and effective presets stay unchanged.
+Only the original five profiles are required in deployment-owned routing files;
+`memory_decomposition` is known and validated when present, but optional (owner
+P1, superseding packet A3's missing-profile load failure). If absent, entering its
+routing context fails before completion, and decomposition retains the baseline
+without substituting another profile. Legacy inference policies need no proposal
+or new transport fields: a missing pinned route returns no components. No new
+commercial-config requirement is introduced.
 
 Profile placement grants no route permission (`model_routing.py:10–18`). Pin
 the proposed decomposition route through the existing guarded-completion
@@ -193,10 +200,10 @@ infrastructure, not a promoted user-visible client capability.
 
 ## Rollout
 
-Apply migration 060 before deploying this code, even with the flag off:
+Apply migration 061 before deploying this code, even with the flag off:
 diagnostics readers always require `query_role`. Flag-off inserts retain the
 legacy statement when the role is `None`; flag-on inserts need the column too.
-The exposure sweep remains compatible with pre-060 evidence databases, matching
+The exposure sweep remains compatible with pre-061 evidence databases, matching
 exact non-empty query text and model instead of filtering by role.
 
 ## Latency, cost and failure behaviour
