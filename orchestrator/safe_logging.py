@@ -18,7 +18,9 @@ _stream: TextIO | None = None
 _managed_level = logging.NOTSET
 _routing_validator: Callable[[str, dict[str, object]], dict[str, object]] | None = None
 _LEVELS = {10: "DEBUG", 20: "INFO", 30: "WARNING", 40: "ERROR", 50: "CRITICAL"}
-_STAGES = frozenset({"startup", "runtime", "shutdown", "uncaught", "thread", "asyncio"})
+_STAGES = frozenset(
+    {"startup", "runtime", "shutdown", "uncaught", "thread", "asyncio", "extraction_truncated"}
+)
 
 
 def register_routing_validator(

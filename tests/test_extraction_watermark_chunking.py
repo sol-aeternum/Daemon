@@ -779,13 +779,17 @@ async def test_truncation_warning_never_logs_reply_content(
         "usage": {"completion_tokens": 4000},
     }
     caplog.set_level("WARNING", logger="orchestrator.memory.extraction")
-    with patch(
-        "orchestrator.memory.extraction.guarded_completion",
-        new_callable=AsyncMock,
-        return_value=response,
+    with (
+        patch(
+            "orchestrator.memory.extraction.guarded_completion",
+            new_callable=AsyncMock,
+            return_value=response,
+        ),
+        patch("orchestrator.memory.extraction.safe_logging.event") as diagnostic,
     ):
         await extract_facts_from_text("candidate memory text")
 
+    diagnostic.assert_called_once_with("failure", stage="extraction_truncated")
     assert sentinel not in caplog.text
     assert "truncated" in caplog.text
     assert "output_tokens=4000" in caplog.text

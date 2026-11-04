@@ -280,3 +280,10 @@ def test_routing_schema_is_revalidated_at_actual_sink(isolated_logging: io.Strin
     assert output[1]["exclusions"] == {"budget": 1}
     assert all(item["event"] == "invalid_diagnostic" for item in output[2:])
     assert CONTENT_SENTINEL not in isolated_logging.getvalue()
+
+
+def test_extraction_truncation_is_a_content_free_diagnostic() -> None:
+    assert safe_logging.validated_payload({"kind": "failure", "stage": "extraction_truncated"}) == {
+        "event": "failure",
+        "stage": "extraction_truncated",
+    }

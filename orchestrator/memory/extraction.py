@@ -14,6 +14,7 @@ from dataclasses import dataclass  # noqa: E402
 from typing import Any  # noqa: E402
 
 
+from orchestrator import safe_logging  # noqa: E402
 from orchestrator.config import get_settings  # noqa: E402
 from orchestrator.memory.store import MemoryStore  # noqa: E402
 from orchestrator.model_routing import routing_context  # noqa: E402
@@ -575,6 +576,9 @@ async def extract_facts_from_text(
                 model_used,
                 output_tokens,
             )
+            # The managed handler renders only structured diagnostics, so this is what
+            # makes a truncation visible in production logs.
+            safe_logging.event("failure", stage="extraction_truncated")
             return ExtractionOutcome(
                 facts=[],
                 raw_count=0,
