@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import asyncio
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -23,7 +24,14 @@ import asyncpg
 from cryptography.fernet import Fernet, InvalidToken
 
 from orchestrator.artifact_envelope import ArtifactBinding, ArtifactEnvelopeCodec, MAX_CONTENT_BYTES
-from orchestrator.artifact_namespaces import NamespaceController, _topology
+from orchestrator.artifact_namespaces import (
+    NamespaceController,
+    _topology,
+    namespace_states,
+    scan_namespace_journal,
+)
+from orchestrator.namespace_inventory import read_output_inventory
+from orchestrator.services.connection_cleanup import pool_connection, require_pool_cleanup
 from orchestrator.artifact_reservations import (
     DescriptorCodec,
     IntentBinding,
@@ -78,21 +86,12 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-class ResourceStore:
-    """Trusted injected registry pool; no R0 wrapper calls or reservation writes."""
+class _ResourceCodec:
+    """Existing canonical encrypted formats; no pool or filesystem authority."""
 
-    def __init__(
-        self,
-        pool: asyncpg.Pool,
-        root: Path,
-        journal_path: Path,
-        journal_id: UUID,
-        cipher: Fernet,
-    ) -> None:
+    def __init__(self, cipher: Fernet) -> None:
         if not isinstance(cipher, Fernet):
             raise ResourceError("invalid")
-        self._namespaces = NamespaceController(pool, root, journal_path, journal_id)
-        self._root = root
         self._cipher = cipher
         self._envelope = ArtifactEnvelopeCodec(cipher)
         self._descriptors = DescriptorCodec(cipher)
@@ -120,6 +119,117 @@ class ResourceStore:
             return value
         except (InvalidToken, ValueError, UnicodeError, TypeError, RecursionError):
             raise ResourceError() from None
+
+    def _record_matches(self, token: str, expected: dict[str, Any]) -> bool:
+        # Canonical bytes distinguish booleans from integers (Python dict equality
+        # does not), as well as preserving the exact authenticated closed shape.
+        return _canonical(self._open(token)) == _canonical(expected)
+
+    @staticmethod
+    def _matches_identity(command: IntentCommand, identity: AttemptIdentity) -> None:
+        j, b = command.job, command.binding
+        if (j.account_id, j.account_generation, j.task_id, b.lifecycle_id, b.attempt_epoch) != (
+            identity.account_id,
+            identity.generation,
+            identity.task_id,
+            identity.lifecycle_id,
+            identity.epoch,
+        ):
+            raise ResourceError("refused")
+
+    def _stored(self, command: IntentCommand, namespace: str) -> StoredBinding:
+        descriptor = self._descriptors.decode(command)
+        j, b = command.job, command.binding
+        return StoredBinding(
+            ArtifactBinding(
+                str(j.account_id),
+                str(b.resource_id),
+                str(b.version_id),
+                j.account_generation,
+                "generated_file",
+            ),
+            namespace,
+            b.intent_id.hex,
+            b.version_id.hex,
+            b.measured_bytes,
+            descriptor["sha256"],
+        )
+
+    @staticmethod
+    def _binding_fields(stored: StoredBinding, source: str) -> dict[str, Any]:
+        a = stored.artifact
+        return {
+            "schema_version": 1,
+            "account_id": a.account_id,
+            "resource_id": a.resource_id,
+            "version_id": a.version_id,
+            "generation": a.generation,
+            "representation": a.representation,
+            "namespace": stored.namespace,
+            "intent_id": str(UUID(hex=stored.intent)),
+            "storage_name": stored.public_name,
+            "measured_bytes": stored.measured_bytes,
+            "sha256": stored.sha256,
+            "source_kind": source,
+        }
+
+    @staticmethod
+    def _metadata(command: IntentCommand, descriptor: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "account_id": str(command.job.account_id),
+            "resource_id": str(command.binding.resource_id),
+            "version_id": str(command.binding.version_id),
+            "generation": command.job.account_generation,
+            "representation": "generated_file",
+            "kind": "file",
+            "mime": "text/csv",
+            "measured_bytes": command.binding.measured_bytes,
+            "name": descriptor["filename"],
+            "title": None,
+            "sha256": descriptor["sha256"],
+            "provenance": descriptor["provenance"],
+        }
+
+    @staticmethod
+    def _provenance(
+        command: IntentCommand,
+        conversation: Any,
+        message: Any,
+        ordinal: int,
+        deleted: Any,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "account_id": str(command.job.account_id),
+            "resource_id": str(command.binding.resource_id),
+            "version_id": str(command.binding.version_id),
+            "generation": command.job.account_generation,
+            "original_task_id": str(command.job.task_id),
+            "original_conversation_id": str(conversation),
+            "original_message_id": str(message),
+            "original_job_id": str(command.job.job_id),
+            "original_attempt_id": str(command.binding.attempt_id),
+            "role": "output",
+            "ordinal": ordinal,
+            "source_deleted": deleted,
+        }
+
+
+class ResourceStore(_ResourceCodec):
+    """Trusted injected registry pool; no R0 wrapper calls or reservation writes."""
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        root: Path,
+        journal_path: Path,
+        journal_id: UUID,
+        cipher: Fernet,
+    ) -> None:
+        super().__init__(cipher)
+        self._namespaces = NamespaceController(pool, root, journal_path, journal_id)
+        self._root = root
 
     @asynccontextmanager
     async def _scope(
@@ -165,11 +275,6 @@ class ResourceStore:
             ReservationError,
         ):
             raise ResourceError() from None
-
-    def _record_matches(self, token: str, expected: dict[str, Any]) -> bool:
-        # Canonical bytes distinguish booleans from integers (Python dict equality
-        # does not), as well as preserving the exact authenticated closed shape.
-        return _canonical(self._open(token)) == _canonical(expected)
 
     @staticmethod
     async def _live(conn: Connection, identity: AttemptIdentity) -> None:
@@ -248,18 +353,6 @@ class ResourceStore:
             raise ResourceError()
         return command, kind
 
-    @staticmethod
-    def _matches_identity(command: IntentCommand, identity: AttemptIdentity) -> None:
-        j, b = command.job, command.binding
-        if (j.account_id, j.account_generation, j.task_id, b.lifecycle_id, b.attempt_epoch) != (
-            identity.account_id,
-            identity.generation,
-            identity.task_id,
-            identity.lifecycle_id,
-            identity.epoch,
-        ):
-            raise ResourceError("refused")
-
     async def _sources(self, conn: Connection, command: IntentCommand) -> tuple[UUID, UUID]:
         task = await conn.fetchrow(
             "SELECT * FROM tasks WHERE id=$1 FOR UPDATE", command.job.task_id
@@ -294,42 +387,6 @@ class ResourceStore:
         ):
             raise ResourceError("refused")
         return conversation, message
-
-    def _stored(self, command: IntentCommand, namespace: str) -> StoredBinding:
-        descriptor = self._descriptors.decode(command)
-        j, b = command.job, command.binding
-        return StoredBinding(
-            ArtifactBinding(
-                str(j.account_id),
-                str(b.resource_id),
-                str(b.version_id),
-                j.account_generation,
-                "generated_file",
-            ),
-            namespace,
-            b.intent_id.hex,
-            b.version_id.hex,
-            b.measured_bytes,
-            descriptor["sha256"],
-        )
-
-    @staticmethod
-    def _binding_fields(stored: StoredBinding, source: str) -> dict[str, Any]:
-        a = stored.artifact
-        return {
-            "schema_version": 1,
-            "account_id": a.account_id,
-            "resource_id": a.resource_id,
-            "version_id": a.version_id,
-            "generation": a.generation,
-            "representation": a.representation,
-            "namespace": stored.namespace,
-            "intent_id": str(UUID(hex=stored.intent)),
-            "storage_name": stored.public_name,
-            "measured_bytes": stored.measured_bytes,
-            "sha256": stored.sha256,
-            "source_kind": source,
-        }
 
     async def _publication(
         self,
@@ -422,48 +479,6 @@ class ResourceStore:
             command,
             kind,
         )
-
-    @staticmethod
-    def _metadata(command: IntentCommand, descriptor: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "schema_version": 1,
-            "account_id": str(command.job.account_id),
-            "resource_id": str(command.binding.resource_id),
-            "version_id": str(command.binding.version_id),
-            "generation": command.job.account_generation,
-            "representation": "generated_file",
-            "kind": "file",
-            "mime": "text/csv",
-            "measured_bytes": command.binding.measured_bytes,
-            "name": descriptor["filename"],
-            "title": None,
-            "sha256": descriptor["sha256"],
-            "provenance": descriptor["provenance"],
-        }
-
-    @staticmethod
-    def _provenance(
-        command: IntentCommand,
-        conversation: Any,
-        message: Any,
-        ordinal: int,
-        deleted: Any,
-    ) -> dict[str, Any]:
-        return {
-            "schema_version": 1,
-            "account_id": str(command.job.account_id),
-            "resource_id": str(command.binding.resource_id),
-            "version_id": str(command.binding.version_id),
-            "generation": command.job.account_generation,
-            "original_task_id": str(command.job.task_id),
-            "original_conversation_id": str(conversation),
-            "original_message_id": str(message),
-            "original_job_id": str(command.job.job_id),
-            "original_attempt_id": str(command.binding.attempt_id),
-            "role": "output",
-            "ordinal": ordinal,
-            "source_deleted": deleted,
-        }
 
     async def publish_output(
         self,
@@ -981,3 +996,439 @@ class ResourceStore:
             )
             await self._live(conn, identity)
         return binding.intent_id
+
+
+class ReservedOutputPublisher(_ResourceCodec):
+    """Backend-only, uncalled P collaborator for an original CSV reservation.
+
+    No reservation, presentation, namespace creation, repair, HTTP or startup.
+    The existing H owner validates native origin on the locked snapshot before
+    entering the sole typed effect seam. Snapshots never authorize file work.
+    """
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        root: Path,
+        journal_path: Path,
+        journal_id: UUID,
+        cipher: Fernet,
+        *,
+        inventory_limit: int,
+        snapshot_byte_limit: int,
+    ) -> None:
+        super().__init__(cipher)
+        if (
+            type(pool) is not asyncpg.Pool
+            or not isinstance(root, Path)
+            or not root.is_absolute()
+            or ".." in root.parts
+            or not isinstance(journal_path, Path)
+            or not journal_path.is_absolute()
+            or ".." in journal_path.parts
+            or not isinstance(journal_id, UUID)
+            or type(inventory_limit) is not int
+            or not 1 <= inventory_limit <= 10000
+            or type(snapshot_byte_limit) is not int
+            or not 1 <= snapshot_byte_limit <= 2**31 - 1
+        ):
+            raise ResourceError("invalid")
+        self._pool, self._root = pool, root
+        self._journal_path, self._journal_id = journal_path, journal_id
+        self._inventory_limit, self._snapshot_byte_limit = inventory_limit, snapshot_byte_limit
+        self._blocked = False
+        self._active_task: asyncio.Task[Any] | None = None
+        self._connection: Any = None
+
+    @asynccontextmanager
+    async def _reserved_transaction(self) -> AsyncIterator[Connection]:
+        require_pool_cleanup()  # Before acquisition; not a replacement H scope.
+        if self._blocked or self._active_task is not None:
+            raise ResourceError("blocked")
+        self._active_task = asyncio.current_task()
+        try:
+            async with pool_connection(self._pool) as conn:
+                self._connection = conn
+                try:
+                    if conn.is_in_transaction():
+                        raise ResourceError("transaction")
+                    tx = conn.transaction(isolation="read_committed")
+                    await tx.start()
+                    yield conn
+                    await tx.commit()  # Only this owned top-level COMMIT counts.
+                except BaseException as original:
+                    self._blocked = True
+                    try:
+                        conn.terminate()  # No rollback/readback on an uncertain channel.
+                    except BaseException:
+                        original.add_note("Native publisher termination also failed")
+                    raise
+        except BaseException:
+            self._blocked = True
+            raise
+        finally:
+            # Actual native release/reset has settled before clearing ownership.
+            self._connection = self._active_task = None
+
+    def _owned_connection(self, conn: Any) -> None:
+        if (
+            self._blocked
+            or self._active_task is not asyncio.current_task()
+            or conn is not self._connection
+            or conn is None
+        ):
+            raise ResourceError("transaction")
+        require_pool_cleanup()
+
+    @staticmethod
+    def _uuid(value: Any) -> UUID:
+        if type(value) is not str:
+            raise ResourceError("invalid_snapshot")
+        try:
+            result = UUID(value)
+        except (ValueError, AttributeError):
+            raise ResourceError("invalid_snapshot") from None
+        if str(result) != value:
+            raise ResourceError("invalid_snapshot")
+        return result
+
+    @staticmethod
+    def _instant(value: Any) -> datetime:
+        if type(value) is not str:
+            raise ResourceError("invalid_snapshot")
+        try:
+            result = datetime.fromisoformat(value)
+        except ValueError:
+            raise ResourceError("invalid_snapshot") from None
+        if result.utcoffset() is None:
+            raise ResourceError("invalid_snapshot")
+        return result
+
+    async def _reserved_snapshot(
+        self, conn: Any, identity: AttemptIdentity, intent: UUID, *, admit: bool = False
+    ) -> dict[str, Any]:
+        self._owned_connection(conn)
+        identity.wire()
+        if not isinstance(intent, UUID):
+            raise ResourceError("invalid")
+        # Bound the returned encoded snapshot on the server, before client
+        # decoding. This does not bound the server's construction/kernel work.
+        if admit:
+            payload = await conn.fetchval(
+                "WITH observed AS MATERIALIZED (SELECT public.resource_output_catalog_admit($1::pg_catalog.jsonb,$2::pg_catalog.uuid) AS value) SELECT CASE WHEN pg_catalog.octet_length(value::pg_catalog.text)<=$3::pg_catalog.int4 THEN value ELSE NULL END FROM observed",
+                identity.wire(),
+                intent,
+                self._snapshot_byte_limit,
+            )
+        else:
+            payload = await conn.fetchval(
+                "WITH observed AS MATERIALIZED (SELECT public.resource_output_catalog_snapshot($1::pg_catalog.jsonb,$2::pg_catalog.uuid) AS value) SELECT CASE WHEN pg_catalog.octet_length(value::pg_catalog.text)<=$3::pg_catalog.int4 THEN value ELSE NULL END FROM observed",
+                identity.wire(),
+                intent,
+                self._snapshot_byte_limit,
+            )
+        if type(payload) is not str or len(payload.encode("utf-8")) > self._snapshot_byte_limit:
+            raise ResourceError("snapshot_capacity")
+        try:
+            raw = json.loads(payload, object_pairs_hook=_pairs)
+            if type(raw) is not dict or set(raw) != {
+                "next_output_ordinal",
+                "task",
+                "job",
+                "intent",
+                "source_kind",
+                "namespace",
+                "publication",
+                "version",
+                "output_references",
+            }:
+                raise ResourceError("invalid_snapshot")
+            if raw["source_kind"] != "output":
+                raise ResourceError("unsupported")
+            task, job, row = raw["task"], raw["job"], raw["intent"]
+            if type(task) is not dict or set(task) != {
+                "id",
+                "user_id",
+                "conversation_id",
+                "result_message_id",
+                "input_version",
+                "input_ciphertext",
+            }:
+                raise ResourceError("invalid_snapshot")
+            binding = JobBinding(
+                self._uuid(job["job_id"]),
+                self._uuid(job["account_id"]),
+                job["account_generation"],
+                self._uuid(job["task_id"]),
+                self._uuid(job["operation_id"]),
+            )
+            command = IntentCommand(
+                binding,
+                IntentBinding(
+                    self._uuid(row["intent_id"]),
+                    row["output_slot"],
+                    self._uuid(row["resource_id"]),
+                    self._uuid(row["version_id"]),
+                    self._uuid(row["lifecycle_id"]),
+                    self._uuid(row["attempt_id"]),
+                    row["attempt_epoch"],
+                    row["measured_bytes"],
+                ),
+                row["descriptor_ciphertext"],
+            )
+            if _canonical(job) != _canonical(
+                binding.wire() | {"created_at": job["created_at"]}
+            ) or _canonical(row) != _canonical(command.wire() | {"created_at": row["created_at"]}):
+                raise ResourceError("invalid_snapshot")
+            self._instant(job["created_at"])
+            self._instant(row["created_at"])
+            self._descriptors.validate(command)
+            self._matches_identity(command, identity)
+            if (
+                command.binding.intent_id != intent
+                or self._uuid(task["id"]) != identity.task_id
+                or self._uuid(task["user_id"]) != identity.account_id
+                or type(task["input_version"]) is not int
+                or type(task["input_ciphertext"]) is not str
+            ):
+                raise ResourceError("invalid_snapshot")
+            for key in ("id", "user_id", "conversation_id", "result_message_id"):
+                task[key] = self._uuid(task[key])
+            ordinal = raw["next_output_ordinal"]
+            if type(ordinal) is not int or not 0 <= ordinal <= 2**31 - 1:
+                raise ResourceError("invalid_snapshot")
+            if (
+                type(raw["namespace"]) is not dict
+                or type(raw["output_references"]) is not list
+                or len(raw["output_references"]) > 1
+            ):
+                raise ResourceError("invalid_snapshot")
+            if raw["publication"] is None:
+                if raw["version"] is not None or raw["output_references"]:
+                    raise ResourceError("invalid_snapshot")
+            elif (
+                type(raw["publication"]) is not dict
+                or type(raw["version"]) is not dict
+                or len(raw["output_references"]) != 1
+            ):
+                raise ResourceError("invalid_snapshot")
+            raw["_command"] = command
+            return raw
+        except (KeyError, TypeError, ValueError, RecursionError, ReservationError):
+            raise ResourceError("invalid_snapshot") from None
+
+    def _existing(self, observed: dict[str, Any], stored: StoredBinding) -> Publication:
+        command, task = observed["_command"], observed["task"]
+        version, pub, refs = (
+            observed["version"],
+            observed["publication"],
+            observed["output_references"],
+        )
+        if (
+            type(version) is not dict
+            or type(pub) is not dict
+            or len(refs) != 1
+            or type(refs[0]) is not dict
+        ):
+            raise ResourceError("invalid_snapshot")
+        ref = refs[0]
+        binding = command.binding
+        common = {
+            "account_id": str(command.job.account_id),
+            "resource_id": str(binding.resource_id),
+            "version_id": str(binding.version_id),
+            "generation": command.job.account_generation,
+        }
+        if (
+            set(version)
+            != set(common)
+            | {
+                "representation",
+                "kind",
+                "mime",
+                "measured_bytes",
+                "metadata_ciphertext",
+                "created_at",
+                "insertion_ordinal",
+            }
+            or set(pub)
+            != set(common)
+            | {
+                "namespace",
+                "intent_id",
+                "source_kind",
+                "representation",
+                "measured_bytes",
+                "binding_ciphertext",
+                "insertion_ordinal",
+                "committed_at",
+            }
+            or set(ref)
+            != set(common)
+            | {
+                "reference_id",
+                "role",
+                "ordinal",
+                "task_id",
+                "conversation_id",
+                "message_id",
+                "job_id",
+                "provenance_ciphertext",
+                "created_at",
+            }
+            or any(
+                type(row[k]) is not type(v) or row[k] != v
+                for row in (version, pub, ref)
+                for k, v in common.items()
+            )
+            or version["representation"] != "generated_file"
+            or version["kind"] != "file"
+            or version["mime"] != "text/csv"
+            or pub["representation"] != "generated_file"
+            or pub["source_kind"] != "output"
+            or pub["namespace"] != stored.namespace
+            or pub["intent_id"] != str(binding.intent_id)
+            or any(
+                type(row["measured_bytes"]) is not int
+                or row["measured_bytes"] != stored.measured_bytes
+                for row in (version, pub)
+            )
+            or type(version["insertion_ordinal"]) is not int
+            or version["insertion_ordinal"] < 1
+            or type(pub["insertion_ordinal"]) is not int
+            or pub["insertion_ordinal"] != version["insertion_ordinal"]
+            or ref["role"] != "output"
+            or type(ref["ordinal"]) is not int
+            or ref["ordinal"] < 0
+            or ref["task_id"] != str(command.job.task_id)
+            or ref["conversation_id"] != str(task["conversation_id"])
+            or ref["message_id"] != str(task["result_message_id"])
+            or ref["job_id"] != str(command.job.job_id)
+        ):
+            raise ResourceError("invalid_snapshot")
+        self._instant(pub["committed_at"])
+        self._instant(ref["created_at"])
+        if (
+            not self._record_matches(
+                version["metadata_ciphertext"],
+                self._metadata(command, self._descriptors.decode(command)),
+            )
+            or not self._record_matches(
+                pub["binding_ciphertext"], self._binding_fields(stored, "output")
+            )
+            or not self._record_matches(
+                ref["provenance_ciphertext"],
+                self._provenance(
+                    command,
+                    task["conversation_id"],
+                    task["result_message_id"],
+                    ref["ordinal"],
+                    False,
+                ),
+            )
+        ):
+            raise ResourceError("conflict")
+        return Publication(
+            command.binding.resource_id,
+            command.binding.version_id,
+            self._uuid(ref["reference_id"]),
+            self._instant(version["created_at"]),
+        )
+
+    async def _publish_reserved(
+        self, conn: Any, identity: AttemptIdentity, intent: UUID, content: bytes
+    ) -> Publication:
+        self._owned_connection(conn)
+        if type(content) is not bytes or len(content) > MAX_CONTENT_BYTES:
+            raise ResourceError("invalid")
+        observed = await self._reserved_snapshot(conn, identity, intent)
+        if observed["publication"] is None:
+            observed = await self._reserved_snapshot(conn, identity, intent, admit=True)
+        command = observed["_command"]
+        namespace = observed["namespace"]["namespace"]
+        stored = self._stored(command, namespace)
+        if (
+            len(content) != stored.measured_bytes
+            or hashlib.sha256(content).hexdigest() != stored.sha256
+        ):
+            raise ResourceError("conflict")
+        # Full actual J1 scan, then one bounded SQL snapshot. The scanner has
+        # closed all journal locks/descriptors before the database call.
+        view = await scan_namespace_journal(self._journal_path, self._journal_id)
+        inventory = await read_output_inventory(
+            conn, self._journal_id, record_limit=self._inventory_limit
+        )
+        states = namespace_states(self._journal_id, view, inventory)
+        own = [
+            r
+            for r in inventory.namespaces
+            if r.namespace == namespace
+            and r.account_id == identity.account_id
+            and r.generation == identity.generation
+        ]
+        if len(own) != 1 or states.get(namespace) != "ready":
+            raise ResourceError("namespace")
+        projected = own[0]
+        expected_namespace = {
+            "namespace": projected.namespace,
+            "account_id": str(projected.account_id),
+            "generation": projected.generation,
+            "journal_id": str(projected.journal_id),
+            "birth_seq": projected.birth_seq,
+            "birth_event_id": str(projected.birth_event_id),
+            "birth_digest": "\\x" + projected.birth_digest.hex(),
+            "command_digest": "\\x" + projected.command_digest.hex(),
+            "state": projected.state,
+        }
+        if _canonical(observed["namespace"]) != _canonical(expected_namespace):
+            raise ResourceError("namespace")
+        if observed["publication"] is not None:
+            result = self._existing(observed, stored)
+            await _io(lambda: read_verified(self._root, self._envelope, stored))
+            return result  # Exact observation only, never missing-phase completion.
+        await _io(lambda: _topology(self._root, namespace, create=False))
+        await _io(
+            lambda: prepare_verified(
+                self._root, self._envelope, stored, content, require_fresh=True
+            )
+        )
+        packet = {
+            "reference_id": str(uuid4()),
+            "metadata_ciphertext": self._seal(
+                self._metadata(command, self._descriptors.decode(command))
+            ),
+            "binding_ciphertext": self._seal(self._binding_fields(stored, "output")),
+            "provenance_ciphertext": self._seal(
+                self._provenance(
+                    command,
+                    observed["task"]["conversation_id"],
+                    observed["task"]["result_message_id"],
+                    observed["next_output_ordinal"],
+                    False,
+                )
+            ),
+        }
+        payload = await conn.fetchval(
+            "SELECT public.resource_output_catalog_stage($1::pg_catalog.jsonb,$2::pg_catalog.uuid,$3::pg_catalog.jsonb)",
+            identity.wire(),
+            intent,
+            json.dumps(packet),
+        )
+        try:
+            result = json.loads(payload, object_pairs_hook=_pairs)
+            if (
+                set(result) != {"version_id", "reference_id", "created_at", "inserted", "outcome"}
+                or result["outcome"] != "pending_commit"
+                or result["inserted"] is not True
+                or self._uuid(result["version_id"]) != command.binding.version_id
+                or self._uuid(result["reference_id"]) != UUID(packet["reference_id"])
+            ):
+                raise ResourceError("invalid_snapshot")
+            return Publication(
+                command.binding.resource_id,
+                command.binding.version_id,
+                UUID(packet["reference_id"]),
+                self._instant(result["created_at"]),
+            )
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise ResourceError("invalid_snapshot") from None

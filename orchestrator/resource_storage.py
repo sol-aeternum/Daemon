@@ -185,16 +185,25 @@ def prepare_verified(
     codec: ArtifactEnvelopeCodec,
     binding: StoredBinding,
     content: bytes,
+    *,
+    require_fresh: bool = False,
 ) -> None:
     binding.validate()
     if (
         type(content) is not bytes
+        or type(require_fresh) is not bool
         or len(content) != binding.measured_bytes
         or hashlib.sha256(content).hexdigest() != binding.sha256
     ):
         raise StorageError("invalid")
     try:
-        prepare_artifact(root, codec, binding.artifact, binding.namespace, binding.intent, content)
+        staged = prepare_artifact(
+            root, codec, binding.artifact, binding.namespace, binding.intent, content
+        )
+        if require_fresh and staged.outcome != "prepared_uncommitted":
+            # An existing uncommitted stage is evidence, never permission to
+            # complete a previously interrupted catalog phase.
+            raise StorageError("needs_reconciliation")
     except ArtifactStageError:
         raise StorageError() from None
     # Duplicate staging is merely an observation: authenticate and sync again.

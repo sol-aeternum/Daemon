@@ -82,3 +82,11 @@ namespace/marker snapshot and shares native J1 parity validation
 file effect or repair and is not runtime-installed. Trusted output/file and append
 collaborators, authenticated local transport, artifact restore/lifecycle evidence
 and full execution composition remain outstanding. No live acceptance is claimed.
+
+Source continuation on the reviewed 060 dependency: the uncalled
+[reserved CSV publisher](RESOURCE_RESERVED_OUTPUT_PUBLISHER.md) joins H ownership,
+original sealed task authority, restricted P catalog staging and verified files.
+It handles only an already-reserved first output, with no new runtime caller,
+reservation, append, presentation or transport. Observation-only remains in force;
+artifact restore/lifecycle evidence, split collaborators and authenticated complete
+execution composition still gate launch. No deployed qualification is claimed.

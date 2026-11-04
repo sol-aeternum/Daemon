@@ -1,5 +1,6 @@
 """Real POSIX encrypted copy/read/repair faults, no caller authority oracle."""
 
+import ast
 import errno
 import hashlib
 import multiprocessing
@@ -202,6 +203,40 @@ def test_owned_process_death_during_repair_releases_lock_and_keeps_private(objec
     assert storage.read_verified(root, codec, binding) == content
 
 
+def _registry_references_allowed(path: str, source: str) -> bool:
+    """One exact static H import, not another admitted runtime module."""
+    if "resource_storage" in source:
+        return False
+    if path == "orchestrator/services/restore_history/effects.py" and "resource_store" in source:
+        if source.count("resource_store") != 1:
+            return False
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return False
+        imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "orchestrator.resource_store"
+        ]
+        if len(imports) != 1:
+            return False
+        node = imports[0]
+        if (
+            node not in tree.body
+            or node.level != 0
+            or len(node.names) != 2
+            or {name.name for name in node.names} != {"ReservedOutputPublisher", "Publication"}
+            or any(name.asname is not None for name in node.names)
+        ):
+            return False
+        segment = ast.get_source_segment(source, node)
+        if segment is None or source.count(segment) != 1:
+            return False
+        source = source.replace(segment, "", 1)
+    return "resource_store" not in source and "resource_storage" not in source
+
+
 def test_registry_modules_not_imported_by_default_runtime():
     root = Path(__file__).resolve().parents[1]
     allowed = {
@@ -217,5 +252,98 @@ def test_registry_modules_not_imported_by_default_runtime():
     for folder in ("orchestrator", "providers"):
         for path in (root / folder).rglob("*.py"):
             if path.relative_to(root).as_posix() not in allowed:
-                assert "resource_store" not in path.read_text(), path
-                assert "resource_storage" not in path.read_text(), path
+                assert _registry_references_allowed(
+                    path.relative_to(root).as_posix(), path.read_text()
+                ), path
+
+
+_H_OUTPUT_OWNER = "orchestrator/services/restore_history/effects.py"
+_OUTPUT_TYPES = "from orchestrator.resource_store import ReservedOutputPublisher, Publication\n"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _OUTPUT_TYPES,
+        "from orchestrator.resource_store import (\n Publication,\n ReservedOutputPublisher,\n)\n",
+    ],
+)
+def test_output_type_import_exception_is_exact_and_does_not_admit_module(source):
+    from tests.inference_composition_support import ADMITTED, composition_violations
+
+    assert _H_OUTPUT_OWNER not in ADMITTED
+    assert _registry_references_allowed(_H_OUTPUT_OWNER, source)
+    assert not composition_violations({_H_OUTPUT_OWNER: source})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from orchestrator.resource_store import ReservedOutputPublisher\n",
+        "from orchestrator.resource_store import Publication\n",
+        _OUTPUT_TYPES.replace("Publication", "ResourceStore"),
+        _OUTPUT_TYPES.rstrip() + ", ResourceStore\n",
+        _OUTPUT_TYPES.rstrip() + ", NamespaceController\n",
+        _OUTPUT_TYPES.replace("Publication", "Publication as P"),
+        _OUTPUT_TYPES.replace("ReservedOutputPublisher", "ReservedOutputPublisher as P"),
+        _OUTPUT_TYPES.replace("Publication", "ReservedOutputPublisher"),
+        "from orchestrator.resource_store import *\n",
+        "import orchestrator.resource_store as resources\n",
+        "from orchestrator import resource_store\n",
+        "import importlib\nimportlib.import_module('orchestrator.resource_store')\n",
+        "__import__('orchestrator.resource_store')\n",
+        _OUTPUT_TYPES + "other = 'orchestrator.resource_store'\n",
+        _OUTPUT_TYPES + "import orchestrator.resource_storage\n",
+        _OUTPUT_TYPES + _OUTPUT_TYPES,
+        _OUTPUT_TYPES.replace("from orchestrator", "from .orchestrator"),
+        "def install():\n " + _OUTPUT_TYPES,
+        "if TYPE_CHECKING:\n " + _OUTPUT_TYPES,
+    ],
+)
+def test_output_import_exception_rejects_extra_alias_dynamic_and_nested_access(source):
+    assert not _registry_references_allowed(_H_OUTPUT_OWNER, source)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "orchestrator/main.py",
+        "orchestrator/db.py",
+        "orchestrator/worker/worker.py",
+        "orchestrator/tasks/runner.py",
+        "orchestrator/services/restore_history/other.py",
+        "providers/other.py",
+    ],
+)
+def test_output_type_exception_does_not_admit_other_hosts(path):
+    assert not _registry_references_allowed(path, _OUTPUT_TYPES)
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        "ReservedOutputPublisher(pool,root,path,identity,key,inventory_limit=1,snapshot_byte_limit=1)",
+        "P = ReservedOutputPublisher\nP(pool,root,path,identity,key,inventory_limit=1,snapshot_byte_limit=1)",
+        "compose(inference_recovery=collaborator)",
+        "store._inference = collaborator",
+        "state.task_composition = bundle",
+        "state.history_runtime = owner",
+        "qualify_task_composition(enabled=True)",
+    ],
+)
+def test_output_type_import_never_admits_construction_injection_or_activation(effect):
+    from tests.inference_composition_support import composition_violations
+
+    source = _OUTPUT_TYPES + effect
+    assert _registry_references_allowed(_H_OUTPUT_OWNER, source)
+    assert composition_violations({_H_OUTPUT_OWNER: source})
+
+
+@pytest.mark.parametrize("comment", ["resource_storage", "resource_store"])
+def test_output_import_exception_does_not_hide_other_reference_tokens_inside_import(comment):
+    source = (
+        "from orchestrator.resource_store import (\n ReservedOutputPublisher, # "
+        + comment
+        + "\n Publication,\n)\n"
+    )
+    assert not _registry_references_allowed(_H_OUTPUT_OWNER, source)

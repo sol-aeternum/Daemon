@@ -35,6 +35,17 @@ from orchestrator.services.deletion_journal.namespace_candidate import (
 )
 
 
+async def scan_namespace_journal(journal_path: Path, journal_id: UUID) -> MixedView:
+    def scan() -> MixedView:
+        with MixedJournal(journal_path, journal_id) as journal:
+            return journal.verify()
+
+    view = await _io(scan)
+    if view.container_version != 2:
+        raise JournalError("recovery_required")
+    return view
+
+
 def namespace_states(
     expected_journal: UUID, view: MixedView, inventory: NamespaceInventory
 ) -> dict[str, str]:
@@ -190,14 +201,7 @@ class NamespaceController:
                 raise
 
     async def _scan(self) -> MixedView:
-        def scan() -> MixedView:
-            with MixedJournal(self._journal_path, self._journal_id) as journal:
-                return journal.verify()
-
-        view = await _io(scan)
-        if view.container_version != 2:
-            raise JournalError("recovery_required")
-        return view
+        return await scan_namespace_journal(self._journal_path, self._journal_id)
 
     async def _inventory(self, conn: Connection, view: MixedView) -> dict[str, str]:
         binding = await conn.fetchval(
