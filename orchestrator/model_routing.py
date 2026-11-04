@@ -61,7 +61,7 @@ SUPPORTED_MODEL_ROUTING_VERSION: Final[int] = 1
 
 #: The workload profiles a caller may select. Every one of them must be configured.
 ROUTING_PROFILES: Final[frozenset[str]] = frozenset(
-    {"routine", "reasoning", "research", "background", "council"}
+    {"routine", "reasoning", "research", "background", "council", "memory_decomposition"}
 )
 
 #: Namespace prefix Daemon uses for OpenRouter model ids. Stripped before the

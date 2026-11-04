@@ -98,6 +98,12 @@ def routing_document(
     declared = models or ["openrouter/test/placeholder"]
     profiles: list[dict[str, Any]] = [
         {
+            "profile": "memory_decomposition",
+            "min_output_tokens": min_output_tokens,
+            "allow_premium": False,
+            "groups": [{"group": "cheap", "models": list(declared)}],
+        },
+        {
             "profile": "routine",
             "min_output_tokens": min_output_tokens,
             "allow_premium": False,

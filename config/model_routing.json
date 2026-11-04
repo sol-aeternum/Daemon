@@ -31,10 +31,11 @@
       "model": "openrouter/openai/gpt-6-luna",
       "sampling_parameters": ["seed"],
       "developer": "openai",
-      "suitability": ["background", "council", "research", "routine"],
+      "suitability": ["background", "council", "research", "routine", "memory_decomposition"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low", "none"],
       "parameter_presets": {
         "default": {"reasoning_effort": "medium"},
+        "memory_decomposition": {"reasoning_effort": "none"},
         "council": {"reasoning_effort": "medium", "include_reasoning": true}
       },
       "notes": "Provisional economical candidate and the single accepted automatic candidate for the routine, background and research profiles, at its medium default effort. Medium was approved on 3 October 2026 after the B3 evaluation (docs/REASONING_EVAL_PROTOCOL.md): it passed the pre-registered rule on the test split, which could not separate it from low; its gain over low rests on development and validation tool and planning cases. The earlier low placement rested on 16/16 human-acceptable held-out answers inside one narrow bounded screen. Neither is evidence for memory helpers, general reasoning, coding or demanding work, and the council preset and the reasoning/council placements are unchanged."
@@ -127,6 +128,13 @@
     }
   ],
   "profiles": [
+    {
+      "profile": "memory_decomposition",
+      "min_output_tokens": 256,
+      "allow_premium": false,
+      "groups": [{"group": "luna", "models": ["openrouter/openai/gpt-6-luna"]}],
+      "notes": "M1 proposal only, reasoning off. The caller must pin the separately unapproved decomposition route; this profile grants no dispatch permission."
+    },
     {
       "profile": "routine",
       "min_output_tokens": 1024,
