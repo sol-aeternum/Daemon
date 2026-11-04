@@ -56,6 +56,9 @@ from orchestrator.memory.injection import (
 )
 from orchestrator.memory.retrieval import RECENCY_REFERENCE_TIME, retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.multi_query import SubqueryProvider
+from orchestrator.memory.embedding import EmbeddingVectorResult
+from collections.abc import Mapping
 from tests.longmemeval.ingest import DATASET_PATH as DEFAULT_DATASET_PATH
 from tests.longmemeval.official_judge import (
     OFFICIAL_MAX_TOKENS,
@@ -662,6 +665,9 @@ async def build_parity_memory_context(
     allowed_source_conversation_ids: list[uuid.UUID] | None,
     log_retrieval: bool = False,
     query_reference_time: datetime | None = None,
+    subquery_provider: SubqueryProvider | None = None,
+    multi_query_merge: str = "additive",
+    pinned_query_embeddings: Mapping[str, EmbeddingVectorResult] | None = None,
 ) -> tuple[str, MemoryContextInputs]:
     """Gather and render the memory block exactly as production does for a turn.
 
@@ -669,6 +675,16 @@ async def build_parity_memory_context(
     trust recording and access touches are disabled. ``query_reference_time``
     (historical-clock mode only) anchors temporal query windows.
     """
+    pinned_kwargs: dict[str, Any] = {}
+    if subquery_provider is not None:
+        pinned_kwargs.update(
+            subquery_provider=subquery_provider,
+            evaluation=True,
+            evaluation_merge=multi_query_merge,
+            evaluation_embeddings=pinned_query_embeddings,
+        )
+    elif multi_query_merge != "additive" or pinned_query_embeddings is not None:
+        raise ValueError("Pinned evaluation controls require a SubqueryProvider")
     inputs = await gather_memory_context_inputs(
         store,
         user_id=user_id,
@@ -679,6 +695,7 @@ async def build_parity_memory_context(
         log_retrieval=log_retrieval,
         retrieval_triggered_by=PARITY_RETRIEVAL_TRIGGER,
         query_reference_time=query_reference_time,
+        **pinned_kwargs,
     )
     return render_memory_context(inputs), inputs
 

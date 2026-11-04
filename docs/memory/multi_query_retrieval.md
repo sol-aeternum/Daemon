@@ -268,9 +268,20 @@ heuristic against the five spent omission cases now.
 | Item | Artifact | Status / acceptance |
 |---|---|---|
 | B1 | This design | Written first; no runtime approval implied |
-| Renderer seam | `injection.py`, `exposure.py`, offline tests | Opt-in/default-preserving; test evidence reported separately |
-| B2 | `multi_query.py`, settings, gather, policy, logs | Authorised under adjudicated S1–S6; final verification required |
-| B3 | Parity injection and exposure gate | Not implemented; follows B2 |
+| Renderer seam | `injection.py`, `exposure.py`, offline tests | Implemented: shared width/row helpers, unchanged token budget and renderer signature |
+| B2 | `multi_query.py`, settings, gather, policy, logs | Implemented under S1–S6 and the wrapper-effects amendment; enabled gather is read-only, wrapper effects use its actual rendered block; no route approved |
+| B3 | `build_parity_memory_context`, `exposure.measure_multi_query_exposure` | Implemented: optional provider pin, frozen cached-vector exposure entry, additive/evaluation-only round-robin; synthetic tests, no live run |
+
+The B3 exposure entry refuses any provider except the exact frozen
+`PinnedSubqueryProvider` class and requires original/component vector pins before
+reading the supplied store. Cached-vector controls are scoped to that evaluation
+call; no global embedding override or new provider is used. Original and component
+retrieval both disable additional embedding dispatch. The entry measures per-question
+exposure, distractors and duplicate occupancy through production gather/render and
+the existing exposure metrics; it sets no acceptance threshold and authorises no
+campaign. The harness's omitted-provider call retains its existing call contract.
+Final gate evidence is reported separately; implementation is not a claim of
+live qualification or improved answer quality.
 
 No live evaluation, holdout access, provider spend or benchmark DB connection
 is part of M1. Local unit-test DB fixtures are permitted; no route is approved.

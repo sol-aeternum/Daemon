@@ -9,10 +9,16 @@ exact duplicates. Neither rule claims semantic equivalence.
 from __future__ import annotations
 
 import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from orchestrator.memory import injection
+from orchestrator.memory.embedding import EmbeddingVectorResult
+from orchestrator.memory.multi_query import SubqueryProvider, validate_subqueries
+from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.injection import (
     _section_counts as _section_counts,
     _eligible_l0 as _eligible_l0,
@@ -38,6 +44,107 @@ STOPWORDS = frozenset(
     "from with by and or but that this these those about as if than then previous "
     "chat conversation tell please mention mentioned user".split()
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedSubqueryProvider:
+    """Frozen evaluation input, not an inference client or an acceptance result."""
+
+    subqueries: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.subqueries) is not tuple:
+            raise ValueError("Pinned subqueries must be a tuple")
+        validate_subqueries(list(self.subqueries), "")
+
+    async def get_subqueries(
+        self, message: str, *, reference_time: datetime, deadline: float
+    ) -> list[str]:
+        return validate_subqueries(list(self.subqueries), message)
+
+
+async def measure_multi_query_exposure(
+    store: MemoryStore,
+    *,
+    user_id: uuid.UUID,
+    question: str,
+    provider: SubqueryProvider,
+    query_embeddings: Mapping[str, EmbeddingVectorResult],
+    reference_time: datetime,
+    allowed_source_conversation_ids: list[uuid.UUID] | None,
+    target_ids: Sequence[str],
+    gold_conversation_ids: Sequence[str],
+    source_conversations: Mapping[str, str | None],
+    merge: str = "additive",
+    max_tokens: int = injection.DEFAULT_MAX_TOKENS,
+) -> dict[str, Any]:
+    """Offline per-question gate input, through production gather and exposure.
+
+    Refuse live decomposition providers (including subclasses overriding the
+    frozen provider), and require every original/component vector up front.
+    This opens no database connection; the caller supplies its scoped store.
+    It grants no campaign, threshold, ingestion or route approval authority.
+    """
+    if type(provider) is not PinnedSubqueryProvider:
+        raise ValueError("Exposure requires a frozen PinnedSubqueryProvider, never live inference")
+    if merge not in {"additive", "round_robin"}:
+        raise ValueError("Invalid exposure merge")
+    query = injection._normalize_content(question)
+    components = validate_subqueries(list(provider.subqueries), query)
+    vectors = dict(query_embeddings)
+    for text in [query, *components]:
+        result = vectors.get(text)
+        if not isinstance(result, EmbeddingVectorResult) or not result.embedding:
+            raise ValueError("Exposure refuses missing cached query embeddings")
+    baseline = await injection.gather_memory_context_inputs(
+        store,
+        user_id=user_id,
+        pipeline="cloud",
+        query_text=query,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
+        record_side_effects=False,
+        query_reference_time=reference_time,
+        subquery_provider=PinnedSubqueryProvider(()),
+        evaluation=True,
+        evaluation_merge="additive",
+        evaluation_embeddings=vectors,
+    )
+    candidate = await injection.gather_memory_context_inputs(
+        store,
+        user_id=user_id,
+        pipeline="cloud",
+        query_text=query,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
+        record_side_effects=False,
+        query_reference_time=reference_time,
+        subquery_provider=provider,
+        evaluation=True,
+        evaluation_merge=merge,
+        evaluation_embeddings=vectors,
+    )
+
+    def metrics(inputs: injection.MemoryContextInputs) -> dict[str, Any]:
+        return measure(
+            inputs,
+            target_ids=target_ids,
+            gold_conversation_ids=gold_conversation_ids,
+            source_conversations=source_conversations,
+            ranking=inputs.retrieved,
+            max_tokens=max_tokens,
+        )
+
+    before, after = metrics(baseline), metrics(candidate)
+    rows = rendered_memory_rows(candidate, injection.render_memory_context(candidate, max_tokens))
+    original = set(before["rendered_ids"])
+    added = [row for row in rows if str(row["id"]) not in original]
+    return {
+        "baseline": before,
+        "candidate": after,
+        "merge": merge,
+        "subquery_count": len(components),
+        "distractors": distractor_counts(question, added),
+        "exposure_regression": before["target_exposed"] and not after["target_exposed"],
+    }
 
 
 def content_tokens(text: str) -> set[str]:

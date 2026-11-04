@@ -8,12 +8,14 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Any, cast
+from collections.abc import Mapping
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.config import get_settings
 from orchestrator.memory import provenance
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
+    EmbeddingVectorResult,
     embed_query_with_metadata,
     embed_queries_with_metadata,
     get_selected_embedding_route_id,
@@ -315,6 +317,8 @@ async def gather_memory_context_inputs(
     query_reference_time: datetime | None = None,
     subquery_provider: SubqueryProvider | None = None,
     evaluation: bool = False,
+    evaluation_merge: str | None = None,
+    evaluation_embeddings: Mapping[str, EmbeddingVectorResult] | None = None,
 ) -> MemoryContextInputs:
     """Enabled gathering is read-only; the production wrapper owns rendered effects.
 
@@ -334,10 +338,17 @@ async def gather_memory_context_inputs(
         query_reference_time=query_reference_time,
     )
     settings = get_settings()
-    if not settings.memory_multi_query_enabled:
+    if evaluation and subquery_provider is None:
+        raise ValueError("Evaluation requires pinned subqueries")
+    if not evaluation and (evaluation_merge is not None or evaluation_embeddings is not None):
+        raise ValueError("Pinned evaluation controls are evaluation-only")
+    if not settings.memory_multi_query_enabled and not evaluation:
         return await _gather_single_query_inputs(store, **kwargs)
+    merge_mode = evaluation_merge or settings.memory_multi_query_merge
+    if merge_mode not in {"additive", "round_robin"}:
+        raise ValueError("Invalid memory merge configuration")
     # This guard is before task creation or any new outbound work.
-    if settings.memory_multi_query_merge == "round_robin" and not evaluation:
+    if merge_mode == "round_robin" and not evaluation:
         raise ValueError("Round-robin memory merge is evaluation-only")
     if query_text is None:
         messages = (
@@ -358,6 +369,11 @@ async def gather_memory_context_inputs(
         )
     else:
         baseline_query = latest_user = _normalize_content(query_text)
+    pinned_query = None
+    if evaluation_embeddings is not None and baseline_query:
+        pinned_query = evaluation_embeddings.get(baseline_query)
+        if pinned_query is None:
+            raise ValueError("Uncached evaluation query refused")
     reference = query_reference_time or RECENCY_REFERENCE_TIME.get() or datetime.now(timezone.utc)
     reference = (
         reference.replace(tzinfo=timezone.utc)
@@ -371,7 +387,13 @@ async def gather_memory_context_inputs(
     tasks: list[asyncio.Task[Any]] = []
     try:
         baseline_task = asyncio.create_task(
-            _gather_single_query_inputs(store, **kwargs, query_role="original", owned_tasks=tasks)
+            _gather_single_query_inputs(
+                store,
+                **kwargs,
+                query_role="original",
+                owned_tasks=tasks,
+                evaluation_embedding=pinned_query,
+            )
         )
         tasks.append(baseline_task)
         components_task = None
@@ -398,9 +420,12 @@ async def gather_memory_context_inputs(
             try:
                 started = monotonic()
                 try:
-                    vectors = await asyncio.wait_for(
-                        embed_queries_with_metadata(components), timeout=8.0
-                    )
+                    if evaluation_embeddings is not None:
+                        vectors = [evaluation_embeddings[text] for text in components]
+                    else:
+                        vectors = await asyncio.wait_for(
+                            embed_queries_with_metadata(components), timeout=8.0
+                        )
                 finally:
                     _phase_latency("embedding", started)
                 if len(vectors) != len(components):
@@ -437,7 +462,7 @@ async def gather_memory_context_inputs(
                     inputs.retrieved,
                     arms,
                     quota=settings.memory_subquery_quota,
-                    mode=settings.memory_multi_query_merge,
+                    mode=merge_mode,
                     evaluation=evaluation,
                 )
                 existing = {str(row.get("id")) for row in inputs.retrieved}
@@ -546,6 +571,7 @@ async def _gather_single_query_inputs(
     query_reference_time: datetime | None = None,
     query_role: str | None = None,
     owned_tasks: list[asyncio.Task[Any]] | None = None,
+    evaluation_embedding: EmbeddingVectorResult | None = None,
 ) -> MemoryContextInputs:
     """Read L0 memories, retrieved memories and summaries for one prompt.
 
@@ -594,9 +620,12 @@ async def _gather_single_query_inputs(
                     raise EmbeddingConfigurationError(
                         "Local or unknown-locality conversation cannot be cloud embedded"
                     )
-                query_result = await asyncio.wait_for(
-                    embed_query_with_metadata(query_text), timeout=8.0
-                )
+                if evaluation_embedding is not None:
+                    query_result = evaluation_embedding
+                else:
+                    query_result = await asyncio.wait_for(
+                        embed_query_with_metadata(query_text), timeout=8.0
+                    )
             except EmbeddingConfigurationError:
                 query_result = None
             retrieval_mode = (
@@ -605,6 +634,8 @@ async def _gather_single_query_inputs(
             retrieval_kwargs: dict[str, Any] = {}
             if query_role is not None:
                 retrieval_kwargs["query_role"] = query_role
+            if evaluation_embedding is not None:
+                retrieval_kwargs["allow_query_embedding"] = False
             if not record_side_effects:
                 retrieval_kwargs["touch_results"] = False
             if allowed_source_conversation_ids is not None:

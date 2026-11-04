@@ -350,6 +350,14 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 `assemble_system_prompt()` then prepends DAEMON_SYSTEM_PROMPT, adds personality/preferences, appends the memory block, and ensures the memory tools reminder is present.
 
+The default-off M1 multi-query path adds bounded component retrieval only for an
+exact cloud pipeline, through a separately pinned, unapproved decomposition
+route. Enabled gather is read-only; the async production wrapper records touches
+and trust once after its actual render. The item-limit override preserves the
+existing token budget. Component log rows store an empty query and no vector,
+with a nullable query role; original-query plaintext is pre-existing (#663).
+See [the design and offline evaluation gates](docs/memory/multi_query_retrieval.md).
+
 ### 10. Queued entity projection
 
 Extraction's successful and failed-suffix entity enqueues carry its original

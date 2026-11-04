@@ -24,7 +24,14 @@ measured task quality. The supplied inference policy still approves no routes.
 Public catalog checks on 27 September 2026 inform the candidate pools; they do
 not certify account privacy settings or endpoint hosting location.
 
-Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`.
+Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`, `memory_decomposition`.
+
+`memory_decomposition` is a default-off M1 helper, not a chat candidate. Its
+profile-specific Luna preset is `reasoning_effort: none`; background/extraction
+stays medium. Its caller additionally pins `memory-decomposition-luna-azure-eu`,
+an unapproved proposal in both shipped policies, never the approved general Luna
+route. No existing profile candidates or route approvals change. See
+[the M1 design](memory/multi_query_retrieval.md).
 
 ### Operator-selected Sol 6.1 high — 30 September 2026
 
