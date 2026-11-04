@@ -13,6 +13,10 @@ reproducible from the IDs and the seed alone. Arm files are written with
 ``open("x")`` and never overwritten; the manifest carries IDs plus numbers, no
 question, session or answer text. Nothing here calls a provider, opens a
 database, touches the network or reads the benchmark dataset directory.
+
+The runtime helpers at the bottom expose the SQL text, file readers and stdlib
+resource sampling the driver injects into ``run_arm``; the driver still owns the
+connection, the child process and the captured log.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import shutil
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -361,6 +367,8 @@ def main(argv: Sequence[str] | None = None) -> None:
 STOP_SPEND: Final[str] = "spend_cap"
 STOP_RATE_LIMIT: Final[str] = "rate_limit_loop"
 STOP_EXTRACTION: Final[str] = "extraction_failed"
+# A reader raised, so no gate can be evaluated: hard stop, never a silent zero.
+STOP_GUARD_FAILED: Final[str] = "guard_failed"
 # Hard gate: an arm with at least one failed session and >= 1% failures stops.
 FAILED_RATE_GATE: Final[float] = 0.01
 
@@ -375,27 +383,63 @@ class ProcessHandle(Protocol):
     def wait(self) -> int: ...
 
 
-def count_rate_limits(log_lines: Iterable[str]) -> dict[str, int]:
-    """Count ``attempt_outcome`` lines by ``failure_category``.
+ROUTING_EVENT_MARKER: Final[str] = "routing_event "
 
-    Only JSON object lines carrying ``"event": "attempt_outcome"`` are read;
-    every other line (junk, partial writes, other events) is ignored. The result
-    is a plain ``{category: count}`` mapping and carries no message text.
+
+def _routing_records(log_lines: Iterable[str]) -> list[Mapping[str, Any]]:
+    """JSON objects that follow a ``routing_event `` marker on a log line.
+
+    ``orchestrator/routing_log.py`` writes ``logger.info("%s %s", PREFIX, json)``,
+    so a real line is ``<log prefix>routing_event {"event": ...}``. The record is
+    the JSON object after the marker anywhere in the line; junk, partial writes
+    and lines from other loggers are ignored.
     """
-    counts: Counter[str] = Counter()
+    records: list[Mapping[str, Any]] = []
     for line in log_lines:
         if not isinstance(line, str):
             continue
+        index = line.find(ROUTING_EVENT_MARKER)
+        if index < 0:
+            continue
         try:
-            payload = json.loads(line)
+            payload = json.loads(line[index + len(ROUTING_EVENT_MARKER) :])
         except ValueError:
             continue
-        if not isinstance(payload, dict) or payload.get("event") != "attempt_outcome":
-            continue
-        category = payload.get("failure_category")
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def _attempt_outcome_records(log_lines: Iterable[str]) -> list[Mapping[str, Any]]:
+    return [
+        record for record in _routing_records(log_lines) if record.get("event") == "attempt_outcome"
+    ]
+
+
+def count_rate_limits(log_lines: Iterable[str]) -> dict[str, int]:
+    """Count ``attempt_outcome`` routing events by ``failure_category``.
+
+    Only ``routing_event`` JSON objects carrying ``"event": "attempt_outcome"``
+    are read; every other line (junk, partial writes, other events) is ignored.
+    The result is a plain ``{category: count}`` mapping and carries no message
+    text.
+    """
+    counts: Counter[str] = Counter()
+    for record in _attempt_outcome_records(log_lines):
+        category = record.get("failure_category")
         if isinstance(category, str) and category:
             counts[category] += 1
     return dict(sorted(counts.items()))
+
+
+def log_lines_seen_routing_events(lines: Iterable[str]) -> int:
+    """How many routing records the captured log actually carried.
+
+    A zero ``rate_limited`` count is only evidence of no 429s when this is
+    non-zero: with no routing events the log source was empty or misconfigured,
+    so the count is unknown rather than zero.
+    """
+    return len(_routing_records(lines))
 
 
 def _ingest_results(checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -406,6 +450,38 @@ def _ingest_results(checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
     return results
 
 
+def _pending_sessions(checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``phases.ingest.pending_sessions``; absent means nothing is in flight."""
+    ingest = checkpoint["phases"]["ingest"]
+    pending = ingest.get("pending_sessions", {})
+    if not isinstance(pending, Mapping):
+        raise ValueError("checkpoint pending sessions must be a mapping")
+    return pending
+
+
+def _pending_failures(pending: Mapping[str, Any], question_id: str) -> list[str]:
+    """Session IDs of a question's pending entries that recorded a ``failure``.
+
+    ``fact_harness.py:1701-1755`` writes ``pending[question_id] = {corpus_key,
+    started_at, state_fingerprint}`` before a session is ingested and adds a
+    ``failure`` mapping (``at``, ``session_id``, ``status``, ``error``,
+    ``chunks_failed``, ``chunk_errors``) only when the session did not complete.
+    The harness then raises, so a failed session never reaches ``results``. An
+    entry without ``failure`` is still in flight: neither failed nor complete.
+    """
+    entry = pending.get(question_id)
+    if not isinstance(entry, Mapping):
+        return []
+    failure = entry.get("failure")
+    if not isinstance(failure, Mapping):
+        return []
+    session_id = failure.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        return [session_id]
+    corpus_key = entry.get("corpus_key")
+    return [corpus_key] if isinstance(corpus_key, str) and corpus_key else []
+
+
 def default_session_extractor(
     checkpoint: Mapping[str, Any], question_id: str
 ) -> tuple[Sequence[str], Sequence[str]]:
@@ -413,8 +489,11 @@ def default_session_extractor(
 
     ``phases.ingest.results`` maps ``ingest_result_key`` (``question:corpus_key``,
     ``fact_harness.py:736``) to a result whose ``status`` is ``complete`` on success
-    (``fact_harness.py:1631``). Keys are unique, so a duplicate can't appear here: the
-    resume check must also compare database conversation counts.
+    (``fact_harness.py:1631``). A session that failed is never added to ``results``:
+    it stays in ``pending`` with a ``failure`` and the harness raises
+    (``fact_harness.py:1736-1755``), so pending failures count as failed sessions
+    too. Keys are unique, so a duplicate can't appear here: the resume check must
+    also compare database conversation counts.
     """
     results = _ingest_results(checkpoint)
     prefix = f"{question_id}:"
@@ -427,14 +506,24 @@ def default_session_extractor(
         sessions.append(session)
         if not isinstance(result, Mapping) or result.get("status") != "complete":
             failed.append(session)
+    for session in _pending_failures(_pending_sessions(checkpoint), question_id):
+        sessions.append(session)
+        failed.append(session)
     return sessions, failed
 
 
 def checkpoint_invariants(
     checkpoint: Mapping[str, Any], *, extract: SessionExtractor | None = None
 ) -> dict[str, Any]:
-    """Invariants for every question present in ``checkpoint``."""
-    question_ids = sorted({str(key).split(":", 1)[0] for key in _ingest_results(checkpoint)})
+    """Invariants for every question present in ``checkpoint``.
+
+    A question whose only session is a pending failure has no ``results`` key, so
+    the pending question IDs are part of the set as well.
+    """
+    question_ids = sorted(
+        {str(key).split(":", 1)[0] for key in _ingest_results(checkpoint)}
+        | {str(key) for key in _pending_sessions(checkpoint)}
+    )
     return session_invariants(checkpoint, question_ids, extract=extract)
 
 
@@ -643,7 +732,12 @@ def run_arm(
     is sent once that many questions completed and the run is marked
     ``interrupted_for_resume`` with no stop reason. A second SIGINT is sent at
     most once, only after ``grace_seconds`` with the child still alive, and is
-    recorded. The result carries numbers and reason codes only.
+    recorded. If any reader raises, the run is a hard stop: one interrupt is
+    sent, ``stop_reason`` is ``guard_failed``, the child is still drained to exit
+    on the same grace path, and the unread final numbers are reported as ``None``
+    instead of a false zero. The result carries numbers and reason codes only,
+    including ``routing_events_seen`` so a zero 429 count can be told apart from
+    a log source that carried no routing events at all.
     """
     if poll_seconds <= 0 or not math.isfinite(poll_seconds):
         raise ValueError("poll_seconds must be a positive finite number")
@@ -658,48 +752,88 @@ def run_arm(
     interrupts: list[dict[str, Any]] = []
     stop_reason: str | None = None
     interrupted = False
+    guard_error: str | None = None
     first_interrupt_at: float | None = None
     second_sent = False
     process = spawn(list(command))
 
-    while process.poll() is None:
-        samples.append(sample_resources())
+    try:
+        while process.poll() is None:
+            samples.append(sample_resources())
+            now = clock()
+            if first_interrupt_at is not None:
+                if not second_sent and now - first_interrupt_at >= grace_seconds:
+                    send_interrupt(process)
+                    second_sent = True
+                    interrupts.append({"at_seconds": round(now - started, 3), "kind": "grace"})
+            else:
+                invariants = checkpoint_invariants(read_checkpoint())
+                rate_limits = count_rate_limits(read_log_lines())
+                reason: str | None = None
+                resumed = False
+                if (
+                    interrupt_after_completed is not None
+                    and _completed_questions(invariants, expected_sessions)
+                    >= interrupt_after_completed
+                ):
+                    resumed = True
+                else:
+                    reason = _gate_reason(
+                        float(read_spend_usd()), invariants, rate_limits, stop_rule
+                    )
+                if resumed or reason is not None:
+                    send_interrupt(process)
+                    first_interrupt_at = now
+                    if resumed:
+                        interrupted = True
+                        kind = "resume"
+                    else:
+                        stop_reason = reason
+                        kind = "stop"
+                    interrupts.append({"at_seconds": round(now - started, 3), "kind": kind})
+            sleep(poll_seconds)
+    except Exception as exc:
+        # A reader failed, so every gate is unknown: that is a hard stop, not a
+        # zero. Interrupt the child and drain it below; it is never left running.
+        guard_error = type(exc).__name__
+        stop_reason = STOP_GUARD_FAILED
         now = clock()
-        if first_interrupt_at is not None:
-            if not second_sent and now - first_interrupt_at >= grace_seconds:
+        send_interrupt(process)
+        first_interrupt_at = now
+        interrupts.append({"at_seconds": round(now - started, 3), "kind": "guard"})
+    finally:
+        # Never leave the child running: keep polling to exit, escalating once
+        # after the grace period exactly like the normal interrupt path.
+        while process.poll() is None:
+            now = clock()
+            if (
+                first_interrupt_at is not None
+                and not second_sent
+                and now - first_interrupt_at >= grace_seconds
+            ):
                 send_interrupt(process)
                 second_sent = True
                 interrupts.append({"at_seconds": round(now - started, 3), "kind": "grace"})
-        else:
-            invariants = checkpoint_invariants(read_checkpoint())
-            rate_limits = count_rate_limits(read_log_lines())
-            reason: str | None = None
-            resumed = False
-            if (
-                interrupt_after_completed is not None
-                and _completed_questions(invariants, expected_sessions) >= interrupt_after_completed
-            ):
-                resumed = True
-            else:
-                reason = _gate_reason(float(read_spend_usd()), invariants, rate_limits, stop_rule)
-            if resumed or reason is not None:
-                send_interrupt(process)
-                first_interrupt_at = now
-                if resumed:
-                    interrupted = True
-                    kind = "resume"
-                else:
-                    stop_reason = reason
-                    kind = "stop"
-                interrupts.append({"at_seconds": round(now - started, 3), "kind": kind})
-        sleep(poll_seconds)
+            sleep(poll_seconds)
+        exit_code = process.wait()
 
-    exit_code = process.wait()
-    samples.append(sample_resources())
     elapsed = max(clock() - started, 0.0)
-    spend_after = float(read_spend_usd())
-    final_invariants = checkpoint_invariants(read_checkpoint())
-    final_rates = count_rate_limits(read_log_lines())
+    spend_after: float | None
+    routing_events_seen: int
+    if guard_error is None:
+        samples.append(sample_resources())
+        spend_after = float(read_spend_usd())
+        final_invariants = checkpoint_invariants(read_checkpoint())
+        lines = list(read_log_lines())
+        final_rates = count_rate_limits(lines)
+        routing_events_seen = log_lines_seen_routing_events(lines)
+    else:
+        # The readers are still broken, so the final numbers are unknown; report
+        # them as absent rather than as a false zero.
+        spend_after = None
+        final_invariants = {}
+        final_rates = {}
+        routing_events_seen = 0
     completed = int(final_invariants.get("completed_sessions", 0))
     hours = elapsed / 3600.0
     return {
@@ -708,16 +842,262 @@ def run_arm(
         "stop_reason": stop_reason,
         "interrupted_for_resume": interrupted,
         "interrupts": interrupts,
+        "guard_error": guard_error,
         "spend_before_usd": spend_before,
         "spend_after_usd": spend_after,
-        "spend_usd": spend_after - spend_before,
+        "spend_usd": None if spend_after is None else spend_after - spend_before,
         "rate_limits": final_rates,
         "rate_limited_events": int(final_rates.get("rate_limited", 0)),
+        "routing_events_seen": routing_events_seen,
         "resource_samples": _resource_bounds(samples),
         "completed_sessions": completed,
         "failed_sessions": int(final_invariants.get("failed_sessions", 0)),
         "sessions_per_hour": completed / hours if hours > 0 else 0.0,
     }
+
+
+# --- Live wiring --------------------------------------------------------------
+#
+# Each reader below is still injected into ``run_arm``; nothing here opens a
+# connection, calls a provider or reads the dataset. The driver supplies the
+# database callable, the checkpoint path and the captured child log path.
+
+MICROUSD_PER_USD: Final[float] = 1_000_000.0
+
+#: Cumulative spend for the whole benchmark database, ids included.
+#:
+#: Settled rows contribute ``actual_microusd``; ``open`` rows contribute the
+#: amount they still hold (``reserved_microusd``) so in-flight calls are counted
+#: before they settle. No ``since`` and no user filter: the cap is a whole-run
+#: cap, cumulative across arms.
+SPEND_SQL: Final[str] = (
+    "SELECT "
+    "coalesce(sum(actual_microusd) FILTER (WHERE status = 'settled'), 0) AS settled_microusd, "
+    "coalesce(sum(reserved_microusd) FILTER (WHERE status = 'open'), 0) AS held_microusd "
+    "FROM entitlement_reservations"
+)
+
+#: Conversations per benchmark user, for the duplicate check.
+CONVERSATION_COUNTS_SQL: Final[str] = (
+    "SELECT user_id::text AS user_id, count(*) AS conversations FROM conversations GROUP BY user_id"
+)
+
+
+@dataclass(frozen=True)
+class SpendBreakdown:
+    """Cumulative spend split into settled actuals and still-open holds."""
+
+    settled_usd: float
+    held_usd: float
+
+    @property
+    def total_usd(self) -> float:
+        return self.settled_usd + self.held_usd
+
+
+def spend_from_row(row: Mapping[str, Any] | None) -> SpendBreakdown:
+    """USD from one :data:`SPEND_SQL` row; a missing row reads as zero."""
+    if row is None:
+        return SpendBreakdown(0.0, 0.0)
+    settled = int(row["settled_microusd"] or 0)
+    held = int(row["held_microusd"] or 0)
+    return SpendBreakdown(
+        settled_usd=settled / MICROUSD_PER_USD,
+        held_usd=held / MICROUSD_PER_USD,
+    )
+
+
+def make_spend_reader(
+    fetchrow: Callable[[str], Mapping[str, Any] | None],
+) -> Callable[[], float]:
+    """A ``run_arm`` spend reader from a synchronous ``fetchrow`` callable.
+
+    The driver owns the connection and event loop; this module never awaits.
+    Use :func:`spend_breakdown_reader` when the settled/held split is reported.
+    """
+
+    def read() -> float:
+        return spend_from_row(fetchrow(SPEND_SQL)).total_usd
+
+    return read
+
+
+def spend_breakdown_reader(
+    fetchrow: Callable[[str], Mapping[str, Any] | None],
+) -> Callable[[], SpendBreakdown]:
+    """A reader that returns the split, for the per-arm report."""
+
+    def read() -> SpendBreakdown:
+        return spend_from_row(fetchrow(SPEND_SQL))
+
+    return read
+
+
+def empty_checkpoint() -> dict[str, Any]:
+    """The shell the harness leaves before its first save."""
+    return {"phases": {"ingest": {"results": {}, "pending_sessions": {}}}}
+
+
+def read_checkpoint_file(path: Path | str) -> dict[str, Any]:
+    """Read the harness checkpoint; before the first save it is an empty shell.
+
+    A missing file is normal, not an error: the harness creates the checkpoint on
+    its first save, so a poll before that must read as no sessions rather than
+    trip the guard-failure path.
+    """
+    target = Path(path)
+    try:
+        raw = target.read_bytes()
+    except FileNotFoundError:
+        return empty_checkpoint()
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("checkpoint must be a JSON object")
+    return payload
+
+
+def make_log_reader(path: Path | str) -> Callable[[], list[str]]:
+    """A ``run_arm`` log reader over a captured child log file.
+
+    A missing file reads as no lines: ``routing_events_seen`` then reports that
+    the log source carried nothing, which the report must treat as unknown.
+    """
+    target = Path(path)
+
+    def read() -> list[str]:
+        try:
+            return target.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            return []
+
+    return read
+
+
+def _proc_value(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="strict").strip()
+
+
+def sample_resources_psutil_free(proc_root: Path | str = "/proc") -> dict[str, float]:
+    """CPU load, memory, RSS and free disk, using only stdlib and ``/proc``.
+
+    Missing or unreadable sources are omitted rather than raised: this runs
+    inside the poll loop, where a raise is a guard failure.
+    """
+    root = Path(proc_root)
+    sample: dict[str, float] = {}
+    try:
+        sample["load1"] = float(_proc_value(root / "loadavg").split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        for line in (root / "meminfo").read_text(encoding="utf-8").splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] in {"MemTotal:", "MemAvailable:"}:
+                name = "mem_total_bytes" if fields[0] == "MemTotal:" else "mem_available_bytes"
+                sample[name] = float(int(fields[1]) * 1024)
+    except (OSError, ValueError):
+        pass
+    try:
+        resident_pages = int(_proc_value(root / "self" / "statm").split()[1])
+        sample["rss_bytes"] = float(resident_pages * os.sysconf("SC_PAGE_SIZE"))
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        usage = shutil.disk_usage("/")
+        sample["disk_free_bytes"] = float(usage.free)
+        sample["disk_total_bytes"] = float(usage.total)
+    except OSError:
+        pass
+    return sample
+
+
+def conversation_counts_sql() -> str:
+    """The whole-database conversation count per benchmark user."""
+    return CONVERSATION_COUNTS_SQL
+
+
+def verify_db_counts(rows: Iterable[Mapping[str, Any]], expected: Mapping[str, int]) -> list[str]:
+    """Compare conversations per benchmark user with the expected session count.
+
+    ``expected`` is keyed by benchmark ``user_id`` (``question_user_id``). Each
+    question has its own user, so an arm's total is one row per question; a row
+    above ``expected`` means a duplicated conversation survived a resume. Users
+    outside ``expected`` are not reported: another arm's users legitimately exist
+    in the same database.
+    """
+    observed = {str(row["user_id"]): int(row["conversations"]) for row in rows}
+    violations: list[str] = []
+    for user_id, count in sorted(expected.items()):
+        actual = observed.get(str(user_id), 0)
+        if actual != int(count):
+            violations.append(f"user {user_id} has {actual} conversations, expected {int(count)}")
+    return violations
+
+
+def expected_sessions_from_dataset(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    """Expected session count per question, de-duplicated exactly as the harness.
+
+    ``fact_harness.py:692-733`` builds one ``corpus_key`` per session with
+    ``build_corpus_key`` and keeps the first occurrence of each key, so the count
+    is the number of distinct corpus keys among the list-valued sessions. The
+    derivation is imported, never re-implemented; the import is local because
+    those modules pull the database stack and this module stays import-light.
+    """
+    from orchestrator.eval.chunk_harness import normalize_question_id
+    from tests.longmemeval.ingest import build_corpus_key
+
+    counts: dict[str, int] = {}
+    for idx, entry in enumerate(rows):
+        question_id = normalize_question_id(dict(entry), idx)
+        if question_id in counts:
+            raise ValueError("Duplicate question IDs in the dataset")
+        keys = {
+            build_corpus_key(messages)
+            for messages in entry.get("haystack_sessions") or []
+            if isinstance(messages, list)
+        }
+        counts[question_id] = len(keys)
+    return counts
+
+
+def answer_conversation_ids(
+    checkpoint: Mapping[str, Any],
+    question_id: str,
+    answer_session_ids: Sequence[str],
+) -> dict[str, str]:
+    """Map a question's answer sessions to their ingested ``conversation_id``s.
+
+    Sessions are matched on each result's ``session_id`` field, not on the result
+    key (that key is the ``corpus_key``). An answer session with no completed
+    result raises: labelling must never silently drop an answer source.
+    """
+    results = _ingest_results(checkpoint)
+    prefix = f"{question_id}:"
+    by_session: dict[str, str] = {}
+    for key, result in results.items():
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+        if not isinstance(result, Mapping) or result.get("status") != "complete":
+            continue
+        session_id = result.get("session_id")
+        conversation_id = result.get("conversation_id")
+        if isinstance(session_id, str) and isinstance(conversation_id, str):
+            by_session[session_id] = conversation_id
+    mapping: dict[str, str] = {}
+    missing: list[str] = []
+    for session_id in answer_session_ids:
+        conversation_id = by_session.get(str(session_id))
+        if conversation_id is None:
+            missing.append(str(session_id))
+        else:
+            mapping[str(session_id)] = conversation_id
+    if missing:
+        raise ValueError(
+            f"{len(missing)} answer session(s) of {question_id} have no completed ingest result"
+        )
+    return mapping
 
 
 if __name__ == "__main__":  # pragma: no cover

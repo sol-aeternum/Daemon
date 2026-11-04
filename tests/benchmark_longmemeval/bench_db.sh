@@ -30,8 +30,11 @@ die() { echo "bench_db: $*" >&2; exit 1; }
 
 # A caller may point the helper at another benchmark database, never at one
 # outside the benchmark name prefix the safety guard in orchestrator/eval/
-# bench_db.py allowlists.
-[[ "$DB_NAME" == daemon_lme_bench* ]] || die "BENCH_DB_NAME must start with daemon_lme_bench"
+# bench_db.py allowlists. The name is anchored and restricted to
+# [a-z0-9_]: it is interpolated unquoted into DROP DATABASE and CREATE DATABASE
+# in `restore`, so anything else (spaces, quotes, semicolons, uppercase) must be
+# rejected before the first SQL statement is built.
+[[ "$DB_NAME" =~ ^daemon_lme_bench[a-z0-9_]*$ ]] || die "BENCH_DB_NAME must match ^daemon_lme_bench[a-z0-9_]*$"
 
 psql_bench() {
   "${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$DB_USER" "$@"

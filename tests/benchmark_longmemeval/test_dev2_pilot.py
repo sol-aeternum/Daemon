@@ -20,19 +20,32 @@ from tests.benchmark_longmemeval.dev2_pilot import (
     ALGORITHM,
     ARM_SIZES,
     PILOT_SIZE,
+    SPEND_SQL,
     STOP_EXTRACTION,
+    STOP_GUARD_FAILED,
     STOP_RATE_LIMIT,
     STOP_SPEND,
     StopRule,
+    answer_conversation_ids,
     assign_arms,
     checkpoint_invariants,
+    conversation_counts_sql,
     count_rate_limits,
+    empty_checkpoint,
+    expected_sessions_from_dataset,
     failed_rate,
+    log_lines_seen_routing_events,
+    make_log_reader,
+    make_spend_reader,
     pilot_volume,
+    read_checkpoint_file,
     run_arm,
+    sample_resources_psutil_free,
     select_pilot,
     session_invariants,
+    spend_breakdown_reader,
     spend_projection,
+    verify_db_counts,
     verify_resume,
     write_arm_datasets,
 )
@@ -270,12 +283,44 @@ def test_spend_projection_rejects_negative_rates() -> None:
         spend_projection(volume, usd_per_session=-1.0, usd_per_1k_tokens=0.25)
 
 
+def _db_name_guard_line() -> str:
+    """The one guard line that validates BENCH_DB_NAME, extracted verbatim."""
+    matches = [
+        line
+        for line in SCRIPT.read_text().splitlines()
+        if '"$DB_NAME" =~ ^daemon_lme_bench[a-z0-9_]*$' in line
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _run_db_name_guard(db_name: str) -> subprocess.CompletedProcess[str]:
+    """Run the extracted guard in bash; no database command is ever evaluated."""
+    script = 'die() { echo "$*" >&2; exit 3; }\nDB_NAME="$1"\n' + _db_name_guard_line() + "\n"
+    return subprocess.run(
+        ["bash", "-c", script, "_", db_name], capture_output=True, text=True, check=False
+    )
+
+
 def test_bench_db_script_parses_and_guards_the_db_name() -> None:
     text = SCRIPT.read_text()
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
     assert 'DB_NAME="${BENCH_DB_NAME:-daemon_lme_bench}"' in text
-    assert '[[ "$DB_NAME" == daemon_lme_bench* ]] || die' in text
     assert dev2_pilot.MANIFEST_NAME == "pilot_manifest.json"
+    for accepted in ("daemon_lme_bench", "daemon_lme_bench_v2", "daemon_lme_bench2"):
+        assert _run_db_name_guard(accepted).returncode == 0, accepted
+    for rejected in (
+        'daemon_lme_bench"; DROP DATABASE daemon; --',
+        "daemon_lme_bench;DROP DATABASE postgres",
+        "daemon_lme_benchV2",
+        "daemon_lme_bench-2",
+        "daemon_lme_bench db",
+        "xdaemon_lme_bench",
+        "",
+    ):
+        result = _run_db_name_guard(rejected)
+        assert result.returncode == 3, rejected
+        assert "must match" in result.stderr
 
 
 class FakeClock:
@@ -301,6 +346,7 @@ class FakeProcess:
         self.interrupts = 0
         self.ignore_interrupts = ignore_interrupts
         self.ignored = 0
+        self.waits = 0
         self.commands: list[Sequence[str]] = []
 
     def poll(self) -> int | None:
@@ -315,6 +361,7 @@ class FakeProcess:
         return None
 
     def wait(self) -> int:
+        self.waits += 1
         return self.exit_code
 
 
@@ -332,7 +379,7 @@ def _spend_reader(values: Sequence[float]) -> Any:
 def _checkpoint(sessions: Sequence[str], failures: Sequence[str] = ()) -> dict[str, Any]:
     results: dict[str, dict[str, str]] = {f"q1:{s}": {"status": "complete"} for s in sessions}
     results.update({f"q1:{s}": {"status": "error"} for s in failures})
-    return {"phases": {"ingest": {"results": results}}}
+    return {"phases": {"ingest": {"results": results, "pending_sessions": {}}}}
 
 
 def _extract(
@@ -384,7 +431,8 @@ class Harness:
 
 
 def _rate_limited_lines(count: int) -> list[str]:
-    line = '{"event": "attempt_outcome", "failure_category": "rate_limited"}'
+    record = '{"event":"attempt_outcome","failure_category":"rate_limited"}'
+    line = f"2026-11-04 10:00:00,001 INFO daemon.routing routing_event {record}"
     return [line] * count
 
 
@@ -540,16 +588,18 @@ def test_verify_resume_flags_duplicate_lost_mismatch_and_failures() -> None:
 
 
 def test_count_rate_limits_tolerates_junk_lines() -> None:
+    marker = "2026-11-04 10:00:00,001 INFO daemon.routing routing_event "
     lines = [
         "",
         "not json at all",
-        '{"event": "attempt_outcome", "failure_category": "rate_limited"}',
-        '{"event": "attempt_outcome", "failure_category": "rate_limited"}',
-        '{"event": "attempt_outcome", "failure_category": "timeout"}',
-        '{"event": "other", "failure_category": "rate_limited"}',
-        '{"event": "attempt_outcome"}',
-        '{"event": "attempt_outcome", "failure_category": 5}',
-        "[1, 2, 3]",
+        marker + '{"event":"attempt_outcome","failure_category":"rate_limited"}',
+        marker + '{"event":"attempt_outcome","failure_category":"rate_limited"}',
+        marker + '{"event":"attempt_outcome","failure_category":"timeout"}',
+        marker + '{"event":"other","failure_category":"rate_limited"}',
+        marker + '{"event":"attempt_outcome"}',
+        marker + '{"event":"attempt_outcome","failure_category":5}',
+        marker + "[1, 2, 3]",
+        '{"event":"attempt_outcome","failure_category":"rate_limited"}',
     ]
     counts = count_rate_limits(lines)
     assert counts == {"rate_limited": 2, "timeout": 1}
@@ -601,3 +651,258 @@ def test_default_extractor_reads_the_real_checkpoint_shape() -> None:
     sessions, failed = dev2_pilot.default_session_extractor(checkpoint, "q1")
     assert sorted(sessions) == ["a", "b"]
     assert failed == ["b"]
+
+
+# --- Real failure path: pending_sessions -------------------------------------
+
+PENDING_FAILURE: dict[str, Any] = {
+    "corpus_key": "corpus-b",
+    "started_at": "2026-11-04T00:00:00+00:00",
+    "state_fingerprint": "benchmark-state",
+    "failure": {
+        "at": "2026-11-04T00:00:01+00:00",
+        "session_id": "s-b",
+        "status": "error",
+        "error": "TimeoutError",
+        "chunks_failed": 1,
+        "chunk_errors": {"extraction": 1},
+    },
+}
+
+
+def _pending_checkpoint(pending: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "phases": {
+            "ingest": {
+                "results": {"q1:a": {"status": "complete"}},
+                "pending_sessions": dict(pending),
+            }
+        }
+    }
+
+
+def test_a_real_pending_failure_counts_as_a_failed_session_and_trips_the_gate() -> None:
+    checkpoint = _pending_checkpoint({"q1": PENDING_FAILURE})
+    sessions, failed = dev2_pilot.default_session_extractor(checkpoint, "q1")
+    assert sorted(sessions) == ["a", "s-b"]
+    assert failed == ["s-b"]
+    invariants = checkpoint_invariants(checkpoint)
+    assert invariants["total_sessions"] == 2
+    assert invariants["failed_sessions"] == 1
+    assert failed_rate(invariants) == pytest.approx(0.5)
+
+    harness = Harness(checkpoint=checkpoint, process=FakeProcess(polls=10))
+    result = harness.run()
+    assert result["stop_reason"] == STOP_EXTRACTION
+    assert harness.process.interrupts == 1
+
+
+def test_an_in_flight_pending_entry_is_neither_failed_nor_completed() -> None:
+    in_flight = {key: value for key, value in PENDING_FAILURE.items() if key != "failure"}
+    checkpoint = _pending_checkpoint({"q1": in_flight})
+    sessions, failed = dev2_pilot.default_session_extractor(checkpoint, "q1")
+    assert sessions == ["a"]
+    assert failed == []
+    invariants = checkpoint_invariants(checkpoint)
+    assert invariants["total_sessions"] == 1
+    assert invariants["failed_sessions"] == 0
+    assert invariants["completed_sessions"] == 1
+    assert Harness(checkpoint=checkpoint).run()["stop_reason"] is None
+
+
+def test_checkpoint_invariants_includes_a_pending_only_question() -> None:
+    checkpoint = _pending_checkpoint({"q2": {**PENDING_FAILURE, "corpus_key": "other"}})
+    invariants = checkpoint_invariants(checkpoint)
+    assert set(invariants["questions"]) == {"q1", "q2"}
+    assert invariants["questions"]["q2"]["failed"] == 1
+    assert invariants["duplicate_sessions"] == 0
+
+
+# --- Real log lines: routing_event -------------------------------------------
+
+
+def test_count_rate_limits_parses_real_routing_event_lines() -> None:
+    lines = [
+        '2026-11-04 10:00:00,001 INFO daemon.routing routing_event {"event":"attempt_outcome",'
+        '"failure_category":"rate_limited","attempt":0}',
+        'routing_event {"failure_category":"rate_limited","event":"attempt_outcome"}',
+        'prefix routing_event {"event":"attempt_outcome","failure_category":"timeout"}',
+        "routing_event not json",
+        "routing_event [1, 2]",
+        'daemon.routing routing_eventx {"event":"attempt_outcome","failure_category":"junk"}',
+        "",
+    ]
+    assert count_rate_limits(lines) == {"rate_limited": 2, "timeout": 1}
+    assert log_lines_seen_routing_events(lines) == 3
+    assert count_rate_limits(["routing_event not json"]) == {}
+    assert log_lines_seen_routing_events([]) == 0
+
+
+def test_run_arm_reports_how_many_routing_events_the_log_carried() -> None:
+    harness = Harness(log_lines=_rate_limited_lines(1), process=FakeProcess(polls=2))
+    result = harness.run()
+    assert result["routing_events_seen"] == 1
+    assert result["rate_limits"] == {"rate_limited": 1}
+    empty = Harness(process=FakeProcess(polls=2)).run()
+    assert empty["routing_events_seen"] == 0
+    assert empty["rate_limits"] == {}
+
+
+# --- run_arm guard failure ----------------------------------------------------
+
+
+def test_a_reader_raising_is_a_guard_failure_that_still_drains_the_child() -> None:
+    harness = Harness(process=FakeProcess(polls=50))
+
+    def broken_checkpoint() -> Mapping[str, Any]:
+        raise RuntimeError("checkpoint unreadable")
+
+    result = harness.run(read_checkpoint=broken_checkpoint)
+    assert result["stop_reason"] == STOP_GUARD_FAILED
+    assert result["guard_error"] == "RuntimeError"
+    assert [item["kind"] for item in result["interrupts"]] == ["guard"]
+    assert len(harness.sent) == 1
+    assert harness.process.interrupts == 1
+    assert harness.process.waits == 1
+    assert result["spend_after_usd"] is None
+    assert result["spend_usd"] is None
+
+
+def test_a_missing_checkpoint_before_the_first_save_is_an_empty_shell(tmp_path: Path) -> None:
+    path = tmp_path / "longmemeval_checkpoint.json"
+    assert read_checkpoint_file(path) == empty_checkpoint()
+    invariants = checkpoint_invariants(read_checkpoint_file(path))
+    assert invariants["total_sessions"] == 0
+    assert invariants["failed_sessions"] == 0
+    path.write_text(json.dumps(_checkpoint(["a"])))
+    assert checkpoint_invariants(read_checkpoint_file(path))["total_sessions"] == 1
+    not_an_object = tmp_path / "bad.json"
+    not_an_object.write_text("[1, 2]")
+    with pytest.raises(ValueError):
+        read_checkpoint_file(not_an_object)
+
+
+# --- Live wiring --------------------------------------------------------------
+
+
+def test_spend_sql_is_whole_database_settled_plus_open_holds() -> None:
+    sql = SPEND_SQL.lower()
+    assert "from entitlement_reservations" in sql
+    assert "actual_microusd" in sql
+    assert "reserved_microusd" in sql
+    assert "status = 'settled'" in sql
+    assert "status = 'open'" in sql
+    assert "user_id" not in sql
+    assert "since" not in sql
+    assert "created_at" not in sql
+
+
+def test_make_spend_reader_sums_settled_and_open_holds() -> None:
+    quoted: list[str] = []
+
+    def fetchrow(sql: str) -> Mapping[str, Any]:
+        quoted.append(sql)
+        return {"settled_microusd": 1_500_000, "held_microusd": 500_000}
+
+    assert make_spend_reader(fetchrow)() == pytest.approx(2.0)
+    breakdown = spend_breakdown_reader(fetchrow)()
+    assert breakdown.settled_usd == pytest.approx(1.5)
+    assert breakdown.held_usd == pytest.approx(0.5)
+    assert breakdown.total_usd == pytest.approx(2.0)
+    assert quoted == [SPEND_SQL, SPEND_SQL]
+    assert make_spend_reader(lambda _sql: None)() == 0.0
+
+
+def test_make_log_reader_reads_a_captured_child_log(tmp_path: Path) -> None:
+    path = tmp_path / "arm.log"
+    read = make_log_reader(path)
+    assert read() == []
+    path.write_text("\n".join(_rate_limited_lines(2)) + "\n")
+    assert log_lines_seen_routing_events(read()) == 2
+    assert count_rate_limits(read()) == {"rate_limited": 2}
+
+
+def test_verify_db_counts_compares_per_user_and_ignores_other_arms() -> None:
+    rows = [
+        {"user_id": "u1", "conversations": 3},
+        {"user_id": "u2", "conversations": 2},
+        {"user_id": "u9", "conversations": 7},
+    ]
+    assert verify_db_counts(rows, {"u1": 3, "u2": 2}) == []
+    violations = verify_db_counts(rows, {"u1": 4, "u2": 2, "u3": 1})
+    assert len(violations) == 2
+    assert any("u1 has 3" in item for item in violations)
+    assert any("u3 has 0" in item for item in violations)
+    sql = conversation_counts_sql()
+    assert "user_id::text" in sql
+    assert "FROM conversations" in sql
+
+
+def test_expected_sessions_from_dataset_deduplicates_like_the_harness() -> None:
+    first = [{"role": "user", "content": "alpha"}]
+    second = [{"role": "user", "content": "beta"}]
+    rows = [
+        {
+            "question_id": "q1",
+            "haystack_sessions": [first, first, second],
+            "haystack_session_ids": ["s1", "s2", "s3"],
+        },
+        {"question_id": "q2", "haystack_sessions": [second]},
+        {"question_id": "q3", "haystack_sessions": ["not a session"]},
+    ]
+    assert expected_sessions_from_dataset(rows) == {"q1": 2, "q2": 1, "q3": 0}
+    with pytest.raises(ValueError):
+        expected_sessions_from_dataset([rows[0], rows[0]])
+
+
+def test_answer_conversation_ids_maps_sessions_and_raises_on_a_missing_one() -> None:
+    checkpoint = {
+        "phases": {
+            "ingest": {
+                "results": {
+                    "q1:corpus-a": {
+                        "status": "complete",
+                        "session_id": "s1",
+                        "conversation_id": "c1",
+                    },
+                    "q1:corpus-b": {
+                        "status": "complete",
+                        "session_id": "s2",
+                        "conversation_id": "c2",
+                    },
+                    "q2:corpus-c": {
+                        "status": "complete",
+                        "session_id": "s3",
+                        "conversation_id": "c3",
+                    },
+                },
+                "pending_sessions": {},
+            }
+        }
+    }
+    assert answer_conversation_ids(checkpoint, "q1", ["s2", "s1"]) == {
+        "s2": "c2",
+        "s1": "c1",
+    }
+    with pytest.raises(ValueError, match="no completed ingest result"):
+        answer_conversation_ids(checkpoint, "q1", ["s1", "s3"])
+
+
+def test_sample_resources_psutil_free_reads_proc_without_psutil(tmp_path: Path) -> None:
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "loadavg").write_text("0.50 0.40 0.30 1/100 1234\n")
+    (proc / "meminfo").write_text(
+        "MemTotal:       1000 kB\nMemFree:  1 kB\nMemAvailable:    400 kB\n"
+    )
+    (proc / "self" / "statm").write_text("100 25 10 1 0 5 0\n")
+    sample = sample_resources_psutil_free(proc)
+    assert sample["load1"] == pytest.approx(0.5)
+    assert sample["mem_total_bytes"] == pytest.approx(1_024_000.0)
+    assert sample["mem_available_bytes"] == pytest.approx(409_600.0)
+    assert sample["rss_bytes"] > 0
+    assert sample["disk_free_bytes"] > 0
+    absent = sample_resources_psutil_free(tmp_path / "absent")
+    assert "load1" not in absent
+    assert "mem_total_bytes" not in absent
+    assert "disk_free_bytes" in absent
