@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `04aae7b1c3b3f69670fa384e0ac7f57e126c87f4` (main verified
-before this source-only presentation refresh). This checklist separates
+Source checkpoint: `93da43e1a3b0826ff701f280d858ca2dd217a0d1` (main verified
+before this source-only H-owned reservation join). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -98,3 +98,20 @@ phase for an already committed CSV. It preserves existing snapshot/envelope form
 and table permissions. No runtime constructor, transport, new task completion,
 live grant or migration is installed; original-operation uncertainty and the
 artifact restore/lifecycle release gates remain. #477 stays open.
+
+Post-#668 synthetic phase qualification exercises known catalog, card and native
+terminal commits followed by original-task/file readback, and Stop after the card
+without late terminal publication. It also records the still-uncomposed R0
+boundary: direct native reservation does not compare H/SQL parity or poison H on
+an uncertain reservation COMMIT. Those diagnostics do not authorize bypassing H
+or retrying the reservation. The next bounded source contract is an H-owned R0
+join with unchanged restricted SQL and separate P/R0/W ownership. See
+[phase qualification](RESOURCE_OUTPUT_PRESENTATION_JOIN.md#cross-phase-qualification).
+No authenticated transport, complete runtime graph or live acceptance is claimed.
+
+The approved source-only [reservation join](RESOURCE_OUTPUT_RESERVATION_JOIN.md)
+now owns full H/source validation, sequential P and R0 transactions, known COMMIT
+and actual cleanup for the exact retained first-output command. Its exact typed
+guard exception installs no host and changes no SQL permissions. Authenticated
+command preparation/transport, append, complete execution composition, independent
+artifact restore evidence and lifecycle/privacy qualification remain launch gates.
