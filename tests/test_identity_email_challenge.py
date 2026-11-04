@@ -2,8 +2,8 @@
 
 Coverage matches the TODO 10 acceptance criteria:
 
-  - Code generation: CSPRNG, 6 decimal digits, no two consecutive
-    calls produce the same code with overwhelming probability.
+  - Code generation: CSPRNG decimal draws, 6 digits by default,
+    leading zeros, and valid collisions without imposing uniqueness.
   - Verifier computation: HMAC-SHA256(plaintext, pepper), 64-char
     hex, deterministic, distinct inputs produce distinct hashes.
   - Service.issue_challenge: row inserted, attempts_remaining set
@@ -342,18 +342,56 @@ class TestCodeGeneration:
         with pytest.raises(ValueError, match="num_digits"):
             generate_email_code(num_digits=11)
 
-    def test_codes_are_distinct_across_many_calls(self) -> None:
-        """Consecutive calls produce distinct codes with very
-        high probability. With a 6-digit code space
-        (10^6) and N samples, the birthday-bound probability
-        of at least one collision is approximately
-        `1 - exp(-N*(N-1) / (2 * 10^6))`. At N=100, this is
-        ~0.5% (≈1 in 200). The test is therefore not strictly
-        deterministic but is overwhelmingly likely to pass; a
-        real CSPRNG failure would fail the test in seconds.
-        """
-        codes = {generate_email_code() for _ in range(100)}
-        assert len(codes) == 100
+    @pytest.mark.parametrize("num_digits", [None, 4, 10])
+    def test_each_digit_comes_from_csprng_decimal_draws(
+        self, monkeypatch: pytest.MonkeyPatch, num_digits: int | None
+    ) -> None:
+        """Verify the secure primitive and draw contract, not chance uniqueness."""
+        from orchestrator.services.identity import email_challenge
+
+        width = 6 if num_digits is None else num_digits
+        expected = ["0123456789"[:width], "9876543210"[:width]]
+        draws = iter("".join(expected))
+        populations: list[str] = []
+
+        class ControlledSystemRandom:
+            def choice(self, population: str) -> str:
+                # Every decimal digit must be represented exactly once, so
+                # the CSPRNG choice has the full intended uniform code space.
+                assert len(population) == 10 and set(population) == set("0123456789")
+                populations.append(population)
+                return next(draws)
+
+        monkeypatch.setattr(email_challenge.secrets, "SystemRandom", ControlledSystemRandom)
+        codes = [
+            generate_email_code()
+            if num_digits is None
+            else generate_email_code(num_digits=num_digits)
+            for _ in expected
+        ]
+        assert codes == expected  # Includes leading zeros without integer truncation.
+        assert len(populations) == 2 * width  # New CSPRNG draws for both requests.
+        assert next(draws, None) is None
+
+    def test_valid_csprng_collisions_do_not_trigger_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bounded code space can repeat; generation must not pretend otherwise."""
+        from orchestrator.services.identity import email_challenge
+
+        draws = iter("000000" * 2)
+        populations: list[str] = []
+
+        class ControlledSystemRandom:
+            def choice(self, population: str) -> str:
+                assert len(population) == 10 and set(population) == set("0123456789")
+                populations.append(population)
+                return next(draws)  # An unexpected retry fails instead of hanging.
+
+        monkeypatch.setattr(email_challenge.secrets, "SystemRandom", ControlledSystemRandom)
+        assert [generate_email_code(), generate_email_code()] == ["000000", "000000"]
+        assert len(populations) == 12
+        assert next(draws, None) is None
 
 
 class TestCodeVerifier:
