@@ -6,7 +6,9 @@ Every row here is invented: no dataset, provider, database or network access.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import subprocess
 import sys
 from collections import Counter
@@ -16,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from orchestrator import routing_log, safe_logging
 from tests.benchmark_longmemeval import dev2_pilot, holdout
 from tests.benchmark_longmemeval.dev2_pilot import (
     ALGORITHM,
@@ -603,7 +606,7 @@ def test_count_rate_limits_tolerates_junk_lines() -> None:
         '{"event":"attempt_outcome","failure_category":"rate_limited"}',
     ]
     counts = count_rate_limits(lines)
-    assert counts == {"rate_limited": 2, "timeout": 1}
+    assert counts == {"rate_limited": 3, "timeout": 1}
     assert all(isinstance(value, int) for value in counts.values())
 
 
@@ -1001,10 +1004,12 @@ def test_child_command_is_exact_and_weakening_flags_are_absent() -> None:
         assert flag not in command
 
 
-def test_db_name_from_dsn_ignores_credentials_and_query() -> None:
-    assert dev2_pilot.db_name_from_dsn(
-        "postgresql://u:p@h:5432/daemon_lme_bench_dev2?sslmode=x"
-    ) == ("daemon_lme_bench_dev2")
+def test_db_name_from_dsn_ignores_credentials_and_refuses_query() -> None:
+    assert dev2_pilot.db_name_from_dsn("postgresql://u:p@h:5432/daemon_lme_bench_dev2") == (
+        "daemon_lme_bench_dev2"
+    )
+    # Any query string is refused: libpq honours a dbname parameter there.
+    assert dev2_pilot.db_name_from_dsn("postgresql://u:p@h/daemon_lme_bench_dev2?sslmode=x") is None
     assert dev2_pilot.db_name_from_dsn("") is None
     assert dev2_pilot.check_run_arm_database("postgresql://u:p@h/daemon_lme_bench_dev2") == (
         "daemon_lme_bench_dev2"
@@ -1125,3 +1130,48 @@ def test_write_record_never_overwrites(tmp_path: Path) -> None:
     dev2_pilot.write_record(path, {"a": 1})
     with pytest.raises(FileExistsError):
         dev2_pilot.write_record(path, {"a": 2})
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://b:b@127.0.0.1:55432/%64aemon_lme_bench",
+        "postgresql://b:b@127.0.0.1:55432/%64aemon_lme_bench_dev2",
+        "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench_dev2?dbname=daemon_lme_bench",
+        "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench",
+    ],
+)
+def test_run_arm_database_guard_refuses_encoded_and_overridden_names(dsn: str) -> None:
+    with pytest.raises(ValueError):
+        dev2_pilot.check_run_arm_database(dsn)
+
+
+def test_run_arm_database_guard_accepts_the_exact_name() -> None:
+    dsn = "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench_dev2"
+    assert dev2_pilot.check_run_arm_database(dsn) == "daemon_lme_bench_dev2"
+
+
+def test_output_dir_must_be_outside_the_repository(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(ValueError):
+        dev2_pilot.check_output_outside_repo(repo / "out", repo)
+    dev2_pilot.check_output_outside_repo(tmp_path / "out", repo)
+
+
+def test_rate_limit_count_reads_what_the_real_handler_writes() -> None:
+    record = routing_log.build_record(
+        "attempt_outcome", {"outcome": "failed", "failure_category": "rate_limited"}
+    )
+    stream = io.StringIO()
+    handler = safe_logging.SafeHandler(stream)
+    handler.emit(
+        logging.makeLogRecord(
+            {"levelno": logging.INFO, "_daemon_event": {"kind": "routing", "fields": record}}
+        )
+    )
+    handler.emit(logging.makeLogRecord({"levelno": logging.INFO, "msg": "other"}))
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 2
+    assert dev2_pilot.count_rate_limits(lines) == {"rate_limited": 1}
+    assert dev2_pilot.log_lines_seen_routing_events(lines) == 1

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 from urllib.parse import urlsplit
 
+from orchestrator.routing_log import EVENT_FIELDS
 from tests.benchmark_longmemeval.dev2 import (
     QuestionAggregate,
     estimate_volumes,
@@ -397,25 +398,24 @@ ROUTING_EVENT_MARKER: Final[str] = "routing_event "
 
 
 def _routing_records(log_lines: Iterable[str]) -> list[Mapping[str, Any]]:
-    """JSON objects that follow a ``routing_event `` marker on a log line.
+    """Routing records in captured log lines.
 
-    ``orchestrator/routing_log.py`` writes ``logger.info("%s %s", PREFIX, json)``,
-    so a real line is ``<log prefix>routing_event {"event": ...}``. The record is
-    the JSON object after the marker anywhere in the line; junk, partial writes
-    and lines from other loggers are ignored.
+    The routing logger's ``SafeHandler`` writes a bare JSON object per line
+    (``orchestrator/safe_logging.py:61-78``); a plain formatter would instead render
+    ``routing_event {json}``. Both are read. Only events the routing log declares
+    count, so ``legacy_log`` lines and junk are ignored.
     """
     records: list[Mapping[str, Any]] = []
     for line in log_lines:
         if not isinstance(line, str):
             continue
         index = line.find(ROUTING_EVENT_MARKER)
-        if index < 0:
-            continue
+        text = line[index + len(ROUTING_EVENT_MARKER) :] if index >= 0 else line
         try:
-            payload = json.loads(line[index + len(ROUTING_EVENT_MARKER) :])
+            payload = json.loads(text)
         except ValueError:
             continue
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and payload.get("event") in EVENT_FIELDS:
             records.append(payload)
     return records
 
@@ -1133,7 +1133,12 @@ FORBIDDEN_CHILD_FLAGS: Final[tuple[str, ...]] = (
 
 def db_name_from_dsn(dsn: str) -> str | None:
     """Database name of a postgres URL, ignoring credentials and query string."""
-    name = urlsplit(dsn).path.lstrip("/")
+    parts = urlsplit(dsn)
+    name = parts.path.lstrip("/")
+    # libpq honours a dbname query parameter, and the harness decodes percent escapes,
+    # so either could address a database other than the one compared here.
+    if parts.query or "%" in name:
+        return None
     return name or None
 
 
@@ -1145,6 +1150,12 @@ def check_run_arm_database(dsn: str | None) -> str:
     if name != RUN_ARM_DB_NAME:
         raise ValueError(f"run-arm requires DATABASE_URL to name exactly {RUN_ARM_DB_NAME}")
     return name
+
+
+def check_output_outside_repo(output_dir: Path, repo_root: Path) -> None:
+    """Run output inside the checkout would dirty the tree and refuse its own resume."""
+    if output_dir.resolve().is_relative_to(repo_root.resolve()):
+        raise ValueError("run-arm requires --output-dir outside the repository")
 
 
 def check_clean_tree(porcelain: str) -> None:
@@ -1357,6 +1368,7 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
 
     database_url = os.environ.get("DATABASE_URL")
     rows = json.loads(args.arm_dataset.read_text(encoding="utf-8"))
+    check_output_outside_repo(args.output_dir, Path(_git("rev-parse", "--show-toplevel")))
     record, exit_code = run_arm_command(
         arm_dataset=args.arm_dataset,
         output_dir=args.output_dir,

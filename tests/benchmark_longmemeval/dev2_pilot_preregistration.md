@@ -88,7 +88,7 @@ Recorded per arm, numbers only (no question, session or answer text):
 |---|---|
 | Wall time, sessions/hour | driver (`run_arm` wall clock, completed sessions) |
 | Tokens/hour | spend ledger token sums divided by wall hours |
-| `rate_limited` and other `failure_category` counts | **process log only**: the JSON object after each `routing_event ` marker, when its `event` is `attempt_outcome` (`count_rate_limits`), reported with `routing_events_seen` (`log_lines_seen_routing_events`) |
+| `rate_limited` and other `failure_category` counts | **process log only**: the JSON record the routing handler writes per line, when its `event` is `attempt_outcome` (`count_rate_limits`), reported with `routing_events_seen` (`log_lines_seen_routing_events`) |
 | `extraction_failed` rate (gate below 1%) | checkpoint per-question records (`session_invariants`, `failed_rate`) |
 | Provider-reported cost per session | `entitlement_reservations` via `SPEND_SQL`/`spend_breakdown_reader`: settled `actual_microusd` **plus** the `reserved_microusd` still held by `open` rows, summed over the **entire database** with no time window and no user filter, i.e. cumulative across arms and including calls still in flight (`SpendBreakdown` reports settled and held separately); per-model detail via `summarize_compute_spend` (`orchestrator/eval/bench_db.py:280-312`) |
 | CPU, memory, disk growth | sampled during the arm (`sample_resources`), reported as min/max |
@@ -96,8 +96,8 @@ Recorded per arm, numbers only (no question, session or answer text):
 | Overnight slowdown | wall time and sessions/hour compared across day vs night windows, if any |
 
 **429s are log-derived, never persisted.** No table records them; only the routing
-log does: `routing_event {"event":"attempt_outcome","failure_category":"rate_limited"}`
-(`orchestrator/routing_log.py`). 429 counts are log-derived and only meaningful if
+log does, as one JSON object per line, `{"event":"attempt_outcome","failure_category":"rate_limited",...}`
+(`orchestrator/routing_log.py`, `orchestrator/safe_logging.py:61-78`). 429 counts are log-derived and only meaningful if
 routing events were seen; zero routing events means the count is **unknown**, and
 the report says unknown, not zero. `run_arm` therefore reports
 `routing_events_seen` alongside `rate_limits`.
@@ -107,6 +107,15 @@ full bound is counted while it is still `open`, so the reading never understates
 in-flight work; the driver still samples on an interval, so the pre-registered
 margin of **USD 1.00** (`cap_usd=8.50`, `margin_usd=1.00`; the arm is interrupted
 at USD 7.50) must cover a call that starts and settles between two polls.
+
+The margin is sized from Phase D: $19.22 over 17,360 active seconds at concurrency 8–16 is
+about $0.0011/s, or roughly $0.02 per 15 s poll, and about $0.009 per session. After a stop
+signal each stream finishes its in-flight session, so 8 streams add on the order of $0.10 at
+the average. USD 1.00 is about ten times that. Largest-session cost is not separately
+established; the record reports actual spend after the stop.
+
+`--output-dir` must be outside the repository, and `run-arm` refuses otherwise: run output
+would dirty the tree and block the resume's clean-tree check.
 
 Cost is conservative: a failed dispatch settles at the full bound in
 `entitlement_reservations`, so `actual_microusd` overstates rather than understates,
