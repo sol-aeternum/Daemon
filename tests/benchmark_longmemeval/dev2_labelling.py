@@ -18,13 +18,20 @@ Status: frozen before any call. No call has been made.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import hashlib
 import inspect
 import json
 import math
-from collections.abc import Callable, Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
 from typing import Any, Final
+
+from tests.benchmark_longmemeval.dev2_pilot import answer_conversation_ids
 
 LABELLER_MODEL: Final[str] = "openrouter/openai/gpt-6-luna"
 LABELLER_ROUTE_ID: Final[str] = "luna-azure-eu"
@@ -281,12 +288,301 @@ def artifact_hashes() -> dict[str, str]:
     }
 
 
+# --- ``label`` command --------------------------------------------------------
+#
+# The runbook (`dev2_labelling.md`) owns the route precondition, the attestation
+# and the cost gate. This section only wires them: the call, the attestation, the
+# route check, the memory reader and the decryption are injected, so the tests
+# drive the whole flow with fakes and no provider, database or dataset is touched
+# by this module's tests.
+
+LABEL_RECORD_SCHEMA: Final[str] = "dev2-labelling/1"
+
+
+class _NullScope:
+    """The stand-in account scope: the tests are not inside a benchmark account."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+def verify_label_route() -> Any:
+    """Pin ``LABELLER_ROUTE_ID`` exactly, as ``run_live`` pins its own route."""
+    from orchestrator.entitlements.policy import load_inference_policy
+    from orchestrator.memory import embedding_adapter
+
+    policy = load_inference_policy()
+    route = policy.routes.get(LABELLER_ROUTE_ID)
+    if route is None or not route.is_approved(policy.requirements):
+        reasons = (
+            route.rejection_reasons(policy.requirements)
+            if route is not None
+            else ("route_missing",)
+        )
+        raise ValueError(f"Labeller route unapproved: {','.join(reasons)}")
+    expected = {
+        "only": ["azure/eu"],
+        "order": ["azure/eu"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+    }
+    actual = dict(route.transport_payload(policy.requirements)["extra_body"]["provider"])
+    # transport_payload always adds the route's own price ceiling (policy.py:997);
+    # pin it separately so the privacy/pinning fields still compare exactly.
+    max_price = actual.pop("max_price", None)
+    if (
+        route.route_id != LABELLER_ROUTE_ID
+        or route.model != LABELLER_MODEL
+        or route.provider != "openrouter"
+        or route.endpoint != embedding_adapter.ENDPOINT
+        or actual != expected
+        or route.price_ceiling is None
+        or max_price != route.price_ceiling.as_max_price()
+    ):
+        raise ValueError("Labeller route/pinning/ZDR mismatch")
+    return route
+
+
+def _response_text(receipt: Mapping[str, Any]) -> str:
+    """The single completion's content; a refusal or a tool call is an error."""
+    choices = receipt.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise ValueError("Labeller response must carry exactly one choice")
+    message = choices[0].get("message") if isinstance(choices[0], Mapping) else None
+    if not isinstance(message, Mapping):
+        raise ValueError("Labeller response message missing")
+    if message.get("refusal") or message.get("tool_calls"):
+        raise ValueError("Labeller response refused or called a tool")
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise ValueError("Labeller response content missing")
+    return content
+
+
+def _serving_provider(receipt: Mapping[str, Any]) -> str | None:
+    provider = receipt.get("provider")
+    return provider if isinstance(provider, str) else None
+
+
+async def label_questions(
+    *,
+    question_rows: Sequence[Mapping[str, Any]],
+    checkpoint: Mapping[str, Any],
+    output_path: Path | str,
+    max_spend_usd: Decimal,
+    call: Callable[[Mapping[str, Any]], Any],
+    check_attestation: Callable[[], Any],
+    verify_route: Callable[[], Any],
+    memory_reader: Callable[[str, Sequence[Any]], Any],
+    decrypt: Callable[[str], str],
+    account_scope: Callable[[str], Any] | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> dict[str, Any]:
+    """Label every question once, sequentially, with no retry.
+
+    Attestation and the route pin run first: if either refuses, zero calls are
+    made. A question whose answer sessions hold no memories is recorded as not
+    answerable from the store and never called. The loop stops before a call when
+    the cumulative reported cost has reached ``max_spend_usd``. Memory text and
+    raw responses are never written, logged or put in an exception message.
+    """
+    from scripts.memory_query_decomposition import receipt_dict, reported_cost
+
+    pending = check_attestation()
+    if inspect.isawaitable(pending):
+        await pending
+    pending_route = verify_route()
+    if inspect.isawaitable(pending_route):
+        await pending_route
+
+    scope = account_scope or (lambda _user_id: _NullScope())
+    total = Decimal(0)
+    calls = 0
+    entries: list[dict[str, Any]] = []
+    stop_reason: str | None = None
+
+    for row in question_rows:
+        if stop_reason is not None:
+            break
+        question_id = str(row["question_id"])
+        user_id = str(row["user_id"])
+        conversation_ids = answer_conversation_ids(
+            checkpoint, question_id, [str(value) for value in row.get("answer_session_ids") or []]
+        )
+        memories = await load_answer_session_memories(
+            memory_reader, decrypt, user_id, list(conversation_ids.values())
+        )
+        if not memories:
+            entries.append(
+                {
+                    "question_id": question_id,
+                    "schema_valid": False,
+                    "answerable_from_store": False,
+                    "reason": "no_memories",
+                    "calls": 0,
+                    "cost_usd": "0",
+                    "latency_seconds": 0.0,
+                    "serving_provider": None,
+                }
+            )
+            continue
+        if total >= max_spend_usd:
+            stop_reason = "spend_cap"
+            break
+
+        item = LabelInput(
+            question_id=question_id,
+            question=str(row["question"]),
+            reference_answer=str(row["answer"]),
+            memories=memories,
+        )
+        payload = {"_route_id": LABELLER_ROUTE_ID, "_exact_model": True, **build_request(item)}
+        started = clock()
+        calls += 1
+        try:
+            async with scope(user_id):
+                response = call(dict(payload))
+                if inspect.isawaitable(response):
+                    response = await response
+        except Exception:
+            # The cause can carry memory text or a raw response, so it is dropped.
+            raise ValueError(f"Labeller dispatch failed: {question_id}") from None
+        latency = max(clock() - started, 0.0)
+        receipt = receipt_dict(response)
+        cost = reported_cost(receipt)
+        total += cost
+
+        try:
+            label = parse_label(item, _response_text(receipt))
+        except ValueError:
+            label = None
+        entry: dict[str, Any] = {
+            "question_id": question_id,
+            "schema_valid": label is not None,
+            "calls": 1,
+            "cost_usd": str(cost),
+            "latency_seconds": latency,
+            "serving_provider": _serving_provider(receipt),
+        }
+        if label is None:
+            entry["reason"] = "parse_failure"
+        else:
+            entry["answerable_from_store"] = label.answerable_from_store
+            entry["memory_ids"] = list(label.memory_ids)
+            entry["note"] = label.note
+        entries.append(entry)
+
+    document = {
+        "schema": LABEL_RECORD_SCHEMA,
+        "route_id": LABELLER_ROUTE_ID,
+        "max_spend_usd": str(max_spend_usd),
+        "total_cost_usd": str(total),
+        "calls": calls,
+        "stop_reason": stop_reason,
+        "questions": entries,
+    }
+    with open(output_path, "x", encoding="utf-8") as handle:
+        json.dump(document, handle, indent=2, sort_keys=True, allow_nan=False)
+        handle.write("\n")
+    return document
+
+
+async def _run_label(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    checkpoint: Mapping[str, Any],
+    output_path: Path | str,
+    max_spend_usd: Decimal,
+) -> dict[str, Any]:
+    """Build the real collaborators for ``label``. The tests never reach here."""
+    import asyncpg
+
+    from orchestrator import compute_runtime
+    from orchestrator.config import get_settings
+    from orchestrator.entitlements import attestation
+    from orchestrator.memory.encryption import ContentEncryption
+    from uuid import UUID
+
+    settings = get_settings()
+    pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=1)
+    try:
+        connection = await asyncpg.connect(settings.database_url)
+        try:
+            encryption = ContentEncryption(settings.daemon_encryption_key)
+
+            def account_scope(user_id: str) -> Any:
+                return compute_runtime.account_compute(
+                    pool,
+                    UUID(user_id),
+                    operation="chat",
+                    background=True,
+                    profile="background",
+                )
+
+            async def call(payload: Mapping[str, Any]) -> Any:
+                return await compute_runtime.guarded_completion(**payload)
+
+            def memory_reader(sql: str, params: Sequence[Any]) -> Any:
+                return connection.fetch(sql, *params)
+
+            return await label_questions(
+                question_rows=rows,
+                checkpoint=checkpoint,
+                output_path=output_path,
+                max_spend_usd=max_spend_usd,
+                call=call,
+                check_attestation=lambda: attestation.check_once(pool),
+                verify_route=verify_label_route,
+                memory_reader=memory_reader,
+                decrypt=encryption.decrypt,
+                account_scope=account_scope,
+            )
+        finally:
+            await connection.close()
+    finally:
+        await pool.close()
+
+
+def label_main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="dev2_labelling.py label",
+        description="Label the dev2 answer-session memories once, with no retry.",
+    )
+    parser.add_argument("--question-rows", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--max-spend-usd", type=Decimal, required=True)
+    args = parser.parse_args(argv)
+
+    rows = json.loads(args.question_rows.read_text(encoding="utf-8"))
+    if not isinstance(rows, list):
+        raise ValueError("--question-rows must be a JSON list")
+    checkpoint = json.loads(args.checkpoint.read_text(encoding="utf-8"))
+    if not isinstance(checkpoint, dict):
+        raise ValueError("--checkpoint must be a JSON object")
+    document = asyncio.run(
+        _run_label(
+            rows=rows,
+            checkpoint=checkpoint,
+            output_path=args.output,
+            max_spend_usd=args.max_spend_usd,
+        )
+    )
+    return 0 if document["stop_reason"] is None else 1
+
+
 __all__ = [
     "LABELLER_MAX_TOKENS",
     "LABELLER_MODEL",
     "LABELLER_REASONING_EFFORT",
     "LABELLER_ROUTE_ID",
     "LABELLER_SEED",
+    "LABEL_RECORD_SCHEMA",
     "LABEL_SCHEMA",
     "MEMORY_SQL",
     "PROMPT_V1",
@@ -294,8 +590,11 @@ __all__ = [
     "LabelInput",
     "artifact_hashes",
     "build_request",
+    "label_main",
+    "label_questions",
     "load_answer_session_memories",
     "parse_label",
     "request_template",
     "spot_check_sample",
+    "verify_label_route",
 ]

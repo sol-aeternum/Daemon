@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from tests.benchmark_longmemeval import dev2_labelling
 from tests.benchmark_longmemeval.dev2_labelling import (
     LABELLER_MODEL,
     LABELLER_ROUTE_ID,
@@ -225,3 +227,213 @@ def test_spot_check_sample_minimum_and_determinism() -> None:
 def test_spot_check_sample_rejects_impossible_fraction() -> None:
     with pytest.raises(ValueError):
         spot_check_sample(["a"], fraction=0.0)
+
+
+# --- ``label`` command --------------------------------------------------------
+#
+# Fakes only: no provider, database or dataset is touched.
+
+SENTINEL = "SENTINEL-MEMORY-TEXT-4a1f"
+LABEL_TEXT = '{"memory_ids": ["m1"], "answerable_from_store": true, "note": "the river is named"}'
+
+
+def _checkpoint(*pairs: tuple[str, str, str]) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    for question_id, session_id, conversation_id in pairs:
+        results[f"{question_id}:0"] = {
+            "status": "complete",
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+        }
+    return {"phases": {"ingest": {"results": results, "pending_sessions": {}}}}
+
+
+def _row(question_id: str = "q1", session_id: str = "s1") -> dict[str, Any]:
+    return {
+        "question_id": question_id,
+        "question": "Where did I park?",
+        "answer": "By the river.",
+        "answer_session_ids": [session_id],
+        "user_id": f"user-{question_id}",
+    }
+
+
+def _receipt(content: str, *, cost: str = "0.01", provider: str = "azure") -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "usage": {"cost": cost},
+        "choices": [{"message": {"content": content}}],
+    }
+
+
+def _run(
+    tmp_path: Any,
+    *,
+    rows: list[dict[str, Any]],
+    checkpoint: dict[str, Any],
+    call: Any,
+    check_attestation: Any = None,
+    verify_route: Any = None,
+    memory_reader: Any = None,
+    max_spend: str = "1.00",
+    name: str = "labels.json",
+) -> tuple[dict[str, Any], Any]:
+    output = tmp_path / name
+    document = asyncio.run(
+        dev2_labelling.label_questions(
+            question_rows=rows,
+            checkpoint=checkpoint,
+            output_path=output,
+            max_spend_usd=Decimal(max_spend),
+            call=call,
+            check_attestation=check_attestation or (lambda: None),
+            verify_route=verify_route or (lambda: None),
+            memory_reader=memory_reader or (lambda user_id, ids: [("m1", SENTINEL)]),
+            decrypt=lambda text: text,
+        )
+    )
+    return document, output
+
+
+def test_attestation_refusal_makes_zero_calls(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def refuse() -> None:
+        raise ValueError("attestation refused")
+
+    with pytest.raises(ValueError, match="attestation refused"):
+        _run(
+            tmp_path,
+            rows=[_row()],
+            checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+            call=lambda payload: calls.append(payload),
+            check_attestation=refuse,
+        )
+    assert calls == []
+
+
+def test_route_refusal_makes_zero_calls(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def refuse() -> None:
+        raise ValueError("route unapproved")
+
+    with pytest.raises(ValueError, match="route unapproved"):
+        _run(
+            tmp_path,
+            rows=[_row()],
+            checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+            call=lambda payload: calls.append(payload),
+            verify_route=refuse,
+        )
+    assert calls == []
+
+
+def test_parse_failure_records_schema_invalid_without_retry(tmp_path: Any) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def call(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        return _receipt("not a label")
+
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=call,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["_route_id"] == LABELLER_ROUTE_ID
+    assert calls[0]["_exact_model"] is True
+    assert calls[0]["model"] == LABELLER_MODEL
+    entry = document["questions"][0]
+    assert entry["schema_valid"] is False
+    assert entry["reason"] == "parse_failure"
+    text = output.read_text(encoding="utf-8")
+    assert "not a label" not in text
+    assert SENTINEL not in text
+
+
+def test_spend_cap_stops_before_the_next_call(tmp_path: Any) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def call(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        return _receipt(LABEL_TEXT, cost="0.05")
+
+    document, _ = _run(
+        tmp_path,
+        rows=[_row("q1"), _row("q2", "s2")],
+        checkpoint=_checkpoint(
+            ("q1", "s1", "11111111-1111-1111-1111-111111111111"),
+            ("q2", "s2", "22222222-2222-2222-2222-222222222222"),
+        ),
+        call=call,
+        max_spend="0.05",
+    )
+
+    assert len(calls) == 1
+    assert document["stop_reason"] == "spend_cap"
+    assert len(document["questions"]) == 1
+    assert document["total_cost_usd"] == "0.05"
+
+
+def test_memory_text_never_reaches_the_output(tmp_path: Any) -> None:
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: _receipt(LABEL_TEXT),
+    )
+
+    entry = document["questions"][0]
+    assert entry["schema_valid"] is True
+    assert entry["serving_provider"] == "azure"
+    assert entry["memory_ids"] == ["m1"]
+    text = output.read_text(encoding="utf-8")
+    assert SENTINEL not in text
+
+
+def test_dispatch_failure_message_carries_no_memory_text(tmp_path: Any) -> None:
+    def call(payload: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError(f"provider echoed {SENTINEL}")
+
+    with pytest.raises(ValueError) as raised:
+        _run(
+            tmp_path,
+            rows=[_row()],
+            checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+            call=call,
+        )
+    assert SENTINEL not in str(raised.value)
+    assert not (tmp_path / "labels.json").exists()
+
+
+def test_no_answer_memories_makes_no_call(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: calls.append(payload),
+        memory_reader=lambda user_id, ids: [],
+    )
+
+    assert calls == []
+    entry = document["questions"][0]
+    assert entry["answerable_from_store"] is False
+    assert entry["reason"] == "no_memories"
+    assert entry["calls"] == 0
+
+
+def test_output_is_never_overwritten(tmp_path: Any) -> None:
+    (tmp_path / "labels.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        _run(
+            tmp_path,
+            rows=[_row()],
+            checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+            call=lambda payload: _receipt(LABEL_TEXT),
+        )

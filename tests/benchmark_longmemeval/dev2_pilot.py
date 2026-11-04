@@ -22,16 +22,23 @@ connection, the child process and the captured log.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import math
 import os
 import shutil
+import signal
+import subprocess
+import sys
+import time
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Protocol
+from urllib.parse import urlsplit
 
 from tests.benchmark_longmemeval.dev2 import (
     QuestionAggregate,
@@ -340,6 +347,9 @@ def prepare(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens[:1] == ["run-arm"]:
+        raise SystemExit(run_arm_main(tokens[1:]))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--dev2", type=Path, required=True)
@@ -1098,6 +1108,278 @@ def answer_conversation_ids(
             f"{len(missing)} answer session(s) of {question_id} have no completed ingest result"
         )
     return mapping
+
+
+# --- ``run-arm`` command ------------------------------------------------------
+#
+# This is the only place a process is spawned, a connection is opened and a
+# signal is sent. ``run_arm_command`` takes every one of those as a factory so
+# the tests drive it with fakes: the test suite starts no process, opens no
+# connection, reads no dataset and calls no provider.
+
+RUN_ARM_DB_NAME: Final[str] = "daemon_lme_bench_dev2"
+SHARED_DB_NAME: Final[str] = "daemon_lme_bench"
+CHECKPOINT_NAME: Final[str] = "longmemeval_checkpoint.json"
+CHILD_LOG_NAME: Final[str] = "child.log"
+POLL_SECONDS: Final[float] = 15.0
+GRACE_SECONDS: Final[float] = 60.0
+#: Never passed to the child: each one would weaken the arm's evidence.
+FORBIDDEN_CHILD_FLAGS: Final[tuple[str, ...]] = (
+    "--retry-failed-sessions",
+    "--allow-state-mismatch",
+    "--allow-code-change",
+)
+
+
+def db_name_from_dsn(dsn: str) -> str | None:
+    """Database name of a postgres URL, ignoring credentials and query string."""
+    name = urlsplit(dsn).path.lstrip("/")
+    return name or None
+
+
+def check_run_arm_database(dsn: str | None) -> str:
+    """Refuse unless ``DATABASE_URL`` names exactly the isolated dev2 database."""
+    name = db_name_from_dsn(dsn or "")
+    if name == SHARED_DB_NAME:
+        raise ValueError(f"run-arm refuses the shared {SHARED_DB_NAME} database")
+    if name != RUN_ARM_DB_NAME:
+        raise ValueError(f"run-arm requires DATABASE_URL to name exactly {RUN_ARM_DB_NAME}")
+    return name
+
+
+def check_clean_tree(porcelain: str) -> None:
+    """Refuse to measure an arm built from uncommitted state."""
+    if porcelain.strip():
+        raise ValueError("run-arm requires a clean git tree")
+
+
+def checkpoint_path(output_dir: Path | str) -> Path:
+    return Path(output_dir) / CHECKPOINT_NAME
+
+
+def check_interrupt_target(
+    output_dir: Path | str, *, interrupt_after_completed: int | None, resume: bool
+) -> None:
+    """An interrupt run starts in a fresh directory unless it is a resume."""
+    if interrupt_after_completed is None or resume:
+        return
+    if checkpoint_path(output_dir).exists():
+        raise ValueError("output dir already holds a checkpoint; pass --resume to continue")
+
+
+def file_sha256(path: Path | str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def child_command(
+    *, arm_dataset: Path | str, output_dir: Path | str, concurrency: int, python: str
+) -> list[str]:
+    """The exact ingest command, with none of the evidence-weakening flags."""
+    if isinstance(concurrency, bool) or concurrency < 1:
+        raise ValueError("concurrency must be at least 1")
+    command = [
+        str(python),
+        "-m",
+        "orchestrator.eval.longmemeval",
+        "ingest",
+        "--dataset",
+        str(arm_dataset),
+        "--output-dir",
+        str(output_dir),
+        "--concurrency",
+        str(concurrency),
+    ]
+    if any(flag in command for flag in FORBIDDEN_CHILD_FLAGS):
+        raise ValueError("child command must not weaken the arm")
+    return command
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def build_record(
+    *,
+    result: Mapping[str, Any],
+    code_sha: str,
+    dataset_sha256: str,
+    started_utc: str,
+    ended_utc: str,
+) -> dict[str, Any]:
+    """Numbers, hashes and reason codes only: no question or session text."""
+    return {
+        "schema": "dev2-pilot-run-arm/1",
+        "code_sha": code_sha,
+        "arm_dataset_sha256": dataset_sha256,
+        "started_utc": started_utc,
+        "ended_utc": ended_utc,
+        "run_arm": dict(result),
+    }
+
+
+def write_record(path: Path | str, payload: Mapping[str, Any]) -> None:
+    """``open(..., "x")``: a record is never overwritten, resume included."""
+    with open(path, "x", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
+        handle.write("\n")
+
+
+def make_spawn(log_path: Path | str) -> Callable[[Sequence[str]], ProcessHandle]:
+    """A spawn that captures the child's stdout and stderr to one log file."""
+    target = Path(log_path)
+
+    def spawn(command: Sequence[str]) -> ProcessHandle:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(target, "wb")  # kept open until the child exits
+        try:
+            return subprocess.Popen(list(command), stdout=handle, stderr=subprocess.STDOUT)
+        except BaseException:
+            handle.close()
+            raise
+
+    return spawn
+
+
+def send_sigint(process: Any) -> None:
+    """SIGINT is the harness's documented graceful stop; the child exposes ``pid``."""
+    os.kill(int(process.pid), signal.SIGINT)
+
+
+def make_sync_fetchrow(database_url: str) -> Callable[[str], Mapping[str, Any] | None]:
+    """One short-lived asyncpg connection per poll; none is held between polls."""
+
+    def fetchrow(sql: str) -> Mapping[str, Any] | None:
+        async def read() -> Mapping[str, Any] | None:
+            import asyncpg
+
+            connection = await asyncpg.connect(database_url)
+            try:
+                return await connection.fetchrow(sql)
+            finally:
+                await connection.close()
+
+        return asyncio.run(read())
+
+    return fetchrow
+
+
+def run_arm_command(
+    *,
+    arm_dataset: Path | str,
+    output_dir: Path | str,
+    concurrency: int,
+    cap_usd: float,
+    margin_usd: float,
+    max_rate_limited: int,
+    record_path: Path | str,
+    database_url: str | None,
+    status_porcelain: str,
+    code_sha: str,
+    dataset_rows: Sequence[Mapping[str, Any]],
+    spawn: Callable[[Sequence[str]], ProcessHandle],
+    fetchrow_factory: Callable[[], Callable[[str], Mapping[str, Any] | None]],
+    sample_resources: Callable[[], Mapping[str, float]],
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    send_interrupt: Callable[[ProcessHandle], None],
+    interrupt_after_completed: int | None = None,
+    resume: bool = False,
+    now: Callable[[], str] = _utc_now,
+    poll_seconds: float = POLL_SECONDS,
+) -> tuple[dict[str, Any], int]:
+    """Gate, then wire ``run_arm`` with real readers and write the record.
+
+    The three refusals happen before ``spawn`` is called at all: the wrong
+    database, a dirty tree, and an interrupt run pointed at an existing
+    checkpoint without ``--resume``.
+    """
+    check_run_arm_database(database_url)
+    check_clean_tree(status_porcelain)
+    check_interrupt_target(
+        output_dir, interrupt_after_completed=interrupt_after_completed, resume=resume
+    )
+
+    expected_sessions = expected_sessions_from_dataset(dataset_rows)
+    started_utc = now()
+    result = run_arm(
+        command=child_command(
+            arm_dataset=arm_dataset,
+            output_dir=output_dir,
+            concurrency=concurrency,
+            python=sys.executable,
+        ),
+        spawn=spawn,
+        read_spend_usd=make_spend_reader(fetchrow_factory()),
+        read_log_lines=make_log_reader(Path(output_dir) / CHILD_LOG_NAME),
+        read_checkpoint=lambda: read_checkpoint_file(checkpoint_path(output_dir)),
+        sample_resources=sample_resources,
+        clock=clock,
+        sleep=sleep,
+        poll_seconds=poll_seconds,
+        stop_rule=StopRule(
+            cap_usd=cap_usd, margin_usd=margin_usd, max_rate_limited=max_rate_limited
+        ),
+        interrupt_after_completed=interrupt_after_completed,
+        expected_sessions=expected_sessions,
+        send_interrupt=send_interrupt,
+        grace_seconds=GRACE_SECONDS,
+    )
+    record = build_record(
+        result=result,
+        code_sha=code_sha,
+        dataset_sha256=file_sha256(arm_dataset),
+        started_utc=started_utc,
+        ended_utc=now(),
+    )
+    write_record(record_path, record)
+    return record, (1 if result["stop_reason"] else 0)
+
+
+def _git(*args: str) -> str:
+    return subprocess.check_output(["git", *args], text=True).strip()
+
+
+def run_arm_main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="dev2_pilot.py run-arm",
+        description="Run one ingest arm with the pilot guards wired to real readers.",
+    )
+    parser.add_argument("--arm-dataset", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--cap-usd", type=float, default=8.50)
+    parser.add_argument("--margin-usd", type=float, default=1.00)
+    parser.add_argument("--max-rate-limited", type=int, default=0)
+    parser.add_argument("--record", type=Path, required=True)
+    parser.add_argument("--interrupt-after-completed", type=int)
+    parser.add_argument("--resume", action="store_true")
+    args = parser.parse_args(argv)
+
+    database_url = os.environ.get("DATABASE_URL")
+    rows = json.loads(args.arm_dataset.read_text(encoding="utf-8"))
+    record, exit_code = run_arm_command(
+        arm_dataset=args.arm_dataset,
+        output_dir=args.output_dir,
+        concurrency=args.concurrency,
+        cap_usd=args.cap_usd,
+        margin_usd=args.margin_usd,
+        max_rate_limited=args.max_rate_limited,
+        record_path=args.record,
+        database_url=database_url,
+        status_porcelain=_git("status", "--porcelain"),
+        code_sha=_git("rev-parse", "HEAD"),
+        dataset_rows=rows,
+        spawn=make_spawn(args.output_dir / CHILD_LOG_NAME),
+        fetchrow_factory=lambda: make_sync_fetchrow(database_url or ""),
+        sample_resources=sample_resources_psutil_free,
+        sleep=time.sleep,
+        clock=time.monotonic,
+        send_interrupt=send_sigint,
+        interrupt_after_completed=args.interrupt_after_completed,
+        resume=args.resume,
+    )
+    print(f"run-arm stop_reason={record['run_arm']['stop_reason']} record={args.record}")
+    return exit_code
 
 
 if __name__ == "__main__":  # pragma: no cover

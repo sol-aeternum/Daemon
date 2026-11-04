@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -906,3 +907,221 @@ def test_sample_resources_psutil_free_reads_proc_without_psutil(tmp_path: Path) 
     assert "load1" not in absent
     assert "mem_total_bytes" not in absent
     assert "disk_free_bytes" in absent
+
+
+# --- ``run-arm`` command ------------------------------------------------------
+#
+# The command is driven with fakes only: no process, database, provider or
+# dataset read happens here.
+
+
+class _FakeProcess:
+    """A child that reports one live poll, then exits cleanly."""
+
+    pid = 4242
+
+    def __init__(self) -> None:
+        self.live_polls = 1
+
+    def poll(self) -> int | None:
+        if self.live_polls:
+            self.live_polls -= 1
+            return None
+        return 0
+
+    def wait(self) -> int:
+        return 0
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _arm_rows() -> list[dict[str, Any]]:
+    return [{"question_id": "q1", "haystack_sessions": []}]
+
+
+def _run_arm_kwargs(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
+    dataset = tmp_path / "arm.json"
+    dataset.write_text(json.dumps(_arm_rows()), encoding="utf-8")
+    output = tmp_path / "out"
+    output.mkdir(exist_ok=True)
+    clock = _Clock()
+    kwargs: dict[str, Any] = {
+        "arm_dataset": dataset,
+        "output_dir": output,
+        "concurrency": 2,
+        "cap_usd": 8.5,
+        "margin_usd": 1.0,
+        "max_rate_limited": 3,
+        "record_path": tmp_path / "record.json",
+        "database_url": "postgresql://u:p@localhost/daemon_lme_bench_dev2",
+        "status_porcelain": "",
+        "code_sha": "c" * 40,
+        "dataset_rows": _arm_rows(),
+        "spawn": lambda command: _FakeProcess(),
+        "fetchrow_factory": lambda: lambda sql: {"settled_microusd": 0, "held_microusd": 0},
+        "sample_resources": dict,
+        "sleep": clock.sleep,
+        "clock": clock,
+        "send_interrupt": lambda process: None,
+        "now": lambda: "2026-11-04T00:00:00+00:00",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_child_command_is_exact_and_weakening_flags_are_absent() -> None:
+    command = dev2_pilot.child_command(
+        arm_dataset=Path("arm.json"),
+        output_dir=Path("out"),
+        concurrency=4,
+        python="/usr/bin/python3",
+    )
+    assert command == [
+        "/usr/bin/python3",
+        "-m",
+        "orchestrator.eval.longmemeval",
+        "ingest",
+        "--dataset",
+        "arm.json",
+        "--output-dir",
+        "out",
+        "--concurrency",
+        "4",
+    ]
+    for flag in dev2_pilot.FORBIDDEN_CHILD_FLAGS:
+        assert flag not in command
+
+
+def test_db_name_from_dsn_ignores_credentials_and_query() -> None:
+    assert dev2_pilot.db_name_from_dsn(
+        "postgresql://u:p@h:5432/daemon_lme_bench_dev2?sslmode=x"
+    ) == ("daemon_lme_bench_dev2")
+    assert dev2_pilot.db_name_from_dsn("") is None
+    assert dev2_pilot.check_run_arm_database("postgresql://u:p@h/daemon_lme_bench_dev2") == (
+        "daemon_lme_bench_dev2"
+    )
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        None,
+        "",
+        "postgresql://u:p@localhost/daemon_lme_bench",
+        "postgresql://u:p@localhost/daemon_lme_bench_dev2_backup",
+        "postgresql://u:p@localhost/postgres",
+    ],
+)
+def test_run_arm_refuses_a_wrong_database_before_spawning(tmp_path: Path, dsn: str | None) -> None:
+    spawned: list[Sequence[str]] = []
+    with pytest.raises(ValueError):
+        dev2_pilot.run_arm_command(
+            **_run_arm_kwargs(
+                tmp_path,
+                database_url=dsn,
+                spawn=lambda command: spawned.append(command) or _FakeProcess(),
+            )
+        )
+    assert spawned == []
+
+
+def test_run_arm_refuses_a_dirty_tree_before_spawning(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    with pytest.raises(ValueError, match="clean git tree"):
+        dev2_pilot.run_arm_command(
+            **_run_arm_kwargs(
+                tmp_path,
+                status_porcelain=" M tests/benchmark_longmemeval/dev2_pilot.py\n",
+                spawn=lambda command: spawned.append(command) or _FakeProcess(),
+            )
+        )
+    assert spawned == []
+
+
+def test_interrupt_run_refuses_an_existing_checkpoint_without_resume(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    output.mkdir()
+    dev2_pilot.checkpoint_path(output).write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="--resume"):
+        dev2_pilot.check_interrupt_target(output, interrupt_after_completed=1, resume=False)
+    dev2_pilot.check_interrupt_target(output, interrupt_after_completed=1, resume=True)
+    dev2_pilot.check_interrupt_target(output, interrupt_after_completed=None, resume=False)
+
+
+def test_run_arm_refuses_a_checkpoint_without_resume_before_spawning(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    output.mkdir()
+    dev2_pilot.checkpoint_path(output).write_text("{}", encoding="utf-8")
+    spawned: list[Sequence[str]] = []
+    with pytest.raises(ValueError, match="--resume"):
+        dev2_pilot.run_arm_command(
+            **_run_arm_kwargs(
+                tmp_path,
+                interrupt_after_completed=2,
+                spawn=lambda command: spawned.append(command) or _FakeProcess(),
+            )
+        )
+    assert spawned == []
+
+
+def test_run_arm_wires_real_readers_and_writes_the_record(tmp_path: Path) -> None:
+    dataset = tmp_path / "arm.json"
+    spawned: list[Sequence[str]] = []
+    spend_sql: list[str] = []
+
+    def fetchrow(sql: str) -> Mapping[str, Any] | None:
+        spend_sql.append(sql)
+        return {"settled_microusd": 1_000_000, "held_microusd": 0}
+
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            spawn=lambda command: spawned.append(command) or _FakeProcess(),
+            fetchrow_factory=lambda: fetchrow,
+        )
+    )
+
+    assert exit_code == 0
+    assert record["run_arm"]["stop_reason"] is None
+    assert record["code_sha"] == "c" * 40
+    assert record["arm_dataset_sha256"] == hashlib.sha256(dataset.read_bytes()).hexdigest()
+    assert record["started_utc"] == record["ended_utc"] == "2026-11-04T00:00:00+00:00"
+    assert json.loads((tmp_path / "record.json").read_text(encoding="utf-8")) == record
+    assert spend_sql == [SPEND_SQL] * 3
+    assert spawned == [
+        dev2_pilot.child_command(
+            arm_dataset=tmp_path / "arm.json",
+            output_dir=tmp_path / "out",
+            concurrency=2,
+            python=sys.executable,
+        )
+    ]
+
+
+def test_run_arm_exits_nonzero_when_a_stop_reason_is_set(tmp_path: Path) -> None:
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            cap_usd=1.0,
+            margin_usd=0.5,
+            fetchrow_factory=lambda: lambda sql: {"settled_microusd": 900_000, "held_microusd": 0},
+        )
+    )
+    assert record["run_arm"]["stop_reason"] == STOP_SPEND
+    assert exit_code == 1
+
+
+def test_write_record_never_overwrites(tmp_path: Path) -> None:
+    path = tmp_path / "record.json"
+    dev2_pilot.write_record(path, {"a": 1})
+    with pytest.raises(FileExistsError):
+        dev2_pilot.write_record(path, {"a": 2})
