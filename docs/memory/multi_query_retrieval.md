@@ -108,7 +108,7 @@ Sub-query rows store `query_text=""` and `query_embedding=NULL`, retaining model
 candidate/selected IDs and role. No component text, derived vectors or keyed
 hashes are stored. Suppress text before every log exit, including combined/L0,
 normal, empty and lexical paths; candidate scores, debug/error logs and metrics
-must not copy it. Original-query readers filter sub rows before exact/fuzzy
+must not copy it. Diagnostics readers filter sub rows before exact/fuzzy
 lookups and before fuzzy `LIMIT 50`. Original plaintext is pre-existing and out
 of scope, tracked in #663. This PR neither claims log encryption nor retrofits
 it, and does not expand retention.
@@ -190,6 +190,14 @@ in the env-parity test in the same change; add no wildcard exclusions. No
 dependencies, commercial plan, SSE event or unrelated entitlement changes.
 No feature-matrix row is warranted: this is default-off internal retrieval
 infrastructure, not a promoted user-visible client capability.
+
+## Rollout
+
+Apply migration 060 before deploying this code, even with the flag off:
+diagnostics readers always require `query_role`. Flag-off inserts retain the
+legacy statement when the role is `None`; flag-on inserts need the column too.
+The exposure sweep remains compatible with pre-060 evidence databases, matching
+exact non-empty query text and model instead of filtering by role.
 
 ## Latency, cost and failure behaviour
 

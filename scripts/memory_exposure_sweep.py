@@ -178,7 +178,6 @@ def select_logged_vector(
         row
         for row in rows
         if str(row["user_id"]) == str(user_id)
-        and row.get("query_role") in (None, "original")
         and row["query_text"] == text
         and row["query_embedding_model"] == model
     ]
@@ -482,8 +481,7 @@ async def sweep_snapshot(
     logged = await reader.fetch(
         "SELECT id::text AS log_id, user_id, query_text, query_embedding_model,"
         " query_embedding::text AS query_embedding, created_at FROM retrieval_log"
-        " WHERE user_id = ANY($1::uuid[]) AND (query_role IS NULL OR query_role = 'original')"
-        " ORDER BY user_id, created_at, id",
+        " WHERE user_id = ANY($1::uuid[]) ORDER BY user_id, created_at, id",
         list(users.values()),
     )
     vectors = {}

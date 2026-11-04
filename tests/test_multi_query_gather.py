@@ -469,6 +469,27 @@ async def test_round_robin_rejected_before_any_work(setup):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_evaluation_round_robin_overrides_valid_additive_setting(setup, enabled):
+    setup.settings.memory_multi_query_enabled = enabled
+    inputs = await injection.gather_memory_context_inputs(
+        Store(),
+        user_id=USER_ID,
+        pipeline="cloud",
+        query_text="question",
+        record_side_effects=False,
+        subquery_provider=Provider(),
+        evaluation=True,
+        evaluation_merge="round_robin",
+    )
+    assert setup.settings.memory_multi_query_merge == "additive"
+    assert [row["id"] for row in inputs.retrieved] == [
+        uuid.UUID(int=i) for i in (1, 6, 9, 2, 7, 10, 3, 8, 11, 4, 5)
+    ]
+    setup.batch.assert_awaited_once_with(["Cat name", "Dog name"])
+
+
+@pytest.mark.asyncio
 async def test_cancellation_drains_both_arms_and_summary(setup, monkeypatch):
     started = [asyncio.Event() for _ in range(3)]
     stopped = [False] * 3

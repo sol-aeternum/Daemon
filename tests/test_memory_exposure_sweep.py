@@ -242,6 +242,46 @@ def test_summary_attributes_prefix_vs_non_target_budget_loss():
     }
 
 
+@pytest.mark.parametrize("include_original", [False, True])
+def test_blank_component_logged_vector_is_never_selected(include_original):
+    user = uuid.UUID(int=10)
+    original = {
+        "log_id": "original",
+        "user_id": user,
+        "query_text": "Ari tea?",
+        "query_embedding_model": "model",
+        "query_embedding": "[1,2]",
+        "created_at": datetime(2026, 11, 2, 10, 0, tzinfo=UTC),
+    }
+    component = {
+        **original,
+        "log_id": "component",
+        "query_text": "",
+        "query_embedding": None,
+        "query_role": "sub:0",
+    }
+    rows = [component, original] if include_original else [component]
+
+    def select():
+        return sweep.select_logged_vector(
+            rows,
+            user_id=user,
+            text="Ari tea?",
+            model="model",
+            dimensions=2,
+            vector_from=VECTOR_FROM,
+            vector_until=VECTOR_UNTIL,
+        )
+
+    if not include_original:
+        with pytest.raises(ValueError, match="found 0"):
+            select()
+        return
+    vector, ids, stats = select()
+    assert vector == [1.0, 2.0] and ids == ["original"]
+    assert stats["out_of_window_rows"] == 0
+
+
 def test_logged_vector_matches_exact_text_user_model_and_window():
     user = uuid.UUID(int=10)
     row = {

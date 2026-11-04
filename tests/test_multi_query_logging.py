@@ -341,7 +341,16 @@ def test_original_vector_reader_ignores_component_rows(role):
     if role:
         row["query_role"] = role
     vector, ids, stats = sweep.select_logged_vector(
-        [row, {**row, "log_id": "component", "query_role": "sub:0", "query_embedding": None}],
+        [
+            row,
+            {
+                **row,
+                "log_id": "component",
+                "query_text": "",
+                "query_role": "sub:0",
+                "query_embedding": None,
+            },
+        ],
         user_id=USER,
         text="question",
         model="model",
