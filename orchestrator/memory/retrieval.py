@@ -6,13 +6,15 @@ import logging
 import re
 import time
 import uuid
+from functools import wraps
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, ParamSpec, TypeVar, cast
 
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import (
+    raise_if_embedding_accounting_error,
     EmbeddingConfigurationError,
     EmbeddingVectorResult,
     get_primary_embedding_storage_model,
@@ -410,7 +412,11 @@ def _log_retrieval_results(
     include_local: bool,
     include_historical: bool,
     memory_slot: str | None,
+    record_query_text: bool = True,
 ) -> None:
+    if not record_query_text:
+        logger.info("Component memory retrieval returned=%d", len(ranked))
+        return
     logger.info(
         "Memory retrieval query=%r returned=%d include_local=%s include_historical=%s slot=%s",
         _truncate_for_log(query_text),
@@ -447,6 +453,40 @@ def _schedule_memory_touches(store: MemoryStore, memory_ids: list[uuid.UUID]) ->
     _ = asyncio.create_task(_touch())
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _private_query_errors(
+    function: Callable[_P, Awaitable[_R]],
+) -> Callable[_P, Awaitable[_R]]:
+    """Suppress component-bearing exception messages, without hiding accounting failures."""
+
+    @wraps(function)
+    async def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        try:
+            return await function(*args, **kwargs)
+        except Exception as error:
+            if kwargs.get("record_query_text", True) and not str(
+                kwargs.get("query_role", "")
+            ).startswith("sub:"):
+                raise
+            raise_if_embedding_accounting_error(error)
+            raise RuntimeError("Component memory retrieval failed") from None
+
+    return wrapped
+
+
+def _query_log_controls(record_query_text: bool, query_role: str | None) -> dict[str, Any]:
+    controls: dict[str, Any] = {}
+    if not record_query_text:
+        controls["record_query_text"] = False
+    if query_role is not None:
+        controls["query_role"] = query_role
+    return controls
+
+
+@_private_query_errors
 async def retrieve_memories_for_text(
     store: MemoryStore,
     query_text: str,
@@ -467,6 +507,8 @@ async def retrieve_memories_for_text(
     query_embedding_model: str | None = None,
     allow_query_embedding: bool = True,
     touch_results: bool = True,
+    record_query_text: bool = True,
+    query_role: str | None = None,
 ) -> list[dict[str, object]]:
     """Canonical text-query retrieval contract.
 
@@ -476,6 +518,9 @@ async def retrieve_memories_for_text(
     ``touch_results=False`` skips the access-count/last-accessed update, which
     feeds later ranking; only read-only evaluation passes it.
     """
+
+    if query_role is not None and query_role.startswith("sub:"):
+        record_query_text = False
 
     start_time = time.monotonic()
     normalized_query = _normalize_query_text(query_text)
@@ -592,6 +637,7 @@ async def retrieve_memories_for_text(
                 query_embedding_model=embedding_model_used,
                 touch_results=False,
                 scored_candidates_out=partial_scored,
+                **_query_log_controls(record_query_text, query_role),
             )
             for candidate in partial_scored:
                 candidate_id = candidate.get("id")
@@ -659,10 +705,10 @@ async def retrieve_memories_for_text(
             try:
                 await store.log_retrieval(
                     user_id=user_id,
-                    query_text=normalized_query or "",
+                    query_text=(normalized_query or "") if record_query_text else "",
                     query_embedding_model=l0_log_embedding_model
                     or get_settings().embedding_query_model,
-                    query_embedding=l0_log_embedding,
+                    query_embedding=l0_log_embedding if record_query_text else None,
                     candidate_memory_ids=[uuid.UUID(k) for k in combined_candidate_scores],
                     candidate_scores=combined_candidate_scores,
                     selected_memory_ids=combined_selected_ids,
@@ -672,9 +718,13 @@ async def retrieve_memories_for_text(
                     if retrieval_triggered_by is None
                     else None,
                     retrieval_triggered_by=retrieval_triggered_by,
+                    **_query_log_controls(record_query_text, query_role),
                 )
             except Exception:
-                logger.exception("Failed to persist text retrieval log")
+                if record_query_text:
+                    logger.exception("Failed to persist text retrieval log")
+                else:
+                    logger.warning("Failed to persist component retrieval log")
 
         _ = asyncio.create_task(_persist_combined_log())
 
@@ -717,10 +767,10 @@ async def retrieve_memories_for_text(
                 try:
                     await store.log_retrieval(
                         user_id=user_id,
-                        query_text=normalized_query or "",
+                        query_text=(normalized_query or "") if record_query_text else "",
                         query_embedding_model=l0_log_embedding_model
                         or get_settings().embedding_query_model,
-                        query_embedding=l0_log_embedding,
+                        query_embedding=l0_log_embedding if record_query_text else None,
                         candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
                         candidate_scores=candidate_scores,
                         selected_memory_ids=selected_ids,
@@ -730,9 +780,13 @@ async def retrieve_memories_for_text(
                         if retrieval_triggered_by is None
                         else None,
                         retrieval_triggered_by=retrieval_triggered_by,
+                        **_query_log_controls(record_query_text, query_role),
                     )
                 except Exception:
-                    logger.exception("Failed to persist L0 retrieval log")
+                    if record_query_text:
+                        logger.exception("Failed to persist L0 retrieval log")
+                    else:
+                        logger.warning("Failed to persist component L0 retrieval log")
 
             _ = asyncio.create_task(_persist_l0_log())
 
@@ -833,6 +887,7 @@ async def _get_entity_expanded_candidates(
     return entity_linked_memories
 
 
+@_private_query_errors
 async def retrieve_memories(
     store: MemoryStore,
     query_embedding: list[float],
@@ -853,7 +908,11 @@ async def retrieve_memories(
     query_embedding_model: str | None = None,
     touch_results: bool = True,
     scored_candidates_out: list[dict[str, object]] | None = None,
+    record_query_text: bool = True,
+    query_role: str | None = None,
 ) -> list[dict[str, object]]:
+    if query_role is not None and query_role.startswith("sub:"):
+        record_query_text = False
     if allowed_source_conversation_ids is not None and len(allowed_source_conversation_ids) == 0:
         return []
 
@@ -995,6 +1054,7 @@ async def retrieve_memories(
                 include_local=effective_include_local,
                 include_historical=effective_include_historical,
                 memory_slot=normalized_slot,
+                **_query_log_controls(record_query_text, None),
             )
         return []
 
@@ -1054,6 +1114,7 @@ async def retrieve_memories(
             include_local=effective_include_local,
             include_historical=effective_include_historical,
             memory_slot=normalized_slot,
+            **_query_log_controls(record_query_text, None),
         )
 
     if touch_results:
@@ -1093,9 +1154,9 @@ async def retrieve_memories(
             try:
                 await store.log_retrieval(
                     user_id=effective_user_id,
-                    query_text=normalized_query or "",
+                    query_text=(normalized_query or "") if record_query_text else "",
                     query_embedding_model=logged_embedding_model,
-                    query_embedding=query_embedding,
+                    query_embedding=query_embedding if record_query_text else None,
                     candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
                     candidate_scores=candidate_scores,
                     selected_memory_ids=selected_ids,
@@ -1104,9 +1165,13 @@ async def retrieve_memories(
                     conversation_id=conversation_id,
                     retrieval_context=retrieval_context,
                     retrieval_triggered_by=retrieval_triggered_by,
+                    **_query_log_controls(record_query_text, query_role),
                 )
             except Exception:
-                logger.exception("Failed to persist retrieval log")
+                if record_query_text:
+                    logger.exception("Failed to persist retrieval log")
+                else:
+                    logger.warning("Failed to persist component retrieval log")
 
         _ = asyncio.create_task(_persist_log())
 
