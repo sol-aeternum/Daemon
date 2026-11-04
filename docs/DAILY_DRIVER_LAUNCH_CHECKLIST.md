@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `903bf6a379c9cead38338043b013a93ca0477a31` (main verified
-before this synthetic artifact-phase qualification). This checklist separates
+Source checkpoint: `93da43e1a3b0826ff701f280d858ca2dd217a0d1` (main verified
+before this source-only H-owned reservation join). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -105,7 +105,13 @@ without late terminal publication. It also records the still-uncomposed R0
 boundary: direct native reservation does not compare H/SQL parity or poison H on
 an uncertain reservation COMMIT. Those diagnostics do not authorize bypassing H
 or retrying the reservation. The next bounded source contract is an H-owned R0
-join with unchanged restricted SQL and separate P/R0/W ownership; its exact typed
-seams/import guard amendment require approval. See
+join with unchanged restricted SQL and separate P/R0/W ownership. See
 [phase qualification](RESOURCE_OUTPUT_PRESENTATION_JOIN.md#cross-phase-qualification).
 No authenticated transport, complete runtime graph or live acceptance is claimed.
+
+The approved source-only [reservation join](RESOURCE_OUTPUT_RESERVATION_JOIN.md)
+now owns full H/source validation, sequential P and R0 transactions, known COMMIT
+and actual cleanup for the exact retained first-output command. Its exact typed
+guard exception installs no host and changes no SQL permissions. Authenticated
+command preparation/transport, append, complete execution composition, independent
+artifact restore evidence and lifecycle/privacy qualification remain launch gates.

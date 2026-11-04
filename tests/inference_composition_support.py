@@ -177,6 +177,9 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "HistoryObservation",
                                     "HistoryProjection",
                                     "ReservedOutputPublisher",
+                                    "OutputReservations",
+                                    "register_output_job",
+                                    "reserve_output_intent",
                                     "_reserved_transaction",
                                     "_reserved_snapshot",
                                     "_publish_reserved",
@@ -209,6 +212,11 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     violations.append(
                         f"{path}:{node.lineno}:unapproved output publisher construction"
                     )
+                if (
+                    target.endswith("OutputReservations")
+                    and path == "orchestrator/services/restore_history/effects.py"
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved reservation construction")
                 if any(
                     target == n or target.endswith("." + n)
                     for n in (
@@ -219,6 +227,8 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         "_presentation_snapshot",
                         "_presentation_references",
                         "_reserved_namespace",
+                        "register_output_job",
+                        "reserve_output_intent",
                     )
                 ):
                     enclosing = [
@@ -231,6 +241,12 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     expression = ast.unparse(node.func)
                     args = [ast.unparse(arg) for arg in node.args]
                     h_calls: dict[str | None, dict[str, list[str]]] = {
+                        "_reserve_output": {
+                            "publisher._reserved_transaction": [],
+                            "publisher._presentation_snapshot": ["conn", "identity"],
+                            "reservations.register_output_job": ["conn", "identity", "command.job"],
+                            "reservations.reserve_output_intent": ["conn", "identity", "command"],
+                        },
                         "_publish_reserved_output": {
                             "publisher._reserved_transaction": [],
                             "publisher._reserved_snapshot": ["conn", "identity", "intent_id"],
@@ -299,7 +315,17 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         and args == expected_native[(method, expression)]
                         and (not node.keywords or admit)
                     )
-                    if not (h or native):
+                    legacy_r0 = (
+                        path == "orchestrator/resource_csv.py"
+                        and method == "publish"
+                        and not node.keywords
+                        and (expression, args)
+                        in (
+                            ("self.r0.register_output_job", ["conn", "identity", "job"]),
+                            ("self.r0.reserve_output_intent", ["conn", "identity", "command"]),
+                        )
+                    )
+                    if not (h or native or legacy_r0):
                         violations.append(f"{path}:{node.lineno}:unapproved reserved output seam")
         for node in nodes:
             if isinstance(node, ast.ClassDef) and node.name == "TaskStore":
@@ -449,6 +475,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/observation.py", "_lookup"),
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
+                        ("orchestrator/services/restore_history/effects.py", "_reserve_output"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
                         ("orchestrator/services/restore_history/effects.py", "_write_partial"),
                         (

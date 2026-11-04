@@ -131,6 +131,42 @@ def test_invalid_tokens(token):
         codec.validate(replace(command, descriptor_ciphertext=token))
 
 
+def reservation_references_allowed(path: str, source: str) -> bool:
+    """Exact approved H type import; no new admitted module or runtime host."""
+    if (
+        path == "orchestrator/services/restore_history/effects.py"
+        and "artifact_reservations" in source
+    ):
+        if source.count("artifact_reservations") != 1:
+            return False
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return False
+        imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "orchestrator.artifact_reservations"
+        ]
+        if len(imports) != 1:
+            return False
+        node = imports[0]
+        if (
+            node not in tree.body
+            or node.level != 0
+            or len(node.names) != 2
+            or {item.name for item in node.names} != {"OutputReservations", "IntentCommand"}
+            or any(item.asname is not None for item in node.names)
+        ):
+            return False
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            return False
+        source = source.replace(segment, "", 1)
+    return "artifact_reservations" not in source
+
+
 def test_no_runtime_callers_or_import_time_io(monkeypatch):
     root = Path(__file__).resolve().parents[1]
     for base in ("orchestrator", "providers", "scripts"):
@@ -141,7 +177,9 @@ def test_no_runtime_callers_or_import_time_io(monkeypatch):
                 root / "orchestrator/resource_csv.py",
             }:
                 continue
-            assert "artifact_reservations" not in path.read_text(), str(path)
+            assert reservation_references_allowed(
+                path.relative_to(root).as_posix(), path.read_text()
+            ), str(path)
     tree = ast.parse((root / "orchestrator/artifact_reservations.py").read_text())
     assert not any(
         isinstance(n, (ast.Import, ast.ImportFrom)) and "artifact_staging" in ast.unparse(n)

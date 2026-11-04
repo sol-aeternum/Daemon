@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+from orchestrator.artifact_reservations import OutputReservations, IntentCommand
 from orchestrator.attempt_lifecycle import AttemptIdentity
 from orchestrator.resource_store import ReservedOutputPublisher, Publication
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
@@ -155,6 +156,154 @@ class HistoryEffects:
             for e in state.entries
         ):
             raise HistoryError("historical_stop", uncertain=True)
+
+    async def reserve_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        reservations: OutputReservations,
+        r0_pool: asyncpg.Pool,
+        identity: AttemptIdentity,
+        command: IntentCommand,
+        *,
+        deadline: float,
+    ) -> None:
+        """Uncalled first-output reservation; retain this exact packet on failure."""
+        if (
+            type(publisher) is not ReservedOutputPublisher
+            or type(reservations) is not OutputReservations
+            or type(r0_pool) is not asyncpg.Pool
+            or type(identity) is not AttemptIdentity
+            or type(command) is not IntentCommand
+            or r0_pool is self._tasks._pool
+            or r0_pool is publisher._pool
+            or publisher._pool is self._tasks._pool
+            or publisher._presentation_record_limit is None
+        ):
+            raise HistoryError("artifact_composition_refused")
+        deadline = self._admission_deadline(deadline)
+        identity.wire()
+        # Authenticate with the independently supplied backend content cipher,
+        # not merely SQL's opaque-token checks or a caller-created receipt.
+        publisher._descriptors.validate(command)
+        if (
+            command.job.account_id,
+            command.job.account_generation,
+            command.job.task_id,
+            command.binding.lifecycle_id,
+            command.binding.attempt_epoch,
+        ) != (
+            identity.account_id,
+            identity.generation,
+            identity.task_id,
+            identity.lifecycle_id,
+            identity.epoch,
+        ):
+            raise HistoryError("effects_origin_refused")
+        _check_time(deadline)
+        await self._run(
+            lambda limit: self._reserve_output(
+                publisher, reservations, r0_pool, identity, command, limit
+            ),
+            deadline,
+        )
+
+    async def _reserve_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        reservations: OutputReservations,
+        r0_pool: asyncpg.Pool,
+        identity: AttemptIdentity,
+        command: IntentCommand,
+        deadline: float,
+    ) -> None:
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            accepted = self._accepted(state, identity.account_id, identity.task_id)
+            if accepted.account_generation != identity.generation:
+                raise HistoryError("effects_origin_refused")
+            self._no_stop(state, identity.task_id)
+            async with publisher._reserved_transaction() as conn:
+                observed = await publisher._presentation_snapshot(conn, identity)
+                publication_principal = await conn.fetchval("SELECT SESSION_USER::text")
+                if type(publication_principal) is not str:
+                    raise HistoryError("artifact_principal_refused")
+                origin = self._tasks._origin(observed["task"])
+                if (
+                    origin.account_id,
+                    origin.generation,
+                    observed["task"]["conversation_id"],
+                    observed["task"]["result_message_id"],
+                ) != (
+                    accepted.account_id,
+                    accepted.account_generation,
+                    accepted.conversation_id,
+                    accepted.result_message_id,
+                ):
+                    raise HistoryError("effects_origin_refused")
+                _check_time(deadline)
+            # P's account/source locks and actual pool release have settled before
+            # R0 acquisition. Never nest the two native account transactions.
+            _check_time(deadline)
+            async with pool_connection(r0_pool) as conn:
+                try:
+                    if conn.is_in_transaction():
+                        raise HistoryError("effects_transaction_owner_refused")
+                    tx = conn.transaction(isolation="read_committed")
+                    await tx.start()
+                    # Different pool objects can still authenticate as A/W/P.
+                    # Bind this connection to a distinct direct login as well
+                    # as retaining the unchanged native R0 capability preflight.
+                    if (
+                        await conn.fetchval(
+                            "SELECT CURRENT_USER=SESSION_USER AND "
+                            "NOT pg_catalog.pg_has_role(SESSION_USER,$1::name,'MEMBER') AND "
+                            "NOT pg_catalog.pg_has_role(SESSION_USER,$2::name,'MEMBER') AND "
+                            "NOT pg_catalog.pg_has_role(SESSION_USER,$3::name,'MEMBER')",
+                            self._projection.acceptor,
+                            self._projection.worker,
+                            publication_principal,
+                        )
+                        is not True
+                    ):
+                        raise HistoryError("artifact_principal_refused")
+                    await reservations.register_output_job(conn, identity, command.job)
+                    await reservations.reserve_output_intent(conn, identity, command)
+                    _check_time(deadline)
+                    await tx.commit()
+                except BaseException as original:
+                    # Pinned asyncpg can own a separate CancelRequest even after
+                    # the query raises. Drain that physical work before terminate,
+                    # which otherwise cancels and detaches it. Do not send another
+                    # SQL command or promote a lost COMMIT acknowledgement.
+                    try:
+                        native = conn._con
+                        for cancellation in tuple(native._cancellations):
+                            while not cancellation.done():
+                                try:
+                                    await asyncio.shield(cancellation)
+                                except asyncio.CancelledError:
+                                    continue
+                                except BaseException:
+                                    break
+                            try:
+                                cancellation.result()
+                            except BaseException as secondary:
+                                original.add_note(
+                                    "Native reservation cancellation cleanup: "
+                                    + type(secondary).__name__
+                                )
+                    except BaseException as secondary:
+                        original.add_note(
+                            "Native reservation cancellation cleanup failed: "
+                            + type(secondary).__name__
+                        )
+                    try:
+                        conn.terminate()
+                    except BaseException:
+                        original.add_note("Native reservation termination also failed")
+                    raise
+            _check_time(deadline)
+        _check_time(deadline)
 
     async def mark(
         self,
