@@ -1,0 +1,101 @@
+{
+  "cost_cap_usd": "0.10",
+  "decision": {
+    "baseline": "original_k5",
+    "case_count": 5,
+    "flags": [
+      "CEILING_FAILS",
+      "DECOMPOSITION_CANDIDATE",
+      "BUDGET_LIMITED",
+      "MODEL_GAP",
+      "MERGE_LEAD",
+      "COVERAGE_REGRESSION"
+    ],
+    "oracle_ceiling_veto": true,
+    "question_count": 50,
+    "required_cases": 4,
+    "unrenderable_pre_budget_target": "invalid_stop_with_case_and_memory_id"
+  },
+  "decomposition_sha256": "d38b079bc4d47d2e0f315c5b11cfb5d32a9a52ea748f17867a8d9d8c578c0fb4",
+  "depth": 10,
+  "embedding_cap": 165,
+  "generation_sha256": "2415a49f4208e3472e43d0d5632b7f2c0226f6123f6be46f0dec490eb79bfa79",
+  "logical_call_cap": 50,
+  "merges": {
+    "round_robin": "query_order_original_first_skip_duplicates",
+    "rrf": "sum_1_over_60_plus_one_based_rank",
+    "union_rescore": "max_production_final_score_desc_then_memory_id_asc"
+  },
+  "model": "openrouter/openai/gpt-6-luna",
+  "parameters": {
+    "max_tokens": 2048,
+    "other_extra_parameters": [],
+    "reasoning": "profile_default_no_override",
+    "response_format": {
+      "json_schema": {
+        "name": "memory_queries",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "queries": {
+              "items": {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 3,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "queries"
+          ],
+          "type": "object"
+        },
+        "strict": true
+      },
+      "type": "json_schema"
+    },
+    "seed": 42,
+    "stream": false,
+    "temperature": "omitted"
+  },
+  "profile": "background",
+  "prompt_sha256": "79f69f54c7fc8aeed13392a845f020659125ae216a4a867eb08c8f97f2de0df0",
+  "query_cap": 3,
+  "retry_policy": {
+    "http_429": 2,
+    "identical_request": true,
+    "parse": 1
+  },
+  "route_id": "luna-azure-eu",
+  "rrf_constant": 60,
+  "rrf_ties": [
+    "max_production_final_score_desc",
+    "memory_id_asc"
+  ],
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "queries": {
+        "items": {
+          "maxLength": 300,
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxItems": 3,
+        "minItems": 1,
+        "type": "array"
+      }
+    },
+    "required": [
+      "queries"
+    ],
+    "type": "object"
+  },
+  "widths": [
+    5,
+    10
+  ]
+}
