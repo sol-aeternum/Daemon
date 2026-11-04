@@ -30,7 +30,7 @@ Each arm finishes before the next starts; c=4 carries the resume test (§4).
 - `arm_c1.json`: `007f0edee6094b3f649dbb6c2a09ee5a75c18d799e7ebbf1fdc5637c600f0d3a`
 - `arm_c4.json`: `94b5562aa54e5b89a44f01df440bb3d6bf8590a884e6fab6f87a0001a8262381`
 - `arm_c8.json`: `0d9a011c8b55dc77205dd24f8a7f5192594a7f77a8e99c3f2729fdb663af8223`
-- Tooling at `4500f526b9d5bddde91b1df81fcee4a12ca45ce9`. **The run's code pin is the commit adding this block**, which differs from it only in this file.
+- Tooling at `4500f526b9d5bddde91b1df81fcee4a12ca45ce9`. **The run's code pin is the commit that last changed this file**, which differs from the tooling only in this file.
 
 Volumes: 671 sessions and 7,043 turns (c=1 98, c=4 185, c=8 390 sessions; two sessions are shared across arms). Projected ingest: $5.39 by tokens, $6.07 by sessions, from the Phase D ledger.
 
@@ -145,8 +145,9 @@ Stop the pilot immediately, do not retry, and report:
    labelling**, cumulative across arms. Stop margin is applied before the cap by
    the driver (`StopRule.cap_usd=8.50`, `StopRule.margin_usd=1.00`).
 2. `extraction_failed` at or above **1%** in any arm (with at least one failure).
-3. An unbounded 429 loop — `rate_limited` above the pre-registered
-   `max_rate_limited` for the arm.
+3. An unbounded 429 loop — `rate_limited` above `max_rate_limited` = **100** for the
+   arm: about 1% of the roughly 11,700 calls this volume implies at Phase D's 17.4 calls
+   per session. Phase D saw none; isolated retried 429s are not a stop.
 4. The existing `daemon_lme_bench` fingerprint changing at any point.
 5. Free disk below **3×** the projected pilot growth.
 6. A resume that duplicates or loses sessions (§4).
