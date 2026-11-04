@@ -24,7 +24,15 @@ arms by `assign_arms` (round-robin over `(stratum, rank)`):
 Each arm finishes before the next starts; c=4 carries the resume test (§4).
 `ARM_SIZES` in `dev2_pilot.py` is authoritative if it and this table disagree.
 
-<!-- PRIMARY FILLS: pilot IDs manifest hash, arm file hashes (arm_c1/arm_c4/arm_c8), code SHA -->
+**Frozen pins (2026-11-04).** Outside Git, in the task evidence area, because the arm files hold dataset text:
+
+- `pilot_manifest.json` SHA-256: `5228c9ce35005593f6464e02b9d8fb31264580370b3b72e05e2e0b1228e3effe`
+- `arm_c1.json`: `007f0edee6094b3f649dbb6c2a09ee5a75c18d799e7ebbf1fdc5637c600f0d3a`
+- `arm_c4.json`: `94b5562aa54e5b89a44f01df440bb3d6bf8590a884e6fab6f87a0001a8262381`
+- `arm_c8.json`: `0d9a011c8b55dc77205dd24f8a7f5192594a7f77a8e99c3f2729fdb663af8223`
+- Tooling at `4500f526b9d5bddde91b1df81fcee4a12ca45ce9`. **The run's code pin is the commit adding this block**, which differs from it only in this file.
+
+Volumes: 671 sessions and 7,043 turns (c=1 98, c=4 185, c=8 390 sessions; two sessions are shared across arms). Projected ingest: $5.39 by tokens, $6.07 by sessions, from the Phase D ledger.
 
 ## 2. Pinned ingest
 
