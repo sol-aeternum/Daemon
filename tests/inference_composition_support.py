@@ -176,6 +176,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "HistoryEffects",
                                     "HistoryObservation",
                                     "HistoryProjection",
+                                    "ReservedOutputPublisher",
+                                    "_reserved_transaction",
+                                    "_reserved_snapshot",
+                                    "_publish_reserved",
                                     "_owned",
                                     "_accept_with_stage",
                                     "_mark_with_stage",
@@ -194,6 +198,55 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                             changed = True
             if not changed:
                 break
+        for node in nodes:
+            if isinstance(node, ast.Call):
+                target = name(node.func)
+                if target.endswith("ReservedOutputPublisher"):
+                    violations.append(
+                        f"{path}:{node.lineno}:unapproved output publisher construction"
+                    )
+                if any(
+                    target == n or target.endswith("." + n)
+                    for n in ("_reserved_transaction", "_reserved_snapshot", "_publish_reserved")
+                ):
+                    enclosing = [
+                        f
+                        for f in nodes
+                        if isinstance(f, ast.AsyncFunctionDef)
+                        and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                    ]
+                    method = max(enclosing, key=lambda f: f.lineno).name if enclosing else None
+                    expression = ast.unparse(node.func)
+                    args = [ast.unparse(arg) for arg in node.args]
+                    expected = {
+                        "publisher._reserved_transaction": [],
+                        "publisher._reserved_snapshot": ["conn", "identity", "intent_id"],
+                        "publisher._publish_reserved": ["conn", "identity", "intent_id", "content"],
+                    }
+                    h = (
+                        path == "orchestrator/services/restore_history/effects.py"
+                        and method == "_publish_reserved_output"
+                        and expression in expected
+                        and args == expected[expression]
+                        and not node.keywords
+                    )
+                    native = (
+                        path == "orchestrator/resource_store.py"
+                        and method == "_publish_reserved"
+                        and expression == "self._reserved_snapshot"
+                        and args == ["conn", "identity", "intent"]
+                        and (
+                            not node.keywords
+                            or (
+                                len(node.keywords) == 1
+                                and node.keywords[0].arg == "admit"
+                                and isinstance(node.keywords[0].value, ast.Constant)
+                                and node.keywords[0].value.value is True
+                            )
+                        )
+                    )
+                    if not (h or native):
+                        violations.append(f"{path}:{node.lineno}:unapproved reserved output seam")
         for node in nodes:
             if isinstance(node, ast.ClassDef) and node.name == "TaskStore":
                 for method in node.body:
@@ -344,6 +397,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
                         ("orchestrator/services/restore_history/effects.py", "_write_partial"),
+                        (
+                            "orchestrator/services/restore_history/effects.py",
+                            "_publish_reserved_output",
+                        ),
                         (
                             "orchestrator/services/restore_history/read_supervisor.py",
                             "qualify_read_history",

@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from orchestrator.attempt_lifecycle import AttemptIdentity
+from orchestrator.resource_store import ReservedOutputPublisher, Publication
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks._invocation import InferenceInvocation, block
 from orchestrator.tasks.inference import InferenceRecovery
@@ -359,6 +360,68 @@ class HistoryEffects:
             result = await self._tasks.complete(
                 task, epoch, content=content, message_fields=message_fields, binding=binding
             )
+            _check_time(deadline)
+        _check_time(deadline)
+        return result
+
+    async def publish_reserved_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        identity: AttemptIdentity,
+        intent_id: UUID,
+        content: bytes,
+        *,
+        deadline: float,
+    ) -> Publication:
+        """Uncalled backend catalog phase only; no reservation/card/transport."""
+        if (
+            type(publisher) is not ReservedOutputPublisher
+            or type(identity) is not AttemptIdentity
+            or publisher._pool is self._tasks._pool
+        ):
+            raise HistoryError("artifact_composition_refused")
+        deadline = self._admission_deadline(deadline)
+        return await self._run(
+            lambda limit: self._publish_reserved_output(
+                publisher, identity, intent_id, content, limit
+            ),
+            deadline,
+        )
+
+    async def _publish_reserved_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        identity: AttemptIdentity,
+        intent_id: UUID,
+        content: bytes,
+        deadline: float,
+    ) -> Publication:
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            accepted = self._accepted(state, identity.account_id, identity.task_id)
+            if accepted.account_generation != identity.generation:
+                raise HistoryError("effects_origin_refused")
+            self._no_stop(state, identity.task_id)
+            async with publisher._reserved_transaction() as conn:
+                observed = await publisher._reserved_snapshot(conn, identity, intent_id)
+                origin = self._tasks._origin(observed["task"])
+                if (
+                    origin.account_id,
+                    origin.generation,
+                    observed["task"]["conversation_id"],
+                    observed["task"]["result_message_id"],
+                ) != (
+                    accepted.account_id,
+                    accepted.account_generation,
+                    accepted.conversation_id,
+                    accepted.result_message_id,
+                ):
+                    raise HistoryError("effects_origin_refused")
+                # Same owned P transaction retains source/account locks. The
+                # publisher independently reads/admit-checks again; no supplied
+                # snapshot grants filesystem effects.
+                result = await publisher._publish_reserved(conn, identity, intent_id, content)
+                _check_time(deadline)
             _check_time(deadline)
         _check_time(deadline)
         return result

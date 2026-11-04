@@ -96,3 +96,12 @@ integration still need implementation/qualification. Then require supported
 restore/reconciliation and lifecycle/privacy evidence, exact live migration/ACL/key/
 UID/socket/storage approval, pinned deployment and real cross-device/browser/restart
 acceptance before durable enablement. No source test here establishes live readiness.
+
+
+## Uncalled first-output composition
+
+The later source-only [reserved CSV publisher](RESOURCE_RESERVED_OUTPUT_PUBLISHER.md)
+now supplies an H-owned catalog/file collaborator for an existing first-output
+intent. It uses the existing sealed C1 formats, no additional SQL capability,
+and no runtime caller. Append, reservation/presentation orchestration, authenticated
+local transport and independent artifact restore evidence remain outstanding.

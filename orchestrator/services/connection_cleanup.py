@@ -80,6 +80,14 @@ async def _release(pool: Any, conn: Any, owner: _Scope) -> None:
         raise
 
 
+def require_pool_cleanup() -> None:
+    """Refuse an effect before acquisition without its existing task-owned drain."""
+    owner = _scope.get()
+    if owner is None:
+        raise CleanupUnavailable("native_cleanup_owner_unavailable")
+    owner.check()
+
+
 async def pool_release(pool: Any, conn: Any) -> None:
     """Manual native transaction release, drained only inside the H owner."""
     owner = _scope.get()
