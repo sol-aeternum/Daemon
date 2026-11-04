@@ -59,7 +59,7 @@ a list to re-rank or re-score. Do not increase either global retrieval constant.
 `round_robin` is evaluation-only comparison behind the same merge interface:
 visit the original list and each component list cyclically, consuming the next
 unseen ID, under the same overall cap. It does not promise baseline-prefix
-preservation. It must not become the default through an evaluation result alone.
+preservation. Production rejects it outright; only the evaluation entry can use it.
 
 ### Explicitly authorised renderer change
 
@@ -68,10 +68,12 @@ override, not a token-budget override. Reject booleans, non-integers and values
 below the current `MAX_MEMORY_ITEMS`. The renderer retains its signature and
 changes only its retrieved-row slice to
 `inputs.retrieved[: (inputs.retrieved_limit or MAX_MEMORY_ITEMS)]`.
+One `retrieved_width(inputs)` helper owns the renderer and both exposure slices.
 `None` continues to read the global at call time, so in-process evaluation width
 overrides still work. Labels, truncation, L0 handling and token-budget removal
 are unchanged. Only flag-on retrieval that appended at least one new result may
-set the override to `5 + quota × n_sub`; all baseline/fail-open paths leave it
+set the override to the actual merged length, only above five and no larger
+than `5 + quota × n_sub`; all baseline/fail-open paths leave it
 `None`. The exposure ID mirror and pre-budget metrics must use the same width.
 
 Additive preserves retrieved baseline IDs, but renderer-budget interactions still
@@ -82,18 +84,24 @@ preservation is not permission to waive the zero-regression exposure gate.
 
 With multi-query enabled, defer access touches and trust recording until the
 final rendered set is known. Record each retained memory once, not once per
-retrieval arm. Evaluation disables both. Do not change flag-off ranking or its
+retrieval arm, including fail-open after deferral, no added IDs and sub-arm failure.
+Evaluation disables both. Unlike flag off (which touches retrieved rows even if
+the budget drops them), enabled-path effects use the rendered rows only.
+Do not change flag-off ranking or its
 existing side-effect call contract. The custom render budget must also determine
 the set used for side effects, not only the default budget.
 
-Retrieval-log rows distinguish `original` and `sub:<i>` query roles, with stable
-zero-based component indices. Roles inherit the query log's access/retention
-boundary; never add raw query text to metrics or exception logs. The current
-`MemoryStore.log_retrieval` at `orchestrator/memory/store.py:3605–3644` passes
-`query_text` directly to SQL. This source is **not evidence that query logs are
-encrypted**. Do not claim encryption that is absent, silently retrofit it in
-this PR or expand retention. The primary must settle how the packet's encryption
-requirement applies before the logging implementation changes.
+Retrieval-log rows gain nullable `query_role`: NULL for flag-off/legacy rows,
+`original` for enabled original queries and `sub:<i>` for zero-based components.
+The additive migration adds this column only; `query_text` stays NOT NULL.
+Sub-query rows store `query_text=""` and `query_embedding=NULL`, retaining model,
+candidate/selected IDs and role. No component text, derived vectors or keyed
+hashes are stored. Suppress text before every log exit, including combined/L0,
+normal, empty and lexical paths; candidate scores, debug/error logs and metrics
+must not copy it. Original-query readers filter sub rows before exact/fuzzy
+lookups and before fuzzy `LIMIT 50`. Original plaintext is pre-existing and out
+of scope, tracked in #663. This PR neither claims log encryption nor retrofits
+it, and does not expand retention.
 
 ## Routing, reasoning and privacy
 
@@ -106,7 +114,10 @@ ladder). Existing profiles, candidate groups and effective presets stay unchange
 Profile placement grants no route permission (`model_routing.py:10–18`). Pin
 the proposed decomposition route through the existing guarded-completion
 `_route_id` control (`compute_runtime.py:2326–2338`), inside
-`routing_context(profile, …)` as extraction does. A model-only shortlist could
+`routing_context("memory_decomposition")`. Extraction supplies the context
+pattern, not the route pin: decomposition additionally passes exact `model`,
+`_exact_model=True` and `_dispatch_timeout_s` for the remaining deadline.
+Never retry without the pin. A model-only shortlist could
 select the already-approved `luna-azure-eu` route, which is not permission to
 run this proposal. No approved decomposition route means baseline-only operation,
 even if the flag is enabled. Attestation, account entitlement, reservation and
@@ -115,24 +126,41 @@ settlement remain on the existing guarded path; no direct client or new provider
 Propose a separately named Luna/OpenRouter route with a pinned `azure/eu`
 provider, `sort: latency`, the existing Luna price ceilings as **proposal-only
 ceilings**, and `approved: false`. Availability, approval and operator review
-must truthfully remain unverified; this design grants none of them.
+must truthfully remain unverified; this design grants none of them. Ship the
+entry in both shipped completion-policy files so the feature has one consistent
+pin in development and production, but as `approval_mode: expiring`, with no
+baseline or invented dates/review evidence. It is not attested. Later approval
+must separately convert it to monitored on the single pinned provider with a
+baseline. Do not change attestation filtering: unapproved monitored entries
+otherwise join listing checks/writes. Existing monitored sets, fingerprints,
+staleness, writes and approved-route sets must remain unchanged (S6).
 
-Transport validation needs an additive, policy-owned mode supporting optional
+Transport validation needs explicit `multi_provider: true` opt-in supporting optional
 `sort: latency | throughput` and a nonempty multi-provider `provider_only`
 allowlist. Reject `:` model variants for routes using either feature. Keep ZDR
 true, data collection denied, required parameters true, fallbacks false and a
 pinned maximum price. Legacy routes retain identical validation and serialized
 payloads; sorting must not silently alter an existing provider-order contract.
-Multi-provider support must not widen monitored attestation: it currently pins
-one baseline provider (`policy.py:1355–1359`, `attestation.py:218–239`). The
-precise new transport validation branch requires primary/Astra supervision and
-independent pre-change review before implementation. No approvals change here.
+Reject empty/duplicate slugs, more than four providers, invalid sort and mismatched
+order membership. With sort set, omit order from the outbound payload so it
+cannot defeat sorting; otherwise use the explicit pinned order. Legacy branches
+and absent-vs-null serialization remain identical, and embedding routes cannot
+opt in. Monitored singleton plus sort is valid with unchanged baseline checks;
+monitored multi-provider is rejected. Expiring multi-provider can exist only as
+unapproved proposals, never as approved runtime routes. The primary adjudicated
+the Astra second opinion and focused independent pre-change review under S1–S6;
+implementation may proceed within those constraints. No approvals change here.
 
 Decomposition and component embedding require **exactly** `pipeline == "cloud"`.
 Local, missing, unknown or merely cloud-like values never authorise cloud
-decomposition. Match the existing embedding locality rule in
-`gather_memory_context_inputs`; do not infer cloud permission from missing local
-flags. Source-conversation scope and local-only filtering apply to every arm.
+decomposition, regardless of whether an embedding route is selected. Flag-off,
+local and unapproved mean zero new decomposition sends; baseline cloud embeddings
+continue unchanged. Empty/parse failure/timeout may follow an authorised send:
+fail-open promises baseline prompt bytes, not retroactive non-disclosure.
+Cap the latest user text at 8,000 characters and bind one reference time for the
+enabled path, shared by decomposition's as-of date and temporal retrieval.
+No content in failure logs or exceptions. Do not infer cloud permission from
+missing local flags. Source scope and local-only filtering apply to every arm.
 This preserves DEC12's Z-only runtime and AC07/AC11 authority/data boundaries.
 
 ## Settings proposal
@@ -184,8 +212,9 @@ second generation pass or permission widening is implied.
 
 ## Evaluation and enablement gates
 
-1. **M1 offline:** only synthetic fakes; no provider calls, databases, ingest or
-   holdout payload. Freeze prompt/schema hashes. Test batching, locality,
+1. **M1 offline:** synthetic fakes and local Redis/Postgres unit-test fixtures
+   are allowed (R3); no provider calls, benchmark DB, ingest or holdout payload.
+   Run the full pytest gate. Freeze prompt/schema hashes. Test batching, locality,
    deterministic merging, prefix/cap/de-duplication, query roles, side effects,
    all fail-open paths and legacy policy/payload identity. Use a fake clock for
    timeout tests. The full existing parity matrix is 1,944 cases from
@@ -193,7 +222,11 @@ second generation pass or permission widening is implied.
    outcome (3), L0 (3), retrieved rows (3), summaries (2), messages (3), budgets
    (2), plus early returns, all 18 production/harness combinations and formatter
    identity tests. Preserve noted-date goldens and all exposure exactness/sweep
-   tests. Renderer `None` remains identical to the pre-change implementation;
+   tests. Verify mutable routing contexts do not leak across concurrent baseline
+   embedding/decomposition tasks: enter the routing context inside its task.
+   Test reservation/settlement ownership, settle-once, cancellation propagation
+   and draining owned tasks. Accounting errors escape fail-open; no uncertain
+   send is retried. Renderer `None` remains identical to the pre-change implementation;
    explicit 8-row and constrained-budget cases verify the authorised seam.
 2. **M1.5 latency bake-off:** at most three ZDR model candidates, each with
    minimal/off reasoning and one pinned provider with `sort: latency`; at most
@@ -205,7 +238,9 @@ second generation pass or permission widening is implied.
    pinned `SubqueryProvider` injection in `build_parity_memory_context`.
    Pre-register an exposure-gain threshold **before any dev2 output**, zero
    exposure regressions on dev-50 (verify despite the additive prefix property),
-   abstention distractor delta, trigger rate and added latency. An exposure-gate
+   abstention distractor delta, trigger rate, added latency and duplicate occupancy
+   (equal content with distinct IDs remains possible; do not deduplicate by content
+   in M1). An exposure-gate
    entry point uses `orchestrator/eval/exposure.py`, not a replacement ranker.
    The numeric gain threshold is not set by examining these spent dev cases.
 4. **M3 answers:** a separately authorised answer campaign under v2. No v3
@@ -224,8 +259,8 @@ heuristic against the five spent omission cases now.
 |---|---|---|
 | B1 | This design | Written first; no runtime approval implied |
 | Renderer seam | `injection.py`, `exposure.py`, offline tests | Opt-in/default-preserving; test evidence reported separately |
-| B2 | `multi_query.py`, settings, gather, policy, logs | Not implemented; requires primary pre-change supervision/review |
+| B2 | `multi_query.py`, settings, gather, policy, logs | Authorised under adjudicated S1–S6; final verification required |
 | B3 | Parity injection and exposure gate | Not implemented; follows B2 |
 
-No live evaluation, holdout access, provider spend or database connection is
-part of this M1 implementation work.
+No live evaluation, holdout access, provider spend or benchmark DB connection
+is part of M1. Local unit-test DB fixtures are permitted; no route is approved.
