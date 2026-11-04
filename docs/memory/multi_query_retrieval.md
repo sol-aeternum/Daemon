@@ -41,8 +41,12 @@ partly with sight of these spent development cases. Acceptance needs fresh data.
    timeout, error, parse failure or an empty list, retain the exact baseline.
 5. Batch-embed all accepted components in **one query-embedding call**. Preserve
    query/storage model metadata and existing accounting safeguards; do not use
-   document embeddings as query embeddings. Retrieve each at depth 10 via
-   `retrieve_memories_for_text`, preserving scope, locality and historical clock.
+   document embeddings as query embeddings.
+   The component batch requires a selected guarded embedding route capable of
+   one send; unavailable/insufficient batch capacity fails open, without legacy
+   embedding retries or provider fallback.
+   Retrieve each at depth 10 via `retrieve_memories_for_text`, preserving scope,
+   locality and historical clock.
 6. Merge deterministically, then render through the existing formatter and
    token budget. Failure in the added branch must never erase a good baseline.
    Cancellation and accounting-integrity errors retain their existing safeguards;

@@ -1176,6 +1176,71 @@ async def embed_documents_with_metadata(
     return result
 
 
+async def embed_queries_with_metadata(
+    texts: list[str], *, local_only: bool = False
+) -> list[EmbeddingVectorResult]:
+    """One guarded query batch for M1 components; never document embeddings.
+
+    Fail closed before a send if the selected pinned adapter cannot fit the
+    entire small batch. The legacy retry/fallback path is deliberately not used.
+    The original single-query function and its behaviour remain unchanged.
+    """
+    if not texts:
+        return []
+    if local_only is not False:
+        raise EmbeddingConfigurationError("Component queries require cloud permission")
+    if len(texts) > 3 or any(
+        not isinstance(text, str) or not text.strip() or len(text) > 256 for text in texts
+    ):
+        raise EmbeddingRequestError("Invalid component query batch")
+    selector = get_selected_embedding_route_id()
+    if not selector:
+        raise EmbeddingConfigurationError("Component query batch requires a pinned route")
+    try:
+        route = embedding_adapter.approved_route(selector)
+    except embedding_adapter.AdapterUnavailable:
+        raise EmbeddingConfigurationError("Component query batch route unavailable") from None
+    bounds = [embedding_adapter.input_bound(text) for text in texts]
+    if (
+        len(texts) > route.max_batch_items
+        or sum(bounds) > route.max_batch_tokens
+        or max(bounds) > route.max_input_tokens
+    ):
+        raise EmbeddingConfigurationError("Component query batch cannot fit one send")
+    settings = get_settings()
+    try:
+        result = await _embed_texts(
+            texts,
+            model=settings.embedding_query_model,
+            input_type="query",
+            max_tokens=QUERY_MAX_TOKENS,
+        )
+    except Exception as error:
+        _record_dismissed_exception(error)
+        raise_if_embedding_accounting_error(error)
+        if isinstance(error, EmbeddingConfigurationError):
+            raise EmbeddingConfigurationError("Component query embedding unavailable") from None
+        raise EmbeddingRequestError("Component query embedding failed") from None
+    if len(result.embeddings) != len(texts) or any(not vector for vector in result.embeddings):
+        _record_provider_failure_outcome()
+        raise EmbeddingRequestError("Component query embedding cardinality mismatch")
+    _record_dispatch_success()
+    return [
+        EmbeddingVectorResult(
+            embedding=EmbeddingVector(
+                vector,
+                provider=result.provider,
+                model=result.model,
+                storage_model=result.storage_model,
+            ),
+            provider=result.provider,
+            model=result.model,
+            storage_model=result.storage_model,
+        )
+        for vector in result.embeddings
+    ]
+
+
 async def embed_query_with_metadata(
     text: str, *, local_only: bool = False
 ) -> EmbeddingVectorResult:
