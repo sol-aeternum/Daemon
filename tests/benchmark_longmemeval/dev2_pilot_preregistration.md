@@ -105,8 +105,8 @@ the report says unknown, not zero. `run_arm` therefore reports
 **Spend is settled plus open holds, whole database, cumulative.** A reservation's
 full bound is counted while it is still `open`, so the reading never understates
 in-flight work; the driver still samples on an interval, so the pre-registered
-margin of **USD 1.00** (`cap_usd=6.00`, `margin_usd=1.00`; the arm is interrupted
-at USD 5.00) must cover a call that starts and settles between two polls.
+margin of **USD 1.00** (`cap_usd=8.50`, `margin_usd=1.00`; the arm is interrupted
+at USD 7.50) must cover a call that starts and settles between two polls.
 
 Cost is conservative: a failed dispatch settles at the full bound in
 `entitlement_reservations`, so `actual_microusd` overstates rather than understates,
@@ -123,10 +123,10 @@ Labelling (separate from ingest, charged to the same cap):
 
 Stop the pilot immediately, do not retry, and report:
 
-1. Spend reaches **USD 6.00**, provider-reported (`entitlement_reservations`:
+1. Spend reaches **USD 8.50** (owner-raised from 6.00 on 2026-11-04, before any spend, because ingest alone projects to $5.39–6.07), provider-reported (`entitlement_reservations`:
    settled `actual_microusd` plus open holds, whole database), **including
    labelling**, cumulative across arms. Stop margin is applied before the cap by
-   the driver (`StopRule.cap_usd=6.00`, `StopRule.margin_usd=1.00`).
+   the driver (`StopRule.cap_usd=8.50`, `StopRule.margin_usd=1.00`).
 2. `extraction_failed` at or above **1%** in any arm (with at least one failure).
 3. An unbounded 429 loop — `rate_limited` above the pre-registered
    `max_rate_limited` for the arm.
