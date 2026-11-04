@@ -1,0 +1,9 @@
+{
+  "db_restore_seconds": 600,
+  "embedding_seconds_per_1k_tokens": 0,
+  "embedding_usd_per_1k_tokens": 2e-05,
+  "extraction_seconds_per_1k_tokens": 32.4336,
+  "extraction_usd_per_1k_tokens": 0.00320666,
+  "labelling_seconds_per_question": 300,
+  "turns_per_db_restore": 50000
+}
