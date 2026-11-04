@@ -330,18 +330,15 @@ def _spend_reader(values: Sequence[float]) -> Any:
 
 
 def _checkpoint(sessions: Sequence[str], failures: Sequence[str] = ()) -> dict[str, Any]:
-    return {
-        "results": {
-            "q1": {"sessions": list(sessions), "failures": list(failures)},
-        }
-    }
+    results: dict[str, dict[str, str]] = {f"q1:{s}": {"status": "complete"} for s in sessions}
+    results.update({f"q1:{s}": {"status": "error"} for s in failures})
+    return {"phases": {"ingest": {"results": results}}}
 
 
 def _extract(
     checkpoint: Mapping[str, Any], question_id: str
 ) -> tuple[Sequence[str], Sequence[str]]:
-    record = checkpoint["results"][question_id]
-    return record.get("sessions", ()), record.get("failures", ())
+    return dev2_pilot.default_session_extractor(checkpoint, question_id)
 
 
 class Harness:
@@ -357,7 +354,7 @@ class Harness:
         self.process = process or FakeProcess()
         self.spend = spend
         self.log_lines = list(log_lines)
-        self.checkpoint: Mapping[str, Any] = checkpoint or {}
+        self.checkpoint: Mapping[str, Any] = checkpoint or _checkpoint([])
         self.sent: list[FakeProcess] = []
 
     def spawn(self, command: Sequence[str]) -> FakeProcess:
@@ -442,6 +439,7 @@ def test_interrupt_for_resume_fires_once_after_n_completed() -> None:
     result = harness.run(
         read_checkpoint=read_checkpoint,
         interrupt_after_completed=1,
+        expected_sessions={"q1": 1},
     )
     assert result["interrupted_for_resume"] is True
     assert result["stop_reason"] is None
@@ -471,6 +469,7 @@ def test_second_sigint_only_after_grace() -> None:
         stop_rule=StopRule(cap_usd=6.0, margin_usd=1.0, max_rate_limited=10),
         read_checkpoint=lambda: _checkpoint(["s0"]),
         interrupt_after_completed=1,
+        expected_sessions={"q1": 1},
     )
     kinds = [item["kind"] for item in result["interrupts"]]
     assert kinds[0] == "resume"
@@ -478,9 +477,13 @@ def test_second_sigint_only_after_grace() -> None:
     assert len(harness.sent) == 2
 
 
+def _duplicating(sessions: Sequence[str], failed: Sequence[str] = ()) -> Any:
+    """Checkpoint keys are unique; a duplicate can only come from another extractor."""
+    return lambda _checkpoint, _question_id: (list(sessions), list(failed))
+
+
 def test_session_invariants_counts_and_duplicates() -> None:
-    checkpoint = _checkpoint(["a", "a", "b"], ["c"])
-    invariants = session_invariants(checkpoint, ["q1"], extract=_extract)
+    invariants = session_invariants({}, ["q1"], extract=_duplicating(["a", "a", "b"], ["b"]))
     assert invariants["total_sessions"] == 3
     assert invariants["failed_sessions"] == 1
     assert invariants["completed_sessions"] == 2
@@ -491,14 +494,25 @@ def test_session_invariants_counts_and_duplicates() -> None:
 
 def test_checkpoint_invariants_reads_every_question() -> None:
     checkpoint = {
-        "results": {
-            "q1": {"sessions": ["a"], "failures": []},
-            "q2": {"sessions": ["b", "c"], "failures": ["d"]},
+        "phases": {
+            "ingest": {
+                "results": {
+                    "q1:a": {"status": "complete"},
+                    "q2:b": {"status": "complete"},
+                    "q2:c": {"status": "complete"},
+                    "q2:d": {"status": "error"},
+                }
+            }
         }
     }
-    invariants = checkpoint_invariants(checkpoint, extract=_extract)
-    assert invariants["total_sessions"] == 3
+    invariants = checkpoint_invariants(checkpoint)
+    assert invariants["total_sessions"] == 4
     assert invariants["failed_sessions"] == 1
+
+
+def test_a_foreign_checkpoint_shape_raises_instead_of_reading_as_no_failures() -> None:
+    with pytest.raises(KeyError):
+        checkpoint_invariants({"results": {"q1": {"sessions": ["a"]}}})
 
 
 def test_verify_resume_passes_clean_resume() -> None:
@@ -509,8 +523,10 @@ def test_verify_resume_passes_clean_resume() -> None:
 
 def test_verify_resume_flags_duplicate_lost_mismatch_and_failures() -> None:
     before = session_invariants(_checkpoint(["a", "b"]), ["q1"], extract=_extract)
-    duplicated = session_invariants(_checkpoint(["a", "b", "a"], ["bad"]), ["q1"], extract=_extract)
-    violations = verify_resume(before, duplicated, 4)
+    duplicated = session_invariants(
+        {}, ["q1"], extract=_duplicating(["a", "b", "a", "bad"], ["bad"])
+    )
+    violations = verify_resume(before, duplicated, 3)
     assert any("duplicated" in item for item in violations)
     assert any("does not match" in item for item in violations)
     assert any("extraction_failed" in item for item in violations)
@@ -538,3 +554,50 @@ def test_count_rate_limits_tolerates_junk_lines() -> None:
     counts = count_rate_limits(lines)
     assert counts == {"rate_limited": 2, "timeout": 1}
     assert all(isinstance(value, int) for value in counts.values())
+
+
+def test_prepare_reads_ids_from_real_manifests_and_enforces_the_holdout_guard(
+    tmp_path: Path,
+) -> None:
+    fixtures = Path(__file__).parent / "fixtures"
+    for name in ("dev2_ids.json", "holdout_ids.json"):
+        manifest = json.loads((fixtures / name).read_text())
+        assert set(dev2_pilot._manifest_ids(manifest, name)) == set(manifest["question_ids"])
+        with pytest.raises(ValueError, match="manifest"):
+            dev2_pilot._manifest_ids(manifest["question_ids"], name)
+    with pytest.raises(ValueError, match="manifest"):
+        dev2_pilot._manifest_ids({"size": 1}, "dev2_ids")
+    rows = [
+        {"question_id": f"q{i}", "question_type": "multi-session", "answer_session_ids": [f"s{i}"]}
+        for i in range(20)
+    ]
+    dataset = tmp_path / "dataset.json"
+    dataset.write_text(json.dumps(rows))
+    dev2 = tmp_path / "dev2.json"
+    dev2.write_text(json.dumps({"question_ids": [f"q{i}" for i in range(20)]}))
+    overlapping = tmp_path / "holdout.json"
+    overlapping.write_text(json.dumps({"question_ids": [f"q{i}" for i in range(20)]}))
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(ValueError):
+        dev2_pilot.prepare(
+            dataset_path=dataset, dev2_path=dev2, holdout_path=overlapping, out_dir=out
+        )
+    assert list(out.iterdir()) == []
+
+
+def test_default_extractor_reads_the_real_checkpoint_shape() -> None:
+    checkpoint = {
+        "phases": {
+            "ingest": {
+                "results": {
+                    "q1:a": {"status": "complete"},
+                    "q1:b": {"status": "error"},
+                    "q10:c": {"status": "complete"},
+                }
+            }
+        }
+    }
+    sessions, failed = dev2_pilot.default_session_extractor(checkpoint, "q1")
+    assert sorted(sessions) == ["a", "b"]
+    assert failed == ["b"]

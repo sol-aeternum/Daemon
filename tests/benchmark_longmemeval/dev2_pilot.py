@@ -287,6 +287,13 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_bytes())
 
 
+def _manifest_ids(manifest: Any, label: str) -> Any:
+    """IDs from a frozen manifest; a bare mapping must never validate as its keys."""
+    if not isinstance(manifest, Mapping) or "question_ids" not in manifest:
+        raise ValueError(f"{label} must be a manifest with question_ids")
+    return _validated_ids(manifest["question_ids"], label)
+
+
 def prepare(
     *,
     dataset_path: Path,
@@ -301,8 +308,8 @@ def prepare(
     dev2_bytes = dev2_path.read_bytes()
     holdout_bytes = holdout_path.read_bytes()
     dataset = json.loads(dataset_bytes)
-    dev2_ids = _validated_ids(json.loads(dev2_bytes), "dev2_ids")
-    holdout_ids = _validated_ids(json.loads(holdout_bytes), "holdout_ids")
+    dev2_ids = _manifest_ids(json.loads(dev2_bytes), "dev2_ids")
+    holdout_ids = _manifest_ids(json.loads(holdout_bytes), "holdout_ids")
     rows = project_metadata(dataset)
     pilot_ids = select_pilot(rows, dev2_ids, size=size, seed=seed)
     arms = assign_arms(rows, pilot_ids, seed=seed)
@@ -391,83 +398,44 @@ def count_rate_limits(log_lines: Iterable[str]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _record_container(checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Return the per-question mapping of a runner checkpoint, or ``{}``.
-
-    ``fact_harness`` keeps per-question state in ``results``; older runners may
-    use ``questions``. Both are accepted so a shape delta is not fatal.
-    """
-    if not isinstance(checkpoint, Mapping):
-        return {}
-    for key in ("results", "questions"):
-        container = checkpoint.get(key)
-        if isinstance(container, Mapping):
-            return container
-    return {}
+def _ingest_results(checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``phases.ingest.results``; a missing or foreign shape must not read as zero work."""
+    results = checkpoint["phases"]["ingest"]["results"]
+    if not isinstance(results, Mapping):
+        raise ValueError("checkpoint ingest results must be a mapping")
+    return results
 
 
 def default_session_extractor(
     checkpoint: Mapping[str, Any], question_id: str
 ) -> tuple[Sequence[str], Sequence[str]]:
-    """Best-effort reader for one checkpoint record.
+    """Sessions recorded for one question in a harness checkpoint.
 
-    Provisional: the exact per-question layout of ``results`` is not established
-    from the runner lines available when this module was written
-    (``fact_harness.py`` 1700-1755 describe a ``pending`` entry with
-    ``corpus_key``/``started_at``/``state_fingerprint``/optional ``failure`` and
-    an ``ingest_failures`` manifest list, not the completed record). This
-    extractor therefore understands the shape implied by those lines — a
-    ``sessions`` sequence of IDs or ``{"session_id", "status"}`` mappings, plus a
-    ``failures``/``ingest_failures`` sequence — and raises ``ValueError`` rather
-    than reporting zeros when it does not recognise the record. Pass an explicit
-    ``extract`` to ``session_invariants`` when the real shape is confirmed.
+    ``phases.ingest.results`` maps ``ingest_result_key`` (``question:corpus_key``,
+    ``fact_harness.py:736``) to a result whose ``status`` is ``complete`` on success
+    (``fact_harness.py:1631``). Keys are unique, so a duplicate can't appear here: the
+    resume check must also compare database conversation counts.
     """
-    record = _record_container(checkpoint).get(question_id)
-    if not isinstance(record, Mapping):
-        raise ValueError("checkpoint has no record for this question")
-    raw_sessions = record.get("sessions")
-    if raw_sessions is None:
-        raw_sessions = ()
-    if isinstance(raw_sessions, (str, bytes)) or not isinstance(raw_sessions, Sequence):
-        raise ValueError("checkpoint sessions must be a sequence")
-    completed: list[str] = []
+    results = _ingest_results(checkpoint)
+    prefix = f"{question_id}:"
+    sessions: list[str] = []
     failed: list[str] = []
-    for item in raw_sessions:
-        if isinstance(item, str):
-            completed.append(item)
+    for key, result in results.items():
+        if not isinstance(key, str) or not key.startswith(prefix):
             continue
-        if not isinstance(item, Mapping):
-            raise ValueError("checkpoint sessions must be IDs or mappings")
-        session_id = item.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError("checkpoint sessions need a session_id")
-        status = item.get("status")
-        if status in (None, "complete", "completed", "ok"):
-            completed.append(session_id)
-        else:
-            failed.append(session_id)
-    raw_failures = record.get("failures")
-    if raw_failures is None:
-        raw_failures = record.get("ingest_failures")
-    if raw_failures is None:
-        raw_failures = ()
-    if isinstance(raw_failures, (str, bytes)) or not isinstance(raw_failures, Sequence):
-        raise ValueError("checkpoint failures must be a sequence")
-    for item in raw_failures:
-        if isinstance(item, str):
-            failed.append(item)
-        elif isinstance(item, Mapping) and isinstance(item.get("session_id"), str):
-            failed.append(str(item["session_id"]))
-        else:
-            raise ValueError("checkpoint failures must be IDs or mappings")
-    return completed, failed
+        session = key[len(prefix) :]
+        sessions.append(session)
+        if not isinstance(result, Mapping) or result.get("status") != "complete":
+            failed.append(session)
+    return sessions, failed
 
 
 def checkpoint_invariants(
     checkpoint: Mapping[str, Any], *, extract: SessionExtractor | None = None
 ) -> dict[str, Any]:
     """Invariants for every question present in ``checkpoint``."""
-    return session_invariants(checkpoint, list(_record_container(checkpoint)), extract=extract)
+    question_ids = sorted({str(key).split(":", 1)[0] for key in _ingest_results(checkpoint)})
+    return session_invariants(checkpoint, question_ids, extract=extract)
 
 
 def session_invariants(
@@ -621,6 +589,7 @@ def _gate_reason(
     invariants: Mapping[str, Any],
     rate_limits: Mapping[str, int],
     stop_rule: StopRule,
+    expected_sessions: Mapping[str, int] | None = None,
 ) -> str | None:
     if spend_usd >= stop_rule.spend_threshold_usd:
         return STOP_SPEND
@@ -630,6 +599,20 @@ def _gate_reason(
     if failed >= 1 and failed_rate(invariants) >= FAILED_RATE_GATE:
         return STOP_EXTRACTION
     return None
+
+
+def _completed_questions(
+    invariants: Mapping[str, Any], expected_sessions: Mapping[str, int] | None
+) -> int:
+    """Questions whose every expected session finished complete."""
+    if expected_sessions is None:
+        raise ValueError("interrupt_after_completed requires expected_sessions")
+    questions = invariants.get("questions", {})
+    return sum(
+        1
+        for question_id, expected in expected_sessions.items()
+        if int(questions.get(question_id, {}).get("completed", 0)) >= expected > 0
+    )
 
 
 def run_arm(
@@ -645,6 +628,7 @@ def run_arm(
     poll_seconds: float,
     stop_rule: StopRule,
     interrupt_after_completed: int | None = None,
+    expected_sessions: Mapping[str, int] | None = None,
     send_interrupt: Callable[[ProcessHandle], None],
     grace_seconds: float = 60.0,
 ) -> dict[str, Any]:
@@ -693,7 +677,7 @@ def run_arm(
             resumed = False
             if (
                 interrupt_after_completed is not None
-                and int(invariants.get("completed_sessions", 0)) >= interrupt_after_completed
+                and _completed_questions(invariants, expected_sessions) >= interrupt_after_completed
             ):
                 resumed = True
             else:
