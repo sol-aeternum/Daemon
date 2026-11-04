@@ -64,9 +64,19 @@ In the c=4 arm only:
    finishes in-flight work and exits resumably (`stop_rule` untouched; this is
    `interrupt_after_completed`, not a stop reason).
 3. Rerun the **same command** with the same `--output-dir`, dataset and code SHA.
-4. Verify with `verify_resume(before, after, expected_sessions)`: duplicate
-   session, lost completed session, session count mismatch, or an
-   `extraction_failed` count above the pre-resume count is a violation.
+4. Verify the **final state**, not before-versus-after alone, with two checks:
+   `verify_resume(before, final, expected_sessions)` and
+   `verify_db_counts(conversation-count rows, expected-per-user)`, where the
+   expected session count comes from `expected_sessions_from_dataset` (the same
+   `corpus_key` de-duplication the harness applies). A harness rebuild can
+   legitimately discard the interrupted question's partial session, so a
+   before/after drop in that question's sessions is allowed **only** when the
+   final count equals the expected count for every question and the database
+   conversation count equals the expected session count per benchmark user. A
+   duplicate session, a final count that differs from expected, an
+   `extraction_failed` count above the pre-resume count, or more conversations
+   than expected is a violation. A before/after drop that the final state does
+   not explain is a violation too.
 
 A failed resume is a **hard stop** for the whole pilot.
 
@@ -78,19 +88,29 @@ Recorded per arm, numbers only (no question, session or answer text):
 |---|---|
 | Wall time, sessions/hour | driver (`run_arm` wall clock, completed sessions) |
 | Tokens/hour | spend ledger token sums divided by wall hours |
-| `rate_limited` and other `failure_category` counts | **process log only**, `attempt_outcome` JSON lines (`count_rate_limits`) |
+| `rate_limited` and other `failure_category` counts | **process log only**: the JSON object after each `routing_event ` marker, when its `event` is `attempt_outcome` (`count_rate_limits`), reported with `routing_events_seen` (`log_lines_seen_routing_events`) |
 | `extraction_failed` rate (gate below 1%) | checkpoint per-question records (`session_invariants`, `failed_rate`) |
-| Provider-reported cost per session | `entitlement_reservations.actual_microusd` via `summarize_compute_spend` (`orchestrator/eval/bench_db.py:280-312`, called at `fact_harness.py:1856`) |
+| Provider-reported cost per session | `entitlement_reservations` via `SPEND_SQL`/`spend_breakdown_reader`: settled `actual_microusd` **plus** the `reserved_microusd` still held by `open` rows, summed over the **entire database** with no time window and no user filter, i.e. cumulative across arms and including calls still in flight (`SpendBreakdown` reports settled and held separately); per-model detail via `summarize_compute_spend` (`orchestrator/eval/bench_db.py:280-312`) |
 | CPU, memory, disk growth | sampled during the arm (`sample_resources`), reported as min/max |
 | DB size growth | database size before/after each arm |
 | Overnight slowdown | wall time and sessions/hour compared across day vs night windows, if any |
 
 **429s are log-derived, never persisted.** No table records them; only the routing
-`attempt_outcome` log lines (`failure_category = rate_limited`) do. A missing log
-is missing evidence, not zero 429s.
+log does: `routing_event {"event":"attempt_outcome","failure_category":"rate_limited"}`
+(`orchestrator/routing_log.py`). 429 counts are log-derived and only meaningful if
+routing events were seen; zero routing events means the count is **unknown**, and
+the report says unknown, not zero. `run_arm` therefore reports
+`routing_events_seen` alongside `rate_limits`.
+
+**Spend is settled plus open holds, whole database, cumulative.** A reservation's
+full bound is counted while it is still `open`, so the reading never understates
+in-flight work; the driver still samples on an interval, so the pre-registered
+margin of **USD 1.00** (`cap_usd=6.00`, `margin_usd=1.00`; the arm is interrupted
+at USD 5.00) must cover a call that starts and settles between two polls.
 
 Cost is conservative: a failed dispatch settles at the full bound in
-`entitlement_reservations`, so `actual_microusd` overstates rather than understates.
+`entitlement_reservations`, so `actual_microusd` overstates rather than understates,
+and an open reservation's held `reserved_microusd` is already in the reading.
 
 Labelling (separate from ingest, charged to the same cap):
 
@@ -103,9 +123,10 @@ Labelling (separate from ingest, charged to the same cap):
 
 Stop the pilot immediately, do not retry, and report:
 
-1. Spend reaches **USD 6.00**, provider-reported (`entitlement_reservations`),
-   **including labelling**, cumulative across arms. Stop margin is applied before
-   the cap by the driver (`StopRule.margin_usd`).
+1. Spend reaches **USD 6.00**, provider-reported (`entitlement_reservations`:
+   settled `actual_microusd` plus open holds, whole database), **including
+   labelling**, cumulative across arms. Stop margin is applied before the cap by
+   the driver (`StopRule.cap_usd=6.00`, `StopRule.margin_usd=1.00`).
 2. `extraction_failed` at or above **1%** in any arm (with at least one failure).
 3. An unbounded 429 loop — `rate_limited` above the pre-registered
    `max_rate_limited` for the arm.
@@ -114,6 +135,12 @@ Stop the pilot immediately, do not retry, and report:
 6. A resume that duplicates or loses sessions (§4).
 7. A route that lacks ZDR, a data-collection deny, or the required attestation.
 8. Any need to touch dev2 retrieval, exposure or answer computation to proceed.
+9. A guard failure (`stop_reason = guard_failed`): any spend, log, checkpoint or
+   resource reader raising is a hard stop, not a zero. The driver sends one
+   SIGINT, waits for the child to exit (escalating once at the grace period) and
+   reports the arm as failed with the unread numbers absent. A missing checkpoint
+   before the first save is *not* a guard failure: `read_checkpoint_file`
+   returns the empty shell the harness leaves.
 
 ## 7. Deliverable
 
