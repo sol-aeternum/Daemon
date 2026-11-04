@@ -61,7 +61,9 @@ MAX_EXTRACTION_INPUT_CHARS = 4000
 # automatic background candidate declares seed-only sampling support.
 EXTRACTION_TEMPERATURE = 0.0
 EXTRACTION_TOP_P = 1.0
-EXTRACTION_MAX_TOKENS = 2000
+# Raised from 2000 to 4000 after #670: replies were stopping at the old cap
+# (largest normally-finished reply across 5382 calls was 1747 tokens).
+EXTRACTION_MAX_TOKENS = 4000
 BENCHMARK_SEED = 42
 BENCHMARK_EXTRACTION_MODEL = "openrouter/openai/gpt-4o-mini-2024-07-18"
 # Historical benchmark scripts assign this name; it is not transport authority.
@@ -157,6 +159,9 @@ class ExtractionOutcome:
     # The approved route actually selected for this call, or None when no
     # inference happened (provider failure, empty response, no route).
     model_used: str | None = None
+    # Why a failed extraction failed, when the cause is known and content-free
+    # (e.g. "truncated" when the provider stopped at the output token limit).
+    failure_reason: str | None = None
 
 
 class BenchmarkProviderError(RuntimeError):
@@ -540,12 +545,46 @@ async def extract_facts_from_text(
             _capture_benchmark_metadata(response_data, key="extraction")
 
         content = None
+        finish_reason: str | None = None
+        output_tokens: int = -1
         if isinstance(response_data, dict):
             choices = response_data.get("choices")
             if isinstance(choices, list) and choices:
-                message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                if isinstance(message, dict):
-                    content = message.get("content")
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message")
+                    if isinstance(message, dict):
+                        content = message.get("content")
+                    choice_finish_reason = first_choice.get("finish_reason")
+                    if isinstance(choice_finish_reason, str):
+                        finish_reason = choice_finish_reason
+            usage = response_data.get("usage")
+            if isinstance(usage, dict):
+                completion_tokens = usage.get("completion_tokens")
+                if isinstance(completion_tokens, int):
+                    output_tokens = completion_tokens
+
+        if finish_reason == "length":
+            # Issue #670: the provider stopped at the output token limit, so the
+            # reply is incomplete by definition — never parse it, and never log
+            # reply or input text. Callers see the same failed outcome as any
+            # other unusable reply, so the retry and watermark paths are
+            # unchanged.
+            logger.warning(
+                "Extraction reply truncated at output token limit (model=%s, output_tokens=%d)",
+                model_used,
+                output_tokens,
+            )
+            return ExtractionOutcome(
+                facts=[],
+                raw_count=0,
+                calibrated_count=0,
+                rejected_count=0,
+                slot_coverage=0,
+                succeeded=False,
+                model_used=model_used,
+                failure_reason="truncated",
+            )
 
         if not isinstance(content, str) or not content:
             return ExtractionOutcome(

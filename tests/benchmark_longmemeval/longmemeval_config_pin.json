@@ -111,7 +111,7 @@
       "input_max_chars": 4000,
       "temperature": 0.0,
       "top_p": 1.0,
-      "max_tokens": 2000,
+      "max_tokens": 4000,
       "confidence_calibration": {
         "default_extracted_confidence": 0.8,
         "hedge_override_confidence": 0.65,
