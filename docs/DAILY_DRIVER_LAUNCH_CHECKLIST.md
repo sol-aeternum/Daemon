@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `6383d90be344c50569557c0cf8925ca478828de7` (main verified
-before the complete namespace-inventory source slice). This checklist separates
+Source checkpoint: `04aae7b1c3b3f69670fa384e0ac7f57e126c87f4` (main verified
+before this source-only presentation refresh). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -11,12 +11,12 @@ open until its applicable release conditions are met or explicitly revised.
 | Protected acceptance, Send and Stop | #625/#628/#631/#637 merged; [composition boundary](RESTORE_HISTORY_COMPOSITION.md), immutable 056/057 projections and original native fences | Historical observation/client source is merged in #650; authenticated H runtime composition remains; no history record is execution authority |
 | Cross-device reopen and uncertain work | Existing owner-scoped task APIs/observer preserve persisted results; focused reconnect diagnostics exercise actual device access checks on synthetic SQL/POSIX fixtures | H-aware source responses/client refusal are merged in #650 (RESTORE_HISTORY_OBSERVATION.md); deployed cross-device and held-key acceptance still require qualification |
 | Stop and publication races | #637 Send/Stop and #653 H-ordered durable partial text/native terminal fences are merged, with no runtime execution install | Authenticated runtime wiring and streamed/partial/artifact publication qualification; Stop prevents subsequent local admission/publication, not guaranteed remote cessation or billing cancellation |
-| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–060 need their own reviewed execution scope, not incidental inclusion in the closed runner |
+| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–061 need their own reviewed execution scope, not incidental inclusion in the closed runner |
 | Principal/storage/startup binding | Separate backend A/W and W-only worker startup is merged; [startup contract](TASK_STARTUP_COMPOSITION.md) | Reviewed live credentials, exact grants, private H/J1 storage/key identity, service-specific access and a pinned deployed source; no credentials/grants/storage are provisioned by this checklist |
 | Restart and recovery | Prior isolated PostgreSQL/POSIX and service-startup tests cover specific boundaries | Pinned-runtime restart/reconnect check with original task/results and truthful uncertain outcomes; observed container source/flags/identity read back after any separately approved deployment |
 | Restored database | H/protected SQL mismatch detection exists in isolated joins; historical evidence does not authorize replay | Supported offline restore barrier/reconciliation, independently retained acceptance/possible-send/Stop evidence, and financial/auth/key/account/file continuity; neither schema equality nor matching J1 alone is restore readiness |
 | Lifecycle and privacy | #469 is closed as a design decision, not completed deletion/reset; #486 has source/browser cache-protection qualification | Remaining deletion/reset/retention/GC fences and any explicit personal-pilot contract; no implicit lifecycle/privacy waiver from a closed issue |
-| Browser flows and clients | Existing task/cancel/reset and pending-submission behavior has source tests; browser inventory failures remain separately disclosed | Relevant real-browser reconnect, held-key uncertainty, Stop, revoked/account-change access and file continuity on the qualified runtime; generic green browser job badges do not establish every screenshot/functional case passed |
+| Browser flows and clients | Existing task/cancel/reset and pending-submission behavior has source tests; reviewed #664 browser inventory passed 1 development and 69 production cases; source tests are not deployed acceptance | Relevant real-browser reconnect, held-key uncertainty, Stop, revoked/account-change access and file continuity on the qualified runtime; generic green browser job badges do not establish every screenshot/functional case passed |
 | Enablement | Owner conditionally authorizes durable chat ON once ready | Meet applicable gates, obtain specific live migration/privilege/deployment approvals, then verify the actual enabled flag/state; flag-off is not rollback and must preserve dispatch evidence |
 
 Last saved deployment evidence is historical: the application database was at
@@ -90,3 +90,11 @@ It handles only an already-reserved first output, with no new runtime caller,
 reservation, append, presentation or transport. Observation-only remains in force;
 artifact restore/lifecycle evidence, split collaborators and authenticated complete
 execution composition still gate launch. No deployed qualification is claimed.
+
+
+The source-only [presentation join](RESOURCE_OUTPUT_PRESENTATION_JOIN.md) adds the
+bounded seventh P observation entrypoint in 061 and an explicitly selected H-owned
+phase for an already committed CSV. It preserves existing snapshot/envelope formats
+and table permissions. No runtime constructor, transport, new task completion,
+live grant or migration is installed; original-operation uncertainty and the
+artifact restore/lifecycle release gates remain. #477 stays open.

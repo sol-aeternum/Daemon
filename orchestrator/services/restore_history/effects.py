@@ -291,6 +291,63 @@ class HistoryEffects:
         _check_time(deadline)
         return result
 
+    async def present_reserved_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        identity: AttemptIdentity,
+        intent_id: UUID,
+        *,
+        deadline: float,
+    ) -> UUID:
+        """Uncalled card phase for an existing publication, never file repair."""
+        if (
+            type(publisher) is not ReservedOutputPublisher
+            or type(identity) is not AttemptIdentity
+            or publisher._pool is self._tasks._pool
+            or publisher._presentation_item_limit is None
+            or publisher._presentation_record_limit is None
+        ):
+            raise HistoryError("artifact_composition_refused")
+        deadline = self._admission_deadline(deadline)
+        return await self._run(
+            lambda limit: self._present_reserved_output(publisher, identity, intent_id, limit),
+            deadline,
+        )
+
+    async def _present_reserved_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        identity: AttemptIdentity,
+        intent_id: UUID,
+        deadline: float,
+    ) -> UUID:
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            accepted = self._accepted(state, identity.account_id, identity.task_id)
+            if accepted.account_generation != identity.generation:
+                raise HistoryError("effects_origin_refused")
+            self._no_stop(state, identity.task_id)
+            async with publisher._reserved_transaction() as conn:
+                observed = await publisher._reserved_snapshot(conn, identity, intent_id)
+                origin = self._tasks._origin(observed["task"])
+                if (
+                    origin.account_id,
+                    origin.generation,
+                    observed["task"]["conversation_id"],
+                    observed["task"]["result_message_id"],
+                ) != (
+                    accepted.account_id,
+                    accepted.account_generation,
+                    accepted.conversation_id,
+                    accepted.result_message_id,
+                ):
+                    raise HistoryError("effects_origin_refused")
+                result = await publisher._present_reserved(conn, identity, intent_id)
+                _check_time(deadline)
+            _check_time(deadline)
+        _check_time(deadline)
+        return result
+
     async def write_partial(
         self,
         task: UUID,

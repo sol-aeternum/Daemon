@@ -14,7 +14,7 @@ from uuid import UUID
 
 from orchestrator.resource_inputs import ResourceInputs
 from orchestrator.resource_storage import StorageError, read_verified
-from orchestrator.resource_store import ResourceError, _canonical
+from orchestrator.resource_store import ResourceError, _canonical, _uuid_text
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 from orchestrator.services.deletion_journal.barrier import _io
 
@@ -29,14 +29,7 @@ def safe_display(value: Any) -> str | None:
 
 
 def uuid_text(value: Any) -> str:
-    if type(value) is not str or len(value) != 36:
-        raise ResourceError("invalid_query")
-    try:
-        if str(UUID(value)) != value:
-            raise ValueError
-    except ValueError:
-        raise ResourceError("invalid_query") from None
-    return value
+    return _uuid_text(value)
 
 
 def instant(value: str) -> str:
@@ -228,42 +221,7 @@ class ResourceCatalog:
         return item
 
     def _reference(self, ref: Any, expected: CapturedGeneration) -> dict[str, Any]:
-        p = self.store._open(ref["provenance_ciphertext"])
-        if (p.get("account_id"), p.get("resource_id"), p.get("version_id"), p.get("role")) != (
-            str(expected.account_id),
-            str(ref["resource_id"]),
-            str(ref["version_id"]),
-            ref["role"],
-        ):
-            raise ResourceError()
-        if (
-            type(p.get("generation")) is not int
-            or p["generation"] != expected.generation
-            or type(p.get("ordinal")) is not int
-            or p["ordinal"] != ref["ordinal"]
-            or type(p.get("source_deleted")) is not bool
-        ):
-            raise ResourceError()
-        for field, original in (
-            ("task_id", "original_task_id"),
-            ("conversation_id", "original_conversation_id"),
-            ("message_id", "original_message_id"),
-        ):
-            uuid_text(p.get(original))
-            if p["source_deleted"]:
-                if ref[field] is not None:
-                    raise ResourceError()
-            elif str(ref[field]) != p[original]:
-                raise ResourceError()
-        return {
-            "reference_id": str(ref["reference_id"]),
-            "role": ref["role"],
-            "ordinal": ref["ordinal"],
-            "task_id": str(ref["task_id"]) if ref["task_id"] else None,
-            "conversation_id": str(ref["conversation_id"]) if ref["conversation_id"] else None,
-            "message_id": str(ref["message_id"]) if ref["message_id"] else None,
-            "source_deleted": p["source_deleted"],
-        }
+        return self.store._reference(ref, expected)
 
     async def page(
         self, expected: CapturedGeneration, params: dict[str, str], *, task: UUID | None = None
