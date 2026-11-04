@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `04aae7b1c3b3f69670fa384e0ac7f57e126c87f4` (main verified
-before this source-only presentation refresh). This checklist separates
+Source checkpoint: `903bf6a379c9cead38338043b013a93ca0477a31` (main verified
+before this synthetic artifact-phase qualification). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -98,3 +98,14 @@ phase for an already committed CSV. It preserves existing snapshot/envelope form
 and table permissions. No runtime constructor, transport, new task completion,
 live grant or migration is installed; original-operation uncertainty and the
 artifact restore/lifecycle release gates remain. #477 stays open.
+
+Post-#668 synthetic phase qualification exercises known catalog, card and native
+terminal commits followed by original-task/file readback, and Stop after the card
+without late terminal publication. It also records the still-uncomposed R0
+boundary: direct native reservation does not compare H/SQL parity or poison H on
+an uncertain reservation COMMIT. Those diagnostics do not authorize bypassing H
+or retrying the reservation. The next bounded source contract is an H-owned R0
+join with unchanged restricted SQL and separate P/R0/W ownership; its exact typed
+seams/import guard amendment require approval. See
+[phase qualification](RESOURCE_OUTPUT_PRESENTATION_JOIN.md#cross-phase-qualification).
+No authenticated transport, complete runtime graph or live acceptance is claimed.

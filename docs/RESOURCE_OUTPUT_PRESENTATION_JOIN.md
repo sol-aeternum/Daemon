@@ -90,3 +90,26 @@ composition remain launch gates. Synthetic PostgreSQL/POSIX checks do not prove
 distinct live service-UID isolation or deployed acceptance. Standard hosted pytest
 does not enable the explicit PostgreSQL fixture flag; its skips must be reported
 separately from the local opt-in qualification.
+
+## Cross-phase qualification
+
+`tests/test_artifact_phase_boundary_postgres.py` runs six owned synthetic SQL/POSIX
+cases against merged #668. Known catalog and card commits followed by H-protected
+native terminal completion retain the original task, decryptable final text,
+authenticated pins and verified file bytes. Stop after the card preserves that
+committed file/card while refusing subsequent terminal output. Internal task
+readback here is not authenticated HTTP/device or deployed cross-device evidence.
+
+The remaining cases deliberately document the uncomposed reservation boundary.
+Native restricted R0 can commit after synthetic protected SQL projection loss,
+while the later H-owned catalog phase refuses before files. Native Stop still
+refuses a new reservation. Lost reservation COMMIT acknowledgements can leave
+either absent or committed R0 rows with the exact original packet retained, but
+do not block the separate H owner because it did not own that transaction. No
+retry, replacement or file effect follows those uncertain diagnostic outcomes.
+Projection loss is an owner-only synthetic simulation, not a full restore drill.
+
+Closing this boundary needs a separately reviewed H-owned R0 reservation join,
+including its exact typed guard seams and actual cleanup retention. These tests
+do not install it or change the existing SQL/R0 promises. The observation-only
+barrier, independent artifact restore evidence and lifecycle release gates remain.
