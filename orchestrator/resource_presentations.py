@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from orchestrator.attempt_lifecycle import AttemptIdentity
-from orchestrator.resource_catalog import ResourceCatalog, uuid_text
+from orchestrator.resource_catalog import ResourceCatalog
 from orchestrator.resource_store import ResourceError, _canonical
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 
@@ -25,66 +25,10 @@ class ResourcePresentations:
         self.inputs._presentations = self
 
     def _pins(self, items: Any) -> list[dict[str, str]]:
-        if type(items) is not list or len(items) > self.item_limit:
-            raise ResourceError()
-        result = []
-        for i in items:
-            if type(i) is not dict or set(i) != {"resource_id", "version_id"}:
-                raise ResourceError()
-            result.append({k: uuid_text(i[k]) for k in ("resource_id", "version_id")})
-        if len({(i["resource_id"], i["version_id"]) for i in result}) != len(result):
-            raise ResourceError()
-        return result
+        return self.store._presentation_pins(items, item_limit=self.item_limit)
 
     def _open(self, row: Any, expected: CapturedGeneration) -> dict[str, Any]:
-        value = self.store._open(row["envelope_ciphertext"])
-        if set(value) != {
-            "schema_version",
-            "account_id",
-            "generation",
-            "original_task_id",
-            "original_message_id",
-            "source_deleted",
-            "envelope",
-        }:
-            raise ResourceError()
-        if (
-            type(value["schema_version"]) is not int
-            or value["schema_version"] != 1
-            or value["account_id"] != str(expected.account_id)
-            or type(value["generation"]) is not int
-            or value["generation"] != expected.generation
-            or row["generation"] != expected.generation
-            or type(value["source_deleted"]) is not bool
-        ):
-            raise ResourceError()
-        uuid_text(value["original_task_id"])
-        uuid_text(value["original_message_id"])
-        if (row["source_message_id"] is None) != value["source_deleted"] or (
-            not value["source_deleted"]
-            and str(row["source_message_id"]) != value["original_message_id"]
-        ):
-            raise ResourceError()
-        env = value["envelope"]
-        if type(env) is not dict or set(env) != {
-            "schema_version",
-            "component_library_version",
-            "snapshot_at",
-            "component",
-            "items",
-        }:
-            raise ResourceError()
-        if (
-            any(
-                type(env[k]) is not int or env[k] != 1
-                for k in ("schema_version", "component_library_version")
-            )
-            or env["component"] != "file_results"
-            or env["snapshot_at"] != row["created_at"].isoformat()
-        ):
-            raise ResourceError()
-        self._pins(env["items"])
-        return value
+        return self.store._presentation_open(row, expected, item_limit=self.item_limit)
 
     async def _check_pins(
         self, conn: Any, expected: CapturedGeneration, task: Any, pins: list[dict[str, str]]

@@ -20,7 +20,7 @@ historical Stop, then uses the existing TaskStore origin decoder on the locked
 original sealed task input. The locked conversation and result-message IDs must
 also match that retained acceptance, including when different same-account targets
 would satisfy native foreign keys. The separate backend-only `ReservedOutputPublisher`
-uses only P's two 058, three 059 and one 060 entrypoints. P receives no A/W/R0/H
+uses P's two 058, three 059 and one 060 entrypoints for the catalog phase. P receives no A/W/R0/H
 capabilities or direct table rights. W receives neither P credentials nor file/key
 access. Constructors perform no I/O; a native cleanup owner and exact active
 transaction task/connection are required before private effect seams.
@@ -82,3 +82,10 @@ distinct-UID deployment qualification and complete execution installation remain
 launch gates. No same-user synthetic test establishes live worker exclusion or
 live acceptance. All live keys, identities, credentials, grants, migrations,
 mount/socket permissions, deployment and activation remain separate operations.
+
+
+An optional, separately selected [presentation phase](RESOURCE_OUTPUT_PRESENTATION_JOIN.md)
+uses 061's seventh bounded observation capability. Both explicit presentation
+limits are unset by default, preserving this catalog-only operation. No runtime
+construction or table permission is added; the original `publish_reserved_output`
+method still performs no presentation or completion acknowledgement.

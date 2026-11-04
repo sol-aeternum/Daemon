@@ -122,12 +122,21 @@ def test_explicit_snapshot_and_inventory_budgets_are_not_coerced(field, value):
 
 
 @pytest.mark.asyncio
-async def test_original_base_exception_survives_failed_connection_termination(monkeypatch):
+@pytest.mark.parametrize("missing_native", [False, True])
+async def test_original_base_exception_survives_failed_connection_termination(
+    monkeypatch, missing_native
+):
     from contextlib import asynccontextmanager
     from orchestrator import resource_store
     from orchestrator.services.connection_cleanup import retain_pool_cleanup
 
     class Connection:
+        def __init__(self):
+            if not missing_native:
+                from types import SimpleNamespace
+
+                self._con = SimpleNamespace(_cancellations=set())
+
         def is_in_transaction(self):
             return False
 
@@ -154,6 +163,9 @@ async def test_original_base_exception_survives_failed_connection_termination(mo
     assert caught.value is original and value._blocked
     assert value._active_task is None and value._connection is None
     assert "Native publisher termination also failed" in original.__notes__
+    assert (
+        any("cancellation cleanup failed" in note for note in original.__notes__) is missing_native
+    )
 
 
 @pytest.mark.asyncio

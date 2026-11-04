@@ -180,6 +180,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "_reserved_transaction",
                                     "_reserved_snapshot",
                                     "_publish_reserved",
+                                    "_present_reserved",
+                                    "_presentation_snapshot",
+                                    "_presentation_references",
+                                    "_reserved_namespace",
                                     "_owned",
                                     "_accept_with_stage",
                                     "_mark_with_stage",
@@ -207,7 +211,15 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     )
                 if any(
                     target == n or target.endswith("." + n)
-                    for n in ("_reserved_transaction", "_reserved_snapshot", "_publish_reserved")
+                    for n in (
+                        "_reserved_transaction",
+                        "_reserved_snapshot",
+                        "_publish_reserved",
+                        "_present_reserved",
+                        "_presentation_snapshot",
+                        "_presentation_references",
+                        "_reserved_namespace",
+                    )
                 ):
                     enclosing = [
                         f
@@ -218,32 +230,74 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     method = max(enclosing, key=lambda f: f.lineno).name if enclosing else None
                     expression = ast.unparse(node.func)
                     args = [ast.unparse(arg) for arg in node.args]
-                    expected = {
-                        "publisher._reserved_transaction": [],
-                        "publisher._reserved_snapshot": ["conn", "identity", "intent_id"],
-                        "publisher._publish_reserved": ["conn", "identity", "intent_id", "content"],
+                    h_calls: dict[str | None, dict[str, list[str]]] = {
+                        "_publish_reserved_output": {
+                            "publisher._reserved_transaction": [],
+                            "publisher._reserved_snapshot": ["conn", "identity", "intent_id"],
+                            "publisher._publish_reserved": [
+                                "conn",
+                                "identity",
+                                "intent_id",
+                                "content",
+                            ],
+                        },
+                        "_present_reserved_output": {
+                            "publisher._reserved_transaction": [],
+                            "publisher._reserved_snapshot": ["conn", "identity", "intent_id"],
+                            "publisher._present_reserved": ["conn", "identity", "intent_id"],
+                        },
                     }
+                    expected_h = h_calls.get(method, {})
                     h = (
                         path == "orchestrator/services/restore_history/effects.py"
-                        and method == "_publish_reserved_output"
-                        and expression in expected
-                        and args == expected[expression]
+                        and expression in expected_h
+                        and args == expected_h[expression]
                         and not node.keywords
+                    )
+                    expected_native: dict[tuple[str | None, str], list[str]] = {
+                        ("_publish_reserved", "self._reserved_snapshot"): [
+                            "conn",
+                            "identity",
+                            "intent",
+                        ],
+                        ("_present_reserved", "self._reserved_snapshot"): [
+                            "conn",
+                            "identity",
+                            "intent",
+                        ],
+                        ("_publish_reserved", "self._reserved_namespace"): [
+                            "conn",
+                            "identity",
+                            "observed",
+                            "stored",
+                        ],
+                        ("_present_reserved", "self._reserved_namespace"): [
+                            "conn",
+                            "identity",
+                            "observed",
+                            "stored",
+                        ],
+                        ("_present_reserved", "self._presentation_snapshot"): ["conn", "identity"],
+                        ("_present_reserved", "self._presentation_references"): [
+                            "conn",
+                            "identity",
+                            "pins",
+                            "task",
+                        ],
+                    }
+                    admit = (
+                        method == "_publish_reserved"
+                        and expression == "self._reserved_snapshot"
+                        and len(node.keywords) == 1
+                        and node.keywords[0].arg == "admit"
+                        and isinstance(node.keywords[0].value, ast.Constant)
+                        and node.keywords[0].value.value is True
                     )
                     native = (
                         path == "orchestrator/resource_store.py"
-                        and method == "_publish_reserved"
-                        and expression == "self._reserved_snapshot"
-                        and args == ["conn", "identity", "intent"]
-                        and (
-                            not node.keywords
-                            or (
-                                len(node.keywords) == 1
-                                and node.keywords[0].arg == "admit"
-                                and isinstance(node.keywords[0].value, ast.Constant)
-                                and node.keywords[0].value.value is True
-                            )
-                        )
+                        and (method, expression) in expected_native
+                        and args == expected_native[(method, expression)]
+                        and (not node.keywords or admit)
                     )
                     if not (h or native):
                         violations.append(f"{path}:{node.lineno}:unapproved reserved output seam")
@@ -400,6 +454,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         (
                             "orchestrator/services/restore_history/effects.py",
                             "_publish_reserved_output",
+                        ),
+                        (
+                            "orchestrator/services/restore_history/effects.py",
+                            "_present_reserved_output",
                         ),
                         (
                             "orchestrator/services/restore_history/read_supervisor.py",

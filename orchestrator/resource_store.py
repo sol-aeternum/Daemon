@@ -14,7 +14,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import asyncio
 from typing import Any
@@ -86,8 +86,121 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _uuid_text(value: Any) -> str:
+    if type(value) is not str or len(value) != 36:
+        raise ResourceError("invalid_query")
+    try:
+        if str(UUID(value)) != value:
+            raise ValueError
+    except ValueError:
+        raise ResourceError("invalid_query") from None
+    return value
+
+
 class _ResourceCodec:
     """Existing canonical encrypted formats; no pool or filesystem authority."""
+
+    def _reference(self, ref: Any, expected: CapturedGeneration) -> dict[str, Any]:
+        p = self._open(ref["provenance_ciphertext"])
+        if (p.get("account_id"), p.get("resource_id"), p.get("version_id"), p.get("role")) != (
+            str(expected.account_id),
+            str(ref["resource_id"]),
+            str(ref["version_id"]),
+            ref["role"],
+        ):
+            raise ResourceError()
+        if (
+            type(p.get("generation")) is not int
+            or p["generation"] != expected.generation
+            or type(p.get("ordinal")) is not int
+            or p["ordinal"] != ref["ordinal"]
+            or type(p.get("source_deleted")) is not bool
+        ):
+            raise ResourceError()
+        for column, original in (
+            ("task_id", "original_task_id"),
+            ("conversation_id", "original_conversation_id"),
+            ("message_id", "original_message_id"),
+        ):
+            _uuid_text(p.get(original))
+            if p["source_deleted"]:
+                if ref[column] is not None:
+                    raise ResourceError()
+            elif str(ref[column]) != p[original]:
+                raise ResourceError()
+        return {
+            "reference_id": str(ref["reference_id"]),
+            "role": ref["role"],
+            "ordinal": ref["ordinal"],
+            "task_id": str(ref["task_id"]) if ref["task_id"] else None,
+            "conversation_id": str(ref["conversation_id"]) if ref["conversation_id"] else None,
+            "message_id": str(ref["message_id"]) if ref["message_id"] else None,
+            "source_deleted": p["source_deleted"],
+        }
+
+    def _presentation_pins(self, items: Any, *, item_limit: int) -> list[dict[str, str]]:
+        if type(items) is not list or len(items) > item_limit:
+            raise ResourceError()
+        result = []
+        for i in items:
+            if type(i) is not dict or set(i) != {"resource_id", "version_id"}:
+                raise ResourceError()
+            result.append({k: _uuid_text(i[k]) for k in ("resource_id", "version_id")})
+        if len({(i["resource_id"], i["version_id"]) for i in result}) != len(result):
+            raise ResourceError()
+        return result
+
+    def _presentation_open(
+        self, row: Any, expected: CapturedGeneration, *, item_limit: int
+    ) -> dict[str, Any]:
+        value = self._open(row["envelope_ciphertext"])
+        if set(value) != {
+            "schema_version",
+            "account_id",
+            "generation",
+            "original_task_id",
+            "original_message_id",
+            "source_deleted",
+            "envelope",
+        }:
+            raise ResourceError()
+        if (
+            type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or value["account_id"] != str(expected.account_id)
+            or type(value["generation"]) is not int
+            or value["generation"] != expected.generation
+            or row["generation"] != expected.generation
+            or type(value["source_deleted"]) is not bool
+        ):
+            raise ResourceError()
+        _uuid_text(value["original_task_id"])
+        _uuid_text(value["original_message_id"])
+        if (row["source_message_id"] is None) != value["source_deleted"] or (
+            not value["source_deleted"]
+            and str(row["source_message_id"]) != value["original_message_id"]
+        ):
+            raise ResourceError()
+        env = value["envelope"]
+        if type(env) is not dict or set(env) != {
+            "schema_version",
+            "component_library_version",
+            "snapshot_at",
+            "component",
+            "items",
+        }:
+            raise ResourceError()
+        if (
+            any(
+                type(env[k]) is not int or env[k] != 1
+                for k in ("schema_version", "component_library_version")
+            )
+            or env["component"] != "file_results"
+            or env["snapshot_at"] != row["created_at"].isoformat()
+        ):
+            raise ResourceError()
+        self._presentation_pins(env["items"], item_limit=item_limit)
+        return value
 
     def __init__(self, cipher: Fernet) -> None:
         if not isinstance(cipher, Fernet):
@@ -1001,7 +1114,8 @@ class ResourceStore(_ResourceCodec):
 class ReservedOutputPublisher(_ResourceCodec):
     """Backend-only, uncalled P collaborator for an original CSV reservation.
 
-    No reservation, presentation, namespace creation, repair, HTTP or startup.
+    No reservation, namespace creation, repair, HTTP or startup. Presentation
+    requires separately supplied budgets and owns a distinct P transaction.
     The existing H owner validates native origin on the locked snapshot before
     entering the sole typed effect seam. Snapshots never authorize file work.
     """
@@ -1016,6 +1130,8 @@ class ReservedOutputPublisher(_ResourceCodec):
         *,
         inventory_limit: int,
         snapshot_byte_limit: int,
+        presentation_item_limit: int | None = None,
+        presentation_record_limit: int | None = None,
     ) -> None:
         super().__init__(cipher)
         if (
@@ -1033,6 +1149,13 @@ class ReservedOutputPublisher(_ResourceCodec):
             or not 1 <= snapshot_byte_limit <= 2**31 - 1
         ):
             raise ResourceError("invalid")
+        if (presentation_item_limit is None) != (presentation_record_limit is None) or any(
+            value is not None and (type(value) is not int or not 1 <= value <= 100)
+            for value in (presentation_item_limit, presentation_record_limit)
+        ):
+            raise ResourceError("invalid_limits")
+        self._presentation_item_limit = presentation_item_limit
+        self._presentation_record_limit = presentation_record_limit
         self._pool, self._root = pool, root
         self._journal_path, self._journal_id = journal_path, journal_id
         self._inventory_limit, self._snapshot_byte_limit = inventory_limit, snapshot_byte_limit
@@ -1058,6 +1181,36 @@ class ReservedOutputPublisher(_ResourceCodec):
                     await tx.commit()  # Only this owned top-level COMMIT counts.
                 except BaseException as original:
                     self._blocked = True
+                    # asyncpg 0.31 starts a separate CancelRequest task when a
+                    # query is interrupted. terminate() cancels those tasks
+                    # without joining them. Retain the actual transport work
+                    # before aborting this uncertain channel; do not await its
+                    # missing query/COMMIT acknowledgement or issue another SQL
+                    # command. Repeated caller cancellation cannot detach it.
+                    try:
+                        native = conn._con
+                        while native._cancellations:
+                            pending = tuple(native._cancellations)
+                            for cancellation in pending:
+                                while not cancellation.done():
+                                    try:
+                                        await asyncio.shield(cancellation)
+                                    except asyncio.CancelledError:
+                                        continue
+                                    except BaseException:
+                                        break
+                                try:
+                                    cancellation.result()
+                                except BaseException as secondary:
+                                    original.add_note(
+                                        "Native publisher cancellation cleanup: "
+                                        + type(secondary).__name__
+                                    )
+                    except BaseException as secondary:
+                        original.add_note(
+                            "Native publisher cancellation cleanup failed: "
+                            + type(secondary).__name__
+                        )
                     try:
                         conn.terminate()  # No rollback/readback on an uncertain channel.
                     except BaseException:
@@ -1335,23 +1488,11 @@ class ReservedOutputPublisher(_ResourceCodec):
             self._instant(version["created_at"]),
         )
 
-    async def _publish_reserved(
-        self, conn: Any, identity: AttemptIdentity, intent: UUID, content: bytes
-    ) -> Publication:
+    async def _reserved_namespace(
+        self, conn: Any, identity: AttemptIdentity, observed: dict[str, Any], stored: StoredBinding
+    ) -> None:
         self._owned_connection(conn)
-        if type(content) is not bytes or len(content) > MAX_CONTENT_BYTES:
-            raise ResourceError("invalid")
-        observed = await self._reserved_snapshot(conn, identity, intent)
-        if observed["publication"] is None:
-            observed = await self._reserved_snapshot(conn, identity, intent, admit=True)
-        command = observed["_command"]
-        namespace = observed["namespace"]["namespace"]
-        stored = self._stored(command, namespace)
-        if (
-            len(content) != stored.measured_bytes
-            or hashlib.sha256(content).hexdigest() != stored.sha256
-        ):
-            raise ResourceError("conflict")
+        namespace = stored.namespace
         # Full actual J1 scan, then one bounded SQL snapshot. The scanner has
         # closed all journal locks/descriptors before the database call.
         view = await scan_namespace_journal(self._journal_path, self._journal_id)
@@ -1382,6 +1523,25 @@ class ReservedOutputPublisher(_ResourceCodec):
         }
         if _canonical(observed["namespace"]) != _canonical(expected_namespace):
             raise ResourceError("namespace")
+
+    async def _publish_reserved(
+        self, conn: Any, identity: AttemptIdentity, intent: UUID, content: bytes
+    ) -> Publication:
+        self._owned_connection(conn)
+        if type(content) is not bytes or len(content) > MAX_CONTENT_BYTES:
+            raise ResourceError("invalid")
+        observed = await self._reserved_snapshot(conn, identity, intent)
+        if observed["publication"] is None:
+            observed = await self._reserved_snapshot(conn, identity, intent, admit=True)
+        command = observed["_command"]
+        namespace = observed["namespace"]["namespace"]
+        stored = self._stored(command, namespace)
+        if (
+            len(content) != stored.measured_bytes
+            or hashlib.sha256(content).hexdigest() != stored.sha256
+        ):
+            raise ResourceError("conflict")
+        await self._reserved_namespace(conn, identity, observed, stored)
         if observed["publication"] is not None:
             result = self._existing(observed, stored)
             await _io(lambda: read_verified(self._root, self._envelope, stored))
@@ -1430,5 +1590,245 @@ class ReservedOutputPublisher(_ResourceCodec):
                 UUID(packet["reference_id"]),
                 self._instant(result["created_at"]),
             )
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise ResourceError("invalid_snapshot") from None
+
+    async def _presentation_snapshot(self, conn: Any, identity: AttemptIdentity) -> dict[str, Any]:
+        self._owned_connection(conn)
+        payload = await conn.fetchval(
+            "WITH observed AS MATERIALIZED (SELECT public.resource_output_presentation_snapshot($1::pg_catalog.jsonb) AS value) SELECT CASE WHEN pg_catalog.octet_length(value::pg_catalog.text)<=$2::pg_catalog.int4 THEN value ELSE NULL END FROM observed",
+            identity.wire(),
+            self._snapshot_byte_limit,
+        )
+        if type(payload) is not str or len(payload.encode("utf-8")) > self._snapshot_byte_limit:
+            raise ResourceError("snapshot_capacity")
+        try:
+            raw = json.loads(payload, object_pairs_hook=_pairs)
+            if (
+                type(raw) is not dict
+                or set(raw) != {"task", "records", "observed_at"}
+                or type(raw["task"]) is not dict
+                or set(raw["task"])
+                != {
+                    "id",
+                    "user_id",
+                    "conversation_id",
+                    "result_message_id",
+                    "input_version",
+                    "input_ciphertext",
+                }
+                or type(raw["records"]) is not list
+                or self._presentation_record_limit is None
+                or len(raw["records"]) > self._presentation_record_limit
+            ):
+                raise ResourceError("invalid_snapshot")
+            task = raw["task"]
+            for key in ("id", "user_id", "conversation_id", "result_message_id"):
+                task[key] = self._uuid(task[key])
+            if (
+                task["id"] != identity.task_id
+                or task["user_id"] != identity.account_id
+                or type(task["input_version"]) is not int
+                or type(task["input_ciphertext"]) is not str
+            ):
+                raise ResourceError("invalid_snapshot")
+            # Native asyncpg timestamptz rows use UTC even when PostgreSQL's
+            # JSON serialization uses another session timezone. Preserve the
+            # existing native envelope string format in both directions.
+            raw["observed_at"] = self._instant(raw["observed_at"]).astimezone(timezone.utc)
+            seen = set()
+            for row in raw["records"]:
+                if type(row) is not dict or set(row) != {
+                    "presentation_id",
+                    "account_id",
+                    "generation",
+                    "source_message_id",
+                    "envelope_ciphertext",
+                    "created_at",
+                }:
+                    raise ResourceError("invalid_snapshot")
+                ident = self._uuid(row["presentation_id"])
+                if (
+                    ident in seen
+                    or self._uuid(row["account_id"]) != identity.account_id
+                    or type(row["generation"]) is not int
+                    or row["generation"] != identity.generation
+                    or self._uuid(row["source_message_id"]) != task["result_message_id"]
+                ):
+                    raise ResourceError("invalid_snapshot")
+                seen.add(ident)
+                row["created_at"] = self._instant(row["created_at"]).astimezone(timezone.utc)
+            return raw
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise ResourceError("invalid_snapshot") from None
+
+    async def _presentation_references(
+        self, conn: Any, identity: AttemptIdentity, pins: list[dict[str, str]], task: dict[str, Any]
+    ) -> None:
+        self._owned_connection(conn)
+        if self._presentation_item_limit is None:
+            raise ResourceError("invalid_composition")
+        pins = self._presentation_pins(pins, item_limit=self._presentation_item_limit)
+        payload = await conn.fetchval(
+            "WITH observed AS MATERIALIZED (SELECT public.resource_output_presentation_references($1::pg_catalog.jsonb,$2::pg_catalog.jsonb) AS value) SELECT CASE WHEN pg_catalog.octet_length(value::pg_catalog.text)<=$3::pg_catalog.int4 THEN value ELSE NULL END FROM observed",
+            identity.wire(),
+            json.dumps(pins),
+            self._snapshot_byte_limit,
+        )
+        if type(payload) is not str or len(payload.encode("utf-8")) > self._snapshot_byte_limit:
+            raise ResourceError("snapshot_capacity")
+        try:
+            value = json.loads(payload, object_pairs_hook=_pairs)
+            if (
+                type(value) is not dict
+                or set(value) != {"schema_version", "output_references"}
+                or type(value["schema_version"]) is not int
+                or value["schema_version"] != 1
+                or type(value["output_references"]) is not list
+                or len(value["output_references"]) != len(pins)
+            ):
+                raise ResourceError("invalid_snapshot")
+            expected = CapturedGeneration(identity.account_id, identity.generation)
+            for pin, row in zip(pins, value["output_references"], strict=True):
+                if type(row) is not dict or set(row) != {
+                    "reference_id",
+                    "account_id",
+                    "resource_id",
+                    "version_id",
+                    "generation",
+                    "role",
+                    "ordinal",
+                    "task_id",
+                    "conversation_id",
+                    "message_id",
+                    "job_id",
+                    "provenance_ciphertext",
+                    "created_at",
+                }:
+                    raise ResourceError("invalid_snapshot")
+                if (
+                    self._uuid(row["account_id"]) != identity.account_id
+                    or row["resource_id"] != pin["resource_id"]
+                    or row["version_id"] != pin["version_id"]
+                    or type(row["generation"]) is not int
+                    or row["generation"] != identity.generation
+                    or row["role"] != "output"
+                    or type(row["ordinal"]) is not int
+                    or not 0 <= row["ordinal"] <= 2**31 - 1
+                    or self._uuid(row["task_id"]) != identity.task_id
+                    or self._uuid(row["conversation_id"]) != task["conversation_id"]
+                    or self._uuid(row["message_id"]) != task["result_message_id"]
+                ):
+                    raise ResourceError("invalid_snapshot")
+                for key in ("reference_id", "conversation_id", "message_id"):
+                    self._uuid(row[key])
+                if row["job_id"] is not None:
+                    self._uuid(row["job_id"])
+                self._instant(row["created_at"])
+                provenance = self._open(row["provenance_ciphertext"])
+                if (
+                    set(provenance)
+                    != {
+                        "schema_version",
+                        "account_id",
+                        "resource_id",
+                        "version_id",
+                        "generation",
+                        "original_task_id",
+                        "original_conversation_id",
+                        "original_message_id",
+                        "original_job_id",
+                        "original_attempt_id",
+                        "role",
+                        "ordinal",
+                        "source_deleted",
+                    }
+                    or type(provenance["schema_version"]) is not int
+                    or provenance["schema_version"] != 1
+                    or provenance["original_job_id"] != row["job_id"]
+                ):
+                    raise ResourceError("invalid_snapshot")
+                self._uuid(provenance["original_job_id"])
+                self._uuid(provenance["original_attempt_id"])
+                if self._reference(row, expected)["source_deleted"] is not False:
+                    raise ResourceError("invalid_snapshot")
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise ResourceError("invalid_snapshot") from None
+
+    async def _present_reserved(self, conn: Any, identity: AttemptIdentity, intent: UUID) -> UUID:
+        self._owned_connection(conn)
+        if self._presentation_item_limit is None or self._presentation_record_limit is None:
+            raise ResourceError("invalid_composition")
+        observed = await self._reserved_snapshot(conn, identity, intent)
+        if observed["publication"] is None:
+            raise ResourceError("incomplete")
+        stored = self._stored(observed["_command"], observed["namespace"]["namespace"])
+        await self._reserved_namespace(conn, identity, observed, stored)
+        publication = self._existing(observed, stored)
+        await _io(lambda: read_verified(self._root, self._envelope, stored))
+        desired = [
+            {"resource_id": str(publication.resource_id), "version_id": str(publication.version_id)}
+        ]
+        task = observed["task"]
+        pins = desired
+        # Qualify the seventh capability even when there are no existing cards.
+        await self._presentation_references(conn, identity, pins, task)
+        snapshot = await self._presentation_snapshot(conn, identity)
+        if snapshot["task"] != observed["task"]:
+            raise ResourceError("conflict")
+        expected = CapturedGeneration(identity.account_id, identity.generation)
+        matches = []
+        for row in snapshot["records"]:
+            value = self._presentation_open(row, expected, item_limit=self._presentation_item_limit)
+            if value["original_task_id"] != str(identity.task_id):
+                raise ResourceError("conflict")
+            pins = value["envelope"]["items"]
+            await self._presentation_references(conn, identity, pins, task)
+            if _canonical(pins) == _canonical(desired):
+                matches.append(self._uuid(row["presentation_id"]))
+        if len(matches) > 1:
+            raise ResourceError("conflict")
+        if matches:
+            return matches[0]  # Committed observation only; no new phase or permit.
+        if len(snapshot["records"]) >= self._presentation_record_limit:
+            raise ResourceError("capacity")
+        created, ident = snapshot["observed_at"], uuid4()
+        token = self._seal(
+            {
+                "schema_version": 1,
+                "account_id": str(identity.account_id),
+                "generation": identity.generation,
+                "original_task_id": str(identity.task_id),
+                "original_message_id": str(observed["task"]["result_message_id"]),
+                "source_deleted": False,
+                "envelope": {
+                    "schema_version": 1,
+                    "component_library_version": 1,
+                    "snapshot_at": created.isoformat(),
+                    "component": "file_results",
+                    "items": desired,
+                },
+            }
+        )
+        payload = await conn.fetchval(
+            "SELECT public.resource_output_presentation_insert($1::pg_catalog.jsonb,$2::pg_catalog.uuid,$3::pg_catalog.jsonb,$4::pg_catalog.text,$5::pg_catalog.timestamptz,$6::pg_catalog.int4)",
+            identity.wire(),
+            ident,
+            json.dumps(desired),
+            token,
+            created,
+            self._presentation_record_limit,
+        )
+        try:
+            result = json.loads(payload, object_pairs_hook=_pairs)
+            if (
+                type(result) is not dict
+                or set(result) != {"presentation_id", "inserted", "outcome"}
+                or self._uuid(result["presentation_id"]) != ident
+                or result["inserted"] is not True
+                or result["outcome"] != "pending_commit"
+            ):
+                raise ResourceError("invalid_snapshot")
+            return ident
         except (KeyError, TypeError, ValueError, RecursionError):
             raise ResourceError("invalid_snapshot") from None

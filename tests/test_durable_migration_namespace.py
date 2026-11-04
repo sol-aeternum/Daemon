@@ -424,3 +424,20 @@ def test_complete_inventory_adapter_preserves_binding_types_and_closed_acl(prefi
     assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
     assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("prefix,custom", [("tasks_test_", False), ("bench_metadata_", True)])
+def test_presentation_reference_adapter_preserves_scope_and_closed_acl(prefix, custom):
+    schema = prefix + uuid4().hex
+    path = MIGRATIONS / "061_resource_output_presentation_references.sql"
+    original = path.read_text()
+    sql = migration_sql_for_schema(path, schema, schema_prefix=prefix if custom else None)
+    namespace = f'"{schema}"' if custom else schema
+    assert "public." not in sql
+    assert f"FROM {namespace}.resource_references" in sql
+    assert f"JOIN {namespace}.resource_versions" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert "FOR SHARE OF r,v" in sql
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+    assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
+    assert path.read_text() == original
