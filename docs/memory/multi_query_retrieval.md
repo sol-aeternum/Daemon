@@ -86,14 +86,20 @@ preservation is not permission to waive the zero-regression exposure gate.
 
 ### Side effects and trajectory logging
 
-With multi-query enabled, defer access touches and trust recording until the
-final rendered set is known. Record each retained memory once, not once per
+With multi-query enabled, gather is read-only, even when its legacy
+`record_side_effects` argument is true. The async production wrapper renders
+with its actual caller budget and then records access touches and trust for
+that exact block. No effects are based on a speculative render or a budget
+supplied to gather. Record each retained memory once, not once per
 retrieval arm, including fail-open after deferral, no added IDs and sub-arm failure.
 Evaluation disables both. Unlike flag off (which touches retrieved rows even if
 the budget drops them), enabled-path effects use the rendered rows only.
 Do not change flag-off ranking or its
-existing side-effect call contract. The custom render budget must also determine
-the set used for side effects, not only the default budget.
+existing side-effect call contract. The renderer signature and budget behaviour
+are unchanged. Ordinary effect failures remain best-effort and do not fail the
+prompt; cancellation propagates, and accounting errors must never be hidden.
+Shared rendered-row and width helpers live in `injection.py`; exposure imports
+them, never the reverse. The LongMemEval harness records no effects.
 
 Retrieval-log rows gain nullable `query_role`: NULL for flag-off/legacy rows,
 `original` for enabled original queries and `sub:<i>` for zero-based components.

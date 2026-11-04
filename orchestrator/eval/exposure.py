@@ -13,6 +13,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from orchestrator.memory import injection
+from orchestrator.memory.injection import (
+    _section_counts as _section_counts,
+    _eligible_l0 as _eligible_l0,
+    _expected_retained_l0 as _expected_retained_l0,
+    rendered_memory_rows as rendered_memory_rows,
+)
 
 BASELINE_K = 5
 CANDIDATE_KS = (10, 15, 20)
@@ -80,96 +86,6 @@ def distractor_counts(
     }
 
 
-def _section_counts(block: str) -> tuple[int, int]:
-    """Count rendered (retrieved, frozen) rows per production section."""
-    section = ""
-    retrieved_count = 0
-    frozen_count = 0
-    for line in block.splitlines():
-        if line == "[FROZEN MEMORIES]":
-            section = "frozen"
-        elif line == "About this user:":
-            section = "retrieved"
-        elif line == "Recent context:":
-            section = "summary"
-        elif line.startswith("- "):
-            if section == "frozen":
-                frozen_count += 1
-            elif section == "retrieved" and re.match(
-                r"^- (?:Fact|Project|Preference|Important): ", line
-            ):
-                retrieved_count += 1
-    return retrieved_count, frozen_count
-
-
-def _eligible_l0(inputs: injection.MemoryContextInputs) -> list[dict[str, object]]:
-    """Frozen rows the renderer would print (blank/normalize-empty rows are skipped)."""
-    return [
-        memory
-        for memory in inputs.l0_memories
-        if injection._truncate_to_chars(
-            injection._normalize_content(memory.get("content")), injection.MAX_L0_CHARS
-        )
-    ]
-
-
-def _expected_retained_l0(inputs: injection.MemoryContextInputs, eligible: int) -> int:
-    """Frozen rows the renderer legitimately keeps under its own L0_TOKEN_BUDGET.
-
-    ``render_memory_context`` trims the L0 block independently of ``max_tokens``
-    and of the retrieved rows, popping whole lines from the end while the block
-    exceeds ``L0_TOKEN_BUDGET`` (but never the header). This oracle replays that
-    line-count arithmetic over ``_format_l0_block``'s own lines. It never parses
-    rendered output, so drift in how frozen rows are printed (header text, row
-    prefix) still produces a count mismatch and fails closed.
-    """
-    block = injection._format_l0_block(inputs.l0_memories)
-    if not block:
-        return 0
-    lines = block.split("\n")
-    if len(lines) - 1 != eligible:
-        raise ValueError("Renderer section contract changed")
-    while (
-        injection.estimate_tokens("\n".join(lines)) > injection.L0_TOKEN_BUDGET and len(lines) > 1
-    ):
-        lines.pop()
-    return len(lines) - 1
-
-
-def rendered_memory_rows(
-    inputs: injection.MemoryContextInputs, block: str, *, require_complete: bool = False
-) -> list[dict[str, object]]:
-    """Recover IDs from the actual renderer's prefix-only removal behaviour.
-
-    Content is normalized to a single line by production. Count rendered lines
-    within each production section, then associate them with the corresponding
-    input prefix. This never searches for memory text substrings (which would
-    misattribute duplicates). It also includes retained L0 rows.
-    """
-    retrieved_count, frozen_count = _section_counts(block)
-    eligible = [
-        memory
-        for memory in inputs.retrieved[: (inputs.retrieved_limit or injection.MAX_MEMORY_ITEMS)]
-        if injection._truncate_to_chars(
-            injection._normalize_content(memory.get("content")), injection.MAX_SINGLE_MEMORY_CHARS
-        )
-    ]
-    eligible_l0 = _eligible_l0(inputs)
-    expected_frozen = len(eligible_l0)
-    if require_complete:
-        expected_frozen = _expected_retained_l0(inputs, len(eligible_l0))
-    if (
-        retrieved_count > len(eligible)
-        or frozen_count > len(eligible_l0)
-        or (
-            require_complete
-            and (retrieved_count != len(eligible) or frozen_count != expected_frozen)
-        )
-    ):
-        raise ValueError("Renderer section contract changed")
-    return [*eligible_l0[:frozen_count], *eligible[:retrieved_count]]
-
-
 def rendered_memory_texts(block: str) -> list[str]:
     """Visible memory text only (no labels or summaries), including truncation."""
     texts = []
@@ -223,8 +139,7 @@ def measure(
         str(row["id"]) for row in eligible_l0[retained_l0:] if str(row["id"]) not in rendered
     ]
     retrieved_ids = [
-        str(row["id"])
-        for row in inputs.retrieved[: (inputs.retrieved_limit or injection.MAX_MEMORY_ITEMS)]
+        str(row["id"]) for row in inputs.retrieved[: injection.retrieved_width(inputs)]
     ]
     pre_retrieved = set(retrieved_ids) | {str(row["id"]) for row in inputs.l0_memories}
     gold = set(gold_conversation_ids)
