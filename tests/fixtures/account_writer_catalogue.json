@@ -3352,6 +3352,17 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
+      "owner_source": "orchestrator.eval.retrieval_exactness",
+      "qualname": "plan_summary.visit",
+      "kind": "filesystem_write",
+      "fingerprint": "8a521b6fe6ec1cea",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Conservative scanner candidate for str.replace in plan-shape summarisation, not actual file I/O."
+    },
+    {
       "owner_source": "orchestrator.home_suggestions.contracts",
       "qualname": "render_context",
       "kind": "filesystem_write",
