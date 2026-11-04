@@ -3632,14 +3632,6 @@ class MemoryStore:
         if not record_query_text:
             query_text, query_embedding = "", None
         embedding_str = _format_vector(query_embedding) if query_embedding else None
-        sql = """
-            INSERT INTO retrieval_log
-                (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
-                 candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
-                 latency_ms, retrieval_context, retrieval_triggered_by)
-            VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12)
-            RETURNING *
-            """
         args = [
             user_id,
             conversation_id,
@@ -3654,13 +3646,31 @@ class MemoryStore:
             retrieval_context,
             retrieval_triggered_by,
         ]
-        if query_role is not None:
-            sql = sql.replace(
-                "retrieval_context, retrieval_triggered_by)",
-                "retrieval_context, retrieval_triggered_by, query_role)",
-            ).replace("$11, $12)", "$11, $12, $13)")
-            args.append(query_role)
-        row = await self._pool.fetchrow(sql, *args)
+        if query_role is None:
+            row = await self._pool.fetchrow(
+                """
+                INSERT INTO retrieval_log
+                    (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
+                     candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
+                     latency_ms, retrieval_context, retrieval_triggered_by)
+                VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12)
+                RETURNING *
+                """,
+                *args,
+            )
+        else:
+            row = await self._pool.fetchrow(
+                """
+                INSERT INTO retrieval_log
+                    (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
+                     candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
+                     latency_ms, retrieval_context, retrieval_triggered_by, query_role)
+                VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12, $13)
+                RETURNING *
+                """,
+                *args,
+                query_role,
+            )
         return dict(row)
 
     async def get_retrieval_logs(

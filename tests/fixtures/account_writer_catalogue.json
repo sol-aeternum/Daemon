@@ -619,6 +619,28 @@
   },
   "writer_sites": [
     {
+      "owner_source": "orchestrator.memory.injection",
+      "qualname": "gather_memory_context_inputs",
+      "kind": "filesystem_write",
+      "fingerprint": "a3e6b44a8dcac341",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner flags datetime.replace on the enabled reference clock; this expression changes only an in-memory datetime, not a filesystem path. No runtime account-fence coverage claimed."
+    },
+    {
+      "owner_source": "orchestrator.memory.injection",
+      "qualname": "gather_memory_context_inputs",
+      "kind": "store_write",
+      "fingerprint": "8b5a57f88d7b0e04",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner flags ContextVar.set for the enabled recency clock, reset in finally; no database/store mutation at this call. No runtime account-fence coverage claimed."
+    },
+    {
       "owner_source": "orchestrator.services.connection_cleanup",
       "qualname": "retain_pool_cleanup",
       "kind": "store_write",
@@ -4207,7 +4229,7 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.log_retrieval",
       "kind": "sql_inline",
-      "fingerprint": "71b30ffdfa96ad07",
+      "fingerprint": "0129697f0d1b539e",
       "tables": [
         "retrieval_log"
       ],
@@ -4215,6 +4237,19 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.log_retrieval",
+      "kind": "sql_inline",
+      "fingerprint": "5e1c2da9dbc54077",
+      "tables": [
+        "retrieval_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Explicit role-bearing retrieval-log INSERT; sub-query text/vector suppression precedes this call. Same account ownership as the legacy INSERT; no runtime account-fence coverage claimed."
     },
     {
       "owner_source": "orchestrator.memory.store",

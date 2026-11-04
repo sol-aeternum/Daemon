@@ -37,6 +37,10 @@ def _raw(name="inference_policy.production.json"):
     return json.loads((ROOT / "config" / name).read_text())
 
 
+def _proposal(raw):
+    return next(route for route in raw["routes"] if route["route_id"] == ROUTE)
+
+
 @pytest.mark.parametrize("name", BASELINE)
 def test_shipped_policy_legacy_payloads_approvals_and_attestation_unchanged(name):
     raw = _raw(name)
@@ -93,7 +97,7 @@ def test_shipped_policy_legacy_payloads_approvals_and_attestation_unchanged(name
 @pytest.mark.parametrize("providers", [["azure/eu"], ["azure/eu", "azure/us"]])
 def test_new_mode_payload_and_shared_approval_predicate(sort, providers):
     raw = _raw()
-    entry = raw["routes"][0]
+    entry = _proposal(raw)
     transport = entry["privacy"]["transport"]
     transport.update(provider_only=providers, provider_order=list(reversed(providers)), sort=sort)
     p = parse_inference_policy(raw)
@@ -130,7 +134,7 @@ def test_new_mode_payload_and_shared_approval_predicate(sort, providers):
 )
 def test_invalid_new_mode_rejected(field, value):
     raw = _raw()
-    raw["routes"][0]["privacy"]["transport"][field] = value
+    _proposal(raw)["privacy"]["transport"][field] = value
     with pytest.raises(PolicyError):
         parse_inference_policy(raw)
 
@@ -138,11 +142,11 @@ def test_invalid_new_mode_rejected(field, value):
 def test_new_mode_rejects_variants_missing_price_and_approved_multi():
     for key, value in (("model", "openrouter/openai/gpt-6-luna:nitro"), ("price_ceiling", None)):
         raw = _raw()
-        raw["routes"][0][key] = value
+        _proposal(raw)[key] = value
         with pytest.raises(PolicyError):
             parse_inference_policy(raw)
     raw = _raw()
-    entry = raw["routes"][0]
+    entry = _proposal(raw)
     entry["approved"] = True
     entry["privacy"]["transport"].update(provider_only=["a", "b"], provider_order=["a", "b"])
     with pytest.raises(PolicyError):

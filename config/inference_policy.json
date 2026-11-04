@@ -69,6 +69,7 @@
         "free_model_training_opt_out": null
       },
       "price_ceiling": {"microusd_per_1m_prompt": 220000, "microusd_per_1m_completion": 825000},
+      "operator_review": {"reviewer": null, "reviewed_at": null, "review_expires_at": null, "evidence": []},
       "notes": "M1 proposal only: not approved or attested. Later approval must separately convert to monitored with a baseline for the single pinned provider; M1.5 chooses the route and timeout. No existing route approval is inherited."
     }
   ],
