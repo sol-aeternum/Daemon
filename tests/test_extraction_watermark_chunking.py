@@ -33,6 +33,7 @@ from arq import Retry
 
 from orchestrator.compute_runtime import current_scope
 from orchestrator.memory.extraction import (
+    EXTRACTION_MAX_TOKENS,
     MAX_EXTRACTION_INPUT_CHARS,
     extract_facts_from_text,
     process_extraction,
@@ -628,6 +629,220 @@ async def test_malformed_fact_entry_is_not_successful() -> None:
 
     assert outcome.succeeded is False
     assert outcome.facts == []
+
+
+@pytest.mark.asyncio
+async def test_truncated_reply_fails_without_parsing() -> None:
+    """Issue #670: a ``length`` stop reason means the JSON is cut off.
+
+    The reply below is valid-looking but incomplete JSON, which previously
+    raised from ``json.loads`` and surfaced as a generic extraction error.
+    """
+    response = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": '{"facts": [{"content": "user plans to'},
+            }
+        ],
+        "usage": {"completion_tokens": 4000},
+    }
+    with patch(
+        "orchestrator.memory.extraction.guarded_completion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is False
+    assert outcome.failure_reason == "truncated"
+    assert outcome.facts == []
+
+
+@pytest.mark.asyncio
+async def test_truncated_reply_is_never_parsed_even_when_json_complete() -> None:
+    """A ``length`` stop reason is authoritative, even for a complete envelope."""
+    response = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "facts": [
+                                {
+                                    "content": "user plans to ship feature F",
+                                    "category": "project",
+                                    "confidence": 0.7,
+                                    "slot": "project_f",
+                                }
+                            ]
+                        }
+                    )
+                },
+            }
+        ]
+    }
+    with patch(
+        "orchestrator.memory.extraction.guarded_completion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is False
+    assert outcome.failure_reason == "truncated"
+    assert outcome.facts == []
+
+
+@pytest.mark.asyncio
+async def test_normal_stop_reply_has_no_failure_reason() -> None:
+    response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "facts": [
+                                {
+                                    "content": "user plans to ship feature F",
+                                    "category": "project",
+                                    "confidence": 0.7,
+                                    "slot": "project_f",
+                                }
+                            ]
+                        }
+                    )
+                },
+            }
+        ]
+    }
+    with patch(
+        "orchestrator.memory.extraction.guarded_completion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is True
+    assert outcome.failure_reason is None
+    assert outcome.facts
+
+
+@pytest.mark.asyncio
+async def test_missing_finish_reason_behaves_as_before() -> None:
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "facts": [
+                                {
+                                    "content": "user prefers aisle seats",
+                                    "category": "preference",
+                                    "confidence": 0.8,
+                                    "slot": None,
+                                }
+                            ]
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    with patch(
+        "orchestrator.memory.extraction.guarded_completion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is True
+    assert outcome.failure_reason is None
+    assert outcome.facts
+
+
+@pytest.mark.asyncio
+async def test_truncation_warning_never_logs_reply_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "SENTINEL-REPLY-TEXT-9f13"
+    response = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": '{"facts": [{"content": "' + sentinel},
+            }
+        ],
+        "usage": {"completion_tokens": 4000},
+    }
+    caplog.set_level("WARNING", logger="orchestrator.memory.extraction")
+    with (
+        patch(
+            "orchestrator.memory.extraction.guarded_completion",
+            new_callable=AsyncMock,
+            return_value=response,
+        ),
+        patch("orchestrator.memory.extraction.safe_logging.event") as diagnostic,
+    ):
+        await extract_facts_from_text("candidate memory text")
+
+    diagnostic.assert_called_once_with("failure", stage="extraction_truncated")
+    assert sentinel not in caplog.text
+    assert "truncated" in caplog.text
+    assert "output_tokens=4000" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_truncated_outcome_does_not_advance_checkpoint() -> None:
+    store = AsyncMock()
+    store.get_conversation = AsyncMock(return_value=None)
+    store.log_extraction = AsyncMock()
+
+    class _TruncatedOutcome:
+        facts: list[object] = []
+        raw_count = 0
+        calibrated_count = 0
+        rejected_count = 0
+        slot_coverage: dict[str, int] = {}
+        succeeded = False
+        failure_reason = "truncated"
+
+    with patch(
+        "orchestrator.memory.extraction.extract_facts_from_text",
+        new_callable=AsyncMock,
+        return_value=_TruncatedOutcome(),
+    ) as extract_mock:
+        success, memories, continuation = await process_extraction(
+            store,
+            user_id=uuid.uuid4(),
+            conversation_id=uuid.uuid4(),
+            text="short input",
+            last_message_observed_at=datetime.now(timezone.utc),
+        )
+
+    assert (success, memories, continuation) == (False, [], False)
+    assert extract_mock.await_count == 2
+    store.log_extraction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extraction_request_uses_raised_token_cap() -> None:
+    """Issue #670: the owner raised the cap from 2000 to 4000 output tokens."""
+    response = {"choices": [{"finish_reason": "stop", "message": {"content": '{"facts": []}'}}]}
+    with patch(
+        "orchestrator.memory.extraction.guarded_completion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ) as completion_mock:
+        await extract_facts_from_text("candidate memory text")
+
+    assert EXTRACTION_MAX_TOKENS == 4000
+    request = completion_mock.await_args
+    assert request is not None
+    assert request.kwargs["max_tokens"] == 4000
 
 
 @pytest.mark.asyncio
