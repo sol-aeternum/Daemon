@@ -1041,7 +1041,9 @@ def _proc_value(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="strict").strip()
 
 
-def sample_resources_psutil_free(proc_root: Path | str = "/proc") -> dict[str, float]:
+def sample_resources_psutil_free(
+    proc_root: Path | str = "/proc", *, pid: int | None = None
+) -> dict[str, float]:
     """CPU load, memory, RSS and free disk, using only stdlib and ``/proc``.
 
     Missing or unreadable sources are omitted rather than raised: this runs
@@ -1062,7 +1064,7 @@ def sample_resources_psutil_free(proc_root: Path | str = "/proc") -> dict[str, f
     except (OSError, ValueError):
         pass
     try:
-        resident_pages = int(_proc_value(root / "self" / "statm").split()[1])
+        resident_pages = int(_proc_value(root / (str(pid) if pid else "self") / "statm").split()[1])
         sample["rss_bytes"] = float(resident_pages * os.sysconf("SC_PAGE_SIZE"))
     except (OSError, ValueError, IndexError):
         pass
@@ -1305,6 +1307,20 @@ def claim_record(path: Path | str) -> Path:
     with open(claim, "x", encoding="utf-8"):
         pass
     return claim
+
+
+def child_resource_sampling(
+    spawn: Callable[[Sequence[str]], ProcessHandle],
+) -> tuple[Callable[[Sequence[str]], ProcessHandle], Callable[[], Mapping[str, float]]]:
+    """A spawn and a sampler whose ``rss_bytes`` is the ingestion child's, not the driver's."""
+    child: dict[str, int] = {}
+
+    def spawn_tracking(command: Sequence[str]) -> ProcessHandle:
+        process = spawn(command)
+        child["pid"] = int(process.pid)
+        return process
+
+    return spawn_tracking, lambda: sample_resources_psutil_free(pid=child.get("pid"))
 
 
 def make_spawn(log_path: Path | str) -> Callable[[Sequence[str]], ProcessHandle]:
@@ -1569,6 +1585,9 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
     database_url = os.environ.get("DATABASE_URL")
     rows = json.loads(args.arm_dataset.read_text(encoding="utf-8"))
     check_output_outside_repo(args.output_dir, Path(_git("rev-parse", "--show-toplevel")))
+    spawn, sample_child_resources = child_resource_sampling(
+        make_spawn(args.output_dir / CHILD_LOG_NAME)
+    )
     record, exit_code = run_arm_command(
         arm_dataset=args.arm_dataset,
         output_dir=args.output_dir,
@@ -1581,9 +1600,9 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
         status_porcelain=_git("status", "--porcelain"),
         code_sha=_git("rev-parse", "HEAD"),
         dataset_rows=rows,
-        spawn=make_spawn(args.output_dir / CHILD_LOG_NAME),
+        spawn=spawn,
         fetchrow_factory=lambda: make_sync_fetchrow(database_url or ""),
-        sample_resources=sample_resources_psutil_free,
+        sample_resources=sample_child_resources,
         sleep=time.sleep,
         clock=time.monotonic,
         send_interrupt=send_sigint,

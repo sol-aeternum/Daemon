@@ -1578,3 +1578,18 @@ def test_a_final_read_failure_still_writes_a_stopping_record(tmp_path: Path) -> 
     assert record["run_arm"]["spend_after_usd"] is None
     assert (tmp_path / "record.json").exists()
     assert not (tmp_path / "record.json.claim").exists()
+
+
+def test_resource_sampling_reads_the_ingestion_child(tmp_path: Path) -> None:
+    (tmp_path / "self").mkdir()
+    (tmp_path / "self" / "statm").write_text("100 1 0\n", encoding="utf-8")
+    (tmp_path / "4242").mkdir()
+    (tmp_path / "4242" / "statm").write_text("100 7 0\n", encoding="utf-8")
+    driver = sample_resources_psutil_free(tmp_path)["rss_bytes"]
+    child = sample_resources_psutil_free(tmp_path, pid=4242)["rss_bytes"]
+    assert child == 7 * driver
+
+    spawn, sampler = dev2_pilot.child_resource_sampling(lambda _command: _FakeProcess())
+    process = spawn(["ingest"])
+    assert process.pid == 4242
+    assert isinstance(sampler(), dict)
