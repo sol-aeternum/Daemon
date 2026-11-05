@@ -107,7 +107,7 @@ PostgreSQL 16 with pgvector extension. Migration inventory is maintained in `mig
 - **`memories`**: Encrypted content, 1024d Voyage embeddings, trust scores, and bitemporal validity.
 - **`memory_extraction_log`**: History of fact extraction attempts.
 - **`retrieval_log`**: History of memory retrieval for scoring analysis.
-- **Multi-query memory (M1)**: default-off internal retrieval, with a separate unapproved decomposition pin and off-reasoning profile. Migration 062 adds nullable `query_role`; sub-query text/vectors are not stored. Enabled backend/worker startup requires the column regardless of logging settings; disabled startup adds no schema query. Baseline effects stay legacy; only rendered added rows receive extra effects. Original-query plaintext remains tracked in #663. [Design, settings and offline exposure entry](memory/multi_query_retrieval.md).
+- **Multi-query memory (M1)**: default-off internal retrieval, with a separate unapproved decomposition pin and off-reasoning profile. Migration 063 adds nullable `query_role`; sub-query text/vectors are not stored. Enabled backend/worker startup requires the column regardless of logging settings; disabled startup adds no schema query. Baseline effects stay legacy; only rendered added rows receive extra effects. Original-query plaintext remains tracked in #663. [Design, settings and offline exposure entry](memory/multi_query_retrieval.md).
 - **`entities`**: Extracted named entities for cross-referencing.
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skill_projections`**: Mapping of skills to conversation context.

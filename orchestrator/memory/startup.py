@@ -10,7 +10,7 @@ from orchestrator.config import Settings
 async def require_multi_query_schema(pool: Any, settings: Settings) -> None:
     if not settings.memory_multi_query_enabled:
         return
-    message = "Memory multi-query requires migration 062 (retrieval_log.query_role)"
+    message = "Memory multi-query requires migration 063 (retrieval_log.query_role)"
     if pool is None:
         raise RuntimeError(message)
     try:

@@ -230,17 +230,17 @@ infrastructure, not a promoted user-visible client capability.
 
 ## Rollout
 
-Apply nullable migration 062 with deployment, even with the flag off:
+Apply nullable migration 063 with deployment, even with the flag off:
 diagnostics readers always require `query_role`. Flag-off inserts retain the
 legacy statement when the role is `None`; enabled component inserts need the column too.
 Both backend lifespan and worker startup explicitly refuse enabled operation if
-`retrieval_log.query_role` is absent, naming migration 062 regardless of logging
+`retrieval_log.query_role` is absent, naming migration 063 regardless of logging
 settings. Disabled startup performs no multi-query schema check/query and baseline
 inserts never write the column. Preserve and verify the migration's 1-second lock
 timeout (and 5-second statement timeout); rollback has the same bounds and requires
 disabling the feature and stopping dependent diagnostics first. No live migration
-or deployment is authorized here. Main owns the unrelated 060/061 migrations.
-The exposure sweep remains compatible with pre-062 evidence databases, matching
+or deployment is authorized here. Main owns the unrelated 060, 061 and 062 migrations.
+The exposure sweep remains compatible with pre-063 evidence databases, matching
 exact non-empty query text and model instead of filtering by role.
 
 ## Latency, cost and failure behaviour
@@ -324,7 +324,7 @@ heuristic against the five spent omission cases now.
 |---|---|---|
 | B1 | This design | Written first; no runtime approval implied |
 | Renderer seam | `injection.py`, `exposure.py`, offline tests | Implemented: shared width/row helpers, unchanged token budget and renderer signature |
-| B2 | `multi_query.py`, settings, gather, policy, logs | Implemented under S1–S6; #665 Block A restores exact legacy baseline effects, adds rendered-added-only effects/CAS trust composition, owned buffered logs, bounded concurrent arms/shared deadline, and enabled-only 062 startup guard; no route approved |
+| B2 | `multi_query.py`, settings, gather, policy, logs | Implemented under S1–S6; #665 Block A restores exact legacy baseline effects, adds rendered-added-only effects/CAS trust composition, owned buffered logs, bounded concurrent arms/shared deadline, and enabled-only 063 startup guard; no route approved |
 | B3 | `build_parity_memory_context`, `exposure.measure_multi_query_exposure` | Implemented: optional provider pin, frozen cached-vector exposure entry, additive/evaluation-only round-robin; synthetic tests, no live run |
 
 The B3 exposure entry refuses any provider except the exact frozen

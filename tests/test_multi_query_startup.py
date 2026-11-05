@@ -1,4 +1,4 @@
-"""Both actual startup entry points enforce 062 without accessing any database."""
+"""Both actual startup entry points enforce 063 without accessing any database."""
 
 import importlib
 from types import SimpleNamespace
@@ -65,7 +65,7 @@ async def test_startup_schema_guard_in_both_services(
             await worker.on_startup({})
 
     if enabled and not present:
-        with pytest.raises(RuntimeError, match=r"migration 062 .*retrieval_log.query_role"):
+        with pytest.raises(RuntimeError, match=r"migration 063 .*retrieval_log.query_role"):
             await start()
         close.assert_awaited_once()
     else:
@@ -81,7 +81,7 @@ async def test_startup_schema_guard_in_both_services(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pool", [None, SimpleNamespace(fetchval=AsyncMock(return_value=None))])
 async def test_unknown_schema_fails_closed(pool):
-    with pytest.raises(RuntimeError, match="migration 062"):
+    with pytest.raises(RuntimeError, match="migration 063"):
         await require_multi_query_schema(
             pool, cast(Any, SimpleNamespace(memory_multi_query_enabled=True))
         )

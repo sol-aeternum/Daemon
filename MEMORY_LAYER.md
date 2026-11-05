@@ -356,7 +356,7 @@ route. Enabled gather preserves the legacy baseline touches/trust call; the asyn
 production wrapper records extra effects only for actually rendered added rows.
 The item-limit override preserves the
 existing token budget. Component log rows store an empty query and no vector,
-with a nullable query role (migration 062); original-query plaintext is pre-existing (#663).
+with a nullable query role (migration 063); original-query plaintext is pre-existing (#663).
 See [the design and offline evaluation gates](docs/memory/multi_query_retrieval.md).
 
 ### 10. Queued entity projection
