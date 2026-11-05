@@ -42,9 +42,10 @@ async def db(
         conversation_id = uuid.uuid4()
         try:
             await pool.execute(
-                "INSERT INTO users (id, email) VALUES ($1, $2)",
+                "INSERT INTO users (id, email, name, username) VALUES ($1, $2, $3, $3)",
                 user_id,
                 f"trust-{user_id}@example.invalid",
+                f"trust-{user_id.hex[:8]}",
             )
             await pool.execute(
                 "INSERT INTO conversations (id, user_id, pipeline) VALUES ($1, $2, 'cloud')",

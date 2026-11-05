@@ -141,6 +141,19 @@ def test_baseline_rows_survive_the_additive_merge_at_the_same_budget(
     )
 
 
+def _trimmed_inside_added(baseline_rendered: int, candidate_rendered: int, given: int) -> bool:
+    """This case kept some added rows and dropped others; judged on this case alone."""
+    return baseline_rendered < candidate_rendered < given
+
+
+def test_trimming_inside_added_is_judged_per_case() -> None:
+    assert _trimmed_inside_added(3, 4, 5) is True
+    # Every candidate row rendered: more than the baseline, but nothing trimmed.
+    assert _trimmed_inside_added(3, 5, 5) is False
+    # Trimmed, but no further than the baseline was.
+    assert _trimmed_inside_added(3, 3, 5) is False
+
+
 def test_cases_really_exercise_trimming() -> None:
     """A green suite must mean the property was actually exercised, not vacuous."""
     nothing_rendered = False
@@ -170,10 +183,8 @@ def test_cases_really_exercise_trimming() -> None:
                 baseline_trimmed = True
             if 0 < len(candidate_rendered) < candidate_given:
                 candidate_trimmed = True
-            if (
-                candidate_trimmed
-                and len(candidate_rendered) > len(baseline_rendered)
-                and len(candidate_inputs.retrieved) > len(baseline_inputs.retrieved)
+            if _trimmed_inside_added(
+                len(baseline_rendered), len(candidate_rendered), candidate_given
             ):
                 candidate_trimmed_inside_added = True
 
