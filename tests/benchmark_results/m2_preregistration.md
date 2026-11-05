@@ -31,10 +31,8 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | 1 | Gain | Newly fully-exposed questions (candidate − baseline) ≥ max(5, 10% of answerable questions). **The formula is frozen.** Its value is computed unrounded from the final spot-checked labels and recorded before any retrieval. |
 | 2 | No loss, on dev2 | No answerable question loses any exposed target. Verified on the dev2 run, not assumed. |
 | 3 | Baseline subset, unit test | Under the render budget, the baseline's rendered set is a subset of the candidate's (additive merge, end-first trimming). Replaces the dev-50 coverage gate. This is a code test and uses no database. |
-| 4 | Abstention | Distractor counts reported for the 6 dev2 abstention questions. A rendered plausible false-premise item in more than 2 of them is **flagged for owner review, not auto-rejected.** |
+| 4 | Abstention | Over the 6 dev2 abstention questions, count only plausible false-premise items rendered by the candidate and not by the baseline. **2 or more of the 6 flags for owner review, not auto-reject.** Both arms' absolute counts are reported too. |
 | 5 | Latency | Trigger rate and added p50/p95 latency reported from the Block D route. Report only. |
-
-**Gate 4 isn't ratified yet.** The owner's rulings didn't cover its threshold, so "more than 2" remains a proposal until the owner confirms it. The earlier wording also covered the 5 dev-50 abstention questions; retrieval is now dev2 only, so those are dropped, and 2 is stricter relative to 6 questions than to 11. It only flags, so nothing is auto-rejected either way. Must be settled before the gate code is frozen.
 
 ## Owner rulings, 2026-11-05
 
@@ -45,12 +43,15 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | Run limits | See below. |
 | Questions with no decomposition trigger | Count as baseline, unchanged, and stay in the denominator. |
 | Spot-check error rate | Reported only; it doesn't change the gate margin. Labelling still stops above 20%. |
+| Gate 4 threshold | Count candidate-only items; 2 or more of 6 flags for owner review. Both arms' absolute counts reported. |
+| Spot-check packet | Every `answerable_from_store=false` label is included in addition to the 15% seeded sample, marked as such. The 20% stop is computed over the seeded sample only, because the additions are chosen by their label. |
+| Database | `daemon_lme_bench_dev2_final` for Blocks C, E and M2. The pilot's `daemon_lme_bench_dev2` stays untouched as evidence. |
 
 ## Run limits
 
 - **Spend:** USD 0.50 for generation and retrieval embeddings together. Because the labelling and ingest caps are cumulative ledger ceilings, this one is enforced as the ledger total at M2's start plus 0.50, checked before each dispatch.
 - **Restores:** 0.
-- **Database:** `daemon_lme_bench_dev2` only.
+- **Database:** `daemon_lme_bench_dev2_final` only.
 - **Side effects off:** no touches, no trust updates and no `retrieval_log` rows. The spend guard's own ledger rows are the one expected write.
 - **Fingerprint before and after,** over all 100 dev2 users. `FINGERPRINT_TABLES` doesn't include `retrieval_log`, so its row count is checked separately before and after and must not change.
 
