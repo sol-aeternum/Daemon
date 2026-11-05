@@ -84,4 +84,4 @@ Whether the gates pass or fail, the report gives a per-question diagnosis for ev
 - Small sample of 100 from one dataset; a pass is indicative and does not show general capability.
 - Exposure is not answer quality. Only M3 would measure answers.
 - The dev2 extraction cap (4,000) differs from the Phase D baseline (2,000); see `extraction_truncation_audit_2026-11-05.md`.
-- This draft enables nothing: no route approval, no flag change, no production effect.
+- This document enables nothing: no route approval, no flag change, no production effect.
