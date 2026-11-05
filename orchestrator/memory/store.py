@@ -3,6 +3,7 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 import json
+import re
 import logging
 import uuid
 import hashlib
@@ -3617,17 +3618,21 @@ class MemoryStore:
         conversation_id: uuid.UUID | None = None,
         retrieval_context: str | None = None,
         retrieval_triggered_by: str | None = None,
+        record_query_text: bool = True,
+        query_role: str | None = None,
     ) -> dict[str, Any]:
+        if (
+            query_role is not None
+            and query_role != "original"
+            and not re.fullmatch(r"sub:[0-9]+", query_role)
+        ):
+            raise ValueError("Invalid retrieval query role")
+        if query_role is not None and query_role.startswith("sub:"):
+            record_query_text = False
+        if not record_query_text:
+            query_text, query_embedding = "", None
         embedding_str = _format_vector(query_embedding) if query_embedding else None
-        row = await self._pool.fetchrow(
-            """
-            INSERT INTO retrieval_log
-                (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
-                 candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
-                 latency_ms, retrieval_context, retrieval_triggered_by)
-            VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12)
-            RETURNING *
-            """,
+        args = [
             user_id,
             conversation_id,
             query_text,
@@ -3640,7 +3645,32 @@ class MemoryStore:
             latency_ms,
             retrieval_context,
             retrieval_triggered_by,
-        )
+        ]
+        if query_role is None:
+            row = await self._pool.fetchrow(
+                """
+                INSERT INTO retrieval_log
+                    (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
+                     candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
+                     latency_ms, retrieval_context, retrieval_triggered_by)
+                VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12)
+                RETURNING *
+                """,
+                *args,
+            )
+        else:
+            row = await self._pool.fetchrow(
+                """
+                INSERT INTO retrieval_log
+                    (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
+                     candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
+                     latency_ms, retrieval_context, retrieval_triggered_by, query_role)
+                VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12, $13)
+                RETURNING *
+                """,
+                *args,
+                query_role,
+            )
         return dict(row)
 
     async def get_retrieval_logs(

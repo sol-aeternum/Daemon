@@ -239,7 +239,7 @@ def test_deployment_policy_is_opt_in_and_fails_closed_without_attestation() -> N
     assert not any(
         r.is_approved(default.requirements, now=REVIEWED) for r in default.routes.values()
     )
-    assert len(policy.routes) == 8
+    assert len(policy.routes) == 9
     assert policy.approved_tool_service_ids(now=REVIEWED) == {"brave-web-search"}
     assert not default.approved_tool_service_ids(now=REVIEWED)
     assert policy.default_route_id is None
@@ -252,6 +252,10 @@ def test_deployment_policy_is_opt_in_and_fails_closed_without_attestation() -> N
     assert sonnet.review.reviewed_at == datetime(2026, 10, 3, tzinfo=timezone.utc)
     assert all(r.model != "openrouter/anthropic/claude-sonnet-5" for r in policy.routes.values())
     for route in policy.routes.values():
+        if route.route_id == "memory-decomposition-luna-azure-eu":
+            assert not route.approved and route.approval_mode == "expiring"
+            assert "not_approved" in route.rejection_reasons(policy.requirements, now=REVIEWED)
+            continue
         assert route.is_approved(policy.requirements, now=REVIEWED)
         provider = route.transport_payload(policy.requirements, now=REVIEWED)["extra_body"][
             "provider"
@@ -321,6 +325,9 @@ def test_unknown_or_revoked_attestation_closes_every_route() -> None:
     assert not any(r.is_approved(policy.requirements, now=REVIEWED) for r in policy.routes.values())
     attestation.set_snapshot(_attested_snapshot(revoked=True))
     for route in policy.routes.values():
+        if route.route_id == "memory-decomposition-luna-azure-eu":
+            assert "not_approved" in route.rejection_reasons(policy.requirements, now=REVIEWED)
+            continue
         assert route.rejection_reasons(policy.requirements, now=REVIEWED) == (
             "zdr_attestation_revoked",
         )

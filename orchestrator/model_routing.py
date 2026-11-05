@@ -59,10 +59,12 @@ MODEL_ROUTING_ENV: Final[str] = "DAEMON_MODEL_ROUTING"
 
 SUPPORTED_MODEL_ROUTING_VERSION: Final[int] = 1
 
-#: The workload profiles a caller may select. Every one of them must be configured.
-ROUTING_PROFILES: Final[frozenset[str]] = frozenset(
+#: Existing deployment-owned files must configure these original workload profiles.
+REQUIRED_ROUTING_PROFILES: Final[frozenset[str]] = frozenset(
     {"routine", "reasoning", "research", "background", "council"}
 )
+#: Known names are validated when present; optional helpers need not be configured.
+ROUTING_PROFILES: Final[frozenset[str]] = REQUIRED_ROUTING_PROFILES | {"memory_decomposition"}
 
 #: Namespace prefix Daemon uses for OpenRouter model ids. Stripped before the
 #: developer is derived, so ``openrouter/z-ai/glm-5.3`` and ``z-ai/glm-5.3``
@@ -586,7 +588,7 @@ def parse_model_routing(data: object, *, source_path: str = "<memory>") -> Model
         if parsed_profile.name in profiles:
             raise PolicyError(f"duplicate profile entry: {parsed_profile.name}")
         profiles[parsed_profile.name] = parsed_profile
-    missing_profiles = ROUTING_PROFILES - set(profiles)
+    missing_profiles = REQUIRED_ROUTING_PROFILES - set(profiles)
     if missing_profiles:
         raise PolicyError(
             f"profiles is missing required profile(s): {', '.join(sorted(missing_profiles))}"
@@ -988,6 +990,7 @@ __all__ = [
     "OPENROUTER_PREFIX",
     "PLACEMENT_GROUP_STRIDE",
     "PRESET_PARAMETERS",
+    "REQUIRED_ROUTING_PROFILES",
     "ROUTING_PROFILES",
     "Placement",
     "RoutedModel",

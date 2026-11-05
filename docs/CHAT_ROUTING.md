@@ -3,6 +3,9 @@
 This describes ordinary chat only, excluding deliberation and background helper
 workflows. It is not verification of the live deployment or model quality.
 
+The default-off [M1 memory decomposition helper](memory/multi_query_retrieval.md)
+has a separate unapproved route pin and is outside this ordinary-chat diagram.
+
 The diagram, the candidate table and the notes between the generated markers below
 are produced by `scripts/render_chat_routing.py` from `config/model_routing.json`
 and `config/inference_policy.production.json`, together with

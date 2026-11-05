@@ -378,6 +378,24 @@ class Settings(BaseSettings):
     daemon_redis_account_hash_key: str | None = None
     daemon_encryption_key: str | None = None
 
+    # ===== MULTI-QUERY MEMORY RETRIEVAL =====
+    # Default-off M1 retrieval helpers; the proposed route remains unapproved.
+    memory_multi_query_enabled: bool = False
+    memory_multi_query_merge: Literal["additive", "round_robin"] = "additive"
+    memory_decomposition_timeout_ms: int = Field(default=1500, ge=1, le=60_000)
+    memory_subquery_quota: int = Field(default=3, ge=1, le=10)
+    memory_max_subqueries: int = Field(default=3, ge=0, le=3)
+    memory_decomposition_profile: Literal["memory_decomposition"] = "memory_decomposition"
+
+    @model_validator(mode="after")
+    def _validate_memory_multi_query_merge(self) -> Settings:
+        if self.memory_multi_query_enabled and self.memory_multi_query_merge == "round_robin":
+            raise ValueError(
+                "memory_multi_query_merge='round_robin' is evaluation-only and cannot be used "
+                "with memory_multi_query_enabled=True"
+            )
+        return self
+
     # ===== DREAMING =====
     dreaming_enabled: bool = True
     dream_schedule_hour: int = Field(default=3, ge=0, le=23)

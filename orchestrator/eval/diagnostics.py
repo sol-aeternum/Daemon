@@ -113,6 +113,7 @@ async def fetch_retrieval_log_for_query(
                selected_memory_ids, l0_included, latency_ms
         FROM retrieval_log
         WHERE user_id = $1 AND query_text = $2
+          AND (query_role IS NULL OR query_role = 'original')
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -150,6 +151,7 @@ async def fetch_retrieval_logs_by_fuzzy_match(
                selected_memory_ids, l0_included, latency_ms
         FROM retrieval_log
         WHERE user_id = $1
+          AND (query_role IS NULL OR query_role = 'original')
         ORDER BY created_at DESC
         LIMIT 50
         """,

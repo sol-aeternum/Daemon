@@ -298,6 +298,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     cleanup_shutdown_event = None
 
     try:
+        from orchestrator.memory.startup import require_multi_query_schema
+
+        await require_multi_query_schema(state.db_pool, settings)
         if state.db_pool is not None and state.history_runtime is None:
             await initialize_development_pepper(settings, state.db_pool)
             if state.memory_store is not None:

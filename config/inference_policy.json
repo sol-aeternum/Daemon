@@ -45,6 +45,32 @@
       "operator_review": null,
       "price_ceiling": null,
       "notes": "Carried over from the pre-entitlements tier configuration and intentionally left unqualified. To approve: verify availability; pin the transport block above to the exact provider slug with zdr true, data_collection deny, allow_fallbacks false, require_parameters true; record that account-level prompt/completion logging is disabled and that free models are excluded from training; set max price ceilings in microusd per 1M prompt/completion tokens; then set approved true with an approval_expires_at, and record an operator_review with reviewer, evidence and review_expires_at."
+    },
+    {
+      "route_id": "memory-decomposition-luna-azure-eu",
+      "provider": "openrouter",
+      "model": "openrouter/openai/gpt-6-luna",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "route_class": "routine",
+      "model_capabilities": ["text", "json_schema"],
+      "max_context_tokens": 1050000,
+      "max_output_tokens": 128000,
+      "approved": false,
+      "availability": "unverified",
+      "approval_mode": "expiring",
+      "privacy": {
+        "transport": {
+          "multi_provider": true, "sort": "latency",
+          "provider_only": ["azure/eu"], "provider_order": ["azure/eu"],
+          "allow_fallbacks": false, "require_parameters": true,
+          "data_collection": "deny", "zdr": true
+        },
+        "account_prompt_logging_disabled": null,
+        "free_model_training_opt_out": null
+      },
+      "price_ceiling": {"microusd_per_1m_prompt": 220000, "microusd_per_1m_completion": 825000},
+      "operator_review": {"reviewer": null, "reviewed_at": null, "review_expires_at": null, "evidence": []},
+      "notes": "M1 proposal only: not approved or attested. Later approval must separately convert to monitored with a baseline for the single pinned provider; M1.5 chooses the route and timeout. No existing route approval is inherited."
     }
   ],
   "embedding_routes": [

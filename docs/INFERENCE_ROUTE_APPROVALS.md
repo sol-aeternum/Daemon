@@ -28,6 +28,13 @@ than treating these booleans as verified for its credentials.
 
 ## Approved inventory
 
+The M1 `memory-decomposition-luna-azure-eu` entry is **not** part of this approved
+inventory. Both shipped policy files carry the same singleton `azure/eu` pin,
+policy-owned latency sort and proposal price ceilings, as `approved: false`,
+`approval_mode: expiring`, with no baseline or invented review evidence. It is
+not attested. Later approval must separately convert the singleton to monitored
+with its baseline. Multi-provider entries are unapproved proposals only.
+
 Model IDs below omit the `openrouter/` prefix. Prices are maximum USD per million
 input/output tokens, covering advertised prompt-length tiers rather than only
 the short-prompt base price. Each route supports text, tools and JSON schema.

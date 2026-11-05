@@ -9,10 +9,22 @@ exact duplicates. Neither rule claims semantic equivalence.
 from __future__ import annotations
 
 import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from orchestrator.memory import injection
+from orchestrator.memory.embedding import EmbeddingVectorResult
+from orchestrator.memory.multi_query import SubqueryProvider, validate_subqueries
+from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.injection import (
+    _section_counts as _section_counts,
+    _eligible_l0 as _eligible_l0,
+    _expected_retained_l0 as _expected_retained_l0,
+    rendered_memory_rows as rendered_memory_rows,
+)
 
 BASELINE_K = 5
 CANDIDATE_KS = (10, 15, 20)
@@ -32,6 +44,107 @@ STOPWORDS = frozenset(
     "from with by and or but that this these those about as if than then previous "
     "chat conversation tell please mention mentioned user".split()
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedSubqueryProvider:
+    """Frozen evaluation input, not an inference client or an acceptance result."""
+
+    subqueries: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.subqueries) is not tuple:
+            raise ValueError("Pinned subqueries must be a tuple")
+        validate_subqueries(list(self.subqueries), "")
+
+    async def get_subqueries(
+        self, message: str, *, reference_time: datetime, deadline: float
+    ) -> list[str]:
+        return validate_subqueries(list(self.subqueries), message)
+
+
+async def measure_multi_query_exposure(
+    store: MemoryStore,
+    *,
+    user_id: uuid.UUID,
+    question: str,
+    provider: SubqueryProvider,
+    query_embeddings: Mapping[str, EmbeddingVectorResult],
+    reference_time: datetime,
+    allowed_source_conversation_ids: list[uuid.UUID] | None,
+    target_ids: Sequence[str],
+    gold_conversation_ids: Sequence[str],
+    source_conversations: Mapping[str, str | None],
+    merge: str = "additive",
+    max_tokens: int = injection.DEFAULT_MAX_TOKENS,
+) -> dict[str, Any]:
+    """Offline per-question gate input, through production gather and exposure.
+
+    Refuse live decomposition providers (including subclasses overriding the
+    frozen provider), and require every original/component vector up front.
+    This opens no database connection; the caller supplies its scoped store.
+    It grants no campaign, threshold, ingestion or route approval authority.
+    """
+    if type(provider) is not PinnedSubqueryProvider:
+        raise ValueError("Exposure requires a frozen PinnedSubqueryProvider, never live inference")
+    if merge not in {"additive", "round_robin"}:
+        raise ValueError("Invalid exposure merge")
+    query = injection._normalize_content(question)
+    components = validate_subqueries(list(provider.subqueries), query)
+    vectors = dict(query_embeddings)
+    for text in [query, *components]:
+        result = vectors.get(text)
+        if not isinstance(result, EmbeddingVectorResult) or not result.embedding:
+            raise ValueError("Exposure refuses missing cached query embeddings")
+    baseline = await injection.gather_memory_context_inputs(
+        store,
+        user_id=user_id,
+        pipeline="cloud",
+        query_text=query,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
+        record_side_effects=False,
+        query_reference_time=reference_time,
+        subquery_provider=PinnedSubqueryProvider(()),
+        evaluation=True,
+        evaluation_merge="additive",
+        evaluation_embeddings=vectors,
+    )
+    candidate = await injection.gather_memory_context_inputs(
+        store,
+        user_id=user_id,
+        pipeline="cloud",
+        query_text=query,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
+        record_side_effects=False,
+        query_reference_time=reference_time,
+        subquery_provider=provider,
+        evaluation=True,
+        evaluation_merge=merge,
+        evaluation_embeddings=vectors,
+    )
+
+    def metrics(inputs: injection.MemoryContextInputs) -> dict[str, Any]:
+        return measure(
+            inputs,
+            target_ids=target_ids,
+            gold_conversation_ids=gold_conversation_ids,
+            source_conversations=source_conversations,
+            ranking=inputs.retrieved,
+            max_tokens=max_tokens,
+        )
+
+    before, after = metrics(baseline), metrics(candidate)
+    rows = rendered_memory_rows(candidate, injection.render_memory_context(candidate, max_tokens))
+    original = set(before["rendered_ids"])
+    added = [row for row in rows if str(row["id"]) not in original]
+    return {
+        "baseline": before,
+        "candidate": after,
+        "merge": merge,
+        "subquery_count": len(components),
+        "distractors": distractor_counts(question, added),
+        "exposure_regression": before["target_exposed"] and not after["target_exposed"],
+    }
 
 
 def content_tokens(text: str) -> set[str]:
@@ -78,96 +191,6 @@ def distractor_counts(
             for memory in added_memories
         ),
     }
-
-
-def _section_counts(block: str) -> tuple[int, int]:
-    """Count rendered (retrieved, frozen) rows per production section."""
-    section = ""
-    retrieved_count = 0
-    frozen_count = 0
-    for line in block.splitlines():
-        if line == "[FROZEN MEMORIES]":
-            section = "frozen"
-        elif line == "About this user:":
-            section = "retrieved"
-        elif line == "Recent context:":
-            section = "summary"
-        elif line.startswith("- "):
-            if section == "frozen":
-                frozen_count += 1
-            elif section == "retrieved" and re.match(
-                r"^- (?:Fact|Project|Preference|Important): ", line
-            ):
-                retrieved_count += 1
-    return retrieved_count, frozen_count
-
-
-def _eligible_l0(inputs: injection.MemoryContextInputs) -> list[dict[str, object]]:
-    """Frozen rows the renderer would print (blank/normalize-empty rows are skipped)."""
-    return [
-        memory
-        for memory in inputs.l0_memories
-        if injection._truncate_to_chars(
-            injection._normalize_content(memory.get("content")), injection.MAX_L0_CHARS
-        )
-    ]
-
-
-def _expected_retained_l0(inputs: injection.MemoryContextInputs, eligible: int) -> int:
-    """Frozen rows the renderer legitimately keeps under its own L0_TOKEN_BUDGET.
-
-    ``render_memory_context`` trims the L0 block independently of ``max_tokens``
-    and of the retrieved rows, popping whole lines from the end while the block
-    exceeds ``L0_TOKEN_BUDGET`` (but never the header). This oracle replays that
-    line-count arithmetic over ``_format_l0_block``'s own lines. It never parses
-    rendered output, so drift in how frozen rows are printed (header text, row
-    prefix) still produces a count mismatch and fails closed.
-    """
-    block = injection._format_l0_block(inputs.l0_memories)
-    if not block:
-        return 0
-    lines = block.split("\n")
-    if len(lines) - 1 != eligible:
-        raise ValueError("Renderer section contract changed")
-    while (
-        injection.estimate_tokens("\n".join(lines)) > injection.L0_TOKEN_BUDGET and len(lines) > 1
-    ):
-        lines.pop()
-    return len(lines) - 1
-
-
-def rendered_memory_rows(
-    inputs: injection.MemoryContextInputs, block: str, *, require_complete: bool = False
-) -> list[dict[str, object]]:
-    """Recover IDs from the actual renderer's prefix-only removal behaviour.
-
-    Content is normalized to a single line by production. Count rendered lines
-    within each production section, then associate them with the corresponding
-    input prefix. This never searches for memory text substrings (which would
-    misattribute duplicates). It also includes retained L0 rows.
-    """
-    retrieved_count, frozen_count = _section_counts(block)
-    eligible = [
-        memory
-        for memory in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]
-        if injection._truncate_to_chars(
-            injection._normalize_content(memory.get("content")), injection.MAX_SINGLE_MEMORY_CHARS
-        )
-    ]
-    eligible_l0 = _eligible_l0(inputs)
-    expected_frozen = len(eligible_l0)
-    if require_complete:
-        expected_frozen = _expected_retained_l0(inputs, len(eligible_l0))
-    if (
-        retrieved_count > len(eligible)
-        or frozen_count > len(eligible_l0)
-        or (
-            require_complete
-            and (retrieved_count != len(eligible) or frozen_count != expected_frozen)
-        )
-    ):
-        raise ValueError("Renderer section contract changed")
-    return [*eligible_l0[:frozen_count], *eligible[:retrieved_count]]
 
 
 def rendered_memory_texts(block: str) -> list[str]:
@@ -222,7 +245,9 @@ def measure(
     dropped += [
         str(row["id"]) for row in eligible_l0[retained_l0:] if str(row["id"]) not in rendered
     ]
-    retrieved_ids = [str(row["id"]) for row in inputs.retrieved[: injection.MAX_MEMORY_ITEMS]]
+    retrieved_ids = [
+        str(row["id"]) for row in inputs.retrieved[: injection.retrieved_width(inputs)]
+    ]
     pre_retrieved = set(retrieved_ids) | {str(row["id"]) for row in inputs.l0_memories}
     gold = set(gold_conversation_ids)
     covered = {source_conversations.get(mid) for mid in rendered} & gold

@@ -645,9 +645,38 @@ class TransportPrivacy:
     require_parameters: bool | None
     data_collection: str | None
     zdr: bool | None
+    multi_provider: bool = False
+    sort: str | None = None
+
+    def _selection_pinned(self) -> bool:
+        only, order = self.provider_only, self.provider_order
+        return bool(
+            only
+            and 1 <= len(only) <= 4
+            and len(set(only)) == len(only)
+            and all(isinstance(slug, str) and slug.strip() == slug and slug for slug in only)
+            and self.sort in (None, "latency", "throughput")
+            and (
+                (order is None and self.sort is not None)
+                or (order and len(order) == len(only) and set(order) == set(only))
+            )
+        )
 
     def rejection_reasons(self, requirements: PolicyRequirements) -> tuple[str, ...]:
         """Transport-level reasons this route is not usable, in a stable order."""
+        if self.multi_provider:
+            reasons = []
+            if self.zdr is not True:
+                reasons.append("transport_zdr_not_asserted")
+            if self.data_collection != REQUIRED_DATA_COLLECTION:
+                reasons.append("transport_data_collection_not_denied")
+            if self.allow_fallbacks is not False:
+                reasons.append("transport_allow_fallbacks_not_false")
+            if self.require_parameters is not True:
+                reasons.append("transport_require_parameters_not_true")
+            if not self._selection_pinned():
+                reasons.append("transport_provider_not_pinned")
+            return tuple(reasons)
         reasons: list[str] = []
         if not self.zdr:
             reasons.append("transport_zdr_not_asserted")
@@ -665,6 +694,21 @@ class TransportPrivacy:
 
     def as_transport_kwargs(self) -> dict[str, Any]:
         """The exact per-request flags the inference transport must send."""
+        if self.multi_provider:
+            if self.rejection_reasons(PolicyRequirements()):
+                raise PolicyError("transport privacy flags or provider selection are not pinned")
+            provider: dict[str, Any] = {
+                "only": list(self.provider_only or ()),
+                "allow_fallbacks": False,
+                "require_parameters": True,
+                "data_collection": REQUIRED_DATA_COLLECTION,
+                "zdr": True,
+            }
+            if self.sort is not None:
+                provider["sort"] = self.sort
+            else:
+                provider["order"] = list(self.provider_order or ())
+            return {"extra_body": {"provider": provider}}
         if (
             not self.provider_only
             or not self.provider_order
@@ -910,6 +954,16 @@ def _route_privacy_reasons(
     self = route
     moment = now or datetime.now(timezone.utc)
     reasons: list[str] = []
+    if self.transport.multi_provider:
+        reasons.extend(self.transport.rejection_reasons(requirements))
+        if ":" in self.model:
+            reasons.append("transport_model_variant_forbidden")
+        if len(self.transport.provider_only or ()) > 1 and (
+            self.approval_mode == "monitored" or self.approved
+        ):
+            reasons.append("multi_provider_proposal_only")
+        if self.price_ceiling is None:
+            reasons.append("price_ceiling_missing")
     if requirements.require_approval and not self.approved:
         reasons.append("not_approved")
     if requirements.require_verified_availability and (self.availability != VERIFIED_AVAILABILITY):
@@ -1132,6 +1186,8 @@ class InferencePolicy:
 
 
 def _provider_pinned(transport: TransportPrivacy) -> bool:
+    if transport.multi_provider:
+        return transport._selection_pinned()
     only = transport.provider_only
     order = transport.provider_order
     if not only or not order:
@@ -1187,7 +1243,13 @@ def _parse_str_tuple(
 
 def _parse_transport(raw: object, *, route_id: str) -> TransportPrivacy:
     mapping = _require_mapping(raw, field=f"routes.{route_id}.transport")
-    return TransportPrivacy(
+    mode = _require_bool(
+        mapping.get("multi_provider", False), field=f"routes.{route_id}.transport.multi_provider"
+    )
+    sort = mapping.get("sort")
+    if sort is not None and (not mode or sort not in ("latency", "throughput")):
+        raise PolicyError(f"routes.{route_id}.transport.sort requires opt-in and a valid sort")
+    transport = TransportPrivacy(
         provider_only=_parse_str_tuple(
             mapping.get("provider_only"), field=f"routes.{route_id}.transport.provider_only"
         ),
@@ -1209,7 +1271,12 @@ def _parse_transport(raw: object, *, route_id: str) -> TransportPrivacy:
             )
         ),
         zdr=_optional_bool(mapping.get("zdr"), field=f"routes.{route_id}.transport.zdr"),
+        multi_provider=mode,
+        sort=sort,
     )
+    if mode and transport.rejection_reasons(PolicyRequirements()):
+        raise PolicyError(f"routes.{route_id}: invalid opted-in transport")
+    return transport
 
 
 def _parse_review(raw: object, *, field: str) -> OperatorReview:
@@ -1273,7 +1340,7 @@ def _parse_route(raw: object, *, index: int) -> RoutePolicy:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise PolicyError(f"routes.{route_id}.{key} must be a non-negative integer")
         capacities[key] = value
-    return RoutePolicy(
+    result = RoutePolicy(
         route_id=route_id,
         provider=_require_str(route_map.get("provider"), field=f"routes.{route_id}.provider"),
         model=_require_str(route_map.get("model"), field=f"routes.{route_id}.model"),
@@ -1308,6 +1375,16 @@ def _parse_route(raw: object, *, index: int) -> RoutePolicy:
         notes=str(route_map.get("notes", "")),
         **_parse_approval_mode(route_map, privacy, route_id=route_id),
     )
+    if result.transport.multi_provider:
+        if ":" in result.model or result.price_ceiling is None:
+            raise PolicyError(
+                f"routes.{route_id}: opted-in transport needs unvarianted model and price"
+            )
+        if len(result.transport.provider_only or ()) > 1 and (
+            result.approval_mode == "monitored" or result.approved
+        ):
+            raise PolicyError(f"routes.{route_id}: multi-provider is unapproved proposal only")
+    return result
 
 
 def _parse_approval_mode(
@@ -1391,6 +1468,9 @@ def _parse_embedding_route(raw: object, *, index: int) -> EmbeddingRoutePolicy:
     mapping = _require_mapping(raw, field=f"embedding_routes[{index}]")
     route_id = _require_str(mapping.get("route_id"), field="embedding route_id")
     privacy = _require_mapping(mapping.get("privacy"), field=f"embedding_routes.{route_id}.privacy")
+    transport = _parse_transport(privacy.get("transport"), route_id=route_id)
+    if transport.multi_provider or transport.sort is not None:
+        raise PolicyError("Embedding routes cannot opt into multi-provider transport")
     capacities: dict[str, int] = {}
     for key in ("dimensions", "max_input_tokens", "max_batch_tokens", "max_batch_items"):
         value = mapping.get(key, 0)
@@ -1410,7 +1490,7 @@ def _parse_embedding_route(raw: object, *, index: int) -> EmbeddingRoutePolicy:
         approval_expires_at=_parse_timestamp(
             mapping.get("approval_expires_at"), field="embedding approval_expires_at"
         ),
-        transport=_parse_transport(privacy.get("transport"), route_id=route_id),
+        transport=transport,
         account_prompt_logging_disabled=_optional_bool(
             privacy.get("account_prompt_logging_disabled"),
             field="embedding account_prompt_logging_disabled",

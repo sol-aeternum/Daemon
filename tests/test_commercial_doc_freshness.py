@@ -116,7 +116,10 @@ class TestCommercialFactExtraction:
         assert get_commercial_facts(tmp_path) == {}
 
     def test_inference_policy_facts_derive_requirements(self, policy: dict) -> None:
-        assert policy["route_ids"] == {"legacy-openrouter-unverified": False}
+        assert policy["route_ids"] == {
+            "legacy-openrouter-unverified": False,
+            "memory-decomposition-luna-azure-eu": False,
+        }
         assert policy["service_ids"] == {
             "brave-web-search": False,
             "tavily-web-search": False,
