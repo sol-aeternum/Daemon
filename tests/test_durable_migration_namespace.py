@@ -441,3 +441,63 @@ def test_presentation_reference_adapter_preserves_scope_and_closed_acl(prefix, c
     assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
     assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("prefix,custom", [("tasks_test_", False), ("bench_metadata_", True)])
+def test_preparation_adapter_preserves_attempt_scope_and_owner_only_helper(prefix, custom):
+    schema = prefix + uuid4().hex
+    path = MIGRATIONS / "062_resource_output_preparation.sql"
+    original = path.read_text()
+    sql = migration_sql_for_schema(path, schema, schema_prefix=prefix if custom else None)
+    namespace = f'"{schema}"' if custom else schema
+    assert "public." not in sql
+    assert f"FROM {namespace}.task_attempts" in sql
+    assert f"{namespace}.resource_output_reference_principal()" in sql
+    assert f"n.nspname='{schema}'" in sql
+    assert sql.count(f"PERFORM {namespace}.attempt_lifecycle_assert_open(p)") == 2
+    assert "FOR UPDATE" in sql
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC" in sql
+    assert sql.count("SET search_path=pg_catalog") == original.count("SET search_path=pg_catalog")
+    assert path.read_text() == original
+
+
+@pytest.mark.asyncio
+async def test_preparation_reader_survives_real_tasks_template_clone(durable_database_template):
+    template = durable_database_template
+    async with template.clone() as dsn:
+        conn = await asyncpg.connect(dsn)
+        try:
+            functions = await conn.fetch(
+                "SELECT p.proname,p.prosecdef,p.proconfig,pg_get_functiondef(p.oid) AS definition,"
+                "EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0) AS public_grant "
+                "FROM pg_proc p WHERE p.pronamespace=$1::regnamespace AND p.proname IN "
+                "('resource_output_preparation_principal','resource_output_preparation_snapshot')",
+                template.schema,
+            )
+            assert {r["proname"] for r in functions} == {
+                "resource_output_preparation_principal",
+                "resource_output_preparation_snapshot",
+            }
+            assert all(
+                r["prosecdef"]
+                and "search_path=pg_catalog" in r["proconfig"]
+                and not r["public_grant"]
+                and "public." not in r["definition"]
+                for r in functions
+            )
+            reader = next(
+                r for r in functions if r["proname"] == "resource_output_preparation_snapshot"
+            )
+            assert template.schema + ".task_attempts" in reader["definition"]
+            assert (
+                reader["definition"].count(template.schema + ".attempt_lifecycle_assert_open(p)")
+                == 2
+            )
+            assert (
+                await conn.fetchval(
+                    "SELECT to_regprocedure('public.resource_output_preparation_snapshot(jsonb)')"
+                )
+                is None
+            )
+        finally:
+            await conn.close()

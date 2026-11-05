@@ -115,3 +115,11 @@ and actual cleanup for the exact retained first-output command. Its exact typed
 guard exception installs no host and changes no SQL permissions. Authenticated
 command preparation/transport, append, complete execution composition, independent
 artifact restore evidence and lifecycle/privacy qualification remain launch gates.
+
+The approved source-only [preparation join](RESOURCE_OUTPUT_PREPARATION.md) adds
+the eighth restricted P observation capability and H-owned original CSV packet
+preparation. Existing seven interfaces and table permissions remain unchanged;
+the caller must retain the exact returned packet before reservation. It creates
+no transport, runtime caller or durable prepared-packet store. Complete execution
+composition, authenticated transport, independent artifact restore/reconciliation
+and lifecycle/privacy gates remain open. No live action or enablement is claimed.
