@@ -31,6 +31,15 @@ Calls, failures, completed calls, total p50 and p95, schema-valid rate and trigg
 - **Stops, sending nothing further:** spend cap, unreadable ledger or unknown ceiling, run lock busy or lost, journal mismatch or uncertain dispatch, an accounting error, or 10 consecutive failures.
 - **Failures are data:** a known guard failure is recorded and the run continues, with no retry.
 
+## Accepted risk (owner ruling, 2026-11-06)
+
+The lock check and the guarded reservation are separate steps. If the database drops the lock session in that gap and a second bake-off starts on another output at that moment, both could pass the spend check near the cap. The owner accepted this rather than changing the production reservation path:
+- each racing run could overshoot by about one call, roughly USD 0.0004;
+- it needs both rare events together, and only one run is ever started at a time;
+- the driver's next lock check stops the run.
+
+The labelling command has the same gap, at about USD 0.004 per call.
+
 ## Limits of the result
 
 One sitting, one machine and 50 questions. Latency varies with time of day and provider load, which this run doesn't sample. Results show relative behaviour at that moment, not a guarantee.
