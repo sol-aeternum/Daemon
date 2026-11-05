@@ -340,6 +340,17 @@ def spot_check_selection(
     return [(question_id, tuple(reasons_by_question[question_id])) for question_id in ordered]
 
 
+def _packet_label_line(entry: Mapping[str, Any]) -> str:
+    """State the label as it is: an invalid reply is never shown as a negative label."""
+    if entry.get("schema_valid") is True:
+        value = str(entry.get("answerable_from_store") is True).lower()
+        return f"Labelled answerable_from_store: {value}"
+    reason = str(entry.get("reason") or "unknown")
+    if reason == "no_memories":
+        return "Labelled answerable_from_store: false (no stored memories in the answer sessions)"
+    return f"No valid label: the labeller's reply was unusable ({reason})"
+
+
 def build_spot_check_packet(
     selection: Sequence[tuple[str, Sequence[str]]],
     labels: Sequence[Mapping[str, Any]],
@@ -381,13 +392,13 @@ def build_spot_check_packet(
             "",
             f"Question: {row['question']}",
             f"Reference answer: {row['answer']}",
-            f"Labelled answerable_from_store: {str(bool(entry.get('answerable_from_store'))).lower()}",
+            _packet_label_line(entry),
         ]
         note = entry.get("note")
         if isinstance(note, str) and note:
             lines.append(f"Labeller's note: {note}")
         else:
-            lines.append("Labeller's note: (none — no stored memories to label)")
+            lines.append("Labeller's note: (none)")
 
         mapping = answer_conversation_ids(
             checkpoint,
@@ -1181,6 +1192,8 @@ def _packet_labels(labels: Any, rows: Sequence[Mapping[str, Any]]) -> list[Mappi
     """Validate the finished label document before anything is connected."""
     if not isinstance(labels, dict):
         raise ValueError("--labels must be a JSON object")
+    if labels.get("schema") != LABEL_RECORD_SCHEMA:
+        raise ValueError("--labels has an unknown record schema")
     if labels.get("stop_reason") is not None:
         raise ValueError(f"Labels document stopped, no packet: {labels['stop_reason']}")
     questions = labels.get("questions")
@@ -1189,10 +1202,18 @@ def _packet_labels(labels: Any, rows: Sequence[Mapping[str, Any]]) -> list[Mappi
     for entry in questions:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("question_id"), str):
             raise ValueError("--labels questions must all carry a question_id")
+    label_ids = [str(entry["question_id"]) for entry in questions]
+    if len(set(label_ids)) != len(label_ids):
+        raise ValueError("--labels holds duplicate question ids")
     row_ids = {str(row["question_id"]) for row in rows}
-    unknown = sorted({str(entry["question_id"]) for entry in questions} - row_ids)
+    unknown = sorted(set(label_ids) - row_ids)
     if unknown:
         raise ValueError(f"--labels holds question ids absent from the rows: {unknown}")
+    # The 15% draw and the not-answerable additions are only meaningful over the whole
+    # batch: a partial one would sample the wrong population and hide absent labels.
+    missing = sorted(row_ids - set(label_ids))
+    if missing:
+        raise ValueError(f"--labels is missing question ids from the rows: {missing}")
     return questions
 
 

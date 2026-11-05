@@ -44,7 +44,7 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | Questions with no decomposition trigger | Count as baseline, unchanged, and stay in the denominator. |
 | Spot-check error rate | Reported only; it doesn't change the gate margin. Labelling still stops above 20%. |
 | Gate 4 threshold | Count candidate-only items; 2 or more of 6 flags for owner review. Both arms' absolute counts reported. |
-| Spot-check packet | Every `answerable_from_store=false` label is included in addition to the 15% seeded sample, marked as such. The 20% stop is computed over the seeded sample only, because the additions are chosen by their label. |
+| Spot-check packet | Every `answerable_from_store=false` label is included in addition to the 15% seeded sample, marked as such. |
 | Database | `daemon_lme_bench_dev2_final` for Blocks C, E and M2. The pilot's `daemon_lme_bench_dev2` stays untouched as evidence. |
 
 ## Run limits

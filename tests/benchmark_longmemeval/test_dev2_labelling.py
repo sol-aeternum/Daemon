@@ -1346,7 +1346,7 @@ def _write_packet_inputs(
                 "stop_reason": stop_reason,
                 "questions": questions
                 if questions is not None
-                else [_label_entry("q1", memory_ids=["m1"])],
+                else [_label_entry("q1", memory_ids=["m1"]), _label_entry("q2", memory_ids=["m2"])],
             }
         ),
         encoding="utf-8",
@@ -1441,3 +1441,53 @@ def test_packet_refuses_a_label_id_absent_from_the_rows(tmp_path: Any) -> None:
             connector=_no_connect,
         )
     assert not output.exists()
+
+
+def _batch_rows() -> list[dict[str, Any]]:
+    return [{"question_id": q, "question": "Q", "answer": "A"} for q in ("q1", "q2")]
+
+
+def _batch_document(*ids: str, **overrides: Any) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "schema": dev2_labelling.LABEL_RECORD_SCHEMA,
+        "stop_reason": None,
+        "questions": [{"question_id": q, "schema_valid": True} for q in ids],
+    }
+    document.update(overrides)
+    return document
+
+
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        (_batch_document("q1"), "missing"),
+        (_batch_document("q1", "q2", "q2"), "duplicate"),
+        (_batch_document("q1", "q2", "q3"), "absent"),
+        (_batch_document("q1", "q2", schema="other"), "schema"),
+        (_batch_document("q1", "q2", stop_reason="spend_cap"), "stopped"),
+    ],
+)
+def test_packet_refuses_an_incomplete_or_malformed_batch(document: Any, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        dev2_labelling._packet_labels(document, _batch_rows())
+
+
+def test_packet_accepts_a_complete_batch() -> None:
+    assert len(dev2_labelling._packet_labels(_batch_document("q1", "q2"), _batch_rows())) == 2
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected", "absent"),
+    [
+        ({"schema_valid": True, "answerable_from_store": True}, ": true", "No valid"),
+        ({"schema_valid": True, "answerable_from_store": False}, ": false", "No valid"),
+        ({"schema_valid": False, "reason": "no_memories"}, "no stored memories", "No valid"),
+        ({"schema_valid": False, "reason": "parse_failure"}, "parse_failure", ": false"),
+    ],
+)
+def test_an_invalid_reply_is_never_shown_as_a_negative_label(
+    entry: dict[str, Any], expected: str, absent: str
+) -> None:
+    line = dev2_labelling._packet_label_line(entry)
+    assert expected in line
+    assert absent not in line
