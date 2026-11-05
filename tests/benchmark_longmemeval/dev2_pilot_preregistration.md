@@ -207,3 +207,7 @@ and detect truncation (#671).
    comparable because few replies approach either cap. The extraction cap differs from Phase D and dev-50.
 5. **Reported in addition:** count of `extraction_truncated` diagnostics and of calls above 2,000 output tokens. If
    `finish_reason` is never `length` when a reply reaches a cap, say so: it would leave the #670 diagnosis unconfirmed.
+
+## Owner confirmation, 2026-11-05
+
+The owner confirms approving the pilot spend increase to **USD 8.50**. Source: the owner's plan "Land M1 and the extraction fix; truncation audit; dev2 consistency, ingest and M2 pre-registration", section "Owner record". This records an approval given before the spend; it changes no cap or rule.
