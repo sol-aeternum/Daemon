@@ -1175,3 +1175,22 @@ def test_rate_limit_count_reads_what_the_real_handler_writes() -> None:
     assert len(lines) == 2
     assert dev2_pilot.count_rate_limits(lines) == {"rate_limited": 1}
     assert dev2_pilot.log_lines_seen_routing_events(lines) == 1
+
+
+def test_child_failure_is_reported_as_a_stop_not_success() -> None:
+    process = FakeProcess(polls=1, exit_code=1)
+    result = dev2_pilot.run_arm(
+        command=["ingest"],
+        spawn=lambda _command: process,
+        read_spend_usd=lambda: 0.0,
+        read_log_lines=lambda: [],
+        read_checkpoint=lambda: _checkpoint(["a"]),
+        sample_resources=lambda: {},
+        clock=lambda: 0.0,
+        sleep=lambda _seconds: None,
+        poll_seconds=1.0,
+        stop_rule=StopRule(cap_usd=6.0, margin_usd=1.0, max_rate_limited=10),
+        send_interrupt=lambda _process: None,
+    )
+    assert result["exit_code"] == 1
+    assert result["stop_reason"] == dev2_pilot.STOP_CHILD_FAILED

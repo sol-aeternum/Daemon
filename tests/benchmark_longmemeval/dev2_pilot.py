@@ -380,6 +380,8 @@ STOP_RATE_LIMIT: Final[str] = "rate_limit_loop"
 STOP_EXTRACTION: Final[str] = "extraction_failed"
 # A reader raised, so no gate can be evaluated: hard stop, never a silent zero.
 STOP_GUARD_FAILED: Final[str] = "guard_failed"
+# The child exited non-zero unprompted, e.g. the harness stopping on a failed session.
+STOP_CHILD_FAILED: Final[str] = "child_failed"
 # Hard gate: an arm with at least one failed session and >= 1% failures stops.
 FAILED_RATE_GATE: Final[float] = 0.01
 
@@ -826,6 +828,8 @@ def run_arm(
                 interrupts.append({"at_seconds": round(now - started, 3), "kind": "grace"})
             sleep(poll_seconds)
         exit_code = process.wait()
+        if exit_code != 0 and stop_reason is None and not interrupted:
+            stop_reason = STOP_CHILD_FAILED
 
     elapsed = max(clock() - started, 0.0)
     spend_after: float | None

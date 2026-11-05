@@ -181,3 +181,29 @@ the owner.
 - No restore.
 - No write to `daemon_lme_bench`.
 - No holdout access beyond the IDs file.
+
+## Amendment, 2026-11-05 (owner decision, after the c=8 gate tripped)
+
+**What happened.** c=1 and c=4 completed at code pin `626819d1`: 283 sessions, no failures, resume
+test passed. c=8 stopped at 161 of 392 sessions after 4 failed attempts on one session,
+`sharegpt_xxk9JDz_21`: 1.02% against a 392-session denominator, counted cumulatively across
+invocations, a rule fixed before the first resume. That met the 1% hard stop. Each attempt was a pair
+of calls stopping at exactly 2,000 output tokens (#670).
+
+**Owner decisions.** Investigate rather than excuse the failure; then raise `EXTRACTION_MAX_TOKENS` to 4000
+and detect truncation (#671).
+
+**Changes from here.**
+1. c=8 restarts from scratch at a new code pin: the commit carrying this amendment, which adds #671 and a
+   `run-arm` correction to the tooling. A failed child now records `stop_reason=child_failed`; it previously
+   read as success.
+2. Before the restart: `pg_dump` the database to the evidence area, then delete only the eight c=8 question
+   users' content with the per-user statements of `CANONICAL_RESET_STATEMENTS`. The harness's own reset is not
+   used, because it clears every `longmemeval+` user and would destroy c=1 and c=4. `entitlement_reservations`
+   is untouched, so the spend guard keeps all prior spend. The aborted run's records stay in `run/c8/`.
+3. The restart uses a new output directory, `run/c8r/`. The USD 8.50 cap stays cumulative and includes the aborted
+   attempts. The 1% gate stays cumulative across invocations of the restarted arm: 4 failures on its 392 sessions.
+4. **Comparability, stated plainly:** c=1 and c=4 ran at the 2,000 cap and c=8 at 4,000. Throughput and cost are
+   comparable because few replies approach either cap. The extraction cap differs from Phase D and dev-50.
+5. **Reported in addition:** count of `extraction_truncated` diagnostics and of calls above 2,000 output tokens. If
+   `finish_reason` is never `length` when a reply reaches a cap, say so: it would leave the #670 diagnosis unconfirmed.
