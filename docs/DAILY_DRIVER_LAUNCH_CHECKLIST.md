@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `93da43e1a3b0826ff701f280d858ca2dd217a0d1` (main verified
-before this source-only H-owned reservation join). This checklist separates
+Source checkpoint: `c3d3d9d2fcef70d76c1ff80b11f93872581ea3b7` (main verified
+before publication of the post-#673 five-phase qualification). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -11,7 +11,7 @@ open until its applicable release conditions are met or explicitly revised.
 | Protected acceptance, Send and Stop | #625/#628/#631/#637 merged; [composition boundary](RESTORE_HISTORY_COMPOSITION.md), immutable 056/057 projections and original native fences | Historical observation/client source is merged in #650; authenticated H runtime composition remains; no history record is execution authority |
 | Cross-device reopen and uncertain work | Existing owner-scoped task APIs/observer preserve persisted results; focused reconnect diagnostics exercise actual device access checks on synthetic SQL/POSIX fixtures | H-aware source responses/client refusal are merged in #650 (RESTORE_HISTORY_OBSERVATION.md); deployed cross-device and held-key acceptance still require qualification |
 | Stop and publication races | #637 Send/Stop and #653 H-ordered durable partial text/native terminal fences are merged, with no runtime execution install | Authenticated runtime wiring and streamed/partial/artifact publication qualification; Stop prevents subsequent local admission/publication, not guaranteed remote cessation or billing cancellation |
-| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–061 need their own reviewed execution scope, not incidental inclusion in the closed runner |
+| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–063 need their own reviewed execution scope, not incidental inclusion in the closed runner |
 | Principal/storage/startup binding | Separate backend A/W and W-only worker startup is merged; [startup contract](TASK_STARTUP_COMPOSITION.md) | Reviewed live credentials, exact grants, private H/J1 storage/key identity, service-specific access and a pinned deployed source; no credentials/grants/storage are provisioned by this checklist |
 | Restart and recovery | Prior isolated PostgreSQL/POSIX and service-startup tests cover specific boundaries | Pinned-runtime restart/reconnect check with original task/results and truthful uncertain outcomes; observed container source/flags/identity read back after any separately approved deployment |
 | Restored database | H/protected SQL mismatch detection exists in isolated joins; historical evidence does not authorize replay | Supported offline restore barrier/reconciliation, independently retained acceptance/possible-send/Stop evidence, and financial/auth/key/account/file continuity; neither schema equality nor matching J1 alone is restore readiness |
@@ -123,3 +123,15 @@ the caller must retain the exact returned packet before reservation. It creates
 no transport, runtime caller or durable prepared-packet store. Complete execution
 composition, authenticated transport, independent artifact restore/reconciliation
 and lifecycle/privacy gates remain open. No live action or enablement is claimed.
+
+
+Post-#673 combined synthetic qualification starts with the actual H-owned
+preparation operation, retains its exact returned command/CSV bytes, and then
+selects reservation, catalog/file, presentation and native terminal publication.
+Stop/projection loss between phases and unknown COMMIT or cancelled/failed reset
+in every phase must preserve the original packet and prevent later effects.
+See [prepared phase qualification](RESOURCE_OUTPUT_RESERVATION_JOIN.md#combined-phase-qualification-after-673).
+These tests do not install a host, persist a prepared packet across restart,
+authenticate transport or authorize uncertain-state adoption. Packet lifetime,
+authenticated transport, artifact restore and lifecycle/privacy release gates
+remain open; no live qualification or gate waiver is established. #477 stays open.
