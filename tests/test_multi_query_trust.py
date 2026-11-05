@@ -147,3 +147,91 @@ async def test_empty_baseline_invalid_or_missing_snapshot_fails_closed(snapshot)
     )
     pool.fetchval.assert_not_awaited()
     pool.execute.assert_not_awaited()
+
+
+class _JsonbColumnPool:
+    """Applies the real trust SQL's effects; JSONB array equality is order-sensitive."""
+
+    def __init__(self, stored: list[str]):
+        self.stored = stored
+        self.timestamped: list[list[UUID]] = []
+
+    async def execute(self, sql, *args):
+        if "UPDATE conversations" in sql:
+            self.stored = json.loads(args[1])
+        elif "UPDATE memories" in sql:
+            self.timestamped.append(list(args[0]))
+        else:
+            raise AssertionError(f"Unexpected trust SQL: {sql}")
+
+    async def fetch(self, sql, memory_ids):  # the legacy timestamp path
+        assert "UPDATE memories" in sql
+        self.timestamped.append(list(memory_ids))
+        return [{"id": mid} for mid in memory_ids]
+
+    async def fetchval(self, sql, _conversation_id, expected, replacement):
+        assert "last_retrieved_memory_ids = $2::jsonb" in sql
+        if self.stored != json.loads(expected):
+            return None
+        self.stored = json.loads(replacement)
+        return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("merge_reorders_baseline", [False, True])
+async def test_added_trust_composes_with_the_list_the_real_baseline_call_stored(
+    monkeypatch, merge_reorders_baseline
+):
+    """The CAS only matches while the merge keeps baseline rows in their stored order."""
+    from orchestrator.memory import injection
+    from tests.test_multi_query_gather import Provider, Store, CONVERSATION_ID, _rows
+
+    baseline_ids = [UUID(int=5), UUID(int=3), UUID(int=1)]  # deliberately unsorted
+    added_ids = [UUID(int=6), UUID(int=7)]
+    store = Store()
+    store.conversation["last_retrieved_memory_ids"] = [str(UUID(int=20))]
+    pool = _JsonbColumnPool([str(UUID(int=20))])
+    store._pool = pool
+    settings = SimpleNamespace(
+        memory_multi_query_enabled=True,
+        memory_multi_query_merge="additive",
+        memory_decomposition_timeout_ms=1500,
+        memory_subquery_quota=3,
+        memory_max_subqueries=3,
+    )
+    monkeypatch.setattr(injection, "get_settings", lambda: settings)
+    monkeypatch.setattr(injection, "get_selected_embedding_route_id", lambda: "")
+    vector = SimpleNamespace(embedding=[0.1], model="query", storage_model="storage")
+    monkeypatch.setattr(injection, "embed_query_with_metadata", AsyncMock(return_value=vector))
+    monkeypatch.setattr(
+        injection, "embed_queries_with_metadata", AsyncMock(return_value=[vector] * 2)
+    )
+    monkeypatch.setattr(injection, "ProductionSubqueryProvider", Provider)
+    monkeypatch.setattr(injection, "_lazy_import_trust_signals", lambda: trust_signals)
+
+    async def retrieve(**kwargs):
+        role = kwargs.get("query_role")
+        if role is None:
+            return _rows(5, 3, 1)
+        return _rows(6 if role == "sub:0" else 7)
+
+    monkeypatch.setattr(injection, "retrieve_memories_for_text", retrieve)
+    if merge_reorders_baseline:
+        real_merge = injection.merge_memories
+
+        def reordering_merge(baseline, *args, **kwargs):
+            return real_merge(list(reversed(baseline)), *args, **kwargs)
+
+        monkeypatch.setattr(injection, "merge_memories", reordering_merge)
+
+    block = await injection.build_memory_context(store, CONVERSATION_ID)
+
+    assert "Fictional fact 6" in block and "Fictional fact 7" in block
+    store.bulk_touch_memories.assert_awaited_once_with(added_ids)
+    if merge_reorders_baseline:
+        # The failure this test guards against: added trust is dropped silently.
+        assert pool.stored == [str(mid) for mid in baseline_ids]
+        assert pool.timestamped == [baseline_ids]
+    else:
+        assert pool.stored == [str(mid) for mid in baseline_ids + added_ids]
+        assert pool.timestamped == [baseline_ids, added_ids]
