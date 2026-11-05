@@ -369,11 +369,11 @@ def build_spot_check_packet(
     lines = [
         "# dev2 labelling spot-check packet",
         "",
-        "Error-rate rule: the >20% stop is computed over the seeded sample only. "
-        "Questions added because they are labelled not-answerable "
+        "Error-rate rule (owner ruling): the >20% stop is computed over the seeded "
+        "sample only. Questions added because they are labelled not-answerable "
         "(`answerable_from_store: false`, including `no_memories`) were picked "
-        "*because* of that label, so counting them would bias the rate. They are "
-        "still checked and corrected when wrong.",
+        "*because* of that label, so they get their own correction rate: above 20% "
+        "flags for owner review. They are still checked and corrected when wrong.",
         "",
         "- `Seeded 15% sample`: the frozen 15% draw from `spot_check_sample`.",
         "- `Every not-answerable label`: every schema-valid "

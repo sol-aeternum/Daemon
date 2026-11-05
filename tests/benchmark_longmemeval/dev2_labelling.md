@@ -77,14 +77,15 @@ the 15% seeded sample, each marked "Seeded 15% sample" and/or "Every
 not-answerable label". `no_memories` entries count as not-answerable labels.
 Owner ruling, 2026-11-05.
 
-The >20% stop is computed over the seeded sample only: the not-answerable
-additions were chosen *because* of their label, so counting them would bias the
-rate. They are still checked and corrected when wrong.
+The >20% stop is computed over the seeded sample only (owner ruling, 2026-11-06).
+The not-answerable additions were chosen *because* of their label, so they get
+their own correction rate: above 20% flags for owner review. They are still checked
+and corrected when wrong.
 
 ## Disagreement rule
 
 An owner correction replaces the label — it is not averaged or argued. Error
-rate = spot-checked questions needing any correction / spot-checked questions.
+rate = seeded-sample questions needing any correction / seeded-sample questions.
 Above 20% stops labelling for redesign (prompt or schema version bump, new
 freeze); no partial-batch extension past the threshold.
 

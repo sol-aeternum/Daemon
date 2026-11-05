@@ -1307,6 +1307,7 @@ def test_packet_marks_labelled_ids_and_states_the_rate_rule() -> None:
     )
 
     assert "seeded sample only" in packet
+    assert "flags for owner review" in packet
     assert packet.count("## q1") == 1
     assert packet.count("## q2") == 1
     q1, q2 = packet.split("## q1", 1)[1].split("## q2", 1)

@@ -34,7 +34,7 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | 4 | Abstention | Over the 6 dev2 abstention questions, count only plausible false-premise items rendered by the candidate and not by the baseline. **2 or more of the 6 flags for owner review, not auto-reject.** Both arms' absolute counts are reported too. |
 | 5 | Latency | Trigger rate and added p50/p95 latency reported from the Block D route. Report only. |
 
-## Owner rulings, 2026-11-05
+## Owner rulings, 2026-11-05 and 2026-11-06
 
 | Question | Ruling |
 |---|---|
@@ -45,6 +45,7 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | Spot-check error rate | Reported only; it doesn't change the gate margin. Labelling still stops above 20%. |
 | Gate 4 threshold | Count candidate-only items; 2 or more of 6 flags for owner review. Both arms' absolute counts reported. |
 | Spot-check packet | Every `answerable_from_store=false` label is included in addition to the 15% seeded sample, marked as such. |
+| Spot-check stop | The 20% stop is computed over the seeded sample only. The not-answerable additions get their own correction rate; above 20% flags for owner review. |
 | Database | `daemon_lme_bench_dev2_final` for Blocks C, E and M2. The pilot's `daemon_lme_bench_dev2` stays untouched as evidence. |
 
 ## Run limits

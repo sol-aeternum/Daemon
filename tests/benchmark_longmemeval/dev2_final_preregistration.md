@@ -2,7 +2,7 @@
 
 Fixed before any spend on this database. Authorises only what it states.
 
-## Owner rulings, 2026-11-05
+## Owner rulings, 2026-11-05 and 2026-11-06
 
 | Item | Ruling |
 |---|---|
@@ -10,6 +10,7 @@ Fixed before any spend on this database. Authorises only what it states.
 | Cap | **USD 6.00** for ingest plus labelling. The driver's USD 1.00 margin applies, so ingest stops at USD 5.00. |
 | Database | New `daemon_lme_bench_dev2_final`. Its ledger starts at zero, so this block reconciles on its own. The pilot's `daemon_lme_bench_dev2` stays untouched as evidence. |
 | Spot-check packet | The 15% seeded sample plus every `answerable_from_store=false` label, marked as such. |
+| Spot-check stop | The 20% stop is computed over the seeded sample only. The not-answerable additions get their own correction rate; above 20% flags for owner review. |
 
 ## Final pin
 
