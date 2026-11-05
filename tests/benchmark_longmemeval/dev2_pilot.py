@@ -382,6 +382,12 @@ STOP_EXTRACTION: Final[str] = "extraction_failed"
 STOP_GUARD_FAILED: Final[str] = "guard_failed"
 # The child exited non-zero unprompted, e.g. the harness stopping on a failed session.
 STOP_CHILD_FAILED: Final[str] = "child_failed"
+# Another arm already holds the benchmark run lock, so nothing may spend here.
+STOP_RUN_LOCK_BUSY: Final[str] = "run_lock_busy"
+
+#: Session-scoped advisory lock making one benchmark run exclusive; the cap is whole-database.
+BENCHMARK_RUN_LOCK_KEY: Final[int] = 0x646576325F72756E  # ASCII "dev2_run", sign bit clear.
+RUN_LOCK_SQL: Final[str] = "SELECT pg_try_advisory_lock($1)"
 # Hard gate: an arm with at least one failed session and >= 1% failures stops.
 FAILED_RATE_GATE: Final[float] = 0.01
 
@@ -746,7 +752,11 @@ def run_arm(
     once that many questions completed and the run is marked
     ``interrupted_for_resume`` with no stop reason. A second SIGINT is sent at
     most once, only after ``grace_seconds`` with the child still alive, and is
-    recorded. If any reader raises, the run is a hard stop: one interrupt is
+    recorded. Once the child has exited the gates are evaluated again on the
+    final readings, so spend that crosses during shutdown, or during the drain
+    after a planned resume, is a stop rather than a clean resume; an existing
+    stop reason is never overwritten. If any reader raises, the run is a hard
+    stop: one interrupt is
     sent, ``stop_reason`` is ``guard_failed``, the child is still drained to exit
     on the same grace path, and the unread final numbers are reported as ``None``
     instead of a false zero. The result carries numbers and reason codes only,
@@ -855,6 +865,14 @@ def run_arm(
         final_invariants = {}
         final_rates = {}
         routing_events_seen = 0
+    if guard_error is None and stop_reason is None and spend_after is not None:
+        # The child can cross a gate between the last poll and exit, and a planned
+        # resume drains it without another poll: judge the final readings too. A
+        # resume whose drain crossed the cap is a stop, never a clean resume.
+        final_reason = _gate_reason(spend_after, final_invariants, final_rates, stop_rule)
+        if final_reason is not None:
+            stop_reason = final_reason
+            interrupted = False
     completed = int(final_invariants.get("completed_sessions", 0))
     # On a guard failure the final figures are unknown (reported as zero above), so
     # this invocation's delta is not derivable and is reported as zero too.
@@ -1285,6 +1303,59 @@ def send_sigint(process: Any) -> None:
     os.kill(int(process.pid), signal.SIGINT)
 
 
+class RunLock(Protocol):
+    """An exclusive benchmark run lock held for the whole child lifetime."""
+
+    def acquire(self) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+async def acquire_benchmark_run_lock(fetchval: Callable[..., Any]) -> bool:
+    """``True`` only when this session was granted the benchmark run lock.
+
+    ``fetchval`` is the injected ``pg_try_advisory_lock`` callable. Any error
+    propagates to the caller, which must treat it as not acquired.
+    """
+    return (await fetchval(RUN_LOCK_SQL, BENCHMARK_RUN_LOCK_KEY)) is True
+
+
+class AsyncpgRunLock:
+    """A dedicated asyncpg connection holding :func:`acquire_benchmark_run_lock`.
+
+    The lock is session-scoped, so closing the connection is the release path;
+    the connection is kept open for the whole child lifetime and never shared
+    with the short-lived per-poll readers.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        self._url = database_url
+        self._loop = asyncio.new_event_loop()
+        self._connection: Any = None
+
+    def acquire(self) -> bool:
+        async def open_and_lock() -> bool:
+            import asyncpg
+
+            self._connection = await asyncpg.connect(self._url)
+            return await acquire_benchmark_run_lock(self._connection.fetchval)
+
+        return self._loop.run_until_complete(open_and_lock())
+
+    def release(self) -> None:
+        async def close() -> None:
+            connection, self._connection = self._connection, None
+            if connection is not None:
+                await connection.close()
+
+        if self._loop.is_closed():
+            return
+        try:
+            self._loop.run_until_complete(close())
+        finally:
+            self._loop.close()
+
+
 def make_sync_fetchrow(database_url: str) -> Callable[[str], Mapping[str, Any] | None]:
     """One short-lived asyncpg connection per poll; none is held between polls."""
 
@@ -1301,6 +1372,29 @@ def make_sync_fetchrow(database_url: str) -> Callable[[str], Mapping[str, Any] |
         return asyncio.run(read())
 
     return fetchrow
+
+
+def _run_lock_busy_result() -> dict[str, Any]:
+    """The record body when the run lock refused: nothing ran, nothing is known."""
+    return {
+        "wall_seconds": 0.0,
+        "exit_code": None,
+        "stop_reason": STOP_RUN_LOCK_BUSY,
+        "interrupted_for_resume": False,
+        "interrupts": [],
+        "guard_error": None,
+        "spend_before_usd": None,
+        "spend_after_usd": None,
+        "spend_usd": None,
+        "rate_limits": {},
+        "rate_limited_events": 0,
+        "routing_events_seen": 0,
+        "resource_samples": {},
+        "completed_sessions": 0,
+        "completed_sessions_this_invocation": 0,
+        "failed_sessions": 0,
+        "sessions_per_hour": 0.0,
+    }
 
 
 def run_arm_command(
@@ -1326,12 +1420,16 @@ def run_arm_command(
     resume: bool = False,
     now: Callable[[], str] = _utc_now,
     poll_seconds: float = POLL_SECONDS,
+    run_lock: RunLock | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Gate, then wire ``run_arm`` with real readers and write the record.
 
     The three refusals happen before ``spawn`` is called at all: the wrong
     database, a dirty tree, and an interrupt run pointed at an existing
-    checkpoint without ``--resume``.
+    checkpoint without ``--resume``. The exclusive benchmark run lock is
+    acquired on its own dedicated connection before the child is spawned and
+    held until it exits. A busy or unreadable lock spawns nothing and records
+    ``stop_reason`` ``run_lock_busy`` with exit code 1.
     """
     check_run_arm_database(database_url)
     check_clean_tree(status_porcelain)
@@ -1341,29 +1439,41 @@ def run_arm_command(
 
     expected_sessions = expected_sessions_from_dataset(dataset_rows)
     started_utc = now()
-    result = run_arm(
-        command=child_command(
-            arm_dataset=arm_dataset,
-            output_dir=output_dir,
-            concurrency=concurrency,
-            python=sys.executable,
-        ),
-        spawn=spawn,
-        read_spend_usd=make_spend_reader(fetchrow_factory()),
-        read_log_lines=make_log_reader(Path(output_dir) / CHILD_LOG_NAME),
-        read_checkpoint=lambda: read_checkpoint_file(checkpoint_path(output_dir)),
-        sample_resources=sample_resources,
-        clock=clock,
-        sleep=sleep,
-        poll_seconds=poll_seconds,
-        stop_rule=StopRule(
-            cap_usd=cap_usd, margin_usd=margin_usd, max_rate_limited=max_rate_limited
-        ),
-        interrupt_after_completed=interrupt_after_completed,
-        expected_sessions=expected_sessions,
-        send_interrupt=send_interrupt,
-        grace_seconds=GRACE_SECONDS,
-    )
+    lock = run_lock if run_lock is not None else AsyncpgRunLock(database_url or "")
+    try:
+        try:
+            acquired = lock.acquire()
+        except Exception:
+            # An unreadable lock state is not acquisition: refuse to spend.
+            acquired = False
+        if acquired:
+            result = run_arm(
+                command=child_command(
+                    arm_dataset=arm_dataset,
+                    output_dir=output_dir,
+                    concurrency=concurrency,
+                    python=sys.executable,
+                ),
+                spawn=spawn,
+                read_spend_usd=make_spend_reader(fetchrow_factory()),
+                read_log_lines=make_log_reader(Path(output_dir) / CHILD_LOG_NAME),
+                read_checkpoint=lambda: read_checkpoint_file(checkpoint_path(output_dir)),
+                sample_resources=sample_resources,
+                clock=clock,
+                sleep=sleep,
+                poll_seconds=poll_seconds,
+                stop_rule=StopRule(
+                    cap_usd=cap_usd, margin_usd=margin_usd, max_rate_limited=max_rate_limited
+                ),
+                interrupt_after_completed=interrupt_after_completed,
+                expected_sessions=expected_sessions,
+                send_interrupt=send_interrupt,
+                grace_seconds=GRACE_SECONDS,
+            )
+        else:
+            result = _run_lock_busy_result()
+    finally:
+        lock.release()
     record = build_record(
         result=result,
         code_sha=code_sha,

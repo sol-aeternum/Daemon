@@ -5,6 +5,7 @@ Every row here is invented: no dataset, provider, database or network access.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -23,13 +24,17 @@ from tests.benchmark_longmemeval import dev2_pilot, holdout
 from tests.benchmark_longmemeval.dev2_pilot import (
     ALGORITHM,
     ARM_SIZES,
+    BENCHMARK_RUN_LOCK_KEY,
     PILOT_SIZE,
+    RUN_LOCK_SQL,
     SPEND_SQL,
     STOP_EXTRACTION,
     STOP_GUARD_FAILED,
     STOP_RATE_LIMIT,
+    STOP_RUN_LOCK_BUSY,
     STOP_SPEND,
     StopRule,
+    acquire_benchmark_run_lock,
     answer_conversation_ids,
     assign_arms,
     checkpoint_invariants,
@@ -952,6 +957,25 @@ class _Clock:
         self.now += seconds
 
 
+class _FakeRunLock:
+    """An injected benchmark run lock that records acquisition and release."""
+
+    def __init__(self, acquired: bool = True, error: BaseException | None = None) -> None:
+        self.acquired = acquired
+        self.error = error
+        self.acquire_calls = 0
+        self.releases = 0
+
+    def acquire(self) -> bool:
+        self.acquire_calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.acquired
+
+    def release(self) -> None:
+        self.releases += 1
+
+
 def _arm_rows() -> list[dict[str, Any]]:
     return [{"question_id": "q1", "haystack_sessions": []}]
 
@@ -981,6 +1005,7 @@ def _run_arm_kwargs(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
         "clock": clock,
         "send_interrupt": lambda process: None,
         "now": lambda: "2026-11-04T00:00:00+00:00",
+        "run_lock": _FakeRunLock(),
     }
     kwargs.update(overrides)
     return kwargs
@@ -1263,3 +1288,145 @@ def test_resume_appends_to_the_child_log_and_keeps_earlier_routing_events(
     assert len(separators) == 2
     # The separator is one line per invocation and is not a routing event.
     assert dev2_pilot.log_lines_seen_routing_events(lines) == 2
+
+
+def test_final_spend_over_the_cap_is_a_stop_when_no_poll_saw_it() -> None:
+    """7.40 at the last poll and 8.70 on the final read is still a hard stop."""
+    harness = Harness(spend=(0.0, 7.4, 8.7), process=FakeProcess(polls=1))
+    result = harness.run(stop_rule=StopRule(cap_usd=9.5, margin_usd=1.0, max_rate_limited=10))
+    assert result["stop_reason"] == STOP_SPEND
+    assert result["interrupted_for_resume"] is False
+    # The child had already exited, so the final gate interrupts nothing.
+    assert result["interrupts"] == []
+    assert result["spend_usd"] == pytest.approx(8.7)
+
+
+def test_resume_whose_drain_crosses_the_cap_is_a_stop_not_a_clean_resume() -> None:
+    harness = Harness(
+        spend=(0.0, 5.2, 8.7),
+        checkpoint=_checkpoint(["s0"]),
+        process=FakeProcess(polls=2),
+    )
+    result = harness.run(
+        stop_rule=StopRule(cap_usd=9.5, margin_usd=1.0, max_rate_limited=10),
+        interrupt_after_completed=1,
+        expected_sessions={"q1": 1},
+    )
+    assert result["interrupted_for_resume"] is False
+    assert result["stop_reason"] == STOP_SPEND
+    assert [item["kind"] for item in result["interrupts"]] == ["resume"]
+
+
+def test_final_readings_under_the_cap_keep_a_clean_run_clean() -> None:
+    harness = Harness(spend=(0.0, 8.4, 8.4), process=FakeProcess(polls=1))
+    result = harness.run(stop_rule=StopRule(cap_usd=9.5, margin_usd=1.0, max_rate_limited=10))
+    assert result["stop_reason"] is None
+    assert result["interrupted_for_resume"] is False
+
+
+def test_run_arm_command_exits_nonzero_when_only_the_final_read_crosses_the_cap(
+    tmp_path: Path,
+) -> None:
+    # cap 8.50, margin 1.00: the 7.40 polls are clean, the 8.70 final read is not.
+    amounts = iter([7_400_000, 7_400_000, 8_700_000])
+
+    def fetchrow(sql: str) -> Mapping[str, Any]:
+        return {"settled_microusd": next(amounts), "held_microusd": 0}
+
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(tmp_path, fetchrow_factory=lambda: fetchrow)
+    )
+    assert record["run_arm"]["stop_reason"] == STOP_SPEND
+    assert exit_code == 1
+    assert json.loads((tmp_path / "record.json").read_text(encoding="utf-8")) == record
+
+
+def test_acquire_benchmark_run_lock_requires_an_exact_true() -> None:
+    calls: list[tuple[str, int]] = []
+
+    async def granted(sql: str, key: int) -> bool:
+        calls.append((sql, key))
+        return True
+
+    async def missing(sql: str, key: int) -> None:
+        return None
+
+    async def refused_flag(sql: str, key: int) -> bool:
+        return False
+
+    async def refused(sql: str, key: int) -> bool:
+        raise RuntimeError("connection lost")
+
+    assert 0 < BENCHMARK_RUN_LOCK_KEY < 2**63
+    assert asyncio.run(acquire_benchmark_run_lock(granted)) is True
+    assert calls == [(RUN_LOCK_SQL, BENCHMARK_RUN_LOCK_KEY)]
+    assert asyncio.run(acquire_benchmark_run_lock(missing)) is False
+    assert asyncio.run(acquire_benchmark_run_lock(refused_flag)) is False
+    with pytest.raises(RuntimeError, match="connection lost"):
+        asyncio.run(acquire_benchmark_run_lock(refused))
+
+
+def test_a_busy_run_lock_spawns_nothing_and_exits_nonzero(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    lock = _FakeRunLock(acquired=False)
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            run_lock=lock,
+            spawn=lambda command: spawned.append(command) or _FakeProcess(),
+        )
+    )
+    assert spawned == []
+    assert exit_code == 1
+    assert record["run_arm"]["stop_reason"] == STOP_RUN_LOCK_BUSY
+    assert lock.acquire_calls == 1
+    assert lock.releases == 1
+    assert json.loads((tmp_path / "record.json").read_text(encoding="utf-8")) == record
+
+
+def test_a_run_lock_that_raises_spawns_nothing_and_exits_nonzero(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    lock = _FakeRunLock(error=RuntimeError("lock unavailable"))
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            run_lock=lock,
+            spawn=lambda command: spawned.append(command) or _FakeProcess(),
+        )
+    )
+    assert spawned == []
+    assert exit_code == 1
+    assert record["run_arm"]["stop_reason"] == STOP_RUN_LOCK_BUSY
+    assert lock.acquire_calls == 1
+    assert lock.releases == 1
+
+
+def test_an_acquired_run_lock_runs_the_child_and_is_released(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    lock = _FakeRunLock()
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            run_lock=lock,
+            spawn=lambda command: spawned.append(command) or _FakeProcess(),
+        )
+    )
+    assert exit_code == 0
+    assert record["run_arm"]["stop_reason"] is None
+    assert len(spawned) == 1
+    assert lock.acquire_calls == 1
+    assert lock.releases == 1
+
+
+def test_the_run_lock_is_released_when_the_child_fails(tmp_path: Path) -> None:
+    lock = _FakeRunLock()
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            run_lock=lock,
+            spawn=lambda command: FakeProcess(polls=1, exit_code=1),
+        )
+    )
+    assert exit_code == 1
+    assert record["run_arm"]["stop_reason"] == dev2_pilot.STOP_CHILD_FAILED
+    assert lock.releases == 1
