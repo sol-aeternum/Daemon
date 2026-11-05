@@ -98,3 +98,9 @@ retained artifact restore evidence/reconciliation and lifecycle/privacy/GC remai
 launch gates. All real credentials/grants, UID/key/storage/socket provisioning,
 live migrations, deployment and activation remain separate operations. No paid
 inference or worker key/storage/credential expansion is introduced.
+
+The following source-only [protocol/RAM-owner prototype](PUBLICATION_PACKET_OWNER.md)
+exercises synthetic framing and packet lifetime without a listener or native-effect
+adapter. It installs no caller of this preparation method. Production authentication,
+immutable assignment issuance, real CSV transport and runtime composition remain
+separate qualification boundaries; RAM evidence is not recovery authority.

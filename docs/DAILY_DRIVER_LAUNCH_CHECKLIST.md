@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `c3d3d9d2fcef70d76c1ff80b11f93872581ea3b7` (main verified
-before publication of the post-#673 five-phase qualification). This checklist separates
+Source checkpoint: `b26ad4b1759dbd7bc475ecff98a991a6d52ceadc` (main verified
+before the isolated protocol/RAM-owner prototype following #677). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -135,3 +135,10 @@ These tests do not install a host, persist a prepared packet across restart,
 authenticate transport or authorize uncertain-state adoption. Packet lifetime,
 authenticated transport, artifact restore and lifecycle/privacy release gates
 remain open; no live qualification or gate waiver is established. #477 stays open.
+
+The uncalled [publication protocol/RAM-owner prototype](PUBLICATION_PACKET_OWNER.md)
+adds closed synthetic frames and finite backend retention with fail-closed restart.
+It installs no listener, native-effect adapter or runtime producer. Immutable native
+assignment provenance, real authentication/framing admission and complete execution
+integration remain unqualified. No new permission, live resource, prepared-packet
+store or recovery/restore authority is inferred. Observation-only remains in force.
