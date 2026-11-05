@@ -72,6 +72,15 @@ question ID:
   overall: accept / correct
 ```
 
+The packet includes every `answerable_from_store = false` label in addition to
+the 15% seeded sample, each marked "Seeded 15% sample" and/or "Every
+not-answerable label". `no_memories` entries count as not-answerable labels.
+Owner ruling, 2026-11-05.
+
+The >20% stop is computed over the seeded sample only: the not-answerable
+additions were chosen *because* of their label, so counting them would bias the
+rate. They are still checked and corrected when wrong.
+
 ## Disagreement rule
 
 An owner correction replaces the label — it is not averaged or argued. Error
@@ -93,6 +102,12 @@ the store never held the fact, so they cannot measure exposure failure.
 - The paid pass adds `--output <labels.json> --max-spend-usd <cap>`, where the
   cap is cumulative over the whole benchmark database ledger: settled spend plus
   open holds plus a conservative ceiling for the next call.
+- Build the spot-check packet from a finished label document (read-only, no
+  provider call):
+  `python -m tests.benchmark_longmemeval.dev2_labelling packet --question-rows <rows.json> --checkpoint <checkpoint.json> --labels <labels.json> --output <packet.md>`
+  The packet quotes benchmark text, so the output must be outside the repository
+  and an existing packet is never overwritten. A stopped label document, or a
+  label id absent from the rows, refuses before connecting.
 - Raw model output stays out of Git. Only aggregates — per-question labels that
   the owner has spot-checked, the spot-check counts and the error rate — may be
   recorded in the evidence directory.

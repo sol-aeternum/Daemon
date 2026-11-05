@@ -35,7 +35,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
 
-from tests.benchmark_longmemeval.dev2_pilot import answer_conversation_ids
+from tests.benchmark_longmemeval.dev2_pilot import (
+    answer_conversation_ids,
+    check_output_outside_repo,
+)
 
 LABELLER_MODEL: Final[str] = "openrouter/openai/gpt-6-luna"
 LABELLER_ROUTE_ID: Final[str] = "luna-azure-eu"
@@ -281,6 +284,141 @@ def spot_check_sample(
     )
     count = min(max(math.ceil(fraction * len(ordered)), minimum), len(ordered))
     return tuple(ordered[:count])
+
+
+SPOT_CHECK_REASON_TEXT: Final[dict[str, str]] = {
+    "seeded_sample": "Seeded 15% sample",
+    "answerable_false": "Every not-answerable label",
+}
+
+
+def _is_answerable_false_label(entry: Mapping[str, Any]) -> bool:
+    """Not-answerable labels, including the entries that never reached the model."""
+    if entry.get("reason") == "no_memories":
+        return True
+    return entry.get("schema_valid") is True and entry.get("answerable_from_store") is False
+
+
+def spot_check_selection(
+    labels: Sequence[Mapping[str, Any]],
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Spot-check selection: the frozen 15% sample, then every not-answerable label.
+
+    ``labels`` is the label document's ``questions`` entries. The seeded draw is
+    exactly ``spot_check_sample`` over every question id, in its own order, so
+    its behaviour is unchanged. ``answerable_false`` covers every schema-valid
+    label with ``answerable_from_store`` false and every ``no_memories`` entry
+    (which carries ``answerable_from_store: false``). A question drawn by both
+    appears once, with both reasons; the extra questions are sorted by id.
+    """
+    entries = [entry for entry in labels if isinstance(entry, Mapping)]
+    seeded = spot_check_sample([str(entry["question_id"]) for entry in entries])
+
+    reasons_by_question: dict[str, list[str]] = {}
+    seeded_order: list[str] = []
+    for question_id in seeded:
+        reasons_by_question.setdefault(question_id, []).append("seeded_sample")
+        seeded_order.append(question_id)
+
+    additional: set[str] = set()
+    seen: set[str] = set()
+    for entry in entries:
+        question_id = str(entry["question_id"])
+        if question_id in seen:
+            continue
+        seen.add(question_id)
+        if not _is_answerable_false_label(entry):
+            continue
+        reasons = reasons_by_question.get(question_id)
+        if reasons is None:
+            reasons_by_question[question_id] = ["answerable_false"]
+            additional.add(question_id)
+        else:
+            reasons.append("answerable_false")
+
+    ordered = [*seeded_order, *sorted(additional)]
+    return [(question_id, tuple(reasons_by_question[question_id])) for question_id in ordered]
+
+
+def build_spot_check_packet(
+    selection: Sequence[tuple[str, Sequence[str]]],
+    labels: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
+    checkpoint: Mapping[str, Any],
+    memories_by_question: Mapping[str, Sequence[tuple[str, str]]],
+) -> str:
+    """Render the owner's spot-check packet. Pure: no connection, no provider call.
+
+    Each selected question appears once, with its reason(s), question text,
+    reference answer, label and note, the answer-session memories (labelled ids
+    marked ``[LABELLED]``) and the checklist. The header states the rate rule.
+    """
+    entries = {str(entry["question_id"]): entry for entry in labels if isinstance(entry, Mapping)}
+    rows_by_id = {str(row["question_id"]): row for row in rows}
+    lines = [
+        "# dev2 labelling spot-check packet",
+        "",
+        "Error-rate rule: the >20% stop is computed over the seeded sample only. "
+        "Questions added because they are labelled not-answerable "
+        "(`answerable_from_store: false`, including `no_memories`) were picked "
+        "*because* of that label, so counting them would bias the rate. They are "
+        "still checked and corrected when wrong.",
+        "",
+        "- `Seeded 15% sample`: the frozen 15% draw from `spot_check_sample`.",
+        "- `Every not-answerable label`: every schema-valid "
+        "`answerable_from_store: false` label, plus every `no_memories` entry.",
+        f"- Selected questions: {len(selection)}",
+    ]
+
+    for question_id, reasons in selection:
+        entry = entries[question_id]
+        row = rows_by_id[question_id]
+        lines += ["", f"## {question_id}", ""]
+        lines.append(
+            "Reason(s): " + ", ".join(SPOT_CHECK_REASON_TEXT[reason] for reason in reasons)
+        )
+        lines += [
+            "",
+            f"Question: {row['question']}",
+            f"Reference answer: {row['answer']}",
+            f"Labelled answerable_from_store: {str(bool(entry.get('answerable_from_store'))).lower()}",
+        ]
+        note = entry.get("note")
+        if isinstance(note, str) and note:
+            lines.append(f"Labeller's note: {note}")
+        else:
+            lines.append("Labeller's note: (none — no stored memories to label)")
+
+        mapping = answer_conversation_ids(
+            checkpoint,
+            question_id,
+            [str(value) for value in row.get("answer_session_ids") or []],
+        )
+        if mapping:
+            lines += ["", "Answer sessions:"]
+            lines += [f"- {session} -> {conversation}" for session, conversation in mapping.items()]
+
+        memories = memories_by_question.get(question_id, ())
+        lines.append("")
+        if memories:
+            labelled = {str(memory_id) for memory_id in entry.get("memory_ids") or []}
+            lines.append("Answer-session memories:")
+            for memory_id, text in memories:
+                mark = "[LABELLED] " if memory_id in labelled else ""
+                lines.append(f"- {mark}{memory_id}: {text}")
+        else:
+            lines.append("No answer-session memories were recorded for this question.")
+
+        lines += [
+            "",
+            "Checklist:",
+            "- labelled memory IDs correct?      yes / no — correction:",
+            "- any memory missing from the label? yes / no — ids:",
+            "- answerable_from_store correct?    yes / no — correction:",
+            "- overall: accept / correct",
+        ]
+
+    return "\n".join(lines) + "\n"
 
 
 def artifact_hashes() -> dict[str, str]:
@@ -1027,9 +1165,151 @@ def label_main(argv: Sequence[str] | None = None) -> int:
     return 0 if document["stop_reason"] is None else 1
 
 
+def _repository_root() -> Path:
+    import subprocess
+
+    completed = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(completed.stdout.strip())
+
+
+def _packet_labels(labels: Any, rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Validate the finished label document before anything is connected."""
+    if not isinstance(labels, dict):
+        raise ValueError("--labels must be a JSON object")
+    if labels.get("stop_reason") is not None:
+        raise ValueError(f"Labels document stopped, no packet: {labels['stop_reason']}")
+    questions = labels.get("questions")
+    if not isinstance(questions, list):
+        raise ValueError("--labels must carry a questions list")
+    for entry in questions:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("question_id"), str):
+            raise ValueError("--labels questions must all carry a question_id")
+    row_ids = {str(row["question_id"]) for row in rows}
+    unknown = sorted({str(entry["question_id"]) for entry in questions} - row_ids)
+    if unknown:
+        raise ValueError(f"--labels holds question ids absent from the rows: {unknown}")
+    return questions
+
+
+async def _run_packet(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    checkpoint: Mapping[str, Any],
+    questions: Sequence[Mapping[str, Any]],
+    selection: Sequence[tuple[str, Sequence[str]]],
+    connector: Callable[[str], Any] | None = None,
+    decrypt: Callable[[str], str] | None = None,
+) -> str:
+    """Read the answer-session memories read-only and render the packet.
+
+    No provider, attestation, spend or lock is involved: this makes no paid call.
+    """
+    import asyncpg
+
+    from orchestrator.config import get_settings
+    from orchestrator.memory.encryption import ContentEncryption
+
+    settings = get_settings()
+    database_url = settings.database_url
+    if not database_url:
+        raise ValueError("database_url is not configured")
+    connect = connector or asyncpg.connect
+    connection = await connect(database_url)
+    memories_by_question: dict[str, tuple[tuple[str, str], ...]] = {}
+    try:
+        decryption = decrypt or ContentEncryption(settings.daemon_encryption_key).decrypt
+
+        def memory_reader(sql: str, params: Sequence[Any]) -> Any:
+            return connection.fetch(sql, *params)
+
+        rows_by_id = {str(row["question_id"]): row for row in rows}
+        async with connection.transaction(readonly=True):
+            for question_id, _reasons in selection:
+                row = rows_by_id[question_id]
+                conversation_ids = answer_conversation_ids(
+                    checkpoint,
+                    question_id,
+                    [str(value) for value in row.get("answer_session_ids") or []],
+                )
+                memories_by_question[question_id] = await load_answer_session_memories(
+                    memory_reader,
+                    decryption,
+                    str(row["user_id"]),
+                    list(conversation_ids.values()),
+                )
+    finally:
+        await connection.close()
+
+    return build_spot_check_packet(selection, questions, rows, checkpoint, memories_by_question)
+
+
+def packet_main(
+    argv: Sequence[str] | None = None,
+    *,
+    repo_root: Path | None = None,
+    connector: Callable[[str], Any] | None = None,
+    decrypt: Callable[[str], str] | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(
+        prog="dev2_labelling.py packet",
+        description="Build the owner's spot-check packet from a finished label document.",
+    )
+    parser.add_argument("--question-rows", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Spot-check packet. Must be outside the repository; an existing packet refuses.",
+    )
+    args = parser.parse_args(argv)
+
+    rows = json.loads(args.question_rows.read_text(encoding="utf-8"))
+    if not isinstance(rows, list):
+        raise ValueError("--question-rows must be a JSON list")
+    checkpoint = json.loads(args.checkpoint.read_text(encoding="utf-8"))
+    if not isinstance(checkpoint, dict):
+        raise ValueError("--checkpoint must be a JSON object")
+    labels = json.loads(args.labels.read_text(encoding="utf-8"))
+    questions = _packet_labels(labels, rows)
+
+    # The packet quotes benchmark text, so it never lands in the checkout. Every
+    # refusal below happens before a connection is opened.
+    root = _repository_root() if repo_root is None else repo_root
+    check_output_outside_repo(args.output, root)
+    if args.output.exists():
+        raise FileExistsError(f"Spot-check packet already exists: {args.output}")
+
+    selection = spot_check_selection(questions)
+    markdown = asyncio.run(
+        _run_packet(
+            rows=rows,
+            checkpoint=checkpoint,
+            questions=questions,
+            selection=selection,
+            connector=connector,
+            decrypt=decrypt,
+        )
+    )
+    # Exclusive: an existing packet is never overwritten, even one created
+    # between the check above and this write.
+    with open(args.output, "x", encoding="utf-8") as handle:
+        handle.write(markdown)
+    print(f"wrote {len(selection)} spot-check questions to {args.output}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """The real entry point: ``python -m ...dev2_labelling [label] ...``."""
+    """The real entry point: ``python -m ...dev2_labelling [label|packet] ...``."""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "packet":
+        return packet_main(arguments[1:])
     if arguments and arguments[0] == "label":
         arguments = arguments[1:]
     return label_main(arguments)
@@ -1053,14 +1333,17 @@ __all__ = [
     "LabelInput",
     "artifact_hashes",
     "build_request",
+    "build_spot_check_packet",
     "ceiling_from_route",
     "label_main",
     "label_questions",
     "load_answer_session_memories",
     "main",
+    "packet_main",
     "parse_label",
     "price_ceiling_reader",
     "request_template",
     "spot_check_sample",
+    "spot_check_selection",
     "verify_label_route",
 ]
