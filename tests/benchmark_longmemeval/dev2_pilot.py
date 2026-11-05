@@ -388,6 +388,10 @@ STOP_RUN_LOCK_BUSY: Final[str] = "run_lock_busy"
 #: Session-scoped advisory lock making one benchmark run exclusive; the cap is whole-database.
 BENCHMARK_RUN_LOCK_KEY: Final[int] = 0x646576325F72756E  # ASCII "dev2_run", sign bit clear.
 RUN_LOCK_SQL: Final[str] = "SELECT pg_try_advisory_lock($1)"
+RUN_LOCK_HELD_SQL: Final[str] = (
+    "SELECT count(*) FROM pg_locks "
+    "WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted"
+)
 # Hard gate: an arm with at least one failed session and >= 1% failures stops.
 FAILED_RATE_GATE: Final[float] = 0.01
 
@@ -1308,7 +1312,21 @@ class RunLock(Protocol):
 
     def acquire(self) -> bool: ...
 
+    def assert_held(self) -> None:
+        """Raise unless this run still holds the lock."""
+        ...
+
     def release(self) -> None: ...
+
+
+def spend_while_holding(lock: RunLock, read_spend: Callable[[], float]) -> Callable[[], float]:
+    """Check the lock on every spend poll; a lost lock takes the guard-failed stop."""
+
+    def read() -> float:
+        lock.assert_held()
+        return read_spend()
+
+    return read
 
 
 async def acquire_benchmark_run_lock(fetchval: Callable[..., Any]) -> bool:
@@ -1341,6 +1359,16 @@ class AsyncpgRunLock:
             return await acquire_benchmark_run_lock(self._connection.fetchval)
 
         return self._loop.run_until_complete(open_and_lock())
+
+    def assert_held(self) -> None:
+        """The session lock ends with its connection, so a lost one must surface."""
+
+        async def held() -> bool:
+            count = await self._connection.fetchval(RUN_LOCK_HELD_SQL)
+            return int(count or 0) >= 1
+
+        if self._connection is None or not self._loop.run_until_complete(held()):
+            raise RuntimeError("Benchmark run lock is no longer held")
 
     def release(self) -> None:
         async def close() -> None:
@@ -1455,7 +1483,7 @@ def run_arm_command(
                     python=sys.executable,
                 ),
                 spawn=spawn,
-                read_spend_usd=make_spend_reader(fetchrow_factory()),
+                read_spend_usd=spend_while_holding(lock, make_spend_reader(fetchrow_factory())),
                 read_log_lines=make_log_reader(Path(output_dir) / CHILD_LOG_NAME),
                 read_checkpoint=lambda: read_checkpoint_file(checkpoint_path(output_dir)),
                 sample_resources=sample_resources,

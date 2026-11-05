@@ -960,9 +960,16 @@ class _Clock:
 class _FakeRunLock:
     """An injected benchmark run lock that records acquisition and release."""
 
-    def __init__(self, acquired: bool = True, error: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        acquired: bool = True,
+        error: BaseException | None = None,
+        lost_after_checks: int | None = None,
+    ) -> None:
         self.acquired = acquired
         self.error = error
+        self.lost_after_checks = lost_after_checks
+        self.checks = 0
         self.acquire_calls = 0
         self.releases = 0
 
@@ -971,6 +978,11 @@ class _FakeRunLock:
         if self.error is not None:
             raise self.error
         return self.acquired
+
+    def assert_held(self) -> None:
+        self.checks += 1
+        if self.lost_after_checks is not None and self.checks > self.lost_after_checks:
+            raise RuntimeError("lock connection lost")
 
     def release(self) -> None:
         self.releases += 1
@@ -1430,3 +1442,35 @@ def test_the_run_lock_is_released_when_the_child_fails(tmp_path: Path) -> None:
     assert exit_code == 1
     assert record["run_arm"]["stop_reason"] == dev2_pilot.STOP_CHILD_FAILED
     assert lock.releases == 1
+
+
+def test_a_lock_lost_mid_run_stops_the_arm_and_interrupts_the_child(tmp_path: Path) -> None:
+    process = FakeProcess(polls=50)
+    lock = _FakeRunLock(lost_after_checks=1)  # holds for spend_before, lost on the first poll
+
+    def interrupt(child: Any) -> None:
+        child.interrupts += 1
+
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            run_lock=lock,
+            spawn=lambda _command: process,
+            send_interrupt=interrupt,
+        )
+    )
+    assert lock.checks >= 2
+    assert process.interrupts >= 1
+    assert record["run_arm"]["stop_reason"] == dev2_pilot.STOP_GUARD_FAILED
+    assert exit_code == 1
+    assert lock.releases == 1
+
+
+def test_spend_is_not_read_without_the_lock() -> None:
+    reads: list[int] = []
+    guarded = dev2_pilot.spend_while_holding(
+        _FakeRunLock(lost_after_checks=0), lambda: reads.append(1) or 0.0
+    )
+    with pytest.raises(RuntimeError):
+        guarded()
+    assert reads == []
