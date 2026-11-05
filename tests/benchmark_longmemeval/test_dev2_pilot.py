@@ -1593,3 +1593,32 @@ def test_resource_sampling_reads_the_ingestion_child(tmp_path: Path) -> None:
     process: Any = spawn(["ingest"])
     assert process.pid == 4242
     assert isinstance(sampler(), dict)
+
+
+def test_run_arm_defaults_to_the_preregistered_429_tolerance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_command(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise _Stop
+
+    arm = tmp_path / "arm.json"
+    arm.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(dev2_pilot, "run_arm_command", fake_command)
+    with pytest.raises(_Stop):
+        dev2_pilot.run_arm_main(
+            [
+                "--arm-dataset",
+                str(arm),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--record",
+                str(tmp_path / "record.json"),
+            ]
+        )
+    assert captured["max_rate_limited"] == dev2_pilot.DEFAULT_MAX_RATE_LIMITED == 100

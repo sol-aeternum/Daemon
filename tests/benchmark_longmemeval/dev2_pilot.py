@@ -375,6 +375,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 # call is made here. Counters return numbers (or IDs already present in an
 # injected checkpoint); the runner never logs question or session text.
 
+#: Pre-registration §6: isolated retried 429s aren't a stop; more than this per arm is.
+DEFAULT_MAX_RATE_LIMITED: Final[int] = 100
+
 STOP_SPEND: Final[str] = "spend_cap"
 STOP_RATE_LIMIT: Final[str] = "rate_limit_loop"
 STOP_EXTRACTION: Final[str] = "extraction_failed"
@@ -1578,7 +1581,7 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--cap-usd", type=float, default=8.50)
     parser.add_argument("--margin-usd", type=float, default=1.00)
-    parser.add_argument("--max-rate-limited", type=int, default=0)
+    parser.add_argument("--max-rate-limited", type=int, default=DEFAULT_MAX_RATE_LIMITED)
     parser.add_argument("--record", type=Path, required=True)
     parser.add_argument("--interrupt-after-completed", type=int)
     parser.add_argument("--resume", action="store_true")

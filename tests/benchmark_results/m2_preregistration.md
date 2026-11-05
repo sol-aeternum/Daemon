@@ -34,7 +34,7 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | 4 | Abstention | Distractor counts reported for the 6 dev2 abstention questions. A rendered plausible false-premise item in more than 2 of them is **flagged for owner review, not auto-rejected.** |
 | 5 | Latency | Trigger rate and added p50/p95 latency reported from the Block D route. Report only. |
 
-**Gate 4 consequence, for the owner to confirm:** the earlier wording also covered the 5 dev-50 abstention questions. Retrieval is now dev2 only, so those are dropped. The threshold of 2 is unchanged, which makes it stricter relative to 6 questions than to 11. It only flags, so nothing is auto-rejected either way.
+**Gate 4 isn't ratified yet.** The owner's rulings didn't cover its threshold, so "more than 2" remains a proposal until the owner confirms it. The earlier wording also covered the 5 dev-50 abstention questions; retrieval is now dev2 only, so those are dropped, and 2 is stricter relative to 6 questions than to 11. It only flags, so nothing is auto-rejected either way. Must be settled before the gate code is frozen.
 
 ## Owner rulings, 2026-11-05
 
