@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 from decimal import Decimal
 from typing import Any
@@ -491,6 +492,9 @@ def test_missing_cost_stops_after_that_call(tmp_path: Any) -> None:
     assert entry["cost_usd"] is None
     assert entry["reason"] == "cost_unknown"
     assert document["total_cost_usd"] == "0"
+    # A real call with no known cost: the total must not read as complete.
+    assert document["total_cost_complete"] is False
+    assert document["unknown_cost_questions"] == ["q1"]
     assert output.exists()
 
 
@@ -763,3 +767,25 @@ def test_label_arguments_require_output_and_cap(tmp_path: Any) -> None:
             ["label", "--question-rows", str(rows), "--checkpoint", str(checkpoint)]
         )
     assert raised.value.code == 2
+
+
+def test_a_journal_held_by_another_run_sends_nothing(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def call(payload: Any) -> dict[str, Any]:
+        calls.append(payload)
+        return _receipt(LABEL_TEXT)
+
+    journal = dev2_labelling._journal_path(tmp_path / "labels.json")
+    journal.write_text("", encoding="utf-8")
+    with open(journal, "a", encoding="utf-8") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="held by another run"):
+            _run(
+                tmp_path,
+                rows=[_row()],
+                checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+                call=call,
+            )
+    assert calls == []
+    assert not (tmp_path / "labels.json").exists()

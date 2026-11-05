@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import hashlib
 import inspect
+import fcntl
 import json
 import math
 import os
@@ -511,12 +512,20 @@ async def label_questions(
     try:
         handle = open(journal, "x", encoding="utf-8")
     except FileExistsError:
-        results, intents = _read_journal(journal)
         handle = open(journal, "a", encoding="utf-8")
-    else:
-        results, intents = {}, set()
 
     try:
+        # Exclusive for this whole run, created or resumed: two invocations must
+        # never both see a question as unsent and dispatch it. State is read only
+        # after the lock, because the holder may have just finished.
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise RuntimeError(f"Labelling journal is held by another run: {journal}") from None
+        if output.exists():
+            raise FileExistsError(f"Labelling output already exists: {output}")
+        results, intents = _read_journal(journal)
+
         pending = check_attestation()
         if inspect.isawaitable(pending):
             await pending
@@ -658,11 +667,17 @@ async def label_questions(
             _append_journal(handle, {"kind": "result", **entry})
             entries.append(entry)
 
+        # A call with no known cost still happened: the total is a lower bound, and
+        # the ledger stays the authority for spend.
+        unknown_cost = [e["question_id"] for e in entries if e.get("cost_usd") is None]
         document = {
             "schema": LABEL_RECORD_SCHEMA,
             "route_id": LABELLER_ROUTE_ID,
             "max_spend_usd": str(max_spend_usd),
             "total_cost_usd": str(total),
+            "total_cost_complete": not unknown_cost
+            and stop_reason not in {"cost_unknown", "uncertain_dispatch"},
+            "unknown_cost_questions": unknown_cost,
             "calls": calls,
             "stop_reason": stop_reason,
             "questions": entries,

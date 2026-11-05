@@ -74,7 +74,8 @@ import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from types import SimpleNamespace
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import AliasChoices, AliasPath, Field
@@ -1278,7 +1279,11 @@ def _attribution_violations(
         if consumer.kind == "script":
             # Python reads spell the name as a quoted literal; a POSIX shell reads
             # it through a parameter expansion, e.g. "${BENCH_DB_NAME:-default}".
-            found = f'"{name}"' in line or f"'{name}'" in line or f"${{{name}" in line
+            found = (
+                f'"{name}"' in line
+                or f"'{name}'" in line
+                or re.search(rf"\$\{{{re.escape(name)}(?!\w)", line) is not None
+            )
         else:
             found = re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", line) is not None
         if not found:
@@ -2205,3 +2210,16 @@ def test_frontend_scanner_reports_unresolved_shapes_instead_of_skipping() -> Non
     assert set(named) == {"known"}
     assert len(unresolved) == 6
     assert all(site.startswith("frontend/sample.ts:") for site in unresolved)
+
+
+def test_script_consumer_needs_the_exact_shell_variable(tmp_path: Path) -> None:
+    surface = cast(Surface, SimpleNamespace(root=tmp_path))
+    consumer = NonFieldConsumer(kind="script", sources=("run.sh:1",), reason="synthetic")
+    script = tmp_path / "run.sh"
+
+    script.write_text('NAME="${BENCH_DB_NAME:-default}"\n', encoding="utf-8")
+    assert _attribution_violations("BENCH_DB_NAME", consumer, "TABLE", surface) == []
+
+    # A longer variable sharing the prefix is not a read of this one.
+    script.write_text('NAME="${BENCH_DB_NAME_EXTRA:-default}"\n', encoding="utf-8")
+    assert _attribution_violations("BENCH_DB_NAME", consumer, "TABLE", surface) != []
