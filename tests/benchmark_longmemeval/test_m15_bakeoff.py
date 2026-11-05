@@ -420,8 +420,8 @@ def test_call_ceiling_uses_256_output_tokens() -> None:
 
 
 def test_wrong_database_name_refuses() -> None:
-    assert bakeoff.check_bakeoff_database("postgresql://u:p@localhost/daemon_lme_bench_dev2") == (
-        "daemon_lme_bench_dev2"
+    assert bakeoff.check_bakeoff_database("postgresql://u:p@localhost/daemon_lme_bench_m15") == (
+        "daemon_lme_bench_m15"
     )
     with pytest.raises(ValueError):
         bakeoff.check_bakeoff_database("postgresql://u:p@localhost/daemon_lme_bench")
@@ -466,3 +466,11 @@ def test_the_input_must_be_exactly_fifty_questions(tmp_path: Any) -> None:
     with pytest.raises(ValueError, match="exactly 50"):
         bakeoff.load_questions(short)
     assert len(bakeoff.load_questions()) == 50
+
+
+@pytest.mark.parametrize(
+    "name", ["daemon_lme_bench", "daemon_lme_bench_dev2", "daemon_lme_bench_dev2_final"]
+)
+def test_the_bakeoff_refuses_every_other_benchmark_database(name: str) -> None:
+    with pytest.raises(ValueError):
+        bakeoff.check_bakeoff_database(f"postgresql://u:p@localhost/{name}")

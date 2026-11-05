@@ -65,7 +65,8 @@ CONSECUTIVE_FAILURE_LIMIT: Final[int] = 10
 DISPATCH_TIMEOUT_S: Final[float] = 120.0
 
 #: The only database this driver may address.
-BENCHMARK_DB_NAME: Final[str] = "daemon_lme_bench_dev2"
+#: Its own database (owner ruling), so this block's spend reconciles on its own ledger.
+BENCHMARK_DB_NAME: Final[str] = "daemon_lme_bench_m15"
 
 #: Synthetic benchmark user namespace: deterministic, this driver only.
 M15_USER_NAMESPACE: Final[uuid.UUID] = uuid.UUID("6f1f4e0c-9b3a-5d2e-8c71-2a0d4b7e5f19")
@@ -661,11 +662,11 @@ def _call_entry(arm: Arm, question: Question, elapsed: float) -> dict[str, Any]:
 
 
 def check_bakeoff_database(dsn: str | None) -> str:
-    """Refuse before connecting unless ``DATABASE_URL`` is the dev2 benchmark DB."""
-    from tests.benchmark_longmemeval.dev2_pilot import check_run_arm_database
+    """Refuse before connecting unless ``DATABASE_URL`` is the bake-off's own database."""
+    from tests.benchmark_longmemeval.dev2_pilot import db_name_from_dsn
 
-    name = check_run_arm_database(dsn)
-    if name != BENCHMARK_DB_NAME:  # pragma: no cover - the imported guard already pins it
+    name = db_name_from_dsn(dsn or "")
+    if name != BENCHMARK_DB_NAME:
         raise ValueError(f"Bake-off requires DATABASE_URL to name exactly {BENCHMARK_DB_NAME}")
     return name
 

@@ -26,8 +26,8 @@ Calls, failures, completed calls, total p50 and p95, schema-valid rate and trigg
 
 ## Limits and stops
 
-- **Spend:** USD 0.50, enforced as the ledger total at the run's start plus 0.50, checked against settled + held + the next call's ceiling before each dispatch.
-- **Database:** `daemon_lme_bench_dev2` only, with one synthetic user. The protected fingerprint is checked before and after.
+- **Spend:** USD 0.50. This block has its own ledger starting at zero, so the cap is `--max-spend-usd 0.50`, checked against settled + held + the next call's ceiling before each dispatch.
+- **Database:** its own new `daemon_lme_bench_m15` (owner ruling), holding ledger and account rows only, with one synthetic user. The driver refuses every other database. The fingerprints of `daemon_lme_bench` and the pilot's `daemon_lme_bench_dev2` are checked before and after.
 - **Stops, sending nothing further:** spend cap, unreadable ledger or unknown ceiling, run lock busy or lost, journal mismatch or uncertain dispatch, an accounting error, or 10 consecutive failures.
 - **Failures are data:** a known guard failure is recorded and the run continues, with no retry.
 
