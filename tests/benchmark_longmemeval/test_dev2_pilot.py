@@ -1522,3 +1522,38 @@ def test_real_postgres_lost_lock_is_detected_and_can_be_retaken() -> None:
     finally:
         second.release()
         first.release()
+
+
+def test_spend_already_over_the_threshold_spawns_nothing(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    kwargs = _run_arm_kwargs(
+        tmp_path, spawn=lambda command: spawned.append(command) or _FakeProcess()
+    )
+    kwargs.update(
+        cap_usd=8.5,
+        margin_usd=1.0,
+        fetchrow_factory=lambda: lambda sql: {"settled_microusd": 7_500_000, "held_microusd": 0},
+    )
+    record, exit_code = dev2_pilot.run_arm_command(**kwargs)
+    assert spawned == []
+    assert exit_code == 1
+    assert record["run_arm"]["stop_reason"] == dev2_pilot.STOP_SPEND
+    assert record["run_arm"]["spend_before_usd"] == 7.5
+
+
+def test_a_taken_record_path_refuses_before_spawning(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    (tmp_path / "record.json").write_text("{}", encoding="utf-8")
+    kwargs = _run_arm_kwargs(
+        tmp_path, spawn=lambda command: spawned.append(command) or _FakeProcess()
+    )
+    with pytest.raises(FileExistsError):
+        dev2_pilot.run_arm_command(**kwargs)
+    assert spawned == []
+    assert (tmp_path / "record.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_a_written_record_leaves_no_claim_behind(tmp_path: Path) -> None:
+    dev2_pilot.run_arm_command(**_run_arm_kwargs(tmp_path))
+    assert (tmp_path / "record.json").exists()
+    assert not (tmp_path / "record.json.claim").exists()

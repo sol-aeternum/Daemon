@@ -776,6 +776,14 @@ def run_arm(
 
     started = clock()
     spend_before = float(read_spend_usd())
+    # Already over: start nothing, rather than spawn and stop on the first poll.
+    if spend_before >= stop_rule.spend_threshold_usd:
+        return {
+            **_not_started_result(STOP_SPEND),
+            "spend_before_usd": spend_before,
+            "spend_after_usd": spend_before,
+            "spend_usd": 0.0,
+        }
     samples: list[Mapping[str, float]] = []
     interrupts: list[dict[str, Any]] = []
     stop_reason: str | None = None
@@ -1278,6 +1286,20 @@ def write_record(path: Path | str, payload: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
+def claim_record(path: Path | str) -> Path:
+    """Refuse a taken record path before any child starts, so no paid run loses its record.
+
+    Returns the claim file, removed once the record is written. A leftover claim
+    means a run died without a record; use a new record path, never reuse one.
+    """
+    claim = Path(f"{path}.claim")
+    if Path(path).exists():
+        raise FileExistsError(f"Record already exists: {path}")
+    with open(claim, "x", encoding="utf-8"):
+        pass
+    return claim
+
+
 def make_spawn(log_path: Path | str) -> Callable[[Sequence[str]], ProcessHandle]:
     """A spawn that appends the child's stdout and stderr to one log file.
 
@@ -1402,12 +1424,12 @@ def make_sync_fetchrow(database_url: str) -> Callable[[str], Mapping[str, Any] |
     return fetchrow
 
 
-def _run_lock_busy_result() -> dict[str, Any]:
-    """The record body when the run lock refused: nothing ran, nothing is known."""
+def _not_started_result(stop_reason: str) -> dict[str, Any]:
+    """The record body when a run was refused before any child started."""
     return {
         "wall_seconds": 0.0,
         "exit_code": None,
-        "stop_reason": STOP_RUN_LOCK_BUSY,
+        "stop_reason": stop_reason,
         "interrupted_for_resume": False,
         "interrupts": [],
         "guard_error": None,
@@ -1465,6 +1487,7 @@ def run_arm_command(
         output_dir, interrupt_after_completed=interrupt_after_completed, resume=resume
     )
 
+    claim = claim_record(record_path)
     expected_sessions = expected_sessions_from_dataset(dataset_rows)
     started_utc = now()
     lock = run_lock if run_lock is not None else AsyncpgRunLock(database_url or "")
@@ -1501,7 +1524,7 @@ def run_arm_command(
                 grace_seconds=GRACE_SECONDS,
             )
         else:
-            result = _run_lock_busy_result()
+            result = _not_started_result(STOP_RUN_LOCK_BUSY)
     finally:
         lock.release()
     record = build_record(
@@ -1512,6 +1535,7 @@ def run_arm_command(
         ended_utc=now(),
     )
     write_record(record_path, record)
+    claim.unlink()
     return record, (1 if result["stop_reason"] else 0)
 
 
