@@ -31,7 +31,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
 
@@ -384,14 +384,20 @@ def _append_journal(handle: Any, record: Mapping[str, Any]) -> None:
     os.fsync(handle.fileno())
 
 
-def _read_journal(path: Path) -> tuple[dict[str, dict[str, Any]], set[str]]:
-    """Resumed results and intents. A corrupt journal is fatal, never ignored."""
+JOURNAL_BATCH_VERSION: Final[int] = 1
+
+
+def _read_journal(
+    path: Path,
+) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any] | None]:
+    """Resumed results, intents and the batch manifest. Corruption is fatal."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}, set()
+        return {}, set(), None
     results: dict[str, dict[str, Any]] = {}
     intents: set[str] = set()
+    batch: dict[str, Any] | None = None
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -402,6 +408,12 @@ def _read_journal(path: Path) -> tuple[dict[str, dict[str, Any]], set[str]]:
         if not isinstance(record, dict):
             raise ValueError("Labelling journal is corrupt")
         kind = record.get("kind")
+        if kind == "batch":
+            # Exactly one, first: it is what every later receipt is bound to.
+            if batch is not None or results or intents:
+                raise ValueError("Labelling journal is corrupt")
+            batch = record
+            continue
         question_id = record.get("question_id")
         if not isinstance(question_id, str) or not question_id:
             raise ValueError("Labelling journal is corrupt")
@@ -411,7 +423,109 @@ def _read_journal(path: Path) -> tuple[dict[str, dict[str, Any]], set[str]]:
             intents.add(question_id)
         else:
             raise ValueError("Labelling journal is corrupt")
-    return results, intents
+    return results, intents, batch
+
+
+def _batch_manifest(question_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The resume binding: the frozen protocol and the selected rows, as hashes.
+
+    Question and answer text, the user id and the answer-session ids never
+    appear in the journal, only one digest per selected question. The first
+    journal line is this record, made durable before the first dispatch, so a
+    resume compares it exactly and stops instead of carrying stale labels
+    across a changed selection, answer or protocol.
+    """
+    questions: dict[str, str] = {}
+    for row in question_rows:
+        question_id = str(row["question_id"])
+        if question_id in questions:
+            raise ValueError("Duplicate question id in the selected rows")
+        questions[question_id] = _sha256(
+            _canonical(
+                {
+                    "question": str(row["question"]),
+                    "answer": str(row["answer"]),
+                    "user_id": str(row["user_id"]),
+                    "answer_session_ids": [
+                        str(value) for value in row.get("answer_session_ids") or []
+                    ],
+                }
+            )
+        )
+    return {
+        "kind": "batch",
+        "version": JOURNAL_BATCH_VERSION,
+        "protocol": artifact_hashes(),
+        "questions": questions,
+    }
+
+
+def _result_input_sha256(
+    row: Mapping[str, Any],
+    conversation_ids: Mapping[str, str],
+    memories: Sequence[tuple[str, str]],
+) -> str:
+    """One question's exact inputs, as a digest.
+
+    The frozen request (which carries the prompt, the schema and the template)
+    plus the checkpoint's conversation mapping, so a corrected answer, a changed
+    user, a changed memory text or a changed mapping all move the digest. With
+    no memories there is no request, so the question fields and the mapping are
+    hashed instead. Only the digest is stored: memory text never is.
+    """
+    fields: dict[str, Any] = {
+        "question_id": str(row["question_id"]),
+        "question": str(row["question"]),
+        "answer": str(row["answer"]),
+        "user_id": str(row["user_id"]),
+        "conversations": dict(conversation_ids),
+    }
+    if memories:
+        try:
+            fields["request"] = build_request(
+                LabelInput(
+                    question_id=str(row["question_id"]),
+                    question=str(row["question"]),
+                    reference_answer=str(row["answer"]),
+                    memories=tuple(memories),
+                )
+            )
+        except ValueError:
+            # An unusable input can never match a recorded digest.
+            return ""
+    return _sha256(_canonical(fields))
+
+
+def _stopped_document(max_spend_usd: Decimal, stop_reason: str) -> dict[str, Any]:
+    """The document shape for a run stopped before its journal was created."""
+    return {
+        "schema": LABEL_RECORD_SCHEMA,
+        "route_id": LABELLER_ROUTE_ID,
+        "max_spend_usd": str(max_spend_usd),
+        "total_cost_usd": "0",
+        "total_cost_complete": True,
+        "unknown_cost_questions": [],
+        "calls": 0,
+        "stop_reason": stop_reason,
+        "questions": [],
+    }
+
+
+async def _run_lock_acquired(acquire_run_lock: Callable[[], Any] | None) -> bool:
+    """The benchmark-wide run lock, held before the journal is even opened.
+
+    A missing callable, a raising callable and a refusal all read the same:
+    nothing is dispatched, so no path skips the lock.
+    """
+    if acquire_run_lock is None:
+        return False
+    try:
+        pending = acquire_run_lock()
+        if inspect.isawaitable(pending):
+            pending = await pending
+    except Exception:
+        return False
+    return pending is True
 
 
 def _as_spend(value: Any) -> Decimal:
@@ -450,27 +564,45 @@ def _write_document_atomic(output_path: Path | str, document: Mapping[str, Any])
 def price_ceiling_reader(route: Any) -> Callable[[Mapping[str, Any]], Decimal]:
     """A conservative USD ceiling for one call on ``route``.
 
-    The input bound is the UTF-8 byte length of the serialized messages: a token
-    never costs more than a byte, so the bound cannot be under the real input.
-    Output is charged at ``LABELLER_MAX_TOKENS``. Both terms are rounded up.
+    Priced from the production request bound (``compute_runtime._request_bound``),
+    the same figure ``guarded_completion`` reserves: the messages, the
+    per-message framing and the response schema all count, so an uncertain
+    dispatch cannot settle above this ceiling. Output is charged at
+    ``LABELLER_MAX_TOKENS``, under the route's pinned unit prices.
     """
-    price = getattr(route, "price_ceiling", None)
-    if price is None:
+    from orchestrator.compute_runtime import _request_bound
+
+    if getattr(route, "price_ceiling", None) is None:
         raise ValueError("Labeller route has no price ceiling")
-    prompt_rate = Decimal(str(price.microusd_per_1m_prompt))
-    completion_rate = Decimal(str(price.microusd_per_1m_completion))
-    if not prompt_rate.is_finite() or not completion_rate.is_finite():
-        raise ValueError("Labeller route price ceiling is not finite")
 
     def ceiling(payload: Mapping[str, Any]) -> Decimal:
-        messages = payload.get("messages")
-        if not isinstance(messages, (list, tuple)):
-            raise ValueError("Labeller request has no messages")
-        bound = len(json.dumps(messages, sort_keys=True, ensure_ascii=False).encode("utf-8"))
-        micro = (Decimal(bound) * prompt_rate + Decimal(LABELLER_MAX_TOKENS) * completion_rate) / (
-            Decimal(1_000_000)
-        )
-        return micro.to_integral_value(rounding=ROUND_CEILING) / Decimal(1_000_000)
+        params = {
+            key: value for key, value in payload.items() if key not in {"_route_id", "_exact_model"}
+        }
+        micro = route.estimate_microusd(_request_bound(params).bound, LABELLER_MAX_TOKENS)
+        return Decimal(int(micro)) / Decimal(1_000_000)
+
+    return ceiling
+
+
+def ceiling_from_route(
+    verify_route: Callable[[], Any],
+) -> Callable[[Mapping[str, Any]], Decimal]:
+    """The ceiling reader, resolving the verified route only on first use.
+
+    ``_run_label`` builds this before ``label_questions`` has checked
+    attestation, so the route must not be resolved eagerly: in a fresh process
+    the attestation snapshot is not loaded yet and verification rejects it as
+    unknown. The resolved reader is kept for the rest of the run.
+    """
+    cache: dict[str, Callable[[Mapping[str, Any]], Decimal]] = {}
+
+    def ceiling(payload: Mapping[str, Any]) -> Decimal:
+        reader = cache.get("reader")
+        if reader is None:
+            reader = price_ceiling_reader(verify_route())
+            cache["reader"] = reader
+        return reader(payload)
 
     return ceiling
 
@@ -483,6 +615,7 @@ async def label_questions(
     max_spend_usd: Decimal,
     call: Callable[[Mapping[str, Any]], Any],
     check_attestation: Callable[[], Any],
+    acquire_run_lock: Callable[[], Any] | None = None,
     verify_route: Callable[[], Any],
     memory_reader: Callable[[str, Sequence[Any]], Any],
     decrypt: Callable[[str], str],
@@ -501,8 +634,19 @@ async def label_questions(
     document refuses the run, an existing journal resumes it, and no question
     with a recorded result is dispatched again. Memory text and raw responses
     are never written, logged or put in an exception message.
+
+    ``acquire_run_lock`` is the benchmark-wide exclusive lock, taken before the
+    journal is claimed and held for the whole run: a missing, raising or
+    refused lock stops with ``run_lock_busy`` and creates nothing, so two
+    invocations against different outputs can never both admit a call. A
+    recorded result is reused only when the journal's batch manifest and the
+    question's input digest still match; otherwise the run stops with
+    ``receipt_mismatch`` and sends nothing.
     """
     from scripts.memory_query_decomposition import receipt_dict, reported_cost
+
+    if not await _run_lock_acquired(acquire_run_lock):
+        return _stopped_document(max_spend_usd, "run_lock_busy")
 
     output = Path(output_path)
     if output.exists():
@@ -524,47 +668,68 @@ async def label_questions(
             raise RuntimeError(f"Labelling journal is held by another run: {journal}") from None
         if output.exists():
             raise FileExistsError(f"Labelling output already exists: {output}")
-        results, intents = _read_journal(journal)
+        results, intents, batch = _read_journal(journal)
 
-        pending = check_attestation()
-        if inspect.isawaitable(pending):
-            await pending
-        pending_route = verify_route()
-        if inspect.isawaitable(pending_route):
-            await pending_route
+        stop_reason: str | None = None
+        expected_batch = _batch_manifest(question_rows)
+        if batch is None:
+            if results or intents:
+                # Written before receipts were bound to their inputs: no manifest
+                # to check, so nothing in it can be trusted.
+                stop_reason = "receipt_mismatch"
+            else:
+                # Durable before the first dispatch: a resume compares it exactly.
+                _append_journal(handle, expected_batch)
+        elif batch != expected_batch:
+            stop_reason = "receipt_mismatch"
+
+        if stop_reason is None:
+            pending = check_attestation()
+            if inspect.isawaitable(pending):
+                await pending
+            pending_route = verify_route()
+            if inspect.isawaitable(pending_route):
+                await pending_route
 
         scope = account_scope or (lambda _user_id: _NullScope())
         total = Decimal(0)
         calls = 0
         entries: list[dict[str, Any]] = []
-        stop_reason: str | None = None
 
         for row in question_rows:
             if stop_reason is not None:
                 break
             question_id = str(row["question_id"])
             user_id = str(row["user_id"])
-
-            recorded = results.get(question_id)
-            if recorded is not None:
-                entries.append(dict(recorded))
-                calls += int(recorded.get("calls") or 0)
-                if isinstance(recorded.get("cost_usd"), str):
-                    total += Decimal(recorded["cost_usd"])
-                continue
-            if question_id in intents:
-                # An intent without a result may already have been charged.
-                stop_reason = "uncertain_dispatch"
-                break
-
             conversation_ids = answer_conversation_ids(
                 checkpoint,
                 question_id,
                 [str(value) for value in row.get("answer_session_ids") or []],
             )
+
+            recorded = results.get(question_id)
+            if recorded is None and question_id in intents:
+                # An intent without a result may already have been charged.
+                stop_reason = "uncertain_dispatch"
+                break
+
             memories = await load_answer_session_memories(
                 memory_reader, decrypt, user_id, list(conversation_ids.values())
             )
+            input_sha256 = _result_input_sha256(row, conversation_ids, memories)
+
+            if recorded is not None:
+                # Recomputed from the current checkpoint and memories, before the
+                # receipt is accepted. No call is made to do this.
+                if recorded.get("input_sha256") != input_sha256:
+                    stop_reason = "receipt_mismatch"
+                    break
+                entry = {key: value for key, value in recorded.items() if key != "input_sha256"}
+                entries.append(entry)
+                calls += int(recorded.get("calls") or 0)
+                if isinstance(recorded.get("cost_usd"), str):
+                    total += Decimal(recorded["cost_usd"])
+                continue
             if not memories:
                 entry = {
                     "question_id": question_id,
@@ -576,7 +741,7 @@ async def label_questions(
                     "latency_seconds": 0.0,
                     "serving_provider": None,
                 }
-                _append_journal(handle, {"kind": "result", **entry})
+                _append_journal(handle, {"kind": "result", "input_sha256": input_sha256, **entry})
                 entries.append(entry)
                 continue
 
@@ -614,7 +779,10 @@ async def label_questions(
                 stop_reason = "spend_cap"
                 break
 
-            _append_journal(handle, {"kind": "intent", "question_id": question_id})
+            _append_journal(
+                handle,
+                {"kind": "intent", "question_id": question_id, "input_sha256": input_sha256},
+            )
             started = clock()
             calls += 1
             try:
@@ -645,7 +813,7 @@ async def label_questions(
                 cost = reported_cost(receipt)
             except ValueError:
                 entry["reason"] = "cost_unknown"
-                _append_journal(handle, {"kind": "result", **entry})
+                _append_journal(handle, {"kind": "result", "input_sha256": input_sha256, **entry})
                 entries.append(entry)
                 stop_reason = "cost_unknown"
                 break
@@ -664,7 +832,7 @@ async def label_questions(
                 entry["answerable_from_store"] = label.answerable_from_store
                 entry["memory_ids"] = list(label.memory_ids)
                 entry["note"] = label.note
-            _append_journal(handle, {"kind": "result", **entry})
+            _append_journal(handle, {"kind": "result", "input_sha256": input_sha256, **entry})
             entries.append(entry)
 
         # A call with no known cost still happened: the total is a lower bound, and
@@ -683,8 +851,11 @@ async def label_questions(
             "questions": entries,
         }
         # An uncertain dispatch is not a final state: keep only the journal so a
-        # rerun resumes it. Every other stop is final for this batch.
-        if stop_reason != "uncertain_dispatch":
+        # rerun resumes it. A receipt mismatch is not a final state either: the
+        # operator must reconcile the inputs, and no document may carry forward
+        # labels that the current inputs do not explain. Every other stop is
+        # final for this batch.
+        if stop_reason not in {"uncertain_dispatch", "receipt_mismatch"}:
             _write_document_atomic(output, document)
         return document
     finally:
@@ -705,7 +876,11 @@ async def _run_label(
     from orchestrator.config import get_settings
     from orchestrator.entitlements import attestation
     from orchestrator.memory.encryption import ContentEncryption
-    from tests.benchmark_longmemeval.dev2_pilot import SPEND_SQL, spend_from_row
+    from tests.benchmark_longmemeval.dev2_pilot import (
+        SPEND_SQL,
+        acquire_benchmark_run_lock,
+        spend_from_row,
+    )
     from uuid import UUID
 
     settings = get_settings()
@@ -736,6 +911,11 @@ async def _run_label(
             def memory_reader(sql: str, params: Sequence[Any]) -> Any:
                 return connection.fetch(sql, *params)
 
+            async def acquire_run_lock() -> bool:
+                # Session-scoped on this dedicated connection: held for the whole
+                # run, released when the connection closes.
+                return await acquire_benchmark_run_lock(connection.fetchval)
+
             return await label_questions(
                 question_rows=rows,
                 checkpoint=checkpoint,
@@ -743,12 +923,14 @@ async def _run_label(
                 max_spend_usd=max_spend_usd,
                 call=call,
                 check_attestation=lambda: attestation.check_once(pool),
+                acquire_run_lock=acquire_run_lock,
                 verify_route=verify_label_route,
                 memory_reader=memory_reader,
                 decrypt=encryption.decrypt,
                 account_scope=account_scope,
                 read_ledger_spend_usd=read_ledger_spend_usd,
-                next_call_ceiling_usd=price_ceiling_reader(verify_label_route()),
+                # Resolved on first use, after the attestation check above.
+                next_call_ceiling_usd=ceiling_from_route(verify_label_route),
             )
         finally:
             await connection.close()
@@ -846,6 +1028,7 @@ __all__ = [
     "LabelInput",
     "artifact_hashes",
     "build_request",
+    "ceiling_from_route",
     "label_main",
     "label_questions",
     "load_answer_session_memories",

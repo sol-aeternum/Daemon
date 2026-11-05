@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 import pytest
@@ -267,6 +267,9 @@ def _receipt(content: str, *, cost: str = "0.01", provider: str = "azure") -> di
     }
 
 
+_UNSET = object()
+
+
 def _run(
     tmp_path: Any,
     *,
@@ -275,6 +278,7 @@ def _run(
     call: Any,
     check_attestation: Any = None,
     verify_route: Any = None,
+    acquire_run_lock: Any = _UNSET,
     memory_reader: Any = None,
     max_spend: str = "1.00",
     name: str = "labels.json",
@@ -291,6 +295,7 @@ def _run(
             max_spend_usd=Decimal(max_spend),
             call=call,
             check_attestation=check_attestation or (lambda: None),
+            acquire_run_lock=(lambda: True) if acquire_run_lock is _UNSET else acquire_run_lock,
             verify_route=verify_route or (lambda: None),
             memory_reader=memory_reader or (lambda user_id, ids: [("m1", SENTINEL)]),
             decrypt=lambda text: text,
@@ -498,26 +503,60 @@ def test_missing_cost_stops_after_that_call(tmp_path: Any) -> None:
     assert output.exists()
 
 
-def test_price_ceiling_never_under_the_worst_case() -> None:
-    class _Price:
-        microusd_per_1m_prompt = 250_000
-        microusd_per_1m_completion = 1_000_000
+def _pinned_price() -> Any:
+    from orchestrator.entitlements.policy import PriceCeiling
+
+    return PriceCeiling(microusd_per_1m_prompt=250_000, microusd_per_1m_completion=1_000_000)
+
+
+def _pinned_route() -> Any:
+    """A route with the pinned price ceiling and the production price method."""
+    price = _pinned_price()
 
     class _Route:
-        price_ceiling = _Price()
+        price_ceiling = price
 
-    ceiling = dev2_labelling.price_ceiling_reader(_Route())
-    payload = build_request(ITEM)
+        def estimate_microusd(self, prompt_tokens: int, completion_tokens: int) -> int:
+            return price.estimate_microusd(prompt_tokens, completion_tokens)
+
+    return _Route()
+
+
+def _messages_only_ceiling(item: LabelInput) -> Decimal:
+    """The old messages-byte bound, kept as the regression baseline."""
+    payload = build_request(item)
     bound = len(json.dumps(payload["messages"], sort_keys=True, ensure_ascii=False).encode("utf-8"))
-    worst = (
-        Decimal(bound) * Decimal(250_000) / Decimal(1_000_000)
-        + Decimal(4000) * Decimal(1_000_000) / Decimal(1_000_000)
-    ) / Decimal(1_000_000)
-    assert ceiling(payload) >= worst
-    # A bigger input can never read cheaper.
-    bigger = dict(payload)
-    bigger["messages"] = [{"role": "user", "content": "x" * (bound + 1000)}]
-    assert ceiling(bigger) >= ceiling(payload)
+    micro = (Decimal(bound) * Decimal(250_000) + Decimal(4000) * Decimal(1_000_000)) / Decimal(
+        1_000_000
+    )
+    return micro.to_integral_value(rounding=ROUND_CEILING) / Decimal(1_000_000)
+
+
+def test_price_ceiling_comes_from_the_production_request_bound() -> None:
+    from orchestrator import compute_runtime
+
+    price = _pinned_price()
+    ceiling = dev2_labelling.price_ceiling_reader(_pinned_route())
+    # The small request from the review: `Where?` / `Here.` / one `Here.` memory.
+    small = LabelInput("q-small", "Where?", "Here.", (("m1", "Here."),))
+
+    for item in (ITEM, small):
+        payload = {"_route_id": LABELLER_ROUTE_ID, "_exact_model": True, **build_request(item)}
+        params = {
+            key: value for key, value in payload.items() if key not in {"_route_id", "_exact_model"}
+        }
+        reserved = price.estimate_microusd(
+            compute_runtime._request_bound(params).bound, dev2_labelling.LABELLER_MAX_TOKENS
+        )
+        # Exactly the production reservation: the schema and the per-message
+        # framing count, so it covers what an uncertain dispatch can settle.
+        assert ceiling(payload) == Decimal(reserved) / Decimal(1_000_000)
+        # Strictly above the messages-only bound that used to price this guard.
+        assert ceiling(payload) > _messages_only_ceiling(item)
+
+    bigger = dict(build_request(ITEM))
+    bigger["messages"] = [{"role": "user", "content": "x" * 100_000}]
+    assert ceiling(bigger) >= ceiling(dict(build_request(ITEM)))
 
 
 def test_memory_text_never_reaches_the_output(tmp_path: Any) -> None:
@@ -597,11 +636,21 @@ def test_journal_records_intent_then_result(tmp_path: Any) -> None:
     )
     journal = tmp_path / f"{output.name}.receipts.jsonl"
     records = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
-    assert [record["kind"] for record in records] == ["intent", "result"]
-    assert records[0]["question_id"] == "q1"
+    # The batch manifest is the first line and is durable before any dispatch.
+    assert [record["kind"] for record in records] == ["batch", "intent", "result"]
+    assert records[0]["version"] == 1
+    assert records[0]["protocol"] == artifact_hashes()
+    assert set(records[0]["questions"]) == {"q1"}
     assert records[1]["question_id"] == "q1"
-    assert records[1]["memory_ids"] == ["m1"]
-    assert SENTINEL not in journal.read_text(encoding="utf-8")
+    assert records[2]["question_id"] == "q1"
+    assert records[2]["memory_ids"] == ["m1"]
+    # The intent and the result are bound to the same inputs.
+    assert records[1]["input_sha256"] == records[2]["input_sha256"]
+    text = journal.read_text(encoding="utf-8")
+    assert SENTINEL not in text
+    # The journal stores a digest, never the question or reference-answer text.
+    assert "Where did I park?" not in text
+    assert "By the river." not in text
 
 
 def test_failure_after_one_question_keeps_it_and_rerun_does_not_redispatch(
@@ -642,14 +691,22 @@ def test_failure_after_one_question_keeps_it_and_rerun_does_not_redispatch(
 
 
 def test_intent_without_result_never_redispatches(tmp_path: Any) -> None:
+    rows = [_row()]
+    checkpoint = _checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111"))
     journal = tmp_path / "labels.json.receipts.jsonl"
-    journal.write_text(json.dumps({"kind": "intent", "question_id": "q1"}) + "\n", encoding="utf-8")
+    journal.write_text(
+        json.dumps(dev2_labelling._batch_manifest(rows))
+        + "\n"
+        + json.dumps({"kind": "intent", "question_id": "q1", "input_sha256": "0" * 64})
+        + "\n",
+        encoding="utf-8",
+    )
     calls: list[Any] = []
 
     document, _ = _run(
         tmp_path,
-        rows=[_row()],
-        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        rows=rows,
+        checkpoint=checkpoint,
         call=lambda payload: calls.append(payload),
     )
 
@@ -673,18 +730,26 @@ def test_complete_resume_matches_an_uninterrupted_run(tmp_path: Any) -> None:
             return self.value
 
     def call(payload: Any) -> dict[str, Any]:
-        return _receipt(LABEL_TEXT)
+        return _receipt(LABEL_TEXT, cost="0.05")
 
-    # First run only reaches q1, as if the process died before writing the doc.
+    charged: list[Decimal] = []
+
+    def paying_call(payload: Any) -> dict[str, Any]:
+        charged.append(Decimal("0.05"))
+        return _receipt(LABEL_TEXT, cost="0.05")
+
+    # Interrupted after q1: the cap stops the second dispatch mid-batch.
     first, first_output = _run(
         tmp_path,
-        rows=rows[:1],
+        rows=rows,
         checkpoint=checkpoint,
-        call=call,
+        call=paying_call,
+        max_spend="0.05",
+        ledger=lambda: sum(charged, Decimal(0)),
         name="resumed.json",
         clock=_Clock(),
     )
-    assert first["stop_reason"] is None
+    assert first["stop_reason"] == "spend_cap"
     first_output.unlink()
 
     resumed, _ = _run(
@@ -706,6 +771,314 @@ def test_complete_resume_matches_an_uninterrupted_run(tmp_path: Any) -> None:
 
     assert resumed == uninterrupted
     assert resumed["calls"] == 2
+
+
+# --- benchmark run lock -------------------------------------------------------
+
+Q1_CONVERSATION = "11111111-1111-1111-1111-111111111111"
+
+
+def _q1_checkpoint() -> dict[str, Any]:
+    return _checkpoint(("q1", "s1", Q1_CONVERSATION))
+
+
+def test_busy_run_lock_sends_nothing_and_creates_nothing(tmp_path: Any) -> None:
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: calls.append(payload),
+        acquire_run_lock=lambda: False,
+    )
+
+    assert document["stop_reason"] == "run_lock_busy"
+    assert document["questions"] == []
+    assert calls == []
+    assert not output.exists()
+    assert not dev2_labelling._journal_path(output).exists()
+
+
+def test_raising_run_lock_sends_nothing_and_creates_nothing(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def locked() -> bool:
+        raise RuntimeError("lock unavailable")
+
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: calls.append(payload),
+        acquire_run_lock=locked,
+    )
+
+    assert document["stop_reason"] == "run_lock_busy"
+    assert calls == []
+    assert not output.exists()
+    assert not dev2_labelling._journal_path(output).exists()
+
+
+def test_missing_run_lock_stops_instead_of_dispatching(tmp_path: Any) -> None:
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: calls.append(payload),
+        acquire_run_lock=None,
+    )
+
+    # The lock is required, not optional: no path skips it.
+    assert document["stop_reason"] == "run_lock_busy"
+    assert calls == []
+    assert not output.exists()
+    assert not dev2_labelling._journal_path(output).exists()
+
+
+def test_second_output_is_refused_while_the_run_lock_is_held(tmp_path: Any) -> None:
+    held = {"held": False}
+
+    def lock() -> bool:
+        if held["held"]:
+            return False
+        held["held"] = True
+        return True
+
+    calls: list[Any] = []
+
+    def call(payload: Any) -> dict[str, Any]:
+        calls.append(payload)
+        return _receipt(LABEL_TEXT)
+
+    # Spend is close enough to the cap that the second run would pass the
+    # pre-dispatch check and dispatch: only the shared lock can refuse it.
+    first, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=call,
+        name="first.json",
+        max_spend="0.05",
+        ledger=lambda: Decimal("0.04"),
+        ceiling=lambda payload: Decimal("0.01"),
+        acquire_run_lock=lock,
+    )
+    assert first["stop_reason"] is None
+    assert len(calls) == 1
+
+    second, second_output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=call,
+        name="second.json",
+        max_spend="0.05",
+        ledger=lambda: Decimal("0.04"),
+        ceiling=lambda payload: Decimal("0.01"),
+        acquire_run_lock=lock,
+    )
+
+    assert second["stop_reason"] == "run_lock_busy"
+    assert len(calls) == 1
+    assert not second_output.exists()
+    assert not dev2_labelling._journal_path(second_output).exists()
+
+
+# --- lazy ceiling -------------------------------------------------------------
+
+
+def test_ceiling_resolves_the_route_only_after_attestation(tmp_path: Any) -> None:
+    order: list[str] = []
+    state = {"attested": False, "resolved": 0}
+
+    def verify() -> Any:
+        order.append("verify")
+        if not state["attested"]:
+            # What a fresh process sees before the attestation snapshot loads.
+            raise ValueError("zdr_attestation_unknown")
+        state["resolved"] += 1
+        return _pinned_route()
+
+    def check_attestation() -> None:
+        order.append("attest")
+        state["attested"] = True
+
+    ceiling = dev2_labelling.ceiling_from_route(verify)
+    # Building the command's arguments resolves nothing.
+    assert state["resolved"] == 0
+
+    calls: list[Any] = []
+    document, _ = _run(
+        tmp_path,
+        rows=[_row("q1"), _row("q2", "s2")],
+        checkpoint=_checkpoint(
+            ("q1", "s1", Q1_CONVERSATION),
+            ("q2", "s2", "22222222-2222-2222-2222-222222222222"),
+        ),
+        call=lambda payload: calls.append(payload) or _receipt(LABEL_TEXT),
+        check_attestation=check_attestation,
+        ceiling=ceiling,
+    )
+
+    assert len(calls) == 2
+    assert document["stop_reason"] is None
+    # Attestation first, then the route, and only the once: the reader is cached.
+    assert order == ["attest", "verify"]
+    assert state["resolved"] == 1
+
+
+# --- receipts are bound to their inputs --------------------------------------
+
+
+def _seed_completed_run(
+    tmp_path: Any,
+    *,
+    rows: list[dict[str, Any]],
+    checkpoint: dict[str, Any],
+    **kwargs: Any,
+) -> None:
+    document, output = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=checkpoint,
+        call=lambda payload: _receipt(LABEL_TEXT),
+        **kwargs,
+    )
+    assert document["stop_reason"] is None
+    assert output.exists()
+    # Only the document is removed: the journal, and its manifest, stay.
+    output.unlink()
+
+
+def _assert_mismatch(document: dict[str, Any], calls: list[Any], output: Any, before: str) -> None:
+    assert document["stop_reason"] == "receipt_mismatch"
+    assert calls == []
+    assert not output.exists()
+    # The journal is preserved untouched: it is evidence, not a rerun target.
+    assert dev2_labelling._journal_path(output).read_text(encoding="utf-8") == before
+
+
+def test_changed_answer_on_resume_is_a_receipt_mismatch(tmp_path: Any) -> None:
+    rows = [_row()]
+    checkpoint = _q1_checkpoint()
+    _seed_completed_run(tmp_path, rows=rows, checkpoint=checkpoint)
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    before = journal.read_text(encoding="utf-8")
+
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=[dict(rows[0], answer="By the sea.")],
+        checkpoint=checkpoint,
+        call=lambda payload: calls.append(payload),
+    )
+
+    _assert_mismatch(document, calls, output, before)
+
+
+def test_changed_user_on_resume_is_a_receipt_mismatch(tmp_path: Any) -> None:
+    rows = [_row()]
+    checkpoint = _q1_checkpoint()
+    _seed_completed_run(tmp_path, rows=rows, checkpoint=checkpoint)
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    before = journal.read_text(encoding="utf-8")
+
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=[dict(rows[0], user_id="user-someone-else")],
+        checkpoint=checkpoint,
+        call=lambda payload: calls.append(payload),
+    )
+
+    _assert_mismatch(document, calls, output, before)
+
+
+def test_changed_checkpoint_mapping_on_resume_is_a_receipt_mismatch(tmp_path: Any) -> None:
+    rows = [_row()]
+    _seed_completed_run(tmp_path, rows=rows, checkpoint=_q1_checkpoint())
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    before = journal.read_text(encoding="utf-8")
+
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=_checkpoint(("q1", "s1", "99999999-9999-9999-9999-999999999999")),
+        call=lambda payload: calls.append(payload),
+    )
+
+    _assert_mismatch(document, calls, output, before)
+
+
+def test_changed_memories_on_resume_is_a_receipt_mismatch(tmp_path: Any) -> None:
+    rows = [_row()]
+    checkpoint = _q1_checkpoint()
+    _seed_completed_run(tmp_path, rows=rows, checkpoint=checkpoint)
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    before = journal.read_text(encoding="utf-8")
+
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=checkpoint,
+        call=lambda payload: calls.append(payload),
+        memory_reader=lambda user_id, ids: [("m1", "a different memory")],
+    )
+
+    _assert_mismatch(document, calls, output, before)
+
+
+def test_changed_protocol_on_resume_is_a_receipt_mismatch(tmp_path: Any, monkeypatch: Any) -> None:
+    rows = [_row()]
+    checkpoint = _q1_checkpoint()
+    _seed_completed_run(tmp_path, rows=rows, checkpoint=checkpoint)
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    before = journal.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(dev2_labelling, "PROMPT_V1", PROMPT_V1 + "\nAlso be terse.")
+
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=checkpoint,
+        call=lambda payload: calls.append(payload),
+    )
+
+    _assert_mismatch(document, calls, output, before)
+
+
+def test_journal_without_a_manifest_stops(tmp_path: Any) -> None:
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "kind": "result",
+                "question_id": "q1",
+                "input_sha256": "0" * 64,
+                "schema_valid": True,
+                "answerable_from_store": True,
+                "calls": 1,
+                "cost_usd": "0.01",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = journal.read_text(encoding="utf-8")
+
+    calls: list[Any] = []
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: calls.append(payload),
+    )
+
+    _assert_mismatch(document, calls, output, before)
 
 
 # --- entry point -------------------------------------------------------------
