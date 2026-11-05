@@ -121,6 +121,9 @@ def _parse_reference_time(value: Any) -> datetime:
     return parsed.replace(tzinfo=UTC)
 
 
+QUESTIONS_REQUIRED: Final[int] = 50
+
+
 def load_questions(path: Path | str = QUESTION_PATH) -> list[Question]:
     """The frozen question list, in file order, each with its question date."""
     rows = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -149,6 +152,8 @@ def load_questions(path: Path | str = QUESTION_PATH) -> list[Question]:
             }
         )
         questions.append(Question(question_id, message, reference_time, digest))
+    if len(questions) != QUESTIONS_REQUIRED:
+        raise ValueError(f"Expected exactly {QUESTIONS_REQUIRED} questions")
     return questions
 
 
@@ -366,6 +371,7 @@ def _summary(entries: Sequence[Mapping[str, Any]], arms: Sequence[Arm]) -> dict[
             Decimal(0),
         )
         calls = len(rows)
+        completed = [row for row in rows if row.get("error_category") is None]
         summary[arm.label] = {
             "route_id": arm.route_id,
             "reasoning_effort": arm.reasoning_effort,
@@ -375,11 +381,19 @@ def _summary(entries: Sequence[Mapping[str, Any]], arms: Sequence[Arm]) -> dict[
             "ttft_p95_seconds": _percentile(ttfts, 0.95),
             "total_p50_seconds": _percentile(totals, 0.50),
             "total_p95_seconds": _percentile(totals, 0.95),
+            # A failed call has no reply, so its outcome is unknown, not "invalid" or
+            # "not triggered": these rates cover completed calls, and failures are
+            # reported on their own.
+            "completed_calls": len(completed),
             "schema_valid_rate": (
-                sum(1 for row in rows if row.get("schema_valid")) / calls if calls else 0.0
+                sum(1 for row in completed if row.get("schema_valid")) / len(completed)
+                if completed
+                else 0.0
             ),
             "trigger_rate": (
-                sum(1 for row in rows if row.get("triggered")) / calls if calls else 0.0
+                sum(1 for row in completed if row.get("triggered")) / len(completed)
+                if completed
+                else 0.0
             ),
             "truncated_calls": sum(1 for row in rows if row.get("finish_reason") == "length"),
             "total_cost_usd": str(cost),

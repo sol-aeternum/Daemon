@@ -457,3 +457,12 @@ def test_dry_run_makes_no_calls_or_files(
     printed = capsys.readouterr().out
     assert "50 questions x 3 arms = 150 calls" in printed
     assert "reasoning_effort=low" in printed
+
+
+def test_the_input_must_be_exactly_fifty_questions(tmp_path: Any) -> None:
+    rows = json.loads(bakeoff.QUESTION_PATH.read_text(encoding="utf-8"))
+    short = tmp_path / "short.json"
+    short.write_text(json.dumps(rows[:49]), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly 50"):
+        bakeoff.load_questions(short)
+    assert len(bakeoff.load_questions()) == 50
