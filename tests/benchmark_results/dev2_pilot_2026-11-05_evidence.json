@@ -1,0 +1,344 @@
+{
+ "arm_sha256": {
+  "1": "007f0edee6094b3f649dbb6c2a09ee5a75c18d799e7ebbf1fdc5637c600f0d3a",
+  "4": "94b5562aa54e5b89a44f01df440bb3d6bf8590a884e6fab6f87a0001a8262381",
+  "8": "0d9a011c8b55dc77205dd24f8a7f5192594a7f77a8e99c3f2729fdb663af8223"
+ },
+ "arms": {
+  "1": [
+   "2133c1b5",
+   "edced276_abs"
+  ],
+  "4": [
+   "07741c45",
+   "5a7937c8",
+   "1f2b8d4f",
+   "0ea62687"
+  ],
+  "8": [
+   "41698283",
+   "a08a253f",
+   "gpt4_372c3eed",
+   "4dfccbf7",
+   "0bc8ad92",
+   "71017276",
+   "gpt4_7ca326fa",
+   "gpt4_b5700ca0"
+  ]
+ },
+ "c8_aborted": {
+  "code_sha": "626819d1a3b1fe8b3c12b1137e9eea1747fb91e4",
+  "cumulative_failures": 4,
+  "failed_session": "sharegpt_xxk9JDz_21",
+  "invocations": 4,
+  "sessions_at_stop": 161,
+  "spend_usd": 0.959464,
+  "wall_seconds": 1112.7
+ },
+ "date": "2026-11-05",
+ "hashes": {
+  "pilot_snapshot_sha256": "1df04a269eba35a1a28c933358e7b7f54817361c3232b13ba9e4e85c7ee6589b",
+  "pilot_user_fingerprint_sha256": "84a66e6e8413a653b0e2574f4c544caefbf8053440fefc103d73f17c772ac0fa",
+  "pre_restart_snapshot_sha256": "22d3d7cb783e62d753e4e9463623b1fa365afa73247c68069013ac60cdb88628",
+  "protected_fingerprint_before_after": "5cb6ab14f2eb6bf11bb5e4c5ed164a08b70d0fb92155918d006be4f630b874f3"
+ },
+ "labelling": {
+  "questions": [
+   {
+    "answerable_from_store": true,
+    "arm": "c1",
+    "cost_usd": 0.0005488175,
+    "latency_seconds": 5.711,
+    "memory_id_count": 2,
+    "question_id": "edced276_abs",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c1",
+    "cost_usd": 0.000354255,
+    "latency_seconds": 1.447,
+    "memory_id_count": 1,
+    "question_id": "2133c1b5",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c4",
+    "cost_usd": 0.00044638,
+    "latency_seconds": 3.816,
+    "memory_id_count": 3,
+    "question_id": "5a7937c8",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c4",
+    "cost_usd": 0.00027368,
+    "latency_seconds": 1.498,
+    "memory_id_count": 2,
+    "question_id": "1f2b8d4f",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c4",
+    "cost_usd": 0.000378455,
+    "latency_seconds": 3.203,
+    "memory_id_count": 2,
+    "question_id": "0ea62687",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c4",
+    "cost_usd": 0.00029293,
+    "latency_seconds": 2.397,
+    "memory_id_count": 1,
+    "question_id": "07741c45",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c8",
+    "cost_usd": 0.000624855,
+    "latency_seconds": 5.809,
+    "memory_id_count": 3,
+    "question_id": "gpt4_372c3eed",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c8",
+    "cost_usd": 0.000338305,
+    "latency_seconds": 3.12,
+    "memory_id_count": 3,
+    "question_id": "a08a253f",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": false,
+    "arm": "c8",
+    "cost_usd": 0.0002185425,
+    "latency_seconds": 2.087,
+    "memory_id_count": 0,
+    "question_id": "71017276",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": false,
+    "arm": "c8",
+    "cost_usd": 0.000324555,
+    "latency_seconds": 2.277,
+    "memory_id_count": 0,
+    "question_id": "0bc8ad92",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": false,
+    "arm": "c8",
+    "cost_usd": 0.0003959175,
+    "latency_seconds": 1.776,
+    "memory_id_count": 0,
+    "question_id": "4dfccbf7",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": false,
+    "arm": "c8",
+    "cost_usd": 0.0003992175,
+    "latency_seconds": 2.939,
+    "memory_id_count": 0,
+    "question_id": "gpt4_7ca326fa",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c8",
+    "cost_usd": 0.00015763,
+    "latency_seconds": 1.66,
+    "memory_id_count": 1,
+    "question_id": "gpt4_b5700ca0",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   },
+   {
+    "answerable_from_store": true,
+    "arm": "c8",
+    "cost_usd": 0.0004407425,
+    "latency_seconds": 2.403,
+    "memory_id_count": 1,
+    "question_id": "41698283",
+    "schema_valid": true,
+    "serving_provider": "Azure"
+   }
+  ],
+  "spot_check_sample": [
+   "0bc8ad92",
+   "gpt4_372c3eed",
+   "gpt4_7ca326fa"
+  ],
+  "total_cost_usd": 0.005194
+ },
+ "pilot_ids": [
+  "07741c45",
+  "0bc8ad92",
+  "0ea62687",
+  "1f2b8d4f",
+  "2133c1b5",
+  "41698283",
+  "4dfccbf7",
+  "5a7937c8",
+  "71017276",
+  "a08a253f",
+  "edced276_abs",
+  "gpt4_372c3eed",
+  "gpt4_7ca326fa",
+  "gpt4_b5700ca0"
+ ],
+ "pilot_manifest_sha256": "5228c9ce35005593f6464e02b9d8fb31264580370b3b72e05e2e0b1228e3effe",
+ "results": {
+  "c1": {
+   "code_sha": "626819d1a3b1fe8b3c12b1137e9eea1747fb91e4",
+   "failed_sessions": 0,
+   "invocations": 1,
+   "other_failure_categories": {},
+   "rate_limited_events": 0,
+   "resources": {
+    "load1_max": 1.51,
+    "mem_available_min_bytes": 8800997376.0,
+    "rss_max_bytes": 287084544.0
+   },
+   "routing_events_seen": 5346,
+   "sessions_completed": 98,
+   "sessions_expected": 98,
+   "sessions_per_hour": 88.2,
+   "spend_usd": 0.587064,
+   "tokens_per_hour_estimated": 219161,
+   "usd_per_session": 0.00599,
+   "wall_seconds": 3999.6
+  },
+  "c4_with_resume": {
+   "code_sha": "626819d1a3b1fe8b3c12b1137e9eea1747fb91e4",
+   "failed_sessions": 0,
+   "invocations": 2,
+   "other_failure_categories": {},
+   "rate_limited_events": 0,
+   "resources": {
+    "load1_max": 1.67,
+    "mem_available_min_bytes": 8591323136.0,
+    "rss_max_bytes": 280002560.0
+   },
+   "routing_events_seen": 10470,
+   "sessions_completed": 185,
+   "sessions_expected": 185,
+   "sessions_per_hour": 307.4,
+   "spend_usd": 1.138269,
+   "tokens_per_hour_estimated": 798123,
+   "usd_per_session": 0.006153,
+   "wall_seconds": 2166.7
+  },
+  "c8_restarted": {
+   "code_sha": "bbf614c056bd5b46eb11258f073ca453c5976248",
+   "failed_sessions": 0,
+   "invocations": 1,
+   "other_failure_categories": {
+    "deadline_exceeded": 1,
+    "upstream_unavailable": 5
+   },
+   "rate_limited_events": 0,
+   "resources": {
+    "load1_max": 5.6,
+    "mem_available_min_bytes": 6721196032.0,
+    "rss_max_bytes": 280051712.0
+   },
+   "routing_events_seen": 22194,
+   "sessions_completed": 392,
+   "sessions_expected": 390,
+   "sessions_per_hour": 662.2,
+   "spend_usd": 2.407436,
+   "tokens_per_hour_estimated": 1625111,
+   "usd_per_session": 0.006141,
+   "wall_seconds": 2131.1
+  }
+ },
+ "resume_test": {
+  "after_results": 185,
+  "before_results": 170,
+  "db_conversations_equal_expected": true,
+  "prior_conversations_changed": 0,
+  "prior_results_lost": 0,
+  "violations": []
+ },
+ "schema": "dev2-pilot-evidence/1",
+ "totals": {
+  "calls_over_2000_output": 1,
+  "cap_usd": 8.5,
+  "conversations": 675,
+  "db_size_mb": 55,
+  "max_output_tokens": 2240,
+  "memories": 6889,
+  "provider_spend_usd": 5.100441,
+  "truncation_diagnostics_after_fix": 0
+ },
+ "volumes": {
+  "arms": {
+   "1": {
+    "chars_per_token_approximation": 4.0,
+    "estimated_ingest_chars": 973951,
+    "estimated_ingest_sessions": 98,
+    "estimated_ingest_turns": 1067,
+    "estimated_labelling_spot_check_questions": 1,
+    "estimated_questions": 2,
+    "estimated_tokens": 243487.75,
+    "labelling_spot_check_fraction": 0.15,
+    "session_count_conflicts": 0
+   },
+   "4": {
+    "chars_per_token_approximation": 4.0,
+    "estimated_ingest_chars": 1921480,
+    "estimated_ingest_sessions": 185,
+    "estimated_ingest_turns": 1928,
+    "estimated_labelling_spot_check_questions": 1,
+    "estimated_questions": 4,
+    "estimated_tokens": 480370.0,
+    "labelling_spot_check_fraction": 0.15,
+    "session_count_conflicts": 0
+   },
+   "8": {
+    "chars_per_token_approximation": 4.0,
+    "estimated_ingest_chars": 3848120,
+    "estimated_ingest_sessions": 390,
+    "estimated_ingest_turns": 4075,
+    "estimated_labelling_spot_check_questions": 2,
+    "estimated_questions": 8,
+    "estimated_tokens": 962030.0,
+    "labelling_spot_check_fraction": 0.15,
+    "session_count_conflicts": 0
+   }
+  },
+  "total": {
+   "chars_per_token_approximation": 4.0,
+   "estimated_ingest_chars": 6719361,
+   "estimated_ingest_sessions": 671,
+   "estimated_ingest_turns": 7043,
+   "estimated_labelling_spot_check_questions": 3,
+   "estimated_questions": 14,
+   "estimated_tokens": 1679840.25,
+   "labelling_spot_check_fraction": 0.15,
+   "session_count_conflicts": 0
+  }
+ }
+}
