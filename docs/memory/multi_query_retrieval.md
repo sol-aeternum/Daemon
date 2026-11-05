@@ -299,9 +299,11 @@ second generation pass or permission widening is implied.
 3. **M2 exposure:** on fresh dev2, compare baseline with additive using one
    frozen generation pass and the production gather/renderer, with optional
    pinned `SubqueryProvider` injection in `build_parity_memory_context`.
-   Pre-register an exposure-gain threshold **before any dev2 output**, zero
-   exposure regressions on dev-50 (verify despite the additive prefix property),
-   abstention distractor delta, trigger rate, added latency and duplicate occupancy
+   The owner ratified the gates on 2026-11-05 in
+   `tests/benchmark_results/m2_preregistration.md`, which governs them. They
+   replace the dev-50 regression check with a unit test of the baseline render
+   subset, and require no dev-50 retrieval. Also report the abstention distractor
+   delta, trigger rate, added latency and duplicate occupancy
    (equal content with distinct IDs remains possible; do not deduplicate by content
    in M1). An exposure-gate
    entry point uses `orchestrator/eval/exposure.py`, not a replacement ranker.

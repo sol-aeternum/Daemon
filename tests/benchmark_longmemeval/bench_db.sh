@@ -18,7 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 COMPOSE=(docker compose -f "$HERE/compose.bench.yml")
-DB_NAME="daemon_lme_bench"
+DB_NAME="${BENCH_DB_NAME:-daemon_lme_bench}"
 DB_USER="bench"
 DB_MARKER="daemon-longmemeval-benchmark-v1"
 BENCH_DSN="postgresql://bench:bench@127.0.0.1:55432/${DB_NAME}"
@@ -27,6 +27,14 @@ KEY_FILE="$BENCH_HOME/encryption.key"
 PEPPER_FILE="$BENCH_HOME/auth.pepper"
 
 die() { echo "bench_db: $*" >&2; exit 1; }
+
+# A caller may point the helper at another benchmark database, never at one
+# outside the benchmark name prefix the safety guard in orchestrator/eval/
+# bench_db.py allowlists. The name is anchored and restricted to
+# [a-z0-9_]: it is interpolated unquoted into DROP DATABASE and CREATE DATABASE
+# in `restore`, so anything else (spaces, quotes, semicolons, uppercase) must be
+# rejected before the first SQL statement is built.
+[[ "$DB_NAME" =~ ^daemon_lme_bench[a-z0-9_]*$ ]] || die "BENCH_DB_NAME must match ^daemon_lme_bench[a-z0-9_]*$"
 
 psql_bench() {
   "${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$DB_USER" "$@"
