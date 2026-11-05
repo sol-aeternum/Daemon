@@ -365,10 +365,116 @@ def test_original_vector_reader_ignores_component_rows(role):
 def test_query_role_migration_preserves_original_not_null_contract():
     root = Path(__file__).resolve().parents[1]
     original = (root / "migrations/025_create_retrieval_log.sql").read_text()
-    up = (root / "migrations/061_retrieval_query_role.sql").read_text()
-    down = (root / "migrations/rollback/061_retrieval_query_role.down.sql").read_text()
+    up = (root / "migrations/062_retrieval_query_role.sql").read_text()
+    down = (root / "migrations/rollback/062_retrieval_query_role.down.sql").read_text()
     assert "query_text TEXT NOT NULL" in original
     assert "ADD COLUMN query_role TEXT" in up
     assert "query_role IS NULL" in up and "^sub:[0-9]+$" in up
     assert "ALTER COLUMN" not in up and "UPDATE " not in up
     assert "DROP COLUMN query_role" in down
+    assert "SET LOCAL lock_timeout = '1s'" in up
+    assert "SET LOCAL lock_timeout = '1s'" in down
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_l0", [False, True])
+@pytest.mark.parametrize("lexical", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+async def test_real_retrieval_exits_buffer_only_data_until_owned_flush(
+    logging_fakes, include_l0, lexical, empty
+):
+    store = _store()
+    if empty:
+        store.search_memories.return_value = []
+        store.search_memories_bm25.return_value = []
+    buffer = []
+    token = retrieval._RETRIEVAL_LOG_BUFFER.set(buffer)
+    try:
+        await retrieval.retrieve_memories_for_text(
+            cast(Any, store),
+            SENTINEL,
+            user_id=USER,
+            query_embedding=[] if lexical else [0.1],
+            allow_query_embedding=False,
+            include_l0=include_l0,
+            log_retrieval=True,
+            touch_results=False,
+            query_role="sub:0",
+        )
+        store.log_retrieval.assert_not_awaited()
+    finally:
+        retrieval._RETRIEVAL_LOG_BUFFER.reset(token)
+    assert len(buffer) == 1
+    assert buffer[0]["query_text"] == "" and buffer[0]["query_embedding"] is None
+    assert SENTINEL not in json.dumps(buffer, default=str)
+    assert bool(buffer[0]["candidate_memory_ids"]) is not empty
+    await retrieval._flush_retrieval_logs(cast(Any, store), buffer)
+    store.log_retrieval.assert_awaited_once_with(**buffer[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["empty", "duplicates", "failure", "timeout", "parse"])
+async def test_real_no_added_logs_and_touches_match_disabled_column_values(
+    logging_fakes, monkeypatch, outcome
+):
+    from orchestrator.memory import injection
+    from tests.test_multi_query_gather import Provider
+
+    settings = SimpleNamespace(
+        memory_multi_query_enabled=False,
+        memory_multi_query_merge="additive",
+        memory_decomposition_timeout_ms=1500,
+        memory_subquery_quota=3,
+        memory_max_subqueries=3,
+    )
+    monkeypatch.setattr(injection, "get_settings", lambda: settings)
+    monkeypatch.setattr(injection, "get_selected_embedding_route_id", lambda: "")
+    vector = SimpleNamespace(embedding=[0.1], model="query", storage_model="storage")
+    monkeypatch.setattr(injection, "embed_query_with_metadata", AsyncMock(return_value=vector))
+    monkeypatch.setattr(
+        injection, "embed_queries_with_metadata", AsyncMock(return_value=[vector] * 2)
+    )
+    if outcome == "timeout":
+
+        async def expired(*args):
+            raise TimeoutError
+
+        monkeypatch.setattr(injection, "_wait_for_components", expired)
+    provider = Provider([] if outcome == "empty" else None)
+    if outcome == "parse":
+        provider.values = [123]
+    elif outcome == "failure":
+        provider.error = RuntimeError("synthetic")
+    results = []
+    for enabled in [False, True]:
+        settings.memory_multi_query_enabled = enabled
+        store = _store()
+        store.get_recent_summaries = AsyncMock(return_value=[])
+        touches = []
+        logs = []
+        touched, logged = asyncio.Event(), asyncio.Event()
+
+        async def touch(ids):
+            touches.append(ids)
+            touched.set()
+
+        async def log(**row):
+            logs.append(row)
+            logged.set()
+
+        store.bulk_touch_memories = touch
+        store.log_retrieval = log
+        inputs = await injection.gather_memory_context_inputs(
+            cast(Any, store),
+            user_id=USER,
+            pipeline="cloud",
+            query_text="Original question",
+            log_retrieval=True,
+            subquery_provider=provider,
+        )
+        await asyncio.wait_for(asyncio.gather(touched.wait(), logged.wait()), 5)
+        assert inputs.retrieved_limit is None and inputs.added_memory_ids == ()
+        assert len(logs) == 1 and "query_role" not in logs[0]
+        logs[0].pop("latency_ms")  # wall-clock duration is not a stored-content contract
+        results.append((injection.render_memory_context(inputs), logs, touches))
+    assert results[0] == results[1]

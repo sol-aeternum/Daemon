@@ -85,6 +85,71 @@ async def record_retrieved_memories(
         return False
 
 
+async def _record_added_retrieved_memories(
+    conversation_id: uuid.UUID,
+    baseline_ids: list[uuid.UUID],
+    added_ids: list[uuid.UUID],
+    store: MemoryStore,
+    *,
+    empty_baseline_snapshot: object = None,
+) -> bool:
+    """Compose after the unchanged baseline replacement, never append stale IDs.
+
+    Empty baselines did not replace prior-turn state: compare against the snapshot
+    already read by the wrapper, but replace it with added IDs only. Malformed or
+    missing snapshots fail closed. Mismatch suppresses extra trust work.
+    Identical-ID ABA remains possible
+    under existing last-writer-wins semantics (no generation/schema change).
+    Failure/cancellation after CAS can leave the union without added timestamps;
+    callers handle ordinary failures best-effort, but must propagate accounting.
+    """
+    if not added_ids:
+        return True
+    baseline = [str(mid) for mid in baseline_ids]
+    expected = baseline
+    if not baseline:
+        snapshot = empty_baseline_snapshot
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except (ValueError, TypeError):
+                return False
+        if not isinstance(snapshot, list):
+            return False
+        # JSONB IDs are strings. Validate without rewriting their representation:
+        # the CAS must compare the exact captured list, not a normalized UUID list.
+        for mid in snapshot:
+            if not isinstance(mid, str):
+                return False
+            try:
+                uuid.UUID(mid)
+            except ValueError:
+                return False
+        expected = snapshot
+    combined = list(dict.fromkeys([*baseline, *(str(mid) for mid in added_ids)]))
+    matched = await store._pool.fetchval(
+        """
+        UPDATE conversations
+        SET last_retrieved_memory_ids = $3::jsonb, updated_at = NOW()
+        WHERE id = $1 AND last_retrieved_memory_ids = $2::jsonb
+        RETURNING TRUE
+        """,
+        conversation_id,
+        json.dumps(expected),
+        json.dumps(combined),
+    )
+    if matched is not True:
+        return False
+    await store._pool.execute(
+        """
+        UPDATE memories SET last_retrieved_at = NOW(), updated_at = NOW()
+        WHERE id = ANY($1::uuid[])
+        """,
+        added_ids,
+    )
+    return True
+
+
 async def apply_implicit_positive_signal(
     conversation_id: uuid.UUID,
     store: MemoryStore,

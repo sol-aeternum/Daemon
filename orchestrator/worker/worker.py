@@ -92,6 +92,7 @@ def _build_consolidation_cron_job(interval: int) -> Any:
 
 
 async def on_startup(ctx: WorkerContext) -> None:
+    from orchestrator.memory.startup import require_multi_query_schema
     from orchestrator.tasks.composition import qualify_worker_composition
     from orchestrator.tasks.startup import task_startup_selected, require_legacy_task_schema
 
@@ -119,6 +120,7 @@ async def on_startup(ctx: WorkerContext) -> None:
             except Exception:
                 raise JournalError("database_required") from None
             db_pool = pool
+            await require_multi_query_schema(db_pool, app_settings)
             encryption = ContentEncryption(app_settings.daemon_encryption_key)
             async with history.qualify_before_recovery(pool, deadline=deadline):
                 await qualify_worker_composition(
@@ -162,6 +164,7 @@ async def on_startup(ctx: WorkerContext) -> None:
     except Exception:
         raise JournalError("database_required") from None
     try:
+        await require_multi_query_schema(db_pool, app_settings)
         if not composed:
             await require_legacy_task_schema(db_pool)
         await require_unselected_history(db_pool)

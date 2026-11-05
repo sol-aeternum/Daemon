@@ -92,6 +92,9 @@ def setup(monkeypatch):
         return_value=[SimpleNamespace(embedding=[0.2], model="query", storage_model="storage")] * 2
     )
     trust = FakeTrust()
+    monkeypatch.setattr(
+        trust, "_record_added_retrieved_memories", AsyncMock(return_value=True), raising=False
+    )
     monkeypatch.setattr(injection, "get_settings", lambda: settings)
     monkeypatch.setattr(injection, "get_selected_embedding_route_id", lambda: "pinned")
     monkeypatch.setattr(injection, "embed_query_with_metadata", embed)
@@ -124,7 +127,7 @@ async def test_gather_batches_accepted_components_prefix_metadata_roles_and_cloc
     assert inputs.retrieved[:5] == setup.baseline and len(inputs.retrieved) == 11
     assert inputs.retrieved_limit == 11
     setup.batch.assert_awaited_once_with(["Cat name", "Dog name"])
-    assert [c["query_role"] for c in setup.calls] == ["original", "sub:0", "sub:1"]
+    assert [c.get("query_role") for c in setup.calls] == [None, "sub:0", "sub:1"]
     assert all(
         c["touch_results"] is False and c["query_reference_time"] == NOW for c in setup.calls
     )
@@ -345,7 +348,9 @@ async def test_deployment_owned_legacy_policy_needs_no_proposal_or_transport_fie
         "unknown",
     ],
 )
-async def test_wrapper_effects_once_on_actual_rendered_set(setup, monkeypatch, case, large):
+async def test_wrapper_preserves_baseline_effects_and_only_adds_rendered_rows(
+    setup, monkeypatch, case, large
+):
     store = Store()
     provider = Provider([] if case == "empty" else None)
     if case == "no_added":
@@ -397,14 +402,30 @@ async def test_wrapper_effects_once_on_actual_rendered_set(setup, monkeypatch, c
     assert [r["id"] for r in injection.rendered_memory_rows(inputs, block)] == ids
     if not large:
         assert block == first_three
-    store.bulk_touch_memories.assert_awaited_once_with(ids)
-    assert len(setup.trust.calls) == 1 and setup.trust.calls[0]["memory_ids"] == ids
-    assert all(c["touch_results"] is False for c in setup.calls)
+    baseline_ids = [row["id"] for row in setup.baseline]
+    assert len(setup.trust.calls) == 1
+    assert setup.trust.calls[0]["memory_ids"] == baseline_ids
+    added = ids[5:]
+    if added:
+        store.bulk_touch_memories.assert_awaited_once_with(added)
+        setup.trust._record_added_retrieved_memories.assert_awaited_once_with(
+            conversation_id=CONVERSATION_ID,
+            baseline_ids=baseline_ids,
+            added_ids=added,
+            store=store,
+            empty_baseline_snapshot=None,
+        )
+    else:
+        store.bulk_touch_memories.assert_not_awaited()
+        setup.trust._record_added_retrieved_memories.assert_not_awaited()
+    assert "touch_results" not in setup.calls[0]
+    assert "query_role" not in setup.calls[0]
+    assert all(c["touch_results"] is False for c in setup.calls[1:])
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("record_side_effects", [False, True])
-async def test_enabled_gather_alone_has_no_effects_for_any_render_budget(
+async def test_enabled_gather_preserves_legacy_effects_argument_for_any_render_budget(
     setup, record_side_effects
 ):
     store = Store()
@@ -420,7 +441,9 @@ async def test_enabled_gather_alone_has_no_effects_for_any_render_budget(
     assert injection.render_memory_context(inputs, 1) == ""
     assert injection.render_memory_context(inputs, 10**6)
     store.bulk_touch_memories.assert_not_awaited()
-    assert setup.trust.calls == []
+    assert len(setup.trust.calls) == int(record_side_effects)
+    assert setup.calls[0].get("touch_results", True) is record_side_effects
+    setup.trust._record_added_retrieved_memories.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -457,7 +480,7 @@ async def test_post_render_effects_best_effort_preserve_cancellation_and_account
     setup, monkeypatch, failure
 ):
     store = Store()
-    monkeypatch.setattr(injection, "ProductionSubqueryProvider", lambda: Provider([]))
+    monkeypatch.setattr(injection, "ProductionSubqueryProvider", Provider)
     if failure == "cancel":
         error = asyncio.CancelledError()
     elif failure == "accounting":
@@ -469,7 +492,7 @@ async def test_post_render_effects_best_effort_preserve_cancellation_and_account
     else:
         error = RuntimeError("synthetic best-effort failure")
     if failure == "trust":
-        monkeypatch.setattr(setup.trust, "record_retrieved_memories", AsyncMock(side_effect=error))
+        setup.trust._record_added_retrieved_memories.side_effect = error
     elif failure == "mapping":
         monkeypatch.setattr(injection, "rendered_memory_rows", Mock(side_effect=error))
     else:
@@ -479,20 +502,18 @@ async def test_post_render_effects_best_effort_preserve_cancellation_and_account
             await injection.build_memory_context(store, CONVERSATION_ID)
         assert caught.value is error
     else:
-        expected = injection.render_memory_context(
-            injection.MemoryContextInputs(retrieved=setup.baseline)
-        )
-        assert await injection.build_memory_context(store, CONVERSATION_ID) == expected
+        assert await injection.build_memory_context(store, CONVERSATION_ID)
 
 
 @pytest.mark.asyncio
 async def test_wrapper_preserves_signature_and_passes_enabled_custom_budget(setup):
-    # Production default is an unapproved route: baseline still gets rendered effects.
+    # Even an empty actual render retains the exact legacy baseline trust call.
     store = Store()
     budget = 1
     assert await injection.build_memory_context(store, CONVERSATION_ID, budget) == ""
     store.bulk_touch_memories.assert_not_awaited()
-    assert setup.trust.calls == []
+    assert len(setup.trust.calls) == 1
+    assert setup.trust.calls[0]["memory_ids"] == [r["id"] for r in setup.baseline]
 
 
 @pytest.mark.asyncio
@@ -509,7 +530,7 @@ async def test_accounting_failures_escape_fail_open(setup, monkeypatch, phase):
     elif phase == "sub_retrieval":
 
         async def failed(**kwargs):
-            if kwargs.get("query_role") == "original":
+            if kwargs.get("query_role") is None:
                 return setup.baseline
             raise error
 
@@ -699,3 +720,21 @@ async def test_concurrent_guarded_ledger_holds_settle_once_and_context_isolated(
     for key, amount in list(scope.settled.items()):
         await scope.settle(key, amount)
     assert service.settle.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["get_l0_memories", "get_recent_summaries"])
+async def test_enabled_baseline_read_failures_retain_legacy_exception_contract(
+    setup, monkeypatch, phase
+):
+    error = RuntimeError("synthetic baseline failure")
+    monkeypatch.setattr(injection, "ProductionSubqueryProvider", Provider)
+    for enabled in [False, True]:
+        store = Store()
+        setattr(store, phase, AsyncMock(side_effect=error))
+        setup.settings.memory_multi_query_enabled = enabled
+        with pytest.raises(RuntimeError) as caught:
+            await injection.build_memory_context(store, CONVERSATION_ID)
+        assert caught.value is error
+        store.bulk_touch_memories.assert_not_awaited()
+    setup.trust._record_added_retrieved_memories.assert_not_awaited()

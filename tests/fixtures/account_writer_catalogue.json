@@ -631,7 +631,7 @@
     },
     {
       "owner_source": "orchestrator.memory.injection",
-      "qualname": "gather_memory_context_inputs",
+      "qualname": "_component_branch",
       "kind": "store_write",
       "fingerprint": "8b5a57f88d7b0e04",
       "tables": [],
@@ -639,6 +639,17 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Bounded scanner flags ContextVar.set for the enabled recency clock, reset in finally; no database/store mutation at this call. No runtime account-fence coverage claimed."
+    },
+    {
+      "owner_source": "orchestrator.memory.injection",
+      "qualname": "_component_branch.retrieve",
+      "kind": "store_write",
+      "fingerprint": "f1e6545359872180",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner flags ContextVar.set for the task-owned component log buffer, reset in finally; this call changes only in-memory context. Actual log persistence remains separately inventoried and no runtime account-fence coverage is claimed."
     },
     {
       "owner_source": "orchestrator.services.connection_cleanup",
@@ -4588,6 +4599,32 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust_signals",
+      "qualname": "_record_added_retrieved_memories",
+      "kind": "sql_inline",
+      "fingerprint": "7f62bd103fd18476",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Added-only retrieval trust composition uses a captured-list CAS, not an account-generation fence. Path-specific account-control integration remains pending."
+    },
+    {
+      "owner_source": "orchestrator.memory.trust_signals",
+      "qualname": "_record_added_retrieved_memories",
+      "kind": "sql_inline",
+      "fingerprint": "76d833e938d20be1",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Rendered-added-only retrieval timestamps follow conversation CAS; no account-generation fence or atomic cross-write coverage is claimed. Path-specific account-control integration remains pending."
     },
     {
       "owner_source": "orchestrator.memory.trust_signals",

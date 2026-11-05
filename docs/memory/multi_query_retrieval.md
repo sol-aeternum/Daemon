@@ -45,8 +45,13 @@ partly with sight of these spent development cases. Acceptance needs fresh data.
    The component batch requires a selected guarded embedding route capable of
    one send; unavailable/insufficient batch capacity fails open, without legacy
    embedding retries or provider fallback.
-   Retrieve each at depth 10 via `retrieve_memories_for_text`, preserving scope,
-   locality and historical clock.
+    Retrieve each at depth 10 via `retrieve_memories_for_text`, preserving scope,
+    locality and historical clock. Run at most the configured 0–3 arms concurrently,
+    retaining input order regardless of completion order. One named 8.0-second
+    post-decomposition deadline covers batch embedding plus every retrieval arm;
+    it starts when decomposition is accepted, not when the baseline finishes.
+    This reuses the former component embedding bound as a whole-branch bound,
+    without a new setting or a fresh timeout per child.
 6. Merge deterministically, then render through the existing formatter and
    token budget. Failure in the added branch must never erase a good baseline.
    Cancellation and accounting-integrity errors retain their existing safeguards;
@@ -86,23 +91,40 @@ preservation is not permission to waive the zero-regression exposure gate.
 
 ### Side effects and trajectory logging
 
-With multi-query enabled, gather is read-only, even when its legacy
-`record_side_effects` argument is true. The async production wrapper renders
-with its actual caller budget and then records access touches and trust for
-that exact block. No effects are based on a speculative render or a budget
-supplied to gather. Record each retained memory once, not once per
-retrieval arm, including fail-open after deferral, no added IDs and sub-arm failure.
-Evaluation disables both. Unlike flag off (which touches retrieved rows even if
-the budget drops them), enabled-path effects use the rendered rows only.
-Do not change flag-off ranking or its
-existing side-effect call contract. The renderer signature and budget behaviour
-are unchanged. Ordinary effect failures remain best-effort and do not fail the
-prompt; cancellation propagates, and accounting errors must never be hidden.
+The owner-approved #665 Block A supersedes the earlier global rendered-only
+amendment. Enabled gather runs the same legacy baseline helper with the caller's
+original `record_side_effects`, reference-time argument and NULL query role.
+Baseline touches and the baseline `record_retrieved_memories` call remain unchanged,
+even when the renderer drops those rows. Empty/unapproved/parse/timeout/failure and
+all-duplicate branches retain baseline prompt bytes, touches, trust calls and log
+column values. A global rendered-only change is not proposed here.
+
+Inputs carry added IDs with an empty default. Only added rows retained by the
+wrapper's actual render receive extra access touches and retrieval timestamps;
+L0 and baseline rows are never re-touched by this extra path. Evaluation with
+`record_side_effects=False` remains read-only. No speculative render sets effects.
+The narrow added-trust helper replaces the conversation list with this turn's
+baseline IDs plus rendered added IDs, never an append to stored prior-turn IDs.
+It compares the stored list against the captured baseline before replacing it;
+a mismatch suppresses the extra trust update and added timestamps. With an empty
+baseline (which skips the legacy replacement), CAS instead uses the prior-ID
+snapshot from the wrapper's existing owner-qualified conversation read. JSON
+strings/decoded lists are validated; malformed or missing snapshots fail closed.
+The replacement contains rendered added IDs only, never stale prior-turn IDs.
+No additional baseline/no-addition read or trust call is introduced.
+Identical-ID ABA remains unresolved under existing last-writer-wins semantics;
+there is no new schema, generation or concurrency policy.
+
+Effects are best-effort, not atomic: an added touch can survive a later CAS mismatch;
+a successful conversation CAS can survive a failed/cancelled added timestamp write.
+Neither rolls back or repeats legacy baseline effects. Ordinary extra-effect
+failures do not fail the prompt; cancellation and accounting failures propagate.
+The baseline failure/call contract, renderer signature and budget stay unchanged.
 Shared rendered-row and width helpers live in `injection.py`; exposure imports
 them, never the reverse. The LongMemEval harness records no effects.
 
-Retrieval-log rows gain nullable `query_role`: NULL for flag-off/legacy rows,
-`original` for enabled original queries and `sub:<i>` for zero-based components.
+Retrieval-log rows gain nullable `query_role`: NULL for all new baseline rows,
+`sub:<i>` for zero-based components. Readers still accept historical `original` rows.
 The additive migration adds this column only; `query_text` stays NOT NULL.
 Sub-query rows store `query_text=""` and `query_embedding=NULL`, retaining model,
 candidate/selected IDs and role. No component text, derived vectors or keyed
@@ -112,6 +134,14 @@ must not copy it. Diagnostics readers filter sub rows before exact/fuzzy
 lookups and before fuzzy `LIMIT 50`. Original plaintext is pre-existing and out
 of scope, tracked in #663. This PR neither claims log encryption nor retrofits
 it, and does not expand retention.
+
+Component rows are sanitized buffered data under each branch's ownership, not
+detached writes. Failed, cancelled and no-addition branches discard their buffers.
+Only a successful additive merge with added IDs flushes rows, in input-arm order,
+preserving candidate/selected data. Flushes are awaited by gather; cancellation
+stops remaining writes (already completed rows can remain), accounting failures
+propagate, and ordinary log failures remain best-effort. No component/flush producer
+outlives gather. Runtime round-robin rejection and evaluation-only controls remain.
 
 ## Routing, reasoning and privacy
 
@@ -200,18 +230,26 @@ infrastructure, not a promoted user-visible client capability.
 
 ## Rollout
 
-Apply migration 061 before deploying this code, even with the flag off:
+Apply nullable migration 062 with deployment, even with the flag off:
 diagnostics readers always require `query_role`. Flag-off inserts retain the
-legacy statement when the role is `None`; flag-on inserts need the column too.
-The exposure sweep remains compatible with pre-061 evidence databases, matching
+legacy statement when the role is `None`; enabled component inserts need the column too.
+Both backend lifespan and worker startup explicitly refuse enabled operation if
+`retrieval_log.query_role` is absent, naming migration 062 regardless of logging
+settings. Disabled startup performs no multi-query schema check/query and baseline
+inserts never write the column. Preserve and verify the migration's 1-second lock
+timeout (and 5-second statement timeout); rollback has the same bounds and requires
+disabling the feature and stopping dependent diagnostics first. No live migration
+or deployment is authorized here. Main owns the unrelated 060/061 migrations.
+The exposure sweep remains compatible with pre-062 evidence databases, matching
 exact non-empty query text and model instead of filtering by role.
 
 ## Latency, cost and failure behaviour
 
 Let B be baseline latency, D decomposition time, T its deadline, E batch
 embedding and R component retrieval. With successful parallel decomposition the
-critical path is approximately `max(B, D) + E + R`; if retrieval arms run in
-parallel, R is their maximum, otherwise their sum. A decomposition-only failure
+critical path is approximately `max(B, D + E + max(R_i))`; concurrent component
+embedding/retrieval shares the eight-second deadline after accepted decomposition.
+A decomposition-only failure
 adds at most `max(0, min(D, T) - B)` before baseline rendering, excluding cleanup.
 Time out/cancel and await owned work; do not leave a provider task running after
 the gather finishes. Measure decomposition, batch embedding and sub-retrieval
@@ -272,7 +310,9 @@ second generation pass or permission widening is implied.
    restore, retry or campaign authority is granted by this design.
 5. **Production:** separate owner enablement decision, possibly opt-in per
    account, after route approval and fresh evaluation evidence. This PR ships
-   no approved decomposition route and makes no live benchmark run.
+    no approved decomposition route and makes no live benchmark run. The owner
+    must also rule on retaining empty-string component query text before production;
+    Block A preserves that privacy-first representation without claiming final approval.
 
 Open question: can a cheap deterministic pre-filter avoid generation on
 single-fact turns? Defer until M2 trigger-rate data exists; do not tune a
@@ -284,7 +324,7 @@ heuristic against the five spent omission cases now.
 |---|---|---|
 | B1 | This design | Written first; no runtime approval implied |
 | Renderer seam | `injection.py`, `exposure.py`, offline tests | Implemented: shared width/row helpers, unchanged token budget and renderer signature |
-| B2 | `multi_query.py`, settings, gather, policy, logs | Implemented under S1–S6 and the wrapper-effects amendment; enabled gather is read-only, wrapper effects use its actual rendered block; no route approved |
+| B2 | `multi_query.py`, settings, gather, policy, logs | Implemented under S1–S6; #665 Block A restores exact legacy baseline effects, adds rendered-added-only effects/CAS trust composition, owned buffered logs, bounded concurrent arms/shared deadline, and enabled-only 062 startup guard; no route approved |
 | B3 | `build_parity_memory_context`, `exposure.measure_multi_query_exposure` | Implemented: optional provider pin, frozen cached-vector exposure entry, additive/evaluation-only round-robin; synthetic tests, no live run |
 
 The B3 exposure entry refuses any provider except the exact frozen

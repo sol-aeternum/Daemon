@@ -42,6 +42,31 @@ MAX_LOGGED_CONTENT_CHARS = 120
 RECENCY_REFERENCE_TIME: ContextVar[dt.datetime | None] = ContextVar(
     "RECENCY_REFERENCE_TIME", default=None
 )
+# Private branch-local data sink. Legacy retrieval retains detached logging;
+# multi-query components collect sanitized rows, never write speculatively.
+_RETRIEVAL_LOG_BUFFER: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "_RETRIEVAL_LOG_BUFFER", default=None
+)
+
+
+async def _emit_retrieval_log(store: MemoryStore, **row: Any) -> None:
+    buffer = _RETRIEVAL_LOG_BUFFER.get()
+    if buffer is None:
+        await store.log_retrieval(**row)
+    else:
+        row.pop("record_query_text", None)
+        row["query_text"] = ""
+        row["query_embedding"] = None
+        buffer.append(row)
+
+
+async def _flush_retrieval_logs(store: MemoryStore, rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        try:
+            await store.log_retrieval(**row)
+        except Exception as error:
+            raise_if_embedding_accounting_error(error)
+            logger.warning("Failed to persist component retrieval log")
 
 
 @dataclass(frozen=True)
@@ -703,7 +728,8 @@ async def retrieve_memories_for_text(
 
         async def _persist_combined_log() -> None:
             try:
-                await store.log_retrieval(
+                await _emit_retrieval_log(
+                    store,
                     user_id=user_id,
                     query_text=(normalized_query or "") if record_query_text else "",
                     query_embedding_model=l0_log_embedding_model
@@ -726,7 +752,10 @@ async def retrieve_memories_for_text(
                 else:
                     logger.warning("Failed to persist component retrieval log")
 
-        _ = asyncio.create_task(_persist_combined_log())
+        if _RETRIEVAL_LOG_BUFFER.get() is not None:
+            await _persist_combined_log()
+        else:
+            _ = asyncio.create_task(_persist_combined_log())
 
     if include_l0:
         l0_memories = cast(
@@ -765,7 +794,8 @@ async def retrieve_memories_for_text(
 
             async def _persist_l0_log() -> None:
                 try:
-                    await store.log_retrieval(
+                    await _emit_retrieval_log(
+                        store,
                         user_id=user_id,
                         query_text=(normalized_query or "") if record_query_text else "",
                         query_embedding_model=l0_log_embedding_model
@@ -788,7 +818,10 @@ async def retrieve_memories_for_text(
                     else:
                         logger.warning("Failed to persist component L0 retrieval log")
 
-            _ = asyncio.create_task(_persist_l0_log())
+            if _RETRIEVAL_LOG_BUFFER.get() is not None:
+                await _persist_l0_log()
+            else:
+                _ = asyncio.create_task(_persist_l0_log())
 
         ranked = combined
 
@@ -1152,7 +1185,8 @@ async def retrieve_memories(
 
         async def _persist_log() -> None:
             try:
-                await store.log_retrieval(
+                await _emit_retrieval_log(
+                    store,
                     user_id=effective_user_id,
                     query_text=(normalized_query or "") if record_query_text else "",
                     query_embedding_model=logged_embedding_model,
@@ -1173,6 +1207,9 @@ async def retrieve_memories(
                 else:
                     logger.warning("Failed to persist component retrieval log")
 
-        _ = asyncio.create_task(_persist_log())
+        if _RETRIEVAL_LOG_BUFFER.get() is not None:
+            await _persist_log()
+        else:
+            _ = asyncio.create_task(_persist_log())
 
     return ranked

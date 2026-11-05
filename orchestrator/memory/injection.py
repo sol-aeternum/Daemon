@@ -23,6 +23,7 @@ from orchestrator.memory.embedding import (
 )
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.retrieval import RECENCY_REFERENCE_TIME
+from orchestrator.memory.retrieval import _RETRIEVAL_LOG_BUFFER, _flush_retrieval_logs
 from orchestrator.memory.multi_query import (
     SubqueryProvider,
     ProductionSubqueryProvider,
@@ -58,6 +59,8 @@ DEFAULT_MAX_TOKENS = 2500
 MAX_SINGLE_MEMORY_CHARS = 400
 L0_TOKEN_BUDGET = 200
 MAX_L0_CHARS = 600
+# One post-decomposition budget for the entire added branch, not per arm.
+COMPONENT_RETRIEVAL_TIMEOUT_SECONDS = 8.0
 
 PERSONALITY_PRESETS: dict[str, str] = {
     "default": "",
@@ -199,6 +202,7 @@ class MemoryContextInputs:
     summaries: list[dict[str, object]] = field(default_factory=list)
     retrieval_mode: str = "none"
     retrieved_limit: int | None = None
+    added_memory_ids: tuple[uuid.UUID, ...] = ()
 
     def __post_init__(self) -> None:
         if self.retrieved_limit is not None and (
@@ -320,12 +324,7 @@ async def gather_memory_context_inputs(
     evaluation_merge: str | None = None,
     evaluation_embeddings: Mapping[str, EmbeddingVectorResult] | None = None,
 ) -> MemoryContextInputs:
-    """Enabled gathering is read-only; the production wrapper owns rendered effects.
-
-    Flag off delegates to the unchanged single-query path and effect contract.
-    Enabled callers can render the returned inputs with any budget without
-    affecting ranking state. ``record_side_effects`` applies only when flag off.
-    """
+    """Preserve legacy baseline effects; defer only added-row effects to rendering."""
     kwargs: dict[str, Any] = dict(
         user_id=user_id,
         pipeline=pipeline,
@@ -380,17 +379,12 @@ async def gather_memory_context_inputs(
         if reference.tzinfo is None
         else reference.astimezone(timezone.utc)
     )
-    kwargs.update(
-        query_text=baseline_query, query_reference_time=reference, record_side_effects=False
-    )
-    token = RECENCY_REFERENCE_TIME.set(reference)
     tasks: list[asyncio.Task[Any]] = []
     try:
         baseline_task = asyncio.create_task(
             _gather_single_query_inputs(
                 store,
                 **kwargs,
-                query_role="original",
                 owned_tasks=tasks,
                 evaluation_embedding=pinned_query,
             )
@@ -400,64 +394,31 @@ async def gather_memory_context_inputs(
         if pipeline == "cloud" and latest_user and settings.memory_max_subqueries > 0:
             deadline = monotonic() + settings.memory_decomposition_timeout_ms / 1000
             components_task = asyncio.create_task(
-                _decompose_components(
+                _component_branch(
+                    store,
                     subquery_provider or ProductionSubqueryProvider(),
                     latest_user,
                     reference,
                     deadline,
                     settings.memory_max_subqueries,
+                    user_id=user_id,
+                    allowed_source_conversation_ids=allowed_source_conversation_ids,
+                    log_retrieval=log_retrieval,
+                    retrieval_triggered_by=retrieval_triggered_by,
+                    evaluation_embeddings=evaluation_embeddings,
                 )
             )
             tasks.append(components_task)
         # Await both arms together so an accounting failure cancels/drains the other.
         inputs: MemoryContextInputs
-        components: list[str]
+        component_result = None
         if components_task is not None:
-            inputs, components = await asyncio.gather(baseline_task, components_task)
+            inputs, component_result = await asyncio.gather(baseline_task, components_task)
         else:
-            inputs, components = await baseline_task, []
-        if components:
+            inputs = await baseline_task
+        if component_result is not None:
+            arms, buffers = component_result
             try:
-                started = monotonic()
-                try:
-                    if evaluation_embeddings is not None:
-                        vectors = [evaluation_embeddings[text] for text in components]
-                    else:
-                        vectors = await asyncio.wait_for(
-                            embed_queries_with_metadata(components), timeout=8.0
-                        )
-                finally:
-                    _phase_latency("embedding", started)
-                if len(vectors) != len(components):
-                    raise ValueError("Component embedding count mismatch")
-                arms = []
-                started = monotonic()
-                try:
-                    for index, (component, vector) in enumerate(
-                        zip(components, vectors, strict=True)
-                    ):
-                        arms.append(
-                            await retrieve_memories_for_text(
-                                store=store,
-                                query_text=component,
-                                user_id=user_id,
-                                query_embedding=vector.embedding,
-                                limit=SUBQUERY_DEPTH,
-                                include_local=False,
-                                storage_embedding_model=vector.storage_model,
-                                query_embedding_model=vector.model,
-                                allow_query_embedding=False,
-                                touch_results=False,
-                                record_query_text=False,
-                                query_role=f"sub:{index}",
-                                allowed_source_conversation_ids=allowed_source_conversation_ids,
-                                log_retrieval=log_retrieval,
-                                retrieval_triggered_by=retrieval_triggered_by,
-                                query_reference_time=reference,
-                            )
-                        )
-                finally:
-                    _phase_latency("sub_retrieval", started)
                 merged = merge_memories(
                     inputs.retrieved,
                     arms,
@@ -466,27 +427,145 @@ async def gather_memory_context_inputs(
                     evaluation=evaluation,
                 )
                 existing = {str(row.get("id")) for row in inputs.retrieved}
-                if any(str(row.get("id")) not in existing for row in merged):
+                added_ids = tuple(
+                    row["id"]
+                    for row in merged
+                    if isinstance(row.get("id"), uuid.UUID) and str(row["id"]) not in existing
+                )
+                if added_ids:
                     inputs = replace(
                         inputs,
                         retrieved=merged,
                         retrieved_limit=len(merged) if len(merged) > MAX_MEMORY_ITEMS else None,
+                        added_memory_ids=added_ids,
                     )
             except Exception as error:
                 raise_if_embedding_accounting_error(error)
-                logger.info("Memory multi-query branch failed; retaining baseline")
+                logger.info("Memory multi-query merge failed; retaining baseline")
+                return inputs
+            # No detached component writes. Flush in input-arm order only
+            # after a successful additive merge with additions (never fallback).
+            if added_ids and merge_mode == "additive":
+                await _flush_retrieval_logs(store, [row for buffer in buffers for row in buffer])
         return inputs
     finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+        await _cancel_and_drain(tasks)
+
+
+async def _cancel_and_drain(tasks: list[asyncio.Task[Any]]) -> None:
+    # Cancel owners before their children; do not re-cancel settlement cleanup.
+    for task in reversed(tasks):
+        if not task.done() and not task.cancelling():
+            task.cancel()
+    drained = asyncio.gather(*tasks, return_exceptions=True)
+    cancelled = False
+    while not drained.done():
         try:
-            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.shield(drained)
+        except asyncio.CancelledError:
+            cancelled = True
+    outcomes = drained.result()
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise_if_embedding_accounting_error(outcome)
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _before_component_deadline(task: asyncio.Task[Any], deadline: float) -> Any:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    # Explicit ownership lets cleanup inspect accounting failures even when a
+    # timeout/cancellation races with a task's settlement cleanup.
+    return await asyncio.wait_for(asyncio.shield(task), remaining)
+
+
+async def _component_branch(
+    store: MemoryStore,
+    provider: SubqueryProvider,
+    message: str,
+    reference: datetime,
+    decomposition_deadline: float,
+    maximum: int,
+    *,
+    user_id: uuid.UUID,
+    allowed_source_conversation_ids: list[uuid.UUID] | None,
+    log_retrieval: bool,
+    retrieval_triggered_by: str | None,
+    evaluation_embeddings: Mapping[str, EmbeddingVectorResult] | None,
+) -> tuple[list[list[dict[str, object]]], list[list[dict[str, Any]]]] | None:
+    tasks: list[asyncio.Task[Any]] = []
+    clock_token = RECENCY_REFERENCE_TIME.set(reference)
+    try:
+        components = await _decompose_components(
+            provider, message, reference, decomposition_deadline, maximum
+        )
+        if not components:
+            return None
+        deadline = monotonic() + COMPONENT_RETRIEVAL_TIMEOUT_SECONDS
+        started = monotonic()
+        try:
+            if evaluation_embeddings is not None:
+                vectors = [evaluation_embeddings[text] for text in components]
+            else:
+                embedding_task = asyncio.create_task(embed_queries_with_metadata(components))
+                tasks.append(embedding_task)
+                vectors = await _before_component_deadline(embedding_task, deadline)
         finally:
-            RECENCY_REFERENCE_TIME.reset(token)
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                raise_if_embedding_accounting_error(outcome)
+            _phase_latency("embedding", started)
+        if len(vectors) != len(components):
+            raise ValueError("Component embedding count mismatch")
+        buffers: list[list[dict[str, Any]]] = [[] for _ in components]
+
+        async def retrieve(index: int) -> list[dict[str, object]]:
+            token = _RETRIEVAL_LOG_BUFFER.set(buffers[index])
+            try:
+                vector = vectors[index]
+                return await retrieve_memories_for_text(
+                    store=store,
+                    query_text=components[index],
+                    user_id=user_id,
+                    query_embedding=vector.embedding,
+                    limit=SUBQUERY_DEPTH,
+                    include_local=False,
+                    storage_embedding_model=vector.storage_model,
+                    query_embedding_model=vector.model,
+                    allow_query_embedding=False,
+                    touch_results=False,
+                    record_query_text=False,
+                    query_role=f"sub:{index}",
+                    allowed_source_conversation_ids=allowed_source_conversation_ids,
+                    log_retrieval=log_retrieval,
+                    retrieval_triggered_by=retrieval_triggered_by,
+                    query_reference_time=reference,
+                )
+            finally:
+                _RETRIEVAL_LOG_BUFFER.reset(token)
+
+        started = monotonic()
+        try:
+            arms = [asyncio.create_task(retrieve(i)) for i in range(len(components))]
+            tasks.extend(arms)
+
+            async def collect() -> list[list[dict[str, object]]]:
+                return await asyncio.gather(*arms)
+
+            collector = asyncio.create_task(collect())
+            tasks.append(collector)
+            results = await _before_component_deadline(collector, deadline)
+            return results, buffers
+        finally:
+            _phase_latency("sub_retrieval", started)
+    except Exception as error:
+        raise_if_embedding_accounting_error(error)
+        logger.info("Memory multi-query branch failed; retaining baseline")
+        return None
+    finally:
+        try:
+            await _cancel_and_drain(tasks)
+        finally:
+            RECENCY_REFERENCE_TIME.reset(clock_token)
 
 
 def _phase_latency(phase: str, started: float) -> None:
@@ -530,10 +609,16 @@ async def _record_rendered_effects(
     inputs: MemoryContextInputs,
     conversation_id: uuid.UUID | None,
     block: str,
+    *,
+    empty_baseline_snapshot: object = None,
 ) -> None:
+    if not inputs.added_memory_ids:
+        return
     try:
         rows = rendered_memory_rows(inputs, block)
-        ids = list(dict.fromkeys(row["id"] for row in rows if isinstance(row.get("id"), uuid.UUID)))
+        ids = list(
+            dict.fromkeys(row["id"] for row in rows if row.get("id") in inputs.added_memory_ids)
+        )
     except Exception as error:
         raise_if_embedding_accounting_error(error)
         logger.warning("Memory multi-query rendered-row mapping failed")
@@ -549,8 +634,16 @@ async def _record_rendered_effects(
         try:
             trust = _lazy_import_trust_signals()
             if trust:
-                await trust.record_retrieved_memories(
-                    conversation_id=conversation_id, memory_ids=ids, store=store
+                await trust._record_added_retrieved_memories(
+                    conversation_id=conversation_id,
+                    baseline_ids=[
+                        row["id"]
+                        for row in inputs.retrieved
+                        if row.get("id") and row.get("id") not in inputs.added_memory_ids
+                    ],
+                    added_ids=ids,
+                    store=store,
+                    empty_baseline_snapshot=empty_baseline_snapshot,
                 )
         except Exception as error:
             raise_if_embedding_accounting_error(error)
@@ -816,6 +909,11 @@ async def build_memory_context(
         return ""  # Unknown source permissions cannot authorize context processing.
 
     enabled = get_settings().memory_multi_query_enabled
+    # Capture from the existing owner-qualified read, before gather can yield.
+    # Copy decoded lists so later changes to that read result cannot alter CAS.
+    snapshot = conversation.get("last_retrieved_memory_ids")
+    if isinstance(snapshot, list):
+        snapshot = list(snapshot)
     inputs = await gather_memory_context_inputs(
         store,
         user_id=user_id,
@@ -824,7 +922,9 @@ async def build_memory_context(
     )
     block = render_memory_context(inputs, max_tokens)
     if enabled:
-        await _record_rendered_effects(store, inputs, conversation_id, block)
+        await _record_rendered_effects(
+            store, inputs, conversation_id, block, empty_baseline_snapshot=snapshot
+        )
     return block
 
 
