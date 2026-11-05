@@ -309,7 +309,8 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
 
 def _output_tokens(receipt: Mapping[str, Any]) -> int:
     usage = receipt.get("usage")
-    value = usage.get("output_tokens") if isinstance(usage, Mapping) else None
+    # The provider's own field, as ``compute_runtime._usage_counts`` reads it.
+    value = usage.get("completion_tokens") if isinstance(usage, Mapping) else None
     return value if type(value) is int and value >= 0 else 0
 
 

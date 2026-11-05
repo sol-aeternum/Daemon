@@ -53,7 +53,7 @@ def _response(
     return {
         "choices": [{"message": {"content": content}, "finish_reason": finish}],
         "provider": provider,
-        "usage": {"cost": cost, "output_tokens": output_tokens},
+        "usage": {"cost": cost, "completion_tokens": output_tokens},
     }
 
 
@@ -474,3 +474,8 @@ def test_the_input_must_be_exactly_fifty_questions(tmp_path: Any) -> None:
 def test_the_bakeoff_refuses_every_other_benchmark_database(name: str) -> None:
     with pytest.raises(ValueError):
         bakeoff.check_bakeoff_database(f"postgresql://u:p@localhost/{name}")
+
+
+def test_output_tokens_come_from_the_provider_usage_field() -> None:
+    assert bakeoff._output_tokens({"usage": {"completion_tokens": 42}}) == 42
+    assert bakeoff._output_tokens({"usage": {"output_tokens": 42}}) == 0
