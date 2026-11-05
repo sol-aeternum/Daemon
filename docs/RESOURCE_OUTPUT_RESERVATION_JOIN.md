@@ -83,3 +83,34 @@ authenticated worker request, append, complete runtime composition and supported
 artifact restore/reconciliation remain outstanding. H does not independently
 record every artifact reservation/publication/card. Lifecycle/deletion/reset/
 retention/GC/privacy requirements are not waived by this reservation join.
+
+## Combined phase qualification after #673
+
+`tests/test_history_output_phases_postgres.py` reconciles the previously separate
+post-#669 qualification with merged preparation source. It first calls the actual
+H-owned `prepare_output`, retains the exact returned command and CSV bytes in the
+explicit synthetic fixture, and then selects reservation, catalog/file,
+presentation and terminal-text operations. No reservation bypasses H or prepares
+replacement identifiers. Preparation writes no reservation/catalog/card/result.
+The known-COMMIT path reopens the original task, decrypts its final text,
+authenticates original card pins and reads the verified CSV bytes.
+
+Stop and protected-projection loss at every boundary between the five operations
+preserve earlier committed effects while the next operation refuses. Unknown
+COMMIT acknowledgement before/after each actual phase COMMIT and cancelled/failed
+native holder resets block all five entrypoints without returning a late packet,
+regenerating identifiers, advancing another phase or promoting diagnostic rows.
+Synthetic owner readback establishes which rows survived; it is never application
+reconciliation or retry authority. Actual reset workers and H operation/lifetime
+ownership must settle before the caller observes failure. Production behavior,
+assertions and deadlines are unchanged.
+
+This is synthetic SQL/POSIX interoperability proof, not an installed runtime,
+authenticated user/device/socket path or durable prepared-packet store. The
+fixture's explicit memory retention does not define crash/restart packet recovery.
+A future host must define retained packet ownership, bounded authenticated local
+transport and the response/recovery contract before invoking these methods.
+No automatic regeneration, replacement, history adoption or uncertain-COMMIT
+promotion is inferred. Independent artifact restore evidence and lifecycle/privacy
+release gates remain open. Qualification results are reported separately; this
+source description does not itself establish passing tests or live acceptance.
