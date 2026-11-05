@@ -1530,11 +1530,43 @@ async def test_a_local_lease_deadline_reached_during_the_own_commit_waits_for_it
     # A 2 s local estimate; the database lease stays LEASE_S.
     monkeypatch.setattr(runner, "LEASE_SAFETY_S", runner.LEASE_S - 2.0)
 
+    loop = asyncio.get_running_loop()
+    state_seen: asyncio.Future[runner.AttemptState] = loop.create_future()
+    allow_expiry_check, expiry_checked = asyncio.Event(), asyncio.Event()
+    real_supervisor = runner._heartbeat
+
+    async def supervisor_after_local_expiry(
+        store: Any, state: runner.AttemptState, execution: asyncio.Task[Any]
+    ) -> None:
+        state_seen.set_result(state)
+        await allow_expiry_check.wait()
+        try:
+            await real_supervisor(store, state, execution)
+        finally:
+            expiry_checked.set()
+
+    # Select local expiry during our own completion, rather than racing a
+    # real observation's clipped I/O timeout (which correctly emits no expiry
+    # warning and blocks writes). The native supervisor still decides the stop.
+    monkeypatch.setattr(runner, "_heartbeat", supervisor_after_local_expiry)
     accepted = await accept_task(env)
 
     async def before() -> None:
-        while not any("could not be renewed" in r.getMessage() for r in caplog.records):
-            await asyncio.sleep(0.01)
+        state = await state_seen
+        assert state.completing and state.result is None
+        while (remaining := state.lease_deadline - loop.time()) > 0:
+            await asyncio.sleep(remaining)
+        assert await env.pool.fetchval(
+            "SELECT status='running' AND lease_epoch=$2 "
+            "AND lease_expires_at>clock_timestamp() FROM tasks WHERE id=$1",
+            accepted.task_id,
+            state.claim.epoch,
+        )
+        allow_expiry_check.set()
+        await expiry_checked.wait()
+        assert state.completing and state.deferred_stop == "fenced"
+        assert not state.fenced and state.blocked is None
+        assert any("could not be renewed" in r.getMessage() for r in caplog.records)
 
     race.before = before
     redis = FakeRedis()
