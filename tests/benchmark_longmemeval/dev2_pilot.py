@@ -861,22 +861,29 @@ def run_arm(
             stop_reason = STOP_CHILD_FAILED
 
     elapsed = max(clock() - started, 0.0)
-    spend_after: float | None
-    routing_events_seen: int
+    # On a broken reader the final numbers are unknown; report them as absent rather
+    # than as a false zero. The child has already drained, so a reader failing here
+    # must still produce a record: it stops the arm instead of raising.
+    spend_after: float | None = None
+    final_invariants: Mapping[str, Any] = {}
+    final_rates: Mapping[str, int] = {}
+    routing_events_seen = 0
     if guard_error is None:
-        samples.append(sample_resources())
-        spend_after = float(read_spend_usd())
-        final_invariants = checkpoint_invariants(read_checkpoint())
-        lines = list(read_log_lines())
-        final_rates = count_rate_limits(lines)
-        routing_events_seen = log_lines_seen_routing_events(lines)
-    else:
-        # The readers are still broken, so the final numbers are unknown; report
-        # them as absent rather than as a false zero.
-        spend_after = None
-        final_invariants = {}
-        final_rates = {}
-        routing_events_seen = 0
+        try:
+            samples.append(sample_resources())
+            spend_after = float(read_spend_usd())
+            final_invariants = checkpoint_invariants(read_checkpoint())
+            lines = list(read_log_lines())
+            final_rates = count_rate_limits(lines)
+            routing_events_seen = log_lines_seen_routing_events(lines)
+        except Exception as exc:
+            guard_error = type(exc).__name__
+            stop_reason = stop_reason or STOP_GUARD_FAILED
+            interrupted = False
+            spend_after = None
+            final_invariants = {}
+            final_rates = {}
+            routing_events_seen = 0
     if guard_error is None and stop_reason is None and spend_after is not None:
         # The child can cross a gate between the last poll and exit, and a planned
         # resume drains it without another poll: judge the final readings too. A

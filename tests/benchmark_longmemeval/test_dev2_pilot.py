@@ -1557,3 +1557,24 @@ def test_a_written_record_leaves_no_claim_behind(tmp_path: Path) -> None:
     dev2_pilot.run_arm_command(**_run_arm_kwargs(tmp_path))
     assert (tmp_path / "record.json").exists()
     assert not (tmp_path / "record.json.claim").exists()
+
+
+def test_a_final_read_failure_still_writes_a_stopping_record(tmp_path: Path) -> None:
+    process = FakeProcess(polls=1)
+
+    class _LostAtTheEnd(_FakeRunLock):
+        def assert_held(self) -> None:
+            self.checks += 1
+            # spend_before and the poll succeed; the final read after the drain fails.
+            if process.remaining <= 0:
+                raise RuntimeError("lock connection lost")
+
+    lock = _LostAtTheEnd()
+    record, exit_code = dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(tmp_path, run_lock=lock, spawn=lambda _command: process)
+    )
+    assert exit_code == 1
+    assert record["run_arm"]["stop_reason"] == dev2_pilot.STOP_GUARD_FAILED
+    assert record["run_arm"]["spend_after_usd"] is None
+    assert (tmp_path / "record.json").exists()
+    assert not (tmp_path / "record.json.claim").exists()
