@@ -239,6 +239,15 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
             "DAEMON_ENCRYPTION_KEY. Script repair is a separate follow-up"
         ),
     ),
+    "BENCH_DB_NAME": NonFieldConsumer(
+        kind="script",
+        sources=("tests/benchmark_longmemeval/bench_db.sh:21",),
+        reason=(
+            "benchmark-only database name for the local LongMemEval bench Postgres stack "
+            "(default 'daemon_lme_bench'); read from the process environment by that script "
+            "alone, so no Settings field exists and Compose must not inject it"
+        ),
+    ),
     "NEXT_PUBLIC_API_URL": NonFieldConsumer(
         kind="frontend-source",
         sources=("frontend/proxy.ts:85",),
@@ -1267,7 +1276,9 @@ def _attribution_violations(
             continue
         line = _cited_line(path.read_text(encoding="utf-8"), int(lineno_text))
         if consumer.kind == "script":
-            found = f'"{name}"' in line or f"'{name}'" in line
+            # Python reads spell the name as a quoted literal; a POSIX shell reads
+            # it through a parameter expansion, e.g. "${BENCH_DB_NAME:-default}".
+            found = f'"{name}"' in line or f"'{name}'" in line or f"${{{name}" in line
         else:
             found = re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", line) is not None
         if not found:

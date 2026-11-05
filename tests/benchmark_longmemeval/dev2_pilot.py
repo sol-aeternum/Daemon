@@ -740,8 +740,10 @@ def run_arm(
     spend threshold ``cap_usd - margin_usd`` is reached (``spend_cap``), when
     ``rate_limited`` exceeds ``max_rate_limited`` (``rate_limit_loop``), or when
     at least one session has failed and the failed rate is >= 1%
-    (``extraction_failed``). If ``interrupt_after_completed`` is set, one SIGINT
-    is sent once that many questions completed and the run is marked
+    (``extraction_failed``). Those hard-stop gates are evaluated first, so they
+    win a poll on which a planned interrupt also became due. If
+    ``interrupt_after_completed`` is set and no gate fired, one SIGINT is sent
+    once that many questions completed and the run is marked
     ``interrupted_for_resume`` with no stop reason. A second SIGINT is sent at
     most once, only after ``grace_seconds`` with the child still alive, and is
     recorded. If any reader raises, the run is a hard stop: one interrupt is
@@ -769,7 +771,13 @@ def run_arm(
     second_sent = False
     process = spawn(list(command))
 
+    completed_at_start = 0
     try:
+        # Sessions already complete when this invocation starts belong to earlier
+        # ones: throughput must divide this invocation's work by its own wall time.
+        completed_at_start = int(
+            checkpoint_invariants(read_checkpoint()).get("completed_sessions", 0)
+        )
         while process.poll() is None:
             samples.append(sample_resources())
             now = clock()
@@ -781,18 +789,17 @@ def run_arm(
             else:
                 invariants = checkpoint_invariants(read_checkpoint())
                 rate_limits = count_rate_limits(read_log_lines())
-                reason: str | None = None
-                resumed = False
-                if (
-                    interrupt_after_completed is not None
+                # Hard-stop gates are checked before the planned interrupt: a poll
+                # that satisfies both must record the gate, not a clean resume.
+                reason: str | None = _gate_reason(
+                    float(read_spend_usd()), invariants, rate_limits, stop_rule
+                )
+                resumed = (
+                    reason is None
+                    and interrupt_after_completed is not None
                     and _completed_questions(invariants, expected_sessions)
                     >= interrupt_after_completed
-                ):
-                    resumed = True
-                else:
-                    reason = _gate_reason(
-                        float(read_spend_usd()), invariants, rate_limits, stop_rule
-                    )
+                )
                 if resumed or reason is not None:
                     send_interrupt(process)
                     first_interrupt_at = now
@@ -849,6 +856,11 @@ def run_arm(
         final_rates = {}
         routing_events_seen = 0
     completed = int(final_invariants.get("completed_sessions", 0))
+    # On a guard failure the final figures are unknown (reported as zero above), so
+    # this invocation's delta is not derivable and is reported as zero too.
+    completed_this_invocation = (
+        0 if guard_error is not None else max(completed - completed_at_start, 0)
+    )
     hours = elapsed / 3600.0
     return {
         "wall_seconds": elapsed,
@@ -865,8 +877,9 @@ def run_arm(
         "routing_events_seen": routing_events_seen,
         "resource_samples": _resource_bounds(samples),
         "completed_sessions": completed,
+        "completed_sessions_this_invocation": completed_this_invocation,
         "failed_sessions": int(final_invariants.get("failed_sessions", 0)),
-        "sessions_per_hour": completed / hours if hours > 0 else 0.0,
+        "sessions_per_hour": completed_this_invocation / hours if hours > 0 else 0.0,
     }
 
 
@@ -1125,6 +1138,10 @@ RUN_ARM_DB_NAME: Final[str] = "daemon_lme_bench_dev2"
 SHARED_DB_NAME: Final[str] = "daemon_lme_bench"
 CHECKPOINT_NAME: Final[str] = "longmemeval_checkpoint.json"
 CHILD_LOG_NAME: Final[str] = "child.log"
+#: Written once at the start of every invocation. A resume appends, so earlier
+#: invocations' routing events (and the rate-limit guard's count) survive; the
+#: line is not a ``routing_event`` record and is ignored by every log reader.
+CHILD_LOG_SEPARATOR: Final[str] = "--- dev2 ingest invocation"
 POLL_SECONDS: Final[float] = 15.0
 GRACE_SECONDS: Final[float] = 60.0
 #: Never passed to the child: each one would weaken the arm's evidence.
@@ -1240,13 +1257,21 @@ def write_record(path: Path | str, payload: Mapping[str, Any]) -> None:
 
 
 def make_spawn(log_path: Path | str) -> Callable[[Sequence[str]], ProcessHandle]:
-    """A spawn that captures the child's stdout and stderr to one log file."""
+    """A spawn that appends the child's stdout and stderr to one log file.
+
+    Append, not truncate: a resumed invocation must keep the routing events of
+    the invocations before it, and the rate-limit guard counts over the whole
+    arm rather than restarting from zero. One separator line marks where this
+    invocation began; no reader parses it as a routing event.
+    """
     target = Path(log_path)
 
     def spawn(command: Sequence[str]) -> ProcessHandle:
         target.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(target, "wb")  # kept open until the child exits
+        handle = open(target, "ab")  # kept open until the child exits
         try:
+            handle.write(f"{CHILD_LOG_SEPARATOR} {_utc_now()}\n".encode())
+            handle.flush()
             return subprocess.Popen(list(command), stdout=handle, stderr=subprocess.STDOUT)
         except BaseException:
             handle.close()

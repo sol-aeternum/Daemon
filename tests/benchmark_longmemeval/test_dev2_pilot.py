@@ -500,16 +500,21 @@ def test_interrupt_for_resume_fires_once_after_n_completed() -> None:
 
 
 def test_normal_completion_records_no_stop_reason() -> None:
-    harness = Harness(
-        checkpoint=_checkpoint(["s0", "s1"]),
-        process=FakeProcess(polls=2),
-    )
-    result = harness.run()
+    reads = {"count": 0}
+
+    def read_checkpoint() -> Mapping[str, Any]:
+        # Empty at invocation start; both sessions finish during this invocation.
+        reads["count"] += 1
+        return _checkpoint([] if reads["count"] == 1 else ["s0", "s1"])
+
+    harness = Harness(process=FakeProcess(polls=2))
+    result = harness.run(read_checkpoint=read_checkpoint)
     assert result["stop_reason"] is None
     assert result["interrupted_for_resume"] is False
     assert result["interrupts"] == []
     assert harness.process.interrupts == 0
     assert result["completed_sessions"] == 2
+    assert result["completed_sessions_this_invocation"] == 2
     assert result["sessions_per_hour"] > 0
 
 
@@ -1194,3 +1199,67 @@ def test_child_failure_is_reported_as_a_stop_not_success() -> None:
     )
     assert result["exit_code"] == 1
     assert result["stop_reason"] == dev2_pilot.STOP_CHILD_FAILED
+
+
+def test_spend_gate_wins_a_poll_that_also_satisfies_the_planned_interrupt() -> None:
+    """Hard-stop gates are evaluated first: $9.00 spend beats a due resume interrupt."""
+    harness = Harness(
+        spend=(0.0, 9.0),
+        checkpoint=_checkpoint(["s1"]),
+        process=FakeProcess(polls=10, exit_code=1),
+    )
+    result = harness.run(
+        stop_rule=StopRule(cap_usd=8.5, margin_usd=0.0, max_rate_limited=10),
+        interrupt_after_completed=1,
+        expected_sessions={"q1": 1},
+    )
+    assert result["stop_reason"] == dev2_pilot.STOP_SPEND
+    assert result["interrupted_for_resume"] is False
+    assert [item["kind"] for item in result["interrupts"]] == ["stop"]
+    # A non-None stop reason is what makes run_arm_command exit 1.
+    assert result["exit_code"] == 1
+
+
+def test_throughput_counts_only_sessions_completed_in_this_invocation() -> None:
+    """170 already complete, 185 at the end and 300 s elapsed is 180 sessions/hour."""
+    before = [f"s{index}" for index in range(170)]
+    after = [f"s{index}" for index in range(185)]
+    reads = {"count": 0}
+
+    def read_checkpoint() -> Mapping[str, Any]:
+        reads["count"] += 1
+        # The first read is the invocation-start snapshot; later reads are the run.
+        return _checkpoint(before if reads["count"] == 1 else after)
+
+    moments = [0.0] + [300.0] * 8
+
+    def clock() -> float:
+        return moments.pop(0) if len(moments) > 1 else 300.0
+
+    result = Harness(process=FakeProcess(polls=1)).run(read_checkpoint=read_checkpoint, clock=clock)
+
+    assert result["wall_seconds"] == 300.0
+    assert result["completed_sessions"] == 185
+    assert result["completed_sessions_this_invocation"] == 15
+    assert result["sessions_per_hour"] == 180.0
+
+
+def test_resume_appends_to_the_child_log_and_keeps_earlier_routing_events(
+    tmp_path: Path,
+) -> None:
+    """A second invocation appends: earlier lines survive and the guard tally spans both."""
+    log = tmp_path / "child.log"
+    routing = _rate_limited_lines(1)[0]
+    spawn = dev2_pilot.make_spawn(log)
+
+    for _ in range(2):
+        process = spawn([sys.executable, "-c", f"print({routing!r})"])
+        assert process.wait() == 0
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert lines.count(routing) == 2
+    assert dev2_pilot.count_rate_limits(lines)["rate_limited"] == 2
+    separators = [line for line in lines if line.startswith(dev2_pilot.CHILD_LOG_SEPARATOR)]
+    assert len(separators) == 2
+    # The separator is one line per invocation and is not a routing event.
+    assert dev2_pilot.log_lines_seen_routing_events(lines) == 2
