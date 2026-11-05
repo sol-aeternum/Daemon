@@ -1493,7 +1493,9 @@ def run_arm_command(
                 stop_rule=StopRule(
                     cap_usd=cap_usd, margin_usd=margin_usd, max_rate_limited=max_rate_limited
                 ),
-                interrupt_after_completed=interrupt_after_completed,
+                # A resume finishes the arm: the planned interrupt already happened, and
+                # the checkpoint's completed questions would fire it again at once.
+                interrupt_after_completed=None if resume else interrupt_after_completed,
                 expected_sessions=expected_sessions,
                 send_interrupt=send_interrupt,
                 grace_seconds=GRACE_SECONDS,

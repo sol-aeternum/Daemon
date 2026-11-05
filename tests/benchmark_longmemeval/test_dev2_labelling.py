@@ -285,6 +285,7 @@ def _run(
     ledger: Any = None,
     ceiling: Any = None,
     clock: Any = None,
+    check_run_lock: Any = None,
 ) -> tuple[dict[str, Any], Any]:
     output = tmp_path / name
     document = asyncio.run(
@@ -296,6 +297,7 @@ def _run(
             call=call,
             check_attestation=check_attestation or (lambda: None),
             acquire_run_lock=(lambda: True) if acquire_run_lock is _UNSET else acquire_run_lock,
+            check_run_lock=check_run_lock or (lambda: True),
             verify_route=verify_route or (lambda: None),
             memory_reader=memory_reader or (lambda user_id, ids: [("m1", SENTINEL)]),
             decrypt=lambda text: text,
@@ -1162,3 +1164,22 @@ def test_a_journal_held_by_another_run_sends_nothing(tmp_path: Any) -> None:
             )
     assert calls == []
     assert not (tmp_path / "labels.json").exists()
+
+
+@pytest.mark.parametrize("check", [lambda: False, lambda: 1 / 0])
+def test_a_lock_lost_before_dispatch_sends_nothing(tmp_path: Any, check: Any) -> None:
+    calls: list[Any] = []
+
+    def call(payload: Any) -> dict[str, Any]:
+        calls.append(payload)
+        return _receipt(LABEL_TEXT)
+
+    document, _output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=call,
+        check_run_lock=check,
+    )
+    assert calls == []
+    assert document["stop_reason"] == "run_lock_lost"

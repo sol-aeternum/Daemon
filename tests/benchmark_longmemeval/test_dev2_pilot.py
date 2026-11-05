@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import logging
 import subprocess
 import sys
@@ -1474,3 +1475,50 @@ def test_spend_is_not_read_without_the_lock() -> None:
     with pytest.raises(RuntimeError):
         guarded()
     assert reads == []
+
+
+def test_a_resume_does_not_fire_the_planned_interrupt_again(tmp_path: Path) -> None:
+    process = FakeProcess(polls=3)
+    kwargs = _run_arm_kwargs(tmp_path, spawn=lambda _command: process)
+    kwargs.update(resume=True, interrupt_after_completed=1)
+    record, exit_code = dev2_pilot.run_arm_command(**kwargs)
+    assert record["run_arm"]["interrupted_for_resume"] is False
+    assert record["run_arm"]["interrupts"] == []
+    assert exit_code == 0
+
+
+def test_real_postgres_lost_lock_is_detected_and_can_be_retaken() -> None:
+    url = os.environ.get("TASKS_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TASKS_TEST_DATABASE_URL is not set")
+
+    first = dev2_pilot.AsyncpgRunLock(url)
+    second = dev2_pilot.AsyncpgRunLock(url)
+    try:
+        assert first.acquire() is True
+        first.assert_held()
+        assert second.acquire() is False
+
+        async def kill_first() -> None:
+            import asyncpg
+
+            pid = await first._connection.fetchval("SELECT pg_backend_pid()")
+            admin = await asyncpg.connect(url)
+            try:
+                assert await admin.fetchval("SELECT pg_terminate_backend($1)", pid) is True
+            finally:
+                await admin.close()
+
+        first._loop.run_until_complete(kill_first())
+        with pytest.raises(Exception):  # the driver treats any failure as lost
+            first.assert_held()
+
+        # What makes the loss dangerous: another run can now take it.
+        third = dev2_pilot.AsyncpgRunLock(url)
+        try:
+            assert third.acquire() is True
+        finally:
+            third.release()
+    finally:
+        second.release()
+        first.release()

@@ -511,6 +511,19 @@ def _stopped_document(max_spend_usd: Decimal, stop_reason: str) -> dict[str, Any
     }
 
 
+async def _run_lock_held(check_run_lock: Callable[[], Any] | None) -> bool:
+    """``True`` only on a positive answer; a missing or failing check is not held."""
+    if check_run_lock is None:
+        return False
+    try:
+        pending = check_run_lock()
+        if inspect.isawaitable(pending):
+            pending = await pending
+    except Exception:
+        return False
+    return pending is True
+
+
 async def _run_lock_acquired(acquire_run_lock: Callable[[], Any] | None) -> bool:
     """The benchmark-wide run lock, held before the journal is even opened.
 
@@ -616,6 +629,7 @@ async def label_questions(
     call: Callable[[Mapping[str, Any]], Any],
     check_attestation: Callable[[], Any],
     acquire_run_lock: Callable[[], Any] | None = None,
+    check_run_lock: Callable[[], Any] | None = None,
     verify_route: Callable[[], Any],
     memory_reader: Callable[[str, Sequence[Any]], Any],
     decrypt: Callable[[str], str],
@@ -779,6 +793,12 @@ async def label_questions(
                 stop_reason = "spend_cap"
                 break
 
+            # The session lock ends with its connection: confirm it directly before
+            # this send. A call already in flight can't be recalled, but none follows.
+            if not await _run_lock_held(check_run_lock):
+                stop_reason = "run_lock_lost"
+                break
+
             _append_journal(
                 handle,
                 {"kind": "intent", "question_id": question_id, "input_sha256": input_sha256},
@@ -878,6 +898,7 @@ async def _run_label(
     from orchestrator.memory.encryption import ContentEncryption
     from tests.benchmark_longmemeval.dev2_pilot import (
         SPEND_SQL,
+        RUN_LOCK_HELD_SQL,
         acquire_benchmark_run_lock,
         spend_from_row,
     )
@@ -916,6 +937,9 @@ async def _run_label(
                 # run, released when the connection closes.
                 return await acquire_benchmark_run_lock(connection.fetchval)
 
+            async def check_run_lock() -> bool:
+                return int(await connection.fetchval(RUN_LOCK_HELD_SQL) or 0) >= 1
+
             return await label_questions(
                 question_rows=rows,
                 checkpoint=checkpoint,
@@ -924,6 +948,7 @@ async def _run_label(
                 call=call,
                 check_attestation=lambda: attestation.check_once(pool),
                 acquire_run_lock=acquire_run_lock,
+                check_run_lock=check_run_lock,
                 verify_route=verify_label_route,
                 memory_reader=memory_reader,
                 decrypt=encryption.decrypt,
