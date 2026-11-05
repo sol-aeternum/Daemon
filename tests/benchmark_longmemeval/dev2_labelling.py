@@ -24,10 +24,13 @@ import hashlib
 import inspect
 import json
 import math
+import os
+import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
 
@@ -369,6 +372,108 @@ def _serving_provider(receipt: Mapping[str, Any]) -> str | None:
     return provider if isinstance(provider, str) else None
 
 
+def _journal_path(output_path: Path | str) -> Path:
+    return Path(f"{Path(output_path)}.receipts.jsonl")
+
+
+def _append_journal(handle: Any, record: Mapping[str, Any]) -> None:
+    """Append one record and make it durable before the next step."""
+    handle.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+
+
+def _read_journal(path: Path) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """Resumed results and intents. A corrupt journal is fatal, never ignored."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, set()
+    results: dict[str, dict[str, Any]] = {}
+    intents: set[str] = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            raise ValueError("Labelling journal is corrupt") from None
+        if not isinstance(record, dict):
+            raise ValueError("Labelling journal is corrupt")
+        kind = record.get("kind")
+        question_id = record.get("question_id")
+        if not isinstance(question_id, str) or not question_id:
+            raise ValueError("Labelling journal is corrupt")
+        if kind == "result":
+            results[question_id] = {key: value for key, value in record.items() if key != "kind"}
+        elif kind == "intent":
+            intents.add(question_id)
+        else:
+            raise ValueError("Labelling journal is corrupt")
+    return results, intents
+
+
+def _as_spend(value: Any) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError("Ledger spend is not a number") from None
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("Ledger spend is not a usable amount")
+    return amount
+
+
+def _write_document_atomic(output_path: Path | str, document: Mapping[str, Any]) -> None:
+    """Temp file, fsync, rename: a crash never leaves a half-written document."""
+    target = Path(output_path)
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    try:
+        with handle:
+            json.dump(document, handle, indent=2, sort_keys=True, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, target)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+
+
+def price_ceiling_reader(route: Any) -> Callable[[Mapping[str, Any]], Decimal]:
+    """A conservative USD ceiling for one call on ``route``.
+
+    The input bound is the UTF-8 byte length of the serialized messages: a token
+    never costs more than a byte, so the bound cannot be under the real input.
+    Output is charged at ``LABELLER_MAX_TOKENS``. Both terms are rounded up.
+    """
+    price = getattr(route, "price_ceiling", None)
+    if price is None:
+        raise ValueError("Labeller route has no price ceiling")
+    prompt_rate = Decimal(str(price.microusd_per_1m_prompt))
+    completion_rate = Decimal(str(price.microusd_per_1m_completion))
+    if not prompt_rate.is_finite() or not completion_rate.is_finite():
+        raise ValueError("Labeller route price ceiling is not finite")
+
+    def ceiling(payload: Mapping[str, Any]) -> Decimal:
+        messages = payload.get("messages")
+        if not isinstance(messages, (list, tuple)):
+            raise ValueError("Labeller request has no messages")
+        bound = len(json.dumps(messages, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+        micro = (Decimal(bound) * prompt_rate + Decimal(LABELLER_MAX_TOKENS) * completion_rate) / (
+            Decimal(1_000_000)
+        )
+        return micro.to_integral_value(rounding=ROUND_CEILING) / Decimal(1_000_000)
+
+    return ceiling
+
+
 async def label_questions(
     *,
     question_rows: Sequence[Mapping[str, Any]],
@@ -381,45 +486,78 @@ async def label_questions(
     memory_reader: Callable[[str, Sequence[Any]], Any],
     decrypt: Callable[[str], str],
     account_scope: Callable[[str], Any] | None = None,
+    read_ledger_spend_usd: Callable[[], Any] | None = None,
+    next_call_ceiling_usd: Callable[[Mapping[str, Any]], Any] | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> dict[str, Any]:
     """Label every question once, sequentially, with no retry.
 
-    Attestation and the route pin run first: if either refuses, zero calls are
-    made. A question whose answer sessions hold no memories is recorded as not
-    answerable from the store and never called. The loop stops before a call when
-    the cumulative reported cost has reached ``max_spend_usd``. Memory text and
-    raw responses are never written, logged or put in an exception message.
+    ``max_spend_usd`` is a ceiling on the whole benchmark ledger, not on this
+    invocation: settled spend plus open holds, read before every dispatch, plus
+    a conservative ceiling for the call about to be sent. A missing reader, an
+    unreadable ledger, an unknown ceiling or a missing cost all stop the run
+    before another call is made. The output is claimed up front: an existing
+    document refuses the run, an existing journal resumes it, and no question
+    with a recorded result is dispatched again. Memory text and raw responses
+    are never written, logged or put in an exception message.
     """
     from scripts.memory_query_decomposition import receipt_dict, reported_cost
 
-    pending = check_attestation()
-    if inspect.isawaitable(pending):
-        await pending
-    pending_route = verify_route()
-    if inspect.isawaitable(pending_route):
-        await pending_route
+    output = Path(output_path)
+    if output.exists():
+        raise FileExistsError(f"Labelling output already exists: {output}")
 
-    scope = account_scope or (lambda _user_id: _NullScope())
-    total = Decimal(0)
-    calls = 0
-    entries: list[dict[str, Any]] = []
-    stop_reason: str | None = None
+    journal = _journal_path(output)
+    try:
+        handle = open(journal, "x", encoding="utf-8")
+    except FileExistsError:
+        results, intents = _read_journal(journal)
+        handle = open(journal, "a", encoding="utf-8")
+    else:
+        results, intents = {}, set()
 
-    for row in question_rows:
-        if stop_reason is not None:
-            break
-        question_id = str(row["question_id"])
-        user_id = str(row["user_id"])
-        conversation_ids = answer_conversation_ids(
-            checkpoint, question_id, [str(value) for value in row.get("answer_session_ids") or []]
-        )
-        memories = await load_answer_session_memories(
-            memory_reader, decrypt, user_id, list(conversation_ids.values())
-        )
-        if not memories:
-            entries.append(
-                {
+    try:
+        pending = check_attestation()
+        if inspect.isawaitable(pending):
+            await pending
+        pending_route = verify_route()
+        if inspect.isawaitable(pending_route):
+            await pending_route
+
+        scope = account_scope or (lambda _user_id: _NullScope())
+        total = Decimal(0)
+        calls = 0
+        entries: list[dict[str, Any]] = []
+        stop_reason: str | None = None
+
+        for row in question_rows:
+            if stop_reason is not None:
+                break
+            question_id = str(row["question_id"])
+            user_id = str(row["user_id"])
+
+            recorded = results.get(question_id)
+            if recorded is not None:
+                entries.append(dict(recorded))
+                calls += int(recorded.get("calls") or 0)
+                if isinstance(recorded.get("cost_usd"), str):
+                    total += Decimal(recorded["cost_usd"])
+                continue
+            if question_id in intents:
+                # An intent without a result may already have been charged.
+                stop_reason = "uncertain_dispatch"
+                break
+
+            conversation_ids = answer_conversation_ids(
+                checkpoint,
+                question_id,
+                [str(value) for value in row.get("answer_session_ids") or []],
+            )
+            memories = await load_answer_session_memories(
+                memory_reader, decrypt, user_id, list(conversation_ids.values())
+            )
+            if not memories:
+                entry = {
                     "question_id": question_id,
                     "schema_valid": False,
                     "answerable_from_store": False,
@@ -429,67 +567,113 @@ async def label_questions(
                     "latency_seconds": 0.0,
                     "serving_provider": None,
                 }
+                _append_journal(handle, {"kind": "result", **entry})
+                entries.append(entry)
+                continue
+
+            item = LabelInput(
+                question_id=question_id,
+                question=str(row["question"]),
+                reference_answer=str(row["answer"]),
+                memories=memories,
             )
-            continue
-        if total >= max_spend_usd:
-            stop_reason = "spend_cap"
-            break
+            payload = {"_route_id": LABELLER_ROUTE_ID, "_exact_model": True, **build_request(item)}
 
-        item = LabelInput(
-            question_id=question_id,
-            question=str(row["question"]),
-            reference_answer=str(row["answer"]),
-            memories=memories,
-        )
-        payload = {"_route_id": LABELLER_ROUTE_ID, "_exact_model": True, **build_request(item)}
-        started = clock()
-        calls += 1
-        try:
-            async with scope(user_id):
-                response = call(dict(payload))
-                if inspect.isawaitable(response):
-                    response = await response
-        except Exception:
-            # The cause can carry memory text or a raw response, so it is dropped.
-            raise ValueError(f"Labeller dispatch failed: {question_id}") from None
-        latency = max(clock() - started, 0.0)
-        receipt = receipt_dict(response)
-        cost = reported_cost(receipt)
-        total += cost
+            if read_ledger_spend_usd is None:
+                stop_reason = "spend_unreadable"
+                break
+            if next_call_ceiling_usd is None:
+                stop_reason = "ceiling_unknown"
+                break
+            try:
+                read_pending = read_ledger_spend_usd()
+                if inspect.isawaitable(read_pending):
+                    read_pending = await read_pending
+                spend = _as_spend(read_pending)
+            except Exception:
+                stop_reason = "spend_unreadable"
+                break
+            try:
+                ceiling_pending = next_call_ceiling_usd(dict(payload))
+                if inspect.isawaitable(ceiling_pending):
+                    ceiling_pending = await ceiling_pending
+                ceiling = _as_spend(ceiling_pending)
+            except Exception:
+                stop_reason = "ceiling_unknown"
+                break
+            if spend + ceiling > max_spend_usd:
+                stop_reason = "spend_cap"
+                break
 
-        try:
-            label = parse_label(item, _response_text(receipt))
-        except ValueError:
-            label = None
-        entry: dict[str, Any] = {
-            "question_id": question_id,
-            "schema_valid": label is not None,
-            "calls": 1,
-            "cost_usd": str(cost),
-            "latency_seconds": latency,
-            "serving_provider": _serving_provider(receipt),
+            _append_journal(handle, {"kind": "intent", "question_id": question_id})
+            started = clock()
+            calls += 1
+            try:
+                async with scope(user_id):
+                    response = call(dict(payload))
+                    if inspect.isawaitable(response):
+                        response = await response
+            except Exception:
+                # The cause can carry memory text or a raw response, so it is dropped.
+                stop_reason = "uncertain_dispatch"
+                break
+            latency = max(clock() - started, 0.0)
+            try:
+                receipt = receipt_dict(response)
+            except Exception:
+                stop_reason = "cost_unknown"
+                break
+
+            entry = {
+                "question_id": question_id,
+                "schema_valid": False,
+                "calls": 1,
+                "cost_usd": None,
+                "latency_seconds": latency,
+                "serving_provider": _serving_provider(receipt),
+            }
+            try:
+                cost = reported_cost(receipt)
+            except ValueError:
+                entry["reason"] = "cost_unknown"
+                _append_journal(handle, {"kind": "result", **entry})
+                entries.append(entry)
+                stop_reason = "cost_unknown"
+                break
+            total += cost
+            entry["cost_usd"] = str(cost)
+
+            try:
+                label = parse_label(item, _response_text(receipt))
+            except ValueError:
+                label = None
+            if label is None:
+                entry["schema_valid"] = False
+                entry["reason"] = "parse_failure"
+            else:
+                entry["schema_valid"] = True
+                entry["answerable_from_store"] = label.answerable_from_store
+                entry["memory_ids"] = list(label.memory_ids)
+                entry["note"] = label.note
+            _append_journal(handle, {"kind": "result", **entry})
+            entries.append(entry)
+
+        document = {
+            "schema": LABEL_RECORD_SCHEMA,
+            "route_id": LABELLER_ROUTE_ID,
+            "max_spend_usd": str(max_spend_usd),
+            "total_cost_usd": str(total),
+            "calls": calls,
+            "stop_reason": stop_reason,
+            "questions": entries,
         }
-        if label is None:
-            entry["reason"] = "parse_failure"
-        else:
-            entry["answerable_from_store"] = label.answerable_from_store
-            entry["memory_ids"] = list(label.memory_ids)
-            entry["note"] = label.note
-        entries.append(entry)
-
-    document = {
-        "schema": LABEL_RECORD_SCHEMA,
-        "route_id": LABELLER_ROUTE_ID,
-        "max_spend_usd": str(max_spend_usd),
-        "total_cost_usd": str(total),
-        "calls": calls,
-        "stop_reason": stop_reason,
-        "questions": entries,
-    }
-    with open(output_path, "x", encoding="utf-8") as handle:
-        json.dump(document, handle, indent=2, sort_keys=True, allow_nan=False)
-        handle.write("\n")
-    return document
+        # An uncertain dispatch is not a final state: keep only the journal so a
+        # rerun resumes it. Every other stop is final for this batch.
+        if stop_reason != "uncertain_dispatch":
+            _write_document_atomic(output, document)
+        return document
+    finally:
+        handle.close()
 
 
 async def _run_label(
@@ -506,6 +690,7 @@ async def _run_label(
     from orchestrator.config import get_settings
     from orchestrator.entitlements import attestation
     from orchestrator.memory.encryption import ContentEncryption
+    from tests.benchmark_longmemeval.dev2_pilot import SPEND_SQL, spend_from_row
     from uuid import UUID
 
     settings = get_settings()
@@ -527,6 +712,12 @@ async def _run_label(
             async def call(payload: Mapping[str, Any]) -> Any:
                 return await compute_runtime.guarded_completion(**payload)
 
+            async def read_ledger_spend_usd() -> Decimal:
+                # Settled actuals plus open holds: the driver's own whole-database
+                # reader, so the cap cannot silently undercount in-flight calls.
+                row = await connection.fetchrow(SPEND_SQL)
+                return Decimal(str(spend_from_row(row).total_usd))
+
             def memory_reader(sql: str, params: Sequence[Any]) -> Any:
                 return connection.fetch(sql, *params)
 
@@ -541,6 +732,8 @@ async def _run_label(
                 memory_reader=memory_reader,
                 decrypt=encryption.decrypt,
                 account_scope=account_scope,
+                read_ledger_spend_usd=read_ledger_spend_usd,
+                next_call_ceiling_usd=price_ceiling_reader(verify_label_route()),
             )
         finally:
             await connection.close()
@@ -555,8 +748,26 @@ def label_main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--question-rows", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--max-spend-usd", type=Decimal, required=True)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Labels document. Required unless --dry-run. An existing document refuses the run.",
+    )
+    parser.add_argument(
+        "--max-spend-usd",
+        type=Decimal,
+        help=(
+            "Cumulative ceiling in USD on the whole benchmark database ledger: "
+            "settled spend plus open holds plus a conservative ceiling for the "
+            "next call. Required unless --dry-run."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read and validate the inputs, resolve answer conversations, print the "
+        "question count and exit. No database, no provider, no output, no journal.",
+    )
     args = parser.parse_args(argv)
 
     rows = json.loads(args.question_rows.read_text(encoding="utf-8"))
@@ -565,6 +776,24 @@ def label_main(argv: Sequence[str] | None = None) -> int:
     checkpoint = json.loads(args.checkpoint.read_text(encoding="utf-8"))
     if not isinstance(checkpoint, dict):
         raise ValueError("--checkpoint must be a JSON object")
+
+    if args.dry_run:
+        # Resolve only; memory text is never read and nothing is created.
+        for row in rows:
+            answer_conversation_ids(
+                checkpoint,
+                str(row["question_id"]),
+                [str(value) for value in row.get("answer_session_ids") or []],
+            )
+        print(
+            f"dry run: {len(rows)} questions, answer conversations resolved; "
+            "no calls will be made and no files are written"
+        )
+        return 0
+
+    if args.output is None or args.max_spend_usd is None:
+        parser.error("--output and --max-spend-usd are required unless --dry-run")
+
     document = asyncio.run(
         _run_label(
             rows=rows,
@@ -574,6 +803,18 @@ def label_main(argv: Sequence[str] | None = None) -> int:
         )
     )
     return 0 if document["stop_reason"] is None else 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """The real entry point: ``python -m ...dev2_labelling [label] ...``."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "label":
+        arguments = arguments[1:]
+    return label_main(arguments)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 __all__ = [
@@ -593,7 +834,9 @@ __all__ = [
     "label_main",
     "label_questions",
     "load_answer_session_memories",
+    "main",
     "parse_label",
+    "price_ceiling_reader",
     "request_template",
     "spot_check_sample",
     "verify_label_route",

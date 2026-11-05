@@ -277,6 +277,9 @@ def _run(
     memory_reader: Any = None,
     max_spend: str = "1.00",
     name: str = "labels.json",
+    ledger: Any = None,
+    ceiling: Any = None,
+    clock: Any = None,
 ) -> tuple[dict[str, Any], Any]:
     output = tmp_path / name
     document = asyncio.run(
@@ -290,6 +293,9 @@ def _run(
             verify_route=verify_route or (lambda: None),
             memory_reader=memory_reader or (lambda user_id, ids: [("m1", SENTINEL)]),
             decrypt=lambda text: text,
+            read_ledger_spend_usd=ledger or (lambda: Decimal(0)),
+            next_call_ceiling_usd=ceiling or (lambda payload: Decimal("0.01")),
+            **({"clock": clock} if clock is not None else {}),
         )
     )
     return document, output
@@ -357,9 +363,11 @@ def test_parse_failure_records_schema_invalid_without_retry(tmp_path: Any) -> No
 
 def test_spend_cap_stops_before_the_next_call(tmp_path: Any) -> None:
     calls: list[dict[str, Any]] = []
+    charged: list[Decimal] = []
 
     def call(payload: dict[str, Any]) -> dict[str, Any]:
         calls.append(dict(payload))
+        charged.append(Decimal("0.05"))
         return _receipt(LABEL_TEXT, cost="0.05")
 
     document, _ = _run(
@@ -371,12 +379,141 @@ def test_spend_cap_stops_before_the_next_call(tmp_path: Any) -> None:
         ),
         call=call,
         max_spend="0.05",
+        ledger=lambda: sum(charged, Decimal(0)),
     )
 
     assert len(calls) == 1
     assert document["stop_reason"] == "spend_cap"
     assert len(document["questions"]) == 1
     assert document["total_cost_usd"] == "0.05"
+
+
+def test_prior_ledger_spend_blocks_the_first_call(tmp_path: Any) -> None:
+    calls: list[Any] = []
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: calls.append(payload),
+        max_spend="1.00",
+        ledger=lambda: Decimal("0.99"),
+        ceiling=lambda payload: Decimal("0.02"),
+    )
+
+    assert calls == []
+    assert document["stop_reason"] == "spend_cap"
+    assert document["calls"] == 0
+
+
+def test_next_call_ceiling_crossing_the_cap_is_refused(tmp_path: Any) -> None:
+    calls: list[Any] = []
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: calls.append(payload),
+        max_spend="0.05",
+        ledger=lambda: Decimal("0.04"),
+        ceiling=lambda payload: Decimal("0.02"),
+    )
+
+    assert calls == []
+    assert document["stop_reason"] == "spend_cap"
+    assert document["total_cost_usd"] == "0"
+
+
+def test_open_holds_count_in_the_reused_ledger_reader() -> None:
+    from tests.benchmark_longmemeval.dev2_pilot import spend_from_row
+
+    breakdown = spend_from_row({"settled_microusd": 1_000_000, "held_microusd": 500_000})
+    assert breakdown.settled_usd == 1.0
+    assert breakdown.held_usd == 0.5
+    assert breakdown.total_usd == 1.5
+
+
+def test_unreadable_ledger_sends_nothing(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def ledger() -> Decimal:
+        raise RuntimeError("ledger unavailable")
+
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: calls.append(payload),
+        ledger=ledger,
+    )
+
+    assert calls == []
+    assert document["stop_reason"] == "spend_unreadable"
+    assert output.exists()
+
+
+def test_unknown_ceiling_sends_nothing(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def ceiling(payload: Any) -> Decimal:
+        raise ValueError("no price ceiling")
+
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: calls.append(payload),
+        ceiling=ceiling,
+    )
+
+    assert calls == []
+    assert document["stop_reason"] == "ceiling_unknown"
+
+
+def test_missing_cost_stops_after_that_call(tmp_path: Any) -> None:
+    calls: list[Any] = []
+
+    def call(payload: Any) -> dict[str, Any]:
+        calls.append(payload)
+        return {"provider": "azure", "choices": [{"message": {"content": LABEL_TEXT}}]}
+
+    document, output = _run(
+        tmp_path,
+        rows=[_row("q1"), _row("q2", "s2")],
+        checkpoint=_checkpoint(
+            ("q1", "s1", "11111111-1111-1111-1111-111111111111"),
+            ("q2", "s2", "22222222-2222-2222-2222-222222222222"),
+        ),
+        call=call,
+    )
+
+    assert len(calls) == 1
+    assert document["stop_reason"] == "cost_unknown"
+    entry = document["questions"][0]
+    assert entry["cost_usd"] is None
+    assert entry["reason"] == "cost_unknown"
+    assert document["total_cost_usd"] == "0"
+    assert output.exists()
+
+
+def test_price_ceiling_never_under_the_worst_case() -> None:
+    class _Price:
+        microusd_per_1m_prompt = 250_000
+        microusd_per_1m_completion = 1_000_000
+
+    class _Route:
+        price_ceiling = _Price()
+
+    ceiling = dev2_labelling.price_ceiling_reader(_Route())
+    payload = build_request(ITEM)
+    bound = len(json.dumps(payload["messages"], sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    worst = (
+        Decimal(bound) * Decimal(250_000) / Decimal(1_000_000)
+        + Decimal(4000) * Decimal(1_000_000) / Decimal(1_000_000)
+    ) / Decimal(1_000_000)
+    assert ceiling(payload) >= worst
+    # A bigger input can never read cheaper.
+    bigger = dict(payload)
+    bigger["messages"] = [{"role": "user", "content": "x" * (bound + 1000)}]
+    assert ceiling(bigger) >= ceiling(payload)
 
 
 def test_memory_text_never_reaches_the_output(tmp_path: Any) -> None:
@@ -395,19 +532,23 @@ def test_memory_text_never_reaches_the_output(tmp_path: Any) -> None:
     assert SENTINEL not in text
 
 
-def test_dispatch_failure_message_carries_no_memory_text(tmp_path: Any) -> None:
+def test_dispatch_failure_is_uncertain_and_leaks_no_memory_text(tmp_path: Any) -> None:
     def call(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"provider echoed {SENTINEL}")
 
-    with pytest.raises(ValueError) as raised:
-        _run(
-            tmp_path,
-            rows=[_row()],
-            checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
-            call=call,
-        )
-    assert SENTINEL not in str(raised.value)
-    assert not (tmp_path / "labels.json").exists()
+    document, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=call,
+    )
+    assert document["stop_reason"] == "uncertain_dispatch"
+    assert document["questions"] == []
+    # A charged-but-unresolved call is journal-only: no final document, no rerun.
+    assert not output.exists()
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    assert journal.exists()
+    assert SENTINEL not in journal.read_text(encoding="utf-8")
 
 
 def test_no_answer_memories_makes_no_call(tmp_path: Any) -> None:
@@ -430,10 +571,195 @@ def test_no_answer_memories_makes_no_call(tmp_path: Any) -> None:
 
 def test_output_is_never_overwritten(tmp_path: Any) -> None:
     (tmp_path / "labels.json").write_text("{}", encoding="utf-8")
+    calls: list[Any] = []
     with pytest.raises(FileExistsError):
         _run(
             tmp_path,
             rows=[_row()],
             checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
-            call=lambda payload: _receipt(LABEL_TEXT),
+            call=lambda payload: calls.append(payload),
         )
+    assert calls == []
+    assert (tmp_path / "labels.json").read_text(encoding="utf-8") == "{}"
+    assert not (tmp_path / "labels.json.receipts.jsonl").exists()
+
+
+def test_journal_records_intent_then_result(tmp_path: Any) -> None:
+    _, output = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: _receipt(LABEL_TEXT),
+    )
+    journal = tmp_path / f"{output.name}.receipts.jsonl"
+    records = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert [record["kind"] for record in records] == ["intent", "result"]
+    assert records[0]["question_id"] == "q1"
+    assert records[1]["question_id"] == "q1"
+    assert records[1]["memory_ids"] == ["m1"]
+    assert SENTINEL not in journal.read_text(encoding="utf-8")
+
+
+def test_failure_after_one_question_keeps_it_and_rerun_does_not_redispatch(
+    tmp_path: Any,
+) -> None:
+    rows = [_row("q1"), _row("q2", "s2")]
+    checkpoint = _checkpoint(
+        ("q1", "s1", "11111111-1111-1111-1111-111111111111"),
+        ("q2", "s2", "22222222-2222-2222-2222-222222222222"),
+    )
+    calls: list[Any] = []
+
+    def flaky(payload: Any) -> dict[str, Any]:
+        calls.append(payload)
+        if len(calls) == 2:
+            raise RuntimeError("provider exploded")
+        return _receipt(LABEL_TEXT)
+
+    document, output = _run(tmp_path, rows=rows, checkpoint=checkpoint, call=flaky)
+    assert len(calls) == 2
+    assert document["stop_reason"] == "uncertain_dispatch"
+    assert [entry["question_id"] for entry in document["questions"]] == ["q1"]
+    assert document["total_cost_usd"] == "0.01"
+    assert not output.exists()
+
+    rerun_calls: list[Any] = []
+    second, _ = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=checkpoint,
+        call=lambda payload: rerun_calls.append(payload),
+    )
+    assert rerun_calls == []
+    assert second["stop_reason"] == "uncertain_dispatch"
+    assert [entry["question_id"] for entry in second["questions"]] == ["q1"]
+    assert second["total_cost_usd"] == "0.01"
+    assert second["calls"] == 1
+
+
+def test_intent_without_result_never_redispatches(tmp_path: Any) -> None:
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    journal.write_text(json.dumps({"kind": "intent", "question_id": "q1"}) + "\n", encoding="utf-8")
+    calls: list[Any] = []
+
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_checkpoint(("q1", "s1", "11111111-1111-1111-1111-111111111111")),
+        call=lambda payload: calls.append(payload),
+    )
+
+    assert calls == []
+    assert document["stop_reason"] == "uncertain_dispatch"
+
+
+def test_complete_resume_matches_an_uninterrupted_run(tmp_path: Any) -> None:
+    rows = [_row("q1"), _row("q2", "s2")]
+    checkpoint = _checkpoint(
+        ("q1", "s1", "11111111-1111-1111-1111-111111111111"),
+        ("q2", "s2", "22222222-2222-2222-2222-222222222222"),
+    )
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def __call__(self) -> float:
+            self.value += 1.0
+            return self.value
+
+    def call(payload: Any) -> dict[str, Any]:
+        return _receipt(LABEL_TEXT)
+
+    # First run only reaches q1, as if the process died before writing the doc.
+    first, first_output = _run(
+        tmp_path,
+        rows=rows[:1],
+        checkpoint=checkpoint,
+        call=call,
+        name="resumed.json",
+        clock=_Clock(),
+    )
+    assert first["stop_reason"] is None
+    first_output.unlink()
+
+    resumed, _ = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=checkpoint,
+        call=call,
+        name="resumed.json",
+        clock=_Clock(),
+    )
+    uninterrupted, _ = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=checkpoint,
+        call=call,
+        name="fresh.json",
+        clock=_Clock(),
+    )
+
+    assert resumed == uninterrupted
+    assert resumed["calls"] == 2
+
+
+# --- entry point -------------------------------------------------------------
+
+DRY_RUN_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+def _inputs(tmp_path: Any) -> tuple[Any, Any]:
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps([_row()]), encoding="utf-8")
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps(_checkpoint(("q1", "s1", DRY_RUN_UUID))), encoding="utf-8")
+    return rows, checkpoint
+
+
+def test_help_exits_zero_and_lists_the_flags(capsys: Any) -> None:
+    with pytest.raises(SystemExit) as raised:
+        dev2_labelling.main(["--help"])
+    assert raised.value.code == 0
+    output = capsys.readouterr().out
+    for flag in ("--question-rows", "--checkpoint", "--output", "--max-spend-usd", "--dry-run"):
+        assert flag in output
+
+
+def test_dry_run_makes_no_call_and_creates_no_files(tmp_path: Any, capsys: Any) -> None:
+    rows, checkpoint = _inputs(tmp_path)
+    before = set(tmp_path.iterdir())
+    assert (
+        dev2_labelling.main(
+            [
+                "--dry-run",
+                "--question-rows",
+                str(rows),
+                "--checkpoint",
+                str(checkpoint),
+                "--output",
+                str(tmp_path / "labels.json"),
+            ]
+        )
+        == 0
+    )
+    assert set(tmp_path.iterdir()) == before
+    assert "no calls will be made" in capsys.readouterr().out
+
+
+def test_bad_arguments_do_not_silently_succeed() -> None:
+    with pytest.raises(SystemExit) as raised:
+        dev2_labelling.main(["label", "--bogus"])
+    assert raised.value.code == 2
+    with pytest.raises(SystemExit) as raised:
+        dev2_labelling.main([])
+    assert raised.value.code == 2
+
+
+def test_label_arguments_require_output_and_cap(tmp_path: Any) -> None:
+    rows, checkpoint = _inputs(tmp_path)
+    with pytest.raises(SystemExit) as raised:
+        dev2_labelling.main(
+            ["label", "--question-rows", str(rows), "--checkpoint", str(checkpoint)]
+        )
+    assert raised.value.code == 2

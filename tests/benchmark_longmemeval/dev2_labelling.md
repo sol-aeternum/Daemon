@@ -87,6 +87,12 @@ the store never held the fact, so they cannot measure exposure failure.
 
 - Code: `tests/benchmark_longmemeval/dev2_labelling.py`
 - Tests: `tests/benchmark_longmemeval/test_dev2_labelling.py`, `dev2_labelling.md`
+- Run a dry check first (reads and validates the inputs, resolves answer
+  conversations, writes nothing):
+  `python -m tests.benchmark_longmemeval.dev2_labelling label --dry-run --question-rows <rows.json> --checkpoint <checkpoint.json>`
+- The paid pass adds `--output <labels.json> --max-spend-usd <cap>`, where the
+  cap is cumulative over the whole benchmark database ledger: settled spend plus
+  open holds plus a conservative ceiling for the next call.
 - Raw model output stays out of Git. Only aggregates — per-question labels that
   the owner has spot-checked, the spot-check counts and the error rate — may be
   recorded in the evidence directory.
