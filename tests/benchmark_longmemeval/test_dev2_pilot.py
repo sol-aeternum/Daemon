@@ -1590,6 +1590,6 @@ def test_resource_sampling_reads_the_ingestion_child(tmp_path: Path) -> None:
     assert child == 7 * driver
 
     spawn, sampler = dev2_pilot.child_resource_sampling(lambda _command: _FakeProcess())
-    process = spawn(["ingest"])
+    process: Any = spawn(["ingest"])
     assert process.pid == 4242
     assert isinstance(sampler(), dict)

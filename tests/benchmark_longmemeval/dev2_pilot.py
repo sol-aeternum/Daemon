@@ -1317,7 +1317,9 @@ def child_resource_sampling(
 
     def spawn_tracking(command: Sequence[str]) -> ProcessHandle:
         process = spawn(command)
-        child["pid"] = int(process.pid)
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int):
+            child["pid"] = pid
         return process
 
     return spawn_tracking, lambda: sample_resources_psutil_free(pid=child.get("pid"))
