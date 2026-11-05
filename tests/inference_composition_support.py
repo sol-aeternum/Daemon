@@ -185,6 +185,8 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "_publish_reserved",
                                     "_present_reserved",
                                     "_presentation_snapshot",
+                                    "_preparation_snapshot",
+                                    "encode_csv",
                                     "_presentation_references",
                                     "_reserved_namespace",
                                     "_owned",
@@ -217,6 +219,30 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and path == "orchestrator/services/restore_history/effects.py"
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved reservation construction")
+                if target == "encode_csv" or target.endswith(".encode_csv"):
+                    functions = [
+                        f
+                        for f in nodes
+                        if isinstance(f, ast.AsyncFunctionDef)
+                        and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                    ]
+                    method = max(functions, key=lambda f: f.lineno).name if functions else ""
+                    expected = {
+                        ("orchestrator/resource_csv.py", "publish"): "self.byte_limit",
+                        (
+                            "orchestrator/services/restore_history/effects.py",
+                            "prepare_output",
+                        ): "8388608",
+                    }.get((path, method))
+                    if not (
+                        expected is not None
+                        and ast.unparse(node.func) == "encode_csv"
+                        and [ast.unparse(a) for a in node.args] == ["rows"]
+                        and len(node.keywords) == 1
+                        and node.keywords[0].arg == "byte_limit"
+                        and ast.unparse(node.keywords[0].value) == expected
+                    ):
+                        violations.append(f"{path}:{node.lineno}:unapproved CSV encoder seam")
                 if any(
                     target == n or target.endswith("." + n)
                     for n in (
@@ -225,6 +251,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         "_publish_reserved",
                         "_present_reserved",
                         "_presentation_snapshot",
+                        "_preparation_snapshot",
                         "_presentation_references",
                         "_reserved_namespace",
                         "register_output_job",
@@ -241,6 +268,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     expression = ast.unparse(node.func)
                     args = [ast.unparse(arg) for arg in node.args]
                     h_calls: dict[str | None, dict[str, list[str]]] = {
+                        "_prepare_output": {
+                            "publisher._reserved_transaction": [],
+                            "publisher._preparation_snapshot": ["conn", "identity"],
+                        },
                         "_reserve_output": {
                             "publisher._reserved_transaction": [],
                             "publisher._presentation_snapshot": ["conn", "identity"],
@@ -476,6 +507,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
                         ("orchestrator/services/restore_history/effects.py", "_reserve_output"),
+                        ("orchestrator/services/restore_history/effects.py", "_prepare_output"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
                         ("orchestrator/services/restore_history/effects.py", "_write_partial"),
                         (

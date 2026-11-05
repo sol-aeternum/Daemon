@@ -1,4 +1,4 @@
-"""Uncalled Send/Stop join. No transport, observer, host or reusable permit.
+"""Uncalled H/native joins. No transport, observer, host or reusable permit.
 
 Every new send still needs its original fresh native mark. Historical sends only
 constrain admission; they never grant it. SQL and filesystem cleanup finish under
@@ -8,6 +8,7 @@ H ownership, even after logical timeout. Kernel cleanup has no promised bound.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import Callable, Coroutine
 from typing import Any, Literal, TypeVar
@@ -15,8 +16,14 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from orchestrator.artifact_reservations import OutputReservations, IntentCommand
+from orchestrator.artifact_reservations import (
+    OutputReservations,
+    IntentCommand,
+    JobBinding,
+    IntentBinding,
+)
 from orchestrator.attempt_lifecycle import AttemptIdentity
+from orchestrator.resource_csv import encode_csv
 from orchestrator.resource_store import ReservedOutputPublisher, Publication
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks._invocation import InferenceInvocation, block
@@ -156,6 +163,104 @@ class HistoryEffects:
             for e in state.entries
         ):
             raise HistoryError("historical_stop", uncertain=True)
+
+    async def prepare_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        identity: AttemptIdentity,
+        job: JobBinding,
+        slot: int,
+        rows: list[list[str]],
+        filename: str,
+        *,
+        deadline: float,
+    ) -> tuple[IntentCommand, bytes]:
+        """Prepare once; retain this packet before any separate reservation call."""
+        if (
+            type(publisher) is not ReservedOutputPublisher
+            or publisher._pool is self._tasks._pool
+            or publisher._presentation_record_limit is None
+            or type(identity) is not AttemptIdentity
+            or type(job) is not JobBinding
+            or type(slot) is not int
+            or not 0 <= slot <= 2**31 - 1
+            or type(filename) is not str
+            or len(filename) > 1024
+        ):
+            raise HistoryError("artifact_composition_refused")
+        deadline = self._admission_deadline(deadline)
+        identity.wire()
+        job.wire()
+        if (job.account_id, job.account_generation, job.task_id) != (
+            identity.account_id,
+            identity.generation,
+            identity.task_id,
+        ):
+            raise HistoryError("effects_origin_refused")
+        try:
+            if len(filename.encode("utf-8")) > 1024:
+                raise HistoryError("artifact_composition_refused")
+        except UnicodeError:
+            raise HistoryError("artifact_composition_refused") from None
+        content = encode_csv(rows, byte_limit=8388608)
+        _check_time(deadline)
+        return await self._run(
+            lambda limit: self._prepare_output(
+                publisher, identity, job, slot, content, filename, limit
+            ),
+            deadline,
+        )
+
+    async def _prepare_output(
+        self,
+        publisher: ReservedOutputPublisher,
+        identity: AttemptIdentity,
+        job: JobBinding,
+        slot: int,
+        content: bytes,
+        filename: str,
+        deadline: float,
+    ) -> tuple[IntentCommand, bytes]:
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            accepted = self._accepted(state, identity.account_id, identity.task_id)
+            if accepted.account_generation != identity.generation:
+                raise HistoryError("effects_origin_refused")
+            self._no_stop(state, identity.task_id)
+            async with publisher._reserved_transaction() as conn:
+                observed = await publisher._preparation_snapshot(conn, identity)
+                origin = self._tasks._origin(observed["task"])
+                if (
+                    origin.account_id,
+                    origin.generation,
+                    observed["task"]["conversation_id"],
+                    observed["task"]["result_message_id"],
+                ) != (
+                    accepted.account_id,
+                    accepted.account_generation,
+                    accepted.conversation_id,
+                    accepted.result_message_id,
+                ):
+                    raise HistoryError("effects_origin_refused")
+                command = publisher._descriptors.encode(
+                    job,
+                    IntentBinding(
+                        uuid4(),
+                        slot,
+                        uuid4(),
+                        uuid4(),
+                        identity.lifecycle_id,
+                        observed["attempt_id"],
+                        identity.epoch,
+                        len(content),
+                    ),
+                    filename=filename,
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+                _check_time(deadline)
+            _check_time(deadline)
+        _check_time(deadline)
+        return command, content
 
     async def reserve_output(
         self,

@@ -155,8 +155,12 @@ def reservation_references_allowed(path: str, source: str) -> bool:
         if (
             node not in tree.body
             or node.level != 0
-            or len(node.names) != 2
-            or {item.name for item in node.names} != {"OutputReservations", "IntentCommand"}
+            or {item.name for item in node.names}
+            not in (
+                {"OutputReservations", "IntentCommand"},
+                {"OutputReservations", "IntentCommand", "JobBinding", "IntentBinding"},
+            )
+            or len(node.names) != len({item.name for item in node.names})
             or any(item.asname is not None for item in node.names)
         ):
             return False

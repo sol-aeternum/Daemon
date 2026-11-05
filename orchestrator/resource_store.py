@@ -1112,12 +1112,12 @@ class ResourceStore(_ResourceCodec):
 
 
 class ReservedOutputPublisher(_ResourceCodec):
-    """Backend-only, uncalled P collaborator for an original CSV reservation.
+    """Backend-only, uncalled P collaborator for an original CSV operation.
 
     No reservation, namespace creation, repair, HTTP or startup. Presentation
     requires separately supplied budgets and owns a distinct P transaction.
     The existing H owner validates native origin on the locked snapshot before
-    entering the sole typed effect seam. Snapshots never authorize file work.
+    entering the typed effect seams. Snapshots never authorize file work.
     """
 
     def __init__(
@@ -1590,6 +1590,49 @@ class ReservedOutputPublisher(_ResourceCodec):
                 UUID(packet["reference_id"]),
                 self._instant(result["created_at"]),
             )
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise ResourceError("invalid_snapshot") from None
+
+    async def _preparation_snapshot(self, conn: Any, identity: AttemptIdentity) -> dict[str, Any]:
+        self._owned_connection(conn)
+        payload = await conn.fetchval(
+            "WITH observed AS MATERIALIZED (SELECT public.resource_output_preparation_snapshot($1::pg_catalog.jsonb) AS value) SELECT CASE WHEN pg_catalog.octet_length(value::pg_catalog.text)<=$2::pg_catalog.int4 THEN value ELSE NULL END FROM observed",
+            identity.wire(),
+            self._snapshot_byte_limit,
+        )
+        if type(payload) is not str or len(payload.encode("utf-8")) > self._snapshot_byte_limit:
+            raise ResourceError("snapshot_capacity")
+        try:
+            raw = json.loads(payload, object_pairs_hook=_pairs)
+            if (
+                type(raw) is not dict
+                or set(raw) != {"schema_version", "attempt_id", "task"}
+                or type(raw["schema_version"]) is not int
+                or raw["schema_version"] != 1
+                or type(raw["task"]) is not dict
+                or set(raw["task"])
+                != {
+                    "id",
+                    "user_id",
+                    "conversation_id",
+                    "result_message_id",
+                    "input_version",
+                    "input_ciphertext",
+                }
+            ):
+                raise ResourceError("invalid_snapshot")
+            raw["attempt_id"] = self._uuid(raw["attempt_id"])
+            task = raw["task"]
+            for key in ("id", "user_id", "conversation_id", "result_message_id"):
+                task[key] = self._uuid(task[key])
+            if (
+                task["id"] != identity.task_id
+                or task["user_id"] != identity.account_id
+                or type(task["input_version"]) is not int
+                or type(task["input_ciphertext"]) is not str
+            ):
+                raise ResourceError("invalid_snapshot")
+            return raw
         except (KeyError, TypeError, ValueError, RecursionError):
             raise ResourceError("invalid_snapshot") from None
 
