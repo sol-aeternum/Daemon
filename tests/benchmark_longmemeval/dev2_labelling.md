@@ -105,7 +105,7 @@ the store never held the fact, so they cannot measure exposure failure.
   open holds plus a conservative ceiling for the next call.
 - Build the spot-check packet from a finished label document (read-only, no
   provider call):
-  `python -m tests.benchmark_longmemeval.dev2_labelling packet --question-rows <rows.json> --checkpoint <checkpoint.json> --labels <labels.json> --output <packet.md>`
+  `python -m tests.benchmark_longmemeval.dev2_labelling packet --question-rows <rows.json> --checkpoint <checkpoint.json> --labels <labels.json> --population <ids.json> --output <packet.md>`
   The packet quotes benchmark text, so the output must be outside the repository
   and an existing packet is never overwritten. A stopped label document, or a
   label id absent from the rows, refuses before connecting.

@@ -1188,7 +1188,37 @@ def _repository_root() -> Path:
     return Path(completed.stdout.strip())
 
 
-def _packet_labels(labels: Any, rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+def _read_population(path: Path) -> set[str]:
+    """The frozen question IDs this packet must cover: a list or ``question_ids``."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    ids = value.get("question_ids") if isinstance(value, Mapping) else value
+    if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
+        raise ValueError("--population must hold a non-empty list of question ids")
+    if len(set(ids)) != len(ids):
+        raise ValueError("--population holds duplicate question ids")
+    return set(ids)
+
+
+def _check_packet_entry(entry: Mapping[str, Any]) -> None:
+    """A label is whole or plainly invalid; a truncated one must not read as a judgment."""
+    question_id = entry["question_id"]
+    if entry.get("schema_valid") is True:
+        answerable = entry.get("answerable_from_store")
+        memory_ids = entry.get("memory_ids")
+        if type(answerable) is not bool:
+            raise ValueError(f"--labels {question_id}: answerable_from_store must be a boolean")
+        if not isinstance(memory_ids, list) or not isinstance(entry.get("note"), str):
+            raise ValueError(f"--labels {question_id}: memory_ids and note are required")
+    elif entry.get("schema_valid") is False:
+        if not isinstance(entry.get("reason"), str):
+            raise ValueError(f"--labels {question_id}: an invalid entry must carry its reason")
+    else:
+        raise ValueError(f"--labels {question_id}: schema_valid must be a boolean")
+
+
+def _packet_labels(
+    labels: Any, rows: Sequence[Mapping[str, Any]], population: set[str]
+) -> list[Mapping[str, Any]]:
     """Validate the finished label document before anything is connected."""
     if not isinstance(labels, dict):
         raise ValueError("--labels must be a JSON object")
@@ -1205,7 +1235,16 @@ def _packet_labels(labels: Any, rows: Sequence[Mapping[str, Any]]) -> list[Mappi
     label_ids = [str(entry["question_id"]) for entry in questions]
     if len(set(label_ids)) != len(label_ids):
         raise ValueError("--labels holds duplicate question ids")
-    row_ids = {str(row["question_id"]) for row in rows}
+    row_list = [str(row["question_id"]) for row in rows]
+    row_ids = set(row_list)
+    if len(row_ids) != len(row_list):
+        raise ValueError("--question-rows holds duplicate question ids")
+    # Rows and labels can agree on the same incomplete subset, so both answer to the
+    # frozen population, not only to each other.
+    if row_ids != population:
+        raise ValueError("--question-rows does not match the frozen --population")
+    for entry in questions:
+        _check_packet_entry(entry)
     unknown = sorted(set(label_ids) - row_ids)
     if unknown:
         raise ValueError(f"--labels holds question ids absent from the rows: {unknown}")
@@ -1284,6 +1323,12 @@ def packet_main(
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument(
+        "--population",
+        type=Path,
+        required=True,
+        help="Frozen question IDs the batch must cover: a JSON list or a question_ids object.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         required=True,
@@ -1298,7 +1343,7 @@ def packet_main(
     if not isinstance(checkpoint, dict):
         raise ValueError("--checkpoint must be a JSON object")
     labels = json.loads(args.labels.read_text(encoding="utf-8"))
-    questions = _packet_labels(labels, rows)
+    questions = _packet_labels(labels, rows, _read_population(args.population))
 
     # The packet quotes benchmark text, so it never lands in the checkout. Every
     # refusal below happens before a connection is opened.

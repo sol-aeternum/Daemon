@@ -22,7 +22,7 @@ The pilot arms cost USD 0.587, 1.138 and 2.407, so about **USD 4.13** for 675 se
 
 ## Method
 
-- **Questions:** `07741c45`, `0bc8ad92`, `0ea62687`, `1f2b8d4f`, `2133c1b5`, `41698283`, `4dfccbf7`, `5a7937c8`, `71017276`, `a08a253f`, `edced276_abs`, `gpt4_372c3eed`, `gpt4_7ca326fa`, `gpt4_b5700ca0`.
+- **Questions** (`fixtures/dev2_pilot_ids.json`, which the packet command checks against): `07741c45`, `0bc8ad92`, `0ea62687`, `1f2b8d4f`, `2133c1b5`, `41698283`, `4dfccbf7`, `5a7937c8`, `71017276`, `a08a253f`, `edced276_abs`, `gpt4_372c3eed`, `gpt4_7ca326fa`, `gpt4_b5700ca0`.
 - **Ingest:** one arm at concurrency 8, same harness, with `--cap-usd 6.00 --margin-usd 1.00`. Never `--retry-failed-sessions` or `--allow-state-mismatch`.
 - **Relabel:** the frozen labelling protocol, `--max-spend-usd 6.00` as a cumulative ledger ceiling.
 - **Provisional labels from pre-pin arms:** discarded as evidence, kept archived. Changes against them are reported, especially for `0bc8ad92`, `4dfccbf7`, `71017276` and `gpt4_7ca326fa`.

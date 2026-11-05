@@ -7,6 +7,7 @@ import fcntl
 import json
 from collections.abc import Sequence
 from decimal import ROUND_CEILING, Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1339,6 +1340,7 @@ def _write_packet_inputs(
     rows.write_text(json.dumps(_packet_rows()), encoding="utf-8")
     checkpoint = tmp_path / "checkpoint.json"
     checkpoint.write_text(json.dumps(_packet_checkpoint()), encoding="utf-8")
+    (tmp_path / "population.json").write_text(json.dumps(["q1", "q2"]), encoding="utf-8")
     labels = tmp_path / "labels.json"
     labels.write_text(
         json.dumps(
@@ -1369,6 +1371,8 @@ def test_packet_refuses_an_output_inside_the_repository(tmp_path: Any) -> None:
                 str(checkpoint),
                 "--labels",
                 str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
                 "--output",
                 str(output),
             ],
@@ -1391,6 +1395,8 @@ def test_packet_refuses_an_existing_output_without_connecting(tmp_path: Any) -> 
                 str(checkpoint),
                 "--labels",
                 str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
                 "--output",
                 str(output),
             ],
@@ -1412,6 +1418,8 @@ def test_packet_refuses_an_unfinished_label_document(tmp_path: Any) -> None:
                 str(checkpoint),
                 "--labels",
                 str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
                 "--output",
                 str(output),
             ],
@@ -1435,6 +1443,8 @@ def test_packet_refuses_a_label_id_absent_from_the_rows(tmp_path: Any) -> None:
                 str(checkpoint),
                 "--labels",
                 str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
                 "--output",
                 str(output),
             ],
@@ -1442,6 +1452,9 @@ def test_packet_refuses_a_label_id_absent_from_the_rows(tmp_path: Any) -> None:
             connector=_no_connect,
         )
     assert not output.exists()
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def _batch_rows() -> list[dict[str, Any]]:
@@ -1452,7 +1465,16 @@ def _batch_document(*ids: str, **overrides: Any) -> dict[str, Any]:
     document: dict[str, Any] = {
         "schema": dev2_labelling.LABEL_RECORD_SCHEMA,
         "stop_reason": None,
-        "questions": [{"question_id": q, "schema_valid": True} for q in ids],
+        "questions": [
+            {
+                "question_id": q,
+                "schema_valid": True,
+                "answerable_from_store": True,
+                "memory_ids": ["m1"],
+                "note": "n",
+            }
+            for q in ids
+        ],
     }
     document.update(overrides)
     return document
@@ -1470,11 +1492,14 @@ def _batch_document(*ids: str, **overrides: Any) -> dict[str, Any]:
 )
 def test_packet_refuses_an_incomplete_or_malformed_batch(document: Any, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        dev2_labelling._packet_labels(document, _batch_rows())
+        dev2_labelling._packet_labels(document, _batch_rows(), {"q1", "q2"})
 
 
 def test_packet_accepts_a_complete_batch() -> None:
-    assert len(dev2_labelling._packet_labels(_batch_document("q1", "q2"), _batch_rows())) == 2
+    assert (
+        len(dev2_labelling._packet_labels(_batch_document("q1", "q2"), _batch_rows(), {"q1", "q2"}))
+        == 2
+    )
 
 
 @pytest.mark.parametrize(
@@ -1492,3 +1517,46 @@ def test_an_invalid_reply_is_never_shown_as_a_negative_label(
     line = dev2_labelling._packet_label_line(entry)
     assert expected in line
     assert absent not in line
+
+
+def test_rows_and_labels_cannot_agree_on_an_incomplete_subset() -> None:
+    rows = [{"question_id": "q1", "question": "Q", "answer": "A"}]
+    with pytest.raises(ValueError, match="frozen --population"):
+        dev2_labelling._packet_labels(_batch_document("q1"), rows, {"q1", "q2"})
+
+
+def test_duplicate_rows_refuse() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        dev2_labelling._packet_labels(
+            _batch_document("q1", "q2"), [*_batch_rows(), _batch_rows()[0]], {"q1", "q2"}
+        )
+
+
+@pytest.mark.parametrize("value", [[], {"question_ids": []}, {"other": ["q1"]}, ["q1", "q1"]])
+def test_an_empty_or_malformed_population_refuses(tmp_path: Any, value: Any) -> None:
+    path = tmp_path / "population.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="--population"):
+        dev2_labelling._read_population(path)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"answerable_from_store": None},
+        {"answerable_from_store": "false"},
+        {"memory_ids": None},
+        {"note": None},
+        {"schema_valid": "true"},
+        {"schema_valid": False, "reason": None},
+    ],
+)
+def test_a_malformed_entry_refuses_before_sampling(broken: dict[str, Any]) -> None:
+    document = _batch_document("q1", "q2")
+    document["questions"][0].update(broken)
+    with pytest.raises(ValueError, match="--labels q1"):
+        dev2_labelling._packet_labels(document, _batch_rows(), {"q1", "q2"})
+
+
+def test_the_committed_pilot_population_has_all_fourteen() -> None:
+    assert len(dev2_labelling._read_population(FIXTURES / "dev2_pilot_ids.json")) == 14
