@@ -2816,6 +2816,7 @@ async def test_pinned_route_dispatches_exactly_one_of_two_same_model_routes(
     assert len({route.route_id for route in pool}) == 2
     _qualified_policy(monkeypatch, route=pool)
     service = _chat_service()
+    service.reserve = AsyncMock(side_effect=["pooled-hold", "pooled-hold-2"])
     provider = AsyncMock(return_value={"choices": []})
     monkeypatch.setattr(runtime.litellm, "acompletion", provider)
     async with _account_scope(service):
@@ -2826,6 +2827,7 @@ async def test_pinned_route_dispatches_exactly_one_of_two_same_model_routes(
         cheap = provider.await_args
         assert cheap is not None
         assert cheap.kwargs["extra_body"]["provider"]["only"] == ["shared-provider"]
+        assert service.reserve.await_args is not None
         assert service.reserve.await_args.kwargs["route_id"] == "pooled-cheap"
 
         # Pinned: the exact route wins over price, on the same exact model.
@@ -2844,6 +2846,7 @@ async def test_pinned_route_dispatches_exactly_one_of_two_same_model_routes(
         "order": ["alternate-provider"],
         "max_price": {"prompt": 0.009, "completion": 0.009},
     }
+    assert service.reserve.await_args is not None
     assert service.reserve.await_args.kwargs["route_id"] == "pooled-dear"
     # The seam's own arguments are not request parameters and the SDK still never
     # retries: a hidden retry would re-send a pinned route on unreserved budget.
@@ -3540,7 +3543,9 @@ async def test_settlement_owner_emits_once_despite_waiter_lifetime(monkeypatch, 
             owner.cancel()
         release.set()
         results = await asyncio.wait_for(asyncio.gather(*waiters, return_exceptions=True), 1)
-        service.settle.assert_awaited_once_with("reservation", 7, usage=usage)
+        service.settle.assert_awaited_once_with(
+            "reservation", 7, usage={"input_tokens": 3, "output_tokens": 4}
+        )
         if ending in {"success", "waiter_cancelled"}:
             if ending == "success":
                 assert results == [None, None]

@@ -38,6 +38,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Final
+from types import MappingProxyType
 
 import httpx
 import litellm
@@ -361,6 +362,7 @@ class ComputeScope:
     selected_budget_fitted: bool = False
     outstanding: dict[Any, ReservationHold] = field(default_factory=dict)
     settled: dict[Any, int] = field(default_factory=dict)
+    terminal_decisions: dict[Any, TerminalDecision] = field(default_factory=dict)
     expected_period: str | None = None
     #: Outer account profile bounds automatic premium eligibility in nested contexts.
     account_allow_premium: bool = True
@@ -391,11 +393,56 @@ class ComputeScope:
         usage: dict[str, Any] | None = None,
         path: str = "unspecified",
     ) -> None:
+        await self._finish(reservation, "settle", amount, usage=usage, path=path)
+
+    async def release(self, reservation: Any, *, path: str = "unspecified") -> None:
+        await self._finish(reservation, "release", 0, path=path)
+
+    async def finish_failure(
+        self,
+        hold: ReservationHold,
+        amount: int,
+        *,
+        path: str,
+        release: bool = False,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        """Join an existing winner, including a failed owner; never replace it."""
+        await self._finish(
+            hold.reservation,
+            "release" if release else "settle",
+            amount,
+            usage=usage,
+            path=path,
+            join=True,
+        )
+
+    async def _finish(
+        self,
+        reservation: Any,
+        operation: str,
+        amount: int,
+        *,
+        usage: dict[str, Any] | None = None,
+        path: str,
+        join: bool = False,
+    ) -> None:
         self.require_inference_effect()
         key = _hold_key(reservation)
         hold = self.outstanding.get(key)
+        decision = self.terminal_decisions.get(key)
+        matches = decision is not None and (decision.operation, decision.amount) == (
+            operation,
+            amount,
+        )
+        if decision is not None and not join and not matches:
+            raise ComputeUnavailable(
+                "settlement_conflict",
+                "Reservation already settling differently",
+                category=FAILURE_SETTLEMENT_FAILED,
+            )
         if hold is None:
-            if self.settled.get(key) == amount:
+            if key in self.settled and (join or matches):
                 return
             raise ComputeUnavailable(
                 "settlement_conflict",
@@ -406,8 +453,13 @@ class ComputeScope:
             # One task per reservation prevents racing a stream-finally against
             # the account-scope-finally on client cancellation. Its initiating
             # caller also owns telemetry, even if that waiter is cancelled.
-            hold.actual = amount
-            has_usage = bool(usage)
+            decision = TerminalDecision(
+                operation, amount, MappingProxyType(dict(usage or {})), path
+            )
+            self.terminal_decisions[key] = hold.decision = decision
+            hold.actual = decision.amount
+            hold.final_usage = dict(decision.usage)
+            has_usage = bool(decision.usage)
             settlement_fields = {
                 "scope_id": str(self.scope_id),
                 "reservation_id": _label(key),
@@ -421,8 +473,12 @@ class ComputeScope:
 
             async def settle_once() -> Any:
                 self.require_inference_effect()
-                if has_usage:
-                    result = await self.service.settle(reservation, amount, usage=usage)
+                if operation == "release":
+                    result = await self.service.release(reservation)
+                elif has_usage:
+                    result = await self.service.settle(
+                        reservation, amount, usage=dict(decision.usage)
+                    )
                 else:
                     result = await self.service.settle(reservation, amount)
                 # No await between financial success and the single emission.
@@ -436,12 +492,6 @@ class ComputeScope:
                 return result
 
             hold.settlement = asyncio.create_task(settle_once())
-        elif hold.actual != amount:
-            raise ComputeUnavailable(
-                "settlement_conflict",
-                "Reservation already settling differently",
-                category=FAILURE_SETTLEMENT_FAILED,
-            )
         try:
             await asyncio.shield(hold.settlement)
         except BaseException as exc:
@@ -454,7 +504,8 @@ class ComputeScope:
                     category=FAILURE_SETTLEMENT_FAILED,
                 ) from None
             raise
-        self.settled[key] = amount
+        assert hold.decision is not None
+        self.settled[key] = hold.decision.amount
         self.outstanding.pop(key, None)
 
     def require_inference_effect(self) -> None:
@@ -512,6 +563,14 @@ class ComputeScope:
             raise
 
 
+@dataclass(frozen=True)
+class TerminalDecision:
+    operation: str
+    amount: int
+    usage: Any
+    path: str
+
+
 @dataclass
 class ReservationHold:
     reservation: Any
@@ -520,6 +579,7 @@ class ReservationHold:
     actual: int | None = None
     stream: _StreamControl | None = None
     final_usage: dict[str, Any] | None = None
+    decision: TerminalDecision | None = None
 
 
 class _StreamControl:
