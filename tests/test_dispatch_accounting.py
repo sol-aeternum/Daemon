@@ -19,17 +19,30 @@ class Ledger:
     def __init__(self) -> None:
         self.actions: list[tuple[str, Any, int]] = []
         self.error: Exception | None = None
+        self.reservations: dict[Any, dict[str, Any]] = {}
+        self.units_used = 0
+
+    async def reserve(self, user: Any, amount: int, **options: Any) -> Any:
+        key = str(uuid.uuid4())
+        self.reservations[key] = {**options, "bound": amount, "status": "open"}
+        return key
 
     async def settle(self, reservation: Any, amount: int, **kwargs: Any) -> Any:
         self.actions.append(("settle", reservation, amount))
         if self.error:
             raise self.error
+        if reservation in self.reservations:
+            record = self.reservations[reservation]
+            self.units_used += int(record.get("extended_run", False))
+            record["status"] = "settled"
         return SimpleNamespace(status="settled", overage_microusd=0)
 
     async def release(self, reservation: Any, **kwargs: Any) -> Any:
         self.actions.append(("release", reservation, 0))
         if self.error:
             raise self.error
+        if reservation in self.reservations:
+            self.reservations[reservation]["status"] = "released"
         return SimpleNamespace(status="released", overage_microusd=0)
 
 
@@ -188,3 +201,83 @@ async def test_extended_release_waiter_cancellation_keeps_financial_lock(monkeyp
     await scope.finish_failure(carrier, 100, path="scope_cleanup")
     assert not scope.extended_lock.locked() and not scope.extended_started
     assert scope.extended_holds == 0
+
+
+def test_production_reasoning_failure_arithmetic(monkeypatch) -> None:
+    from orchestrator import model_routing
+    from orchestrator.entitlements import attestation
+    from orchestrator.entitlements.models import AccountRecord
+    from orchestrator.entitlements.plans import AccountStatus, Plan, TrialState
+    from orchestrator.entitlements.policy import load_policy, load_inference_policy
+    from orchestrator.entitlements.resolver import resolve_account_policy
+
+    inference = load_inference_policy("config/inference_policy.production.json")
+    monkeypatch.setattr(runtime, "load_inference_policy", lambda: inference)
+    # Arithmetic only: synthetic current monitoring, never a qualification claim.
+    monkeypatch.setattr(attestation, "attestation_reasons", lambda *args, **kwargs: ())
+    record = AccountRecord(
+        uuid.uuid4(), Plan.PRO, "admin", AccountStatus.ACTIVE, False, TrialState.EXHAUSTED, 0, 0, 0
+    )
+    policy = resolve_account_policy(record, load_policy(), period="2026-11")
+    params = {"messages": [{"role": "user", "content": "hi"}]}
+    amounts: dict[str, int] = {}
+    with model_routing.routing_context("reasoning"):
+        candidates = runtime._priced_candidates(
+            policy, runtime._request_bound(params), params, None, unknown_amounts=amounts
+        )
+    assert len(candidates) == 4
+    bound = sum(entry[0] for entry in candidates)
+    unknown = sum(amounts[entry[2].route_id] for entry in candidates)
+    assert 0 < unknown < bound
+    print(
+        f"PRO_REASONING four_candidates rejection_usd=0 unknown_usd={unknown / 1_000_000:.6f} bound_usd={bound / 1_000_000:.6f}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nonstream_response_after_deadline_stays_at_bound(monkeypatch) -> None:
+    _qualified_policy(monkeypatch, route=_route())
+    ledger = Ledger()
+    service = _chat_service(
+        reserve=AsyncMock(side_effect=ledger.reserve), settle=ledger.settle, release=ledger.release
+    )
+
+    async def late(**kwargs):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            return {"choices": []}
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", late)
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable, match="deadline"):
+            await runtime.guarded_completion(
+                model="openrouter/reviewed/model",
+                messages=[{"role": "user", "content": "hi"}],
+                _dispatch_timeout_s=0.01,
+            )
+        decision = next(iter(scope.terminal_decisions.values()))
+        assert decision.amount == next(iter(ledger.reservations.values()))["bound"]
+        assert decision.path == "dispatch_failure" and decision.operation == "settle"
+
+
+@pytest.mark.asyncio
+async def test_release_wins_before_conservative_finalizer(monkeypatch) -> None:
+    scope, hold, ledger = held()
+    entered, resume = asyncio.Event(), asyncio.Event()
+    original = ledger.release
+
+    async def release(*args, **kwargs):
+        entered.set()
+        await resume.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(ledger, "release", release)
+    first = asyncio.create_task(scope.release("hold", path="dispatch_not_sent"))
+    await entered.wait()
+    later = asyncio.create_task(scope.finish_failure(hold, 100, path="scope_cleanup"))
+    resume.set()
+    await asyncio.gather(first, later)
+    assert ledger.actions == [("release", "hold", 0)]
+    assert hold.actual == 0 and hold.decision is not None
+    assert hold.decision.path == "dispatch_not_sent"

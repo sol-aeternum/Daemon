@@ -455,6 +455,7 @@ class ComputeScope:
         path: str,
         join: bool = False,
         unlock_extended: bool = False,
+        start_only: bool = False,
     ) -> None:
         self.require_inference_effect()
         key = _hold_key(reservation)
@@ -541,6 +542,8 @@ class ComputeScope:
             hold.settlement = asyncio.create_task(settle_once())
             if unlock_extended:
                 hold.settlement.add_done_callback(unlock_once)
+        if start_only:
+            return
         try:
             await asyncio.shield(hold.settlement)
         except BaseException as exc:
@@ -3108,21 +3111,34 @@ async def guarded_completion(
                     )
                 try:
                     if not scope.invocation_managed():
+                        amount = (
+                            settlement[0]
+                            if completed and settlement is not None
+                            else (bound if completed else hold.failure_amount)
+                        )
+                        usage = (
+                            settlement[1]
+                            if completed and settlement is not None
+                            else _estimated_usage(generation_id)
+                        )
+                        path = (
+                            "stream_end"
+                            if completed or hold.output_released
+                            else "dispatch_unknown_floor"
+                        )
+                        await scope._finish(
+                            reservation,
+                            "settle",
+                            amount,
+                            usage=usage,
+                            path=path,
+                            join=True,
+                            start_only=True,
+                        )
                         try:
-                            await scope.finish_failure(
-                                hold,
-                                settlement[0]
-                                if completed and settlement is not None
-                                else (bound if completed else hold.failure_amount),
-                                usage=settlement[1]
-                                if completed and settlement is not None
-                                else _estimated_usage(generation_id),
-                                path="stream_end"
-                                if completed or hold.output_released
-                                else "dispatch_unknown_floor",
-                            )
-                        finally:
                             await scope.close_stream(hold)
+                        finally:
+                            await scope.finish_failure(hold, amount, usage=usage, path=path)
                     else:
                         await scope.close_stream(hold)
                     if scope.invocation_managed() and (

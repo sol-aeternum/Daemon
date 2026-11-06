@@ -79,6 +79,11 @@ def _route(
     )
 
 
+def _unknown_cost(route: Any, content: str = "hi", floor: int = 1) -> int:
+    size = runtime._request_bound({"messages": [{"role": "user", "content": content}]})
+    return route.estimate_microusd(size.bound, floor)
+
+
 def routing_document(
     models: list[str],
     *,
@@ -481,7 +486,7 @@ async def test_auto_route_price_weights_actual_request_and_falls_back_after_fail
     assert service.reserve.await_args_list[1].kwargs["model"] == "openrouter/test/cheap-output"
     assert service.settle.await_args_list[0].args == (
         "first",
-        service.reserve.await_args_list[0].args[1],
+        _unknown_cost(cheap_input, "a" * 2000),
     )
     assert service.settle.await_args_list[1].args == (
         "second",
@@ -543,7 +548,7 @@ async def test_automatic_walk_exhausted_by_auth_failures_carries_the_terminal_cl
                 model="auto",
                 messages=[{"role": "user", "content": "hi"}],
             )
-    # Every candidate was still tried, each on its own hold settled at bound...
+    # Synthetic exceptions have no forwarder evidence: each uses its unknown floor.
     assert service.reserve.await_count == 2
     assert service.settle.await_count == 2
     assert service.settle.await_args_list[0].args == (
@@ -552,7 +557,7 @@ async def test_automatic_walk_exhausted_by_auth_failures_carries_the_terminal_cl
     )
     assert service.settle.await_args_list[1].args == (
         "auth-hold-b",
-        service.reserve.await_args_list[1].args[1],
+        _unknown_cost(dearer),
     )
     # ...and the surfaced error is the last failure's typed verdict instead of
     # a bare capacity message that invites retrying an authentication failure.
@@ -582,7 +587,7 @@ async def test_sole_automatic_candidate_auth_failure_carries_the_terminal_classi
     assert service.reserve.await_count == 1
     assert service.settle.await_args.args == (
         "pooled-hold",
-        service.reserve.await_args.args[1],
+        _unknown_cost(_route()),
     )
     assert denied.value.code == "capacity_unavailable"
     assert denied.value.message == "Qualified provider unavailable"
@@ -620,7 +625,7 @@ async def test_automatic_stream_walk_after_a_pre_output_failure_is_unchanged(
         )
         received = [chunk async for chunk in stream]
     # Current stream behaviour, pinned: a pre-output failure still walks to the
-    # next candidate, the refused stream is closed and settled at its bound,
+    # next candidate, the refused stream is closed and settled at its unknown floor,
     # and the surviving candidate serves the request on its own hold.
     assert received == [{"text": "recovered"}]
     assert service.reserve.await_count == 2
@@ -1016,7 +1021,8 @@ async def test_unstarted_stream_is_charged_at_scope_exit(monkeypatch: pytest.Mon
         )
         service.settle.assert_not_awaited()
     bound = service.reserve.await_args.args[1]
-    service.settle.assert_awaited_once_with(reservation, bound)
+    assert _unknown_cost(_route()) < bound
+    service.settle.assert_awaited_once_with(reservation, _unknown_cost(_route()))
 
 
 @pytest.mark.asyncio
@@ -1571,6 +1577,7 @@ def _funded_service(
         ),
         reserve=AsyncMock(return_value="hold"),
         settle=AsyncMock(),
+        release=AsyncMock(),
         **extra,
     )
 
@@ -1721,7 +1728,10 @@ async def _scope_acquisition_race(
             assert not result.retryable
         assert provider.await_count == (2 if fallback else 1)
         assert len(settlements) == (2 if fallback else 1)
-        assert all(amount == hold.bound for _, amount in settlements)
+        assert all(
+            amount == (hold.unknown_amount if hold.unknown_amount is not None else hold.bound)
+            for _, amount in settlements
+        )
         assert not scope.outstanding
         assert hold.stream is not None and hold.stream.timer.cancelled()
         if cancel_cleanup:
@@ -1755,7 +1765,7 @@ async def _scope_acquisition_race(
             assert events[0]["actual"] == amount
             assert events[0]["estimated"] is True
             assert events[0]["path"] == (
-                "scope_cleanup" if reservation == hold.reservation else "stream_end"
+                "scope_cleanup" if reservation == hold.reservation else "dispatch_unknown_floor"
             )
         return holds, settlements
     finally:
@@ -1886,8 +1896,18 @@ async def test_scope_close_before_acquisition_send_or_failure_is_terminal(
         assert isinstance(result, runtime.ComputeUnavailable), result
         assert not result.retryable
         assert provider.await_count == target - int(barrier == "reservation")
-        assert service.reserve.await_count == service.settle.await_count == target
-        assert len({call.args[0] for call in service.settle.await_args_list}) == target
+        assert service.reserve.await_count == target
+        assert service.settle.await_count + service.release.await_count == target
+        assert service.release.await_count == int(barrier == "reservation")
+        assert (
+            len(
+                {
+                    call.args[0]
+                    for call in [*service.settle.await_args_list, *service.release.await_args_list]
+                }
+            )
+            == target
+        )
         assert not scopes[0].outstanding
         assert first.closes == int(fallback)
     finally:
@@ -1965,6 +1985,7 @@ async def test_nonstream_acquisition_after_scope_exit_preserves_scope_charge(mon
     try:
         await asyncio.wait_for(entered.wait(), 1)
         bound = next(iter(scopes[0].outstanding.values())).bound
+        assert _unknown_cost(_route(), "synthetic") < bound
         leave.set()
         await asyncio.wait_for(asyncio.shield(owning), 1)
         release.set()
@@ -1972,7 +1993,7 @@ async def test_nonstream_acquisition_after_scope_exit_preserves_scope_charge(mon
             await asyncio.wait_for(asyncio.shield(children[0]), 1)
         assert not refused.value.retryable
         assert provider.await_count == service.settle.await_count == 1
-        assert service.settle.await_args.args == ("hold", bound)
+        assert service.settle.await_args.args == ("hold", _unknown_cost(_route(), "synthetic"))
         assert scopes[0].first_output_at is None
     finally:
         release.set()
@@ -2013,7 +2034,9 @@ async def test_acquired_stream_deadline_closes_without_another_pull(
         assert denied.value.retryable is False
         assert source.reads == int(started)
         assert provider.await_count == 1
-    service.settle.assert_awaited_once_with("hold", hold.bound, usage={"estimated_cost": True})
+    service.settle.assert_awaited_once_with(
+        "hold", hold.failure_amount, usage={"estimated_cost": True}
+    )
 
 
 @pytest.mark.asyncio
@@ -2040,7 +2063,7 @@ async def test_explicit_close_disarms_acquired_stream_even_when_unstarted(
         with pytest.raises(StopAsyncIteration):
             await anext(stream)
     assert service.settle.await_count == 1
-    assert service.settle.await_args.args == ("hold", hold.bound)
+    assert service.settle.await_args.args == ("hold", hold.failure_amount)
 
 
 @pytest.mark.asyncio
@@ -2126,7 +2149,7 @@ async def test_deadline_read_race_rejects_late_chunk_and_eof(monkeypatch, late_e
             await asyncio.gather(control.reading, return_exceptions=True)
         assert control.timer.cancelled()
     assert service.settle.await_count == 1
-    assert service.settle.await_args.args[1] == service.reserve.await_args.args[1]
+    assert service.settle.await_args.args[1] == _unknown_cost(_route(), "synthetic")
 
 
 @pytest.mark.asyncio
@@ -2385,14 +2408,15 @@ async def test_close_during_fallback_acquisition_is_terminal(monkeypatch, barrie
             )
             assert first.closes == 1
             assert provider.await_count == (1 if barrier == "reservation" else 2)
-            assert len(holds) == service.settle.await_count == 2
-            assert [call.args[0] for call in service.settle.await_args_list] == holds
-            assert all(
-                settled.args[1] == reserved.args[1]
-                for settled, reserved in zip(
-                    service.settle.await_args_list, service.reserve.await_args_list, strict=True
+            assert len(holds) == service.settle.await_count + service.release.await_count == 2
+            assert service.release.await_count == int(barrier == "reservation")
+            for index, hold_id in enumerate(holds):
+                decision = scope.terminal_decisions[hold_id]
+                assert decision.amount == (
+                    0
+                    if index == 1 and barrier == "reservation"
+                    else _unknown_cost(routes[index], "synthetic")
                 )
-            )
             assert not scope.outstanding  # no deferral of the second hold to scope exit
             for hold in holds:
                 events = [

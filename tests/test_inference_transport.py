@@ -50,6 +50,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import aiohttp
 import httpx
@@ -65,6 +67,9 @@ from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from orchestrator import inference_transport
 from orchestrator.inference_transport import Attempt, Evidence, Handler, current
 from tests.inference_transport_support import completion, offline_only, peer
+from tests.test_dispatch_accounting import Ledger
+from tests.test_compute_runtime import _account_scope, _chat_service, _qualified_policy, _route
+from orchestrator import compute_runtime as runtime
 
 __all__ = ["offline_only"]  # Reuse the enforced loopback/.invalid network fixture.
 
@@ -162,6 +167,10 @@ class Capture:
                 self.bodies.append(body)
                 self.received.set()
                 status = int(self.mode) if self.mode.isdigit() else 200
+                if self.mode in {"reject_once", "reject_twice"}:
+                    status = (
+                        503 if len(self.bodies) <= (1 if self.mode == "reject_once" else 2) else 200
+                    )
                 streaming = json.loads(body).get("stream", False)
                 chunk = {
                     "id": "offline",
@@ -569,3 +578,135 @@ def test_mixed_attempts_never_erase_unknown_send() -> None:
         )
         == "dispatch_provider_rejected"
     )
+
+
+def guarded_fixture(monkeypatch, base):
+    route = _route(model="openrouter/openai/gpt-4.1-mini")
+    route.endpoint = base
+    _qualified_policy(monkeypatch, route=route)
+    monkeypatch.setattr(
+        runtime,
+        "get_settings",
+        lambda: SimpleNamespace(
+            request_timeout_s=0.3,
+            openrouter_api_key="fictional-offline-key",
+            get_provider_config=lambda _: SimpleNamespace(extra_headers={}),
+        ),
+    )
+    ledger = Ledger()
+    service = _chat_service(
+        reserve=AsyncMock(side_effect=ledger.reserve), settle=ledger.settle, release=ledger.release
+    )
+    return route, ledger, service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504])
+async def test_guarded_real_status_accounting(monkeypatch, status, stream):
+    try:
+        async with capture(str(status)) as (_, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service) as scope:
+                with pytest.raises(runtime.ComputeUnavailable):
+                    await runtime.guarded_completion(
+                        model=route.model,
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=stream,
+                    )
+                decision = next(iter(scope.terminal_decisions.values()))
+                unknown = status in {408, 500, 504}
+                size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+                assert decision.operation == ("settle" if unknown else "release")
+                assert decision.amount == (route.estimate_microusd(size.bound, 1) if unknown else 0)
+                assert decision.path == (
+                    "dispatch_unknown_floor" if unknown else "dispatch_provider_rejected"
+                )
+                assert len(ledger.actions) == 1 and not scope.outstanding
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["error_before", "error_after", "close_before"])
+async def test_guarded_acquired_stream_failures(monkeypatch, mode):
+    try:
+        async with capture("ok" if mode == "close_before" else mode) as (_, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service) as scope:
+                stream = await runtime.guarded_completion(
+                    model=route.model, messages=[{"role": "user", "content": "hi"}], stream=True
+                )
+                if mode == "close_before":
+                    await stream.aclose()
+                    for hold in tuple(scope.outstanding.values()):
+                        await scope.finish_failure(hold, hold.failure_amount, path="scope_cleanup")
+                else:
+                    with pytest.raises(runtime.ComputeUnavailable):
+                        async for _ in stream:
+                            pass
+                record = next(iter(ledger.reservations.values()))
+                decision = next(iter(scope.terminal_decisions.values()))
+                assert decision.operation == "settle"
+                if mode == "error_after":
+                    assert decision.amount == record["bound"] and decision.path == "stream_end"
+                else:
+                    assert decision.amount < record["bound"]
+                    assert decision.path == (
+                        "scope_cleanup" if mode == "close_before" else "dispatch_unknown_floor"
+                    )
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["503", "reject_once", "reject_twice"])
+async def test_guarded_extended_rejections_rearm_unit(monkeypatch, mode):
+    try:
+        async with capture(mode) as (_, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            routes = [_route(model=route.model) for _ in range(3)]
+            for index, candidate in enumerate(routes):
+                candidate.route_id = f"candidate-{index}"
+                candidate.endpoint = base
+            _qualified_policy(monkeypatch, route=routes)
+            service.resolve.return_value.capabilities.add("extended_agents")
+            async with _account_scope(service, extended=True, auto_route=True) as scope:
+                if mode == "503":
+                    with pytest.raises(runtime.ComputeUnavailable):
+                        await runtime.guarded_completion(
+                            model="auto", messages=[{"role": "user", "content": "hi"}]
+                        )
+                else:
+                    await runtime.guarded_completion(
+                        model="auto", messages=[{"role": "user", "content": "hi"}]
+                    )
+                assert ledger.units_used == int(mode != "503")
+                assert all(record["extended_run"] for record in ledger.reservations.values())
+                assert scope.extended_holds == int(mode != "503")
+                assert not scope.outstanding
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_guarded_release_failure_stops_candidate_walk(monkeypatch):
+    try:
+        async with capture("503") as (server, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            routes = [_route(model=route.model) for _ in range(2)]
+            for index, candidate in enumerate(routes):
+                candidate.route_id = f"candidate-{index}"
+                candidate.endpoint = base
+            _qualified_policy(monkeypatch, route=routes)
+            ledger.error = RuntimeError("financial failure")
+            async with _account_scope(service, auto_route=True) as scope:
+                with pytest.raises(runtime.ComputeUnavailable) as caught:
+                    await runtime.guarded_completion(
+                        model="auto", messages=[{"role": "user", "content": "hi"}]
+                    )
+                assert caught.value.code == "settlement_failed" and not caught.value.retryable
+                assert len(server.bodies) == len(ledger.actions) == 1
+                assert len(scope.outstanding) == 1
+    finally:
+        await inference_transport.shutdown()
