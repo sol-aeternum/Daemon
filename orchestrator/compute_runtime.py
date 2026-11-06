@@ -2762,9 +2762,6 @@ async def guarded_completion(
                 outcome(index, "refused", "raise", failure_category=exc.category)
                 raise
             except Exception as failure:
-                if scope.inference_invocation is not None:
-                    scope.inference_invocation.call_failed = True
-                    raise
                 last_failure = _classify_dispatch_failure(
                     failure,
                     deadline_bound=asyncio.get_running_loop().time() >= deadline,
@@ -2773,7 +2770,7 @@ async def guarded_completion(
                 outcome(
                     index,
                     "failed",
-                    walk_on if automatic else "raise",
+                    walk_on if automatic and scope.inference_invocation is None else "raise",
                     failure_category=last_failure.category,
                     exception_type=(
                         "UnsupportedParamsError"
@@ -2784,6 +2781,9 @@ async def guarded_completion(
                     retryable=last_failure.retryable,
                     output_released=False,
                 )
+                if scope.inference_invocation is not None:
+                    scope.inference_invocation.call_failed = True
+                    raise
                 if not automatic:
                     raise last_failure.as_unavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
