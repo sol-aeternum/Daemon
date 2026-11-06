@@ -125,3 +125,66 @@ async def test_synthetic_failure_uses_captured_floor(monkeypatch, stream) -> Non
         assert decision.amount == route.estimate_microusd(input_size.bound, 1)
         assert decision.path == "dispatch_unknown_floor" and decision.operation == "settle"
         assert ledger.actions == [("settle", "pooled-hold", decision.amount)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other", ["none", "open", "settled", "released"])
+async def test_extended_carrier_release_counts_nonreleased_history(other) -> None:
+    scope, carrier, ledger = held()
+    scope.extended = scope.extended_started = True
+    scope.extended_holds = 1
+    carrier.extended_run = carrier.extended_counted = True
+    if other != "none":
+        second = runtime.ReservationHold("second", 100, extended_counted=True)
+        scope.outstanding["second"] = second
+        scope.extended_holds += 1
+        if other == "settled":
+            await scope.settle("second", 3)
+        elif other == "released":
+            await scope.release("second", path="dispatch_not_sent")
+    await scope.release("hold", path="dispatch_provider_rejected")
+    refunded = other in {"none", "released"}
+    assert ledger.actions[-1] == ("release" if refunded else "settle", "hold", 0)
+    assert scope.extended_started is not refunded
+    assert scope.extended_holds == (0 if refunded else 2)
+    assert not scope.extended_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_extended_release_failure_retains_unit_and_count() -> None:
+    scope, carrier, ledger = held()
+    carrier.extended_run = carrier.extended_counted = True
+    scope.extended_started = True
+    scope.extended_holds = 1
+    ledger.error = RuntimeError()
+    with pytest.raises(runtime.ComputeUnavailable):
+        await scope.release("hold")
+    assert scope.extended_started and scope.extended_holds == 1
+    assert not scope.extended_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_extended_release_waiter_cancellation_keeps_financial_lock(monkeypatch) -> None:
+    scope, carrier, ledger = held()
+    carrier.extended_run = carrier.extended_counted = True
+    scope.extended_started = True
+    scope.extended_holds = 1
+    entered, resume = asyncio.Event(), asyncio.Event()
+    original = ledger.release
+
+    async def release(*args, **kwargs):
+        entered.set()
+        await resume.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(ledger, "release", release)
+    waiter = asyncio.create_task(scope.release("hold"))
+    await entered.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert scope.extended_lock.locked() and scope.extended_started
+    resume.set()
+    await scope.finish_failure(carrier, 100, path="scope_cleanup")
+    assert not scope.extended_lock.locked() and not scope.extended_started
+    assert scope.extended_holds == 0

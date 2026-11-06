@@ -356,6 +356,7 @@ class ComputeScope:
     #: calls, plus one concurrency slot while any reservation remains open.
     scope_id: uuid.UUID = field(default_factory=uuid.uuid4)
     extended_started: bool = False
+    extended_holds: int = 0
     extended_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     selected_model: str | None = None
     selected_effort: str | None = None
@@ -396,7 +397,31 @@ class ComputeScope:
         await self._finish(reservation, "settle", amount, usage=usage, path=path)
 
     async def release(self, reservation: Any, *, path: str = "unspecified") -> None:
-        await self._finish(reservation, "release", 0, path=path)
+        await self._release(reservation, path=path, join=False)
+
+    async def _release(self, reservation: Any, *, path: str, join: bool) -> None:
+        self.require_inference_effect()
+        hold = self.outstanding.get(_hold_key(reservation))
+        if hold is None or not hold.extended_counted or hold.decision is not None:
+            await self._finish(reservation, "release", 0, path=path, join=join)
+            return
+        await self.extended_lock.acquire()
+        if hold.decision is not None:
+            self.extended_lock.release()
+            await self._finish(reservation, "release", 0, path=path, join=join)
+            return
+        try:
+            # Open holds and non-released history count; only release removes one.
+            operation = "settle" if hold.extended_run and self.extended_holds != 1 else "release"
+            await self._finish(
+                reservation, operation, 0, path=path, join=join, unlock_extended=True
+            )
+        finally:
+            # Once created, the shielded financial owner owns the lock, including
+            # counter publication after success. Cancelling a waiter cannot refund
+            # a unit without resetting extended_started or admit an intervening hold.
+            if hold.settlement is None:
+                self.extended_lock.release()
 
     async def finish_failure(
         self,
@@ -408,6 +433,9 @@ class ComputeScope:
         usage: dict[str, Any] | None = None,
     ) -> None:
         """Join an existing winner, including a failed owner; never replace it."""
+        if release:
+            await self._release(hold.reservation, path=path, join=True)
+            return
         await self._finish(
             hold.reservation,
             "release" if release else "settle",
@@ -426,6 +454,7 @@ class ComputeScope:
         usage: dict[str, Any] | None = None,
         path: str,
         join: bool = False,
+        unlock_extended: bool = False,
     ) -> None:
         self.require_inference_effect()
         key = _hold_key(reservation)
@@ -471,7 +500,7 @@ class ComputeScope:
                 "output_tokens": _count((usage or {}).get("output_tokens")),
             }
 
-            async def settle_once() -> Any:
+            async def apply_once() -> Any:
                 self.require_inference_effect()
                 if operation == "release":
                     result = await self.service.release(reservation)
@@ -481,6 +510,10 @@ class ComputeScope:
                     )
                 else:
                     result = await self.service.settle(reservation, amount)
+                if operation == "release" and hold.extended_counted:
+                    self.extended_holds -= 1
+                    if hold.extended_run:
+                        self.extended_started = False
                 # No await between financial success and the single emission.
                 # Failed/cancelled owners never emit a successful settlement.
                 routing_log.emit(
@@ -491,7 +524,23 @@ class ComputeScope:
                 )
                 return result
 
+            unlocked = False
+
+            def unlock_once(task: asyncio.Task[Any] | None = None) -> None:
+                nonlocal unlocked
+                if unlock_extended and not unlocked:
+                    unlocked = True
+                    self.extended_lock.release()
+
+            async def settle_once() -> Any:
+                try:
+                    return await apply_once()
+                finally:
+                    unlock_once()
+
             hold.settlement = asyncio.create_task(settle_once())
+            if unlock_extended:
+                hold.settlement.add_done_callback(unlock_once)
         try:
             await asyncio.shield(hold.settlement)
         except BaseException as exc:
@@ -593,6 +642,8 @@ class ReservationHold:
     decision: TerminalDecision | None = None
     unknown_amount: int | None = None
     output_released: bool = False
+    extended_run: bool = False
+    extended_counted: bool = False
 
     @property
     def failure_amount(self) -> int:
@@ -2710,6 +2761,8 @@ async def guarded_completion(
                 )
                 if first_extended:
                     scope.extended_started = True
+                if scope.extended and not scope.invocation_managed():
+                    scope.extended_holds += 1
         except EntitlementsError:
             raise
         except Exception:
@@ -2717,6 +2770,8 @@ async def guarded_completion(
         hold = ReservationHold(
             reservation, bound, unknown_amount=unknown_amounts.get(route.route_id, bound)
         )
+        hold.extended_run = first_extended
+        hold.extended_counted = scope.extended and not scope.invocation_managed()
         attempt_holds[attempt_index] = hold
         scope.outstanding[_hold_key(reservation)] = hold
         reservation_id = _label(_hold_key(reservation))
