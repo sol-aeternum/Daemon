@@ -92,6 +92,9 @@ def _build_consolidation_cron_job(interval: int) -> Any:
 
 
 async def on_startup(ctx: WorkerContext) -> None:
+    from orchestrator.litellm_runtime import require_local_model_cost_map
+
+    require_local_model_cost_map()
     from orchestrator.memory.startup import require_multi_query_schema
     from orchestrator.tasks.composition import qualify_worker_composition
     from orchestrator.tasks.startup import task_startup_selected, require_legacy_task_schema

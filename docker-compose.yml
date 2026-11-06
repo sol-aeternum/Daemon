@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
       - POSTGRES_USER=${POSTGRES_USER:-daemon}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_HOST=postgres
@@ -26,6 +27,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - VOYAGE_API_KEY=${VOYAGE_API_KEY}
       - EMBEDDING_ROUTE_ID=${EMBEDDING_ROUTE_ID:-}
@@ -146,6 +148,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - VOYAGE_API_KEY=${VOYAGE_API_KEY}
       - EMBEDDING_ROUTE_ID=${EMBEDDING_ROUTE_ID:-}

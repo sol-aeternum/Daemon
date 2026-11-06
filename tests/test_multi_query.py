@@ -162,7 +162,8 @@ async def test_final_outbound_preset_pin_cap_date_and_task_context(
         assert await task == ["Cat name", "Dog name"]
         assert model_routing.current_routing() is parent and parent.selected_model is None
     sent = provider.await_args.kwargs
-    assert sent["reasoning_effort"] == "none"
+    assert sent["extra_body"]["reasoning"]["effort"] == "none"
+    assert "reasoning_effort" not in sent
     assert sent["extra_body"]["provider"]["sort"] == "latency"
     assert "order" not in sent["extra_body"]["provider"]
     assert sent["num_retries"] == 0

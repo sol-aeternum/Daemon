@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import Any, TextIO
 
 from orchestrator import safe_logging
+from orchestrator.litellm_runtime import LocalModelCostMapRequired, require_local_model_cost_map
 
 
 @contextlib.contextmanager
@@ -30,6 +31,7 @@ def initialization(stream: TextIO) -> Iterator[None]:
 
 def prepare(role: str, stream: TextIO) -> tuple[Callable[[], None], str]:
     with initialization(stream):
+        require_local_model_cost_map()
         settings = importlib.import_module("orchestrator.config").get_settings()
         if role == "backend":
             uvicorn = importlib.import_module("uvicorn")
@@ -89,6 +91,9 @@ def launch(
         # Uvicorn re-raises captured SIGINT after graceful shutdown. Let the
         # interpreter keep its interrupt status; the safe hook emits no text.
         raise
+    except LocalModelCostMapRequired:
+        safe_logging.event("failure", stage="litellm_model_table")
+        raise SystemExit(1) from None
     except BaseException:
         safe_logging.event("failure", stage="runtime")
         raise SystemExit(1) from None

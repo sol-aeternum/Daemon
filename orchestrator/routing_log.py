@@ -105,6 +105,7 @@ EVENT_FIELDS: Final[Mapping[str, frozenset[str]]] = {
             "reservation_id",
             "outcome",
             "failure_category",
+            "exception_type",
             "status_code",
             "retryable",
             "output_released",
@@ -195,6 +196,7 @@ _ENUMS = {
     "sent_effort": {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
     "outcome": {"failed", "completed", "cancelled", "denied", "revoked", "refused"},
     "next_action": {"fallback", "raise", "none"},
+    "exception_type": {"UnsupportedParamsError"},
     "failure_category": {
         "rate_limited",
         "upstream_unavailable",
@@ -204,6 +206,7 @@ _ENUMS = {
         "authentication_failed",
         "payment_failed",
         "invalid_request",
+        "unsupported_params",
         "settlement_failed",
         "unspecified",
         "entitlements",

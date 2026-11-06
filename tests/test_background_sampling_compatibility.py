@@ -246,7 +246,8 @@ async def test_automatic_background_call_sends_no_legacy_sampling(
     # Luna serves background work at its default effort (medium since the B3
     # evaluation), and the seed it does declare is never invented by the helper.
     assert sent["model"] == LUNA
-    assert sent["reasoning_effort"] == "medium"
+    assert sent["extra_body"]["reasoning"] == {"effort": "medium"}
+    assert "reasoning_effort" not in sent
     assert "seed" not in sent
 
     # Exactly one reservation and one settlement: no fallback, no double charge.
