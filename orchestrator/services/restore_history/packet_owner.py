@@ -1,8 +1,9 @@
-"""Uncalled RAM packet ownership with synthetic effects, never dispatch authority.
+"""Uninstalled RAM packet ownership, never dispatch authority.
 
 Admission is a trusted backend operation, absent from the worker wire protocol.
 Assignment provenance must be independently authorized before this boundary.
-Nothing here creates/replaces an H owner, clears its latch, or performs I/O.
+Construction performs no I/O. The explicit native profile delegates fixed phases;
+no H owner is created/replaced and no native failure latch is cleared.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import hashlib
 import math
 import os
 import time
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 from uuid import UUID
 
 from .publication_protocol import (
@@ -27,6 +28,17 @@ from .publication_protocol import (
     identifier,
     encode_request,
 )
+
+if TYPE_CHECKING:
+    from .native_publication import (
+        NativeContext,
+        NativeInput,
+        NativeOutcome,
+        NativePacket,
+        NativeProfile,
+        NativeReply,
+        NativeRequest,
+    )
 
 
 def _now() -> float:
@@ -80,9 +92,38 @@ class Budgets:
             raise ProtocolError()
 
 
+@dataclass(frozen=True, slots=True)
+class NativeBudgets(Budgets):
+    """Explicit native retained-byte limits, never a runtime default/RSS bound."""
+
+    csv_bytes: int
+    command_bytes: int
+    input_cells: int
+    terminal_bytes: int
+
+    def validate(self) -> None:
+        _count(self.entries, 64)
+        _count(self.live_packets, 8)
+        _count(self.inflight, 4)
+        _count(self.packet_bytes, 8650752)
+        _count(self.total_packet_bytes, 67108864)
+        _count(self.csv_bytes, 8388608)
+        _count(self.command_bytes, 262144)
+        _count(self.input_cells, 100000)
+        _count(self.terminal_bytes, 1048576)
+        _seconds(self.retention_seconds, 60)
+        _seconds(self.effect_seconds, 2)
+        if (
+            self.live_packets > self.entries
+            or self.csv_bytes + self.command_bytes > self.packet_bytes
+            or self.packet_bytes > self.total_packet_bytes
+        ):
+            raise ProtocolError()
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class AssignmentAuthorization:
-    """Synthetic trusted input, not worker-supplied authentication or a permit.
+    """Trusted backend input, not worker-supplied authentication or a permit.
 
     assignment_id is the immutable ORIGINAL assignment identity. binding covers
     its original native account/generation/attempt/job/slot facts. origin_session
@@ -144,15 +185,22 @@ class SyntheticEffects(Protocol):
     ) -> Established: ...
 
 
+class _NativeProfile:
+    """Negative selection marker only; never an executable profile interface."""
+
+
 @dataclass(slots=True)
 class _Entry:
     authorization: AssignmentAuthorization
     handle: UUID
     expires_at: float
-    packet: PreparedPacket | None = None
-    results: dict[Phase, Established] = field(default_factory=dict)
+    packet: PreparedPacket | NativePacket | None = None
+    results: dict[Phase, Established | NativeOutcome] = field(default_factory=dict)
     inputs: dict[Phase, bytes] = field(default_factory=dict)
-    work: asyncio.Task[tuple[PreparedPacket | None, Established]] | None = None
+    work: (
+        asyncio.Task[tuple[PreparedPacket | NativePacket | None, Established | NativeOutcome]]
+        | None
+    ) = None
     caller: asyncio.Task[object] | None = None
     pending: Phase | None = None
     abandoned: bool = False
@@ -160,6 +208,9 @@ class _Entry:
     retire_requested: bool = False
     reserved: bool = False
     effect_started: bool = False
+    context: NativeContext | None = None
+    context_token: object | None = None
+    context_binding: bytes | None = None
 
 
 class PacketOwner:
@@ -167,13 +218,26 @@ class PacketOwner:
 
     No reconstruction API exists. A future host must create one fresh incarnation
     and must never reissue old assignment provenance. Replacing an H/writer owner
-    to evade failure remains forbidden. These synthetic facts do not enforce an
+    to evade failure remains forbidden. These caller-supplied facts cannot constrain an
     untrusted in-process Python caller or authenticate actual service identities.
     """
 
-    def __init__(self, session: UUID, effects: SyntheticEffects, budgets: Budgets) -> None:
+    def __init__(
+        self, session: UUID, effects: SyntheticEffects | NativeProfile, budgets: Budgets
+    ) -> None:
         identifier(session)
-        if type(budgets) is not Budgets:
+        self._native: NativeProfile | None = None
+        if type(budgets) is NativeBudgets:
+            # Explicit native selection only. The synthetic import/constructor
+            # never imports the native application graph.
+            from .native_publication import NativeProfile
+
+            if type(effects) is not NativeProfile:
+                raise ProtocolError()
+            self._native = effects
+        elif type(budgets) is not Budgets:
+            raise ProtocolError()
+        elif isinstance(effects, _NativeProfile):
             raise ProtocolError()
         budgets.validate()
         self._session, self._effects, self._budgets = session, effects, budgets
@@ -181,6 +245,7 @@ class PacketOwner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._entries: dict[UUID, _Entry] = {}
         self._assignments: dict[UUID, _Entry] = {}
+        self._native_origins: dict[tuple[UUID, int], _Entry] = {}
         self._inflight = 0
         self._blocked = self._closing = self._closed = False
 
@@ -189,7 +254,7 @@ class PacketOwner:
         return self._session
 
     @property
-    def effects(self) -> SyntheticEffects:
+    def effects(self) -> SyntheticEffects | NativeProfile:
         return self._effects
 
     @property
@@ -223,6 +288,21 @@ class PacketOwner:
     def admit(self, authorization: AssignmentAuthorization, handle: UUID) -> None:
         """Trusted backend-only admission. There is deliberately no wire opcode."""
         self._bind()
+        if self._native is not None:
+            raise ProtocolError("assignment_refused")
+        self._admit(authorization, handle, None)
+
+    def admit_native(self, context: NativeContext, handle: UUID) -> None:
+        self._bind()
+        if self._native is None:
+            raise ProtocolError("assignment_refused")
+        self._native.check_context(context)
+        self._admit(context.authorization, handle, context)
+
+    def _admit(
+        self, authorization: AssignmentAuthorization, handle: UUID, context: NativeContext | None
+    ) -> None:
+        self._bind()
         if self._closing or self._unavailable():
             raise ProtocolError("packet_owner_blocked")
         if type(authorization) is not AssignmentAuthorization:
@@ -245,24 +325,39 @@ class PacketOwner:
             raise ProtocolError("assignment_refused")
         previous = self._assignments.get(authorization.assignment_id)
         if previous is not None:
-            if previous.authorization != authorization or previous.handle != handle:
+            if (
+                previous.authorization != authorization
+                or previous.handle != handle
+                or (context is not None and previous.context_token is not context._token)
+            ):
                 raise ProtocolError("assignment_conflict")
             return  # never renew expiry or discard the original tombstone
         if handle in self._entries:
             raise ProtocolError("assignment_conflict")
         if len(self._entries) >= self.budgets.entries:
             raise ProtocolError("packet_tombstones_exhausted")
+        if (
+            context is not None
+            and (context.job.job_id, context.output_slot) in self._native_origins
+        ):
+            raise ProtocolError("assignment_conflict")
         entry = _Entry(
             authorization,
             handle,
             min(authorization.expires_at, _now() + self.budgets.retention_seconds),
         )
+        if context is not None:
+            entry.context = context
+            entry.context_token = context._token
+            entry.context_binding = context.binding()
+            self._native_origins[(context.job.job_id, context.output_slot)] = entry
         self._entries[handle] = self._assignments[authorization.assignment_id] = entry
 
     def _drop(self, entry: _Entry) -> None:
         if entry.pending is not None or entry.work is not None:
             raise ProtocolError("packet_work_owned")
         entry.packet = None
+        entry.context = None  # release the original Claim/input; keep negative facts only
         entry.results.clear()
         entry.reserved = False
         entry.retired = True
@@ -279,20 +374,46 @@ class PacketOwner:
 
     def _reply(
         self,
-        request: Request,
+        request: Request | NativeRequest,
         status: Status,
         phase: Phase | None = None,
-        result: bytes | None = None,
-    ) -> Reply:
+        result: Established | NativeOutcome | None = None,
+    ) -> Reply | NativeReply:
+        if self._native is not None:
+            return self._native.reply(request, status, phase, result)
+        if type(result) is not Established and result is not None:
+            raise ProtocolError("packet_result_refused")
         return Reply(
-            self.session, request.handle, request.request_id, request.action, status, phase, result
+            self.session,
+            request.handle,
+            request.request_id,
+            request.action,
+            status,
+            phase,
+            result.result if result is not None else None,
         )
 
     async def handle(
         self, peer: AuthenticatedWorker, request: Request, *, deadline: float
     ) -> Reply:
         self._bind()
+        if self._native is not None:
+            raise ProtocolError("assignment_refused")
         encode_request(request)  # identical validation for direct and framed callers
+        return cast(Reply, await self._handle(peer, request, deadline=deadline))
+
+    async def handle_native(
+        self, peer: AuthenticatedWorker, request: NativeRequest, *, deadline: float
+    ) -> NativeReply:
+        self._bind()
+        if self._native is None:
+            raise ProtocolError("assignment_refused")
+        self._native.check_header(request)
+        return cast("NativeReply", await self._handle(peer, request, deadline=deadline))
+
+    async def _handle(
+        self, peer: AuthenticatedWorker, request: Request | NativeRequest, *, deadline: float
+    ) -> Reply | NativeReply:
         deadline = _finite(deadline)
         if deadline <= _now():
             raise ProtocolError("packet_deadline")
@@ -326,14 +447,20 @@ class PacketOwner:
                 return self._reply(request, "retired")
             if entry.results:
                 phase = PHASES[len(entry.results) - 1]
-                return self._reply(request, "established", phase, entry.results[phase].result)
+                return self._reply(request, "established", phase, entry.results[phase])
             return self._reply(request, "pending")
         if self._closing or entry.abandoned or self._unavailable():
             raise ProtocolError("packet_owner_blocked")
         if entry.retired:
             raise ProtocolError("packet_retired")
         phase = cast(Phase, request.action)
-        digest = hashlib.sha256(request.payload).digest()
+        native_input: NativeInput | None = None
+        if self._native is not None:
+            if entry.context is None or entry.context.binding() != entry.context_binding:
+                raise ProtocolError("assignment_conflict")
+            native_input, digest = self._native.input(request, cast(NativeBudgets, self.budgets))
+        else:
+            digest = hashlib.sha256(cast(Request, request).payload).digest()
         if phase in entry.inputs and entry.inputs[phase] != digest:
             raise ProtocolError("assignment_conflict")
         if entry.pending is not None:
@@ -341,7 +468,7 @@ class PacketOwner:
                 raise ProtocolError("packet_phase_order")
             return self._reply(request, "pending")
         if phase in entry.results:
-            return self._reply(request, "established", phase, entry.results[phase].result)
+            return self._reply(request, "established", phase, entry.results[phase])
         if len(entry.results) >= len(PHASES) or PHASES[len(entry.results)] != phase:
             raise ProtocolError("packet_phase_order")
         if self._inflight >= self.budgets.inflight:
@@ -368,7 +495,7 @@ class PacketOwner:
         self._inflight += 1
         call = None
         try:
-            call = self._drive(entry, request, phase, limit, ready)
+            call = self._drive(entry, request, phase, limit, ready, native_input)
             work = asyncio.create_task(call)
         except BaseException as original:
             entry.abandoned = self._blocked = True
@@ -388,7 +515,7 @@ class PacketOwner:
             if _now() >= limit or self._closing or self._unavailable() or caller.cancelling():
                 raise ProtocolError("packet_outcome_uncertain")
             entry.packet, entry.results[phase] = packet, result
-            return self._reply(request, "established", phase, result.result)
+            return self._reply(request, "established", phase, result)
         except BaseException as original:
             failure = original
             entry.abandoned = self._blocked = True
@@ -425,8 +552,14 @@ class PacketOwner:
             original.add_note("Packet settlement: " + type(cleanup).__name__)
 
     async def _drive(
-        self, entry: _Entry, request: Request, phase: Phase, deadline: float, ready: asyncio.Event
-    ) -> tuple[PreparedPacket | None, Established]:
+        self,
+        entry: _Entry,
+        request: Request | NativeRequest,
+        phase: Phase,
+        deadline: float,
+        ready: asyncio.Event,
+        native_input: NativeInput | None = None,
+    ) -> tuple[PreparedPacket | NativePacket | None, Established | NativeOutcome]:
         try:
             await ready.wait()
             if (
@@ -439,9 +572,22 @@ class PacketOwner:
                 raise ProtocolError("packet_outcome_uncertain")
             entry.effect_started = True
             packet = entry.packet
-            if phase == "prepare":
-                packet, result = await self.effects.prepare(
-                    entry.authorization, request.payload, deadline=deadline
+            if self._native is not None:
+                packet, result = await self._native.perform(
+                    entry.context,
+                    phase,
+                    native_input,
+                    packet,
+                    cast(NativeBudgets, self.budgets),
+                    deadline=deadline,
+                )
+                self._native.check_outcome(result)
+                if entry.context is None or result.phase != phase:
+                    raise ProtocolError("packet_result_refused")
+                self._native.check_packet(entry.context, packet, cast(NativeBudgets, self.budgets))
+            elif phase == "prepare":
+                packet, result = await cast(SyntheticEffects, self.effects).prepare(
+                    entry.authorization, cast(Request, request).payload, deadline=deadline
                 )
                 if (
                     type(packet) is not PreparedPacket
@@ -453,25 +599,18 @@ class PacketOwner:
                 ):
                     raise ProtocolError("packet_result_refused")
             else:
-                if packet is None:
+                if type(packet) is not PreparedPacket:
                     raise ProtocolError("packet_phase_order")
+                effects = cast(SyntheticEffects, self.effects)
                 if phase == "reserve":
-                    result = await self.effects.reserve(
-                        entry.authorization, packet, deadline=deadline
-                    )
+                    result = await effects.reserve(entry.authorization, packet, deadline=deadline)
                 elif phase == "catalog":
-                    result = await self.effects.catalog(
-                        entry.authorization, packet, deadline=deadline
-                    )
+                    result = await effects.catalog(entry.authorization, packet, deadline=deadline)
                 elif phase == "present":
-                    result = await self.effects.present(
-                        entry.authorization, packet, deadline=deadline
-                    )
+                    result = await effects.present(entry.authorization, packet, deadline=deadline)
                 else:
-                    result = await self.effects.terminal(
-                        entry.authorization, packet, deadline=deadline
-                    )
-            if (
+                    result = await effects.terminal(entry.authorization, packet, deadline=deadline)
+            if self._native is None and (
                 type(result) is not Established
                 or type(result.result) is not bytes
                 or len(result.result) > MAX_RESULT

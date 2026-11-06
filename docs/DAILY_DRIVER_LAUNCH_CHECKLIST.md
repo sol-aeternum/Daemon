@@ -151,3 +151,13 @@ and known native control-only terminal outcomes require explicit real-adapter
 semantics; existing native CSV limits are not the prototype transport limits.
 No runtime, permission, stored format or deployment change is introduced, and
 the authentication, artifact restore/lifecycle and launch gates remain open.
+
+The uninstalled [backend-only native profile](PUBLICATION_PACKET_OWNER.md#backend-only-native-profile)
+now reuses the RAM owner for the five actual H/native phases with closed original
+context, packet and result types. Required bounded native budgets preserve the
+8 MiB CSV limit without changing synthetic frames. Native terminal control outcomes
+remain truthful; uncertainty blocks the packet owner and drains physical cleanup.
+No runtime caller, issuer, authentication, listener, SQL/permission change or
+external wire contract is added. Whole-ingress allocation, authenticated provenance,
+restart fencing, complete runtime composition and independent artifact restore
+evidence remain release gates. Observation-only is unchanged; #477 stays open.
