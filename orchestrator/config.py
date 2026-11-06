@@ -382,7 +382,7 @@ class Settings(BaseSettings):
     # Default-off M1 retrieval helpers; the proposed route remains unapproved.
     memory_multi_query_enabled: bool = False
     memory_multi_query_merge: Literal["additive", "round_robin"] = "additive"
-    memory_decomposition_timeout_ms: int = Field(default=1500, ge=1, le=60_000)
+    memory_decomposition_timeout_ms: int = Field(default=2600, ge=1, le=60_000)
     memory_subquery_quota: int = Field(default=3, ge=1, le=10)
     memory_max_subqueries: int = Field(default=3, ge=0, le=3)
     memory_decomposition_profile: Literal["memory_decomposition"] = "memory_decomposition"

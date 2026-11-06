@@ -216,7 +216,7 @@ This preserves DEC12's Z-only runtime and AC07/AC11 authority/data boundaries.
 |---|---|---|
 | `memory_multi_query_enabled` | `false` | Default-off runtime gate |
 | `memory_multi_query_merge` | `additive` | `additive` or evaluation-only `round_robin` |
-| `memory_decomposition_timeout_ms` | `1500` | Positive decomposition deadline |
+| `memory_decomposition_timeout_ms` | `2600` | Positive decomposition deadline. Every flag-on turn waits up to this long. |
 | `memory_subquery_quota` | `3` | Positive unseen results per component |
 | `memory_max_subqueries` | `3` | Bounded to 0–3, matching the schema |
 | `memory_decomposition_profile` | `memory_decomposition` | Dedicated minimal/off reasoning profile |
@@ -262,7 +262,7 @@ USD 0.00000026 per embedding, with generation p50 1.84 s and p95 2.71 s.
 Incremental helper cost is approximately `0.00006 + n_sub × 0.00000026` USD
 (at three components, USD 0.00006078), excluding answer-prompt growth, provider
 price differences, failed-call charges and retries. Those are estimates, not
-approved spend. A 1500 ms prior may discard many medium-effort calls. The old
+approved spend. The original 1500 ms prior would have cut off 24% of the bake-off's calls, so the default is now 2600 ms, near its p95 (`tests/benchmark_results/m15_bakeoff_2026-11-06.md` once merged). The old
 prompt produced one paraphrase for 43/50 questions, motivating a new prompt
 that requests distinct fact components or an empty list.
 
