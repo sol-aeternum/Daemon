@@ -142,3 +142,35 @@ their bounded contracts and qualification. Independent artifact restore evidence
 lifecycle/privacy and deployment release gates remain open. Real identities,
 keys, roles/grants, mounts/sockets, migrations and deployment require specific
 operational approvals. No paid inference is introduced.
+
+## Native phase boundary qualification
+
+`tests/test_packet_native_phases_postgres.py` exercises this owner around the
+actual H-owned preparation, reservation, file/catalog, presentation and terminal
+methods on owned synthetic PostgreSQL/POSIX fixtures. It retains the original
+native objects out of band and uses tiny fixed input/result bytes. This is a
+test bridge, not a production adapter, assignment issuer or CSV/result codec.
+The existing distinct P/R0/W pools, private files, H/J1 and native checks remain
+unchanged. No runtime import or construction exception is added.
+
+The cases distinguish identical-result replay from repeated native effects;
+exercise Stop, generation and missing-projection boundaries; interrupt actual
+phase COMMIT acknowledgements and holder resets; and observe ownership through
+repeated cancellation, logical deadline and cleanup failure. They reopen original
+task/file results only as synthetic fixture evidence. Results are reported
+separately; this description is not deployed or authenticated acceptance.
+
+Two boundaries remain explicit. An abandoned outer caller blocks the packet owner
+and cannot establish a late result, but its uncancelled native driver can finish
+known cleanup with the H owner still healthy. This does not select a production
+interest-propagation or owner-replacement policy. Native terminal publication can
+also return a known control-only status, such as `failed:task_generation_stale`,
+without publishing new content. The test bridge refuses to invent its wire mapping;
+a real adapter must preserve that status rather than call it task success or
+mislabel the native COMMIT unknown.
+
+Native CSV supports up to 8 MiB, and native descriptor bounds also exceed the
+prototype's selected packet surface. These tests use a small fitting packet;
+they do not raise the prototype caps, choose transport/memory budgets or qualify
+real request/result formats. Those contracts, immutable native assignment
+provenance, worker authentication and complete runtime composition remain open.

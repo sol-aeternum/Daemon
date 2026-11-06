@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `b26ad4b1759dbd7bc475ecff98a991a6d52ceadc` (main verified
-before the isolated protocol/RAM-owner prototype following #677). This checklist separates
+Source checkpoint: `a57b5773b27d42d238acbeea4364e03c46ab1d38` (main verified
+after #680, before packet/native boundary qualification). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -142,3 +142,12 @@ It installs no listener, native-effect adapter or runtime producer. Immutable na
 assignment provenance, real authentication/framing admission and complete execution
 integration remain unqualified. No new permission, live resource, prepared-packet
 store or recovery/restore authority is inferred. Observation-only remains in force.
+
+Subsequent [native phase boundary tests](PUBLICATION_PACKET_OWNER.md#native-phase-boundary-qualification)
+put the RAM owner around the actual five H/native methods using owned synthetic
+SQL/POSIX fixtures. The test bridge's out-of-band native objects and tiny fixed
+payloads are not a production adapter, issuer or codec. Outer-caller abandonment
+and known native control-only terminal outcomes require explicit real-adapter
+semantics; existing native CSV limits are not the prototype transport limits.
+No runtime, permission, stored format or deployment change is introduced, and
+the authentication, artifact restore/lifecycle and launch gates remain open.
