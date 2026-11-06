@@ -2477,7 +2477,7 @@ def _generation_id(chunk: Any) -> str | None:
 
 
 def _estimated_usage(generation_id: str | None) -> dict[str, Any]:
-    """Usage for a conservative full-hold settlement, keyed for receipt reconciliation."""
+    """Usage for an estimated settlement, keyed for lower-only receipt reconciliation."""
     if generation_id is None:
         return dict(_ESTIMATED)
     return {**_ESTIMATED, "generation_id": generation_id}
@@ -2838,11 +2838,28 @@ async def guarded_completion(
                     evidence.broken = True
             token = inference_transport.current.set(evidence)
             try:
-                call_started = True
-                response = await asyncio.wait_for(
-                    litellm.acompletion(**call),
-                    timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
-                )
+                if scope.invocation_managed():
+                    call_started = True
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(**call),
+                        timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
+                    )
+                else:
+
+                    async def ordinary_completion() -> Any:
+                        nonlocal call_started
+                        call_started = True
+                        result = await litellm.acompletion(**call)
+                        # Publish in the SDK owner before wait_for can lose its
+                        # result to cancellation of the awaiting dispatch task.
+                        if not stream:
+                            hold.output_released = True
+                        return result
+
+                    response = await asyncio.wait_for(
+                        ordinary_completion(),
+                        timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
+                    )
             finally:
                 inference_transport.current.reset(token)
             if not stream:
@@ -2877,9 +2894,9 @@ async def guarded_completion(
         except BaseException as failure:
             if scope.inference_invocation is not None:
                 scope.inference_invocation.call_failed = True
-            # An unknown or cancelled outcome still cost what was reserved, and a
-            # failed settlement replaces this exception rather than hiding behind
-            # a retryable one, so incomplete accounting stays visible.
+            # Ordinary unknown outcomes use the captured floor; managed calls
+            # retain the existing bound/uncertainty policy. Financial failures
+            # cannot hide behind retryable provider errors.
             if scope.inference_invocation is None or scope.inference_invocation.uncertainty is None:
                 try:
                     if scope.invocation_managed():

@@ -255,12 +255,15 @@ async def test_nonstream_response_after_deadline_stays_at_bound(monkeypatch) -> 
             return {"choices": []}
 
     monkeypatch.setattr(runtime.litellm, "acompletion", late)
+    # Construct the observer before starting this deliberately short SDK
+    # deadline: this test is about a returned response, not local pool startup.
+    runtime.inference_transport.get_handler()
     async with _account_scope(service) as scope:
         with pytest.raises(runtime.ComputeUnavailable, match="deadline"):
             await runtime.guarded_completion(
                 model="openrouter/reviewed/model",
                 messages=[{"role": "user", "content": "hi"}],
-                _dispatch_timeout_s=0.01,
+                _dispatch_timeout_s=0.1,
             )
         decision = next(iter(scope.terminal_decisions.values()))
         assert decision.amount == next(iter(ledger.reservations.values()))["bound"]
@@ -783,3 +786,43 @@ async def test_managed_scope_cleanup_keeps_bound_or_uncertainty_skip(monkeypatch
         service.reconcile_expired_reservations.assert_not_awaited()
     finally:
         invocation.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_nonstream_sdk_return_before_waiter_cancellation_counts_as_output(monkeypatch):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service = _chat_service(
+        reserve=AsyncMock(side_effect=ledger.reserve), settle=ledger.settle, release=ledger.release
+    )
+
+    async def provider(**kwargs):
+        return {"choices": []}
+
+    original_wait = asyncio.wait_for
+
+    async def cancelled_after_sdk_return(awaitable, *, timeout):
+        # Force the scheduling window independently of this Python version's
+        # wait_for cancellation-race preference. The real SDK owner has already
+        # returned; its awaiting dispatch loses the result to cancellation.
+        await original_wait(awaitable, timeout=timeout)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    monkeypatch.setattr(runtime.asyncio, "wait_for", cancelled_after_sdk_return)
+    async with _account_scope(service) as scope:
+        dispatch = asyncio.create_task(
+            runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}]
+            )
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await dispatch
+        decision = next(iter(scope.terminal_decisions.values()))
+        bound = next(iter(ledger.reservations.values()))["bound"]
+        assert (decision.operation, decision.amount, decision.path) == (
+            "settle",
+            bound,
+            "dispatch_failure",
+        )
