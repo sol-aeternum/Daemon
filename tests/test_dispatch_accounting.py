@@ -6,11 +6,13 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from orchestrator import compute_runtime as runtime
 from orchestrator.entitlements import EntitlementService
+from tests.test_compute_runtime import _account_scope, _chat_service, _qualified_policy, _route
 
 
 class Ledger:
@@ -94,3 +96,32 @@ async def test_racing_terminal_callers_join_first_decision(monkeypatch) -> None:
     assert hold.actual == 30
     assert ledger.actions == [("settle", "hold", 30)]
     assert hold.decision is not None and hold.decision.path == "scope_cleanup"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_synthetic_failure_uses_captured_floor(monkeypatch, stream) -> None:
+    route = _route(input_price=1_000_000)
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+
+    async def chunks():
+        raise RuntimeError("offline")
+        yield {}
+
+    provider = AsyncMock(return_value=chunks()) if stream else AsyncMock(side_effect=RuntimeError())
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable):
+            result = await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+            if stream:
+                async for _ in result:
+                    pass
+        decision = scope.terminal_decisions["pooled-hold"]
+        input_size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+        assert decision.amount == route.estimate_microusd(input_size.bound, 1)
+        assert decision.path == "dispatch_unknown_floor" and decision.operation == "settle"
+        assert ledger.actions == [("settle", "pooled-hold", decision.amount)]
