@@ -366,8 +366,12 @@ async def test_reset_and_sent_retry_refused(mode: str, stream: bool) -> None:
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("variant", ["context", "bound"])
 async def test_pooling_parity_and_cost(stream: bool, variant: str) -> None:
+    started = time.perf_counter()
     owner = Handler()
+    owner_startup = time.perf_counter() - started
+    started = time.perf_counter()
     baseline = AsyncHTTPHandler(timeout=0.2)
+    baseline_startup = time.perf_counter() - started
     try:
         async with capture() as (server, base):
             times: dict[str, float] = {}
@@ -386,7 +390,10 @@ async def test_pooling_parity_and_cost(stream: bool, variant: str) -> None:
                         await h.close()
                     if name != "off":
                         assert e.statuses == [200] and e.charge
-                times[name] = (time.perf_counter() - start) * 1000 / 40
+                # Include shared-client construction amortized across the batch;
+                # bound also includes every per-dispatch client construction.
+                startup = baseline_startup if name == "off" else owner_startup
+                times[name] = (time.perf_counter() - start + startup) * 1000 / 40
             assert server.accepts == 2  # One baseline and one shared seam connection.
             assert len(set(server.bodies)) == 1
             assert all(headers == server.headers[0] for headers in server.headers)
