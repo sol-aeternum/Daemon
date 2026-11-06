@@ -7784,6 +7784,30 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.packet_owner",
+      "qualname": "PacketOwner.handle",
+      "kind": "store_write",
+      "fingerprint": "2175a10352b53d1a",
+      "line_hint": 385,
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled synthetic packet owner: ready.set signals only the in-process logical start gate. Conservatively retained as deferred and uncovered; no persistent write or runtime fence is claimed."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.packet_owner",
+      "qualname": "PacketOwner.handle",
+      "kind": "store_write",
+      "fingerprint": "57f204a304e8ff8a",
+      "line_hint": 312,
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uncalled synthetic packet owner: self.expire retires inactive RAM payloads while preserving assignment tombstones and active ownership. Conservatively retained as deferred and uncovered; no persistent write or runtime fence is claimed."
     }
   ]
 }

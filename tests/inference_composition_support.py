@@ -660,6 +660,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ".HistoryObservation",
                         ".HistoryReadSupervisor",
                         ".HistoryRuntime",
+                        ".PacketOwner",
                     )
                 ) or target in (
                     "AcceptanceProjection",
@@ -670,6 +671,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     "HistoryObservation",
                     "HistoryReadSupervisor",
                     "HistoryRuntime",
+                    "PacketOwner",
                 ):
                     read_host = (
                         target == "orchestrator.services.restore_history.runtime.HistoryRuntime"
