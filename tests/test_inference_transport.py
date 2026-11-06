@@ -1,10 +1,10 @@
 """Production S4 transport, exercised over real owned-loopback sockets (#681).
 
-Both variants borrow one factory-built aiohttp transport. create_client delegates
-all HTTPX configuration to LiteLLM, then replaces only its unstarted transport.
-The first transport becomes the pool; later unused factory transports have only
-a callable session factory (no sockets/session to close). A production factory
-should avoid that redundant allocation, preserving the same configuration.
+The production handler borrows one factory-built aiohttp transport. create_client
+delegates all HTTPX configuration to LiteLLM, then replaces only its unstarted
+transport. Later factory transports have only a callable session factory (no live
+session to close). Dispatch-local context supplies evidence, including request
+hooks that expose a proxy/mount bypass as an unknown attempt.
 
 Source-qualified negative proof (installed aiohttp): client.py:854-876 connects
 BEFORE req.send; connector.py:1309-1367,1476-1545,1593-1598 raise connector errors
@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
+import httpx
 import pytest
 from litellm.exceptions import (
     APIError,
@@ -61,7 +62,8 @@ from litellm.exceptions import (
 )
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
-from orchestrator.inference_transport import Evidence, Handler, current
+from orchestrator import inference_transport
+from orchestrator.inference_transport import Attempt, Evidence, Handler, current
 from tests.inference_transport_support import completion, offline_only, peer
 
 __all__ = ["offline_only"]  # Reuse the enforced loopback/.invalid network fixture.
@@ -112,6 +114,9 @@ async def test_socket_outcomes(mode: str, stream: bool) -> None:
                 if mode in {"close", "read_timeout"}:
                     assert server.bodies
                 assert e.attempts
+                assert e.release_path(exc) == (
+                    "dispatch_not_sent" if mode in {"refused", "dns", "tls"} else None
+                )
     finally:
         await h.shutdown()
 
@@ -247,6 +252,9 @@ async def test_real_status(status: int, stream: bool) -> None:
             report(str(status), stream, e, exc)
             assert exc is not None and server.bodies and e.charge
             assert e.statuses == [status]
+            assert e.release_path(exc) == (
+                None if status in {408, 500, 504} else "dispatch_provider_rejected"
+            )
     finally:
         await h.shutdown()
 
@@ -401,6 +409,7 @@ def test_synthetic_exception_has_no_provenance(kind: Any) -> None:
     exc = kind(**kwargs, **({"status_code": 503} if kind is APIError else {}))
     assert exc.status_code in {429, 503}
     assert Evidence().charge and not Evidence().statuses
+    assert Evidence().release_path(exc) is None
 
 
 @pytest.mark.xfail(
@@ -422,6 +431,7 @@ async def test_local_unsupported_parameter(stream: bool) -> None:
             assert not server.bodies and not e.attempts
             # Separate allowlisted source-path proof is required for release.
             assert e.charge and not e.statuses
+            assert e.release_path(exc) == "dispatch_not_sent_local"
     finally:
         await h.shutdown()
 
@@ -490,3 +500,72 @@ def test_foreign_event_loop_recycles_session() -> None:
         assert new.closed
 
     asyncio.run(second())
+
+
+@pytest.mark.asyncio
+async def test_bypass_mount_records_unknown_attempt() -> None:
+    from httpx._utils import URLPattern
+
+    h, e = Handler(), Evidence(attempts=[Attempt(status=503)])
+    # An HTTPX proxy/mount bypasses the forwarding transport, but not the hook.
+    h.client._mounts[URLPattern("all://")] = httpx.AsyncHTTPTransport()
+    try:
+        async with capture() as (_, base):
+            assert await dispatch(base, False, h, e) is None
+        assert len(e.attempts) == 2
+        assert e.release_path(RuntimeError()) is None
+    finally:
+        await h.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_broken_observer_does_not_refuse_inference() -> None:
+    class BrokenAttempts(list[Attempt]):
+        def append(self, value: Attempt) -> None:
+            raise RuntimeError("synthetic observer failure")
+
+    h, e = Handler(), Evidence(attempts=BrokenAttempts())
+    try:
+        async with capture() as (_, base):
+            assert await dispatch(base, False, h, e) is None
+        assert e.broken and e.release_path(RuntimeError()) is None
+    finally:
+        await h.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_check_degrades_without_private_factory(monkeypatch) -> None:
+    monkeypatch.delattr(AsyncHTTPHandler, "_create_aiohttp_transport")
+    assert inference_transport.get_handler() is None
+    await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_active_body() -> None:
+    h, e = Handler(), Evidence()
+    async with capture("active") as (server, base):
+        task = asyncio.create_task(dispatch(base, True, h, e, timeout=3))
+        await asyncio.wait_for(server.received.wait(), 3)
+        shutdown = asyncio.create_task(h.shutdown())
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+        assert isinstance(h.pool.client, aiohttp.ClientSession) and not h.pool.client.closed
+        server.release.set()
+        assert await task is None
+        await shutdown
+        assert h.pool.client.closed
+
+
+def test_mixed_attempts_never_erase_unknown_send() -> None:
+    for attempts in (
+        [Attempt(), Attempt(status=503)],
+        [Attempt(status=503), Attempt()],
+        [Attempt(status=200), Attempt(status=503)],
+    ):
+        assert Evidence(attempts=attempts).release_path(RuntimeError()) is None
+    assert (
+        Evidence(attempts=[Attempt(not_sent=True), Attempt(status=503)]).release_path(
+            RuntimeError()
+        )
+        == "dispatch_provider_rejected"
+    )

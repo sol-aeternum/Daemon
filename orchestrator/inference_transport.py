@@ -10,6 +10,7 @@ server/worker drain and additionally waits for outstanding response bodies.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
@@ -20,7 +21,6 @@ from weakref import WeakKeyDictionary
 import aiohttp
 import httpx
 from litellm.exceptions import UnsupportedParamsError
-from litellm.llms.custom_httpx.aiohttp_transport import LiteLLMAiohttpTransport
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from litellm import utils
 
@@ -143,7 +143,7 @@ class Forwarder(httpx.AsyncBaseTransport):
 
 class Handler(AsyncHTTPHandler):
     def __init__(self) -> None:
-        self.pool: LiteLLMAiohttpTransport | None = None
+        self.pool: Any = None
         self.borrower_closes = 0
         self.active = 0
         self.drained = asyncio.Event()
@@ -171,7 +171,13 @@ class Handler(AsyncHTTPHandler):
         hooks.setdefault("request", []).append(self.observe_request)
         client = super().create_client(timeout, hooks, ssl_verify, shared_session)
         original = getattr(client, "_transport", None)
-        if not isinstance(original, LiteLLMAiohttpTransport) or not callable(original.client):
+        transport_type = getattr(
+            importlib.import_module("litellm.llms.custom_httpx.aiohttp_transport"),
+            "LiteLLMAiohttpTransport",
+        )
+        if not isinstance(original, transport_type) or not callable(
+            getattr(original, "client", None)
+        ):
             raise RuntimeError("inference transport factory changed")
         if self.pool is None:
             self.pool = original

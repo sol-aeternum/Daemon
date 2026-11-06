@@ -26,6 +26,10 @@ def offline_only(monkeypatch: pytest.MonkeyPatch) -> None:
         if isinstance(host, bytes):
             host = host.decode("ascii")
         assert host in {"127.0.0.1", "::1", "send-evidence.invalid"}, host
+        if host == "send-evidence.invalid":
+            # Never ask the host's potentially external DNS resolver. The other
+            # cases use real sockets; this case qualifies error mapping only.
+            raise socket.gaierror(socket.EAI_NONAME, "fictional local DNS failure")
         return original_resolve(host, *args, **kwargs)
 
     monkeypatch.setattr(socket.socket, "connect", connect)
