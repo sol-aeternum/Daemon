@@ -1176,7 +1176,9 @@ def answer_conversation_ids(
 # the tests drive it with fakes: the test suite starts no process, opens no
 # connection, reads no dataset and calls no provider.
 
-RUN_ARM_DB_NAME: Final[str] = "daemon_lme_bench_dev2"
+#: The final-pin dev2 database (owner ruling). The pilot's ``daemon_lme_bench_dev2``
+#: stays untouched as evidence, so this driver refuses it.
+RUN_ARM_DB_NAME: Final[str] = "daemon_lme_bench_dev2_final"
 SHARED_DB_NAME: Final[str] = "daemon_lme_bench"
 CHECKPOINT_NAME: Final[str] = "longmemeval_checkpoint.json"
 CHILD_LOG_NAME: Final[str] = "child.log"
@@ -1206,7 +1208,7 @@ def db_name_from_dsn(dsn: str) -> str | None:
 
 
 def check_run_arm_database(dsn: str | None) -> str:
-    """Refuse unless ``DATABASE_URL`` names exactly the isolated dev2 database."""
+    """Refuse unless ``DATABASE_URL`` names exactly the final-pin dev2 database."""
     name = db_name_from_dsn(dsn or "")
     if name == SHARED_DB_NAME:
         raise ValueError(f"run-arm refuses the shared {SHARED_DB_NAME} database")
@@ -1579,7 +1581,8 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--arm-dataset", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--concurrency", type=int, default=1)
-    parser.add_argument("--cap-usd", type=float, default=8.50)
+    # Required: each block sets its own cap, so no run can fall back on an old figure.
+    parser.add_argument("--cap-usd", type=float, required=True)
     parser.add_argument("--margin-usd", type=float, default=1.00)
     parser.add_argument("--max-rate-limited", type=int, default=DEFAULT_MAX_RATE_LIMITED)
     parser.add_argument("--record", type=Path, required=True)

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+from collections.abc import Sequence
 from decimal import ROUND_CEILING, Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,9 +23,11 @@ from tests.benchmark_longmemeval.dev2_labelling import (
     LabelInput,
     artifact_hashes,
     build_request,
+    build_spot_check_packet,
     load_answer_session_memories,
     parse_label,
     spot_check_sample,
+    spot_check_selection,
 )
 
 # Pinned at freeze time; any change to the prompt, schema or template fails here.
@@ -1183,3 +1187,376 @@ def test_a_lock_lost_before_dispatch_sends_nothing(tmp_path: Any, check: Any) ->
     )
     assert calls == []
     assert document["stop_reason"] == "run_lock_lost"
+
+
+# --- spot-check selection and packet -----------------------------------------
+#
+# Fakes only: the packet command's connector raises if it is ever reached, so
+# every refusal below proves that no connection was opened.
+
+
+def _label_entry(
+    question_id: str,
+    *,
+    schema_valid: bool = True,
+    answerable: bool = True,
+    reason: str | None = None,
+    memory_ids: Sequence[str] = (),
+    note: str = "one short sentence",
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "question_id": question_id,
+        "schema_valid": schema_valid,
+        "answerable_from_store": answerable,
+        "calls": 1,
+        "cost_usd": "0.01",
+        "latency_seconds": 0.5,
+        "serving_provider": "azure",
+    }
+    if reason is not None:
+        entry["reason"] = reason
+    if schema_valid:
+        entry["memory_ids"] = list(memory_ids)
+        entry["note"] = note
+    return entry
+
+
+def _five_ids() -> list[str]:
+    return [f"q{index}" for index in range(5)]
+
+
+def test_spot_check_seeded_draw_is_unchanged() -> None:
+    entries = [_label_entry(question_id) for question_id in _five_ids()]
+    selection = spot_check_selection(entries)
+    seeded = [question_id for question_id, reasons in selection if "seeded_sample" in reasons]
+    assert seeded == list(spot_check_sample(_five_ids()))
+    assert {reason for _, reasons in selection for reason in reasons} <= {
+        "seeded_sample",
+        "answerable_false",
+    }
+
+
+def test_spot_check_seeded_false_label_gets_both_reasons_once() -> None:
+    entries = [_label_entry(question_id) for question_id in _five_ids()]
+    target = spot_check_sample(_five_ids())[0]
+    by_id = {entry["question_id"]: entry for entry in entries}
+    by_id[target]["answerable_from_store"] = False
+    by_id[target]["memory_ids"] = []
+
+    selection = spot_check_selection(entries)
+    assert [question_id for question_id, _ in selection].count(target) == 1
+    assert dict(selection)[target] == ("seeded_sample", "answerable_false")
+
+
+def test_spot_check_adds_not_answerable_labels_sorted_and_counts_no_memories() -> None:
+    entries = [_label_entry(question_id) for question_id in _five_ids()]
+    seeded = set(spot_check_sample(_five_ids()))
+    extra = sorted(set(_five_ids()) - seeded)
+    assert len(extra) == 3
+    by_id = {entry["question_id"]: entry for entry in entries}
+
+    by_id[extra[0]]["answerable_from_store"] = False
+    by_id[extra[0]]["memory_ids"] = []
+    by_id[extra[1]].update(
+        {"schema_valid": False, "answerable_from_store": False, "reason": "no_memories"}
+    )
+    by_id[extra[1]].pop("memory_ids", None)
+    by_id[extra[1]].pop("note", None)
+    by_id[extra[2]].update(
+        {"schema_valid": False, "answerable_from_store": False, "reason": "parse_failure"}
+    )
+    by_id[extra[2]].pop("memory_ids", None)
+    by_id[extra[2]].pop("note", None)
+
+    selection = spot_check_selection(entries)
+    additional = [
+        question_id for question_id, reasons in selection if "answerable_false" in reasons
+    ]
+    assert additional == sorted([extra[0], extra[1]])
+    assert dict(selection)[extra[0]] == ("answerable_false",)
+    assert dict(selection)[extra[1]] == ("answerable_false",)
+    assert extra[2] not in {question_id for question_id, _ in selection}
+
+
+PACKET_CONVERSATION = "22222222-2222-2222-2222-222222222222"
+
+
+def _packet_rows() -> list[dict[str, Any]]:
+    return [
+        {**_row("q1", "s1"), "question": "Which card did I use?", "answer": "The blue card."},
+        {**_row("q2", "s2"), "question": "Which vet do I use?", "answer": "The Oak Street vet."},
+    ]
+
+
+def _packet_checkpoint() -> dict[str, Any]:
+    return _checkpoint(("q1", "s1", Q1_CONVERSATION), ("q2", "s2", PACKET_CONVERSATION))
+
+
+def test_packet_marks_labelled_ids_and_states_the_rate_rule() -> None:
+    labels = [
+        _label_entry("q1", memory_ids=["m1"], note="Both memories cover it."),
+        _label_entry("q2", schema_valid=False, answerable=False, reason="no_memories"),
+    ]
+    selection = [("q1", ("seeded_sample",)), ("q2", ("answerable_false",))]
+    memories = {
+        "q1": (("m1", "blue card"), ("m2", "backup card")),
+        "q2": (),
+    }
+
+    packet = build_spot_check_packet(
+        selection, labels, _packet_rows(), _packet_checkpoint(), memories
+    )
+
+    assert "seeded sample only" in packet
+    assert "flags for owner review" in packet
+    assert packet.count("## q1") == 1
+    assert packet.count("## q2") == 1
+    q1, q2 = packet.split("## q1", 1)[1].split("## q2", 1)
+    assert "Seeded 15% sample" in q1
+    assert "Every not-answerable label" not in q1
+    assert "Which card did I use?" in q1
+    assert "The blue card." in q1
+    assert "[LABELLED] m1: blue card" in q1
+    assert "[LABELLED] m2" not in q1
+    assert "Both memories cover it." in q1
+    assert "Every not-answerable label" in q2
+    assert "Seeded 15% sample" not in q2
+    assert "No answer-session memories were recorded for this question." in q2
+    assert "answerable_from_store: false" in q2
+    assert "labelled memory IDs correct?" in q2
+
+
+def _no_connect(database_url: str) -> Any:
+    raise AssertionError(f"no connection may be opened: {database_url}")
+
+
+def _write_packet_inputs(
+    tmp_path: Any,
+    *,
+    stop_reason: str | None = None,
+    questions: list[dict[str, Any]] | None = None,
+) -> tuple[Any, Any, Any]:
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps(_packet_rows()), encoding="utf-8")
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps(_packet_checkpoint()), encoding="utf-8")
+    (tmp_path / "population.json").write_text(json.dumps(["q1", "q2"]), encoding="utf-8")
+    labels = tmp_path / "labels.json"
+    labels.write_text(
+        json.dumps(
+            {
+                "schema": "dev2-labelling/1",
+                "stop_reason": stop_reason,
+                "questions": questions
+                if questions is not None
+                else [_label_entry("q1", memory_ids=["m1"]), _label_entry("q2", memory_ids=["m2"])],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return rows, checkpoint, labels
+
+
+def test_packet_refuses_an_output_inside_the_repository(tmp_path: Any) -> None:
+    rows, checkpoint, labels = _write_packet_inputs(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    output = repo / "packet.md"
+    with pytest.raises(ValueError):
+        dev2_labelling.packet_main(
+            [
+                "--question-rows",
+                str(rows),
+                "--checkpoint",
+                str(checkpoint),
+                "--labels",
+                str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
+                "--output",
+                str(output),
+            ],
+            repo_root=repo,
+            connector=_no_connect,
+        )
+    assert not output.exists()
+
+
+def test_packet_refuses_an_existing_output_without_connecting(tmp_path: Any) -> None:
+    rows, checkpoint, labels = _write_packet_inputs(tmp_path)
+    output = tmp_path / "packet.md"
+    output.write_text("keep me", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        dev2_labelling.packet_main(
+            [
+                "--question-rows",
+                str(rows),
+                "--checkpoint",
+                str(checkpoint),
+                "--labels",
+                str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
+                "--output",
+                str(output),
+            ],
+            repo_root=tmp_path / "elsewhere",
+            connector=_no_connect,
+        )
+    assert output.read_text(encoding="utf-8") == "keep me"
+
+
+def test_packet_refuses_an_unfinished_label_document(tmp_path: Any) -> None:
+    rows, checkpoint, labels = _write_packet_inputs(tmp_path, stop_reason="spend_cap")
+    output = tmp_path / "packet.md"
+    with pytest.raises(ValueError):
+        dev2_labelling.packet_main(
+            [
+                "--question-rows",
+                str(rows),
+                "--checkpoint",
+                str(checkpoint),
+                "--labels",
+                str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
+                "--output",
+                str(output),
+            ],
+            repo_root=tmp_path / "elsewhere",
+            connector=_no_connect,
+        )
+    assert not output.exists()
+
+
+def test_packet_refuses_a_label_id_absent_from_the_rows(tmp_path: Any) -> None:
+    rows, checkpoint, labels = _write_packet_inputs(
+        tmp_path, questions=[_label_entry("q9", memory_ids=["m1"])]
+    )
+    output = tmp_path / "packet.md"
+    with pytest.raises(ValueError):
+        dev2_labelling.packet_main(
+            [
+                "--question-rows",
+                str(rows),
+                "--checkpoint",
+                str(checkpoint),
+                "--labels",
+                str(labels),
+                "--population",
+                str(tmp_path / "population.json"),
+                "--output",
+                str(output),
+            ],
+            repo_root=tmp_path / "elsewhere",
+            connector=_no_connect,
+        )
+    assert not output.exists()
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _batch_rows() -> list[dict[str, Any]]:
+    return [{"question_id": q, "question": "Q", "answer": "A"} for q in ("q1", "q2")]
+
+
+def _batch_document(*ids: str, **overrides: Any) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "schema": dev2_labelling.LABEL_RECORD_SCHEMA,
+        "stop_reason": None,
+        "questions": [
+            {
+                "question_id": q,
+                "schema_valid": True,
+                "answerable_from_store": True,
+                "memory_ids": ["m1"],
+                "note": "n",
+            }
+            for q in ids
+        ],
+    }
+    document.update(overrides)
+    return document
+
+
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        (_batch_document("q1"), "missing"),
+        (_batch_document("q1", "q2", "q2"), "duplicate"),
+        (_batch_document("q1", "q2", "q3"), "absent"),
+        (_batch_document("q1", "q2", schema="other"), "schema"),
+        (_batch_document("q1", "q2", stop_reason="spend_cap"), "stopped"),
+    ],
+)
+def test_packet_refuses_an_incomplete_or_malformed_batch(document: Any, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        dev2_labelling._packet_labels(document, _batch_rows(), {"q1", "q2"})
+
+
+def test_packet_accepts_a_complete_batch() -> None:
+    assert (
+        len(dev2_labelling._packet_labels(_batch_document("q1", "q2"), _batch_rows(), {"q1", "q2"}))
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected", "absent"),
+    [
+        ({"schema_valid": True, "answerable_from_store": True}, ": true", "No valid"),
+        ({"schema_valid": True, "answerable_from_store": False}, ": false", "No valid"),
+        ({"schema_valid": False, "reason": "no_memories"}, "no stored memories", "No valid"),
+        ({"schema_valid": False, "reason": "parse_failure"}, "parse_failure", ": false"),
+    ],
+)
+def test_an_invalid_reply_is_never_shown_as_a_negative_label(
+    entry: dict[str, Any], expected: str, absent: str
+) -> None:
+    line = dev2_labelling._packet_label_line(entry)
+    assert expected in line
+    assert absent not in line
+
+
+def test_rows_and_labels_cannot_agree_on_an_incomplete_subset() -> None:
+    rows = [{"question_id": "q1", "question": "Q", "answer": "A"}]
+    with pytest.raises(ValueError, match="frozen --population"):
+        dev2_labelling._packet_labels(_batch_document("q1"), rows, {"q1", "q2"})
+
+
+def test_duplicate_rows_refuse() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        dev2_labelling._packet_labels(
+            _batch_document("q1", "q2"), [*_batch_rows(), _batch_rows()[0]], {"q1", "q2"}
+        )
+
+
+@pytest.mark.parametrize("value", [[], {"question_ids": []}, {"other": ["q1"]}, ["q1", "q1"]])
+def test_an_empty_or_malformed_population_refuses(tmp_path: Any, value: Any) -> None:
+    path = tmp_path / "population.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="--population"):
+        dev2_labelling._read_population(path)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"answerable_from_store": None},
+        {"answerable_from_store": "false"},
+        {"memory_ids": None},
+        {"note": None},
+        {"schema_valid": "true"},
+        {"schema_valid": False, "reason": None},
+    ],
+)
+def test_a_malformed_entry_refuses_before_sampling(broken: dict[str, Any]) -> None:
+    document = _batch_document("q1", "q2")
+    document["questions"][0].update(broken)
+    with pytest.raises(ValueError, match="--labels q1"):
+        dev2_labelling._packet_labels(document, _batch_rows(), {"q1", "q2"})
+
+
+def test_the_committed_pilot_population_has_all_fourteen() -> None:
+    assert len(dev2_labelling._read_population(FIXTURES / "dev2_pilot_ids.json")) == 14

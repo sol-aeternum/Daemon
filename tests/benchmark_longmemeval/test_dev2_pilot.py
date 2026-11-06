@@ -1007,7 +1007,7 @@ def _run_arm_kwargs(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
         "margin_usd": 1.0,
         "max_rate_limited": 3,
         "record_path": tmp_path / "record.json",
-        "database_url": "postgresql://u:p@localhost/daemon_lme_bench_dev2",
+        "database_url": "postgresql://u:p@localhost/daemon_lme_bench_dev2_final",
         "status_porcelain": "",
         "code_sha": "c" * 40,
         "dataset_rows": _arm_rows(),
@@ -1048,14 +1048,17 @@ def test_child_command_is_exact_and_weakening_flags_are_absent() -> None:
 
 
 def test_db_name_from_dsn_ignores_credentials_and_refuses_query() -> None:
-    assert dev2_pilot.db_name_from_dsn("postgresql://u:p@h:5432/daemon_lme_bench_dev2") == (
-        "daemon_lme_bench_dev2"
+    assert dev2_pilot.db_name_from_dsn("postgresql://u:p@h:5432/daemon_lme_bench_dev2_final") == (
+        "daemon_lme_bench_dev2_final"
     )
     # Any query string is refused: libpq honours a dbname parameter there.
-    assert dev2_pilot.db_name_from_dsn("postgresql://u:p@h/daemon_lme_bench_dev2?sslmode=x") is None
+    assert (
+        dev2_pilot.db_name_from_dsn("postgresql://u:p@h/daemon_lme_bench_dev2_final?sslmode=x")
+        is None
+    )
     assert dev2_pilot.db_name_from_dsn("") is None
-    assert dev2_pilot.check_run_arm_database("postgresql://u:p@h/daemon_lme_bench_dev2") == (
-        "daemon_lme_bench_dev2"
+    assert dev2_pilot.check_run_arm_database("postgresql://u:p@h/daemon_lme_bench_dev2_final") == (
+        "daemon_lme_bench_dev2_final"
     )
 
 
@@ -1065,7 +1068,7 @@ def test_db_name_from_dsn_ignores_credentials_and_refuses_query() -> None:
         None,
         "",
         "postgresql://u:p@localhost/daemon_lme_bench",
-        "postgresql://u:p@localhost/daemon_lme_bench_dev2_backup",
+        "postgresql://u:p@localhost/daemon_lme_bench_dev2_final_backup",
         "postgresql://u:p@localhost/postgres",
     ],
 )
@@ -1180,7 +1183,7 @@ def test_write_record_never_overwrites(tmp_path: Path) -> None:
     [
         "postgresql://b:b@127.0.0.1:55432/%64aemon_lme_bench",
         "postgresql://b:b@127.0.0.1:55432/%64aemon_lme_bench_dev2",
-        "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench_dev2?dbname=daemon_lme_bench",
+        "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench_dev2_final?dbname=daemon_lme_bench",
         "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench",
     ],
 )
@@ -1190,8 +1193,8 @@ def test_run_arm_database_guard_refuses_encoded_and_overridden_names(dsn: str) -
 
 
 def test_run_arm_database_guard_accepts_the_exact_name() -> None:
-    dsn = "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench_dev2"
-    assert dev2_pilot.check_run_arm_database(dsn) == "daemon_lme_bench_dev2"
+    dsn = "postgresql://b:b@127.0.0.1:55432/daemon_lme_bench_dev2_final"
+    assert dev2_pilot.check_run_arm_database(dsn) == "daemon_lme_bench_dev2_final"
 
 
 def test_output_dir_must_be_outside_the_repository(tmp_path: Path) -> None:
@@ -1619,6 +1622,31 @@ def test_run_arm_defaults_to_the_preregistered_429_tolerance(
                 str(tmp_path / "out"),
                 "--record",
                 str(tmp_path / "record.json"),
+                "--cap-usd",
+                "6.00",
             ]
         )
     assert captured["max_rate_limited"] == dev2_pilot.DEFAULT_MAX_RATE_LIMITED == 100
+    assert captured["cap_usd"] == 6.00
+
+
+def test_run_arm_refuses_the_pilot_database_kept_as_evidence() -> None:
+    with pytest.raises(ValueError, match="daemon_lme_bench_dev2_final"):
+        dev2_pilot.check_run_arm_database("postgresql://u:p@localhost/daemon_lme_bench_dev2")
+
+
+def test_run_arm_requires_an_explicit_cap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        dev2_pilot.run_arm_main(
+            [
+                "--arm-dataset",
+                str(tmp_path / "arm.json"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--record",
+                str(tmp_path / "record.json"),
+            ]
+        )
+    assert "--cap-usd" in capsys.readouterr().err
