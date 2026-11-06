@@ -931,3 +931,27 @@ async def test_extended_real_tool_path_and_dispatch_share_one_run(monkeypatch, t
             reject.set()
             if pending is not None:
                 await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_unknown_profile_refuses_before_dispatch_and_docs_do_not_claim_fallback(monkeypatch):
+    from pathlib import Path
+
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    monkeypatch.setattr(
+        runtime.model_routing, "current_routing", lambda: SimpleNamespace(profile="unknown-profile")
+    )
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as caught:
+            await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}]
+            )
+    assert caught.value.code == "route_unavailable"
+    service.reserve.assert_not_awaited()
+    provider.assert_not_awaited()
+    documentation = Path("docs/SUBSCRIPTION_ARCHITECTURE.md").read_text()
+    assert "without a resolved profile it is the full bound" not in documentation

@@ -337,8 +337,12 @@ retain attempt/status evidence across LiteLLM's internal fresh-client retry and
 detect HTTPX mount bypasses as unknown attempts. Borrower close cannot close the
 shared pool; failed retry responses are closed separately. Missing private seam
 attributes disable observation, not inference: dispatch omits `client=` and uses
-unknown accounting. Backend lifespan and worker shutdown drain response bodies
-before closing their loop-owned pools. Seam logs contain no request content. Loopback
+unknown accounting. Backend lifespan and worker shutdown allow a bounded grace
+period for response bodies to drain, then force-close their loop-owned pools even
+if a body was abandoned. Drain timeout warnings contain counts only; client and
+pool closes also have bounded waits. Transport failure or timeout cannot skip
+backend AppState or worker database cleanup. This bounds local shutdown, not
+remote provider cessation. Seam logs contain no request content. Loopback
 tests qualify this seam, not live providers, real TLS success or proxy tunnelling.
 
 ## Routing telemetry

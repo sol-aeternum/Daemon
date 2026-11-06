@@ -177,7 +177,8 @@ An unknown attempt followed by a real rejection remains unknown. The per-candida
 unknown amount is captured before dispatch as
 `min(bound, route.estimate_microusd(input_size.bound, min(output_tokens, workload.min_output_tokens)))`,
 using the same validated workload as candidate selection, including explicit and
-pinned routes; without a resolved profile it is the full bound. Once output
+pinned routes. An unknown profile fails closed before dispatch; there is no
+profile-less inference fallback. Once output
 exists, incomplete calls retain their full-bound settlement. Invocation-managed
 execution retains its existing full-bound/uncertainty-skip behaviour; partial or
 mismatched bindings do not admit ordinary accounting.
