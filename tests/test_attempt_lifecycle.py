@@ -30,7 +30,7 @@ def imports_lifecycle(text):
     )
 
 
-def assert_history_identity_only(text):
+def assert_history_identity_only(text, *, native_context=False):
     """Only H's exact data-type import; no lifecycle consumer or activation."""
     tree = ast.parse(text)
     imports = [
@@ -50,8 +50,20 @@ def assert_history_identity_only(text):
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id == "AttemptIdentity":
             parent = parents[node]
-            assert (isinstance(parent, ast.arg) and parent.annotation is node) or isinstance(
-                parent, ast.Compare
+            container = parents.get(parent)
+            context_field = (
+                native_context
+                and isinstance(parent, ast.AnnAssign)
+                and parent.annotation is node
+                and isinstance(parent.target, ast.Name)
+                and parent.target.id == "identity"
+                and isinstance(container, ast.ClassDef)
+                and container.name == "NativeContext"
+            )
+            assert (
+                (isinstance(parent, ast.arg) and parent.annotation is node)
+                or isinstance(parent, ast.Compare)
+                or context_field
             )
         if isinstance(node, ast.Call):
             assert not (
@@ -80,6 +92,35 @@ def test_history_identity_exception_cannot_activate_lifecycle(extra):
     assert_history_identity_only(good)
     with pytest.raises(AssertionError):
         assert_history_identity_only(good + "\n" + extra)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "class Other:\n identity: AttemptIdentity",
+        "class NativeContext:\n other: AttemptIdentity",
+        "def f():\n identity: AttemptIdentity",
+        "identity: AttemptIdentity",
+        "class NativeContext:\n identity: list[AttemptIdentity]",
+        "class NativeContext:\n identity = AttemptIdentity(a,b,c,d,e,f,g,h)",
+        "consumer.register(value)",
+        "consumer.close(value)",
+        "consumer.readback(value)",
+        "Alias = AttemptIdentity",
+        "from orchestrator.attempt_lifecycle import assert_open",
+        "from orchestrator.attempt_lifecycle import AttemptIdentity as Alias",
+    ],
+)
+def test_native_context_identity_exception_is_data_only(extra):
+    good = (
+        "from orchestrator.attempt_lifecycle import AttemptIdentity\n"
+        "class NativeContext:\n identity: AttemptIdentity\n"
+    )
+    assert_history_identity_only(good, native_context=True)
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good)
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good + extra, native_context=True)
 
 
 def assert_composition_catalogue_only(text):
@@ -182,11 +223,15 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                     for n in ast.walk(ast.parse(text))
                 )
                 continue
-            if (
-                path.relative_to(root).as_posix()
-                == "orchestrator/services/restore_history/effects.py"
-            ):
-                assert_history_identity_only(text)
+            if path.relative_to(root).as_posix() in {
+                "orchestrator/services/restore_history/effects.py",
+                "orchestrator/services/restore_history/native_publication.py",
+            }:
+                assert_history_identity_only(
+                    text,
+                    native_context=path.relative_to(root).as_posix()
+                    == "orchestrator/services/restore_history/native_publication.py",
+                )
             else:
                 assert not imports_lifecycle(text), str(path)
             if path.relative_to(root).as_posix() == "orchestrator/tasks/composition.py":
