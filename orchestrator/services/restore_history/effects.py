@@ -33,7 +33,8 @@ from orchestrator.tasks.states import TaskStatus
 
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
-from .model import AcceptPrepare, Command, HistoryError, SendPossible, StopIntent
+from .artifact_projection import ArtifactHistoryProjection
+from .model import AcceptPrepare, ArtifactPrepare, Command, HistoryError, SendPossible, StopIntent
 from .projection import compare_projections
 from .store import _check_time
 
@@ -55,7 +56,8 @@ class HistoryEffects:
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection) is not HistoryProjection
+            or type(projection) not in (HistoryProjection, ArtifactHistoryProjection)
+            or history.profile != projection.profile
             or type(tasks._inference) is not InferenceRecovery
         ):
             raise HistoryError("effects_composition_refused")
@@ -78,6 +80,7 @@ class HistoryEffects:
             or self._tasks._cover_new_inference is not False
             or recovery.principals != (self._projection.worker, self._projection.acceptor)
             or self._history._expected != self._projection.expected
+            or self._history.profile != self._projection.profile
         ):
             raise HistoryError("effects_composition_refused")
 
@@ -138,7 +141,12 @@ class HistoryEffects:
                     if len(page) < 32:
                         break
                     cursor = page[-1].seq
-        report = compare_projections(self._projection.expected.history_id, state, tuple(facts))
+        report = compare_projections(
+            self._projection.expected.history_id,
+            state,
+            tuple(facts),
+            profile=self._projection.profile,
+        )
         if report.missing or report.extra or report.mismatched or report.restore_required:
             raise HistoryError("effects_reconciliation_required", uncertain=True)
         return state
@@ -731,7 +739,61 @@ class HistoryEffects:
                 # Same owned P transaction retains source/account locks. The
                 # publisher independently reads/admit-checks again; no supplied
                 # snapshot grants filesystem effects.
+                prepared = None
+                projection = self._projection
+                if type(projection) is ArtifactHistoryProjection:
+                    await projection.qualify_publisher(conn, deadline=deadline)
+                    command = observed["_command"]
+                    if (
+                        observed["publication"] is not None
+                        or observed["source_kind"] != "output"
+                        or any(
+                            type(e.command.data) is ArtifactPrepare
+                            and e.command.data.intent_id == intent_id
+                            for e in state.entries
+                        )
+                    ):
+                        raise HistoryError("historical_artifact", uncertain=True)
+                    ancestor = next(
+                        e.command.record_id
+                        for e in state.entries
+                        if type(e.command.data) is AcceptPrepare
+                        and e.command.data.task_id == identity.task_id
+                    )
+                    prepared = await operation.append(
+                        Command(
+                            uuid4(),
+                            ArtifactPrepare(
+                                identity.account_id,
+                                identity.generation,
+                                identity.task_id,
+                                ancestor,
+                                identity.epoch,
+                                identity.lifecycle_id,
+                                identity.financial_scope_id,
+                                identity.metadata_scope_id,
+                                identity.producer_instance_id,
+                                intent_id,
+                                command.binding.resource_id,
+                                command.binding.version_id,
+                                command.job.job_id,
+                                command.job.operation_id,
+                                command.binding.output_slot,
+                                command.binding.attempt_id,
+                                "first-output-csv-catalog-v1",
+                            ),
+                        )
+                    )
+                    if not prepared.created:
+                        raise HistoryError("historical_artifact", uncertain=True)
+                    _check_time(deadline)
                 result = await publisher._publish_reserved(conn, identity, intent_id, content)
+                if prepared is not None:
+                    assert type(projection) is ArtifactHistoryProjection
+                    if not (
+                        await projection.stage_artifact(conn, prepared.entry, deadline=deadline)
+                    ).inserted:
+                        raise HistoryError("historical_artifact", uncertain=True)
                 _check_time(deadline)
             _check_time(deadline)
         _check_time(deadline)

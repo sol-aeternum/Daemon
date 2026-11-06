@@ -25,6 +25,7 @@ from .model import (
     Entry,
     HistoryError,
     Identity,
+    Profile,
     decode_entry,
     encode_entry,
 )
@@ -121,6 +122,11 @@ class AcceptanceProjection:
     _catalog = CATALOG
     _kinds: tuple[type[Any], ...] = (AcceptPrepare,)
     _reader = "SELECT * FROM public.task_history_acceptance_page($1,$2,$3)"
+    _profile: Profile = "h1"
+
+    @property
+    def profile(self) -> Profile:
+        return self._profile
 
     def __init__(self, expected: Identity, *, acceptor: str, worker: str) -> None:
         if (
@@ -194,7 +200,7 @@ class AcceptanceProjection:
             frame = row["frame"]
             if type(frame) is not bytes or type(row["digest"]) is not bytes:
                 raise HistoryError("projection_result_unavailable")
-            entry = decode_entry(frame)
+            entry = decode_entry(frame, profile=self._profile)
             if (
                 type(row["seq"]) is not int
                 or not 1 <= row["seq"] <= MAX_RECORDS

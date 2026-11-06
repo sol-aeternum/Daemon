@@ -119,7 +119,7 @@ def assert_composition_catalogue_only(text):
         value = node.value
         if "attempt_lifecycle" not in value or value in identifiers:
             continue
-        # Only the two read-only pg_catalog predicates may contain the name
+        # Only read-only pg_catalog predicates may contain the name
         # prefix. Any actual public function SQL, dynamic import or new name fails.
         assert value.startswith("SELECT ") and "FROM pg_catalog." in value
         assert re.findall(r"attempt_lifecycle\w*", value) == ["attempt_lifecycle_"]
@@ -142,6 +142,57 @@ def test_composition_catalogue_exception_does_not_allow_lifecycle_activation(ext
     assert_composition_catalogue_only(source)
     with pytest.raises(AssertionError):
         assert_composition_catalogue_only(source + "\n" + extra)
+
+
+def assert_artifact_catalogue_only(text):
+    """Only the approved P qualifier's fixed catalog literal may name the prefix."""
+    assert_composition_catalogue_only(text)
+    tree = ast.parse(text)
+    literals = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "PUBLISHER_CATALOG"
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    ]
+    assert len(literals) == 1
+    literal = literals[0].value
+    assert isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+    value = literal.value
+    assert re.findall(r"attempt_lifecycle\w*", value) == ["attempt_lifecycle_"]
+    tree.body.remove(literals[0])
+    assert "attempt_lifecycle" not in ast.unparse(tree)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "from orchestrator.attempt_lifecycle import assert_open",
+        "from orchestrator.attempt_lifecycle import AttemptIdentity as Alias",
+        "import orchestrator.attempt_lifecycle as lifecycle",
+        "__import__('orchestrator.attempt_lifecycle')",
+        "conn.execute('SELECT public.attempt_lifecycle_register($1,$2)')",
+        "adapter.attempt_lifecycle_close(value)",
+        "getattr(adapter, 'attempt_lifecycle_register')(value)",
+        "OTHER = \"SELECT p.oid FROM pg_catalog.pg_proc p WHERE p.proname LIKE 'attempt_lifecycle_%'\"",
+    ],
+)
+def test_artifact_catalogue_exception_cannot_import_or_activate_lifecycle(extra):
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "orchestrator/services/restore_history/artifact_projection.py").read_text()
+    assert_artifact_catalogue_only(source)
+    with pytest.raises(AssertionError):
+        assert_artifact_catalogue_only(source + "\n" + extra)
+
+
+def test_artifact_catalogue_prefix_cannot_move_to_another_constant():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "orchestrator/services/restore_history/artifact_projection.py").read_text()
+    with pytest.raises(AssertionError):
+        assert_artifact_catalogue_only(source.replace("PUBLISHER_CATALOG", "OTHER"))
 
 
 def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
@@ -191,6 +242,11 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                 assert not imports_lifecycle(text), str(path)
             if path.relative_to(root).as_posix() == "orchestrator/tasks/composition.py":
                 assert_composition_catalogue_only(text)
+            elif (
+                path.relative_to(root).as_posix()
+                == "orchestrator/services/restore_history/artifact_projection.py"
+            ):
+                assert_artifact_catalogue_only(text)
             else:
                 assert "attempt_lifecycle_" not in text, str(path)
             assert not any(

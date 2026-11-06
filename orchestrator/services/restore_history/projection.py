@@ -3,7 +3,15 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from .model import MAX_PAYLOAD, MAX_RECORDS, Entry, HistoryError, HistoryState, validate_chain
+from .model import (
+    MAX_PAYLOAD,
+    MAX_RECORDS,
+    Entry,
+    HistoryError,
+    HistoryState,
+    Profile,
+    validate_chain,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,14 +32,18 @@ class ProjectionReport:
 
 
 def compare_projections(
-    history_id: UUID, state: HistoryState, facts: tuple[ProjectionFact, ...]
+    history_id: UUID,
+    state: HistoryState,
+    facts: tuple[ProjectionFact, ...],
+    *,
+    profile: Profile = "h1",
 ) -> ProjectionReport:
     """Even an empty report cannot certify auth/budget/restore continuity."""
     from .model import encode_entry
 
     if len(facts) > MAX_RECORDS:
         raise HistoryError("invalid_projection")
-    checked = validate_chain(history_id, state.entries)
+    checked = validate_chain(history_id, state.entries, profile=profile)
     expected: dict[int, Entry] = {e.seq: e for e in checked.entries}
     seen = set()
     missing = []
@@ -57,7 +69,9 @@ def compare_projections(
         if entry is None:
             extra.append(fact.seq)
             continue
-        frame = encode_entry(entry.history_id, entry.seq, entry.prev_digest, entry.command)
+        frame = encode_entry(
+            entry.history_id, entry.seq, entry.prev_digest, entry.command, profile=profile
+        )
         if (fact.history_id, fact.record_id, fact.digest, fact.frame) != (
             entry.history_id,
             entry.command.record_id,

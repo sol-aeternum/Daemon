@@ -16,7 +16,7 @@ from contextlib import AbstractContextManager, asynccontextmanager
 from pathlib import Path
 from typing import TypeVar
 
-from .model import Command, HistoryError, HistoryState, Identity
+from .model import Command, HistoryError, HistoryState, Identity, Profile, check_profile
 from .store import AppendResult, HistoryStore, Ownership, _check_time
 
 T = TypeVar("T")
@@ -68,7 +68,10 @@ class HistoryCoordinator:
     A failed invocation blocks this object permanently; close is the only exit.
     """
 
-    def __init__(self, path: Path, expected: Identity, ownership: Ownership) -> None:
+    def __init__(
+        self, path: Path, expected: Identity, ownership: Ownership, *, profile: Profile = "h1"
+    ) -> None:
+        self._profile: Profile = check_profile(profile)
         self._pid = os.getpid()
         self._path, self._expected, self._ownership = path, expected, ownership
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -79,6 +82,10 @@ class HistoryCoordinator:
         self._operation: HistoryOperation | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
         self._started = self._closing = self._closed = self._blocked = False
+
+    @property
+    def profile(self) -> Profile:
+        return self._profile
 
     def _bind(self) -> None:
         # Never touch inherited executor/mutex/flock state after a fork.
@@ -156,7 +163,11 @@ class HistoryCoordinator:
         def initialize() -> None:
             # Retain ownership even if the completed result cannot be delivered.
             self._store = HistoryStore(
-                self._path, self._expected, self._ownership, deadline=deadline
+                self._path,
+                self._expected,
+                self._ownership,
+                deadline=deadline,
+                profile=self._profile,
             )
 
         try:

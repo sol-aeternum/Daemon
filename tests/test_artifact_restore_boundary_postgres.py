@@ -208,7 +208,7 @@ async def close_pool(pool):
 
 
 @asynccontextmanager
-async def restored(s, saved, *, older_files=False):
+async def restored(s, saved, *, older_files=False, projection=None):
     cluster = s.db.cluster
     assert not s.history._blocked and not s.effects._blocked
     # No producer runs concurrently. Do not replace an uncertain/failed owner.
@@ -278,10 +278,12 @@ async def restored(s, saved, *, older_files=False):
             worker_pool = await pool("md_app")
             publication_pool = await pool("reserved_p")
             owner_pool = await pool("md_owner")
-            history = HistoryCoordinator(s.path, s.identity, s.ownership)
+            history = HistoryCoordinator(s.path, s.identity, s.ownership, profile=s.history.profile)
             await history.open(deadline=q.r.p.r.deadline())
             stack.push_async_callback(history.aclose, deadline=q.r.p.r.deadline())
-            projection = HistoryProjection(s.identity, acceptor="md_acceptor", worker="md_app")
+            projection = projection or HistoryProjection(
+                s.identity, acceptor="md_acceptor", worker="md_app"
+            )
             recovery = InferenceRecovery(worker_pool)
             recovery.principals = ("md_app", "md_acceptor")
             worker = TaskStore(
