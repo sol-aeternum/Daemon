@@ -637,6 +637,33 @@ const pendingLocks = (page: Page) =>
 const stableRecord = (epoch: string) =>
   JSON.stringify({ version: 1, epoch, status: 'stable' });
 
+async function waitForNativeRefreshSettlement(tabs: Page[]) {
+  // One tab's first ready state can precede the other tab's committed refresh
+  // notice, which deliberately re-arms its cache barrier. Observe both native
+  // owners and their barriers before asserting the final two-document result.
+  // This only reads state: it cannot retry refresh or initiate cache clearing.
+  await expect
+    .poll(() =>
+      Promise.all(
+        tabs.map(async (tab) => {
+          const value = await state(tab);
+          return {
+            header: value.header,
+            cacheStatus: value.cacheStatus,
+            refreshPending: value.refreshPending,
+          };
+        }),
+      ),
+    )
+    .toEqual(
+      tabs.map(() => ({
+        header: 'Bearer fictional-rotated-a',
+        cacheStatus: 'ready',
+        refreshPending: false,
+      })),
+    );
+}
+
 test('two genuinely unbound native fresh documents get serialized cookie refreshes and preserve both protected deep links', async ({
   page,
   context,
@@ -676,6 +703,7 @@ test('two genuinely unbound native fresh documents get serialized cookie refresh
   );
   await expect.poll(() => pendingLocks(page)).toBe(2);
   await page.evaluate(() => Reflect.get(window, '__releaseLock')());
+  await waitForNativeRefreshSettlement(tabs);
   for (const [index, tab] of tabs.entries()) {
     await expect
       .poll(async () => (await state(tab)).header)
@@ -711,6 +739,113 @@ test('two genuinely unbound native fresh documents get serialized cookie refresh
       .some((event) => event[2] === 'step-body'),
   ).toBe(true);
   for (const tab of tabs) await tab.close();
+});
+
+test('two genuinely unbound native fresh documents wait for peer revalidation before final observations', async ({
+  page,
+  context,
+  request,
+}) => {
+  await context.addCookies([
+    {
+      name: 'daemon_refresh',
+      value: 'fictional-refresh-a',
+      url: 'http://127.0.0.1:3142',
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+  await holdCookieLock(page);
+  await plan(request, {
+    refresh: ['refresh-success', 'refresh-success'],
+  });
+  const tabs = [await context.newPage(), await context.newPage()];
+  for (const tab of tabs) {
+    await tab.addInitScript(() => {
+      // Delay actual native peer notices, not the refresh transaction: a
+      // pending transaction correctly fences both documents' headers already.
+      const post = BroadcastChannel.prototype.postMessage;
+      const notices: (() => void)[] = [];
+      let held = true;
+      BroadcastChannel.prototype.postMessage = function (message: unknown) {
+        if (
+          held &&
+          this.name === 'daemon-auth' &&
+          typeof message === 'object' &&
+          message !== null &&
+          Reflect.get(message, 'type') === 'refreshed'
+        ) {
+          notices.push(() => post.call(this, message));
+        } else {
+          post.call(this, message);
+        }
+      };
+      Reflect.set(window, '__releaseRefreshNotices', () => {
+        held = false;
+        for (const send of notices.splice(0)) send();
+      });
+    });
+  }
+  let releaseCache!: () => void;
+  const cacheReleased = new Promise<void>((resolve) => {
+    releaseCache = resolve;
+  });
+  let settlement: Promise<void> | undefined;
+  let settled = false;
+  let cacheHeld = false;
+  try {
+    await Promise.all(
+      tabs.map((tab, index) => freshProtected(tab, `revalidation-${index}`)),
+    );
+    await expect.poll(() => pendingLocks(page)).toBe(2);
+    await page.evaluate(() => Reflect.get(window, '__releaseLock')());
+    await waitForNativeRefreshSettlement(tabs);
+    expect(await refreshAttempts(request)).toBe(2);
+    const first = tabs[0];
+    const generation = (await state(first)).generation;
+    await expect(first.getByTestId('protected-cache-probe')).toBeVisible();
+    expect((await state(first)).cacheStatus).toBe('ready');
+
+    await first.route('**/api/v1/auth/cache/clear', async (route) => {
+      cacheHeld = true;
+      await cacheReleased;
+      await route.continue();
+    });
+    await tabs[1].evaluate(() =>
+      Reflect.get(window, '__releaseRefreshNotices')(),
+    );
+    await expect.poll(() => cacheHeld).toBe(true);
+    const revalidating = await state(first);
+    expect(revalidating.generation).toBeGreaterThan(generation);
+    expect(revalidating.cacheStatus).toBe('pending');
+    expect(revalidating.header).toBeNull();
+    await expect(first.getByTestId('protected-cache-probe')).toHaveCount(0);
+    settlement = waitForNativeRefreshSettlement(tabs).then(() => {
+      settled = true;
+    });
+    void settlement.catch(() => {}); // Observed below; retain cleanup on failure.
+    await state(first);
+    expect(settled).toBe(false); // Neither a committed refresh nor an old
+    // acknowledgement may satisfy the newly invalidated cache generation.
+    await first.evaluate(() =>
+      Reflect.get(window, '__releaseRefreshNotices')(),
+    );
+    releaseCache();
+    await settlement;
+    for (const [index, tab] of tabs.entries()) {
+      expect(new URL(tab.url()).pathname).toBe(
+        `/settings/p02-revalidation-${index}`,
+      );
+      await expect(tab.getByTestId('protected-cache-probe')).toBeVisible();
+      expect((await state(tab)).cacheStatus).toBe('ready');
+      expect((await state(tab)).header).toBe('Bearer fictional-rotated-a');
+    }
+    expect(await refreshAttempts(request)).toBe(2);
+  } finally {
+    releaseCache();
+    await settlement?.catch(() => {});
+    await boundedOwnedCleanup(Promise.all(tabs.map((tab) => tab.close())));
+  }
 });
 
 for (const status of ['signed-out', 'uncertain', 'pending'] as const) {
