@@ -234,7 +234,8 @@ async def test_preoutput_fallback_turn_can_be_reconstructed(
     assert first_outcome["next_action"] == "fallback"
     assert first_outcome["output_released"] is False
     assert first_settlement["reservation_id"] == str(holds[0].id)
-    assert first_settlement["path"] == "stream_end"
+    # The failed acquired stream emitted no chunk: row 4, not completed stream accounting.
+    assert first_settlement["path"] == "dispatch_unknown_floor"
     assert first_settlement["estimated"] is True
     assert records[5]["attempt_index"] == 1
     assert records[5]["reservation_id"] == str(holds[1].id)

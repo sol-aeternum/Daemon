@@ -3654,9 +3654,10 @@ async def test_cancellation_is_never_reported_as_a_retryable_dispatch(
                 messages=[{"role": "user", "content": "hi"}],
                 _route_id="pooled-cheap",
             )
-    # Cancellation is not reclassified as a provider failure, and the reserved
-    # bound is still settled rather than left open.
-    service.settle.assert_awaited_once_with("pooled-hold", service.reserve.await_args.args[1])
+    # No-output cancellation is not a retryable provider failure; row 4 settles
+    # its unknown floor (which happens to round to the bound for this fixture).
+    route = next(route for route in _pooled_pool() if route.route_id == "pooled-cheap")
+    service.settle.assert_awaited_once_with("pooled-hold", _unknown_cost(route))
 
 
 @pytest.mark.asyncio

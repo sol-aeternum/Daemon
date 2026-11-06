@@ -1582,6 +1582,39 @@
     },
     {
       "owner_source": "orchestrator.compute_runtime",
+      "qualname": "guarded_completion.dispatch",
+      "kind": "store_write",
+      "fingerprint": "d0211b55715e09a2",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Dispatch-local inference_transport.current.set(evidence) is ContextVar bookkeeping, not a new account or ledger SQL writer. Conservatively retained as an unknown deferred/uncovered candidate; no runtime fence, release authority or account-writer boundary is granted by this classification."
+    },
+    {
+      "owner_source": "orchestrator.inference_transport",
+      "qualname": "Handler.__init__",
+      "kind": "store_write",
+      "fingerprint": "6a9c3e452d7a8cb6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "self.drained.set() signals an in-process asyncio.Event for transport lifetime tracking. It writes no account table; the name-based scanner candidate remains unknown, deferred and uncovered, without runtime fence or account-writer authority."
+    },
+    {
+      "owner_source": "orchestrator.inference_transport",
+      "qualname": "Handler.finished",
+      "kind": "store_write",
+      "fingerprint": "6a9c3e452d7a8cb6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "self.drained.set() signals completion of local transport bodies through asyncio.Event, not persistence or account mutation. Conservatively retained as an unknown deferred/uncovered candidate; no runtime fence or account-writer authority is claimed."
+    },
+    {
+      "owner_source": "orchestrator.compute_runtime",
       "qualname": "account_compute",
       "kind": "store_write",
       "fingerprint": "64b4e48998562a00",

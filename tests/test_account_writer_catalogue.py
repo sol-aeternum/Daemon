@@ -146,6 +146,25 @@ def test_committed_manifest_matches_current_discovery() -> None:
     assert problems == []
 
 
+def test_transport_context_and_event_candidates_claim_no_new_account_fence() -> None:
+    manifest = json.loads(catalogue.MANIFEST_PATH.read_text(encoding="utf-8"))
+    expected = {
+        ("orchestrator.compute_runtime", "guarded_completion.dispatch", "d0211b55715e09a2"),
+        ("orchestrator.inference_transport", "Handler.__init__", "6a9c3e452d7a8cb6"),
+        ("orchestrator.inference_transport", "Handler.finished", "6a9c3e452d7a8cb6"),
+    }
+    candidates = [
+        entry
+        for entry in manifest["writer_sites"]
+        if (entry["owner_source"], entry["qualname"], entry["fingerprint"]) in expected
+    ]
+    assert len(candidates) == len(expected)
+    for entry in candidates:
+        assert entry["kind"] == "store_write" and entry["tables"] == []
+        assert entry["unknown"] is True and entry["uncovered"] is True
+        assert entry["category"] == "deferred" and "guard_contract" not in entry
+
+
 @pytest.mark.parametrize(
     "call",
     [
