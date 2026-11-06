@@ -3,16 +3,43 @@
 from __future__ import annotations
 
 import io
+import logging
+import sys
+import threading
 from unittest.mock import Mock
 
 import pytest
 
-from orchestrator import runtime
+from orchestrator import runtime, safe_logging
 from orchestrator.litellm_runtime import (
     LocalModelCostMapRequired,
     openrouter_reasoning_params,
     require_local_model_cost_map,
 )
+
+
+@pytest.fixture(autouse=True)
+def restore_logging_state(monkeypatch):
+    """Startup reconfigures process-wide sinks/hooks; never leak them to later tests."""
+    loggers = [logging.getLogger()] + [
+        value
+        for value in logging.root.manager.loggerDict.values()
+        if isinstance(value, logging.Logger)
+    ]
+    saved = [(logger, logger.handlers[:], logger.propagate, logger.level) for logger in loggers]
+    last = logging.lastResort
+    monkeypatch.setattr(safe_logging, "_stream", safe_logging._stream)
+    monkeypatch.setattr(safe_logging, "_managed_level", safe_logging._managed_level)
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    try:
+        yield
+    finally:
+        for logger, handlers, propagate, level in saved:
+            logger.handlers[:] = handlers
+            logger.propagate = propagate
+            logger.setLevel(level)
+        logging.lastResort = last
 
 
 @pytest.mark.parametrize("role", ["backend", "worker"])
