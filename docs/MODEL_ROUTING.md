@@ -215,7 +215,7 @@ fit the budget at that size is ineligible, and the target falls to the group's
 next-largest capacity. If no route of the group fits the remaining budget at any
 capacity size, each is offered at the largest output its hold can cover, provided
 that still meets the profile's `min_output_tokens` (approved 2 October 2026). That
-output is sent as `max_tokens`, so the hold still bounds what the provider can bill;
+output is sent as `max_tokens`, preserving the conservative admission quote;
 the routing event adds the `budget_fitted_output` reason code and the chat notes
 that the reply may stop early. An explicit model with no caller output limit is
 fitted the same way. The profile's `min_output_tokens` is a suitability floor,
@@ -298,18 +298,21 @@ exception message. Classification does **not** change the candidate walk:
 ordinary automatic execution still tries the next eligible candidate in the
 selected group; exact selection raises. Invocation-managed execution rethrows
 the original exception, marks the call failed and fences subsequent sends rather
-than falling back. There is no new send, retry or refund authority here.
+than falling back. Classification itself does not authorize refunds; the separate
+failure-accounting rules below determine the charge.
 
 `tests/test_routing_refusal_trace.py` injects the SDK exception at the real dispatch
 boundary using the production reasoning profile and synthetic approvals/prices.
 GLM refusal advances to Sol; another refusal advances to Sonnet. If all three fail,
 the ordinary caller sees `capacity_unavailable` / `unsupported_params`. Each failed
-attempt still settles its full conservative hold; successful usage settles normally.
+attempt carries no forwarder evidence and therefore settles at its captured unknown
+amount; successful usage settles normally.
 Invocation-managed execution charges the first failed hold and raises without
-trying Sol or Sonnet. These are existing accounting/fallback rules, not changes
-approved by this repair. Any future local-refusal refund or fallback-policy change
-requires separate approval. Frozen evaluation request builders and campaign guards
-are not changed by the production-only adapter.
+trying Sol or Sonnet. The #681 accounting repair separately permits ordinary
+releases only with the source-qualified local-validation or forwarding-transport
+evidence described in [the subscription architecture](SUBSCRIPTION_ARCHITECTURE.md).
+Frozen evaluation request builders and campaign guards are not changed by this
+production-only repair.
 
 Fallback retains workload requirements and account ownership. Each attempt has
 its own conservative reservation. Streaming output is not replayed after a chunk
@@ -319,6 +322,24 @@ when a returned iterator was never started. Account cleanup awaits every held
 reservation before surfacing a ledger failure.
 Transport close is bounded to two seconds; a stalled close is cancelled without
 waiting for cancellation acknowledgement, so it cannot block ledger settlement.
+
+Ordinary failures before output release proven local/not-sent/rejected attempts;
+other failures charge the candidate's precomputed workload-floor estimate, capped
+at its hold. Any yielded chunk or returned non-stream response counts as output;
+incomplete calls after output retain the full hold. Completed usage settlement and
+invocation-managed accounting are unchanged. The operator absorbs provider-billed
+rejections and provider spend above the unknown charge: the ledger is **not an
+upper bound on provider spend** for campaigns running this code.
+
+`orchestrator/inference_transport.py` uses one shared handler per event loop over
+LiteLLM's factory-built aiohttp transport. Per-dispatch context and request hooks
+retain attempt/status evidence across LiteLLM's internal fresh-client retry and
+detect HTTPX mount bypasses as unknown attempts. Borrower close cannot close the
+shared pool; failed retry responses are closed separately. Missing private seam
+attributes disable observation, not inference: dispatch omits `client=` and uses
+unknown accounting. Backend lifespan and worker shutdown drain response bodies
+before closing their loop-owned pools. Seam logs contain no request content. Loopback
+tests qualify this seam, not live providers, real TLS success or proxy tunnelling.
 
 ## Routing telemetry
 
@@ -336,7 +357,7 @@ defaults drop INFO from application loggers.
 | `candidates` | Before dispatch, per completion | Ordered route ids and exclusion counts by reason |
 | `attempt` | At dispatch | Route, model, group, requested, preset and **sent** reasoning effort, `max_tokens`, hold bound, reservation id |
 | `attempt_outcome` | After a response or failure | Outcome, failure category, fixed SDK exception-type label for unsupported parameters, retryability, whether output was released, next action |
-| `settlement` | Only after settlement | Actual amount, hold bound, estimated or metered, tokens, overage, path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery, receipt reconciliation) |
+| `settlement` | Only after settlement or release | Actual amount, hold bound, estimated or metered, tokens, overage, status and path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery, receipt reconciliation; #681 adds `dispatch_not_sent_local`, `dispatch_not_sent`, `dispatch_provider_rejected`, `dispatch_unknown_floor`) |
 
 Records join to the ledger by `scope_id` (the reservation row's scope) and
 `reservation_id`; `request_id` joins them to the HTTP request. The reservation row

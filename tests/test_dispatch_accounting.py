@@ -826,3 +826,17 @@ async def test_nonstream_sdk_return_before_waiter_cancellation_counts_as_output(
             bound,
             "dispatch_failure",
         )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "dispatch_not_sent_local",
+        "dispatch_not_sent",
+        "dispatch_provider_rejected",
+        "dispatch_unknown_floor",
+    ],
+)
+def test_documented_accounting_paths_are_loggable(path):
+    record = runtime.routing_log.build_record("settlement", {"path": path})
+    assert record["path"] == path
