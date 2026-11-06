@@ -275,11 +275,14 @@ def test_consecutive_failures_stop(tmp_path: Any) -> None:
         attempts.append(payload)
         raise ComputeUnavailable("upstream_unavailable", "down", category="upstream_unavailable")
 
-    questions = [_question(index) for index in range(4)]
+    questions = [_question(index) for index in range(12)]
     kwargs, _ = _kwargs(tmp_path, questions, call=unavailable)
     document = asyncio.run(run_bakeoff(**kwargs))
     assert document["stop_reason"] == "consecutive_failures"
-    assert len(attempts) == bakeoff.CONSECUTIVE_FAILURE_LIMIT
+    # Each arm counts its own, so the first to reach the limit stops the run.
+    per_arm = [sum(1 for row in document["questions"] if row["arm"] == arm) for arm in "ABC"]
+    assert max(per_arm) == bakeoff.CONSECUTIVE_FAILURE_LIMIT
+    assert len(attempts) == sum(per_arm)
 
 
 def test_accounting_error_stops(tmp_path: Any) -> None:
@@ -479,3 +482,68 @@ def test_the_bakeoff_refuses_every_other_benchmark_database(name: str) -> None:
 def test_output_tokens_come_from_the_provider_usage_field() -> None:
     assert bakeoff._output_tokens({"usage": {"completion_tokens": 42}}) == 42
     assert bakeoff._output_tokens({"usage": {"output_tokens": 42}}) == 0
+
+
+def test_another_arms_successes_do_not_reset_a_failing_arm(tmp_path: Any) -> None:
+    """The live run refused every B and C call while Luna's successes hid it."""
+
+    async def only_luna_works(payload: Any) -> Any:
+        if payload["_route_id"] == "luna-azure-eu":
+            return _response()
+        raise ComputeUnavailable("invalid_request", "refused", category="invalid_request")
+
+    questions = [_question(index) for index in range(30)]
+    kwargs, _ = _kwargs(tmp_path, questions, call=only_luna_works)
+    document = asyncio.run(run_bakeoff(**kwargs))
+    assert document["stop_reason"] == "consecutive_failures"
+    failures = {
+        arm: sum(1 for row in document["questions"] if row["arm"] == arm and row["error_category"])
+        for arm in ("B", "C")
+    }
+    assert max(failures.values()) == bakeoff.CONSECUTIVE_FAILURE_LIMIT
+
+
+def _seed_journal(tmp_path: Any, questions: list[Question], calls: int, failing_arm: str) -> None:
+    with open(_journal_path(_output(tmp_path)), "x", encoding="utf-8") as handle:
+        _append_journal(handle, manifest(questions))
+        for arm, question in dispatch_plan(questions, ARMS)[:calls]:
+            key = call_key(arm, question)
+            entry = bakeoff._call_entry(arm, question, 0.1)
+            if arm.label == failing_arm:
+                entry["error_category"] = "invalid_request"
+            _append_journal(
+                handle,
+                {
+                    "kind": "intent",
+                    "call_key": key,
+                    "arm": arm.label,
+                    "question_id": question.question_id,
+                },
+            )
+            _append_journal(handle, {"kind": "result", "call_key": key, **entry})
+
+
+def test_a_resume_keeps_an_arms_failure_streak(tmp_path: Any) -> None:
+    attempts: list[Any] = []
+
+    async def fails_on_b(payload: Any) -> Any:
+        attempts.append(payload)
+        if payload["_route_id"] == ARMS[1].route_id:
+            raise ComputeUnavailable("invalid_request", "refused", category="invalid_request")
+        return _response()
+
+    questions = [_question(index) for index in range(12)]
+    _seed_journal(tmp_path, questions, 27, "B")  # nine rounds: nine B failures, with A and C fine
+    kwargs, _ = _kwargs(tmp_path, questions, call=fails_on_b)
+    document = asyncio.run(run_bakeoff(**kwargs))
+    assert document["stop_reason"] == "consecutive_failures"
+    assert len([a for a in attempts if a["_route_id"] == ARMS[1].route_id]) == 1
+
+
+def test_a_resume_with_a_full_streak_sends_nothing(tmp_path: Any) -> None:
+    questions = [_question(index) for index in range(12)]
+    _seed_journal(tmp_path, questions, 30, "B")  # ten rounds: ten B failures
+    kwargs, calls = _kwargs(tmp_path, questions)
+    document = asyncio.run(run_bakeoff(**kwargs))
+    assert document["stop_reason"] == "consecutive_failures"
+    assert calls == []
