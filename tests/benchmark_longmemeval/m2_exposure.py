@@ -23,6 +23,7 @@ import fcntl
 import hashlib
 import inspect
 import json
+import os
 import sys
 import time
 import uuid
@@ -62,6 +63,7 @@ GATES_SCHEMA: Final[str] = "m2-gates/1"
 RETENTION_SCHEMA: Final[str] = "m2-retention/1"
 REPORT_SCHEMA: Final[str] = "m2-report/1"
 PLAUSIBILITY_SCHEMA: Final[str] = "m2-gate4-plausibility/1"
+START_MARKER_SCHEMA: Final[str] = "m2-start-marker/1"
 LABEL_SCHEMA: Final[str] = "dev2-labelling/1"
 JOURNAL_VERSION: Final[int] = 1
 
@@ -191,6 +193,8 @@ LogCount = Callable[[], Awaitable[int]]
 SpendReader = Callable[[], Awaitable[Any]]
 CeilingReader = Callable[[Mapping[str, Any]], Any]
 EmbeddingCeiling = Callable[[Sequence[str]], Any]
+#: The embedding route a run charges and stores vectors for: (route id, dimensions).
+EmbeddingRoute = Callable[[], tuple[str, int]]
 RetentionReader = Callable[[uuid.UUID, str, Sequence[str]], Awaitable[list[dict[str, Any]]]]
 
 
@@ -534,6 +538,90 @@ def _question_digest(question: Question) -> str:
     )
 
 
+# --- one spend start per M2 run ----------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class StartMarker:
+    start_spend_usd: Decimal
+    spend_cap_usd: Decimal
+    database: str
+
+
+def _start_marker_payload(start: Decimal) -> dict[str, Any]:
+    return {
+        "schema": START_MARKER_SCHEMA,
+        "start_spend_usd": str(start),
+        "spend_cap_usd": str(SPEND_CAP_USD),
+        "database": BENCHMARK_DB_NAME,
+    }
+
+
+def _start_marker_path(path: Path | str, repo_root: Path | None) -> Path:
+    marker = Path(path)
+    root = _repository_root() if repo_root is None else repo_root
+    check_output_outside_repo(marker, root)
+    return marker
+
+
+def _read_start_marker(path: Path) -> StartMarker:
+    """The one start and cap this M2 run was anchored to; anything else refuses."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ValueError(f"M2 start marker is missing: {path}") from None
+    except OSError:
+        raise ValueError(f"M2 start marker is unreadable: {path}") from None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        raise ValueError("M2 start marker is corrupt") from None
+    if not isinstance(data, Mapping) or set(data) != {
+        "schema",
+        "start_spend_usd",
+        "spend_cap_usd",
+        "database",
+    }:
+        raise ValueError("M2 start marker is corrupt")
+    if data.get("schema") != START_MARKER_SCHEMA:
+        raise ValueError("M2 start marker is corrupt")
+    if data.get("database") != BENCHMARK_DB_NAME:
+        raise ValueError("M2 start marker names a different benchmark database")
+    try:
+        start = _as_spend(data.get("start_spend_usd"))
+        cap = _as_spend(data.get("spend_cap_usd"))
+    except ValueError:
+        raise ValueError("M2 start marker is corrupt") from None
+    if cap != SPEND_CAP_USD:
+        raise ValueError("M2 start marker spend cap is not the frozen cap")
+    return StartMarker(start_spend_usd=start, spend_cap_usd=cap, database=BENCHMARK_DB_NAME)
+
+
+def _optional_start_marker(path: Path) -> StartMarker | None:
+    if not path.exists():
+        return None
+    return _read_start_marker(path)
+
+
+def _create_start_marker(path: Path, start: Decimal) -> StartMarker:
+    """The first start wins: exclusive create, fsync; a later process reads it."""
+    payload = _canonical(_start_marker_payload(start))
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return _read_start_marker(path)
+    except OSError:
+        raise ValueError(f"M2 start marker cannot be created: {path}") from None
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return StartMarker(
+        start_spend_usd=start, spend_cap_usd=SPEND_CAP_USD, database=BENCHMARK_DB_NAME
+    )
+
+
 def _generation_static_manifest(questions: Sequence[Question], start: Decimal) -> dict[str, Any]:
     return {
         "kind": "manifest",
@@ -643,6 +731,7 @@ async def run_generation(
     *,
     questions: Sequence[Question],
     output_path: Path | str,
+    start_marker: Path | str,
     spend_cap_usd: Decimal,
     call: Callable[[Mapping[str, Any]], Any],
     check_attestation: Callable[[], Any],
@@ -655,7 +744,12 @@ async def run_generation(
     repo_root: Path | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> dict[str, Any]:
-    """One ``PROMPT_V2`` pass, resumable, with the frozen spend ceiling."""
+    """One ``PROMPT_V2`` pass, resumable, with the frozen spend ceiling.
+
+    ``start_marker`` is the run's one spend start: the first ``generate`` creates
+    it, and every later ``generate`` — whatever its output path — reads it
+    instead of re-anchoring the ceiling to the ledger.
+    """
     if not questions:
         raise ValueError("Generation requires questions")
     if len({question.question_id for question in questions}) != len(questions):
@@ -677,6 +771,7 @@ async def run_generation(
         if isinstance(existing, Mapping) and existing.get("schema") == GENERATION_SCHEMA:
             raise ValueError("M2 generation document exists without its journal")
     output = _prepare_output(output_path, repo_root)
+    marker_path = _start_marker_path(start_marker, repo_root)
     try:
         handle = open(journal, "x", encoding="utf-8")
     except FileExistsError:
@@ -689,16 +784,24 @@ async def run_generation(
             raise RuntimeError(f"M2 generation journal is held: {journal}") from None
 
         results, intents, manifest = _read_generation_journal(journal)
+        marker = _optional_start_marker(marker_path)
         stop_reason: str | None = None
         if manifest is None:
             if results or intents:
                 stop_reason = "receipt_mismatch"
-                start_spend = Decimal(0)
+                start_spend = marker.start_spend_usd if marker is not None else Decimal(0)
+            elif marker is not None:
+                # A later output path must not re-anchor the ceiling to the ledger.
+                start_spend = marker.start_spend_usd
+                manifest = _generation_static_manifest(questions, start_spend)
+                _append_journal(handle, manifest)
             else:
                 try:
                     start_spend = _as_spend(await _maybe_await(read_ledger_spend_usd()))
                 except Exception:
                     return _stopped_generation("spend_unreadable", Decimal(0))
+                marker = _create_start_marker(marker_path, start_spend)
+                start_spend = marker.start_spend_usd
                 manifest = _generation_static_manifest(questions, start_spend)
                 _append_journal(handle, manifest)
         else:
@@ -707,6 +810,14 @@ async def run_generation(
             except ValueError:
                 stop_reason = "receipt_mismatch"
                 start_spend = Decimal(0)
+            if stop_reason is None:
+                if marker is None:
+                    raise ValueError(
+                        "M2 generation journal has no start marker; the spend start cannot "
+                        "be re-anchored from the ledger"
+                    )
+                if marker.start_spend_usd != start_spend:
+                    raise ValueError("M2 start marker disagrees with the generation journal")
             if stop_reason is None and manifest != _generation_static_manifest(
                 questions, start_spend
             ):
@@ -1097,6 +1208,9 @@ def _measure_manifest(
     subqueries: Mapping[str, Mapping[str, Any]],
     start: Decimal,
     cap: Decimal,
+    *,
+    embedding_route_id: str,
+    embedding_dimensions: int,
 ) -> dict[str, Any]:
     return {
         "kind": "manifest",
@@ -1108,6 +1222,10 @@ def _measure_manifest(
         ),
         "start_spend_usd": str(start),
         "spend_cap_usd": str(cap),
+        # The vector cache is keyed by text alone, so a resume needs this binding:
+        # vectors from a different route must never be mixed into the same run.
+        "embedding_route_id": embedding_route_id,
+        "embedding_dimensions": embedding_dimensions,
     }
 
 
@@ -1214,12 +1332,14 @@ async def run_measure(
     labels: LabelSet,
     subqueries: Mapping[str, Mapping[str, Any]],
     output_path: Path | str,
+    start_marker: Path | str,
     measure_question: MeasureQuestion,
     embed_texts: Embed,
     fingerprint: Fingerprint,
     retrieval_log_count: LogCount,
     read_ledger_spend_usd: SpendReader,
     embedding_ceiling_usd: EmbeddingCeiling,
+    read_embedding_route: EmbeddingRoute,
     acquire_run_lock: Callable[[], Any],
     check_run_lock: Callable[[], Any],
     read_retrieval_logging_flags: Callable[[], tuple[bool, bool]] = retrieval_logging_flags,
@@ -1228,10 +1348,13 @@ async def run_measure(
 ) -> dict[str, Any]:
     """Measure the three arms, journalled per question, with side effects off.
 
-    Every embedding receipt and every completed question is journalled durably
-    before the next dispatch, so a mid-run failure loses no paid work: the stop
-    writes a partial document marked as stopped and re-raises, and a resume
-    re-dispatches nothing that is already recorded.
+    The one start marker must exist and agree with the pinned spend binding, so
+    the ceiling is the run's first start rather than the current ledger. Every
+    embedding receipt and every completed question is journalled durably before
+    the next dispatch, so a mid-run failure loses no paid work: the stop writes a
+    partial document marked as stopped and re-raises, and a resume re-dispatches
+    nothing that is already recorded. The manifest binds the embedding route, so
+    a resume after a route change refuses instead of mixing vectors.
     """
     logging_enabled, logging_debug = read_retrieval_logging_flags()
     if logging_enabled or logging_debug:
@@ -1242,12 +1365,34 @@ async def run_measure(
     output = Path(output_path)
     journal = _journal_path(output)
     _prepare_resumable_output(output, repo_root, journal)
+    marker = _read_start_marker(_start_marker_path(start_marker, repo_root))
     if not await _run_lock_acquired(acquire_run_lock):
         return {"schema": MEASURE_SCHEMA, "stop_reason": "run_lock_busy", "questions": []}
 
     start, cap = _spend_of_document(subqueries)
+    if marker.start_spend_usd != start:
+        raise ValueError("M2 start marker disagrees with the generation document")
+    if marker.spend_cap_usd != cap:
+        raise ValueError("M2 start marker disagrees with the generation document spend cap")
+    embedding_route_id, embedding_dimensions = read_embedding_route()
+    if not isinstance(embedding_route_id, str) or not embedding_route_id:
+        raise ValueError("M2 embedding route is unreadable")
+    if (
+        not isinstance(embedding_dimensions, int)
+        or isinstance(embedding_dimensions, bool)
+        or embedding_dimensions <= 0
+    ):
+        raise ValueError("M2 embedding route dimensions are unreadable")
     ceiling = start + cap
-    manifest = _measure_manifest(questions, labels, subqueries, start, cap)
+    manifest = _measure_manifest(
+        questions,
+        labels,
+        subqueries,
+        start,
+        cap,
+        embedding_route_id=embedding_route_id,
+        embedding_dimensions=embedding_dimensions,
+    )
     handle = open(journal, "a", encoding="utf-8")
     try:
         try:
@@ -1317,6 +1462,7 @@ async def run_measure(
                     vectors = await _maybe_await(embed_texts(batch, is_query))
                     if not isinstance(vectors, list) or len(vectors) != len(batch):
                         raise ValueError("Embedding count differs from the request")
+                    # Accepted: a crash here re-spends this batch on resume, under the ledger cap.
                     observed = spend + legacy
                     high_water = max(high_water, observed)
                     for text, vector in zip(batch, vectors, strict=True):
@@ -1809,13 +1955,25 @@ def generation_ceiling(route: Any, payload: Mapping[str, Any]) -> Decimal:
     return Decimal(int(micro)) / Decimal(1_000_000)
 
 
-def embedding_ceiling_usd(texts: Sequence[str]) -> Decimal:
+def selected_embedding_route() -> Any:
+    """The pinned route ``embedding_ceiling_usd`` charges and the manifest binds."""
     from orchestrator.memory import embedding, embedding_adapter
 
     selector = embedding.get_selected_embedding_route_id()
     if not selector:
         raise ValueError("M2 embeddings require a pinned route")
-    route = embedding_adapter.approved_route(selector)
+    return embedding_adapter.approved_route(selector)
+
+
+def embedding_route_identity() -> tuple[str, int]:
+    route = selected_embedding_route()
+    return str(route.route_id), int(route.dimensions)
+
+
+def embedding_ceiling_usd(texts: Sequence[str]) -> Decimal:
+    from orchestrator.memory import embedding_adapter
+
+    route = selected_embedding_route()
     tokens = sum(embedding_adapter.input_bound(text) for text in texts)
     return Decimal(int(route.estimate_microusd(tokens))) / Decimal(1_000_000)
 
@@ -1828,6 +1986,7 @@ async def _run_live_generation(
     *,
     questions: Sequence[Question],
     output_path: Path | str,
+    start_marker: Path | str,
 ) -> dict[str, Any]:
     import asyncpg
 
@@ -1878,6 +2037,7 @@ async def _run_live_generation(
         return await run_generation(
             questions=questions,
             output_path=output_path,
+            start_marker=start_marker,
             spend_cap_usd=SPEND_CAP_USD,
             call=call,
             check_attestation=check_attestation,
@@ -1942,6 +2102,7 @@ async def _run_live_measure(
     labels: LabelSet,
     subqueries: Mapping[str, Mapping[str, Any]],
     output_path: Path | str,
+    start_marker: Path | str,
 ) -> dict[str, Any]:
     import asyncpg
 
@@ -2031,12 +2192,14 @@ async def _run_live_measure(
             labels=labels,
             subqueries=subqueries,
             output_path=output_path,
+            start_marker=start_marker,
             measure_question=measure_question,
             embed_texts=embed,
             fingerprint=fingerprint,
             retrieval_log_count=log_count,
             read_ledger_spend_usd=read_ledger_spend_usd,
             embedding_ceiling_usd=embedding_ceiling_usd,
+            read_embedding_route=embedding_route_identity,
             acquire_run_lock=lambda: acquire_benchmark_run_lock(connection.fetchval),
             check_run_lock=lambda: _check_lock(connection.fetchval, RUN_LOCK_HELD_SQL),
             read_retrieval_logging_flags=lambda: (
@@ -2125,6 +2288,18 @@ def _add_labels(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--labels", type=Path, action="append", required=True)
 
 
+def _add_start_marker(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--start-marker",
+        type=Path,
+        required=True,
+        help=(
+            "One per M2 run, outside the repository: the first start and the cap. "
+            "Created by the first generate; every later generate and measure reads it."
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tests.benchmark_longmemeval.m2_exposure",
@@ -2140,12 +2315,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate = sub.add_parser("generate", help="One PROMPT_V2 pass on the Block D route.")
     generate.add_argument("--questions", type=Path, required=True)
     generate.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
+    _add_start_marker(generate)
     _add_output(generate)
 
     measure = sub.add_parser("measure", help="Three arms through the production exposure metric.")
     measure.add_argument("--questions", type=Path, required=True)
     measure.add_argument("--subqueries", type=Path, required=True)
     measure.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
+    _add_start_marker(measure)
     _add_labels(measure)
     _add_output(measure)
 
@@ -2194,7 +2371,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "generate":
         questions = load_questions(args.questions, frozen)
-        document = asyncio.run(_run_live_generation(questions=questions, output_path=args.output))
+        document = asyncio.run(
+            _run_live_generation(
+                questions=questions, output_path=args.output, start_marker=args.start_marker
+            )
+        )
         return 0 if document.get("stop_reason") is None else 1
 
     if args.command == "measure":
@@ -2207,6 +2388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 labels=labels,
                 subqueries=subqueries,
                 output_path=args.output,
+                start_marker=args.start_marker,
             )
         )
         return 0 if document.get("stop_reason") is None else 1

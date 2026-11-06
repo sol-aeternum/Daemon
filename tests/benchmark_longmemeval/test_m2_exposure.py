@@ -270,7 +270,7 @@ class _GenFakes:
         return Decimal("0.02")
 
 
-def _gen_kwargs(fakes: _GenFakes) -> dict[str, Any]:
+def _gen_kwargs(fakes: _GenFakes, directory: Path) -> dict[str, Any]:
     async def lock_acquired() -> bool:
         return True
 
@@ -281,6 +281,7 @@ def _gen_kwargs(fakes: _GenFakes) -> dict[str, Any]:
         return None
 
     return {
+        "start_marker": directory / "start-marker.json",
         "call": fakes.call,
         "check_attestation": attestation,
         "verify_route": lambda: _Route(),
@@ -303,7 +304,7 @@ def test_generation_spend_cap_stops_before_dispatch_and_survives_resume(tmp_path
             questions=questions,
             output_path=output,
             spend_cap_usd=Decimal("0.50"),
-            **_gen_kwargs(fakes),
+            **_gen_kwargs(fakes, tmp_path),
         )
     )
     assert document["stop_reason"] == "spend_cap"
@@ -318,7 +319,7 @@ def test_generation_spend_cap_stops_before_dispatch_and_survives_resume(tmp_path
             questions=questions,
             output_path=output,
             spend_cap_usd=Decimal("0.50"),
-            **_gen_kwargs(fakes),
+            **_gen_kwargs(fakes, tmp_path),
         )
     )
     assert resumed["start_spend_usd"] == "0.30"
@@ -337,7 +338,7 @@ def test_generation_resumes_without_regenerating_recorded_questions(tmp_path: Pa
             questions=questions,
             output_path=output,
             spend_cap_usd=Decimal("0.50"),
-            **_gen_kwargs(fakes),
+            **_gen_kwargs(fakes, tmp_path),
         )
     )
     assert fakes.call_count == 2
@@ -351,12 +352,102 @@ def test_generation_resumes_without_regenerating_recorded_questions(tmp_path: Pa
             questions=questions,
             output_path=output,
             spend_cap_usd=Decimal("0.50"),
-            **_gen_kwargs(fakes),
+            **_gen_kwargs(fakes, tmp_path),
         )
     )
     assert fakes.call_count == 2
     assert resumed["stop_reason"] is None
     assert resumed["subqueries_sha256"] == first["subqueries_sha256"]
+
+
+def test_generation_keeps_the_first_start_for_a_new_output_path(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    first_output = tmp_path / "first" / "subqueries.json"
+    first_output.parent.mkdir()
+    marker = tmp_path / "start-marker.json"
+    first = asyncio.run(
+        run_generation(
+            questions=questions,
+            output_path=first_output,
+            spend_cap_usd=Decimal("0.50"),
+            **_gen_kwargs(_GenFakes(ledger=Decimal("0.10")), tmp_path),
+        )
+    )
+    assert first["start_spend_usd"] == "0.10"
+    assert json.loads(marker.read_text(encoding="utf-8"))["start_spend_usd"] == "0.10"
+
+    second_output = tmp_path / "second" / "subqueries.json"
+    second_output.parent.mkdir()
+    second_fakes = _GenFakes(ledger=Decimal("0.80"), fail_calls=True)
+    second = asyncio.run(
+        run_generation(
+            questions=questions,
+            output_path=second_output,
+            spend_cap_usd=Decimal("0.50"),
+            **_gen_kwargs(second_fakes, tmp_path),
+        )
+    )
+    # The new output path must not re-anchor the ceiling to the current ledger.
+    assert second["start_spend_usd"] == "0.10"
+    assert second["spend_ceiling_usd"] == "0.60"
+    assert second["stop_reason"] == "spend_cap"
+    assert second_fakes.call_count == 0
+
+
+def test_generation_refuses_a_corrupt_start_marker_before_any_spend(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    output = tmp_path / "out" / "subqueries.json"
+    output.parent.mkdir()
+    (tmp_path / "start-marker.json").write_text("not json", encoding="utf-8")
+    fakes = _GenFakes()
+    with pytest.raises(ValueError, match="corrupt"):
+        asyncio.run(
+            run_generation(
+                questions=_questions(frozen),
+                output_path=output,
+                spend_cap_usd=Decimal("0.50"),
+                **_gen_kwargs(fakes, tmp_path),
+            )
+        )
+    assert fakes.call_count == 0
+    journal = m2_exposure._journal_path(output)
+    assert not journal.exists() or journal.read_text(encoding="utf-8") == ""
+
+
+def test_generation_refuses_a_start_marker_that_disagrees_with_its_journal(
+    tmp_path: Path,
+) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    output = tmp_path / "out" / "subqueries.json"
+    output.parent.mkdir()
+    marker = tmp_path / "start-marker.json"
+    fakes = _GenFakes()
+    asyncio.run(
+        run_generation(
+            questions=questions,
+            output_path=output,
+            spend_cap_usd=Decimal("0.50"),
+            **_gen_kwargs(fakes, tmp_path),
+        )
+    )
+    calls_after_first = fakes.call_count
+    output.unlink()
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["start_spend_usd"] = "0.01"
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    fakes.fail_calls = True
+    with pytest.raises(ValueError, match="disagrees"):
+        asyncio.run(
+            run_generation(
+                questions=questions,
+                output_path=output,
+                spend_cap_usd=Decimal("0.50"),
+                **_gen_kwargs(fakes, tmp_path),
+            )
+        )
+    assert fakes.call_count == calls_after_first
 
 
 def test_generation_refuses_an_existing_output(tmp_path: Path) -> None:
@@ -371,7 +462,7 @@ def test_generation_refuses_an_existing_output(tmp_path: Path) -> None:
                 questions=_questions(frozen),
                 output_path=output,
                 spend_cap_usd=Decimal("0.50"),
-                **_gen_kwargs(fakes),
+                **_gen_kwargs(fakes, tmp_path),
             )
         )
     assert fakes.call_count == 0
@@ -390,7 +481,7 @@ def test_generation_refuses_a_document_without_its_journal(tmp_path: Path) -> No
                 questions=questions,
                 output_path=output,
                 spend_cap_usd=Decimal("0.50"),
-                **_gen_kwargs(fakes),
+                **_gen_kwargs(fakes, tmp_path),
             )
         )
     assert fakes.call_count == 0
@@ -407,7 +498,7 @@ def test_generation_refuses_a_cap_other_than_the_frozen_one(tmp_path: Path) -> N
                 questions=_questions(frozen),
                 output_path=output,
                 spend_cap_usd=Decimal("0.60"),
-                **_gen_kwargs(fakes),
+                **_gen_kwargs(fakes, tmp_path),
             )
         )
     assert fakes.call_count == 0
@@ -432,7 +523,7 @@ def test_generation_declares_its_benchmark_user_writes(tmp_path: Path) -> None:
             questions=_questions(frozen),
             output_path=output,
             spend_cap_usd=Decimal("0.50"),
-            **_gen_kwargs(_GenFakes()),
+            **_gen_kwargs(_GenFakes(), tmp_path),
         )
     )
     effects = document["side_effects"]
@@ -449,7 +540,7 @@ def test_outputs_record_the_route_mapping(tmp_path: Path) -> None:
             questions=_questions(frozen),
             output_path=output,
             spend_cap_usd=Decimal("0.50"),
-            **_gen_kwargs(_GenFakes()),
+            **_gen_kwargs(_GenFakes(), tmp_path),
         )
     )
     mapping = document["route_mapping"]
@@ -592,7 +683,7 @@ def _generation_journal(
     return journal
 
 
-def _measure_kwargs(fakes: _MeasureFakes) -> dict[str, Any]:
+def _measure_kwargs(fakes: _MeasureFakes, directory: Path) -> dict[str, Any]:
     async def lock_acquired() -> bool:
         return True
 
@@ -600,6 +691,8 @@ def _measure_kwargs(fakes: _MeasureFakes) -> dict[str, Any]:
         return True
 
     return {
+        "start_marker": directory / "start-marker.json",
+        "read_embedding_route": lambda: ("fake-embedding-route", 2),
         "measure_question": fakes.measure,
         "embed_texts": fakes.embed,
         "fingerprint": fakes.fingerprint,
@@ -616,6 +709,9 @@ def _pinned(frozen: FrozenIds, questions: Sequence[Question], path: Path) -> dic
     document = _subqueries_document(questions)
     path.write_text(json.dumps(document), encoding="utf-8")
     _generation_journal(path, questions, document)
+    m2_exposure._create_start_marker(
+        path.parent / "start-marker.json", Decimal(str(document["start_spend_usd"]))
+    )
     return load_pinned_subqueries(path, frozen)
 
 
@@ -633,7 +729,7 @@ def test_measure_no_trigger_stays_in_the_denominator_as_baseline(tmp_path: Path)
             labels=labels,
             subqueries=subqueries,
             output_path=output,
-            **_measure_kwargs(fakes),
+            **_measure_kwargs(fakes, tmp_path),
         )
     )
     assert document["questions"][0]["triggered"] is True
@@ -657,7 +753,7 @@ def test_measure_fingerprint_change_is_a_hard_failure(tmp_path: Path) -> None:
         calls["n"] += 1
         return {"sha256": "a" if calls["n"] == 1 else "b", "users": 2, "rows": {}}
 
-    kwargs = _measure_kwargs(fakes)
+    kwargs = _measure_kwargs(fakes, tmp_path)
     kwargs["fingerprint"] = fingerprint
     with pytest.raises(m2_exposure.M2SideEffectError, match="fingerprint"):
         asyncio.run(
@@ -687,7 +783,7 @@ def test_measure_retrieval_log_change_is_a_hard_failure(tmp_path: Path) -> None:
     async def log_count() -> int:
         return next(counts)
 
-    kwargs = _measure_kwargs(fakes)
+    kwargs = _measure_kwargs(fakes, tmp_path)
     kwargs["retrieval_log_count"] = log_count
     with pytest.raises(m2_exposure.M2SideEffectError, match="retrieval_log"):
         asyncio.run(
@@ -721,7 +817,7 @@ def test_measure_journals_completed_work_and_resumes_without_redispatch(
                 labels=labels,
                 subqueries=subqueries,
                 output_path=output,
-                **_measure_kwargs(fakes),
+                **_measure_kwargs(fakes, tmp_path),
             )
         )
     partial = json.loads(output.read_text(encoding="utf-8"))
@@ -739,7 +835,7 @@ def test_measure_journals_completed_work_and_resumes_without_redispatch(
             labels=labels,
             subqueries=subqueries,
             output_path=output,
-            **_measure_kwargs(fakes),
+            **_measure_kwargs(fakes, tmp_path),
         )
     )
     assert resumed["stop_reason"] is None
@@ -780,7 +876,7 @@ def test_measure_resume_refuses_a_mismatched_manifest(tmp_path: Path) -> None:
                 labels=labels,
                 subqueries=subqueries,
                 output_path=output,
-                **_measure_kwargs(fakes),
+                **_measure_kwargs(fakes, tmp_path),
             )
         )
     journal = m2_exposure._journal_path(output)
@@ -795,7 +891,87 @@ def test_measure_resume_refuses_a_mismatched_manifest(tmp_path: Path) -> None:
                 labels=labels,
                 subqueries=subqueries,
                 output_path=output,
-                **_measure_kwargs(fakes),
+                **_measure_kwargs(fakes, tmp_path),
+            )
+        )
+
+
+def test_measure_refuses_an_absent_mismatched_or_corrupt_start_marker(tmp_path: Path) -> None:
+    frozen = _frozen(1)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    marker = tmp_path / "start-marker.json"
+    fakes = _MeasureFakes()
+
+    def run() -> None:
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **_measure_kwargs(fakes, tmp_path),
+            )
+        )
+
+    marker.unlink()
+    with pytest.raises(ValueError, match="missing"):
+        run()
+    m2_exposure._create_start_marker(marker, Decimal("0.10"))
+    with pytest.raises(ValueError, match="disagrees with the generation document"):
+        run()
+    marker.write_text("not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="corrupt"):
+        run()
+    assert fakes.embed_calls == []
+    assert fakes.calls == 0
+    assert not m2_exposure._journal_path(output).exists()
+
+
+@pytest.mark.parametrize(
+    ("route_id", "dimensions"),
+    [("other-embedding-route", 2), ("fake-embedding-route", 3)],
+)
+def test_measure_resume_refuses_a_changed_embedding_route(
+    tmp_path: Path, route_id: str, dimensions: int
+) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0], frozen.ids[1]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    fakes = _MeasureFakes(fail_on_question=frozen.ids[1])
+    with pytest.raises(RuntimeError, match="forced mid-run failure"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **_measure_kwargs(fakes, tmp_path),
+            )
+        )
+    manifest = json.loads(
+        m2_exposure._journal_path(output).read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert manifest["embedding_route_id"] == "fake-embedding-route"
+    assert manifest["embedding_dimensions"] == 2
+
+    fakes.fail_on_question = None
+    kwargs = _measure_kwargs(fakes, tmp_path)
+    kwargs["read_embedding_route"] = lambda: (route_id, dimensions)
+    with pytest.raises(ValueError, match="does not match"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **kwargs,
             )
         )
 
@@ -811,7 +987,7 @@ def test_measure_refuses_retrieval_logging_before_any_spend(
     output = tmp_path / "out" / "measure.json"
     output.parent.mkdir()
     fakes = _MeasureFakes()
-    kwargs = _measure_kwargs(fakes)
+    kwargs = _measure_kwargs(fakes, tmp_path)
     kwargs["read_retrieval_logging_flags"] = lambda: flags
     with pytest.raises(m2_exposure.M2SideEffectError, match="retrieval_logging"):
         asyncio.run(
@@ -843,7 +1019,7 @@ def test_measure_refuses_before_spend_when_required_users_are_missing(
         seen.append("checked")
         raise m2_exposure.M2SideEffectError("M2 measure requires existing benchmark users")
 
-    kwargs = _measure_kwargs(fakes)
+    kwargs = _measure_kwargs(fakes, tmp_path)
     kwargs["check_users_present"] = users
     with pytest.raises(m2_exposure.M2SideEffectError, match="benchmark users"):
         asyncio.run(
@@ -873,7 +1049,7 @@ def test_measure_declares_no_user_writes(tmp_path: Path) -> None:
             labels=labels,
             subqueries=subqueries,
             output_path=output,
-            **_measure_kwargs(_MeasureFakes()),
+            **_measure_kwargs(_MeasureFakes(), tmp_path),
         )
     )
     effects = document["side_effects"]
