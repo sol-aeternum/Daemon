@@ -95,7 +95,8 @@ the cooperating trusted-single-host threat model is unchanged.
 
 `HistoryEffects` admits only its two exact projection types, not arbitrary
 subclasses. History/coordinator and projection profiles must match. Default H1
-behavior stays unselected. Runtime construction/injection admission is unchanged.
+behavior is unchanged; the v2 profile stays unselected. Runtime
+construction/injection admission is unchanged.
 The lifecycle source guard permits its name prefix only inside this module's
 fixed `PUBLISHER_CATALOG` metadata predicate, using the existing catalog-only
 checks. Negative tests deny imports, aliases, lifecycle calls and moving that
