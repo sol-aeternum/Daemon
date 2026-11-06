@@ -13,6 +13,7 @@ import pytest_asyncio
 # the worktree boundary and load the primary checkout's credentials. Disable
 # LiteLLM's implicit dotenv loading before any test module can import it.
 os.environ["LITELLM_MODE"] = "PRODUCTION"
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 from orchestrator.config import get_settings
 

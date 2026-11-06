@@ -200,6 +200,11 @@ class NonFieldConsumer:
 _RESOLVER_SOURCE = "orchestrator/database_url.py"
 
 NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
+    "LITELLM_LOCAL_MODEL_COST_MAP": NonFieldConsumer(
+        kind="script",
+        sources=("orchestrator/litellm_runtime.py:18",),
+        reason="pre-import SDK local-table pin, asserted by backend and worker startup",
+    ),
     "POSTGRES_USER": NonFieldConsumer(
         kind="script",
         sources=(f"{_RESOLVER_SOURCE}:50",),

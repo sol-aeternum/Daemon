@@ -1,6 +1,6 @@
-"""Which routing combinations LiteLLM's parameter mapping refuses, on bundled metadata.
+"""Every routing combination must pass LiteLLM on pinned bundled metadata.
 
-This is pinned debt from #681, not an acceptance of it. The test enumerates every
+Regression contract for #681. The test enumerates every
 (profile, model, resolved preset) combination in ``config/model_routing.json``
 through the same preset resolution production uses, plus each model's declared
 ``reasoning_efforts`` ladder under a synthetic ``declared:<effort>`` profile, and
@@ -81,65 +81,9 @@ REFUSAL_ERROR_NAME: Final[str] = "UnsupportedParamsError"
 #: The result recorded for a combination the mapping accepted.
 OK: Final[str] = "ok"
 
-#: Exactly the (profile, model, effort) combinations LiteLLM refuses when the
-#: model capability table bundled with the locked LiteLLM version is installed.
-#: This is the most conservative case - the table production falls back to when
-#: the import-time fetch fails - not the fetched table production usually sees,
-#: which refuses fewer of these. Pinned debt from #681; see the module docstring.
-#: Regenerate by running ``python -m tests.test_routing_litellm_contract`` and
-#: taking the ``bundled`` column; never hand-edit it to look better.
-KNOWN_REFUSALS: frozenset[tuple[str, str, str]] = frozenset(
-    {
-        ("background", "openrouter/openai/gpt-6-luna", "medium"),
-        ("council", "openrouter/deepseek/deepseek-v4.1-flash", "high"),
-        ("council", "openrouter/google/gemini-3.8-flash", "high"),
-        ("council", "openrouter/openai/gpt-6-astra", "high"),
-        ("council", "openrouter/openai/gpt-6-luna", "medium"),
-        ("council", "openrouter/openai/gpt-6.1-sol", "high"),
-        ("council", "openrouter/x-ai/grok-4.7", "high"),
-        ("council", "openrouter/z-ai/glm-5.3", "high"),
-        ("council", "openrouter/z-ai/glm-5.3-flash", "high"),
-        ("declared:high", "openrouter/deepseek/deepseek-v4.1-flash", "high"),
-        ("declared:high", "openrouter/google/gemini-3.8-flash", "high"),
-        ("declared:high", "openrouter/openai/gpt-6-astra", "high"),
-        ("declared:high", "openrouter/openai/gpt-6-luna", "high"),
-        ("declared:high", "openrouter/openai/gpt-6.1-sol", "high"),
-        ("declared:high", "openrouter/x-ai/grok-4.7", "high"),
-        ("declared:high", "openrouter/z-ai/glm-5.3", "high"),
-        ("declared:high", "openrouter/z-ai/glm-5.3-flash", "high"),
-        ("declared:low", "openrouter/deepseek/deepseek-v4.1-flash", "low"),
-        ("declared:low", "openrouter/google/gemini-3.8-flash", "low"),
-        ("declared:low", "openrouter/openai/gpt-6-astra", "low"),
-        ("declared:low", "openrouter/openai/gpt-6-luna", "low"),
-        ("declared:low", "openrouter/openai/gpt-6.1-sol", "low"),
-        ("declared:low", "openrouter/x-ai/grok-4.7", "low"),
-        ("declared:low", "openrouter/z-ai/glm-5.3", "low"),
-        ("declared:low", "openrouter/z-ai/glm-5.3-flash", "low"),
-        ("declared:max", "openrouter/deepseek/deepseek-v4.1-flash", "max"),
-        ("declared:max", "openrouter/openai/gpt-6-astra", "max"),
-        ("declared:max", "openrouter/openai/gpt-6-luna", "max"),
-        ("declared:max", "openrouter/openai/gpt-6.1-sol", "max"),
-        ("declared:max", "openrouter/z-ai/glm-5.3", "max"),
-        ("declared:max", "openrouter/z-ai/glm-5.3-flash", "max"),
-        ("declared:medium", "openrouter/google/gemini-3.8-flash", "medium"),
-        ("declared:medium", "openrouter/openai/gpt-6-astra", "medium"),
-        ("declared:medium", "openrouter/openai/gpt-6-luna", "medium"),
-        ("declared:medium", "openrouter/openai/gpt-6.1-sol", "medium"),
-        ("declared:medium", "openrouter/x-ai/grok-4.7", "medium"),
-        ("declared:none", "openrouter/openai/gpt-6-astra", "none"),
-        ("declared:none", "openrouter/openai/gpt-6-luna", "none"),
-        ("declared:xhigh", "openrouter/openai/gpt-6-astra", "xhigh"),
-        ("declared:xhigh", "openrouter/openai/gpt-6-luna", "xhigh"),
-        ("declared:xhigh", "openrouter/openai/gpt-6.1-sol", "xhigh"),
-        ("declared:xhigh", "openrouter/x-ai/grok-4.7", "xhigh"),
-        ("memory_decomposition", "openrouter/openai/gpt-6-luna", "none"),
-        ("reasoning", "openrouter/openai/gpt-6-astra", "high"),
-        ("reasoning", "openrouter/openai/gpt-6.1-sol", "high"),
-        ("reasoning", "openrouter/z-ai/glm-5.3", "high"),
-        ("research", "openrouter/openai/gpt-6-luna", "medium"),
-        ("routine", "openrouter/openai/gpt-6-luna", "medium"),
-    }
-)
+#: No production profile or synthetic declared ladder may be refused locally.
+#: This measures mapping acceptance, not upstream support or quality evidence.
+KNOWN_REFUSALS: frozenset[tuple[str, str, str]] = frozenset()
 
 USAGE = """\
 usage: python -m tests.test_routing_litellm_contract [--json | --negative-control]
@@ -203,13 +147,7 @@ def _call_params(preset: dict[str, Any], max_tokens: int) -> dict[str, Any]:
     ``response_format`` is only sent when the caller supplied one, so none is
     invented here.
     """
-    params: dict[str, Any] = {
-        "max_tokens": max_tokens,
-        "reasoning_effort": preset["reasoning_effort"],
-    }
-    if "include_reasoning" in preset:
-        params["include_reasoning"] = preset["include_reasoning"]
-    return params
+    return {"max_tokens": max_tokens, **preset}
 
 
 def _combinations() -> list[tuple[str, str, str, dict[str, Any]]]:
@@ -219,6 +157,7 @@ def _combinations() -> list[tuple[str, str, str, dict[str, Any]]]:
     is only ever called inside the measurement subprocess.
     """
     from orchestrator import model_routing
+    from orchestrator.litellm_runtime import openrouter_reasoning_params
 
     config = _load_config()
     output_tokens = {
@@ -236,7 +175,9 @@ def _combinations() -> list[tuple[str, str, str, dict[str, Any]]]:
                         name,
                         model,
                         effort if isinstance(effort, str) else "<none>",
-                        _call_params(preset, output_tokens[name]),
+                        openrouter_reasoning_params(
+                            _call_params(preset, output_tokens[name]), model
+                        ),
                     )
                 )
     for entry in config["models"]:
@@ -247,7 +188,9 @@ def _combinations() -> list[tuple[str, str, str, dict[str, Any]]]:
                     f"declared:{effort}",
                     model,
                     effort,
-                    _call_params({"reasoning_effort": effort}, DEFAULT_MAX_TOKENS),
+                    openrouter_reasoning_params(
+                        _call_params({"reasoning_effort": effort}, DEFAULT_MAX_TOKENS), model
+                    ),
                 )
             )
     return combinations
@@ -566,7 +509,7 @@ def test_a_different_refusal_type_is_rejected(contract_measurement: dict[str, An
     """A known refusal that raises any other error type must fail, naming it."""
     _assert_offline(contract_measurement)
     outcomes = _outcomes(contract_measurement)
-    target = next(outcome for outcome in outcomes if outcome.label in KNOWN_REFUSALS)
+    target = outcomes[0]
     tampered = [
         replace(
             outcome,
@@ -579,7 +522,7 @@ def test_a_different_refusal_type_is_rejected(contract_measurement: dict[str, An
         for outcome in outcomes
     ]
     # The combination is still refused, so only the type check can catch this.
-    assert _refusals(tampered) == _refusals(outcomes)
+    assert _refusals(tampered) == {target.label}
     with pytest.raises(AssertionError) as caught:
         assert_contract(tampered)
     message = str(caught.value)
