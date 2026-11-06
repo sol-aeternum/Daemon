@@ -25,6 +25,8 @@ from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from litellm import utils
 
 logger = logging.getLogger(__name__)
+SHUTDOWN_DRAIN_TIMEOUT_S = 2.0
+SHUTDOWN_CLOSE_TIMEOUT_S = 2.0
 
 
 @dataclass
@@ -231,10 +233,25 @@ class Handler(AsyncHTTPHandler):
             raise
 
     async def shutdown(self) -> None:
-        await self.drained.wait()
-        await self.close()
-        if self.pool is not None:
-            await self.pool.aclose()
+        try:
+            try:
+                await asyncio.wait_for(self.drained.wait(), SHUTDOWN_DRAIN_TIMEOUT_S)
+            except TimeoutError:
+                logger.warning("Inference transport drain timed out (active=%d)", self.active)
+        finally:
+            # An abandoned body cannot retain the application pool forever.
+            # Attempt the owning pool close even if borrower/client close fails.
+            try:
+                await asyncio.wait_for(self.close(), SHUTDOWN_CLOSE_TIMEOUT_S)
+            finally:
+                if self.pool is not None:
+                    try:
+                        await asyncio.wait_for(self.pool.aclose(), SHUTDOWN_CLOSE_TIMEOUT_S)
+                    except BaseException:
+                        logger.warning(
+                            "Inference transport pool close failed (active=%d)", self.active
+                        )
+                        raise
 
 
 _handlers: WeakKeyDictionary[asyncio.AbstractEventLoop, Handler | None] = WeakKeyDictionary()
@@ -266,6 +283,8 @@ def get_handler() -> Handler | None:
 
 async def shutdown() -> None:
     handler = _handlers.get(asyncio.get_running_loop())
-    if handler is not None:
-        await handler.shutdown()
-    _handlers.pop(asyncio.get_running_loop(), None)
+    try:
+        if handler is not None:
+            await handler.shutdown()
+    finally:
+        _handlers.pop(asyncio.get_running_loop(), None)

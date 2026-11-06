@@ -359,7 +359,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from orchestrator.inference_transport import shutdown as close_inference_transport
 
         try:
-            # ASGI has drained requests; the seam also drains response bodies.
+            # ASGI drained requests; the seam bounds its remaining body drain
+            # and pool close. Neither timeout nor failure skips AppState cleanup.
             await close_inference_transport()
         finally:
             await close_app_state(state)

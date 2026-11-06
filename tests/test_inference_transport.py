@@ -49,7 +49,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -567,6 +567,72 @@ async def test_shutdown_waits_for_active_body() -> None:
         assert await task is None
         await shutdown
         assert h.pool.client.closed
+
+
+@pytest.mark.asyncio
+async def test_shutdown_force_closes_abandoned_body(monkeypatch, caplog):
+    monkeypatch.setattr(inference_transport, "SHUTDOWN_DRAIN_TIMEOUT_S", 0.01, raising=False)
+    h = inference_transport.get_handler()
+    assert h is not None
+    response = None
+    try:
+        async with capture("active") as (_, base):
+            request = h.client.build_request(
+                "POST", base + "/chat/completions", json={"stream": True}
+            )
+            response = await h.client.send(request, stream=True)
+            assert h.active == 1
+            await asyncio.wait_for(inference_transport.shutdown(), 0.3)
+            assert h.pool.client.closed
+            assert "active=1" in caplog.text
+    finally:
+        if response is not None:
+            await response.aclose()
+        await h.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_backend_state_closes_if_inference_shutdown_fails(monkeypatch):
+    from orchestrator import main
+    from orchestrator.memory import startup
+
+    state = SimpleNamespace(db_pool=None, history_runtime=None)
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(main, "_validate_startup_config", lambda _: None)
+    monkeypatch.setattr(main, "apply_resolved_database_url", lambda _: None)
+    monkeypatch.setattr(main, "init_app_state", AsyncMock(return_value=state))
+    close_state = AsyncMock()
+    monkeypatch.setattr(main, "close_app_state", close_state)
+    monkeypatch.setattr(startup, "require_multi_query_schema", AsyncMock())
+    monkeypatch.setattr(inference_transport, "get_handler", lambda: None)
+    monkeypatch.setattr(
+        inference_transport,
+        "shutdown",
+        AsyncMock(side_effect=RuntimeError("synthetic shutdown failure")),
+    )
+    with pytest.raises(RuntimeError, match="synthetic shutdown failure"):
+        async with main.lifespan(cast(Any, SimpleNamespace(state=SimpleNamespace()))):
+            pass
+    close_state.assert_awaited_once_with(state)
+
+
+@pytest.mark.asyncio
+async def test_worker_pool_closes_if_inference_shutdown_fails(monkeypatch):
+    from orchestrator.worker import worker
+    from orchestrator.entitlements import attestation
+
+    pool = SimpleNamespace(close=AsyncMock())
+    monkeypatch.setattr(attestation, "stop", AsyncMock())
+    monkeypatch.setattr(
+        inference_transport,
+        "shutdown",
+        AsyncMock(side_effect=RuntimeError("synthetic shutdown failure")),
+    )
+    shutdown = worker.on_shutdown
+    assert shutdown is not None
+    with pytest.raises(RuntimeError, match="synthetic shutdown failure"):
+        await shutdown(cast(Any, {"db_pool": pool}))
+    pool.close.assert_awaited_once()
 
 
 def test_mixed_attempts_never_erase_unknown_send() -> None:
