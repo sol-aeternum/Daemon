@@ -3,7 +3,7 @@
 Regression contract for #681. The test enumerates every
 (profile, model, resolved preset) combination in ``config/model_routing.json``
 through the same preset resolution production uses, plus each model's declared
-``reasoning_efforts`` ladder under a synthetic ``declared:<effort>`` profile, and
+    ``reasoning_efforts`` ladder under a synthetic ``declared:<effort>`` profile, and
 runs LiteLLM's offline parameter mapping (``get_optional_params``) exactly the way
 production's call reaches it.
 
@@ -22,10 +22,11 @@ The measurement runs in a fresh subprocess, never in the pytest process:
 Metadata is pinned: the measurement installs the capability table bundled with the
 locked LiteLLM version (``GetModelCostMap.load_local_model_cost_map()``) through the
 reviewed scoped helper ``tests.test_judge_qualification.scoped_sdk_metadata``, then
-restores the previous state. What is pinned is therefore the *most conservative*
-case: the bundled table, which is exactly what production falls back to when the
-import-time fetch fails. It is NOT what production sees when the fetch succeeds - a
-fetched table knows more models as reasoning-capable and refuses fewer combinations.
+restores the previous state. Production now requires that same bundled source,
+explicitly forced before import; remote and implicit-fallback sources fail startup.
+The production wire adapter sends native OpenRouter ``reasoning.effort`` through
+``extra_body``, avoiding stale model-dependent SDK validation without dropping the
+effort. The separate request-body test proves real HTTP serialization as well.
 
 Running ``python -m tests.test_routing_litellm_contract`` prints both tables side by
 side. The ``bundled`` column is the asserted one. The ``ambient`` column is
@@ -37,8 +38,9 @@ variable is set for it.
 Refusals are pinned by type as well as by combination: a refusal counts only when
 LiteLLM raised ``litellm.exceptions.UnsupportedParamsError``. Any other exception on
 any combination fails the test and names the combination. The set below must match
-reality in both directions - a new refusal fails the test, and so does a refusal that
-stops happening (fix the config, then update the pin).
+reality in both directions. The accepted refusal set is empty, including synthetic
+declared ladders; a refusal is a regression, not permission to weaken this contract.
+Local acceptance does not certify that a provider supports a declared effort.
 
 No provider is contacted: within the subprocess, ``litellm.completion`` and
 ``litellm.acompletion`` are replaced with functions that record and raise for the
@@ -138,12 +140,11 @@ def _split_provider(model: str) -> tuple[str, str]:
 def _call_params(preset: dict[str, Any], max_tokens: int) -> dict[str, Any]:
     """The parameters production sends LiteLLM for this preset.
 
-    ``compute_runtime`` builds ``call = {**resolved, "model": ..., "max_tokens":
-    output_tokens, ...}`` where ``resolved`` is
-    ``apply_model_parameter_presets`` output. So ``reasoning_effort`` and
-    ``include_reasoning`` travel in the same kwargs, and LiteLLM does not strip
-    ``include_reasoning`` before ``get_optional_params`` (it lands in the
-    provider's non-default parameters). ``max_tokens`` is always sent.
+    ``compute_runtime`` applies model presets after selection, merges its approved
+    transport, then calls ``openrouter_reasoning_params``. ``_combinations`` uses
+    that same adapter after this base construction. ``include_reasoning`` remains
+    a provider-specific option; ``reasoning_effort`` becomes native
+    ``extra_body.reasoning.effort``. ``max_tokens`` is always sent.
     ``response_format`` is only sent when the caller supplied one, so none is
     invented here.
     """
@@ -498,15 +499,15 @@ def test_refusals_match_the_known_list(contract_measurement: dict[str, Any]) -> 
     added = sorted(observed - KNOWN_REFUSALS)
     repaired = sorted(KNOWN_REFUSALS - observed)
     assert observed == KNOWN_REFUSALS, (
-        "LiteLLM refusals changed on the bundled metadata table; update KNOWN_REFUSALS "
-        "and fix the cause.\n"
+        "LiteLLM refusals changed on the bundled metadata table; fix the cause "
+        "without weakening the empty-refusal contract.\n"
         f"new refusals ({len(added)}): {[(item, detail[item]) for item in added]}\n"
         f"no longer refused ({len(repaired)}): {repaired}"
     )
 
 
 def test_a_different_refusal_type_is_rejected(contract_measurement: dict[str, Any]) -> None:
-    """A known refusal that raises any other error type must fail, naming it."""
+    """An injected refusal of an unexpected type must fail, naming its row."""
     _assert_offline(contract_measurement)
     outcomes = _outcomes(contract_measurement)
     target = outcomes[0]
