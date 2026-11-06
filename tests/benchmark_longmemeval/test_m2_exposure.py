@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from orchestrator.memory.embedding import EmbeddingVectorResult
+from orchestrator.memory.multi_query import DECOMPOSITION_ROUTE_ID
 from tests.benchmark_longmemeval import m2_exposure
 from tests.benchmark_longmemeval.dev2_labelling import _NullScope
 from tests.benchmark_longmemeval.m2_exposure import (
@@ -376,6 +377,118 @@ def test_generation_refuses_an_existing_output(tmp_path: Path) -> None:
     assert fakes.call_count == 0
 
 
+def test_generation_refuses_a_document_without_its_journal(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    output = tmp_path / "out" / "subqueries.json"
+    output.parent.mkdir()
+    output.write_text(json.dumps(_subqueries_document(questions)), encoding="utf-8")
+    fakes = _GenFakes()
+    with pytest.raises(ValueError, match="without its journal"):
+        asyncio.run(
+            run_generation(
+                questions=questions,
+                output_path=output,
+                spend_cap_usd=Decimal("0.50"),
+                **_gen_kwargs(fakes),
+            )
+        )
+    assert fakes.call_count == 0
+
+
+def test_generation_refuses_a_cap_other_than_the_frozen_one(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    output = tmp_path / "out" / "subqueries.json"
+    output.parent.mkdir()
+    fakes = _GenFakes()
+    with pytest.raises(ValueError, match="frozen"):
+        asyncio.run(
+            run_generation(
+                questions=_questions(frozen),
+                output_path=output,
+                spend_cap_usd=Decimal("0.60"),
+                **_gen_kwargs(fakes),
+            )
+        )
+    assert fakes.call_count == 0
+
+
+def test_generation_request_matches_productions_normalized_input() -> None:
+    question = Question("q0000", "first line\n\n  second   line ", NOW, False, ())
+    body = json.loads(m2_exposure.generation_request(question)["messages"][1]["content"])
+    assert body["message"] == "first line second line"
+
+    long = Question("q0001", "word " * 5000, NOW, False, ())
+    long_body = json.loads(m2_exposure.generation_request(long)["messages"][1]["content"])
+    assert len(long_body["message"]) <= m2_exposure.MAX_INPUT_CHARS
+
+
+def test_generation_declares_its_benchmark_user_writes(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    output = tmp_path / "out" / "subqueries.json"
+    output.parent.mkdir()
+    document = asyncio.run(
+        run_generation(
+            questions=_questions(frozen),
+            output_path=output,
+            spend_cap_usd=Decimal("0.50"),
+            **_gen_kwargs(_GenFakes()),
+        )
+    )
+    effects = document["side_effects"]
+    assert effects["users_inserted"] is True
+    assert effects["entitlement_accounts_inserted"] is True
+
+
+def test_outputs_record_the_route_mapping(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    output = tmp_path / "out" / "subqueries.json"
+    output.parent.mkdir()
+    document = asyncio.run(
+        run_generation(
+            questions=_questions(frozen),
+            output_path=output,
+            spend_cap_usd=Decimal("0.50"),
+            **_gen_kwargs(_GenFakes()),
+        )
+    )
+    mapping = document["route_mapping"]
+    assert mapping["block_d"]["route_id"] == "luna-azure-eu"
+    assert mapping["block_d"]["reasoning_effort"] == "none"
+    assert mapping["block_d"]["closed"] is True
+    assert mapping["production_decomposition"]["route_id"] == DECOMPOSITION_ROUTE_ID
+    assert mapping["production_decomposition"]["approved"] is False
+    gates_document = _run_gates(tmp_path, _frozen(), newly=6)
+    assert gates_document["route_mapping"] == mapping
+
+
+def test_pinned_subqueries_bind_spend_and_require_their_journal(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    path = tmp_path / "subqueries.json"
+    document = _subqueries_document(questions)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    journal = _generation_journal(path, questions, document)
+    load_pinned_subqueries(path, frozen)
+
+    edited_start = json.loads(json.dumps(document))
+    edited_start["start_spend_usd"] = "0.00"
+    path.write_text(json.dumps(edited_start), encoding="utf-8")
+    with pytest.raises(ValueError, match="recorded hash"):
+        load_pinned_subqueries(path, frozen)
+
+    edited_cap = json.loads(json.dumps(document))
+    edited_cap["spend_cap_usd"] = "5.00"
+    path.write_text(json.dumps(edited_cap), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_pinned_subqueries(path, frozen)
+
+    path.write_text(json.dumps(document), encoding="utf-8")
+    journal.unlink()
+    with pytest.raises(ValueError, match="journal"):
+        load_pinned_subqueries(path, frozen)
+
+
 # --- measure ------------------------------------------------------------------
 
 
@@ -402,8 +515,12 @@ class _MeasureFakes:
     fingerprint_sha: str = "a"
     log_count: int = 3
     calls: int = 0
+    fail_on_question: str | None = None
+    embed_calls: list[list[str]] = field(default_factory=list)
+    measured_ids: list[str] = field(default_factory=list)
 
     async def embed(self, texts: Sequence[str], _is_query: bool) -> list[EmbeddingVectorResult]:
+        self.embed_calls.append(list(texts))
         return [_vector() for _ in texts]
 
     async def ceiling(self, _texts: Sequence[str]) -> Decimal:
@@ -420,13 +537,16 @@ class _MeasureFakes:
 
     async def measure(
         self,
-        _question: Question,
+        question: Question,
         components: tuple[str, ...],
         _vectors: Mapping[str, EmbeddingVectorResult],
         merge: str,
         targets: Sequence[str],
     ) -> dict[str, Any]:
+        if self.fail_on_question == question.question_id:
+            raise RuntimeError("forced mid-run failure")
         self.calls += 1
+        self.measured_ids.append(question.question_id)
         baseline = _arm(targets, [targets[0]] if targets else [])
         candidate = _arm(targets, list(targets)) if merge == "additive" else _arm(targets, [])
         return {"baseline": baseline, "candidate": candidate, "merge": merge}
@@ -451,9 +571,25 @@ def _subqueries_document(
         "stop_reason": None,
         "start_spend_usd": start,
         "spend_cap_usd": cap,
-        "subqueries_sha256": m2_exposure.pinned_subqueries_sha256(entries),
+        "subqueries_sha256": m2_exposure.pinned_subqueries_sha256(
+            entries, start_spend_usd=start, spend_cap_usd=cap
+        ),
         "questions": entries,
     }
+
+
+def _generation_journal(
+    path: Path, questions: Sequence[Question], document: Mapping[str, Any]
+) -> Path:
+    manifest = m2_exposure._generation_static_manifest(
+        questions, Decimal(str(document["start_spend_usd"]))
+    )
+    lines = [json.dumps(manifest, sort_keys=True)]
+    for entry in document["questions"]:
+        lines.append(json.dumps({"kind": "result", **entry}, sort_keys=True))
+    journal = m2_exposure._journal_path(path)
+    journal.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return journal
 
 
 def _measure_kwargs(fakes: _MeasureFakes) -> dict[str, Any]:
@@ -472,11 +608,14 @@ def _measure_kwargs(fakes: _MeasureFakes) -> dict[str, Any]:
         "embedding_ceiling_usd": fakes.ceiling,
         "acquire_run_lock": lock_acquired,
         "check_run_lock": lock_held,
+        "read_retrieval_logging_flags": lambda: (False, False),
     }
 
 
 def _pinned(frozen: FrozenIds, questions: Sequence[Question], path: Path) -> dict[str, Any]:
-    path.write_text(json.dumps(_subqueries_document(questions)), encoding="utf-8")
+    document = _subqueries_document(questions)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    _generation_journal(path, questions, document)
     return load_pinned_subqueries(path, frozen)
 
 
@@ -530,7 +669,9 @@ def test_measure_fingerprint_change_is_a_hard_failure(tmp_path: Path) -> None:
                 **kwargs,
             )
         )
-    assert not output.exists()
+    partial = json.loads(output.read_text(encoding="utf-8"))
+    assert partial["stop_reason"] == "side_effect"
+    assert partial["stopped_by"] == "M2SideEffectError"
 
 
 def test_measure_retrieval_log_change_is_a_hard_failure(tmp_path: Path) -> None:
@@ -558,7 +699,186 @@ def test_measure_retrieval_log_change_is_a_hard_failure(tmp_path: Path) -> None:
                 **kwargs,
             )
         )
-    assert not output.exists()
+    partial = json.loads(output.read_text(encoding="utf-8"))
+    assert partial["stop_reason"] == "side_effect"
+
+
+def test_measure_journals_completed_work_and_resumes_without_redispatch(
+    tmp_path: Path,
+) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0], frozen.ids[1]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    fakes = _MeasureFakes(fail_on_question=frozen.ids[1])
+
+    with pytest.raises(RuntimeError, match="forced mid-run failure"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **_measure_kwargs(fakes),
+            )
+        )
+    partial = json.loads(output.read_text(encoding="utf-8"))
+    assert partial["stop_reason"] == "error"
+    assert partial["stopped_by"] == "RuntimeError"
+    assert [row["question_id"] for row in partial["questions"]] == [frozen.ids[0]]
+    first_batches = [list(batch) for batch in fakes.embed_calls]
+    assert len(first_batches) == 3
+    assert set(fakes.measured_ids) == {frozen.ids[0]}
+
+    fakes.fail_on_question = None
+    resumed = asyncio.run(
+        run_measure(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            output_path=output,
+            **_measure_kwargs(fakes),
+        )
+    )
+    assert resumed["stop_reason"] is None
+    assert [row["question_id"] for row in resumed["questions"]] == [
+        frozen.ids[0],
+        frozen.ids[1],
+    ]
+    later_batches = [list(batch) for batch in fakes.embed_calls[len(first_batches) :]]
+    first_texts = {text for batch in first_batches for text in batch}
+    later_texts = {text for batch in later_batches for text in batch}
+    assert not first_texts & later_texts
+    assert fakes.measured_ids.count(frozen.ids[0]) == 2
+    assert fakes.measured_ids.count(frozen.ids[1]) == 2
+    # The resume re-dispatched nothing: no batch, no charge.
+    assert later_batches == []
+    assert resumed["spend_high_water_usd"] == partial["spend_high_water_usd"]
+    records = [
+        json.loads(line)
+        for line in m2_exposure._journal_path(output).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    keys = [record["text_sha256"] for record in records if record.get("kind") == "embedding"]
+    assert len(keys) == len(set(keys))
+
+
+def test_measure_resume_refuses_a_mismatched_manifest(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0], frozen.ids[1]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    fakes = _MeasureFakes(fail_on_question=frozen.ids[1])
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **_measure_kwargs(fakes),
+            )
+        )
+    journal = m2_exposure._journal_path(output)
+    manifest = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+    manifest["labels_sha256"] = "other"
+    journal.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    fakes.fail_on_question = None
+    with pytest.raises(ValueError, match="does not match"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **_measure_kwargs(fakes),
+            )
+        )
+
+
+@pytest.mark.parametrize("flags", [(True, False), (False, True)])
+def test_measure_refuses_retrieval_logging_before_any_spend(
+    tmp_path: Path, flags: tuple[bool, bool]
+) -> None:
+    frozen = _frozen(1)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    fakes = _MeasureFakes()
+    kwargs = _measure_kwargs(fakes)
+    kwargs["read_retrieval_logging_flags"] = lambda: flags
+    with pytest.raises(m2_exposure.M2SideEffectError, match="retrieval_logging"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **kwargs,
+            )
+        )
+    assert fakes.embed_calls == []
+    assert not m2_exposure._journal_path(output).exists()
+
+
+def test_measure_refuses_before_spend_when_required_users_are_missing(
+    tmp_path: Path,
+) -> None:
+    frozen = _frozen(1)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    fakes = _MeasureFakes()
+    seen: list[str] = []
+
+    async def users() -> None:
+        seen.append("checked")
+        raise m2_exposure.M2SideEffectError("M2 measure requires existing benchmark users")
+
+    kwargs = _measure_kwargs(fakes)
+    kwargs["check_users_present"] = users
+    with pytest.raises(m2_exposure.M2SideEffectError, match="benchmark users"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **kwargs,
+            )
+        )
+    assert seen == ["checked"]
+    assert fakes.embed_calls == []
+    assert fakes.calls == 0
+
+
+def test_measure_declares_no_user_writes(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0], frozen.ids[1]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    document = asyncio.run(
+        run_measure(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            output_path=output,
+            **_measure_kwargs(_MeasureFakes()),
+        )
+    )
+    effects = document["side_effects"]
+    assert effects["users_created"] is False
+    assert effects["entitlement_accounts_created"] is False
 
 
 def test_wrong_database_is_refused() -> None:
@@ -752,11 +1072,56 @@ def test_gate4_flags_at_two_and_not_before(tmp_path: Path) -> None:
     assert one["gate4"]["plausible_candidate_only_count"] == 1
     assert one["gate4"]["flagged_for_owner_review"] is False
     assert one["result"] == "pass"
+    assert one["gate4"]["alternative_reading"]["count"] == 1
+    assert one["gate4"]["alternative_reading"]["affects_result"] is False
 
     two = _run_gates(tmp_path, _frozen(), newly=6, plausible=2)
     assert two["gate4"]["plausible_candidate_only_count"] == 2
     assert two["gate4"]["flagged_for_owner_review"] is True
     assert two["result"] == "flag_for_owner_review"
+    assert two["gate4"]["alternative_reading"]["count"] == 2
+
+
+def test_gate4_alternative_reading_counts_questions_not_items(tmp_path: Path) -> None:
+    frozen = _frozen()
+    threshold, measure, plausibility, labels = _gate_documents(frozen, newly=6)
+    question_id = next(value for value in frozen.ids if value.endswith("_abs"))
+    row = next(value for value in measure["questions"] if value["question_id"] == question_id)
+    row["candidate_only_rendered_ids"] = ["false-premise-a", "false-premise-b"]
+    plausibility["questions"][question_id] = {
+        "plausible_ids": ["false-premise-a", "false-premise-b"]
+    }
+    output = tmp_path / "out" / "gates.json"
+    output.parent.mkdir()
+    document = run_gates(
+        threshold=threshold,
+        labels=labels,
+        measure=measure,
+        plausibility=plausibility,
+        output_path=output,
+        repo_root=tmp_path / "repo",
+    )
+    assert document["gate4"]["plausible_candidate_only_count"] == 2
+    assert document["gate4"]["alternative_reading"]["count"] == 1
+    assert document["gate4"]["flagged_for_owner_review"] is True
+    assert document["result"] == "flag_for_owner_review"
+
+
+def test_gates_refuse_a_stopped_measure_document(tmp_path: Path) -> None:
+    frozen = _frozen()
+    threshold, measure, plausibility, labels = _gate_documents(frozen, newly=6)
+    measure["stop_reason"] = "error"
+    output = tmp_path / "out" / "gates.json"
+    output.parent.mkdir()
+    with pytest.raises(ValueError, match="stopped"):
+        run_gates(
+            threshold=threshold,
+            labels=labels,
+            measure=measure,
+            plausibility=plausibility,
+            output_path=output,
+            repo_root=tmp_path / "repo",
+        )
 
 
 def test_gate4_refuses_to_finish_without_the_plausibility_input(tmp_path: Path) -> None:
@@ -843,15 +1208,22 @@ def test_retention_reads_only_not_answerable_labels_without_spend(tmp_path: Path
     assert document["question_count"] == len(labels.not_answerable_ids)
 
 
-def test_report_is_sanitized_and_ignores_benchmark_text(tmp_path: Path) -> None:
+def _categories(
+    labels: LabelSet, *, category: str = "other", reason: str | None = None
+) -> dict[str, Any]:
+    return {
+        question_id: {"category": category, "reason": reason}
+        for question_id in labels.not_answerable_ids
+    }
+
+
+def _report_inputs(
+    tmp_path: Path, *, newly: int = 6, plausible: int = 2
+) -> tuple[dict[str, Any], dict[str, Any], LabelSet]:
     frozen = _frozen()
-    threshold, measure, plausibility, labels = _gate_documents(frozen, newly=6, plausible=2)
-    for row in measure["questions"]:
-        row["question"] = "PLANTED BENCHMARK TEXT"
-        row["note"] = "PLANTED NOTE"
-        row["baseline"]["rendered_text"] = "PLANTED RENDERED TEXT"
-    measure["planted"] = "PLANTED DOCUMENT TEXT"
-    (tmp_path / "out").mkdir()
+    threshold, measure, plausibility, labels = _gate_documents(
+        frozen, newly=newly, plausible=plausible
+    )
     gates = run_gates(
         threshold=threshold,
         labels=labels,
@@ -860,10 +1232,22 @@ def test_report_is_sanitized_and_ignores_benchmark_text(tmp_path: Path) -> None:
         output_path=tmp_path / "out" / "gates.json",
         repo_root=tmp_path / "repo",
     )
+    return measure, gates, labels
+
+
+def test_report_is_sanitized_and_ignores_benchmark_text(tmp_path: Path) -> None:
+    (tmp_path / "out").mkdir()
+    measure, gates, labels = _report_inputs(tmp_path)
+    for row in measure["questions"]:
+        row["question"] = "PLANTED BENCHMARK TEXT"
+        row["note"] = "PLANTED NOTE"
+        row["baseline"]["rendered_text"] = "PLANTED RENDERED TEXT"
+    measure["planted"] = "PLANTED DOCUMENT TEXT"
     output = tmp_path / "out" / "report.json"
     document = run_report(
         measure=measure,
         gates=gates,
+        retention_categories=_categories(labels),
         output_path=output,
         repo_root=tmp_path / "repo",
     )
@@ -871,5 +1255,68 @@ def test_report_is_sanitized_and_ignores_benchmark_text(tmp_path: Path) -> None:
     assert "PLANTED" not in serialized
     assert document["question_count"] == 100
     assert set(document["category_counts"]) == set(m2_exposure.REPORT_CATEGORIES)
-    assert all(set(row) == {"question_id", "category"} for row in document["questions"])
+    assert set(document["retention_category_counts"]) == set(m2_exposure.RETENTION_CATEGORIES)
+    assert all(
+        set(row) == {"question_id", "category"}
+        for row in document["questions"]
+        if row["category"] != "not_answerable"
+    )
     assert document["gate4_flagged"] is True
+
+
+def test_report_requires_a_retention_category_for_every_not_answerable_label(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "out").mkdir()
+    measure, gates, labels = _report_inputs(tmp_path)
+
+    missing = _categories(labels)
+    missing.pop(labels.not_answerable_ids[0])
+    with pytest.raises(ValueError, match="missing"):
+        run_report(
+            measure=measure,
+            gates=gates,
+            retention_categories=missing,
+            output_path=tmp_path / "out" / "missing.json",
+            repo_root=tmp_path / "repo",
+        )
+
+    unknown = _categories(labels)
+    unknown[labels.not_answerable_ids[0]] = {"category": "made_up"}
+    with pytest.raises(ValueError, match="unknown"):
+        run_report(
+            measure=measure,
+            gates=gates,
+            retention_categories=unknown,
+            output_path=tmp_path / "out" / "unknown.json",
+            repo_root=tmp_path / "repo",
+        )
+
+
+def test_report_keeps_closed_reasons_and_drops_free_text(tmp_path: Path) -> None:
+    (tmp_path / "out").mkdir()
+    measure, gates, labels = _report_inputs(tmp_path)
+    first, second = labels.not_answerable_ids[0], labels.not_answerable_ids[1]
+
+    categories = _categories(labels)
+    categories[first] = {"category": "other", "reason": "PLANTED BENCHMARK TEXT"}
+    categories[second] = {
+        "category": "atomic_decomposition",
+        "reason": "detail_lost_in_decomposition",
+    }
+    output = tmp_path / "out" / "report.json"
+    document = run_report(
+        measure=measure,
+        gates=gates,
+        retention_categories=categories,
+        output_path=output,
+        repo_root=tmp_path / "repo",
+    )
+    serialized = output.read_text(encoding="utf-8")
+    assert "PLANTED" not in serialized
+    rows = {row["question_id"]: row for row in document["questions"]}
+    assert rows[first]["retention_category"] == "other"
+    assert "retention_reason" not in rows[first]
+    assert rows[second]["retention_reason"] == "detail_lost_in_decomposition"
+    assert document["retention_category_counts"]["atomic_decomposition"] == 1
+    assert document["retention_category_counts"]["other"] == len(labels.not_answerable_ids) - 1

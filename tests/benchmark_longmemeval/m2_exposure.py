@@ -39,6 +39,7 @@ from orchestrator.eval.exposure import PinnedSubqueryProvider, measure_multi_que
 from orchestrator.memory import injection
 from orchestrator.memory.embedding import EmbeddingVectorResult
 from orchestrator.memory.multi_query import (
+    DECOMPOSITION_ROUTE_ID,
     MAX_INPUT_CHARS,
     PROMPT_V2,
     SUBQUERY_SCHEMA,
@@ -81,6 +82,39 @@ MAX_SUBQUERIES: Final[int] = 3
 SUBQUERY_QUOTA: Final[int] = 3
 DISPATCH_TIMEOUT_S: Final[float] = 120.0
 CONSECUTIVE_FAILURE_LIMIT: Final[int] = 10
+
+#: Block D's closed route and the unapproved production decomposition route it
+#: is measured against. Recorded in the output; neither value is a runtime knob.
+ROUTE_MAPPING: Final[dict[str, Any]] = {
+    "block_d": {
+        "route_id": GENERATION_ROUTE_ID,
+        "reasoning_effort": GENERATION_REASONING_EFFORT,
+        "closed": True,
+    },
+    "production_decomposition": {
+        "route_id": DECOMPOSITION_ROUTE_ID,
+        "approved": False,
+        "defined_in": "orchestrator/memory/multi_query.py:19",
+    },
+}
+
+#: The pre-registration's retention diagnosis. Only these four categories count.
+RETENTION_CATEGORIES: Final[tuple[str, ...]] = (
+    "assistant_turn_content",
+    "atomic_decomposition",
+    "dedup_or_supersession",
+    "other",
+)
+#: Closed reasons; anything else stays uncommitted and is never copied out.
+RETENTION_REASONS: Final[tuple[str, ...]] = (
+    "assistant_only_detail",
+    "detail_lost_in_decomposition",
+    "extracted_then_absent",
+    "input_snippet_truncated",
+    "failed_chunk",
+    "detail_not_in_logged_input",
+    "other",
+)
 
 M2_USER_NAMESPACE: Final[uuid.UUID] = uuid.UUID("b3a2f6d8-4c71-5a09-9f4e-7d2c1e8b6a35")
 M2_USER_NAME: Final[str] = "m2-exposure:subquery"
@@ -386,6 +420,16 @@ def load_questions(path: Path | str, frozen: FrozenIds) -> list[Question]:
     return questions
 
 
+def _normalized_message(question: Question) -> str:
+    """Production decomposes ``injection._normalize_content(...)``, not raw text.
+
+    ``_derive_query_text`` normalizes the user message before it reaches
+    ``ProductionSubqueryProvider.get_subqueries``, so the request body must carry
+    the same collapsed text and validation must run against it too.
+    """
+    return injection._normalize_content(question.message)
+
+
 def generation_request(question: Question) -> dict[str, Any]:
     """The exact body ``ProductionSubqueryProvider`` sends, before routing."""
     return {
@@ -395,7 +439,7 @@ def generation_request(question: Question) -> dict[str, Any]:
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "message": question.message[:MAX_INPUT_CHARS],
+                        "message": _normalized_message(question)[:MAX_INPUT_CHARS],
                         "as_of": question.reference_time.date().isoformat(),
                     }
                 ),
@@ -547,6 +591,7 @@ def _stopped_generation(stop_reason: str, start: Decimal) -> dict[str, Any]:
         "schema": GENERATION_SCHEMA,
         "route_id": GENERATION_ROUTE_ID,
         "reasoning_effort": GENERATION_REASONING_EFFORT,
+        "route_mapping": ROUTE_MAPPING,
         "start_spend_usd": str(start),
         "spend_cap_usd": str(SPEND_CAP_USD),
         "stop_reason": stop_reason,
@@ -569,14 +614,27 @@ def _generation_entry(question: Question) -> dict[str, Any]:
     }
 
 
-def pinned_subqueries_sha256(entries: Sequence[Mapping[str, Any]]) -> str:
-    """The stable hash of the pinned sub-query map, never of its text."""
+def pinned_subqueries_sha256(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    start_spend_usd: Any,
+    spend_cap_usd: Any,
+) -> str:
+    """The stable hash of the pinned sub-query map and its spend binding.
+
+    ``start_spend_usd`` and ``spend_cap_usd`` are part of the hash on purpose:
+    the pinned file alone decides the ceiling, so editing either must break it.
+    """
     payload = {
-        str(entry.get("question_id")): {
-            "subqueries": list(entry.get("subqueries") or []),
-            "triggered": bool(entry.get("triggered")),
-        }
-        for entry in entries
+        "start_spend_usd": str(_as_spend(start_spend_usd)),
+        "spend_cap_usd": str(_as_spend(spend_cap_usd)),
+        "questions": {
+            str(entry.get("question_id")): {
+                "subqueries": list(entry.get("subqueries") or []),
+                "triggered": bool(entry.get("triggered")),
+            }
+            for entry in entries
+        },
     }
     return _sha256_json(payload)
 
@@ -602,11 +660,23 @@ async def run_generation(
         raise ValueError("Generation requires questions")
     if len({question.question_id for question in questions}) != len(questions):
         raise ValueError("Generation questions must be unique")
+    if _as_spend(spend_cap_usd) != SPEND_CAP_USD:
+        raise ValueError(f"M2 generation spend cap is frozen at {SPEND_CAP_USD}")
     if not await _run_lock_acquired(acquire_run_lock):
         return _stopped_generation("run_lock_busy", Decimal(0))
 
-    output = _prepare_output(output_path, repo_root)
+    output = Path(output_path)
     journal = _journal_path(output)
+    if output.exists() and not journal.exists():
+        # A finished generation document with no journal can only be a deleted
+        # journal; the pinned file would otherwise be re-derived from the ledger.
+        try:
+            existing = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = None
+        if isinstance(existing, Mapping) and existing.get("schema") == GENERATION_SCHEMA:
+            raise ValueError("M2 generation document exists without its journal")
+    output = _prepare_output(output_path, repo_root)
     try:
         handle = open(journal, "x", encoding="utf-8")
     except FileExistsError:
@@ -748,7 +818,7 @@ async def run_generation(
             entry["cost_usd"] = str(cost)
             entry["observed_spend_usd"] = str(spent + cost)
             content, _finish = _first_choice(receipt)
-            schema_valid, subqueries = _evaluate_subqueries(content, question.message)
+            schema_valid, subqueries = _evaluate_subqueries(content, _normalized_message(question))
             entry["schema_valid"] = schema_valid
             entry["subqueries"] = subqueries
             entry["triggered"] = bool(subqueries)
@@ -772,6 +842,7 @@ async def run_generation(
             "route_id": GENERATION_ROUTE_ID,
             "model": getattr(route, "model", None),
             "reasoning_effort": GENERATION_REASONING_EFFORT,
+            "route_mapping": ROUTE_MAPPING,
             "inputs_sha256": manifest["inputs_sha256"] if manifest else None,
             "prompt_sha256": _sha256_text(PROMPT_V2),
             "start_spend_usd": str(start_spend),
@@ -779,11 +850,22 @@ async def run_generation(
             "spend_ceiling_usd": str(ceiling),
             "stop_reason": stop_reason,
             "calls": calls,
+            "side_effects": {
+                "users_inserted": True,
+                "entitlement_accounts_inserted": True,
+                "note": (
+                    "ensure_benchmark_user may insert one users row and its "
+                    "entitlement_accounts row for the M2 account user; the spend "
+                    "guard's ledger rows are the only other write"
+                ),
+            },
             "total_cost_usd": str(total),
             "total_cost_complete": not unknown
             and stop_reason not in {"uncertain_dispatch", "accounting_error"},
             "unknown_cost_questions": unknown,
-            "subqueries_sha256": pinned_subqueries_sha256(entries),
+            "subqueries_sha256": pinned_subqueries_sha256(
+                entries, start_spend_usd=start_spend, spend_cap_usd=spend_cap_usd
+            ),
             "questions": entries,
         }
         if stop_reason not in {"uncertain_dispatch", "receipt_mismatch"}:
@@ -836,8 +918,17 @@ def _arm_view(metrics: Mapping[str, Any], arm: str, target_ids: Sequence[str]) -
     }
 
 
-def load_pinned_subqueries(path: Path | str, frozen: FrozenIds) -> dict[str, dict[str, Any]]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def load_pinned_subqueries(
+    path: Path | str, frozen: FrozenIds, *, journal_path: Path | str | None = None
+) -> dict[str, dict[str, Any]]:
+    """The pinned map, tied to its spend binding and to its generation journal.
+
+    ``subqueries_sha256`` covers the start and the cap, and the journal manifest
+    must agree with the document: deleting the journal, or editing either spend
+    field, refuses here rather than at the first dispatch.
+    """
+    document_path = Path(path)
+    data = json.loads(document_path.read_text(encoding="utf-8"))
     if not isinstance(data, Mapping):
         raise ValueError("Pinned sub-query document must be an object")
     if data.get("schema") != GENERATION_SCHEMA:
@@ -847,7 +938,16 @@ def load_pinned_subqueries(path: Path | str, frozen: FrozenIds) -> dict[str, dic
     questions = data.get("questions")
     if not isinstance(questions, list):
         raise ValueError("Pinned sub-query document has no questions")
-    if pinned_subqueries_sha256(questions) != data.get("subqueries_sha256"):
+    try:
+        start = _as_spend(data.get("start_spend_usd"))
+        cap = _as_spend(data.get("spend_cap_usd"))
+    except ValueError:
+        raise ValueError("Pinned sub-query spend records are unreadable") from None
+    if cap != SPEND_CAP_USD:
+        raise ValueError(f"Pinned sub-query spend cap is not the frozen {SPEND_CAP_USD}")
+    if pinned_subqueries_sha256(questions, start_spend_usd=start, spend_cap_usd=cap) != data.get(
+        "subqueries_sha256"
+    ):
         raise ValueError("Pinned sub-queries do not match their recorded hash")
     entries: dict[str, dict[str, Any]] = {}
     for value in questions:
@@ -872,11 +972,24 @@ def load_pinned_subqueries(path: Path | str, frozen: FrozenIds) -> dict[str, dic
         entries[question_id] = dict(value)
     if set(entries) != set(frozen.ids):
         raise ValueError("Pinned sub-queries do not cover the frozen id set exactly")
-    try:
-        start = _as_spend(data.get("start_spend_usd"))
-        cap = _as_spend(data.get("spend_cap_usd"))
-    except ValueError:
-        raise ValueError("Pinned sub-query spend records are unreadable") from None
+
+    journal = Path(journal_path) if journal_path is not None else _journal_path(document_path)
+    if not journal.exists():
+        raise ValueError("Pinned sub-query document has no generation journal")
+    recorded, _intents, manifest = _read_generation_journal(journal)
+    if manifest is None:
+        raise ValueError("Pinned sub-query journal has no manifest")
+    if manifest.get("start_spend_usd") != str(start) or manifest.get("spend_cap_usd") != str(cap):
+        raise ValueError("Pinned sub-query journal disagrees with the document's spend binding")
+    for question_id, entry in entries.items():
+        stored = recorded.get(question_id)
+        if stored is None:
+            raise ValueError("Pinned sub-query journal is missing a question")
+        if [str(item) for item in stored.get("subqueries") or []] != list(entry["subqueries"]):
+            raise ValueError("Pinned sub-queries disagree with the generation journal")
+        if bool(stored.get("triggered")) != bool(entry.get("triggered")):
+            raise ValueError("Pinned sub-queries disagree with the generation journal")
+
     for entry in entries.values():
         entry["_start_spend_usd"] = str(start)
         entry["_spend_cap_usd"] = str(cap)
@@ -886,6 +999,213 @@ def load_pinned_subqueries(path: Path | str, frozen: FrozenIds) -> dict[str, dic
 def _spend_of_document(subqueries: Mapping[str, Mapping[str, Any]]) -> tuple[Decimal, Decimal]:
     first = next(iter(subqueries.values()))
     return _as_spend(first["_start_spend_usd"]), _as_spend(first["_spend_cap_usd"])
+
+
+def retrieval_logging_flags() -> tuple[bool, bool]:
+    """The two settings that make production's own guard log retrievals.
+
+    ``_is_retrieval_logging_enabled(False)`` returns True when either setting is
+    on, so ``measure`` refuses before any spend rather than after the row count
+    check, which can only notice the rows once they exist.
+    """
+    from orchestrator.config import get_settings
+
+    settings = get_settings()
+    return bool(settings.retrieval_logging_enabled), bool(settings.retrieval_logging_debug)
+
+
+def _text_key(text: str) -> str:
+    return _sha256_text(text)
+
+
+def _vector_record(text: str, vector: EmbeddingVectorResult, observed: Decimal) -> dict[str, Any]:
+    """A durable embedding receipt keyed by text hash: no text is journalled."""
+    return {
+        "kind": "embedding",
+        "text_sha256": _text_key(text),
+        "embedding": [float(value) for value in vector.embedding],
+        "provider": vector.provider,
+        "model": vector.model,
+        "storage_model": vector.storage_model,
+        "observed_spend_usd": str(observed),
+    }
+
+
+def _vector_from_record(record: Mapping[str, Any]) -> EmbeddingVectorResult:
+    embedding = record.get("embedding")
+    if not isinstance(embedding, list) or any(
+        not isinstance(value, int | float) or isinstance(value, bool) for value in embedding
+    ):
+        raise ValueError("M2 measure journal holds a corrupt embedding vector")
+    provider = record.get("provider")
+    model = record.get("model")
+    storage_model = record.get("storage_model")
+    if not all(isinstance(value, str) for value in (provider, model, storage_model)):
+        raise ValueError("M2 measure journal holds a corrupt vector receipt")
+    return EmbeddingVectorResult(
+        embedding=[float(value) for value in embedding],
+        provider=str(provider),
+        model=str(model),
+        storage_model=str(storage_model),
+    )
+
+
+def _read_measure_journal(
+    path: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any] | None]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, {}, None
+    results: dict[str, dict[str, Any]] = {}
+    vectors: dict[str, dict[str, Any]] = {}
+    manifest: dict[str, Any] | None = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            raise ValueError("M2 measure journal is corrupt") from None
+        if not isinstance(record, dict):
+            raise ValueError("M2 measure journal is corrupt")
+        kind = record.get("kind")
+        if kind == "manifest":
+            if manifest is not None or results or vectors:
+                raise ValueError("M2 measure journal is corrupt")
+            manifest = record
+            continue
+        if kind == "embedding":
+            key = record.get("text_sha256")
+            if not isinstance(key, str) or not key or key in vectors:
+                raise ValueError("M2 measure journal is corrupt")
+            vectors[key] = dict(record)
+            continue
+        if kind == "result":
+            key = record.get("question_id")
+            if not isinstance(key, str) or not key or key in results:
+                raise ValueError("M2 measure journal is corrupt")
+            results[key] = {name: value for name, value in record.items() if name != "kind"}
+            continue
+        raise ValueError("M2 measure journal is corrupt")
+    return results, vectors, manifest
+
+
+def _measure_manifest(
+    questions: Sequence[Question],
+    labels: LabelSet,
+    subqueries: Mapping[str, Mapping[str, Any]],
+    start: Decimal,
+    cap: Decimal,
+) -> dict[str, Any]:
+    return {
+        "kind": "manifest",
+        "version": JOURNAL_VERSION,
+        "inputs_sha256": _sha256_json([_question_digest(question) for question in questions]),
+        "labels_sha256": labels.sha256,
+        "subqueries_sha256": pinned_subqueries_sha256(
+            list(subqueries.values()), start_spend_usd=start, spend_cap_usd=cap
+        ),
+        "start_spend_usd": str(start),
+        "spend_cap_usd": str(cap),
+    }
+
+
+def _prepare_resumable_output(output: Path, repo_root: Path | None, journal: Path) -> None:
+    """A fresh output, or a stopped document that still has its journal."""
+    root = _repository_root() if repo_root is None else repo_root
+    check_output_outside_repo(output, root)
+    if not output.exists():
+        return
+    try:
+        data = json.loads(output.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise FileExistsError(f"M2 output already exists: {output}") from None
+    stopped = (
+        isinstance(data, Mapping)
+        and data.get("schema") == MEASURE_SCHEMA
+        and data.get("stop_reason") is not None
+    )
+    if not stopped:
+        raise FileExistsError(f"M2 output already exists: {output}")
+    if not journal.exists():
+        raise ValueError("A stopped M2 measure document has no journal to resume from")
+
+
+def _measure_stop_reason(error: BaseException) -> str:
+    category = _failure_category(error)
+    if category is not None:
+        return category
+    if isinstance(error, M2SideEffectError):
+        return "side_effect"
+    message = str(error)
+    for marker, reason in (
+        ("spend cap", "spend_cap"),
+        ("run lock", "run_lock_lost"),
+        ("ceiling is unreadable", "ceiling_unknown"),
+    ):
+        if marker in message:
+            return reason
+    return "error"
+
+
+def _measure_document(
+    *,
+    questions: Sequence[Question],
+    labels: LabelSet,
+    subqueries: Mapping[str, Mapping[str, Any]],
+    results: Mapping[str, Mapping[str, Any]],
+    start: Decimal,
+    cap: Decimal,
+    ceiling: Decimal,
+    high_water: Decimal,
+    before_fingerprint: Mapping[str, Any],
+    before_log: int | None,
+    after_fingerprint: Mapping[str, Any],
+    after_log: int | None,
+    stop_reason: str | None,
+    stopped_by: str | None,
+) -> dict[str, Any]:
+    entries = [
+        dict(results[question.question_id])
+        for question in questions
+        if question.question_id in results
+    ]
+    return {
+        "schema": MEASURE_SCHEMA,
+        "stop_reason": stop_reason,
+        "stopped_by": stopped_by,
+        "completed_question_count": len(entries),
+        "question_count": len(questions),
+        "start_spend_usd": str(start),
+        "spend_cap_usd": str(cap),
+        "spend_ceiling_usd": str(ceiling),
+        "spend_high_water_usd": str(high_water),
+        "labels_sha256": labels.sha256,
+        "subqueries_sha256": pinned_subqueries_sha256(
+            list(subqueries.values()), start_spend_usd=start, spend_cap_usd=cap
+        ),
+        "database": BENCHMARK_DB_NAME,
+        "render": {
+            "max_tokens": injection.DEFAULT_MAX_TOKENS,
+            "subquery_quota": SUBQUERY_QUOTA,
+            "max_subqueries": MAX_SUBQUERIES,
+        },
+        "side_effects": {
+            "touches": False,
+            "trust_updates": False,
+            "retrieval_log_rows": False,
+            "users_created": False,
+            "entitlement_accounts_created": False,
+            "fingerprint_before": before_fingerprint.get("sha256"),
+            "fingerprint_after": after_fingerprint.get("sha256"),
+            "retrieval_log_before": before_log,
+            "retrieval_log_after": after_log,
+            "fingerprint_users": before_fingerprint.get("users"),
+            "note": FINGERPRINT_LIMIT_NOTE,
+        },
+        "questions": entries,
+    }
 
 
 async def run_measure(
@@ -902,124 +1222,195 @@ async def run_measure(
     embedding_ceiling_usd: EmbeddingCeiling,
     acquire_run_lock: Callable[[], Any],
     check_run_lock: Callable[[], Any],
+    read_retrieval_logging_flags: Callable[[], tuple[bool, bool]] = retrieval_logging_flags,
+    check_users_present: Callable[[], Any] | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Measure the three arms with side effects off and the frozen spend ceiling."""
-    output = _prepare_output(output_path, repo_root)
+    """Measure the three arms, journalled per question, with side effects off.
+
+    Every embedding receipt and every completed question is journalled durably
+    before the next dispatch, so a mid-run failure loses no paid work: the stop
+    writes a partial document marked as stopped and re-raises, and a resume
+    re-dispatches nothing that is already recorded.
+    """
+    logging_enabled, logging_debug = read_retrieval_logging_flags()
+    if logging_enabled or logging_debug:
+        raise M2SideEffectError(
+            "M2 measure refuses to run while retrieval_logging is enabled: "
+            "it would write retrieval_log rows"
+        )
+    output = Path(output_path)
+    journal = _journal_path(output)
+    _prepare_resumable_output(output, repo_root, journal)
     if not await _run_lock_acquired(acquire_run_lock):
         return {"schema": MEASURE_SCHEMA, "stop_reason": "run_lock_busy", "questions": []}
-    before_fingerprint = await _maybe_await(fingerprint())
-    before_log = int(await _maybe_await(retrieval_log_count()))
-    _require_fingerprint(before_fingerprint, len(questions))
 
     start, cap = _spend_of_document(subqueries)
     ceiling = start + cap
-    high_water = start
-    cache: dict[str, EmbeddingVectorResult] = {}
-    entries: list[dict[str, Any]] = []
+    manifest = _measure_manifest(questions, labels, subqueries, start, cap)
+    handle = open(journal, "a", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise RuntimeError(f"M2 measure journal is held: {journal}") from None
 
-    for question in questions:
-        if not await _run_lock_held(check_run_lock):
-            raise RuntimeError("M2 measure lost the benchmark run lock")
-        pinned = subqueries.get(question.question_id)
-        if pinned is None:
-            raise ValueError("Pinned sub-queries are missing a question")
-        label = labels.entries.get(question.question_id)
-        if label is None:
-            raise ValueError("Labels are missing a question")
-        raw = [str(value) for value in pinned.get("subqueries") or []]
-        query_text, components = _embedding_texts(question, raw)
-        texts = [query_text, *components]
-        dispatches: list[tuple[list[str], bool]] = []
-        if query_text not in cache:
-            dispatches.append(([query_text], True))
-        dispatches.extend(
-            (batch, False)
-            for batch in _embedding_batches([text for text in components if text not in cache])
-        )
-        for batch, is_query in dispatches:
-            try:
-                legacy = _as_spend(await _maybe_await(embedding_ceiling_usd(batch)))
-            except Exception:
-                raise RuntimeError("M2 embedding ceiling is unreadable") from None
-            ledger = _as_spend(await _maybe_await(read_ledger_spend_usd()))
-            spend = max(ledger, high_water)
-            if spend + legacy > ceiling:
-                raise RuntimeError("M2 spend cap reached before an embedding dispatch")
-            vectors = await _maybe_await(embed_texts(batch, is_query))
-            if len(vectors) != len(batch):
-                raise ValueError("Embedding count differs from the request")
-            high_water = max(high_water, spend + legacy)
-            for text, vector in zip(batch, vectors, strict=True):
-                cache[text] = vector
+        results, recorded_vectors, stored_manifest = _read_measure_journal(journal)
+        if stored_manifest is None:
+            if results or recorded_vectors:
+                raise ValueError("M2 measure journal has no manifest")
+            _append_journal(handle, manifest)
+        elif stored_manifest != manifest:
+            raise ValueError("M2 measure journal does not match this run")
 
-        vectors = {text: cache[text] for text in texts}
-        target_ids = list(label.memory_ids)
-        additive = await measure_question(
-            question, tuple(components), vectors, "additive", target_ids
-        )
-        round_robin = await measure_question(
-            question, tuple(components), vectors, "round_robin", target_ids
-        )
-        baseline = _arm_view(additive, "baseline", target_ids)
-        candidate = _arm_view(additive, "candidate", target_ids)
-        baseline_round_robin = _arm_view(round_robin, "candidate", target_ids)
-        entries.append(
-            {
-                "question_id": question.question_id,
-                "answerable_from_store": label.answerable_from_store,
-                "abstention": question.abstention,
-                "triggered": bool(components),
-                "subquery_count": len(components),
-                "latency_seconds": pinned.get("latency_seconds"),
-                "error_category": pinned.get("error_category"),
-                "target_count": len(target_ids),
-                "baseline": baseline,
-                "candidate": candidate,
-                "round_robin": baseline_round_robin,
-                "candidate_only_rendered_ids": sorted(
-                    set(candidate["rendered_ids"]) - set(baseline["rendered_ids"])
+        cache = {key: _vector_from_record(record) for key, record in recorded_vectors.items()}
+        high_water = start
+        for record in recorded_vectors.values():
+            high_water = max(high_water, _as_spend(record.get("observed_spend_usd") or "0"))
+        for stored in results.values():
+            high_water = max(high_water, _as_spend(stored.get("spend_high_water_usd") or "0"))
+
+        before_fingerprint: dict[str, Any] = {}
+        after_fingerprint: dict[str, Any] = {}
+        before_log: int | None = None
+        after_log: int | None = None
+        stop_reason: str | None = None
+        stopped_by: str | None = None
+        try:
+            if check_users_present is not None:
+                await _maybe_await(check_users_present())
+            before_fingerprint = await _maybe_await(fingerprint())
+            before_log = int(await _maybe_await(retrieval_log_count()))
+            _require_fingerprint(before_fingerprint, len(questions))
+
+            for question in questions:
+                key = question.question_id
+                if key in results:
+                    continue
+                if not await _run_lock_held(check_run_lock):
+                    raise RuntimeError("M2 measure lost the benchmark run lock")
+                pinned = subqueries.get(key)
+                if pinned is None:
+                    raise ValueError("Pinned sub-queries are missing a question")
+                label = labels.entries.get(key)
+                if label is None:
+                    raise ValueError("Labels are missing a question")
+                raw = [str(value) for value in pinned.get("subqueries") or []]
+                query_text, components = _embedding_texts(question, raw)
+                texts = [query_text, *components]
+                batches: list[tuple[list[str], bool]] = []
+                if _text_key(query_text) not in cache:
+                    batches.append(([query_text], True))
+                missing_components = [
+                    text for text in dict.fromkeys(components) if _text_key(text) not in cache
+                ]
+                batches.extend((batch, False) for batch in _embedding_batches(missing_components))
+                for batch, is_query in batches:
+                    try:
+                        legacy = _as_spend(await _maybe_await(embedding_ceiling_usd(batch)))
+                    except Exception:
+                        raise RuntimeError("M2 embedding ceiling is unreadable") from None
+                    ledger = _as_spend(await _maybe_await(read_ledger_spend_usd()))
+                    spend = max(ledger, high_water)
+                    if spend + legacy > ceiling:
+                        raise RuntimeError("M2 spend cap reached before an embedding dispatch")
+                    vectors = await _maybe_await(embed_texts(batch, is_query))
+                    if not isinstance(vectors, list) or len(vectors) != len(batch):
+                        raise ValueError("Embedding count differs from the request")
+                    observed = spend + legacy
+                    high_water = max(high_water, observed)
+                    for text, vector in zip(batch, vectors, strict=True):
+                        record = _vector_record(text, vector, observed)
+                        _append_journal(handle, record)
+                        cache[_text_key(text)] = vector
+                        recorded_vectors[_text_key(text)] = record
+
+                vectors_by_text = {text: cache[_text_key(text)] for text in texts}
+                target_ids = list(label.memory_ids)
+                additive = await _maybe_await(
+                    measure_question(
+                        question, tuple(components), vectors_by_text, "additive", target_ids
+                    )
+                )
+                round_robin = await _maybe_await(
+                    measure_question(
+                        question, tuple(components), vectors_by_text, "round_robin", target_ids
+                    )
+                )
+                baseline = _arm_view(additive, "baseline", target_ids)
+                candidate = _arm_view(additive, "candidate", target_ids)
+                baseline_round_robin = _arm_view(round_robin, "candidate", target_ids)
+                entry = {
+                    "question_id": key,
+                    "answerable_from_store": label.answerable_from_store,
+                    "abstention": question.abstention,
+                    "triggered": bool(components),
+                    "subquery_count": len(components),
+                    "latency_seconds": pinned.get("latency_seconds"),
+                    "error_category": pinned.get("error_category"),
+                    "target_count": len(target_ids),
+                    "spend_high_water_usd": str(high_water),
+                    "baseline": baseline,
+                    "candidate": candidate,
+                    "round_robin": baseline_round_robin,
+                    "candidate_only_rendered_ids": sorted(
+                        set(candidate["rendered_ids"]) - set(baseline["rendered_ids"])
+                    ),
+                }
+                _append_journal(handle, {"kind": "result", **entry})
+                results[key] = entry
+
+            after_fingerprint = await _maybe_await(fingerprint())
+            after_log = int(await _maybe_await(retrieval_log_count()))
+            _require_fingerprint(after_fingerprint, len(questions))
+            if before_fingerprint.get("sha256") != after_fingerprint.get("sha256"):
+                raise M2SideEffectError("M2 measure changed the benchmark fingerprint")
+            if before_log != after_log:
+                raise M2SideEffectError("M2 measure wrote retrieval_log rows")
+        except BaseException as error:
+            stop_reason = _measure_stop_reason(error)
+            stopped_by = type(error).__name__
+            _write_document_atomic(
+                output,
+                _measure_document(
+                    questions=questions,
+                    labels=labels,
+                    subqueries=subqueries,
+                    results=results,
+                    start=start,
+                    cap=cap,
+                    ceiling=ceiling,
+                    high_water=high_water,
+                    before_fingerprint=before_fingerprint,
+                    before_log=before_log,
+                    after_fingerprint=after_fingerprint,
+                    after_log=after_log,
+                    stop_reason=stop_reason,
+                    stopped_by=stopped_by,
                 ),
-            }
+            )
+            raise
+
+        document = _measure_document(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            results=results,
+            start=start,
+            cap=cap,
+            ceiling=ceiling,
+            high_water=high_water,
+            before_fingerprint=before_fingerprint,
+            before_log=before_log,
+            after_fingerprint=after_fingerprint,
+            after_log=after_log,
+            stop_reason=None,
+            stopped_by=None,
         )
-
-    after_fingerprint = await _maybe_await(fingerprint())
-    after_log = int(await _maybe_await(retrieval_log_count()))
-    _require_fingerprint(after_fingerprint, len(questions))
-    if before_fingerprint.get("sha256") != after_fingerprint.get("sha256"):
-        raise M2SideEffectError("M2 measure changed the benchmark fingerprint")
-    if before_log != after_log:
-        raise M2SideEffectError("M2 measure wrote retrieval_log rows")
-
-    document = {
-        "schema": MEASURE_SCHEMA,
-        "stop_reason": None,
-        "start_spend_usd": str(start),
-        "spend_cap_usd": str(cap),
-        "spend_ceiling_usd": str(ceiling),
-        "labels_sha256": labels.sha256,
-        "subqueries_sha256": pinned_subqueries_sha256(list(subqueries.values())),
-        "database": BENCHMARK_DB_NAME,
-        "render": {
-            "max_tokens": injection.DEFAULT_MAX_TOKENS,
-            "subquery_quota": SUBQUERY_QUOTA,
-            "max_subqueries": MAX_SUBQUERIES,
-        },
-        "side_effects": {
-            "touches": False,
-            "trust_updates": False,
-            "retrieval_log_rows": False,
-            "fingerprint_before": before_fingerprint.get("sha256"),
-            "fingerprint_after": after_fingerprint.get("sha256"),
-            "retrieval_log_before": before_log,
-            "retrieval_log_after": after_log,
-            "fingerprint_users": before_fingerprint.get("users"),
-            "note": FINGERPRINT_LIMIT_NOTE,
-        },
-        "questions": entries,
-    }
-    _write_document_atomic(output, document)
-    return document
+        _write_document_atomic(output, document)
+        return document
+    finally:
+        handle.close()
 
 
 def _require_fingerprint(value: Mapping[str, Any], users: int) -> None:
@@ -1175,6 +1566,11 @@ def run_gates(
             }
         )
     gate4_flagged = plausible_total >= GATE4_FLAG_THRESHOLD
+    # The pre-registration's gate 4 wording allows two readings: count plausible
+    # items, or count abstention questions with at least one. The frozen gate is
+    # the item count; the question count is reported as an alternative reading
+    # for the owner to rule on, and never changes the result.
+    alternative_ids = [row["question_id"] for row in gate4_rows if row["plausible_ids"]]
 
     latencies = [
         float(row["latency_seconds"])
@@ -1206,6 +1602,12 @@ def run_gates(
         "flagged_for_owner_review": gate4_flagged,
         "plausible_candidate_only_count": plausible_total,
         "question_count": len(gate4_rows),
+        "alternative_reading": {
+            "description": "abstention questions with at least one plausible candidate-only item",
+            "count": len(alternative_ids),
+            "question_ids": alternative_ids,
+            "affects_result": False,
+        },
         "rows": gate4_rows,
     }
     result = (
@@ -1216,6 +1618,7 @@ def run_gates(
     document = {
         "schema": GATES_SCHEMA,
         "result": result,
+        "route_mapping": ROUTE_MAPPING,
         "gate1": gate1,
         "gate2": gate2,
         "gate3": {"covered": True, "test": GATE3_TEST},
@@ -1292,10 +1695,38 @@ def _report_category(row: Mapping[str, Any]) -> str:
     return "unexposed"
 
 
+def _retention_diagnosis(
+    categories: Mapping[str, Any], not_answerable_ids: Sequence[str]
+) -> dict[str, dict[str, str | None]]:
+    """Validate the primary's diagnosis; only closed reasons may be committed."""
+    outside = sorted(set(categories) - set(not_answerable_ids))
+    if outside:
+        raise ValueError("Retention diagnosis names a question that is not not-answerable")
+    diagnosis: dict[str, dict[str, str | None]] = {}
+    for question_id in not_answerable_ids:
+        value = categories.get(question_id)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"Retention diagnosis is missing: {question_id}")
+        category = value.get("category")
+        if category not in RETENTION_CATEGORIES:
+            raise ValueError(f"Retention diagnosis has an unknown category: {question_id}")
+        reason = value.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise ValueError(f"Retention diagnosis reason is not text: {question_id}")
+        # A free reason carries benchmark-derived text, so it is dropped here
+        # unless it is one of the closed values.
+        diagnosis[question_id] = {
+            "category": str(category),
+            "reason": reason if reason in RETENTION_REASONS else None,
+        }
+    return diagnosis
+
+
 def run_report(
     *,
     measure: Mapping[str, Any],
     gates: Mapping[str, Any],
+    retention_categories: Mapping[str, Any],
     output_path: Path | str,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -1306,6 +1737,12 @@ def run_report(
     raw_questions = measure.get("questions")
     if not isinstance(raw_questions, list):
         raise ValueError("Report needs the measure question list")
+    not_answerable = [
+        str(value.get("question_id"))
+        for value in raw_questions
+        if isinstance(value, Mapping) and value.get("answerable_from_store") is False
+    ]
+    diagnosis = _retention_diagnosis(retention_categories, not_answerable)
     questions: list[dict[str, str]] = []
     for value in raw_questions:
         if not isinstance(value, Mapping):
@@ -1314,9 +1751,18 @@ def run_report(
         if not isinstance(question_id, str) or not question_id:
             raise ValueError("Report question id is invalid")
         category = _report_category(value)
+        row: dict[str, str] = {"question_id": question_id, "category": category}
         # Whitelist every copied field: no question text, memory ids or notes.
-        questions.append({"question_id": question_id, "category": category})
+        found = diagnosis.get(question_id)
+        if found is not None:
+            row["retention_category"] = str(found["category"])
+            if found["reason"] is not None:
+                row["retention_reason"] = str(found["reason"])
+        questions.append(row)
     counts = Counter(row["category"] for row in questions)
+    retention_counts = Counter(
+        row["retention_category"] for row in questions if "retention_category" in row
+    )
     gate_result = gates.get("result")
     if gate_result not in {"pass", "fail", "flag_for_owner_review"}:
         raise ValueError("Gate result is not a recognised outcome")
@@ -1324,6 +1770,9 @@ def run_report(
         "schema": REPORT_SCHEMA,
         "question_count": len(questions),
         "category_counts": {name: counts.get(name, 0) for name in REPORT_CATEGORIES},
+        "retention_category_counts": {
+            name: retention_counts.get(name, 0) for name in RETENTION_CATEGORIES
+        },
         "gate_result": gate_result,
         "gate1_passed": bool((gates.get("gate1") or {}).get("passed")),
         "gate2_passed": bool((gates.get("gate2") or {}).get("passed")),
@@ -1500,7 +1949,6 @@ async def _run_live_measure(
     from orchestrator.config import get_settings
     from orchestrator.eval.bench_db import (
         assert_benchmark_database,
-        ensure_benchmark_user,
         fingerprint_benchmark_users,
         question_user_id,
     )
@@ -1517,6 +1965,7 @@ async def _run_live_measure(
     check_m2_database(settings.database_url)
     user_id = uuid.uuid5(M2_USER_NAMESPACE, M2_USER_NAME)
     user_ids = [question_user_id(question.question_id) for question in questions]
+    required_user_ids = [user_id, *user_ids]
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=1)
     connection = await asyncpg.connect(settings.database_url)
     store = MemoryStore(pool, ContentEncryption(settings.daemon_encryption_key))
@@ -1526,7 +1975,22 @@ async def _run_live_measure(
             raise ValueError(f"M2 requires memory_subquery_quota={SUBQUERY_QUOTA}")
         if settings.memory_max_subqueries < MAX_SUBQUERIES:
             raise ValueError("M2 requires memory_max_subqueries to admit 3 sub-queries")
-        await ensure_benchmark_user(pool, user_id)
+        # Measure writes nothing to users or entitlement_accounts: every required
+        # user must already exist from the ingest/generation phases.
+        if settings.retrieval_logging_enabled or settings.retrieval_logging_debug:
+            raise M2SideEffectError("M2 measure refuses to run while retrieval_logging is enabled")
+
+        async def check_users_present() -> None:
+            rows = await connection.fetch(
+                "SELECT id FROM users WHERE id = ANY($1::uuid[])", required_user_ids
+            )
+            present = {str(row["id"]) for row in rows}
+            missing = [value for value in required_user_ids if str(value) not in present]
+            if missing:
+                raise M2SideEffectError(
+                    f"M2 measure requires {len(user_ids)} existing benchmark users and the "
+                    f"M2 account user; {len(missing)} are missing"
+                )
 
         async def fingerprint() -> dict[str, Any]:
             return await fingerprint_benchmark_users(pool, user_ids)
@@ -1575,6 +2039,11 @@ async def _run_live_measure(
             embedding_ceiling_usd=embedding_ceiling_usd,
             acquire_run_lock=lambda: acquire_benchmark_run_lock(connection.fetchval),
             check_run_lock=lambda: _check_lock(connection.fetchval, RUN_LOCK_HELD_SQL),
+            read_retrieval_logging_flags=lambda: (
+                bool(settings.retrieval_logging_enabled),
+                bool(settings.retrieval_logging_debug),
+            ),
+            check_users_present=check_users_present,
         )
     finally:
         await connection.close()
@@ -1698,6 +2167,12 @@ def build_parser() -> argparse.ArgumentParser:
     report = sub.add_parser("report", help="Sanitized question ids, categories and counts.")
     report.add_argument("--measure", type=Path, required=True)
     report.add_argument("--gates", type=Path, required=True)
+    report.add_argument(
+        "--categories",
+        type=Path,
+        required=True,
+        help="Primary-supplied retention diagnosis: question id, category, reason.",
+    )
     report.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
     _add_output(report)
     return parser
@@ -1780,8 +2255,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "report":
         measure = json.loads(Path(args.measure).read_text(encoding="utf-8"))
         gates = json.loads(Path(args.gates).read_text(encoding="utf-8"))
+        categories = json.loads(Path(args.categories).read_text(encoding="utf-8"))
+        if not isinstance(categories, Mapping):
+            raise ValueError("Retention diagnosis must be an object of question id to category")
         document = run_report(
-            measure=measure, gates=gates, output_path=args.output, repo_root=repo_root
+            measure=measure,
+            gates=gates,
+            retention_categories=categories,
+            output_path=args.output,
+            repo_root=repo_root,
         )
         print(json.dumps(document["category_counts"], sort_keys=True))
         return 0
@@ -1803,7 +2285,10 @@ __all__ = [
     "M2SideEffectError",
     "Question",
     "REPORT_CATEGORIES",
+    "RETENTION_CATEGORIES",
+    "RETENTION_REASONS",
     "RETENTION_SCHEMA",
+    "ROUTE_MAPPING",
     "SPEND_CAP_USD",
     "SUBQUERY_QUOTA",
     "THRESHOLD_SCHEMA",
@@ -1816,6 +2301,7 @@ __all__ = [
     "load_questions",
     "main",
     "pinned_subqueries_sha256",
+    "retrieval_logging_flags",
     "run_gates",
     "run_generation",
     "run_measure",
