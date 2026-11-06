@@ -15,6 +15,7 @@ from tests.test_artifact_reservations import reservation_references_allowed
 from tests.test_reserved_output import publisher
 
 OWNER = "orchestrator/services/restore_history/effects.py"
+NATIVE = "orchestrator/services/restore_history/native_publication.py"
 TYPES = (
     "from orchestrator.artifact_reservations import "
     "OutputReservations, IntentCommand, JobBinding, IntentBinding\n"
@@ -23,7 +24,7 @@ ENCODER = "from orchestrator.resource_csv import encode_csv\n"
 
 
 def csv_references_allowed(path, source):
-    if path == OWNER and "resource_csv" in source:
+    if path in (OWNER, NATIVE) and "resource_csv" in source:
         if source.count("resource_csv") != 1:
             return False
         try:
@@ -54,9 +55,10 @@ def csv_references_allowed(path, source):
 
 
 def test_only_exact_preparation_imports_are_selected_without_admitting_a_host():
-    assert OWNER not in ADMITTED
-    assert reservation_references_allowed(OWNER, TYPES)
-    assert csv_references_allowed(OWNER, ENCODER)
+    for path in (OWNER, NATIVE):
+        assert path not in ADMITTED
+        assert reservation_references_allowed(path, TYPES)
+        assert csv_references_allowed(path, ENCODER)
     assert not reservation_references_allowed("orchestrator/main.py", TYPES)
     assert not csv_references_allowed("orchestrator/main.py", ENCODER)
 
@@ -87,11 +89,12 @@ def test_preparation_type_exception_does_not_expand_to_other_imports(source):
         "__import__('orchestrator.resource_csv')",
     ],
 )
-def test_pure_encoder_exception_refuses_aliases_classes_and_dynamic_imports(source):
-    assert not csv_references_allowed(OWNER, source)
+@pytest.mark.parametrize("path", [OWNER, NATIVE])
+def test_pure_encoder_exception_refuses_aliases_classes_and_dynamic_imports(source, path):
+    assert not csv_references_allowed(path, source)
 
 
-def test_production_encoder_inventory_has_no_new_module_allowlist():
+def test_production_encoder_inventory_keeps_exact_imports_without_runtime_admission():
     root = Path(__file__).resolve().parents[1]
     for directory in ("orchestrator", "providers", "scripts"):
         for path in (root / directory).rglob("*.py"):

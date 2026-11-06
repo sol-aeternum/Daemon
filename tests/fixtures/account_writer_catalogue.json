@@ -7787,7 +7787,7 @@
     },
     {
       "owner_source": "orchestrator.services.restore_history.packet_owner",
-      "qualname": "PacketOwner.handle",
+      "qualname": "PacketOwner._handle",
       "kind": "store_write",
       "fingerprint": "2175a10352b53d1a",
       "line_hint": 385,
@@ -7799,7 +7799,7 @@
     },
     {
       "owner_source": "orchestrator.services.restore_history.packet_owner",
-      "qualname": "PacketOwner.handle",
+      "qualname": "PacketOwner._handle",
       "kind": "store_write",
       "fingerprint": "57f204a304e8ff8a",
       "line_hint": 312,

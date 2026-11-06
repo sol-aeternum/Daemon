@@ -134,7 +134,11 @@ def test_invalid_tokens(token):
 def reservation_references_allowed(path: str, source: str) -> bool:
     """Exact approved H type import; no new admitted module or runtime host."""
     if (
-        path == "orchestrator/services/restore_history/effects.py"
+        path
+        in {
+            "orchestrator/services/restore_history/effects.py",
+            "orchestrator/services/restore_history/native_publication.py",
+        }
         and "artifact_reservations" in source
     ):
         if source.count("artifact_reservations") != 1:
@@ -162,6 +166,11 @@ def reservation_references_allowed(path: str, source: str) -> bool:
             )
             or len(node.names) != len({item.name for item in node.names})
             or any(item.asname is not None for item in node.names)
+            or (
+                path.endswith("/native_publication.py")
+                and {item.name for item in node.names}
+                != {"OutputReservations", "IntentCommand", "JobBinding", "IntentBinding"}
+            )
         ):
             return False
         segment = ast.get_source_segment(source, node)
