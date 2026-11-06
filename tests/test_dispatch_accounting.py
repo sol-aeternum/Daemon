@@ -709,3 +709,77 @@ async def test_observer_unavailable_does_not_refuse_or_trust_exception(monkeypat
             )
         decision = scope.terminal_decisions["pooled-hold"]
         assert decision.operation == "settle" and decision.path == "dispatch_unknown_floor"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_scope_cleanup_financial_failure_does_not_hide_behind_provider_error(
+    monkeypatch, cancelled
+):
+    from tests.test_compute_runtime import _funded_service
+
+    service = _funded_service()
+    service.settle.side_effect = RuntimeError("synthetic ledger failure")
+    monkeypatch.setattr(runtime, "EntitlementService", lambda _: service)
+    expected = asyncio.CancelledError if cancelled else runtime.ComputeUnavailable
+    scope = None
+    with pytest.raises(expected) as caught:
+        async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+            scope.outstanding["hold"] = runtime.ReservationHold("hold", 100, unknown_amount=7)
+            if cancelled:
+                raise asyncio.CancelledError()
+            raise _status_error(503)
+    service.settle.assert_awaited_once_with("hold", 7)
+    assert scope is not None
+    assert scope.outstanding["hold"].decision is not None
+    if cancelled:
+        assert "Scope cleanup failed" in caught.value.__notes__[0]
+    else:
+        assert isinstance(caught.value, runtime.ComputeUnavailable)
+        assert caught.value.category == "settlement_failed" and not caught.value.retryable
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output", [False, True])
+async def test_scope_cleanup_without_decision_uses_output_flag(monkeypatch, output):
+    from tests.test_compute_runtime import _funded_service
+
+    service = _funded_service()
+    monkeypatch.setattr(runtime, "EntitlementService", lambda _: service)
+    async with runtime.account_compute(object(), uuid.uuid4()) as scope:
+        hold = runtime.ReservationHold("hold", 100, unknown_amount=7, output_released=output)
+        scope.outstanding["hold"] = hold
+    amount = 100 if output else 7
+    service.settle.assert_awaited_once_with("hold", amount)
+    assert hold.actual == amount
+    assert hold.decision is not None and hold.decision.path == "scope_cleanup"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_managed_scope_cleanup_keeps_bound_or_uncertainty_skip(monkeypatch, uncertain):
+    from orchestrator.tasks._invocation import invocation
+    from tests.test_inference_repair_seams import covered
+
+    original, state, service, _ = covered()
+    monkeypatch.setattr(runtime, "EntitlementService", lambda _: service)
+    token = invocation.set(state)
+    try:
+        async with runtime.account_compute(
+            object(),
+            original.user_id,
+            inference_identity=original.inference_identity,
+            inference_recovery=original.inference_recovery,
+        ) as scope:
+            scope.outstanding["hold"] = runtime.ReservationHold("hold", 100, unknown_amount=7)
+            if uncertain:
+                state.block("synthetic uncertainty")
+        if uncertain:
+            service.settle.assert_not_awaited()
+            assert scope.outstanding and not scope.terminal_decisions
+        else:
+            service.settle.assert_awaited_once_with("hold", 100)
+            assert not scope.outstanding
+        service.reconcile_expired_reservations.assert_not_awaited()
+    finally:
+        invocation.reset(token)

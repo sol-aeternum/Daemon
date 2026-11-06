@@ -1066,7 +1066,12 @@ async def account_compute(
                     if isinstance(result, BaseException):
                         raise result
         except BaseException as cleanup_error:
-            if primary_error is None:
+            if primary_error is None or (
+                not scope.invocation_managed()
+                and isinstance(primary_error, Exception)
+                and isinstance(cleanup_error, ComputeUnavailable)
+                and cleanup_error.category == FAILURE_SETTLEMENT_FAILED
+            ):
                 raise
             primary_error.add_note(f"Scope cleanup failed ({type(cleanup_error).__name__})")
         finally:
