@@ -386,6 +386,40 @@ class ComputeScope:
         if hold.stream is not None:
             await hold.stream.close()
 
+    def register_hold(
+        self,
+        reservation: Any,
+        bound: int,
+        *,
+        extended_run: bool,
+        actual: int | None = None,
+        unknown_amount: int | None = None,
+        pending_commit: bool = False,
+    ) -> ReservationHold:
+        """Register under extended_lock, including unresolved commit receipts.
+
+        Every reservation path uses this owner: an extended hold stays counted
+        after settlement, and leaves the count only on release or proof that its
+        acquisition did not commit. Managed invocation accounting is unchanged.
+        """
+        hold = ReservationHold(reservation, bound, actual=actual, unknown_amount=unknown_amount)
+        hold.extended_run = extended_run
+        hold.extended_counted = self.extended and not self.invocation_managed()
+        if hold.extended_counted:
+            self.extended_holds += 1
+        if extended_run and (not pending_commit or hold.extended_counted):
+            self.extended_started = True
+        self.outstanding[_hold_key(reservation)] = hold
+        return hold
+
+    def discard_uncommitted_hold(self, reservation: Any) -> None:
+        """Only a recovered no-commit result may remove a provisional hold."""
+        hold = self.outstanding.pop(_hold_key(reservation))
+        if hold.extended_counted:
+            self.extended_holds -= 1
+            if hold.extended_run:
+                self.extended_started = False
+
     async def settle(
         self,
         reservation: Any,
@@ -1397,10 +1431,12 @@ async def metered_tool_call(
             # Receipt identity survives even when its committed outcome cannot
             # currently be established. Scope cleanup revalidates this receipt
             # through the service instead of blindly settling a candidate ID.
-            active.outstanding[receipt.id] = ReservationHold(
+            active.register_hold(
                 receipt,
                 approval.ceiling_microusd,
                 actual=0,
+                extended_run=first_extended,
+                pending_commit=True,
             )
 
             async def recover_commit() -> None:
@@ -1429,7 +1465,7 @@ async def metered_tool_call(
                     await asyncio.shield(rejected)
                 recovered = await active.service.recover_reservation(receipt)
                 if recovered is None:
-                    active.outstanding.pop(receipt.id)
+                    active.discard_uncommitted_hold(receipt)
                 else:
                     active.outstanding[receipt.id].reservation = recovered
                     if first_extended:
@@ -1466,13 +1502,12 @@ async def metered_tool_call(
                 "account_unavailable", "Account reservation could not be confirmed"
             ) from None
         # No await between a returned reservation and its scope registration.
-        active.outstanding[_hold_key(reservation)] = ReservationHold(
+        active.register_hold(
             reservation,
             approval.ceiling_microusd,
             actual=0 if dispatch_aware else None,
+            extended_run=first_extended,
         )
-        if first_extended:
-            active.extended_started = True
         return reservation
 
     work_timeout = asyncio.timeout(
@@ -1676,7 +1711,9 @@ async def metered_embedding_call(
                 active.inference_invocation.block("embedding_reservation_unavailable")
                 raise
             receipt = exc.receipt
-            active.outstanding[receipt.id] = ReservationHold(receipt, bound, actual=0)
+            active.register_hold(
+                receipt, bound, actual=0, extended_run=first_extended, pending_commit=True
+            )
 
             async def recover_commit() -> None:
                 if (
@@ -1705,7 +1742,7 @@ async def metered_embedding_call(
                     await asyncio.shield(rejected)
                 recovered = await active.service.recover_reservation(receipt)
                 if recovered is None:
-                    active.outstanding.pop(receipt.id)
+                    active.discard_uncommitted_hold(receipt)
                 else:
                     active.outstanding[receipt.id].reservation = recovered
                     if first_extended:
@@ -1741,9 +1778,7 @@ async def metered_embedding_call(
             raise ComputeUnavailable(
                 "account_unavailable", "Account reservation could not be confirmed"
             ) from None
-        active.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound, actual=0)
-        if first_extended:
-            active.extended_started = True
+        active.register_hold(reservation, bound, actual=0, extended_run=first_extended)
         return reservation
 
     try:
@@ -2767,21 +2802,17 @@ async def guarded_completion(
                     reasoning_effort=_label(resolved.get("reasoning_effort")),
                     **reserve_options,
                 )
-                if first_extended:
-                    scope.extended_started = True
-                if scope.extended and not scope.invocation_managed():
-                    scope.extended_holds += 1
+                hold = scope.register_hold(
+                    reservation,
+                    bound,
+                    extended_run=first_extended,
+                    unknown_amount=unknown_amounts.get(route.route_id, bound),
+                )
         except EntitlementsError:
             raise
         except Exception:
             raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
-        hold = ReservationHold(
-            reservation, bound, unknown_amount=unknown_amounts.get(route.route_id, bound)
-        )
-        hold.extended_run = first_extended
-        hold.extended_counted = scope.extended and not scope.invocation_managed()
         attempt_holds[attempt_index] = hold
-        scope.outstanding[_hold_key(reservation)] = hold
         reservation_id = _label(_hold_key(reservation))
         attempt_reservations[attempt_index] = reservation_id
         scope.attempts += 1

@@ -7,6 +7,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
+from contextlib import AsyncExitStack
 
 import pytest
 
@@ -840,3 +841,93 @@ async def test_nonstream_sdk_return_before_waiter_cancellation_counts_as_output(
 def test_documented_accounting_paths_are_loggable(path):
     record = runtime.routing_log.build_record("settlement", {"path": path})
     assert record["path"] == path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_first", [False, True])
+@pytest.mark.parametrize("kind", ["fixed", "embedding"])
+async def test_extended_real_tool_path_and_dispatch_share_one_run(monkeypatch, tool_first, kind):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service = _chat_service(
+        reserve=AsyncMock(side_effect=ledger.reserve), settle=ledger.settle, release=ledger.release
+    )
+    service.resolve.return_value.capabilities.add("extended_agents")
+    approval = runtime.ToolServiceApproval("synthetic", "search", "synthetic", "call", 10, 7)
+    monkeypatch.setattr(runtime, "approved_tool_service", lambda **kwargs: approval)
+    embedding = cast(
+        Any,
+        SimpleNamespace(
+            route_id="embedding",
+            provider="synthetic",
+            model="synthetic/embed",
+            max_batch_tokens=100,
+            estimate_microusd=lambda tokens: 2 * tokens,
+            is_approved=lambda requirements: True,
+        ),
+    )
+    inference = cast(Any, runtime.load_inference_policy())
+    inference.embedding_route = lambda route_id: embedding
+    monkeypatch.setattr(runtime, "load_inference_policy", lambda: inference)
+    entered, reject = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def provider(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            evidence = runtime.inference_transport.current.get()
+            assert evidence is not None
+            evidence.attempts.append(runtime.inference_transport.Attempt(status=503))
+            entered.set()
+            await reject.wait()
+            raise _status_error(503)
+        return {"choices": []}
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service, extended=True) as scope:
+
+        def tool_context():
+            if kind == "fixed":
+                return runtime.metered_tool_call(approval, scope=scope, dispatch_aware=True)
+            return runtime.metered_embedding_call(embedding, 10, scope=scope)
+
+        pending = None
+        charge: Any = None
+        try:
+            async with AsyncExitStack() as stack:
+                if tool_first:
+                    charge = await stack.enter_async_context(tool_context())
+                pending = asyncio.create_task(
+                    runtime.guarded_completion(
+                        model=route.model, messages=[{"role": "user", "content": "hi"}]
+                    )
+                )
+                await asyncio.wait_for(entered.wait(), 1)
+                if not tool_first:
+                    charge = await stack.enter_async_context(tool_context())
+                assert scope.extended_holds == 2
+                charge.mark_dispatched()
+                if kind == "fixed":
+                    charge.confirm()
+                else:
+                    charge.confirm(input_tokens=10, actual_microusd=20)
+                reject.set()
+                with pytest.raises(runtime.ComputeUnavailable):
+                    await pending
+                assert scope.extended_started
+                await runtime.guarded_completion(
+                    model=route.model, messages=[{"role": "user", "content": "hi"}]
+                )
+            assert [record["extended_run"] for record in ledger.reservations.values()] == [
+                True,
+                False,
+                False,
+            ]
+            assert ledger.units_used == 1
+            assert not scope.outstanding
+        finally:
+            reject.set()
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
