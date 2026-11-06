@@ -491,6 +491,13 @@ async def run_bakeoff(
                 break
             key = call_key(arm, question)
             if key in results:
+                # A resume replays the plan in order, so each arm's streak carries over.
+                if results[key].get("error_category") is None:
+                    consecutive_failures[arm.label] = 0
+                else:
+                    consecutive_failures[arm.label] += 1
+                    if consecutive_failures[arm.label] >= CONSECUTIVE_FAILURE_LIMIT:
+                        stop_reason = "consecutive_failures"
                 continue
             if key in intents:
                 # A dispatch with no result may already have been charged.

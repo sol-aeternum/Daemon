@@ -501,3 +501,49 @@ def test_another_arms_successes_do_not_reset_a_failing_arm(tmp_path: Any) -> Non
         for arm in ("B", "C")
     }
     assert max(failures.values()) == bakeoff.CONSECUTIVE_FAILURE_LIMIT
+
+
+def _seed_journal(tmp_path: Any, questions: list[Question], calls: int, failing_arm: str) -> None:
+    with open(_journal_path(_output(tmp_path)), "x", encoding="utf-8") as handle:
+        _append_journal(handle, manifest(questions))
+        for arm, question in dispatch_plan(questions, ARMS)[:calls]:
+            key = call_key(arm, question)
+            entry = bakeoff._call_entry(arm, question, 0.1)
+            if arm.label == failing_arm:
+                entry["error_category"] = "invalid_request"
+            _append_journal(
+                handle,
+                {
+                    "kind": "intent",
+                    "call_key": key,
+                    "arm": arm.label,
+                    "question_id": question.question_id,
+                },
+            )
+            _append_journal(handle, {"kind": "result", "call_key": key, **entry})
+
+
+def test_a_resume_keeps_an_arms_failure_streak(tmp_path: Any) -> None:
+    attempts: list[Any] = []
+
+    async def fails_on_b(payload: Any) -> Any:
+        attempts.append(payload)
+        if payload["_route_id"] == ARMS[1].route_id:
+            raise ComputeUnavailable("invalid_request", "refused", category="invalid_request")
+        return _response()
+
+    questions = [_question(index) for index in range(12)]
+    _seed_journal(tmp_path, questions, 27, "B")  # nine rounds: nine B failures, with A and C fine
+    kwargs, _ = _kwargs(tmp_path, questions, call=fails_on_b)
+    document = asyncio.run(run_bakeoff(**kwargs))
+    assert document["stop_reason"] == "consecutive_failures"
+    assert len([a for a in attempts if a["_route_id"] == ARMS[1].route_id]) == 1
+
+
+def test_a_resume_with_a_full_streak_sends_nothing(tmp_path: Any) -> None:
+    questions = [_question(index) for index in range(12)]
+    _seed_journal(tmp_path, questions, 30, "B")  # ten rounds: ten B failures
+    kwargs, calls = _kwargs(tmp_path, questions)
+    document = asyncio.run(run_bakeoff(**kwargs))
+    assert document["stop_reason"] == "consecutive_failures"
+    assert calls == []
