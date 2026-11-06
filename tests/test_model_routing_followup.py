@@ -577,9 +577,10 @@ async def test_actual_runtime_dispatch_omits_default_effort_and_settles_each_cal
     for attempt, request in zip(attempts, sent, strict=True):
         if attempt.condition == "default":
             assert "reasoning_effort" not in request
+            assert "reasoning" not in request.get("extra_body", {})
         else:
             assert (
-                request["reasoning_effort"]
+                request["extra_body"]["reasoning"]["effort"]
                 == follow.CANDIDATE_BY_LABEL[attempt.candidate_label].effort
             )
         call = state["attempts"][attempt.attempt_id]["calls"][0]
