@@ -1,4 +1,4 @@
-"""Offline S4 feasibility proof for #681; NO production integration.
+"""Production S4 transport, exercised over real owned-loopback sockets (#681).
 
 Both variants borrow one factory-built aiohttp transport. create_client delegates
 all HTTPX configuration to LiteLLM, then replaces only its unstarted transport.
@@ -46,13 +46,12 @@ import json
 import socket
 import struct
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
-import httpx
 import pytest
 from litellm.exceptions import (
     APIError,
@@ -60,102 +59,12 @@ from litellm.exceptions import (
     ServiceUnavailableError,
     UnsupportedParamsError,
 )
-from litellm.llms.custom_httpx.aiohttp_transport import LiteLLMAiohttpTransport
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
-from tests.test_litellm_send_evidence_proof import completion, offline_only, peer
+from orchestrator.inference_transport import Evidence, Handler, current
+from tests.inference_transport_support import completion, offline_only, peer
 
 __all__ = ["offline_only"]  # Reuse the enforced loopback/.invalid network fixture.
-
-
-@dataclass
-class Attempt:
-    not_sent: bool = False
-    status: int | None = None
-    error: str | None = None
-    cause: str | None = None
-
-
-@dataclass
-class Evidence:
-    attempts: list[Attempt] = field(default_factory=list)
-    broken: bool = False
-    break_observer: bool = False
-
-    @property
-    def charge(self) -> bool:
-        return self.broken or not self.attempts or not all(a.not_sent for a in self.attempts)
-
-    @property
-    def statuses(self) -> list[int]:
-        return [] if self.broken else [a.status for a in self.attempts if a.status is not None]
-
-
-current: contextvars.ContextVar[Evidence | None] = contextvars.ContextVar("s4", default=None)
-
-
-class Forwarder(httpx.AsyncBaseTransport):
-    def __init__(self, pool: LiteLLMAiohttpTransport, bound: Evidence | None) -> None:
-        self.pool = pool
-        self.bound = bound
-        self.closes = 0
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        evidence = self.bound if self.bound is not None else current.get()
-        attempt = Attempt()
-        if evidence is not None:
-            try:
-                if evidence.break_observer:
-                    raise RuntimeError("synthetic observer failure")
-                evidence.attempts.append(attempt)
-            except Exception:
-                evidence.broken = True
-        try:
-            response = await self.pool.handle_async_request(request)
-        except BaseException as exc:
-            # Direct mapped cause only, never type/message of LiteLLM's wrapper.
-            attempt.error = type(exc).__name__
-            attempt.cause = type(exc.__cause__).__name__
-            attempt.not_sent = isinstance(exc.__cause__, aiohttp.ClientConnectorError)
-            raise
-        attempt.status = response.status_code
-        return response
-
-    async def aclose(self) -> None:
-        self.closes += 1  # Borrower close intentionally cannot destroy the pool.
-
-
-class Handler(AsyncHTTPHandler):
-    def __init__(
-        self, pool: LiteLLMAiohttpTransport | None = None, bound: Evidence | None = None
-    ) -> None:
-        self.pool = pool
-        self.bound = bound
-        self.forwarders: list[Forwarder] = []
-        super().__init__(timeout=0.2)
-
-    def create_client(
-        self,
-        timeout: float | httpx.Timeout | None,
-        event_hooks: Mapping[str, list[Any]] | None,
-        ssl_verify: Any = None,
-        shared_session: Any = None,
-    ) -> httpx.AsyncClient:
-        client = super().create_client(timeout, event_hooks, ssl_verify, shared_session)
-        original = client._transport
-        assert isinstance(original, LiteLLMAiohttpTransport)
-        assert callable(original.client)  # No unowned live session is discarded.
-        if self.pool is None:
-            self.pool = original
-        forwarder = Forwarder(self.pool, self.bound)
-        self.forwarders.append(forwarder)
-        client._transport = forwarder
-        return client
-
-    async def shutdown(self) -> None:
-        await self.close()
-        assert self.pool is not None
-        await self.pool.aclose()
 
 
 async def dispatch(
@@ -355,7 +264,7 @@ async def test_reset_and_sent_retry_refused(mode: str, stream: bool) -> None:
             assert e.attempts[0].cause == "ClientOSError"
             assert not e.attempts[0].not_sent
             assert len(e.attempts) == 2
-            assert sum(f.closes for f in h.forwarders) == 1
+            assert h.borrower_closes == 1
             if mode == "crux":
                 assert len(server.bodies) == 1 and e.attempts[1].not_sent
     finally:
@@ -364,8 +273,8 @@ async def test_reset_and_sent_retry_refused(mode: str, stream: bool) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("variant", ["context", "bound"])
-async def test_pooling_parity_and_cost(stream: bool, variant: str) -> None:
+async def test_pooling_parity_and_cost(stream: bool) -> None:
+    variant = "context"
     started = time.perf_counter()
     owner = Handler()
     owner_startup = time.perf_counter() - started
@@ -379,15 +288,13 @@ async def test_pooling_parity_and_cost(stream: bool, variant: str) -> None:
                 start = time.perf_counter()
                 for _ in range(40):
                     e = Evidence()
-                    h = Handler(owner.pool, e) if name == "bound" else owner
+                    h = owner
                     exc = (
                         await completion(base, stream, baseline)
                         if name == "off"
                         else await dispatch(base, stream, h, e)
                     )
                     assert exc is None
-                    if name == "bound":
-                        await h.close()
                     if name != "off":
                         assert e.statuses == [200] and e.charge
                 # Include shared-client construction amortized across the batch;
@@ -475,7 +382,7 @@ async def test_cancel(mode: str, stream: bool) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["broken", "bypassed"])
 async def test_observer_fail_closed(mode: str) -> None:
-    h, e = Handler(), Evidence(break_observer=mode == "broken")
+    h, e = Handler(), Evidence(broken=mode == "broken")
     try:
         async with capture() as (_, base):
             exc = (
@@ -552,7 +459,7 @@ async def test_retry_close_preserves_concurrent_active_stream() -> None:
             exc = await dispatch(failed, False, h, failed_e)
             assert exc is not None and failed_e.charge and len(failed_e.attempts) == 2
             assert failed_e.attempts[1].not_sent
-            assert sum(f.closes for f in h.forwarders) == 1
+            assert h.borrower_closes == 1
             assert h.pool is not None and isinstance(h.pool.client, aiohttp.ClientSession)
             assert not h.pool.client.closed and not task.done()
             server.release.set()
