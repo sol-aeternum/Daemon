@@ -196,6 +196,40 @@ class Handler(AsyncHTTPHandler):
             except Exception:
                 evidence.broken = True
 
+    async def single_connection_post_request(
+        self,
+        url: str,
+        client: httpx.AsyncClient,
+        data: Any = None,
+        json: Any = None,
+        params: Any = None,
+        headers: Any = None,
+        stream: bool = False,
+        content: Any = None,
+    ) -> Any:
+        try:
+            return await super().single_connection_post_request(
+                url=url,
+                client=client,
+                data=data,
+                json=json,
+                params=params,
+                headers=headers,
+                stream=stream,
+                content=content,
+            )
+        except httpx.HTTPStatusError as failure:
+            # LiteLLM's fresh-client retry is inside an except branch, so its
+            # HTTPStatusError skips post()'s sibling response-body cleanup. The
+            # borrower close deliberately cannot close the pool. Dispose only
+            # this failed response, not concurrent successful streams. This
+            # exception is a resource handle, never accounting evidence.
+            try:
+                await failure.response.aclose()
+            except Exception:
+                logger.warning("Failed inference retry response cleanup")
+            raise
+
     async def shutdown(self) -> None:
         await self.drained.wait()
         await self.close()
@@ -211,7 +245,12 @@ def get_handler() -> Handler | None:
     loop = asyncio.get_running_loop()
     if loop not in _handlers:
         try:
-            for name in ("_create_async_transport", "_create_aiohttp_transport", "create_client"):
+            for name in (
+                "_create_async_transport",
+                "_create_aiohttp_transport",
+                "create_client",
+                "single_connection_post_request",
+            ):
                 if not callable(getattr(AsyncHTTPHandler, name, None)):
                     raise RuntimeError("inference transport factory unavailable")
             handler = Handler()

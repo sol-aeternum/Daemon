@@ -12,7 +12,13 @@ import pytest
 
 from orchestrator import compute_runtime as runtime
 from orchestrator.entitlements import EntitlementService
-from tests.test_compute_runtime import _account_scope, _chat_service, _qualified_policy, _route
+from tests.test_compute_runtime import (
+    _account_scope,
+    _chat_service,
+    _qualified_policy,
+    _route,
+    _status_error,
+)
 
 
 class Ledger:
@@ -281,3 +287,425 @@ async def test_release_wins_before_conservative_finalizer(monkeypatch) -> None:
     assert ledger.actions == [("release", "hold", 0)]
     assert hold.actual == 0 and hold.decision is not None
     assert hold.decision.path == "dispatch_not_sent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_failure_before_completion_call_releases(monkeypatch, stream):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+    async with _account_scope(service) as scope:
+
+        async def reserve(*args, **kwargs):
+            scope.closed = True
+            return "hold"
+
+        service.reserve.side_effect = reserve
+        with pytest.raises(runtime.ComputeUnavailable, match="scope is closed"):
+            await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+        provider.assert_not_awaited()
+        decision = scope.terminal_decisions["hold"]
+        assert (decision.operation, decision.amount, decision.path) == (
+            "release",
+            0,
+            "dispatch_not_sent_local",
+        )
+        assert ledger.actions == [("release", "hold", 0)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504])
+async def test_synthetic_status_never_releases(monkeypatch, stream, status):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+
+    async def chunks():
+        raise _status_error(status)
+        yield {}
+
+    provider = (
+        AsyncMock(return_value=chunks()) if stream else AsyncMock(side_effect=_status_error(status))
+    )
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable):
+            result = await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+            if stream:
+                async for _ in result:
+                    pass
+        decision = scope.terminal_decisions["pooled-hold"]
+        size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+        assert (decision.operation, decision.amount, decision.path) == (
+            "settle",
+            route.estimate_microusd(size.bound, 1),
+            "dispatch_unknown_floor",
+        )
+        assert ledger.actions[0][0] == "settle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winner", ["cleanup", "handler"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_dispatch_handler_and_cleanup_join_winner(monkeypatch, winner, stream):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+    entered, send_failure, accounting, finish = (asyncio.Event() for _ in range(4))
+    original_settle, original_release = ledger.settle, ledger.release
+
+    async def settle(*args, **kwargs):
+        accounting.set()
+        await finish.wait()
+        return await original_settle(*args, **kwargs)
+
+    async def release(*args, **kwargs):
+        accounting.set()
+        await finish.wait()
+        return await original_release(*args, **kwargs)
+
+    service.settle, service.release = settle, release
+
+    async def provider(**kwargs):
+        evidence = runtime.inference_transport.current.get()
+        assert evidence is not None
+        evidence.attempts.append(runtime.inference_transport.Attempt(status=503))
+        entered.set()
+        await send_failure.wait()
+        raise _status_error(503)
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        dispatch = asyncio.create_task(
+            runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        hold = scope.outstanding["pooled-hold"]
+        if winner == "cleanup":
+            cleanup = asyncio.create_task(
+                scope.finish_failure(hold, hold.failure_amount, path="scope_cleanup")
+            )
+            await asyncio.wait_for(accounting.wait(), 1)
+            send_failure.set()
+        else:
+            send_failure.set()
+            await asyncio.wait_for(accounting.wait(), 1)
+            cleanup = asyncio.create_task(
+                scope.finish_failure(hold, hold.failure_amount, path="scope_cleanup")
+            )
+        actual = hold.actual
+        finish.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(dispatch, cleanup, return_exceptions=True), 1
+        )
+        assert isinstance(results[0], runtime.ComputeUnavailable)
+        assert results[0].code != "settlement_conflict" and results[1] is None
+        assert len(ledger.actions) == 1 and hold.actual == actual
+        assert hold.decision is not None
+        assert hold.decision.path == (
+            "scope_cleanup" if winner == "cleanup" else "dispatch_provider_rejected"
+        )
+        assert ledger.actions[0][0] == ("settle" if winner == "cleanup" else "release")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winner", ["cleanup", "stream"])
+async def test_stream_finally_and_cleanup_preserve_actual(monkeypatch, winner):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    eof, accounting, finish = (asyncio.Event() for _ in range(3))
+    original = ledger.settle
+
+    async def settle(*args, **kwargs):
+        accounting.set()
+        await finish.wait()
+        return await original(*args, **kwargs)
+
+    service = _chat_service(settle=settle, release=ledger.release)
+
+    async def chunks():
+        yield {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+        await eof.wait()
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=chunks()))
+    async with _account_scope(service) as scope:
+        stream = await runtime.guarded_completion(
+            model=route.model, messages=[{"role": "user", "content": "hi"}], stream=True
+        )
+        await anext(stream)
+        hold = scope.outstanding["pooled-hold"]
+        if winner == "cleanup":
+            cleanup = asyncio.create_task(
+                scope.finish_failure(hold, hold.failure_amount, path="scope_cleanup")
+            )
+            await asyncio.wait_for(accounting.wait(), 1)
+            eof.set()
+            pulling = asyncio.create_task(anext(stream))
+        else:
+            eof.set()
+            pulling = asyncio.create_task(anext(stream))
+            await asyncio.wait_for(accounting.wait(), 1)
+            cleanup = asyncio.create_task(
+                scope.finish_failure(hold, hold.failure_amount, path="scope_cleanup")
+            )
+        actual = hold.actual
+        finish.set()
+        result, _ = await asyncio.wait_for(
+            asyncio.gather(pulling, cleanup, return_exceptions=True), 1
+        )
+        assert isinstance(result, StopAsyncIteration)
+        assert len(ledger.actions) == 1 and hold.actual == actual
+        assert actual == (hold.bound if winner == "cleanup" else 15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_managed_dispatch_keeps_bound_and_uncertainty_skip(monkeypatch, stream, uncertain):
+    from tests.test_inference_repair_seams import covered
+
+    scope, state, service, _ = covered()
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service.resolve = _chat_service().resolve
+    service.settle, service.release = ledger.settle, ledger.release
+    service.reserve_for_attempt.return_value = "managed-hold"
+    scope.inference_recovery = cast(Any, SimpleNamespace(mark=AsyncMock()))
+
+    def failure():
+        if uncertain:
+            state.block("synthetic uncertainty")
+        return _status_error(503)
+
+    async def chunks():
+        raise failure()
+        yield {}
+
+    async def provider(**kwargs):
+        assert "client" not in kwargs
+        if stream:
+            return chunks()
+        raise failure()
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(scope)
+    try:
+        with pytest.raises(Exception):
+            result = await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+            if stream:
+                async for _ in result:
+                    pass
+        assert state.call_failed
+        if uncertain:
+            assert not ledger.actions and scope.outstanding
+        else:
+            bound = service.reserve_for_attempt.await_args.args[1]
+            assert ledger.actions == [("settle", "managed-hold", bound)]
+            decision = scope.terminal_decisions["managed-hold"]
+            assert decision.path == ("stream_end" if stream else "dispatch_failure")
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "current",
+        "state",
+        "identity",
+        "recovery",
+        "missing_state",
+        "missing_identity",
+        "missing_recovery",
+        "cross_account",
+        "cross_scope",
+        "mismatched_current",
+    ],
+)
+async def test_partial_and_mismatched_bindings_forbid_every_financial_action(binding):
+    from orchestrator.services.account_control.transaction import ObservationBlocked
+    from orchestrator.tasks._invocation import InferenceInvocation, invocation
+    from tests.test_inference_repair_seams import covered
+
+    scope, state, service, _ = covered()
+    ledger = Ledger()
+    service.settle, service.release = ledger.settle, ledger.release
+    scope.outstanding["hold"] = runtime.ReservationHold("hold", 100, unknown_amount=1)
+    current = None
+    if binding in {"current", "state", "identity", "recovery"}:
+        scope.inference_invocation = state if binding == "state" else None
+        scope.inference_identity = scope.inference_identity if binding == "identity" else None
+        scope.inference_recovery = scope.inference_recovery if binding == "recovery" else None
+        current = state if binding == "current" else None
+    elif binding.startswith("missing_"):
+        setattr(
+            scope,
+            {
+                "missing_state": "inference_invocation",
+                "missing_identity": "inference_identity",
+                "missing_recovery": "inference_recovery",
+            }[binding],
+            None,
+        )
+    elif binding == "cross_account":
+        scope.user_id = uuid.uuid4()
+    elif binding == "cross_scope":
+        scope.scope_id = uuid.uuid4()
+    else:
+        current = InferenceInvocation()
+    token = invocation.set(current)
+    try:
+        assert scope.invocation_managed()
+        for action in (
+            scope.settle("hold", 0),
+            scope.release("hold"),
+            scope.finish_failure(scope.outstanding["hold"], 1, path="scope_cleanup"),
+        ):
+            with pytest.raises(ObservationBlocked):
+                await action
+        assert not ledger.actions and not scope.terminal_decisions
+    finally:
+        invocation.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("financial_failure", [False, True])
+async def test_cancel_no_output_preserves_cancellation_and_floor(
+    monkeypatch, stream, financial_failure
+):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    if financial_failure:
+        ledger.error = RuntimeError("synthetic accounting failure")
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+    entered = asyncio.Event()
+
+    async def wait():
+        entered.set()
+        await asyncio.Future()
+
+    async def chunks():
+        await wait()
+        yield {}
+
+    async def provider(**kwargs):
+        if stream:
+            return chunks()
+        await wait()
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+
+        async def consume():
+            result = await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+            if stream:
+                async for _ in result:
+                    pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(task, 1)
+        decision = scope.terminal_decisions["pooled-hold"]
+        size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+        assert ledger.actions == [("settle", "pooled-hold", route.estimate_microusd(size.bound, 1))]
+        assert decision.path == "dispatch_unknown_floor"
+        if financial_failure:
+            assert scope.outstanding
+            assert any("cleanup failed" in note for note in caught.value.__notes__)
+        else:
+            assert not scope.outstanding
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize("output_tokens", [16, 128])
+async def test_unknown_floor_is_captured_for_explicit_and_pinned_routes(
+    monkeypatch, stream, pinned, output_tokens
+):
+    from tests.test_compute_runtime import routing_document
+
+    route = _route()
+    _qualified_policy(
+        monkeypatch, route=route, routing=routing_document([route.model], min_output_tokens=33)
+    )
+    ledger = Ledger()
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+    size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+    expected = route.estimate_microusd(size.bound, min(output_tokens, 33))
+
+    def change_quote():
+        route.estimate_microusd = lambda *args: 999_999
+
+    async def chunks():
+        change_quote()
+        raise RuntimeError("synthetic failure")
+        yield {}
+
+    async def provider(**kwargs):
+        if stream:
+            return chunks()
+        change_quote()
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable):
+            result = await runtime.guarded_completion(
+                model=route.model,
+                _route_id=route.route_id if pinned else None,
+                max_tokens=output_tokens,
+                messages=[{"role": "user", "content": "hi"}],
+                stream=stream,
+            )
+            if stream:
+                async for _ in result:
+                    pass
+        assert scope.terminal_decisions["pooled-hold"].amount == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_observer_unavailable_does_not_refuse_or_trust_exception(monkeypatch, stream):
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    ledger = Ledger()
+    service = _chat_service(settle=ledger.settle, release=ledger.release)
+    monkeypatch.setattr(runtime.inference_transport, "get_handler", lambda: None)
+
+    async def provider(**kwargs):
+        assert "client" not in kwargs
+        raise _status_error(503)
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable):
+            await runtime.guarded_completion(
+                model=route.model, messages=[{"role": "user", "content": "hi"}], stream=stream
+            )
+        decision = scope.terminal_decisions["pooled-hold"]
+        assert decision.operation == "settle" and decision.path == "dispatch_unknown_floor"

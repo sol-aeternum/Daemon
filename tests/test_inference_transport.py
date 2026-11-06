@@ -153,7 +153,9 @@ class Capture:
                     for line in header.split(b"\r\n")
                     if line.lower().startswith(b"content-length:")
                 )
-                if self.mode in {"reset", "crux"}:
+                if self.mode in {"reset", "crux"} or (
+                    self.mode == "sent_then_503" and not self.bodies
+                ):
                     self.bodies.append(await reader.readexactly(min(length, 16)))
                     self.received.set()
                     if self.mode == "crux":
@@ -167,6 +169,8 @@ class Capture:
                 self.bodies.append(body)
                 self.received.set()
                 status = int(self.mode) if self.mode.isdigit() else 200
+                if self.mode == "sent_then_503":
+                    status = 503
                 if self.mode in {"reject_once", "reject_twice"}:
                     status = (
                         503 if len(self.bodies) <= (1 if self.mode == "reject_once" else 2) else 200
@@ -708,5 +712,94 @@ async def test_guarded_release_failure_stops_candidate_walk(monkeypatch):
                 assert caught.value.code == "settlement_failed" and not caught.value.retryable
                 assert len(server.bodies) == len(ledger.actions) == 1
                 assert len(scope.outstanding) == 1
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_guarded_source_qualified_local_validation(monkeypatch, stream):
+    # Inject an SDK-only unsupported parameter at the call boundary, without
+    # widening guarded_completion's deliberately closed caller parameter set.
+    original = runtime.litellm.acompletion
+
+    async def unsupported(**kwargs):
+        return await original(**kwargs, verbosity="high", drop_params=False)
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", unsupported)
+    try:
+        async with capture() as (server, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service) as scope:
+                with pytest.raises(runtime.ComputeUnavailable):
+                    await runtime.guarded_completion(
+                        model=route.model,
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=stream,
+                    )
+                decision = next(iter(scope.terminal_decisions.values()))
+                assert (decision.operation, decision.amount, decision.path) == (
+                    "release",
+                    0,
+                    "dispatch_not_sent_local",
+                )
+                assert not server.bodies and ledger.actions[0][0] == "release"
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mode", ["refused", "tls", "close", "immediate", "read_timeout"])
+async def test_guarded_socket_failure_table(monkeypatch, stream, mode):
+    try:
+        with socket.socket() as bound:
+            bound.bind(("127.0.0.1", 0))
+            async with peer("tls" if mode == "refused" else mode) as (_, base):
+                if mode == "refused":
+                    base = f"http://127.0.0.1:{bound.getsockname()[1]}/v1"
+                elif mode == "tls":
+                    base = base.replace("http:", "https:")
+                route, ledger, service = guarded_fixture(monkeypatch, base)
+                async with _account_scope(service) as scope:
+                    with pytest.raises(runtime.ComputeUnavailable):
+                        await runtime.guarded_completion(
+                            model=route.model,
+                            messages=[{"role": "user", "content": "hi"}],
+                            stream=stream,
+                        )
+                    decision = next(iter(scope.terminal_decisions.values()))
+                    not_sent = mode in {"refused", "tls"}
+                    size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+                    assert decision.operation == ("release" if not_sent else "settle")
+                    assert decision.path == (
+                        "dispatch_not_sent" if not_sent else "dispatch_unknown_floor"
+                    )
+                    assert decision.amount == (
+                        0 if not_sent else route.estimate_microusd(size.bound, 1)
+                    )
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_guarded_sent_then_retry_503_is_unknown(monkeypatch, stream):
+    try:
+        async with capture("sent_then_503") as (server, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service) as scope:
+                with pytest.raises(runtime.ComputeUnavailable):
+                    await runtime.guarded_completion(
+                        model=route.model,
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=stream,
+                    )
+                decision = next(iter(scope.terminal_decisions.values()))
+                assert len(server.bodies) == 2
+                assert decision.operation == "settle" and decision.path == "dispatch_unknown_floor"
+                size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+                assert decision.amount == route.estimate_microusd(size.bound, 1)
+                assert ledger.actions[0][0] == "settle"
     finally:
         await inference_transport.shutdown()
