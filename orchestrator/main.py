@@ -262,6 +262,9 @@ def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = No
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from orchestrator.litellm_runtime import require_local_model_cost_map
+
+    require_local_model_cost_map()
     settings = get_settings()
     apply_resolved_database_url(settings)
 

@@ -41,10 +41,11 @@ from typing import Any, Final
 
 import httpx
 import litellm
-from litellm.exceptions import APIConnectionError, Timeout
+from litellm.exceptions import APIConnectionError, Timeout, UnsupportedParamsError
 from openai import APIError as OpenAIAPIError
 
 from orchestrator import model_routing, routing_log
+from orchestrator.litellm_runtime import openrouter_reasoning_params
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
 from orchestrator.entitlements.policy import (
@@ -111,6 +112,7 @@ FAILURE_DEADLINE_EXCEEDED: Final[str] = "deadline_exceeded"
 FAILURE_AUTHENTICATION_FAILED: Final[str] = "authentication_failed"
 FAILURE_PAYMENT_FAILED: Final[str] = "payment_failed"
 FAILURE_INVALID_REQUEST: Final[str] = "invalid_request"
+FAILURE_UNSUPPORTED_PARAMS: Final[str] = "unsupported_params"
 FAILURE_SETTLEMENT_FAILED: Final[str] = "settlement_failed"
 FAILURE_UNSPECIFIED: Final[str] = "unspecified"
 
@@ -247,7 +249,10 @@ def _classify_dispatch_failure(
     """
     status = _http_status(exc)
     retryable = False
-    if isinstance(exc, _TIMEOUT_ERRORS):
+    if isinstance(exc, UnsupportedParamsError):
+        category = FAILURE_UNSUPPORTED_PARAMS
+        status = None  # Local SDK refusal, not an upstream HTTP response.
+    elif isinstance(exc, _TIMEOUT_ERRORS):
         category = FAILURE_DEADLINE_EXCEEDED if deadline_bound else FAILURE_TIMEOUT
         retryable = not deadline_bound
         status = None
@@ -2581,6 +2586,7 @@ async def guarded_completion(
         }
         if stream:
             call["stream_options"] = {**(stream_options or {}), "include_usage": True}
+        call = openrouter_reasoning_params(call, route.model)
         try:
             async with scope.extended_lock:
                 first_extended = scope.extended and not scope.extended_started
@@ -2756,9 +2762,6 @@ async def guarded_completion(
                 outcome(index, "refused", "raise", failure_category=exc.category)
                 raise
             except Exception as failure:
-                if scope.inference_invocation is not None:
-                    scope.inference_invocation.call_failed = True
-                    raise
                 last_failure = _classify_dispatch_failure(
                     failure,
                     deadline_bound=asyncio.get_running_loop().time() >= deadline,
@@ -2767,12 +2770,20 @@ async def guarded_completion(
                 outcome(
                     index,
                     "failed",
-                    walk_on if automatic else "raise",
+                    walk_on if automatic and scope.inference_invocation is None else "raise",
                     failure_category=last_failure.category,
+                    exception_type=(
+                        "UnsupportedParamsError"
+                        if isinstance(failure, UnsupportedParamsError)
+                        else None
+                    ),
                     status_code=last_failure.status_code,
                     retryable=last_failure.retryable,
                     output_released=False,
                 )
+                if scope.inference_invocation is not None:
+                    scope.inference_invocation.call_failed = True
+                    raise
                 if not automatic:
                     raise last_failure.as_unavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
@@ -2866,6 +2877,11 @@ async def guarded_completion(
                     "failed",
                     "raise" if terminal else "fallback",
                     failure_category=classified.category,
+                    exception_type=(
+                        "UnsupportedParamsError"
+                        if isinstance(failure, UnsupportedParamsError)
+                        else None
+                    ),
                     status_code=classified.status_code,
                     retryable=classified.retryable,
                     output_released=emitted,

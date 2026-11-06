@@ -56,7 +56,8 @@ async def test_dispatch_records_the_profile_and_effort_actually_sent(
         with model_routing.routing_context("routine"):
             await runtime.guarded_completion(messages=[{"role": "user", "content": "hi"}])
     assert provider.await_args is not None
-    sent = provider.await_args.kwargs["reasoning_effort"]
+    sent = provider.await_args.kwargs["extra_body"]["reasoning"]["effort"]
+    assert "reasoning_effort" not in provider.await_args.kwargs
     kwargs: dict[str, Any] = service.reserve.await_args.kwargs
     assert kwargs["workload_profile"] == "routine"
     assert kwargs["reasoning_effort"] == sent == "medium"

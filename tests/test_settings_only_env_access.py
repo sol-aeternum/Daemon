@@ -63,6 +63,9 @@ ALLOWLIST = frozenset(
 # the documented function will fail the gate.
 FUNCTION_ALLOWLIST: dict[str, frozenset[str]] = {
     "orchestrator/database_url.py": frozenset({"resolve_database_url"}),
+    # LiteLLM reads this process variable at import. Settings/dotenv cannot prove
+    # which table it loaded; only this pre-import startup assertion may read it.
+    "orchestrator/litellm_runtime.py": frozenset({"require_local_model_cost_map"}),
 }
 ENVIRON_READ_METHODS = frozenset({"copy", "get", "items", "keys", "values"})
 

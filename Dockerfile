@@ -6,6 +6,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /bin/
 WORKDIR /app
 
 ENV UV_NO_PROGRESS=1
+ENV LITELLM_LOCAL_MODEL_COST_MAP=True
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev

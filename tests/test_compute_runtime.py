@@ -346,7 +346,8 @@ async def test_council_reasoning_round_uses_guarded_approved_transport(
     provider.assert_awaited_once()
     assert provider.await_args is not None
     call = provider.await_args.kwargs
-    assert call["reasoning_effort"] == "high"
+    assert call["extra_body"]["reasoning"] == {"effort": "high"}
+    assert "reasoning_effort" not in call
     assert call["include_reasoning"] is True
     assert call["max_tokens"] == 64
     assert call["num_retries"] == 0

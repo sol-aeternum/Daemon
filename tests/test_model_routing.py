@@ -240,7 +240,8 @@ async def test_cheaper_qualified_route_never_displaces_the_accepted_luna_candida
                 assert state.selected_group == "luna"
             assert last_kwargs(provider)["model"] == LUNA
             assert [call.kwargs["model"] for call in service.reserve.await_args_list] == [LUNA]
-            assert last_kwargs(provider)["reasoning_effort"] == "medium"
+            assert last_kwargs(provider)["extra_body"]["reasoning"] == {"effort": "medium"}
+            assert "reasoning_effort" not in last_kwargs(provider)
 
 
 @pytest.mark.asyncio
@@ -307,7 +308,8 @@ async def test_operator_sol61_replacement_dispatches_high_in_every_used_profile(
             )
         sent = last_kwargs(provider)
         assert sent["model"] == SOL
-        assert sent["reasoning_effort"] == "high"
+        assert sent["extra_body"]["reasoning"] == {"effort": "high"}
+        assert "reasoning_effort" not in sent
         if profile == "council":
             assert sent["include_reasoning"] is True
         assert service.reserve.await_args.kwargs["model"] == SOL
@@ -701,7 +703,9 @@ async def test_fallback_applies_selected_models_own_reasoning_preset(
         with model_routing.routing_context("council") as state:
             await runtime.guarded_completion(messages=[{"role": "user", "content": "review"}])
             assert (state.selected_model, state.selected_route_id) == (LUNA, LUNA)
-        assert [call.kwargs["reasoning_effort"] for call in provider.await_args_list] == [
+        assert [
+            call.kwargs["extra_body"]["reasoning"]["effort"] for call in provider.await_args_list
+        ] == [
             "high",
             "medium",
         ]

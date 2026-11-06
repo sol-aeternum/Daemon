@@ -7,7 +7,8 @@ ENV UV_NO_PROGRESS=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    LITELLM_LOCAL_MODEL_COST_MAP=True
 
 WORKDIR /app
 

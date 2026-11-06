@@ -262,6 +262,55 @@ or benchmark model pins outside the workload catalog retain standard request
 parameters subject to the independently approved endpoint's `require_parameters`
 enforcement; unknown models are never added to automatic pools by that exception.
 
+### Pinned LiteLLM metadata and OpenRouter reasoning (#681)
+
+Both Python images and the backend, worker and migration Compose services pin
+`LITELLM_LOCAL_MODEL_COST_MAP=True` in the **process environment before import**.
+Non-container launches must export it too; placing it only in a dotenv settings
+file is too late. The managed launcher checks this before loading app imports;
+backend lifespan and worker startup also check LiteLLM's source information.
+Only an explicitly forced local table with no remote URL or fallback reason is
+accepted. A mismatch refuses startup; the managed log emits only the fixed
+`litellm_model_table` failure stage, never SDK URLs, errors or content.
+
+After route selection, preset validation and approved transport construction,
+`orchestrator/litellm_runtime.py` translates OpenRouter reasoning effort to native
+`extra_body.reasoning.effort`. It converts `max` to `xhigh`, preserves all other
+declared values (including `none`), and retains council `include_reasoning`.
+The approved provider/privacy/price block is preserved. Non-OpenRouter calls and
+calls without an effort are unchanged. No arbitrary caller `extra_body` is admitted
+and no global SDK parameter dropping or capability-table patch is used. Attribution
+and reservation metadata retain the logical configured effort (`max` corresponds
+to wire `xhigh`).
+
+The locked SDK's `allowed_openai_params` bypasses its initial stale-capability
+rejection but can retain unnormalized `max` in its final override for an unknown
+model. Native body forwarding avoids that model-dependent path. The offline
+contract and real SDK HTTP-body subprocess tests cover every production profile
+and synthetic `declared:*` ladder with zero accepted local refusals. No routing
+configuration or declared ladder was changed. This proves serialization, not live
+provider acceptance, actual reasoning behavior, quality, availability or billing.
+
+`UnsupportedParamsError` is classified as `unsupported_params`, with no upstream
+status and `retryable=false`. `attempt_outcome.exception_type` admits only the
+fixed `UnsupportedParamsError` label (or an unrecognized/null value), never an
+exception message. Classification does **not** change the candidate walk:
+ordinary automatic execution still tries the next eligible candidate in the
+selected group; exact selection raises. Invocation-managed execution rethrows
+the original exception, marks the call failed and fences subsequent sends rather
+than falling back. There is no new send, retry or refund authority here.
+
+`tests/test_routing_refusal_trace.py` injects the SDK exception at the real dispatch
+boundary using the production reasoning profile and synthetic approvals/prices.
+GLM refusal advances to Sol; another refusal advances to Sonnet. If all three fail,
+the ordinary caller sees `capacity_unavailable` / `unsupported_params`. Each failed
+attempt still settles its full conservative hold; successful usage settles normally.
+Invocation-managed execution charges the first failed hold and raises without
+trying Sol or Sonnet. These are existing accounting/fallback rules, not changes
+approved by this repair. Any future local-refusal refund or fallback-policy change
+requires separate approval. Frozen evaluation request builders and campaign guards
+are not changed by the production-only adapter.
+
 Fallback retains workload requirements and account ownership. Each attempt has
 its own conservative reservation. Streaming output is not replayed after a chunk
 has been emitted. Failure or unknown usage does not imply a free attempt.
@@ -286,7 +335,7 @@ defaults drop INFO from application loggers.
 | `scope_open` / `scope_close` | Account scope entry and exit | Operation, profile, premium ceiling; exit (`normal`, `cancelled`, `closed`, `error:<code>`), counts, settled total, first-output and total duration |
 | `candidates` | Before dispatch, per completion | Ordered route ids and exclusion counts by reason |
 | `attempt` | At dispatch | Route, model, group, requested, preset and **sent** reasoning effort, `max_tokens`, hold bound, reservation id |
-| `attempt_outcome` | After a response or failure | Outcome, failure category, retryability, whether output was released, next action |
+| `attempt_outcome` | After a response or failure | Outcome, failure category, fixed SDK exception-type label for unsupported parameters, retryability, whether output was released, next action |
 | `settlement` | Only after settlement | Actual amount, hold bound, estimated or metered, tokens, overage, path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery, receipt reconciliation) |
 
 Records join to the ledger by `scope_id` (the reservation row's scope) and
