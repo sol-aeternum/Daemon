@@ -11,7 +11,7 @@ def test_multi_query_defaults():
     settings = cast(Any, Settings)(_env_file=None)
     assert settings.memory_multi_query_enabled is False
     assert settings.memory_multi_query_merge == "additive"
-    assert settings.memory_decomposition_timeout_ms == 1500
+    assert settings.memory_decomposition_timeout_ms == 2600
     assert settings.memory_subquery_quota == 3
     assert settings.memory_max_subqueries == 3
     assert settings.memory_decomposition_profile == "memory_decomposition"
