@@ -275,11 +275,14 @@ def test_consecutive_failures_stop(tmp_path: Any) -> None:
         attempts.append(payload)
         raise ComputeUnavailable("upstream_unavailable", "down", category="upstream_unavailable")
 
-    questions = [_question(index) for index in range(4)]
+    questions = [_question(index) for index in range(12)]
     kwargs, _ = _kwargs(tmp_path, questions, call=unavailable)
     document = asyncio.run(run_bakeoff(**kwargs))
     assert document["stop_reason"] == "consecutive_failures"
-    assert len(attempts) == bakeoff.CONSECUTIVE_FAILURE_LIMIT
+    # Each arm counts its own, so the first to reach the limit stops the run.
+    per_arm = [sum(1 for row in document["questions"] if row["arm"] == arm) for arm in "ABC"]
+    assert max(per_arm) == bakeoff.CONSECUTIVE_FAILURE_LIMIT
+    assert len(attempts) == sum(per_arm)
 
 
 def test_accounting_error_stops(tmp_path: Any) -> None:
@@ -479,3 +482,22 @@ def test_the_bakeoff_refuses_every_other_benchmark_database(name: str) -> None:
 def test_output_tokens_come_from_the_provider_usage_field() -> None:
     assert bakeoff._output_tokens({"usage": {"completion_tokens": 42}}) == 42
     assert bakeoff._output_tokens({"usage": {"output_tokens": 42}}) == 0
+
+
+def test_another_arms_successes_do_not_reset_a_failing_arm(tmp_path: Any) -> None:
+    """The live run refused every B and C call while Luna's successes hid it."""
+
+    async def only_luna_works(payload: Any) -> Any:
+        if payload["_route_id"] == "luna-azure-eu":
+            return _response()
+        raise ComputeUnavailable("invalid_request", "refused", category="invalid_request")
+
+    questions = [_question(index) for index in range(30)]
+    kwargs, _ = _kwargs(tmp_path, questions, call=only_luna_works)
+    document = asyncio.run(run_bakeoff(**kwargs))
+    assert document["stop_reason"] == "consecutive_failures"
+    failures = {
+        arm: sum(1 for row in document["questions"] if row["arm"] == arm and row["error_category"])
+        for arm in ("B", "C")
+    }
+    assert max(failures.values()) == bakeoff.CONSECUTIVE_FAILURE_LIMIT

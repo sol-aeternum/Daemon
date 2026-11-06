@@ -482,7 +482,8 @@ async def run_bakeoff(
                 raise ValueError("Bake-off arm routes were not verified")
 
         scope = account_scope or (lambda _user_id: _NullScope())
-        consecutive_failures = 0
+        # Per arm: another arm's successes must not reset a refused arm's count.
+        consecutive_failures = {arm.label: 0 for arm in arms}
         plan = dispatch_plan(questions, arms)
 
         for arm, question in plan:
@@ -562,13 +563,13 @@ async def run_bakeoff(
                 entry["error_category"] = category
                 _append_journal(handle, {"kind": "result", "call_key": key, **entry})
                 results[key] = dict(entry)
-                consecutive_failures += 1
-                if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                consecutive_failures[arm.label] += 1
+                if consecutive_failures[arm.label] >= CONSECUTIVE_FAILURE_LIMIT:
                     stop_reason = "consecutive_failures"
                     break
                 continue
             elapsed = max(clock() - started, 0.0)
-            consecutive_failures = 0
+            consecutive_failures[arm.label] = 0
 
             entry = _call_entry(arm, question, elapsed)
             try:
