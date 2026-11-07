@@ -38,13 +38,14 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Final
+from types import MappingProxyType
 
 import httpx
 import litellm
 from litellm.exceptions import APIConnectionError, Timeout, UnsupportedParamsError
 from openai import APIError as OpenAIAPIError
 
-from orchestrator import model_routing, routing_log
+from orchestrator import inference_transport, model_routing, routing_log
 from orchestrator.litellm_runtime import openrouter_reasoning_params
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
@@ -355,12 +356,14 @@ class ComputeScope:
     #: calls, plus one concurrency slot while any reservation remains open.
     scope_id: uuid.UUID = field(default_factory=uuid.uuid4)
     extended_started: bool = False
+    extended_holds: int = 0
     extended_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     selected_model: str | None = None
     selected_effort: str | None = None
     selected_budget_fitted: bool = False
     outstanding: dict[Any, ReservationHold] = field(default_factory=dict)
     settled: dict[Any, int] = field(default_factory=dict)
+    terminal_decisions: dict[Any, TerminalDecision] = field(default_factory=dict)
     expected_period: str | None = None
     #: Outer account profile bounds automatic premium eligibility in nested contexts.
     account_allow_premium: bool = True
@@ -383,6 +386,40 @@ class ComputeScope:
         if hold.stream is not None:
             await hold.stream.close()
 
+    def register_hold(
+        self,
+        reservation: Any,
+        bound: int,
+        *,
+        extended_run: bool,
+        actual: int | None = None,
+        unknown_amount: int | None = None,
+        pending_commit: bool = False,
+    ) -> ReservationHold:
+        """Register under extended_lock, including unresolved commit receipts.
+
+        Every reservation path uses this owner: an extended hold stays counted
+        after settlement, and leaves the count only on release or proof that its
+        acquisition did not commit. Managed invocation accounting is unchanged.
+        """
+        hold = ReservationHold(reservation, bound, actual=actual, unknown_amount=unknown_amount)
+        hold.extended_run = extended_run
+        hold.extended_counted = self.extended and not self.invocation_managed()
+        if hold.extended_counted:
+            self.extended_holds += 1
+        if extended_run and (not pending_commit or hold.extended_counted):
+            self.extended_started = True
+        self.outstanding[_hold_key(reservation)] = hold
+        return hold
+
+    def discard_uncommitted_hold(self, reservation: Any) -> None:
+        """Only a recovered no-commit result may remove a provisional hold."""
+        hold = self.outstanding.pop(_hold_key(reservation))
+        if hold.extended_counted:
+            self.extended_holds -= 1
+            if hold.extended_run:
+                self.extended_started = False
+
     async def settle(
         self,
         reservation: Any,
@@ -391,11 +428,85 @@ class ComputeScope:
         usage: dict[str, Any] | None = None,
         path: str = "unspecified",
     ) -> None:
+        await self._finish(reservation, "settle", amount, usage=usage, path=path)
+
+    async def release(self, reservation: Any, *, path: str = "unspecified") -> None:
+        await self._release(reservation, path=path, join=False)
+
+    async def _release(self, reservation: Any, *, path: str, join: bool) -> None:
+        self.require_inference_effect()
+        hold = self.outstanding.get(_hold_key(reservation))
+        if hold is None or not hold.extended_counted or hold.decision is not None:
+            await self._finish(reservation, "release", 0, path=path, join=join)
+            return
+        await self.extended_lock.acquire()
+        if hold.decision is not None:
+            self.extended_lock.release()
+            await self._finish(reservation, "release", 0, path=path, join=join)
+            return
+        try:
+            # Open holds and non-released history count; only release removes one.
+            operation = "settle" if hold.extended_run and self.extended_holds != 1 else "release"
+            await self._finish(
+                reservation, operation, 0, path=path, join=join, unlock_extended=True
+            )
+        finally:
+            # Once created, the shielded financial owner owns the lock, including
+            # counter publication after success. Cancelling a waiter cannot refund
+            # a unit without resetting extended_started or admit an intervening hold.
+            if hold.settlement is None:
+                self.extended_lock.release()
+
+    async def finish_failure(
+        self,
+        hold: ReservationHold,
+        amount: int,
+        *,
+        path: str,
+        release: bool = False,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        """Join an existing winner, including a failed owner; never replace it."""
+        if release:
+            await self._release(hold.reservation, path=path, join=True)
+            return
+        await self._finish(
+            hold.reservation,
+            "release" if release else "settle",
+            amount,
+            usage=usage,
+            path=path,
+            join=True,
+        )
+
+    async def _finish(
+        self,
+        reservation: Any,
+        operation: str,
+        amount: int,
+        *,
+        usage: dict[str, Any] | None = None,
+        path: str,
+        join: bool = False,
+        unlock_extended: bool = False,
+        start_only: bool = False,
+    ) -> None:
         self.require_inference_effect()
         key = _hold_key(reservation)
         hold = self.outstanding.get(key)
+        decision = self.terminal_decisions.get(key)
+        matches = decision is not None and (decision.operation, decision.amount) == (
+            operation,
+            amount,
+        )
+        if decision is not None and not join and not matches:
+            raise ComputeUnavailable(
+                "settlement_conflict",
+                "Reservation already settling differently",
+                category=FAILURE_SETTLEMENT_FAILED,
+            )
         if hold is None:
-            if self.settled.get(key) == amount:
+            if key in self.settled and (join or matches):
                 return
             raise ComputeUnavailable(
                 "settlement_conflict",
@@ -406,8 +517,13 @@ class ComputeScope:
             # One task per reservation prevents racing a stream-finally against
             # the account-scope-finally on client cancellation. Its initiating
             # caller also owns telemetry, even if that waiter is cancelled.
-            hold.actual = amount
-            has_usage = bool(usage)
+            decision = TerminalDecision(
+                operation, amount, MappingProxyType(dict(usage or {})), path
+            )
+            self.terminal_decisions[key] = hold.decision = decision
+            hold.actual = decision.amount
+            hold.final_usage = dict(decision.usage)
+            has_usage = bool(decision.usage)
             settlement_fields = {
                 "scope_id": str(self.scope_id),
                 "reservation_id": _label(key),
@@ -419,12 +535,20 @@ class ComputeScope:
                 "output_tokens": _count((usage or {}).get("output_tokens")),
             }
 
-            async def settle_once() -> Any:
+            async def apply_once() -> Any:
                 self.require_inference_effect()
-                if has_usage:
-                    result = await self.service.settle(reservation, amount, usage=usage)
+                if operation == "release":
+                    result = await self.service.release(reservation)
+                elif has_usage:
+                    result = await self.service.settle(
+                        reservation, amount, usage=dict(decision.usage)
+                    )
                 else:
                     result = await self.service.settle(reservation, amount)
+                if operation == "release" and hold.extended_counted:
+                    self.extended_holds -= 1
+                    if hold.extended_run:
+                        self.extended_started = False
                 # No await between financial success and the single emission.
                 # Failed/cancelled owners never emit a successful settlement.
                 routing_log.emit(
@@ -435,13 +559,25 @@ class ComputeScope:
                 )
                 return result
 
+            unlocked = False
+
+            def unlock_once(task: asyncio.Task[Any] | None = None) -> None:
+                nonlocal unlocked
+                if unlock_extended and not unlocked:
+                    unlocked = True
+                    self.extended_lock.release()
+
+            async def settle_once() -> Any:
+                try:
+                    return await apply_once()
+                finally:
+                    unlock_once()
+
             hold.settlement = asyncio.create_task(settle_once())
-        elif hold.actual != amount:
-            raise ComputeUnavailable(
-                "settlement_conflict",
-                "Reservation already settling differently",
-                category=FAILURE_SETTLEMENT_FAILED,
-            )
+            if unlock_extended:
+                hold.settlement.add_done_callback(unlock_once)
+        if start_only:
+            return
         try:
             await asyncio.shield(hold.settlement)
         except BaseException as exc:
@@ -454,7 +590,8 @@ class ComputeScope:
                     category=FAILURE_SETTLEMENT_FAILED,
                 ) from None
             raise
-        self.settled[key] = amount
+        assert hold.decision is not None
+        self.settled[key] = hold.decision.amount
         self.outstanding.pop(key, None)
 
     def require_inference_effect(self) -> None:
@@ -486,6 +623,17 @@ class ComputeScope:
             raise ObservationBlocked("inference_identity_unavailable")
         state.require_effect()
 
+    def invocation_managed(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.inference_invocation,
+                invocation.get(),
+                self.inference_identity,
+                self.inference_recovery,
+            )
+        )
+
     def require_inference(self) -> None:
         self.require_inference_effect()
         if self.inference_invocation is None:
@@ -512,6 +660,14 @@ class ComputeScope:
             raise
 
 
+@dataclass(frozen=True)
+class TerminalDecision:
+    operation: str
+    amount: int
+    usage: Any
+    path: str
+
+
 @dataclass
 class ReservationHold:
     reservation: Any
@@ -520,6 +676,19 @@ class ReservationHold:
     actual: int | None = None
     stream: _StreamControl | None = None
     final_usage: dict[str, Any] | None = None
+    decision: TerminalDecision | None = None
+    unknown_amount: int | None = None
+    output_released: bool = False
+    extended_run: bool = False
+    extended_counted: bool = False
+
+    @property
+    def failure_amount(self) -> int:
+        return (
+            self.bound
+            if self.output_released or self.unknown_amount is None
+            else self.unknown_amount
+        )
 
 
 class _StreamControl:
@@ -901,12 +1070,20 @@ async def account_compute(
                         scope.inference_invocation is None
                         or scope.inference_invocation.uncertainty is None
                     ):
-                        await scope.settle(
-                            hold.reservation,
-                            hold.actual if hold.actual is not None else hold.bound,
-                            usage=hold.final_usage,
-                            path="scope_cleanup",
-                        )
+                        if scope.invocation_managed():
+                            await scope.settle(
+                                hold.reservation,
+                                hold.actual if hold.actual is not None else hold.bound,
+                                usage=hold.final_usage,
+                                path="scope_cleanup",
+                            )
+                        else:
+                            await scope.finish_failure(
+                                hold,
+                                hold.failure_amount,
+                                usage=hold.final_usage,
+                                path="scope_cleanup",
+                            )
 
             settlements = [
                 asyncio.create_task(cleanup(hold))
@@ -923,7 +1100,12 @@ async def account_compute(
                     if isinstance(result, BaseException):
                         raise result
         except BaseException as cleanup_error:
-            if primary_error is None:
+            if primary_error is None or (
+                not scope.invocation_managed()
+                and isinstance(primary_error, Exception)
+                and isinstance(cleanup_error, ComputeUnavailable)
+                and cleanup_error.category == FAILURE_SETTLEMENT_FAILED
+            ):
                 raise
             primary_error.add_note(f"Scope cleanup failed ({type(cleanup_error).__name__})")
         finally:
@@ -1249,10 +1431,12 @@ async def metered_tool_call(
             # Receipt identity survives even when its committed outcome cannot
             # currently be established. Scope cleanup revalidates this receipt
             # through the service instead of blindly settling a candidate ID.
-            active.outstanding[receipt.id] = ReservationHold(
+            active.register_hold(
                 receipt,
                 approval.ceiling_microusd,
                 actual=0,
+                extended_run=first_extended,
+                pending_commit=True,
             )
 
             async def recover_commit() -> None:
@@ -1281,7 +1465,7 @@ async def metered_tool_call(
                     await asyncio.shield(rejected)
                 recovered = await active.service.recover_reservation(receipt)
                 if recovered is None:
-                    active.outstanding.pop(receipt.id)
+                    active.discard_uncommitted_hold(receipt)
                 else:
                     active.outstanding[receipt.id].reservation = recovered
                     if first_extended:
@@ -1318,13 +1502,12 @@ async def metered_tool_call(
                 "account_unavailable", "Account reservation could not be confirmed"
             ) from None
         # No await between a returned reservation and its scope registration.
-        active.outstanding[_hold_key(reservation)] = ReservationHold(
+        active.register_hold(
             reservation,
             approval.ceiling_microusd,
             actual=0 if dispatch_aware else None,
+            extended_run=first_extended,
         )
-        if first_extended:
-            active.extended_started = True
         return reservation
 
     work_timeout = asyncio.timeout(
@@ -1528,7 +1711,9 @@ async def metered_embedding_call(
                 active.inference_invocation.block("embedding_reservation_unavailable")
                 raise
             receipt = exc.receipt
-            active.outstanding[receipt.id] = ReservationHold(receipt, bound, actual=0)
+            active.register_hold(
+                receipt, bound, actual=0, extended_run=first_extended, pending_commit=True
+            )
 
             async def recover_commit() -> None:
                 if (
@@ -1557,7 +1742,7 @@ async def metered_embedding_call(
                     await asyncio.shield(rejected)
                 recovered = await active.service.recover_reservation(receipt)
                 if recovered is None:
-                    active.outstanding.pop(receipt.id)
+                    active.discard_uncommitted_hold(receipt)
                 else:
                     active.outstanding[receipt.id].reservation = recovered
                     if first_extended:
@@ -1593,9 +1778,7 @@ async def metered_embedding_call(
             raise ComputeUnavailable(
                 "account_unavailable", "Account reservation could not be confirmed"
             ) from None
-        active.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound, actual=0)
-        if first_extended:
-            active.extended_started = True
+        active.register_hold(reservation, bound, actual=0, extended_run=first_extended)
         return reservation
 
     try:
@@ -1871,6 +2054,7 @@ def _priced_candidates(
     exclusions: dict[str, int] | None = None,
     fit_to_budget: bool = False,
     fitted: set[str] | None = None,
+    unknown_amounts: dict[str, int] | None = None,
 ) -> list[tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None]]:
     """Qualified routes for this request, in the order they should be attempted.
 
@@ -2138,6 +2322,12 @@ def _priced_candidates(
     # Group order first, then a soft preference inside the group, then the cheapest
     # route for *this* request, then a stable tie-break.
     candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]))
+    if unknown_amounts is not None:
+        for _, _, bound, _, output, route, _, _ in candidates:
+            unknown_amounts[route.route_id] = min(
+                bound,
+                route.estimate_microusd(input_size.bound, min(output, workload.min_output_tokens)),
+            )
     return [
         (bound, output_tokens, route, premium, placement)
         for _group, _preferred, bound, _route_id, output_tokens, route, premium, placement in candidates
@@ -2322,7 +2512,7 @@ def _generation_id(chunk: Any) -> str | None:
 
 
 def _estimated_usage(generation_id: str | None) -> dict[str, Any]:
-    """Usage for a conservative full-hold settlement, keyed for receipt reconciliation."""
+    """Usage for an estimated settlement, keyed for lower-only receipt reconciliation."""
     if generation_id is None:
         return dict(_ESTIMATED)
     return {**_ESTIMATED, "generation_id": generation_id}
@@ -2412,6 +2602,7 @@ async def guarded_completion(
     routing = model_routing.current_routing()
     exclusions: dict[str, int] = {}
     fitted_routes: set[str] = set()
+    unknown_amounts: dict[str, int] = {}
     candidates = _priced_candidates(
         policy,
         input_size,
@@ -2422,6 +2613,7 @@ async def guarded_completion(
         exclusions=exclusions,
         fit_to_budget=True,
         fitted=fitted_routes,
+        unknown_amounts=unknown_amounts,
     )
     scope.completion_seq += 1
     completion_seq = scope.completion_seq
@@ -2452,6 +2644,7 @@ async def guarded_completion(
         exclusions=exclusions,
     )
     attempt_reservations: dict[int, str | None] = {}
+    attempt_holds: dict[int, ReservationHold] = {}
 
     def outcome(index: int, result: str, next_action: str, **fields: object) -> None:
         routing_log.emit(
@@ -2609,14 +2802,17 @@ async def guarded_completion(
                     reasoning_effort=_label(resolved.get("reasoning_effort")),
                     **reserve_options,
                 )
-                if first_extended:
-                    scope.extended_started = True
+                hold = scope.register_hold(
+                    reservation,
+                    bound,
+                    extended_run=first_extended,
+                    unknown_amount=unknown_amounts.get(route.route_id, bound),
+                )
         except EntitlementsError:
             raise
         except Exception:
             raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
-        hold = ReservationHold(reservation, bound)
-        scope.outstanding[_hold_key(reservation)] = hold
+        attempt_holds[attempt_index] = hold
         reservation_id = _label(_hold_key(reservation))
         attempt_reservations[attempt_index] = reservation_id
         scope.attempts += 1
@@ -2645,6 +2841,8 @@ async def guarded_completion(
             reservation_id=reservation_id,
             stream=stream,
         )
+        call_started = False
+        evidence = inference_transport.Evidence()
         try:
             # Reservation can consume time: the SDK and local wait share the
             # remainder rather than using an earlier, longer SDK allowance.
@@ -2663,10 +2861,40 @@ async def guarded_completion(
                     category=FAILURE_DEADLINE_EXCEEDED,
                 )
             call["timeout"] = remaining
-            response = await asyncio.wait_for(
-                litellm.acompletion(**call),
-                timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
-            )
+            if not scope.invocation_managed():
+                handler = inference_transport.get_handler()
+                if handler is not None:
+                    call["client"] = handler
+                else:
+                    evidence.broken = True
+            token = inference_transport.current.set(evidence)
+            try:
+                if scope.invocation_managed():
+                    call_started = True
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(**call),
+                        timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
+                    )
+                else:
+
+                    async def ordinary_completion() -> Any:
+                        nonlocal call_started
+                        call_started = True
+                        result = await litellm.acompletion(**call)
+                        # Publish in the SDK owner before wait_for can lose its
+                        # result to cancellation of the awaiting dispatch task.
+                        if not stream:
+                            hold.output_released = True
+                        return result
+
+                    response = await asyncio.wait_for(
+                        ordinary_completion(),
+                        timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
+                    )
+            finally:
+                inference_transport.current.reset(token)
+            if not stream:
+                hold.output_released = True
             if stream:
                 # Keep the original hold handle: scope cleanup may already be
                 # settling it or have removed it while acquisition was pending.
@@ -2694,14 +2922,41 @@ async def guarded_completion(
                     hold.stream.stop()
                     await hold.stream.close()
                 raise
-        except BaseException:
+        except BaseException as failure:
             if scope.inference_invocation is not None:
                 scope.inference_invocation.call_failed = True
-            # An unknown or cancelled outcome still cost what was reserved, and a
-            # failed settlement replaces this exception rather than hiding behind
-            # a retryable one, so incomplete accounting stays visible.
+            # Ordinary unknown outcomes use the captured floor; managed calls
+            # retain the existing bound/uncertainty policy. Financial failures
+            # cannot hide behind retryable provider errors.
             if scope.inference_invocation is None or scope.inference_invocation.uncertainty is None:
-                await scope.settle(reservation, bound, path="dispatch_failure")
+                try:
+                    if scope.invocation_managed():
+                        await scope.settle(reservation, bound, path="dispatch_failure")
+                    else:
+                        path = (
+                            None
+                            if hold.output_released
+                            else (
+                                "dispatch_not_sent_local"
+                                if not call_started
+                                else evidence.release_path(failure)
+                            )
+                        )
+                        await scope.finish_failure(
+                            hold,
+                            0 if path else hold.failure_amount,
+                            release=path is not None,
+                            path=path
+                            or (
+                                "dispatch_failure"
+                                if hold.output_released
+                                else "dispatch_unknown_floor"
+                            ),
+                        )
+                except BaseException as cleanup_error:
+                    if not isinstance(failure, asyncio.CancelledError):
+                        raise
+                    failure.add_note(f"Dispatch cleanup failed ({type(cleanup_error).__name__})")
             raise
         # Attribution records what actually went out, on both the precise routing
         # state and the coarser account scope, after any fallback has taken effect.
@@ -2853,6 +3108,7 @@ async def guarded_completion(
                     if not emitted and scope.first_output_at is None:
                         scope.first_output_at = time.monotonic()
                     emitted = True
+                    attempt_holds[index].output_released = True
                     yield chunk
                 completed = True
                 outcome(index, "completed", "none", output_released=emitted)
@@ -2896,8 +3152,8 @@ async def guarded_completion(
                 primary_error = sys.exception()
                 if not completed and scope.inference_invocation is not None:
                     scope.inference_invocation.call_failed = True
-                hold = scope.outstanding.get(_hold_key(reservation))
-                if hold is not None:
+                hold = attempt_holds[index]
+                if scope.invocation_managed() and hold.decision is None:
                     # Publish the intended amount without yielding so scope exit
                     # cannot race known successful usage against a full-hold charge.
                     hold.actual = settlement[0] if completed and settlement is not None else bound
@@ -2907,9 +3163,38 @@ async def guarded_completion(
                         else _estimated_usage(generation_id)
                     )
                 try:
-                    if hold is not None:
+                    if not scope.invocation_managed():
+                        amount = (
+                            settlement[0]
+                            if completed and settlement is not None
+                            else (bound if completed else hold.failure_amount)
+                        )
+                        usage = (
+                            settlement[1]
+                            if completed and settlement is not None
+                            else _estimated_usage(generation_id)
+                        )
+                        path = (
+                            "stream_end"
+                            if completed or hold.output_released
+                            else "dispatch_unknown_floor"
+                        )
+                        await scope._finish(
+                            reservation,
+                            "settle",
+                            amount,
+                            usage=usage,
+                            path=path,
+                            join=True,
+                            start_only=True,
+                        )
+                        try:
+                            await scope.close_stream(hold)
+                        finally:
+                            await scope.finish_failure(hold, amount, usage=usage, path=path)
+                    else:
                         await scope.close_stream(hold)
-                    if (
+                    if scope.invocation_managed() and (
                         scope.inference_invocation is None
                         or scope.inference_invocation.uncertainty is None
                     ):
@@ -2924,7 +3209,9 @@ async def guarded_completion(
                             path="stream_end",
                         )
                 except BaseException as cleanup_error:
-                    if primary_error is None:
+                    if primary_error is None or (
+                        not scope.invocation_managed() and isinstance(primary_error, Exception)
+                    ):
                         raise
                     primary_error.add_note(
                         f"Stream cleanup failed ({type(cleanup_error).__name__})"

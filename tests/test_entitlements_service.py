@@ -135,6 +135,77 @@ async def test_concurrent_trial_holds_serialize_and_release(database):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("paid", [False, True], ids=["trial", "plan"])
+async def test_dispatch_rejection_then_success_counts_one_extended_unit(
+    database, monkeypatch, paid
+):
+    from orchestrator import compute_runtime as runtime, inference_transport
+    from tests.test_compute_runtime import _account_scope, _qualified_policy, _route
+
+    pool, user = database
+    service = EntitlementService(pool)
+    if paid:
+        await service.apply_subscription_event(
+            SubscriptionEvent(
+                event_id=f"paid-{uuid.uuid4()}", user_id=user, plan=Plan.PRO, source="admin"
+            )
+        )
+    routes = [_route(model=f"openrouter/test/extended-{i}", input_price=1000) for i in range(2)]
+    for i, route in enumerate(routes):
+        route.route_id = f"extended-{i}"
+    _qualified_policy(monkeypatch, route=routes)
+    calls = 0
+
+    async def provider(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            evidence = inference_transport.current.get()
+            assert evidence is not None
+            evidence.attempts.append(inference_transport.Attempt(status=503))
+            raise RuntimeError("synthetic rejection with separately qualified provenance")
+        return {"choices": []}
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        scope.user_id = user
+        scope.extended = scope.auto_route = True
+        scope.operation = "agent"
+        await runtime.guarded_completion(model="auto", messages=[{"role": "user", "content": "hi"}])
+        assert not scope.outstanding
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM entitlement_reservations WHERE status='released'"
+            )
+            == 1
+        )
+        assert (
+            await conn.fetchval("SELECT count(*) FROM entitlement_reservations WHERE status='open'")
+            == 0
+        )
+        if paid:
+            assert (
+                await conn.fetchval(
+                    "SELECT extended_agents_used FROM entitlement_usage_periods WHERE user_id=$1",
+                    user,
+                )
+                == 1
+            )
+        else:
+            assert (
+                await conn.fetchval(
+                    "SELECT trial_extended_agents_used FROM entitlement_accounts WHERE user_id=$1",
+                    user,
+                )
+                == 1
+            )
+        assert not await service.receipt_candidates(
+            settled_after=service.now() - timedelta(days=1), limit=10
+        )
+
+
+@pytest.mark.asyncio
 async def test_zero_cost_execution_consumes_trial_agent_but_cancel_returns_it(database):
     pool, user = database
     service = EntitlementService(pool)

@@ -795,9 +795,10 @@ async def test_preoutput_failover_closes_abandoned_stream_before_next_attempt(mo
 @pytest.mark.asyncio
 async def test_scope_closes_returned_stream_even_when_never_started(monkeypatch) -> None:
     upstream = TrackedStream()
+    route = named_route(FLASH)
     with dispatch_fixture(
         monkeypatch,
-        [named_route(FLASH)],
+        [route],
         routing=accepted_single(FLASH),
         provider=AsyncMock(return_value=upstream),
     ) as (service, _, scope):
@@ -810,7 +811,13 @@ async def test_scope_closes_returned_stream_even_when_never_started(monkeypatch)
             upstream.aclose.assert_not_awaited()
         upstream.aclose.assert_awaited_once()
         service.settle.assert_awaited_once()
-        assert service.settle.await_args.args[1] == service.reserve.await_args.args[1]
+        # Never-read acquired streams have no output: row 4 charges the floor.
+        size = runtime._request_bound({"messages": [{"role": "user", "content": "hello"}]})
+        floor = model_routing.load_model_routing().profile("routine").min_output_tokens
+        assert service.settle.await_args.args[1] == min(
+            service.reserve.await_args.args[1], route.estimate_microusd(size.bound, floor)
+        )
+        assert service.settle.await_args.args[1] < service.reserve.await_args.args[1]
 
 
 @pytest.mark.asyncio
@@ -829,11 +836,12 @@ async def test_hung_close_cannot_block_account_settlement(monkeypatch) -> None:
             finished.set()
 
     upstream = TrackedStream()
+    route = named_route(FLASH)
     upstream.aclose = AsyncMock(side_effect=stubborn_close)
     monkeypatch.setattr(runtime, "STREAM_CLOSE_TIMEOUT_S", 0.01)
     with dispatch_fixture(
         monkeypatch,
-        [named_route(FLASH)],
+        [route],
         routing=accepted_single(FLASH),
         provider=AsyncMock(return_value=upstream),
     ) as (service, _, scope):
@@ -851,7 +859,13 @@ async def test_hung_close_cannot_block_account_settlement(monkeypatch) -> None:
             assert not account.outstanding
             service.settle.assert_awaited_once()
             upstream.aclose.assert_awaited_once()
-            assert service.settle.await_args.args[1] == service.reserve.await_args.args[1]
+            # A hung closer does not turn this never-read stream into output.
+            size = runtime._request_bound({"messages": [{"role": "user", "content": "hello"}]})
+            floor = model_routing.load_model_routing().profile("routine").min_output_tokens
+            assert service.settle.await_args.args[1] == min(
+                service.reserve.await_args.args[1], route.estimate_microusd(size.bound, floor)
+            )
+            assert service.settle.await_args.args[1] < service.reserve.await_args.args[1]
         finally:
             release.set()
             await asyncio.wait_for(finished.wait(), 1)

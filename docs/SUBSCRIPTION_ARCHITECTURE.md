@@ -156,15 +156,58 @@ reservation records unit-economics labels that never affect admission or
 settlement: provider, model, route, and (migration `042_reservation_routing_labels`)
 the workload profile it was dispatched under and the reasoning effort actually sent. Each
 reservation belongs to its original period, even when it settles after rollover.
-Use validated usage and centralized prices for successful settlement; when usage
-is unknown after cancellation or failure, retain the conservative charge rather
-than assume the provider did no work. When such a stream carried an OpenRouter
+Use validated usage and centralized prices for successful settlement; completed
+calls with empty or invalid usage still settle at their price-ceiling hold.
+Ordinary (non invocation-managed) failures use the following ordered rules (#681).
+Every release or reduction requires no output: any yielded stream chunk counts,
+as does any non-stream response returned by `acompletion`, even if a subsequent
+deadline or scope-closed check refuses that response.
+
+| First matching condition, before output | Operation | Routing path |
+| --- | --- | --- |
+| Failure before calling `acompletion` | Release | `dispatch_not_sent_local` |
+| Intact evidence, zero attempts, source-qualified local `UnsupportedParamsError` validation raise | Release | `dispatch_not_sent_local` |
+| Intact evidence, at least one attempt, every attempt has a direct `aiohttp.ClientConnectorError` cause | Release | `dispatch_not_sent` |
+| Intact evidence, every attempt is a certified connector failure or a real 429/502/503 or 4xx except 408, with at least one real status | Release | `dispatch_provider_rejected` |
+| Anything else, including cancellation, read timeout, 408/500/504, missing/broken evidence, or an acquired stream failing/closing before its first chunk | Settle at the captured unknown amount | `dispatch_unknown_floor` |
+
+Only dispatch-local forwarding-transport observations qualify attempts and real
+statuses; final exception status, response and message are not accounting evidence.
+An unknown attempt followed by a real rejection remains unknown. The per-candidate
+unknown amount is captured before dispatch as
+`min(bound, route.estimate_microusd(input_size.bound, min(output_tokens, workload.min_output_tokens)))`,
+using the same validated workload as candidate selection, including explicit and
+pinned routes. An unknown profile fails closed before dispatch; there is no
+profile-less inference fallback. Once output
+exists, incomplete calls retain their full-bound settlement. Invocation-managed
+execution retains its existing full-bound/uncertainty-skip behaviour; partial or
+mismatched bindings do not admit ordinary accounting.
+
+The operator absorbs any provider-billed rejection and any provider cost above
+the unknown amount charged to the user. **The ledger is no longer an upper bound
+on provider spend for campaigns running this code.** Admission, candidate order,
+fall-through and `next_action` are unchanged; existing frozen campaign commits
+are not changed by this production repair.
+
+Release marks the row `released`, returns its held money and stops occupying
+concurrency capacity (a scope with other open holds stays active), and is excluded
+from receipt re-pricing. An extended hold carrying the run unit
+may release only when it is the sole counted extended hold under `extended_lock`:
+open holds and holds closed by anything other than release count. Successful
+release drops that count and resets `extended_started`; otherwise the carrier
+settles at zero on the same path, consuming the unit. Non-carrying releases drop
+the count normally. Serial rejections therefore consume no run unit; a concurrent
+open or settled sibling makes rejection consume the unit unless that sibling
+has itself released. Failed accounting never resets the count or retries as a
+different operation.
+
+When an estimated stream settlement carried an OpenRouter
 generation id, a worker sweep (every 10 minutes) later fetches that generation's
 receipt from the route's pinned endpoint and lowers the charge to
 `max(ceiling price of the receipt's tokens, the receipt's own cost)` if that is
 smaller, refunding the difference to the original period or trial (approved
 2 October 2026). Reconciliation applies once, never raises a charge, skips
-settlements with overage, and after 24 hours without a receipt the full charge
+settlements with overage, and after 24 hours without a receipt the recorded charge
 stands. A zero-cost route still consumes rate and
 concurrency capacity, but must remain admissible after the funded balance reaches
 zero. Clients cannot submit their own authoritative cost, plan, or allowance.
@@ -173,22 +216,31 @@ not refunded as though no work happened. Recovery must use a cutoff beyond the
 enforced whole-call deadline, including stream consumption. Acquired completion
 streams now arm a scope-owned local deadline before return, including unstarted
 streams; expiry blocks late output/fallback and attempts bounded transport close
-without settling the hold. Unknown usage retains the full-hold treatment above.
+without settling the hold. Completed calls without usage retain the full hold;
+ordinary failures before output use the captured unknown amount above.
 Explicit close also latches the logical stream terminal: an in-flight fallback
-acquired afterward is closed without reads and settled at its full hold, and no
+acquired afterward is closed without reads and settled at its captured unknown
+amount for ordinary execution (full hold for invocation-managed execution), and no
 further candidate is dispatched. Consumer-only close during successful fallback
 acquisition ends cleanly, without a completed/failed/refused outcome for that
 acquired candidate; scope closure or deadline expiry still refuses the result.
 Concurrent close waiters share one generator finalizer as well as one transport
-cleanup owner, preserving single settlement. The shared financial settlement task
+cleanup owner, preserving a single terminal decision per hold: operation, amount,
+usage and path. The first writer creates the only financial task; failure handlers
+join it even when they would have preferred a release. Failed tasks remain failed
+and outstanding. `settle` still conflicts on a different amount, and release is
+distinct from `settle(0)`. Scope cleanup without a decision uses the full bound
+after output and the captured unknown amount otherwise. Financial failures stop
+the walk; cancellation is preserved with a cleanup-failure note.
+The shared financial settlement task
 emits one successful settlement routing event per reservation, using its initiating
 caller's attribution; joining waiters cannot emit duplicates, and a failed or
 cancelled financial owner emits no successful settlement event.
 Scope closure is also terminal across pending initial or fallback acquisition:
 a stream returning after its scope's cleanup snapshot gets an immediate bounded
 cleanup owner without reads or replacement dispatch, even if its hold is already
-settling or removed. Existing settlement ownership retains the single full-bound
-charge in the original period; late acquisition cannot reopen a settled hold.
+settling or removed. Existing terminal ownership retains the single winning
+decision in the original period; late acquisition cannot reopen a closed hold.
 Read quiescence and close share a finite cleanup budget; failures or cancellation
 resistance are explicitly uncertain. A returned SDK close may hide an inner
 failure and is not remote-stop evidence. Event-loop suspension and remote

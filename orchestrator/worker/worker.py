@@ -199,6 +199,9 @@ async def on_startup(ctx: WorkerContext) -> None:
         from orchestrator.entitlements import attestation
 
         await attestation.start(db_pool)
+        from orchestrator.inference_transport import get_handler
+
+        get_handler()
     except BaseException:
         await db_pool.close()
         ctx.pop("db_pool", None)
@@ -209,14 +212,22 @@ async def on_startup(ctx: WorkerContext) -> None:
 
 
 async def on_shutdown(ctx: WorkerContext) -> None:
-    set_shared_encryption_failure_counter(None)
-    db_pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
-    if db_pool is not None:
-        from orchestrator.entitlements import attestation
+    from orchestrator.inference_transport import shutdown as close_inference_transport
 
-        await attestation.stop()
-        await db_pool.close()
-        logger.info("Worker DB pool closed")
+    # ARQ drained jobs; a failed/timed-out transport close must not skip DB close.
+    try:
+        await close_inference_transport()
+    finally:
+        set_shared_encryption_failure_counter(None)
+        db_pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
+        if db_pool is not None:
+            from orchestrator.entitlements import attestation
+
+            try:
+                await attestation.stop()
+            finally:
+                await db_pool.close()
+            logger.info("Worker DB pool closed")
 
 
 _worker_settings = WorkerSettings.from_app_settings(get_settings())

@@ -123,8 +123,12 @@ async def test_real_reasoning_selection_refusal_trace(monkeypatch, managed, refu
     for index, call in enumerate(service.settle.await_args_list):
         held = reserve.await_args_list[index].args[1]
         charge = call.args[1]
-        if managed or index < refusals:
+        if managed:
             assert charge == held
+            assert "usage" not in call.kwargs
+        elif index < refusals:
+            size = runtime._request_bound(params)
+            assert charge == min(held, routes[index].estimate_microusd(size.bound, 4096))
             assert "usage" not in call.kwargs
         else:
             assert charge == routes[index].estimate_microusd(1, 1) < held
