@@ -170,6 +170,16 @@ class LabelSet:
         )
 
     @property
+    def exposure_answerable_ids(self) -> tuple[str, ...]:
+        """The exposure denominator: gate 4 owns the `_abs` questions instead."""
+        return tuple(qid for qid in self.answerable_ids if not qid.endswith("_abs"))
+
+    @property
+    def exposure_excluded_abs_ids(self) -> tuple[str, ...]:
+        """Answerable `_abs` ids kept out of the exposure denominator (gate 4 covers them)."""
+        return tuple(qid for qid in self.answerable_ids if qid.endswith("_abs"))
+
+    @property
     def not_answerable_ids(self) -> tuple[str, ...]:
         return tuple(
             sorted(qid for qid, entry in self.entries.items() if not entry.answerable_from_store)
@@ -392,7 +402,9 @@ def run_threshold(
 ) -> dict[str, Any]:
     """Record gate 1's exact value from the final labels, before any retrieval."""
     output = _prepare_output(output_path, repo_root)
-    answerable = len(labels.answerable_ids)
+    exposure_answerable = labels.exposure_answerable_ids
+    exposure_excluded = labels.exposure_excluded_abs_ids
+    answerable = len(exposure_answerable)
     document = {
         "schema": THRESHOLD_SCHEMA,
         "created_at": (clock() if clock is not None else datetime.now(UTC)).isoformat(),
@@ -403,7 +415,9 @@ def run_threshold(
         "question_count": len(labels.entries),
         "answerable_count": answerable,
         "not_answerable_count": len(labels.not_answerable_ids),
-        "answerable_question_ids": list(labels.answerable_ids),
+        "answerable_question_ids": list(exposure_answerable),
+        "exposure_excluded_abs_count": len(exposure_excluded),
+        "exposure_excluded_abs_ids": list(exposure_excluded),
         "retrieval_performed": False,
         "gate1_threshold": gate1_threshold(answerable),
     }
@@ -1703,7 +1717,7 @@ def run_gates(
         raise ValueError("Gate 4 plausibility input has the wrong schema")
 
     threshold_value = _fraction_value(threshold)
-    if int(threshold.get("answerable_count") or -1) != len(labels.answerable_ids):
+    if int(threshold.get("answerable_count") or -1) != len(labels.exposure_answerable_ids):
         raise ValueError("Threshold answerable count disagrees with the label set")
     raw_questions = measure.get("questions")
     if not isinstance(raw_questions, list) or len(raw_questions) != len(labels.entries):
@@ -1721,7 +1735,7 @@ def run_gates(
     if set(measured) != set(labels.entries):
         raise ValueError("Measure question set differs from the label set")
 
-    answerable = labels.answerable_ids
+    answerable = labels.exposure_answerable_ids
     newly_exposed: list[str] = []
     for question_id in answerable:
         row = measured[question_id]

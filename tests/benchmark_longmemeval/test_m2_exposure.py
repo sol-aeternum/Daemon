@@ -135,6 +135,43 @@ def test_threshold_document_records_labels_hash_before_retrieval(tmp_path: Path)
     assert json.loads(output.read_text(encoding="utf-8")) == document
 
 
+def test_threshold_excludes_answerable_abs_questions_from_the_denominator(
+    tmp_path: Path,
+) -> None:
+    frozen = _frozen()
+    abs_id = next(qid for qid in frozen.ids if qid.endswith("_abs"))
+    labels = _labels(frozen, [*_ids()[:50], abs_id], tmp_path / "labels.json")
+    output = tmp_path / "out" / "threshold.json"
+    output.parent.mkdir()
+    document = run_threshold(
+        labels=labels, frozen=frozen, output_path=output, repo_root=tmp_path / "repo"
+    )
+    assert len(labels.answerable_ids) == 51
+    assert document["answerable_count"] == 50
+    assert document["gate1_threshold"]["exact"] == "5"
+    assert document["exposure_excluded_abs_count"] == 1
+    assert document["exposure_excluded_abs_ids"] == [abs_id]
+    assert abs_id not in document["answerable_question_ids"]
+
+
+@pytest.mark.parametrize(("answerable_count", "expected"), [(49, "5"), (50, "5"), (51, "5.1")])
+def test_threshold_boundaries_hold_after_abs_exclusion(
+    tmp_path: Path, answerable_count: int, expected: str
+) -> None:
+    frozen = _frozen()
+    abs_id = next(qid for qid in frozen.ids if qid.endswith("_abs"))
+    labels = _labels(
+        frozen, [*_ids()[:answerable_count], abs_id], tmp_path / f"labels-{answerable_count}.json"
+    )
+    output = tmp_path / f"out-{answerable_count}" / "threshold.json"
+    output.parent.mkdir()
+    document = run_threshold(
+        labels=labels, frozen=frozen, output_path=output, repo_root=tmp_path / "repo"
+    )
+    assert document["answerable_count"] == answerable_count
+    assert document["gate1_threshold"]["exact"] == expected
+
+
 def test_threshold_refuses_incomplete_duplicate_and_invalid_labels(tmp_path: Path) -> None:
     frozen = _frozen()
     complete = _write_labels(tmp_path / "complete.json", frozen, answerable=_ids()[:10])
@@ -1209,18 +1246,22 @@ def _gate_documents(
     lost: bool = False,
     partial: bool = False,
     plausible: int = 0,
+    abs_answerable: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], LabelSet]:
-    answerable_ids = _ids()[:51]
+    answerable_ids = list(_ids()[:51])
+    if abs_answerable:
+        answerable_ids.append(next(qid for qid in frozen.ids if qid.endswith("_abs")))
     labels = LabelSet(
         {qid: LabelEntry(qid, ("m-1", "m-2"), qid in set(answerable_ids)) for qid in frozen.ids},
         (),
         "labels-hash",
     )
+    exposure_count = len([qid for qid in labels.answerable_ids if not qid.endswith("_abs")])
     threshold = {
         "schema": m2_exposure.THRESHOLD_SCHEMA,
         "labels_sha256": labels.sha256,
-        "answerable_count": 51,
-        "gate1_threshold": gate1_threshold(51),
+        "answerable_count": exposure_count,
+        "gate1_threshold": gate1_threshold(exposure_count),
     }
     rows = []
     for qid in frozen.ids:
@@ -1274,9 +1315,15 @@ def _run_gates(
     lost: bool = False,
     partial: bool = False,
     plausible: int = 0,
+    abs_answerable: bool = False,
 ) -> dict[str, Any]:
     threshold, measure, plausibility, labels = _gate_documents(
-        frozen, newly=newly, lost=lost, partial=partial, plausible=plausible
+        frozen,
+        newly=newly,
+        lost=lost,
+        partial=partial,
+        plausible=plausible,
+        abs_answerable=abs_answerable,
     )
     output = tmp_path / "out" / "gates.json"
     output.parent.mkdir(exist_ok=True)
@@ -1309,6 +1356,39 @@ def test_gate2_catches_a_single_lost_target(tmp_path: Path) -> None:
     assert document["gate2"]["passed"] is False
     assert document["gate2"]["losses"]
     assert document["result"] == "fail"
+
+
+def test_abs_answerable_question_does_not_change_gates_1_and_2(tmp_path: Path) -> None:
+    frozen = _frozen()
+    abs_id = next(qid for qid in frozen.ids if qid.endswith("_abs"))
+    base = _run_gates(tmp_path, frozen, newly=6, plausible=1)
+    threshold, measure, plausibility, labels = _gate_documents(
+        frozen, newly=6, plausible=1, abs_answerable=True
+    )
+    row = next(value for value in measure["questions"] if value["question_id"] == abs_id)
+    row["baseline"], row["candidate"] = _gate_arms(("m-1", "m-2"), [], ["m-1", "m-2"])
+    output = tmp_path / "out" / "gates.json"
+    output.unlink(missing_ok=True)
+    with_abs = run_gates(
+        threshold=threshold,
+        labels=labels,
+        measure=measure,
+        plausibility=plausibility,
+        output_path=output,
+        repo_root=tmp_path / "repo",
+    )
+    assert labels.answerable_ids and abs_id in labels.answerable_ids
+    assert with_abs["gate1"]["answerable_count"] == 51
+    # The exposed _abs question would make 7 if it entered the denominator.
+    assert with_abs["gate1"]["newly_exposed_count"] == 6
+    assert with_abs["gate1"] == base["gate1"]
+    assert with_abs["gate2"] == base["gate2"]
+    assert with_abs["result"] == base["result"]
+    # Gate 4 keeps reading exactly the same abstention questions as before.
+    assert [item["question_id"] for item in with_abs["gate4"]["rows"]] == [
+        item["question_id"] for item in base["gate4"]["rows"]
+    ]
+    assert abs_id in [item["question_id"] for item in with_abs["gate4"]["rows"]]
 
 
 def test_strict_metric_does_not_count_partial_exposure(tmp_path: Path) -> None:
