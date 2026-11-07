@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `9857aa674d37ae9fdc0b836095f1797d2092182a` (main verified
-after #688, including the native profile and v2 catalog evidence). This checklist separates
+Source checkpoint: `2fff38652f149619df2e31636d8e5ca539864a5c` (main verified
+after #689, including the #688 native profile and v2 catalog evidence). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.

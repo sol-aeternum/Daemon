@@ -1,7 +1,7 @@
 # Post-catalog output restore boundary
 
-Source baseline: main `9857aa674d37ae9fdc0b836095f1797d2092182a`, after
-#688. This is synthetic qualification of existing methods, not a recovery
+Source baseline: main `2fff38652f149619df2e31636d8e5ca539864a5c`, after
+#689 (including the #688 native profile and v2 catalog evidence). This is synthetic qualification of existing methods, not a recovery
 implementation, new history format, SQL capability, API or runtime admission.
 The H-configured runtime remains observation-only; #477 stays open.
 
