@@ -159,9 +159,15 @@ are reported separately. The default suite skips opt-in database cases; passing
 default CI is not their execution. No live restore, distinct-UID deployment,
 provider inference or daily-driver acceptance is claimed.
 
-Integration includes the exact pending native-profile head `221533b3` (#685)
+Merged #688 includes the exact native-profile head `221533b3` (#685)
 and restore-qualification head `9c0b4e9c` (#687), plus main `db3eee0d` (#686).
 The native profile's phase/fault assertions also run with an explicitly selected
 v2 test fixture; the legacy H1 cases remain. This does not install the profile,
 authenticate a real worker, resume an old assignment or qualify live recovery.
 Executed results and publication dependency status are reported separately.
+
+The subsequent [post-catalog output matrix](ARTIFACT_OUTPUT_RESTORE_BOUNDARY.md)
+uses this v2 profile to distinguish lost presentations, first/later durable
+partial checkpoints and terminal publication. It changes no production history
+or SQL contract and grants no reconciliation/replay authority. Those tests and
+their proposed terminal-first follow-up remain separate from live qualification.

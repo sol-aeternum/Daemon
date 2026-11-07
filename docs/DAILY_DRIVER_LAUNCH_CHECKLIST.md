@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `a57b5773b27d42d238acbeea4364e03c46ab1d38` (main verified
-after #680, before packet/native boundary qualification). This checklist separates
+Source checkpoint: `9857aa674d37ae9fdc0b836095f1797d2092182a` (main verified
+after #688, including the native profile and v2 catalog evidence). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -161,3 +161,10 @@ No runtime caller, issuer, authentication, listener, SQL/permission change or
 external wire contract is added. Whole-ingress allocation, authenticated provenance,
 restart fencing, complete runtime composition and independent artifact restore
 evidence remain release gates. Observation-only is unchanged; #477 stays open.
+
+After #688, the [v2 post-catalog output matrix](ARTIFACT_OUTPUT_RESTORE_BOUNDARY.md)
+distinguishes lost cards, first/later durable partial checkpoints and completed
+text even when catalog parity matches. Independent Stop/possible-Send mismatch
+controls remain fail-closed. This test/documentation continuation changes no
+production format or SQL authority; a completed-text history/projection join and
+separate control-terminal/reconciliation contracts still need owner decisions.
