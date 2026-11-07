@@ -46,13 +46,13 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 | Gate 4 threshold | Count candidate-only items; 2 or more of 6 flags for owner review. Both arms' absolute counts reported. |
 | Spot-check packet | Every `answerable_from_store=false` label is included in addition to the 15% seeded sample, marked as such. |
 | Spot-check stop | The 20% stop is computed over the seeded sample only. The not-answerable additions get their own correction rate; above 20% flags for owner review. |
-| Database | `daemon_lme_bench_dev2_final` for Blocks C, E and M2. The pilot's `daemon_lme_bench_dev2` stays untouched as evidence. |
+| Database | `daemon_lme_bench_dev2_final_remap` for M2. The original `daemon_lme_bench_dev2_final` holds Blocks C and E as untouched evidence, and the pilot's `daemon_lme_bench_dev2` stays untouched as evidence. |
 
 ## Run limits
 
 - **Spend:** USD 0.50 for generation and retrieval embeddings together. Because the labelling and ingest caps are cumulative ledger ceilings, this one is enforced as the ledger total at M2's start plus 0.50, checked before each dispatch.
 - **Restores:** 0.
-- **Database:** `daemon_lme_bench_dev2_final` only.
+- **Database:** `daemon_lme_bench_dev2_final_remap` for M2 only; `daemon_lme_bench_dev2_final` holds Blocks C and E as untouched evidence.
 - **Side effects off:** no touches, no trust updates and no `retrieval_log` rows. The spend guard's own ledger rows are the one expected write.
 - **Fingerprint before and after,** over all 100 dev2 users. `FINGERPRINT_TABLES` doesn't include `retrieval_log`, so its row count is checked separately before and after and must not change.
 
@@ -87,3 +87,11 @@ Whether the gates pass or fail, the report gives a per-question diagnosis for ev
 - Exposure is not answer quality. Only M3 would measure answers.
 - The dev2 extraction cap (4,000) differs from the Phase D baseline (2,000); see `extraction_truncation_audit_2026-11-05.md`.
 - This document enables nothing: no route approval, no flag change, no production effect.
+
+## Amendment, 2026-11-07 (owner ruling)
+
+- Block C's stored times were found at ingest wall-clock on all 6,959 memories, not session dates.
+- M2 runs on a remapped copy so temporal windows and recency see session time, comparable with the 2026-11-03 sweep's historical clock.
+- The original stays untouched as evidence. No re-extraction: relative-date facts stay unanchored (#601), and dedup decisions stand as made at ingest.
+- `_abs` questions are excluded from the exposure denominator by ID; gate 4 covers them.
+- The labeller is v2, frozen separately, and the gate 1 value is computed from v2's final spot-checked labels. Gate formulas, thresholds, the USD 0.50 cap and zero restores are unchanged.
