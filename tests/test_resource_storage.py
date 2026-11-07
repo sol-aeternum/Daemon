@@ -207,7 +207,14 @@ def _registry_references_allowed(path: str, source: str) -> bool:
     """One exact static H import, not another admitted runtime module."""
     if "resource_storage" in source:
         return False
-    if path == "orchestrator/services/restore_history/effects.py" and "resource_store" in source:
+    if (
+        path
+        in {
+            "orchestrator/services/restore_history/effects.py",
+            "orchestrator/services/restore_history/native_publication.py",
+        }
+        and "resource_store" in source
+    ):
         if source.count("resource_store") != 1:
             return False
         try:

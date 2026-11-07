@@ -618,7 +618,7 @@ def test_ram_start_and_expiry_sites_remain_explicit_deferred_uncovered_candidate
         "57f204a304e8ff8a",
     }
     for entry in entries:
-        assert entry["qualname"] == "PacketOwner.handle"
+        assert entry["qualname"] == "PacketOwner._handle"
         assert entry["kind"] == "store_write" and entry["tables"] == []
         assert entry["unknown"] is True and entry["uncovered"] is True
         assert entry["category"] == "deferred" and "guard_contract" not in entry

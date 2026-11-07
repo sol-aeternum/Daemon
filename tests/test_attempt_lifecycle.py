@@ -30,7 +30,7 @@ def imports_lifecycle(text):
     )
 
 
-def assert_history_identity_only(text):
+def assert_history_identity_only(text, *, native_context=False):
     """Only H's exact data-type import; no lifecycle consumer or activation."""
     tree = ast.parse(text)
     imports = [
@@ -50,8 +50,20 @@ def assert_history_identity_only(text):
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id == "AttemptIdentity":
             parent = parents[node]
-            assert (isinstance(parent, ast.arg) and parent.annotation is node) or isinstance(
-                parent, ast.Compare
+            container = parents.get(parent)
+            context_field = (
+                native_context
+                and isinstance(parent, ast.AnnAssign)
+                and parent.annotation is node
+                and isinstance(parent.target, ast.Name)
+                and parent.target.id == "identity"
+                and isinstance(container, ast.ClassDef)
+                and container.name == "NativeContext"
+            )
+            assert (
+                (isinstance(parent, ast.arg) and parent.annotation is node)
+                or isinstance(parent, ast.Compare)
+                or context_field
             )
         if isinstance(node, ast.Call):
             assert not (
@@ -80,6 +92,35 @@ def test_history_identity_exception_cannot_activate_lifecycle(extra):
     assert_history_identity_only(good)
     with pytest.raises(AssertionError):
         assert_history_identity_only(good + "\n" + extra)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "class Other:\n identity: AttemptIdentity",
+        "class NativeContext:\n other: AttemptIdentity",
+        "def f():\n identity: AttemptIdentity",
+        "identity: AttemptIdentity",
+        "class NativeContext:\n identity: list[AttemptIdentity]",
+        "class NativeContext:\n identity = AttemptIdentity(a,b,c,d,e,f,g,h)",
+        "consumer.register(value)",
+        "consumer.close(value)",
+        "consumer.readback(value)",
+        "Alias = AttemptIdentity",
+        "from orchestrator.attempt_lifecycle import assert_open",
+        "from orchestrator.attempt_lifecycle import AttemptIdentity as Alias",
+    ],
+)
+def test_native_context_identity_exception_is_data_only(extra):
+    good = (
+        "from orchestrator.attempt_lifecycle import AttemptIdentity\n"
+        "class NativeContext:\n identity: AttemptIdentity\n"
+    )
+    assert_history_identity_only(good, native_context=True)
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good)
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good + extra, native_context=True)
 
 
 def assert_composition_catalogue_only(text):
@@ -119,7 +160,7 @@ def assert_composition_catalogue_only(text):
         value = node.value
         if "attempt_lifecycle" not in value or value in identifiers:
             continue
-        # Only the two read-only pg_catalog predicates may contain the name
+        # Only read-only pg_catalog predicates may contain the name
         # prefix. Any actual public function SQL, dynamic import or new name fails.
         assert value.startswith("SELECT ") and "FROM pg_catalog." in value
         assert re.findall(r"attempt_lifecycle\w*", value) == ["attempt_lifecycle_"]
@@ -142,6 +183,57 @@ def test_composition_catalogue_exception_does_not_allow_lifecycle_activation(ext
     assert_composition_catalogue_only(source)
     with pytest.raises(AssertionError):
         assert_composition_catalogue_only(source + "\n" + extra)
+
+
+def assert_artifact_catalogue_only(text):
+    """Only the approved P qualifier's fixed catalog literal may name the prefix."""
+    assert_composition_catalogue_only(text)
+    tree = ast.parse(text)
+    literals = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "PUBLISHER_CATALOG"
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    ]
+    assert len(literals) == 1
+    literal = literals[0].value
+    assert isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+    value = literal.value
+    assert re.findall(r"attempt_lifecycle\w*", value) == ["attempt_lifecycle_"]
+    tree.body.remove(literals[0])
+    assert "attempt_lifecycle" not in ast.unparse(tree)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "from orchestrator.attempt_lifecycle import assert_open",
+        "from orchestrator.attempt_lifecycle import AttemptIdentity as Alias",
+        "import orchestrator.attempt_lifecycle as lifecycle",
+        "__import__('orchestrator.attempt_lifecycle')",
+        "conn.execute('SELECT public.attempt_lifecycle_register($1,$2)')",
+        "adapter.attempt_lifecycle_close(value)",
+        "getattr(adapter, 'attempt_lifecycle_register')(value)",
+        "OTHER = \"SELECT p.oid FROM pg_catalog.pg_proc p WHERE p.proname LIKE 'attempt_lifecycle_%'\"",
+    ],
+)
+def test_artifact_catalogue_exception_cannot_import_or_activate_lifecycle(extra):
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "orchestrator/services/restore_history/artifact_projection.py").read_text()
+    assert_artifact_catalogue_only(source)
+    with pytest.raises(AssertionError):
+        assert_artifact_catalogue_only(source + "\n" + extra)
+
+
+def test_artifact_catalogue_prefix_cannot_move_to_another_constant():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "orchestrator/services/restore_history/artifact_projection.py").read_text()
+    with pytest.raises(AssertionError):
+        assert_artifact_catalogue_only(source.replace("PUBLISHER_CATALOG", "OTHER"))
 
 
 def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
@@ -182,15 +274,24 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                     for n in ast.walk(ast.parse(text))
                 )
                 continue
-            if (
-                path.relative_to(root).as_posix()
-                == "orchestrator/services/restore_history/effects.py"
-            ):
-                assert_history_identity_only(text)
+            if path.relative_to(root).as_posix() in {
+                "orchestrator/services/restore_history/effects.py",
+                "orchestrator/services/restore_history/native_publication.py",
+            }:
+                assert_history_identity_only(
+                    text,
+                    native_context=path.relative_to(root).as_posix()
+                    == "orchestrator/services/restore_history/native_publication.py",
+                )
             else:
                 assert not imports_lifecycle(text), str(path)
             if path.relative_to(root).as_posix() == "orchestrator/tasks/composition.py":
                 assert_composition_catalogue_only(text)
+            elif (
+                path.relative_to(root).as_posix()
+                == "orchestrator/services/restore_history/artifact_projection.py"
+            ):
+                assert_artifact_catalogue_only(text)
             else:
                 assert "attempt_lifecycle_" not in text, str(path)
             assert not any(

@@ -7787,7 +7787,7 @@
     },
     {
       "owner_source": "orchestrator.services.restore_history.packet_owner",
-      "qualname": "PacketOwner.handle",
+      "qualname": "PacketOwner._handle",
       "kind": "store_write",
       "fingerprint": "2175a10352b53d1a",
       "line_hint": 385,
@@ -7799,7 +7799,7 @@
     },
     {
       "owner_source": "orchestrator.services.restore_history.packet_owner",
-      "qualname": "PacketOwner.handle",
+      "qualname": "PacketOwner._handle",
       "kind": "store_write",
       "fingerprint": "57f204a304e8ff8a",
       "line_hint": 312,
@@ -7808,6 +7808,39 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Uncalled synthetic packet owner: self.expire retires inactive RAM payloads while preserving assignment tombstones and active ownership. Conservatively retained as deferred and uncovered; no persistent write or runtime fence is claimed."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.artifact_projection",
+      "qualname": "<module>",
+      "kind": "filesystem_write",
+      "fingerprint": "1ea7f0d890fc39b1",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uninstalled artifact-v2 metadata qualification only; fixed SQL/string catalog construction remains outside bounded static resolution. Explicitly uncovered: no runtime authority, ordinary content permission, activation or restore readiness is claimed."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.artifact_projection",
+      "qualname": "ArtifactHistoryProjection._publisher",
+      "kind": "sql_named",
+      "fingerprint": "4b90649b5de41cdb",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uninstalled artifact-v2 metadata qualification only; fixed SQL/string catalog construction remains outside bounded static resolution. Explicitly uncovered: no runtime authority, ordinary content permission, activation or restore readiness is claimed."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.artifact_projection",
+      "qualname": "ArtifactHistoryProjection.qualify_publisher",
+      "kind": "sql_unresolvable",
+      "fingerprint": "7b8bd9b8f4f9a64e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Uninstalled artifact-v2 metadata qualification only; fixed SQL/string catalog construction remains outside bounded static resolution. Explicitly uncovered: no runtime authority, ordinary content permission, activation or restore readiness is claimed."
     }
   ]
 }

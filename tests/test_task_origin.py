@@ -246,6 +246,34 @@ def _assert_origin_import_boundary(path, text):
             if not (isinstance(n, ast.ImportFrom) and n.module == "orchestrator.tasks._origin")
         ]
         assert re.search(r"(?<!\w)tasks\._origin", ast.unparse(remainder)) is None, path
+    elif path == "orchestrator/services/restore_history/native_publication.py":
+        # Exact original-data type comparison, never classification or authority.
+        tree = ast.parse(text)
+        nodes = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.Import, ast.ImportFrom))
+            and imports_origin(ast.Module(body=[n], type_ignores=[]))
+        ]
+        assert len(nodes) == 1 and nodes[0] in tree.body
+        node = nodes[0]
+        assert isinstance(node, ast.ImportFrom)
+        assert node.level == 0 and node.module == "orchestrator.tasks._origin"
+        assert [(a.name, a.asname) for a in node.names] == [("OriginalTaskOrigin", None)]
+        tree.body.remove(node)
+        remaining = ast.unparse(tree)
+        assert not imports_origin(tree)
+        assert re.search(r"(?<!\w)tasks\._origin", remaining) is None, path
+        assert "import _origin" not in remaining and "_classify_task_origin" not in remaining
+        parents = {child: n for n in ast.walk(tree) for child in ast.iter_child_nodes(n)}
+        uses = [
+            n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "OriginalTaskOrigin"
+        ]
+        assert len(uses) == 1
+        for use in uses:
+            parent = parents[use]
+            assert isinstance(parent, ast.Compare)
+            assert ast.unparse(parent) == "type(claim.origin) is not OriginalTaskOrigin"
     else:
         assert "_classify_task_origin" not in text, path
         # Match the module path, not the approved self._tasks._origin wrapper
@@ -283,6 +311,50 @@ def test_approved_wrapper_still_rejects_dynamic_module_access(lookup):
     _assert_origin_import_boundary("orchestrator/tasks/store.py", direct)
     with pytest.raises(AssertionError):
         _assert_origin_import_boundary("orchestrator/tasks/store.py", direct + lookup)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "alias",
+        "extra_type",
+        "classifier",
+        "dynamic",
+        "nested",
+        "duplicate",
+        "constructor",
+        "assignment",
+        "annotation",
+        "other_comparison",
+        "field",
+        "equal",
+    ],
+)
+def test_native_origin_exception_is_only_the_original_data_comparison(damage):
+    path = "orchestrator/services/restore_history/native_publication.py"
+    direct = "from orchestrator.tasks._origin import OriginalTaskOrigin\n"
+    check = "if type(claim.origin) is not OriginalTaskOrigin:\n raise ValueError\n"
+    good = direct + check
+    _assert_origin_import_boundary(path, good)
+    with pytest.raises(AssertionError):
+        _assert_origin_import_boundary("orchestrator/main.py", good)
+    bad = {
+        "alias": direct.replace("OriginalTaskOrigin", "OriginalTaskOrigin as Alias") + check,
+        "extra_type": direct.replace("OriginalTaskOrigin", "OriginalTaskOrigin, TaskOriginContext")
+        + check,
+        "classifier": good + "_classify_task_origin(value)\n",
+        "dynamic": good + "__import__('orchestrator.tasks._origin')\n",
+        "nested": "def f():\n " + direct + check,
+        "duplicate": direct + good,
+        "constructor": good + "OriginalTaskOrigin(a, b)\n",
+        "assignment": good + "Alias = OriginalTaskOrigin\n",
+        "annotation": good + "def f(origin: OriginalTaskOrigin): pass\n",
+        "other_comparison": direct + check.replace("claim.origin", "other"),
+        "field": good + "class NativeContext:\n origin: OriginalTaskOrigin\n",
+        "equal": direct + check.replace(" is not ", " != "),
+    }[damage]
+    with pytest.raises(AssertionError):
+        _assert_origin_import_boundary(path, bad)
 
 
 def test_source_boundary_is_stdlib_only_and_runtime_importer_is_exact():

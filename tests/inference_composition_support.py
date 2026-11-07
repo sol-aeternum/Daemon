@@ -176,8 +176,12 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "HistoryEffects",
                                     "HistoryObservation",
                                     "HistoryProjection",
+                                    "ArtifactHistoryProjection",
                                     "ReservedOutputPublisher",
                                     "OutputReservations",
+                                    "NativeProfile",
+                                    "NativeContext",
+                                    "NativeBudgets",
                                     "register_output_job",
                                     "reserve_output_intent",
                                     "_reserved_transaction",
@@ -210,6 +214,19 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
         for node in nodes:
             if isinstance(node, ast.Call):
                 target = name(node.func)
+                if any(
+                    target == n or target.endswith("." + n)
+                    for n in (
+                        "NativeProfile",
+                        "NativeContext",
+                        "NativeBudgets",
+                        "admit_native",
+                        "handle_native",
+                    )
+                ):
+                    violations.append(
+                        f"{path}:{node.lineno}:uninstalled native publication profile"
+                    )
                 if target.endswith("ReservedOutputPublisher"):
                     violations.append(
                         f"{path}:{node.lineno}:unapproved output publisher construction"
@@ -223,7 +240,12 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     functions = [
                         f
                         for f in nodes
-                        if isinstance(f, ast.AsyncFunctionDef)
+                        if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and (
+                            isinstance(f, ast.FunctionDef)
+                            if path == "orchestrator/services/restore_history/native_publication.py"
+                            else isinstance(f, ast.AsyncFunctionDef)
+                        )
                         and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
                     ]
                     method = max(functions, key=lambda f: f.lineno).name if functions else ""
@@ -233,6 +255,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                             "orchestrator/services/restore_history/effects.py",
                             "prepare_output",
                         ): "8388608",
+                        (
+                            "orchestrator/services/restore_history/native_publication.py",
+                            "input",
+                        ): "budgets.csv_bytes",
                     }.get((path, method))
                     if not (
                         expected is not None
@@ -656,22 +682,30 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ".HistoryCoordinator",
                         ".HistoryAcceptance",
                         ".HistoryProjection",
+                        ".ArtifactHistoryProjection",
                         ".HistoryEffects",
                         ".HistoryObservation",
                         ".HistoryReadSupervisor",
                         ".HistoryRuntime",
                         ".PacketOwner",
+                        ".NativeProfile",
+                        ".NativeContext",
+                        ".NativeBudgets",
                     )
                 ) or target in (
                     "AcceptanceProjection",
                     "HistoryCoordinator",
                     "HistoryAcceptance",
                     "HistoryProjection",
+                    "ArtifactHistoryProjection",
                     "HistoryEffects",
                     "HistoryObservation",
                     "HistoryReadSupervisor",
                     "HistoryRuntime",
                     "PacketOwner",
+                    "NativeProfile",
+                    "NativeContext",
+                    "NativeBudgets",
                 ):
                     read_host = (
                         target == "orchestrator.services.restore_history.runtime.HistoryRuntime"

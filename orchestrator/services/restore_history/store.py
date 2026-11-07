@@ -32,6 +32,8 @@ from .model import (
     encode_entry,
     parse,
     validate_chain,
+    Profile,
+    check_profile,
 )
 
 FILES = frozenset({"IDENTITY", "LOG", "HEAD", "OP_LOCK", "APPEND_LOCK", "RUNTIME_LOCK"})
@@ -83,8 +85,15 @@ class HistoryStore:
     """
 
     def __init__(
-        self, path: Path, expected: Identity, ownership: Ownership, *, deadline: float
+        self,
+        path: Path,
+        expected: Identity,
+        ownership: Ownership,
+        *,
+        deadline: float,
+        profile: Profile = "h1",
     ) -> None:
+        self._profile: Profile = check_profile(profile)
         self._owner_pid = os.getpid()
         self.path = path
         self.expected = expected
@@ -122,6 +131,10 @@ class HistoryStore:
             if isinstance(exc, OSError):
                 raise HistoryError("unavailable") from None
             raise
+
+    @property
+    def profile(self) -> Profile:
+        return self._profile
 
     def _require_owner(self) -> None:
         # flock is tied to open file descriptions shared across fork. A copied
@@ -371,9 +384,9 @@ class HistoryStore:
             end = offset + length + 36
             if not 1 <= length <= MAX_PAYLOAD or end > len(raw):
                 raise HistoryError("corrupt")
-            entries.append(decode_entry(raw[offset:end]))
+            entries.append(decode_entry(raw[offset:end], profile=self._profile))
             offset = end
-        state = validate_chain(self.expected.history_id, entries)
+        state = validate_chain(self.expected.history_id, entries, profile=self._profile)
         head = self._small("HEAD", deadline)
         if (
             set(head) != {"v", "history_id", "seq", "digest"}
@@ -425,17 +438,27 @@ class HistoryStore:
                 for existing in state.entries:
                     if existing.command.record_id == command.record_id:
                         frame = encode_entry(
-                            existing.history_id, existing.seq, existing.prev_digest, command
+                            existing.history_id,
+                            existing.seq,
+                            existing.prev_digest,
+                            command,
+                            profile=self._profile,
                         )
-                        if decode_entry(frame) != existing:
+                        if decode_entry(frame, profile=self._profile) != existing:
                             raise HistoryError("conflict")
                         self._check_pins(deadline)
                         return AppendResult(existing, False)
                 frame = encode_entry(
-                    self.expected.history_id, len(state.entries) + 1, state.digest, command
+                    self.expected.history_id,
+                    len(state.entries) + 1,
+                    state.digest,
+                    command,
+                    profile=self._profile,
                 )
-                entry = decode_entry(frame)
-                validate_chain(self.expected.history_id, (*state.entries, entry))
+                entry = decode_entry(frame, profile=self._profile)
+                validate_chain(
+                    self.expected.history_id, (*state.entries, entry), profile=self._profile
+                )
                 if (
                     len(state.entries) >= MAX_RECORDS
                     or os.fstat(self._fds["LOG"]).st_size + len(frame) > MAX_LOG

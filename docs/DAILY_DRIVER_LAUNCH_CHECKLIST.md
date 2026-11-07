@@ -1,7 +1,7 @@
 # Personal daily-driver launch checklist
 
-Source checkpoint: `b26ad4b1759dbd7bc475ecff98a991a6d52ceadc` (main verified
-before the isolated protocol/RAM-owner prototype following #677). This checklist separates
+Source checkpoint: `a57b5773b27d42d238acbeea4364e03c46ab1d38` (main verified
+after #680, before packet/native boundary qualification). This checklist separates
 merged source, synthetic qualification and deployed acceptance. The independent memory evaluation lane is
 not a launch prerequisite. Keep [#477](https://github.com/sol-aeternum/Daemon/issues/477)
 open until its applicable release conditions are met or explicitly revised.
@@ -11,10 +11,10 @@ open until its applicable release conditions are met or explicitly revised.
 | Protected acceptance, Send and Stop | #625/#628/#631/#637 merged; [composition boundary](RESTORE_HISTORY_COMPOSITION.md), immutable 056/057 projections and original native fences | Historical observation/client source is merged in #650; authenticated H runtime composition remains; no history record is execution authority |
 | Cross-device reopen and uncertain work | Existing owner-scoped task APIs/observer preserve persisted results; focused reconnect diagnostics exercise actual device access checks on synthetic SQL/POSIX fixtures | H-aware source responses/client refusal are merged in #650 (RESTORE_HISTORY_OBSERVATION.md); deployed cross-device and held-key acceptance still require qualification |
 | Stop and publication races | #637 Send/Stop and #653 H-ordered durable partial text/native terminal fences are merged, with no runtime execution install | Authenticated runtime wiring and streamed/partial/artifact publication qualification; Stop prevents subsequent local admission/publication, not guaranteed remote cessation or billing cancellation |
-| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–063 need their own reviewed execution scope, not incidental inclusion in the closed runner |
+| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–064 need their own reviewed execution scope, not incidental inclusion in the closed runner |
 | Principal/storage/startup binding | Separate backend A/W and W-only worker startup is merged; [startup contract](TASK_STARTUP_COMPOSITION.md) | Reviewed live credentials, exact grants, private H/J1 storage/key identity, service-specific access and a pinned deployed source; no credentials/grants/storage are provisioned by this checklist |
 | Restart and recovery | Prior isolated PostgreSQL/POSIX and service-startup tests cover specific boundaries | Pinned-runtime restart/reconnect check with original task/results and truthful uncertain outcomes; observed container source/flags/identity read back after any separately approved deployment |
-| Restored database | H/protected SQL mismatch detection exists in isolated joins; historical evidence does not authorize replay | Supported offline restore barrier/reconciliation, independently retained acceptance/possible-send/Stop evidence, and financial/auth/key/account/file continuity; neither schema equality nor matching J1 alone is restore readiness |
+| Restored database | H/protected SQL mismatch detection exists in isolated joins; [synthetic artifact restore probes](ARTIFACT_RESTORE_BOUNDARY_QUALIFICATION.md) distinguish lost output facts; an [uninstalled v2 catalog prepare/projection join](ARTIFACT_RESTORE_PREPARE.md) adds negative catalog evidence; historical evidence does not authorize replay | Supported offline restore barrier/reconciliation, later partial/card/terminal evidence and financial/auth/key/account/file continuity; neither schema equality nor matching J1 alone is restore readiness |
 | Lifecycle and privacy | #469 is closed as a design decision, not completed deletion/reset; #486 has source/browser cache-protection qualification | Remaining deletion/reset/retention/GC fences and any explicit personal-pilot contract; no implicit lifecycle/privacy waiver from a closed issue |
 | Browser flows and clients | Existing task/cancel/reset and pending-submission behavior has source tests; reviewed #664 browser inventory passed 1 development and 69 production cases; source tests are not deployed acceptance | Relevant real-browser reconnect, held-key uncertainty, Stop, revoked/account-change access and file continuity on the qualified runtime; generic green browser job badges do not establish every screenshot/functional case passed |
 | Enablement | Owner conditionally authorizes durable chat ON once ready | Meet applicable gates, obtain specific live migration/privilege/deployment approvals, then verify the actual enabled flag/state; flag-off is not rollback and must preserve dispatch evidence |
@@ -142,3 +142,22 @@ It installs no listener, native-effect adapter or runtime producer. Immutable na
 assignment provenance, real authentication/framing admission and complete execution
 integration remain unqualified. No new permission, live resource, prepared-packet
 store or recovery/restore authority is inferred. Observation-only remains in force.
+
+Subsequent [native phase boundary tests](PUBLICATION_PACKET_OWNER.md#native-phase-boundary-qualification)
+put the RAM owner around the actual five H/native methods using owned synthetic
+SQL/POSIX fixtures. The test bridge's out-of-band native objects and tiny fixed
+payloads are not a production adapter, issuer or codec. Outer-caller abandonment
+and known native control-only terminal outcomes require explicit real-adapter
+semantics; existing native CSV limits are not the prototype transport limits.
+No runtime, permission, stored format or deployment change is introduced, and
+the authentication, artifact restore/lifecycle and launch gates remain open.
+
+The uninstalled [backend-only native profile](PUBLICATION_PACKET_OWNER.md#backend-only-native-profile)
+now reuses the RAM owner for the five actual H/native phases with closed original
+context, packet and result types. Required bounded native budgets preserve the
+8 MiB CSV limit without changing synthetic frames. Native terminal control outcomes
+remain truthful; uncertainty blocks the packet owner and drains physical cleanup.
+No runtime caller, issuer, authentication, listener, SQL/permission change or
+external wire contract is added. Whole-ingress allocation, authenticated provenance,
+restart fencing, complete runtime composition and independent artifact restore
+evidence remain release gates. Observation-only is unchanged; #477 stays open.
