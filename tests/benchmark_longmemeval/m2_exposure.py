@@ -64,7 +64,10 @@ RETENTION_SCHEMA: Final[str] = "m2-retention/1"
 REPORT_SCHEMA: Final[str] = "m2-report/1"
 PLAUSIBILITY_SCHEMA: Final[str] = "m2-gate4-plausibility/1"
 START_MARKER_SCHEMA: Final[str] = "m2-start-marker/1"
-LABEL_SCHEMA: Final[str] = "dev2-labelling/1"
+LABEL_SCHEMA: Final[str] = "dev2-labelling/2"
+#: A loader-compatible earlier document. Gate 1 needs v2's session dates, so
+#: ``run_threshold`` refuses a v1 document even though the other gates read it.
+LABEL_SCHEMAS: Final[frozenset[str]] = frozenset({"dev2-labelling/1", LABEL_SCHEMA})
 JOURNAL_VERSION: Final[int] = 1
 
 FROZEN_QUESTION_COUNT: Final[int] = 100
@@ -162,6 +165,9 @@ class LabelSet:
     entries: dict[str, LabelEntry]
     files: tuple[dict[str, str], ...]
     sha256: str
+    #: Every record schema the merged documents declared. Empty for a set built
+    #: by hand in a test; ``run_threshold`` refuses anything but v2.
+    schemas: tuple[str, ...] = ()
 
     @property
     def answerable_ids(self) -> tuple[str, ...]:
@@ -358,14 +364,17 @@ def load_labels(paths: Sequence[Path | str], frozen: FrozenIds) -> LabelSet:
     frozen_set = set(frozen.ids)
     entries: dict[str, LabelEntry] = {}
     files: list[dict[str, str]] = []
+    schemas: list[str] = []
     for path_value in paths:
         path = Path(path_value)
         raw = path.read_bytes()
         data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, Mapping):
             raise ValueError("Label document must be an object")
-        if data.get("schema") != LABEL_SCHEMA:
-            raise ValueError(f"Label document schema is not {LABEL_SCHEMA}")
+        schema = data.get("schema")
+        if schema not in LABEL_SCHEMAS:
+            raise ValueError(f"Label document schema is not one of {sorted(LABEL_SCHEMAS)}")
+        schemas.append(str(schema))
         if data.get("stop_reason") is not None:
             raise ValueError("Label document stopped before completion")
         if data.get("total_cost_complete") is not True:
@@ -389,7 +398,7 @@ def load_labels(paths: Sequence[Path | str], frozen: FrozenIds) -> LabelSet:
         }
         for qid, entry in sorted(entries.items())
     }
-    return LabelSet(entries, tuple(files), _sha256_json(merged))
+    return LabelSet(entries, tuple(files), _sha256_json(merged), tuple(schemas))
 
 
 def run_threshold(
@@ -401,6 +410,14 @@ def run_threshold(
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Record gate 1's exact value from the final labels, before any retrieval."""
+    if LABEL_SCHEMA not in labels.schemas or any(
+        schema != LABEL_SCHEMA for schema in labels.schemas
+    ):
+        # The amendment makes gate 1's value come from v2's dated labels, so a v1
+        # document (which has no session dates) cannot set the threshold.
+        raise ValueError(
+            f"Gate 1 requires {LABEL_SCHEMA} labels; a v1 document cannot set the threshold"
+        )
     output = _prepare_output(output_path, repo_root)
     exposure_answerable = labels.exposure_answerable_ids
     exposure_excluded = labels.exposure_excluded_abs_ids
@@ -2577,6 +2594,7 @@ __all__ = [
     "GATES_SCHEMA",
     "GENERATION_SCHEMA",
     "GENERATION_ROUTE_ID",
+    "LABEL_SCHEMAS",
     "LabelSet",
     "MEASURE_SCHEMA",
     "M2SideEffectError",

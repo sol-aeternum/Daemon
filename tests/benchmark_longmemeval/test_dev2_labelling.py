@@ -8,6 +8,7 @@ import json
 from collections.abc import Sequence
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,24 +18,40 @@ from tests.benchmark_longmemeval.dev2_labelling import (
     LABELLER_MODEL,
     LABELLER_ROUTE_ID,
     LABELLER_SEED,
+    LABEL_RECORD_SCHEMA,
+    LABEL_RECORD_SCHEMAS,
     LABEL_SCHEMA,
     MEMORY_SQL,
+    MEMORY_SQL_V2,
     PROMPT_V1,
+    PROMPT_V2,
     LabelInput,
+    LabelInputV2,
     artifact_hashes,
+    build_label_input_v2,
     build_request,
     build_spot_check_packet,
+    build_spot_check_packet_v2,
     load_answer_session_memories,
     parse_label,
+    session_dates_from_row,
     spot_check_sample,
     spot_check_selection,
 )
+from tests.benchmark_longmemeval.dev2_pilot import answer_conversation_ids
 
 # Pinned at freeze time; any change to the prompt, schema or template fails here.
 PINNED_HASHES = {
     "prompt": "8287ddf4385a1ce5908b9b007f82bdb9b345e263778dda373c861a7b9fb894b7",
     "label_schema": "ef2a02089d0f41dea5d4f22c1bed57bb85e1b8463b5efcb47b0c7dfa65b3265f",
     "request_template": "cc60e376ba92180ded2c6bb622bb458f0b412a7a4ee4cb89f937892c9c718c9d",
+}
+
+# Pinned when v2 was added: a wording or template change must be deliberate too.
+PINNED_V2_HASHES = {
+    "prompt_v2": "1e596d6c552e47fb99419c299984df7b715954e00a006fb7bde674cdcd58b08e",
+    "label_record_schema_v2": "87255b59cda0cb8a6aa896d01f045d3d262a9aef6a1c36ff3ff2ce9a927c2a5e",
+    "request_template_v2": "e479028e456ff262a9209065a87092b5b2a6030c9ddaa3febfd4ea48b6bfedf6",
 }
 
 SENTINEL = "SENTINEL_MEMORY_TEXT_do_not_leak"
@@ -51,7 +68,19 @@ ITEM = LabelInput(
 
 
 def test_pinned_artifact_hashes() -> None:
-    assert artifact_hashes() == PINNED_HASHES
+    hashes = artifact_hashes()
+    # v1's three pins are unchanged, so v1 stays comparable across the version bump.
+    assert {key: hashes[key] for key in PINNED_HASHES} == PINNED_HASHES
+    assert set(hashes) == set(PINNED_HASHES) | set(PINNED_V2_HASHES)
+    assert {key: hashes[key] for key in PINNED_V2_HASHES} == PINNED_V2_HASHES
+    assert LABEL_RECORD_SCHEMAS == {"dev2-labelling/1", LABEL_RECORD_SCHEMA}
+
+
+def test_v2_prompt_states_the_date_rules() -> None:
+    assert "Resolve relative expressions" in PROMPT_V2
+    assert "session date" in PROMPT_V2
+    assert "question's date" in PROMPT_V2
+    assert PROMPT_V2.startswith(PROMPT_V1)
 
 
 def test_prompt_avoids_ranking_and_retrieval_language() -> None:
@@ -212,6 +241,105 @@ def test_loader_without_conversations_reads_nothing() -> None:
     assert asyncio.run(load_answer_session_memories(reader, str, "user-1", [])) == ()
 
 
+# --- v2: dated, attributed inputs ---------------------------------------------
+
+
+def test_v2_input_sorts_by_session_date_then_session_then_memory() -> None:
+    item = LabelInputV2(
+        question_id="q",
+        question="question?",
+        question_date="2023-05-30 23:18",
+        reference_answer="answer.",
+        memories=(
+            ("m-b", "s2", "2023-05-30 18:00", "later date"),
+            ("m-a", "s1", "2023-05-30 10:00", "earlier date"),
+            ("m-c", "s1", "2023-05-30 10:00", "same session, later id"),
+            ("m-0", "s10", "2023-05-30 10:00", "session ten sorts between s1 and s2"),
+        ),
+    )
+    assert [memory[0] for memory in item.memories] == ["m-a", "m-c", "m-0", "m-b"]
+    assert [memory[1] for memory in item.memories] == ["s1", "s1", "s10", "s2"]
+
+
+def test_v2_tied_session_dates_sort_stably() -> None:
+    common = {
+        "question_id": "q",
+        "question": "question?",
+        "question_date": "2023-05-30 23:18",
+        "reference_answer": "answer.",
+    }
+    date = "2023-05-30 10:00"
+    forward = LabelInputV2(
+        memories=(("m2", "s2", date, "two"), ("m1", "s1", date, "one")), **common
+    )
+    backward = LabelInputV2(
+        memories=(("m1", "s1", date, "one"), ("m2", "s2", date, "two")), **common
+    )
+    assert forward == backward
+    assert [memory[0] for memory in forward.memories] == ["m1", "m2"]
+
+
+def test_v2_memory_date_comes_from_the_dataset_not_the_database_row() -> None:
+    # The SQL selects no timestamp at all, so no row can carry a date into the input.
+    lowered = MEMORY_SQL_V2.lower()
+    for forbidden in ("created_at", "timestamp", "updated_at", "select *"):
+        assert forbidden not in lowered
+    # A contradictory timestamp on the database row is never read: the loader
+    # returns only (id, conversation, text), and the date comes from the dataset.
+    row = {
+        "question_id": "q1",
+        "question": "Where did I park?",
+        "answer": "By the river.",
+        "answer_session_ids": ["s1"],
+        "user_id": "user-q1",
+        "question_date": "2023/05/30 (Tue) 23:18",
+        "haystack_session_ids": ["s1"],
+        "haystack_dates": ["2023/05/30 (Tue) 09:41"],
+    }
+    database_row = ("m1", Q1_CONVERSATION, "text", "2030/01/01 (Tue) 00:00")
+
+    async def reader(_sql: str, _args: Any) -> list[tuple[str, str, str, str]]:
+        return [database_row]
+
+    loaded = asyncio.run(
+        dev2_labelling.load_answer_session_memories_v2(reader, str, "user-q1", [Q1_CONVERSATION])
+    )
+    assert loaded == (("m1", Q1_CONVERSATION, "text"),)
+    conversations = answer_conversation_ids(
+        _checkpoint(("q1", "s1", Q1_CONVERSATION)), "q1", ["s1"]
+    )
+    item = build_label_input_v2(row, conversations, loaded)
+    assert item.question_date == "2023-05-30 23:18"
+    assert item.memories == (("m1", "s1", "2023-05-30 09:41", "text"),)
+
+
+def test_v2_session_dates_refuse_mismatched_or_unparsable_datasets() -> None:
+    assert session_dates_from_row(
+        {"haystack_session_ids": ["s1"], "haystack_dates": ["2023/05/30 (Tue) 09:41"]}
+    ) == {"s1": "2023-05-30 09:41"}
+    with pytest.raises(ValueError):
+        session_dates_from_row({"haystack_session_ids": ["s1", "s2"], "haystack_dates": []})
+    with pytest.raises(ValueError):
+        session_dates_from_row({"haystack_session_ids": ["s1"], "haystack_dates": ["not a date"]})
+
+
+def test_v2_refuses_a_database_that_is_not_the_remap() -> None:
+    assert (
+        dev2_labelling.assert_label_database_v2(
+            "postgresql://user:pass@host/daemon_lme_bench_dev2_final_remap"
+        )
+        == "daemon_lme_bench_dev2_final_remap"
+    )
+    for dsn in (
+        None,
+        "",
+        "postgresql://user:pass@host/daemon_lme_bench_dev2",
+        "postgresql://user:pass@host/daemon",
+    ):
+        with pytest.raises(ValueError, match="refusing database"):
+            dev2_labelling.assert_label_database_v2(dsn)
+
+
 def test_spot_check_sample_counts_for_14_and_100() -> None:
     assert len(spot_check_sample([f"id-{i:03d}" for i in range(14)])) == 3
     assert len(spot_check_sample([f"id-{i:03d}" for i in range(100)])) == 15
@@ -260,6 +388,11 @@ def _row(question_id: str = "q1", session_id: str = "s1") -> dict[str, Any]:
         "answer": "By the river.",
         "answer_session_ids": [session_id],
         "user_id": f"user-{question_id}",
+        # The dataset's own dates, in LongMemEval's format. No database
+        # timestamp is involved: the labeller reads only these.
+        "question_date": "2023/05/30 (Tue) 23:18",
+        "haystack_session_ids": [session_id],
+        "haystack_dates": ["2023/05/30 (Tue) 18:00"],
     }
 
 
@@ -303,7 +436,7 @@ def _run(
             acquire_run_lock=(lambda: True) if acquire_run_lock is _UNSET else acquire_run_lock,
             check_run_lock=check_run_lock or (lambda: True),
             verify_route=verify_route or (lambda: None),
-            memory_reader=memory_reader or (lambda user_id, ids: [("m1", SENTINEL)]),
+            memory_reader=memory_reader or (lambda _sql, params: [("m1", params[1][0], SENTINEL)]),
             decrypt=lambda text: text,
             read_ledger_spend_usd=ledger or (lambda: Decimal(0)),
             next_call_ceiling_usd=ceiling or (lambda payload: Decimal("0.01")),
@@ -345,6 +478,84 @@ def test_route_refusal_makes_zero_calls(tmp_path: Any) -> None:
             verify_route=refuse,
         )
     assert calls == []
+
+
+def test_v2_unattributable_memory_refuses_without_a_dispatch(tmp_path: Any) -> None:
+    cases = {
+        "unknown conversation": {
+            "memory_reader": lambda _sql, params: [
+                ("m1", "99999999-9999-9999-9999-999999999999", SENTINEL)
+            ],
+        },
+        "session without a date": {
+            "rows": [
+                {
+                    **_row(),
+                    "haystack_session_ids": ["another-session"],
+                    "haystack_dates": ["2023/05/30 (Tue) 18:00"],
+                }
+            ],
+        },
+    }
+    for name, overrides in cases.items():
+        calls: list[Any] = []
+        document, _ = _run(
+            tmp_path,
+            rows=overrides.get("rows", [_row()]),
+            checkpoint=_q1_checkpoint(),
+            call=lambda payload: calls.append(payload),
+            memory_reader=overrides.get("memory_reader"),
+            name=f"{name.replace(' ', '-')}.json",
+        )
+        assert calls == [], name
+        entry = document["questions"][0]
+        assert entry["reason"] == "unattributable", name
+        assert entry["schema_valid"] is False, name
+        assert entry["calls"] == 0, name
+
+
+def test_v2_spend_cap_stops_before_the_first_dispatch(tmp_path: Any) -> None:
+    calls: list[Any] = []
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: calls.append(payload),
+        max_spend="0.05",
+        ledger=lambda: Decimal("0.05"),
+        ceiling=lambda payload: Decimal("0.01"),
+    )
+    assert calls == []
+    assert document["stop_reason"] == "spend_cap"
+    assert document["calls"] == 0
+    assert document["artifacts"] == artifact_hashes()
+
+
+def test_a_v1_journal_refuses_a_v2_resume(tmp_path: Any) -> None:
+    rows = [_row()]
+    journal = tmp_path / "labels.json.receipts.jsonl"
+    v1_manifest = {
+        "kind": "batch",
+        "version": 1,
+        # v1's protocol had only the three v1 artifacts and no dataset dates.
+        "protocol": dict(PINNED_HASHES),
+        "questions": {"q1": "0" * 64},
+    }
+    journal.write_text(json.dumps(v1_manifest) + "\n", encoding="utf-8")
+    before = journal.read_text(encoding="utf-8")
+    calls: list[Any] = []
+
+    document, output = _run(
+        tmp_path,
+        rows=rows,
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: calls.append(payload),
+    )
+
+    assert calls == []
+    assert document["stop_reason"] == "receipt_mismatch"
+    assert not output.exists()
+    assert journal.read_text(encoding="utf-8") == before
 
 
 def test_parse_failure_records_schema_invalid_without_retry(tmp_path: Any) -> None:
@@ -1031,7 +1242,7 @@ def test_changed_memories_on_resume_is_a_receipt_mismatch(tmp_path: Any) -> None
         rows=rows,
         checkpoint=checkpoint,
         call=lambda payload: calls.append(payload),
-        memory_reader=lambda user_id, ids: [("m1", "a different memory")],
+        memory_reader=lambda _sql, params: [("m1", params[1][0], "a different memory")],
     )
 
     _assert_mismatch(document, calls, output, before)
@@ -1326,6 +1537,97 @@ def test_packet_marks_labelled_ids_and_states_the_rate_rule() -> None:
     assert "labelled memory IDs correct?" in q2
 
 
+def test_v2_packet_groups_by_session_date_and_shows_version_and_hash() -> None:
+    memories = {
+        "q1": (
+            ("m2", "s2", "2023-05-30 11:00", "later session"),
+            ("m1", "s1", "2023-05-30 09:00", "earlier session"),
+        )
+    }
+    packet = build_spot_check_packet_v2(
+        [("q1", ("seeded_sample",))],
+        [_label_entry("q1", memory_ids=["m1", "m2"])],
+        _packet_rows()[:1],
+        _packet_checkpoint(),
+        memories,
+        label_schema=LABEL_RECORD_SCHEMA,
+        prompt_sha256=PINNED_V2_HASHES["prompt_v2"],
+    )
+    assert f"Labeller version: `{LABEL_RECORD_SCHEMA}`" in packet
+    assert f"Prompt hash (v2): `{PINNED_V2_HASHES['prompt_v2']}`" in packet
+    assert "Question date: 2023-05-30 23:18" in packet
+    assert packet.index("### Session s1 (2023-05-30 09:00)") < packet.index(
+        "### Session s2 (2023-05-30 11:00)"
+    )
+    assert "[LABELLED] m1: earlier session" in packet
+    assert "[LABELLED] m2: later session" in packet
+
+
+def test_v2_packet_labels_refuse_a_document_without_artifacts() -> None:
+    document = _batch_document("q1", "q2")
+    document.pop("artifacts")
+    with pytest.raises(ValueError, match="prompt hash"):
+        dev2_labelling._packet_labels(document, _batch_rows(), {"q1", "q2"})
+
+
+class _NullTransaction:
+    async def __aenter__(self) -> _NullTransaction:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+
+class _FakeConnection:
+    """A read-only stand-in: returns canned memory rows and records the SQL."""
+
+    def __init__(self, rows: list[tuple[str, str, str]]) -> None:
+        self.rows = rows
+        self.closed = False
+        self.sql: list[str] = []
+
+    def transaction(self, *, readonly: bool = False) -> _NullTransaction:
+        assert readonly is True
+        return _NullTransaction()
+
+    async def fetch(self, sql: str, *args: Any) -> list[tuple[str, str, str]]:
+        self.sql.append(sql)
+        return self.rows
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_v2_packet_dispatch_reads_dated_memories(tmp_path: Any, monkeypatch: Any) -> None:
+    connection = _FakeConnection([("m1", Q1_CONVERSATION, "blue card")])
+    monkeypatch.setattr(
+        "orchestrator.config.get_settings",
+        lambda: SimpleNamespace(database_url="postgresql://user@host/bench"),
+    )
+    labels = _batch_document("q1", "q2")
+
+    async def connect(_url: str) -> _FakeConnection:
+        return connection
+
+    packet = asyncio.run(
+        dev2_labelling._run_packet(
+            labels=labels,
+            rows=_packet_rows(),
+            checkpoint=_packet_checkpoint(),
+            questions=labels["questions"],
+            selection=[("q1", ("seeded_sample",))],
+            connector=connect,
+            decrypt=str,
+        )
+    )
+    assert connection.closed is True
+    assert connection.sql == [MEMORY_SQL_V2]
+    assert f"Labeller version: `{LABEL_RECORD_SCHEMA}`" in packet
+    assert f"Prompt hash (v2): `{artifact_hashes()['prompt_v2']}`" in packet
+    assert "### Session s1 (2023-05-30 18:00)" in packet
+    assert "[LABELLED] m1: blue card" in packet
+
+
 def _no_connect(database_url: str) -> Any:
     raise AssertionError(f"no connection may be opened: {database_url}")
 
@@ -1464,6 +1766,7 @@ def _batch_rows() -> list[dict[str, Any]]:
 def _batch_document(*ids: str, **overrides: Any) -> dict[str, Any]:
     document: dict[str, Any] = {
         "schema": dev2_labelling.LABEL_RECORD_SCHEMA,
+        "artifacts": artifact_hashes(),
         "stop_reason": None,
         "questions": [
             {

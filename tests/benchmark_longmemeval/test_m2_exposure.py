@@ -120,6 +120,20 @@ def test_gate1_threshold_is_exact_at_boundaries() -> None:
     assert gate1_threshold(0)["exact"] == "5"
 
 
+def test_a_v1_label_document_loads_but_cannot_set_the_threshold(tmp_path: Path) -> None:
+    # The amendment makes gate 1's value come from v2's dated labels.
+    frozen = _frozen()
+    path = _write_labels(
+        tmp_path / "labels-v1.json", frozen, answerable=_ids()[:10], schema="dev2-labelling/1"
+    )
+    labels = load_labels([path], frozen)
+    assert labels.schemas == ("dev2-labelling/1",)
+    output = tmp_path / "out" / "threshold.json"
+    with pytest.raises(ValueError, match="dev2-labelling/2"):
+        run_threshold(labels=labels, frozen=frozen, output_path=output, repo_root=tmp_path / "repo")
+    assert not output.exists()
+
+
 def test_threshold_document_records_labels_hash_before_retrieval(tmp_path: Path) -> None:
     frozen = _frozen()
     labels = _labels(frozen, _ids()[:51], tmp_path / "labels.json")

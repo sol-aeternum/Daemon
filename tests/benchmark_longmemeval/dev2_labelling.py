@@ -38,6 +38,7 @@ from typing import Any, Final
 from tests.benchmark_longmemeval.dev2_pilot import (
     answer_conversation_ids,
     check_output_outside_repo,
+    db_name_from_dsn,
 )
 
 LABELLER_MODEL: Final[str] = "openrouter/openai/gpt-6-luna"
@@ -79,6 +80,34 @@ PROMPT_TEMPLATE_V1: Final[str] = (
     "Question:\n{question}\n\n"
     "Reference answer:\n{reference_answer}\n\n"
     'Stored memories (JSON array of {{"id", "text"}}):\n{memories}'
+)
+
+#: Labeller v2: v1's wording, plus the date and session context the owner ruled in.
+#: The question's date and each memory's source session let a relative expression
+#: in a memory ("last month", "recently") resolve against that memory's session
+#: date, not against the question's or the wall clock's.
+PROMPT_V2: Final[str] = (
+    PROMPT_V1
+    + " The input gives the question's date, and each memory's source session ID and session date."
+    + " Resolve relative expressions in a memory ('last month', 'next week', 'recently') against"
+    " that memory's session date, and compare the result with the question's date."
+    + " A memory may support the answer through a date computed this way; don't treat it as"
+    " unsupported because the memory states no absolute date."
+)
+
+PROMPT_TEMPLATE_V2: Final[str] = (
+    "Question date:\n{question_date}\n\n"
+    "Question:\n{question}\n\n"
+    "Reference answer:\n{reference_answer}\n\n"
+    'Stored memories (JSON array of {{"id", "session_id", "session_date", "text"}}, '
+    "sorted by session date, then session ID, then memory ID):\n{memories}"
+)
+
+LABEL_RECORD_SCHEMA_V1: Final[str] = "dev2-labelling/1"
+#: v2 documents carry the question date and per-memory session id and date.
+LABEL_RECORD_SCHEMA: Final[str] = "dev2-labelling/2"
+LABEL_RECORD_SCHEMAS: Final[frozenset[str]] = frozenset(
+    {LABEL_RECORD_SCHEMA_V1, LABEL_RECORD_SCHEMA}
 )
 
 _LABEL_FIELDS: Final[frozenset[str]] = frozenset({"memory_ids", "answerable_from_store", "note"})
@@ -129,9 +158,67 @@ class Label:
     note: str
 
 
+#: One v2 memory: ``(memory id, session id, session date, text)``. The session
+#: id and date come from the dataset, through the memory's source conversation.
+MemoryV2 = tuple[str, str, str, str]
+
+
+@dataclass(frozen=True)
+class LabelInputV2:
+    """One v2 labelling input: the question date and dated, attributed memories."""
+
+    question_id: str
+    question: str
+    question_date: str
+    reference_answer: str
+    memories: tuple[MemoryV2, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("question_id", "question", "question_date", "reference_answer"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Label input {name} must be a nonempty string")
+        entries: list[MemoryV2] = []
+        for entry in self.memories:
+            if not isinstance(entry, tuple) or len(entry) != 4:
+                raise ValueError(
+                    "Label input memories must be (id, session_id, session_date, text) tuples"
+                )
+            memory_id, session_id, session_date, text = entry
+            if not isinstance(memory_id, str) or not memory_id:
+                raise ValueError("Label input memory ids must be nonempty strings")
+            if not isinstance(session_id, str) or not session_id:
+                raise ValueError("Label input memory session ids must be nonempty strings")
+            if not isinstance(session_date, str) or not session_date:
+                raise ValueError("Label input memory session dates must be nonempty strings")
+            if not isinstance(text, str):
+                raise ValueError("Label input memory text must be a string")
+            entries.append((memory_id, session_id, session_date, text))
+        if len({entry[0] for entry in entries}) != len(entries):
+            raise ValueError("Label input memory ids must be unique")
+        # Date, then session, then memory id: independent of any ranking, and stable
+        # for tied session dates.
+        object.__setattr__(
+            self,
+            "memories",
+            tuple(sorted(entries, key=lambda entry: (entry[2], entry[1], entry[0]))),
+        )
+
+
 def _memory_block(item: LabelInput) -> str:
     return json.dumps(
         [{"id": memory_id, "text": text} for memory_id, text in item.memories],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _memory_block_v2(item: LabelInputV2) -> str:
+    return json.dumps(
+        [
+            {"id": memory_id, "session_id": session_id, "session_date": session_date, "text": text}
+            for memory_id, session_id, session_date, text in item.memories
+        ],
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -177,10 +264,39 @@ def build_request(item: LabelInput) -> dict[str, Any]:
     return request
 
 
-def parse_label(item: LabelInput, text: str) -> Label:
+def request_template_v2() -> dict[str, Any]:
+    """The v2 request template: same route, seed, effort and schema as v1."""
+    template = request_template()
+    template["messages"] = [
+        {"role": "system", "content": PROMPT_V2},
+        {"role": "user", "content": PROMPT_TEMPLATE_V2},
+    ]
+    return template
+
+
+def build_request_v2(item: LabelInputV2) -> dict[str, Any]:
+    if not isinstance(item, LabelInputV2):
+        raise ValueError("build_request_v2 expects a LabelInputV2")
+    request = request_template_v2()
+    request["messages"] = [
+        {"role": "system", "content": PROMPT_V2},
+        {
+            "role": "user",
+            "content": PROMPT_TEMPLATE_V2.format(
+                question_date=item.question_date,
+                question=item.question,
+                reference_answer=item.reference_answer,
+                memories=_memory_block_v2(item),
+            ),
+        },
+    ]
+    return request
+
+
+def parse_label(item: LabelInput | LabelInputV2, text: str) -> Label:
     """Strict validation. Messages name fields, never memory text or values."""
-    if not isinstance(item, LabelInput):
-        raise ValueError("parse_label expects a LabelInput")
+    if not isinstance(item, (LabelInput, LabelInputV2)):
+        raise ValueError("parse_label expects a label input")
     if not isinstance(text, str):
         raise ValueError("Label text must be a string")
     try:
@@ -214,7 +330,7 @@ def parse_label(item: LabelInput, text: str) -> Label:
 
     if len(set(ids)) != len(ids):
         raise ValueError("Label memory_ids must be unique")
-    known = {memory_id for memory_id, _ in item.memories}
+    known = {str(entry[0]) for entry in item.memories}
     if any(memory_id not in known for memory_id in ids):
         raise ValueError("Label contains a memory id outside the input")
     # Empty ids must mean not answerable, and not answerable must mean empty ids.
@@ -268,6 +384,117 @@ async def load_answer_session_memories(
             raise ValueError("Decrypted memory content must be a string")
         pairs.append((memory_id, decrypted))
     return tuple(sorted(pairs, key=lambda p: p[0]))
+
+
+MEMORY_SQL_V2: Final[str] = (
+    "SELECT id, source_conversation_id, content FROM memories "
+    "WHERE user_id = $1 AND source_conversation_id = ANY($2::uuid[]) "
+    "AND status = 'active' ORDER BY id"
+)
+
+
+async def load_answer_session_memories_v2(
+    reader: Callable[[str, Sequence[Any]], Any],
+    decrypt: Callable[[str], str],
+    user_id: str,
+    conversation_ids: Sequence[str],
+) -> tuple[tuple[str, str, str], ...]:
+    """Read the answer-session memories with their source conversation.
+
+    Only ``memories`` is touched, and only its id, ``source_conversation_id``
+    and encrypted content: any timestamp column the row happens to carry is
+    never read, so a memory's date can only come from the dataset.
+    """
+    if not user_id:
+        raise ValueError("user_id is required")
+    if not conversation_ids:
+        return ()
+    pending = reader(MEMORY_SQL_V2, (user_id, list(conversation_ids)))
+    rows = await pending if inspect.isawaitable(pending) else pending
+    triples: list[tuple[str, str, str]] = []
+    for row in _rows(rows):
+        entry: Any = row
+        memory_id = str(entry[0])
+        conversation_id = entry[1]
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise ValueError("Memory has no source conversation")
+        content = entry[2]
+        if not isinstance(content, str):
+            raise ValueError("Memory content must be a string")
+        decrypted = decrypt(content)
+        if inspect.isawaitable(decrypted):
+            decrypted = await decrypted
+        if not isinstance(decrypted, str):
+            raise ValueError("Decrypted memory content must be a string")
+        triples.append((memory_id, conversation_id, decrypted))
+    return tuple(sorted(triples, key=lambda entry: entry[0]))
+
+
+def _iso_dataset_date(value: Any) -> str:
+    """A dataset date as ``YYYY-MM-DD HH:MM``; an unparsable one refuses."""
+    from orchestrator.eval.fact_harness import _parse_haystack_date
+
+    parsed = _parse_haystack_date(value)
+    if parsed is None:
+        raise ValueError("Dataset date missing or unparsable")
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def session_dates_from_row(row: Mapping[str, Any]) -> dict[str, str]:
+    """``session id -> date`` from the dataset fields carried by the row.
+
+    The dates come from ``haystack_dates`` paired with ``haystack_session_ids``.
+    No database timestamp is read anywhere.
+    """
+    session_ids = [str(value) for value in row.get("haystack_session_ids") or []]
+    raw_dates = list(row.get("haystack_dates") or [])
+    if len(session_ids) != len(raw_dates):
+        raise ValueError("haystack_session_ids and haystack_dates disagree")
+    dates: dict[str, str] = {}
+    for session_id, raw in zip(session_ids, raw_dates):
+        if session_id in dates:
+            raise ValueError("haystack_session_ids holds duplicates")
+        dates[session_id] = _iso_dataset_date(raw)
+    return dates
+
+
+def build_label_input_v2(
+    row: Mapping[str, Any],
+    conversation_ids: Mapping[str, str],
+    memories: Sequence[tuple[str, str, str]],
+) -> LabelInputV2:
+    """Attach the dataset's session id and date to each memory.
+
+    A memory is attributed through its ``source_conversation_id`` and the
+    checkpoint's existing session-to-conversation mapping. A memory with no
+    attribution, or a session with no date, refuses the question.
+    """
+    try:
+        question_date = _iso_dataset_date(row.get("question_date"))
+    except ValueError:
+        raise ValueError("Question date missing or unparsable") from None
+    dates = session_dates_from_row(row)
+    by_conversation: dict[str, str] = {}
+    for session_id, conversation_id in conversation_ids.items():
+        if str(conversation_id) in by_conversation:
+            raise ValueError("Two sessions map to one conversation")
+        by_conversation[str(conversation_id)] = str(session_id)
+    attributed: list[MemoryV2] = []
+    for memory_id, conversation_id, text in memories:
+        session_id = by_conversation.get(str(conversation_id))
+        if session_id is None:
+            raise ValueError("Memory has no session attribution")
+        session_date = dates.get(session_id)
+        if session_date is None:
+            raise ValueError("Memory session has no date")
+        attributed.append((str(memory_id), session_id, session_date, text))
+    return LabelInputV2(
+        question_id=str(row["question_id"]),
+        question=str(row["question"]),
+        question_date=question_date,
+        reference_answer=str(row["answer"]),
+        memories=tuple(attributed),
+    )
 
 
 def spot_check_sample(
@@ -432,12 +659,112 @@ def build_spot_check_packet(
     return "\n".join(lines) + "\n"
 
 
+def build_spot_check_packet_v2(
+    selection: Sequence[tuple[str, Sequence[str]]],
+    labels: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
+    checkpoint: Mapping[str, Any],
+    memories_by_question: Mapping[str, Sequence[MemoryV2]],
+    *,
+    label_schema: str,
+    prompt_sha256: str,
+) -> str:
+    """Render the v2 spot-check packet. Pure: no connection, no provider call.
+
+    The input's session framing is preserved: memories are grouped by session in
+    date order, each group headed by its session id and date, so the owner can
+    judge a relative expression against the memory's own session date.
+    """
+    entries = {str(entry["question_id"]): entry for entry in labels if isinstance(entry, Mapping)}
+    rows_by_id = {str(row["question_id"]): row for row in rows}
+    lines = [
+        "# dev2 labelling spot-check packet (v2)",
+        "",
+        f"Labeller version: `{label_schema}`",
+        f"Prompt hash (v2): `{prompt_sha256}`",
+        "",
+        "Error-rate rule (owner ruling): the >20% stop is computed over the seeded "
+        "sample only. Questions added because they are labelled not-answerable "
+        "(`answerable_from_store: false`, including `no_memories`) were picked "
+        "*because* of that label, so they get their own correction rate: above 20% "
+        "flags for owner review. They are still checked and corrected when wrong.",
+        "",
+        "- `Seeded 15% sample`: the frozen 15% draw from `spot_check_sample`.",
+        "- `Every not-answerable label`: every schema-valid "
+        "`answerable_from_store: false` label, plus every `no_memories` entry.",
+        f"- Selected questions: {len(selection)}",
+    ]
+
+    for question_id, reasons in selection:
+        entry = entries[question_id]
+        row = rows_by_id[question_id]
+        lines += ["", f"## {question_id}", ""]
+        lines.append(
+            "Reason(s): " + ", ".join(SPOT_CHECK_REASON_TEXT[reason] for reason in reasons)
+        )
+        try:
+            question_date = _iso_dataset_date(row.get("question_date"))
+        except ValueError:
+            question_date = "(missing)"
+        lines += [
+            "",
+            f"Question date: {question_date}",
+            f"Question: {row['question']}",
+            f"Reference answer: {row['answer']}",
+            _packet_label_line(entry),
+        ]
+        note = entry.get("note")
+        if isinstance(note, str) and note:
+            lines.append(f"Labeller's note: {note}")
+        else:
+            lines.append("Labeller's note: (none)")
+
+        mapping = answer_conversation_ids(
+            checkpoint,
+            question_id,
+            [str(value) for value in row.get("answer_session_ids") or []],
+        )
+        if mapping:
+            lines += ["", "Answer sessions:"]
+            lines += [f"- {session} -> {conversation}" for session, conversation in mapping.items()]
+
+        memories = memories_by_question.get(question_id, ())
+        lines.append("")
+        if memories:
+            labelled = {str(memory_id) for memory_id in entry.get("memory_ids") or []}
+            groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
+            for memory_id, session_id, session_date, text in memories:
+                groups.setdefault((session_date, session_id), []).append((memory_id, text))
+            lines.append("Answer-session memories (grouped by session, sessions in date order):")
+            for session_date, session_id in sorted(groups):
+                lines += ["", f"### Session {session_id} ({session_date})"]
+                for memory_id, text in sorted(groups[(session_date, session_id)]):
+                    mark = "[LABELLED] " if memory_id in labelled else ""
+                    lines.append(f"- {mark}{memory_id}: {text}")
+        else:
+            lines.append("No answer-session memories were recorded for this question.")
+
+        lines += [
+            "",
+            "Checklist:",
+            "- labelled memory IDs correct?      yes / no — correction:",
+            "- any memory missing from the label? yes / no — ids:",
+            "- answerable_from_store correct?    yes / no — correction:",
+            "- overall: accept / correct",
+        ]
+
+    return "\n".join(lines) + "\n"
+
+
 def artifact_hashes() -> dict[str, str]:
-    """SHA-256 of the prompt, the canonical schema and the canonical template."""
+    """SHA-256 of each frozen artifact: v1 for provenance, v2 for the run."""
     return {
         "prompt": _sha256(PROMPT_V1),
+        "prompt_v2": _sha256(PROMPT_V2),
         "label_schema": _sha256(_canonical(LABEL_SCHEMA)),
+        "label_record_schema_v2": _sha256(LABEL_RECORD_SCHEMA),
         "request_template": _sha256(_canonical(request_template())),
+        "request_template_v2": _sha256(_canonical(request_template_v2())),
     }
 
 
@@ -449,7 +776,18 @@ def artifact_hashes() -> dict[str, str]:
 # drive the whole flow with fakes and no provider, database or dataset is touched
 # by this module's tests.
 
-LABEL_RECORD_SCHEMA: Final[str] = "dev2-labelling/1"
+#: v2 runs on the remapped copy only: the original stays untouched as evidence.
+LABEL_DATABASE_NAME_V2: Final[str] = "daemon_lme_bench_dev2_final_remap"
+
+
+def assert_label_database_v2(dsn: str | None) -> str:
+    """Refuse unless the connection names the v2 database exactly."""
+    name = db_name_from_dsn(dsn) if dsn else None
+    if name != LABEL_DATABASE_NAME_V2:
+        raise ValueError(
+            f"Labeller v2 runs on {LABEL_DATABASE_NAME_V2}; refusing database {name!r}"
+        )
+    return name
 
 
 class _NullScope:
@@ -595,6 +933,13 @@ def _batch_manifest(question_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any
                     "question": str(row["question"]),
                     "answer": str(row["answer"]),
                     "user_id": str(row["user_id"]),
+                    # v2: the dataset dates are bound too, so a corrected date
+                    # cannot silently reuse a label made without it.
+                    "question_date": str(row.get("question_date") or ""),
+                    "haystack_session_ids": [
+                        str(value) for value in row.get("haystack_session_ids") or []
+                    ],
+                    "haystack_dates": [str(value) for value in row.get("haystack_dates") or []],
                     "answer_session_ids": [
                         str(value) for value in row.get("answer_session_ids") or []
                     ],
@@ -612,32 +957,31 @@ def _batch_manifest(question_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any
 def _result_input_sha256(
     row: Mapping[str, Any],
     conversation_ids: Mapping[str, str],
-    memories: Sequence[tuple[str, str]],
+    memories: Sequence[tuple[str, str, str]],
 ) -> str:
     """One question's exact inputs, as a digest.
 
-    The frozen request (which carries the prompt, the schema and the template)
-    plus the checkpoint's conversation mapping, so a corrected answer, a changed
-    user, a changed memory text or a changed mapping all move the digest. With
-    no memories there is no request, so the question fields and the mapping are
-    hashed instead. Only the digest is stored: memory text never is.
+    The frozen request (which carries the prompt, the schema, the template, the
+    question date and every memory's session id and date) plus the checkpoint's
+    conversation mapping, so a corrected answer, a changed user, date or memory
+    text, or a changed mapping all move the digest. With no memories there is no
+    request, so the question fields and the mapping are hashed instead. Only the
+    digest is stored: memory text never is.
     """
     fields: dict[str, Any] = {
         "question_id": str(row["question_id"]),
         "question": str(row["question"]),
         "answer": str(row["answer"]),
         "user_id": str(row["user_id"]),
+        "question_date": str(row.get("question_date") or ""),
+        "haystack_session_ids": [str(value) for value in row.get("haystack_session_ids") or []],
+        "haystack_dates": [str(value) for value in row.get("haystack_dates") or []],
         "conversations": dict(conversation_ids),
     }
     if memories:
         try:
-            fields["request"] = build_request(
-                LabelInput(
-                    question_id=str(row["question_id"]),
-                    question=str(row["question"]),
-                    reference_answer=str(row["answer"]),
-                    memories=tuple(memories),
-                )
+            fields["request"] = build_request_v2(
+                build_label_input_v2(row, conversation_ids, memories)
             )
         except ValueError:
             # An unusable input can never match a recorded digest.
@@ -649,6 +993,7 @@ def _stopped_document(max_spend_usd: Decimal, stop_reason: str) -> dict[str, Any
     """The document shape for a run stopped before its journal was created."""
     return {
         "schema": LABEL_RECORD_SCHEMA,
+        "artifacts": artifact_hashes(),
         "route_id": LABELLER_ROUTE_ID,
         "max_spend_usd": str(max_spend_usd),
         "total_cost_usd": "0",
@@ -876,7 +1221,7 @@ async def label_questions(
                 stop_reason = "uncertain_dispatch"
                 break
 
-            memories = await load_answer_session_memories(
+            memories = await load_answer_session_memories_v2(
                 memory_reader, decrypt, user_id, list(conversation_ids.values())
             )
             input_sha256 = _result_input_sha256(row, conversation_ids, memories)
@@ -908,13 +1253,29 @@ async def label_questions(
                 entries.append(entry)
                 continue
 
-            item = LabelInput(
-                question_id=question_id,
-                question=str(row["question"]),
-                reference_answer=str(row["answer"]),
-                memories=memories,
-            )
-            payload = {"_route_id": LABELLER_ROUTE_ID, "_exact_model": True, **build_request(item)}
+            try:
+                item = build_label_input_v2(row, conversation_ids, memories)
+            except ValueError:
+                # No dataset session or date for a memory: the question is refused
+                # rather than labelled from a guessed date.
+                entry = {
+                    "question_id": question_id,
+                    "schema_valid": False,
+                    "answerable_from_store": False,
+                    "reason": "unattributable",
+                    "calls": 0,
+                    "cost_usd": "0",
+                    "latency_seconds": 0.0,
+                    "serving_provider": None,
+                }
+                _append_journal(handle, {"kind": "result", "input_sha256": input_sha256, **entry})
+                entries.append(entry)
+                continue
+            payload = {
+                "_route_id": LABELLER_ROUTE_ID,
+                "_exact_model": True,
+                **build_request_v2(item),
+            }
 
             if read_ledger_spend_usd is None:
                 stop_reason = "spend_unreadable"
@@ -1009,6 +1370,7 @@ async def label_questions(
         unknown_cost = [e["question_id"] for e in entries if e.get("cost_usd") is None]
         document = {
             "schema": LABEL_RECORD_SCHEMA,
+            "artifacts": artifact_hashes(),
             "route_id": LABELLER_ROUTE_ID,
             "max_spend_usd": str(max_spend_usd),
             "total_cost_usd": str(total),
@@ -1054,6 +1416,7 @@ async def _run_label(
     from uuid import UUID
 
     settings = get_settings()
+    assert_label_database_v2(settings.database_url)
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=1)
     try:
         connection = await asyncpg.connect(settings.database_url)
@@ -1222,8 +1585,14 @@ def _packet_labels(
     """Validate the finished label document before anything is connected."""
     if not isinstance(labels, dict):
         raise ValueError("--labels must be a JSON object")
-    if labels.get("schema") != LABEL_RECORD_SCHEMA:
+    schema = labels.get("schema")
+    if schema not in LABEL_RECORD_SCHEMAS:
         raise ValueError("--labels has an unknown record schema")
+    if schema == LABEL_RECORD_SCHEMA:
+        # The packet's header states the prompt the labels were made with.
+        artifacts = labels.get("artifacts")
+        if not isinstance(artifacts, Mapping) or not isinstance(artifacts.get("prompt_v2"), str):
+            raise ValueError("--labels v2 document has no prompt hash in `artifacts`")
     if labels.get("stop_reason") is not None:
         raise ValueError(f"Labels document stopped, no packet: {labels['stop_reason']}")
     questions = labels.get("questions")
@@ -1258,6 +1627,7 @@ def _packet_labels(
 
 async def _run_packet(
     *,
+    labels: Mapping[str, Any],
     rows: Sequence[Mapping[str, Any]],
     checkpoint: Mapping[str, Any],
     questions: Sequence[Mapping[str, Any]],
@@ -1267,7 +1637,10 @@ async def _run_packet(
 ) -> str:
     """Read the answer-session memories read-only and render the packet.
 
-    No provider, attestation, spend or lock is involved: this makes no paid call.
+    A v2 document reads the dated v2 input and renders the v2 packet, headed by
+    the labeller version and the prompt hash recorded in ``artifacts``. A v1
+    document keeps v1's rendering. No provider, attestation, spend or lock is
+    involved: this makes no paid call.
     """
     import asyncpg
 
@@ -1280,7 +1653,9 @@ async def _run_packet(
         raise ValueError("database_url is not configured")
     connect = connector or asyncpg.connect
     connection = await connect(database_url)
-    memories_by_question: dict[str, tuple[tuple[str, str], ...]] = {}
+    label_schema = str(labels["schema"])
+    v2 = label_schema == LABEL_RECORD_SCHEMA
+    memories_by_question: dict[str, Any] = {}
     try:
         decryption = decrypt or ContentEncryption(settings.daemon_encryption_key).decrypt
 
@@ -1296,15 +1671,42 @@ async def _run_packet(
                     question_id,
                     [str(value) for value in row.get("answer_session_ids") or []],
                 )
-                memories_by_question[question_id] = await load_answer_session_memories(
-                    memory_reader,
-                    decryption,
-                    str(row["user_id"]),
-                    list(conversation_ids.values()),
-                )
+                if v2:
+                    loaded = await load_answer_session_memories_v2(
+                        memory_reader,
+                        decryption,
+                        str(row["user_id"]),
+                        list(conversation_ids.values()),
+                    )
+                    try:
+                        item = build_label_input_v2(row, conversation_ids, loaded)
+                    except ValueError:
+                        # The labeller refused this question for the same reason:
+                        # show it with no dated memories rather than a guessed date.
+                        memories_by_question[question_id] = ()
+                    else:
+                        memories_by_question[question_id] = item.memories
+                else:
+                    memories_by_question[question_id] = await load_answer_session_memories(
+                        memory_reader,
+                        decryption,
+                        str(row["user_id"]),
+                        list(conversation_ids.values()),
+                    )
     finally:
         await connection.close()
 
+    if v2:
+        artifacts = labels["artifacts"]
+        return build_spot_check_packet_v2(
+            selection,
+            questions,
+            rows,
+            checkpoint,
+            memories_by_question,
+            label_schema=label_schema,
+            prompt_sha256=str(artifacts["prompt_v2"]),
+        )
     return build_spot_check_packet(selection, questions, rows, checkpoint, memories_by_question)
 
 
@@ -1355,6 +1757,7 @@ def packet_main(
     selection = spot_check_selection(questions)
     markdown = asyncio.run(
         _run_packet(
+            labels=labels,
             rows=rows,
             checkpoint=checkpoint,
             questions=questions,
@@ -1391,24 +1794,39 @@ __all__ = [
     "LABELLER_REASONING_EFFORT",
     "LABELLER_ROUTE_ID",
     "LABELLER_SEED",
+    "LABEL_DATABASE_NAME_V2",
     "LABEL_RECORD_SCHEMA",
+    "LABEL_RECORD_SCHEMAS",
+    "LABEL_RECORD_SCHEMA_V1",
     "LABEL_SCHEMA",
     "MEMORY_SQL",
+    "MEMORY_SQL_V2",
+    "PROMPT_TEMPLATE_V2",
     "PROMPT_V1",
+    "PROMPT_V2",
     "Label",
     "LabelInput",
+    "LabelInputV2",
+    "MemoryV2",
     "artifact_hashes",
+    "assert_label_database_v2",
+    "build_label_input_v2",
     "build_request",
+    "build_request_v2",
     "build_spot_check_packet",
+    "build_spot_check_packet_v2",
     "ceiling_from_route",
     "label_main",
     "label_questions",
     "load_answer_session_memories",
+    "load_answer_session_memories_v2",
     "main",
     "packet_main",
     "parse_label",
     "price_ceiling_reader",
     "request_template",
+    "request_template_v2",
+    "session_dates_from_row",
     "spot_check_sample",
     "spot_check_selection",
     "verify_label_route",
