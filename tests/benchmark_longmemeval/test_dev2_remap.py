@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 
@@ -46,6 +47,13 @@ class _Frozen:
 
 def _frozen(count: int = 100) -> _Frozen:
     return _Frozen(tuple(f"q{index:03d}" for index in range(count)))
+
+
+def _prepared(fingerprint: str = "a" * 64, *, database: str = COPY_DB_NAME) -> dict[str, Any]:
+    return {
+        "schema": "dev2-remap-prepare/1",
+        "copy": {"database": database, "fingerprint_sha256": fingerprint},
+    }
 
 
 def _discovery() -> dict[str, list[str]]:
@@ -93,8 +101,15 @@ class _Conn:
             return self.retrieval_rows
         if "pg_trigger" in sql:
             return self.triggers
+        if "user_created" in sql:
+            return 0
         if "information_schema.columns" in sql:
             return 1
+        raise AssertionError(f"unexpected query: {sql}")
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        if "md5(coalesce(string_agg" in sql:
+            return {"rows": 0, "digest": ""}
         raise AssertionError(f"unexpected query: {sql}")
 
     async def fetch(self, sql: str, *args: Any) -> Any:
@@ -256,6 +271,8 @@ def test_run_remap_refuses_the_original_before_any_write(tmp_path: Path) -> None
                 conn=conn,
                 dataset=[],
                 apply=False,
+                prepared=_prepared(),
+                prepared_path=tmp_path / "prepared.json",
                 output_path=tmp_path / "remap.json",
                 repo_root=tmp_path / "repo",
             )
@@ -329,6 +346,8 @@ def test_retrieval_log_rows_refuse(tmp_path: Path) -> None:
                 conn=conn,
                 dataset=[],
                 apply=False,
+                prepared=_prepared(),
+                prepared_path=tmp_path / "prepared.json",
                 output_path=tmp_path / "remap.json",
                 repo_root=tmp_path / "repo",
             )
@@ -345,6 +364,8 @@ def test_unclassified_column_refuses_the_run(tmp_path: Path) -> None:
                 conn=_Conn(discovery=discovery),
                 dataset=[],
                 apply=False,
+                prepared=_prepared(),
+                prepared_path=tmp_path / "prepared.json",
                 output_path=tmp_path / "remap.json",
                 repo_root=tmp_path / "repo",
             )
@@ -358,6 +379,8 @@ def test_user_trigger_refuses(tmp_path: Path) -> None:
                 conn=_Conn(triggers=1),
                 dataset=[],
                 apply=False,
+                prepared=_prepared(),
+                prepared_path=tmp_path / "prepared.json",
                 output_path=tmp_path / "remap.json",
                 repo_root=tmp_path / "repo",
             )
@@ -374,12 +397,34 @@ def test_existing_output_refuses_without_touching_the_database(tmp_path: Path) -
                 conn=conn,
                 dataset=[],
                 apply=False,
+                prepared=_prepared(),
+                prepared_path=tmp_path / "prepared.json",
                 output_path=output,
                 repo_root=tmp_path / "repo",
             )
         )
     assert conn.events == []
     assert output.read_text(encoding="utf-8") == "{}"
+
+
+def test_run_remap_refuses_a_copy_that_is_not_the_prepared_state(tmp_path: Path) -> None:
+    # The live fingerprint no longer equals the prepared one (an earlier apply, or
+    # any change): refuse before the transaction so timestamps are never mapped twice.
+    conn = _Conn()
+    with pytest.raises(RemapError, match="already remapped or changed"):
+        asyncio.run(
+            run_remap(
+                conn=conn,
+                dataset=[{"question_id": "q000"}],
+                apply=True,
+                prepared=_prepared("a" * 64),
+                prepared_path=tmp_path / "prepared.json",
+                output_path=tmp_path / "remap.json",
+                repo_root=tmp_path / "repo",
+            )
+        )
+    assert conn.events == []
+    assert not (tmp_path / "remap.json").exists()
 
 
 # --- dataset loading ---------------------------------------------------------
@@ -434,13 +479,31 @@ def test_dataset_ignores_questions_outside_the_frozen_set(tmp_path: Path) -> Non
 def test_memory_windows_accept_the_bounds_and_refuse_outside() -> None:
     question_at = datetime(2023, 5, 22, 10, 0, tzinfo=UTC)
     bounds = memory_session_bounds(("s1", "s2"), (D1, D2), question_at)
-    assert bounds["s1"] == (D1, D2)
-    assert bounds["s2"] == (D2, question_at)
+    assert (bounds["s1"].lower, bounds["s1"].upper) == (D1, D2)
+    assert bounds["s1"].upper_inclusive is False
+    assert (bounds["s2"].lower, bounds["s2"].upper) == (D2, question_at)
+    assert bounds["s2"].upper_inclusive is False
     assert check_memory_windows([{"id": "m", "session_id": "s1", "valid_from": D1}], bounds) == 1
     with pytest.raises(RemapError, match="outside its session's window"):
         check_memory_windows([{"id": "m", "session_id": "s1", "valid_from": D2}], bounds)
     with pytest.raises(RemapError, match="outside its session's window"):
         check_memory_windows([{"id": "m", "session_id": "s2", "valid_from": question_at}], bounds)
+
+
+def test_memory_windows_accept_a_tied_session_mapping_to_its_date() -> None:
+    # Equal consecutive haystack dates give the earlier session scale 0, so all
+    # its memories land exactly on that date; the bound must include it.
+    question_at = datetime(2023, 5, 22, 10, 0, tzinfo=UTC)
+    bounds = memory_session_bounds(("s1", "s2"), (D1, D1), question_at)
+    assert bounds["s1"].upper == D1
+    assert bounds["s1"].upper_inclusive is True
+    assert check_memory_windows([{"id": "m1", "session_id": "s1", "valid_from": D1}], bounds) == 1
+    assert check_memory_windows([{"id": "m2", "session_id": "s2", "valid_from": D1}], bounds) == 1
+    # The tie still bounds the earlier session: one second later is outside it.
+    with pytest.raises(RemapError, match="outside its session's window"):
+        check_memory_windows(
+            [{"id": "m", "session_id": "s1", "valid_from": D1 + timedelta(seconds=1)}], bounds
+        )
 
 
 def test_memory_windows_refuse_unattributable_memories() -> None:
@@ -597,6 +660,75 @@ def _integration_dataset(question_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def _tied_session_dataset(question_id: str) -> list[dict[str, Any]]:
+    tied = "2023/05/20 (Sat) 02:21"
+    return [
+        {
+            "question_id": question_id,
+            "question_date": "2023/05/22 (Mon) 10:00",
+            "haystack_session_ids": ["bench-session-1", "bench-session-2"],
+            "haystack_dates": [tied, tied],
+        }
+    ]
+
+
+def _source_dsn(copy_dsn: str) -> str:
+    parts = urlsplit(copy_dsn)
+    return urlunsplit(parts._replace(path=f"/{SOURCE_DB_NAME}"))
+
+
+def _write_prepared(
+    tmp_path: Path, *, copy_fingerprint: str, source_fingerprint: str
+) -> tuple[dict[str, Any], Path]:
+    prepared: dict[str, Any] = {
+        "schema": "dev2-remap-prepare/1",
+        "source": {"database": SOURCE_DB_NAME, "fingerprint_sha256": source_fingerprint},
+        "copy": {"database": COPY_DB_NAME, "fingerprint_sha256": copy_fingerprint},
+        "users": 1,
+    }
+    path = tmp_path / "prepared.json"
+    path.write_text(json.dumps(prepared), encoding="utf-8")
+    return prepared, path
+
+
+async def _seed_session(
+    conn: Any,
+    *,
+    user_id: uuid.UUID,
+    conversation: uuid.UUID,
+    session_id: str,
+    start: datetime,
+    memory_at: datetime,
+) -> None:
+    metadata = json.dumps({"session_id": session_id, "source": "longmemeval"})
+    await conn.execute(
+        "INSERT INTO conversations (id, user_id, metadata, created_at, updated_at, "
+        "last_activity_at) VALUES ($1, $2, $3::jsonb, $4, $4, $4)",
+        conversation,
+        user_id,
+        metadata,
+        start,
+    )
+    for extra in (0, 5):
+        await conn.execute(
+            "INSERT INTO messages (id, user_id, conversation_id, metadata, created_at) "
+            "VALUES ($1, $2, $3, $4::jsonb, $5)",
+            uuid.uuid4(),
+            user_id,
+            conversation,
+            metadata,
+            start + timedelta(minutes=extra),
+        )
+    await conn.execute(
+        "INSERT INTO memories (id, user_id, source_conversation_id, source_type, "
+        "created_at, updated_at, valid_from) VALUES ($1, $2, $3, 'extraction', $4, $4, $4)",
+        uuid.uuid4(),
+        user_id,
+        conversation,
+        memory_at,
+    )
+
+
 @pytest.mark.skipif(
     not os.environ.get("REMAP_TEST_DATABASE_URL"),
     reason="REMAP_TEST_DATABASE_URL is not set",
@@ -618,40 +750,29 @@ async def _integration_case(tmp_path: Path) -> None:
         for statement in DDL:
             await conn.execute(statement)
         conversation = uuid.uuid4()
-        await conn.execute(
-            "INSERT INTO conversations (id, user_id, metadata, created_at, updated_at, "
-            "last_activity_at) VALUES ($1, $2, $3::jsonb, $4, $4, $4)",
-            conversation,
-            user_id,
-            '{"session_id": "bench-session-1", "source": "longmemeval"}',
-            ingest,
-        )
-        for minutes in (0, 5):
-            await conn.execute(
-                "INSERT INTO messages (id, user_id, conversation_id, metadata, created_at) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                uuid.uuid4(),
-                user_id,
-                conversation,
-                '{"session_id": "bench-session-1", "source": "longmemeval"}',
-                ingest + timedelta(minutes=minutes),
-            )
-        memory = uuid.uuid4()
-        await conn.execute(
-            "INSERT INTO memories (id, user_id, source_conversation_id, source_type, "
-            "created_at, updated_at, valid_from) VALUES ($1, $2, $3, 'extraction', $4, $4, $4)",
-            memory,
-            user_id,
-            conversation,
-            ingest + timedelta(minutes=2),
+        await _seed_session(
+            conn,
+            user_id=user_id,
+            conversation=conversation,
+            session_id="bench-session-1",
+            start=ingest,
+            memory_at=ingest + timedelta(minutes=2),
         )
         dataset = _integration_dataset(question_id)
-        original = await conn.fetchval("SELECT valid_from FROM memories WHERE id = $1", memory)
+        original = await conn.fetchval(
+            "SELECT valid_from FROM memories WHERE user_id = $1", user_id
+        )
+        fingerprint = await dev2_remap.fingerprint_benchmark_users(conn, [user_id])
+        prepared, prepared_path = _write_prepared(
+            tmp_path, copy_fingerprint=fingerprint["sha256"], source_fingerprint="0" * 64
+        )
 
         dry = await run_remap(
             conn=conn,
             dataset=dataset,
             apply=False,
+            prepared=prepared,
+            prepared_path=prepared_path,
             output_path=tmp_path / "dry.json",
             repo_root=tmp_path / "repo",
         )
@@ -659,20 +780,24 @@ async def _integration_case(tmp_path: Path) -> None:
         assert dry["tables"]["memories"]["rows"] == 1
         assert dry["columns"]["memories"]["valid_from"] == "remapped"
         assert dry["columns"]["retrieval_log"]["created_at"]
-        after_dry = await conn.fetchval("SELECT valid_from FROM memories WHERE id = $1", memory)
+        after_dry = await conn.fetchval(
+            "SELECT valid_from FROM memories WHERE user_id = $1", user_id
+        )
         assert after_dry == original
 
         applied = await run_remap(
             conn=conn,
             dataset=dataset,
             apply=True,
+            prepared=prepared,
+            prepared_path=prepared_path,
             output_path=tmp_path / "apply.json",
             repo_root=tmp_path / "repo",
         )
         assert applied["committed"] is True
         assert applied["invariants"]["values_stuck"] is True
         assert applied["invariants"]["memory_windows_checked"] == 1
-        mapped = await conn.fetchval("SELECT valid_from FROM memories WHERE id = $1", memory)
+        mapped = await conn.fetchval("SELECT valid_from FROM memories WHERE user_id = $1", user_id)
         lower = datetime(2023, 5, 20, 2, 21, tzinfo=UTC)
         upper = datetime(2023, 5, 22, 10, 0, tzinfo=UTC)
         assert lower <= mapped < upper
@@ -681,7 +806,120 @@ async def _integration_case(tmp_path: Path) -> None:
         for table, columns in COLUMNS.items():
             for column in columns:
                 assert column in saved["columns"][table]
+
+        # A second apply must refuse and leave the mapped values untouched.
+        with pytest.raises(RemapError, match="already remapped or changed"):
+            await run_remap(
+                conn=conn,
+                dataset=dataset,
+                apply=True,
+                prepared=prepared,
+                prepared_path=prepared_path,
+                output_path=tmp_path / "second.json",
+                repo_root=tmp_path / "repo",
+            )
+        again = await conn.fetchval("SELECT valid_from FROM memories WHERE user_id = $1", user_id)
+        assert again == mapped
+        assert not (tmp_path / "second.json").exists()
     finally:
         for table in TABLES:
             await conn.execute(f"DROP TABLE IF EXISTS {table}")
         await conn.close()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("REMAP_TEST_DATABASE_URL"),
+    reason="REMAP_TEST_DATABASE_URL is not set",
+)
+def test_integration_tied_sessions_apply_and_verify(tmp_path: Path) -> None:
+    asyncio.run(_integration_tied_case(tmp_path))
+
+
+async def _integration_tied_case(tmp_path: Path) -> None:
+    asyncpg = pytest.importorskip("asyncpg")
+    dsn = os.environ["REMAP_TEST_DATABASE_URL"]
+    question_id = "bench-q1"
+    user_id = question_user_id(question_id)
+    ingest = datetime(2026, 11, 1, 10, 0, tzinfo=UTC)
+    frozen = _Frozen((question_id,))
+    dataset = _tied_session_dataset(question_id)
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    conn = await asyncpg.connect(dsn)
+    source_conn = await asyncpg.connect(_source_dsn(dsn))
+    try:
+        for table in TABLES:
+            await conn.execute(f"DROP TABLE IF EXISTS {table}")
+        for statement in DDL:
+            await conn.execute(statement)
+        first, second = uuid.uuid4(), uuid.uuid4()
+        await _seed_session(
+            conn,
+            user_id=user_id,
+            conversation=first,
+            session_id="bench-session-1",
+            start=ingest,
+            memory_at=ingest + timedelta(minutes=2),
+        )
+        await _seed_session(
+            conn,
+            user_id=user_id,
+            conversation=second,
+            session_id="bench-session-2",
+            start=ingest + timedelta(hours=1),
+            memory_at=ingest + timedelta(hours=1, minutes=2),
+        )
+        copy_fingerprint = await dev2_remap.fingerprint_benchmark_users(conn, [user_id])
+        source_fingerprint = await dev2_remap.fingerprint_benchmark_users(source_conn, [user_id])
+        prepared, prepared_path = _write_prepared(
+            tmp_path,
+            copy_fingerprint=copy_fingerprint["sha256"],
+            source_fingerprint=source_fingerprint["sha256"],
+        )
+
+        applied = await run_remap(
+            conn=conn,
+            dataset=dataset,
+            apply=True,
+            prepared=prepared,
+            prepared_path=prepared_path,
+            output_path=tmp_path / "apply.json",
+            repo_root=tmp_path / "repo",
+        )
+        assert applied["committed"] is True
+        assert applied["invariants"]["memory_windows_checked"] == 2
+        assert applied["session_map"][str(user_id)] == {
+            str(first): "bench-session-1",
+            str(second): "bench-session-2",
+        }
+
+        lineage = await dev2_remap.verify_lineage(
+            source_conn=source_conn,
+            copy_conn=conn,
+            prepared=prepared,
+            apply_report=applied,
+            dataset=dataset,
+            dataset_path=dataset_path,
+            script_path=Path(dev2_remap.__file__),
+            prepared_path=prepared_path,
+            apply_report_path=tmp_path / "apply.json",
+            output_path=tmp_path / "lineage.json",
+            frozen=frozen,
+            repo_root=tmp_path / "repo",
+        )
+        assert lineage["result"] == "ok"
+        assert lineage["memory_windows_checked"] == 2
+
+        # The tied earlier session collapses to its date; the later one follows it.
+        tied = datetime(2023, 5, 20, 2, 21, tzinfo=UTC)
+        values = await conn.fetch(
+            "SELECT source_conversation_id, valid_from FROM memories WHERE user_id = $1", user_id
+        )
+        mapped = {row["source_conversation_id"]: row["valid_from"] for row in values}
+        assert mapped[first] == tied
+        assert mapped[second] > tied
+    finally:
+        for table in TABLES:
+            await conn.execute(f"DROP TABLE IF EXISTS {table}")
+        await conn.close()
+        await source_conn.close()

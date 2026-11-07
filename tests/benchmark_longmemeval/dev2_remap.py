@@ -21,8 +21,11 @@ Subcommands, each writing to an exclusive file outside the repository:
 ``prepare``  fingerprint the original over all 100 frozen users, create the copy
              with ``CREATE DATABASE ... TEMPLATE``, apply the benchmark marker
              comment, and fingerprint the copy (must equal the original).
-``remap``    dry run by default; ``--apply`` commits. Only ever the copy.
-``verify``   read-only; re-fingerprints both databases and writes the lineage.
+``remap``    dry run by default; ``--apply`` commits. Only ever the copy; the
+             prepared report proves the copy is still the untouched clone, so a
+             second apply refuses instead of mapping timestamps twice.
+``verify``   read-only; re-fingerprints both databases, attributes memories
+             through the apply report's session map and writes the lineage.
 
 Column discovery is not a fixed list. Every timestamp column of the connected
 schema is read from ``information_schema`` and must be either in :data:`COLUMNS`
@@ -395,19 +398,47 @@ def _session_schedule(entry: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[
     return tuple(session_ids), tuple(dates)
 
 
+@dataclass(frozen=True, slots=True)
+class SessionWindow:
+    """One session's target date range.
+
+    A session's mapped value must be at or after its own date. It must be before
+    the next session's date, except when consecutive sessions share a date (a
+    tie): a tied session's memories collapse to exactly that date, so the bound
+    is inclusive there. The last session is strict against the question date.
+    """
+
+    lower: datetime
+    upper: datetime
+    upper_inclusive: bool
+
+    def contains(self, value: datetime) -> bool:
+        if value < self.lower:
+            return False
+        if self.upper_inclusive:
+            return value <= self.upper
+        return value < self.upper
+
+
 def memory_session_bounds(
     session_ids: Sequence[str], dates: Sequence[datetime], question_at: datetime
-) -> dict[str, tuple[datetime, datetime]]:
-    """session id -> [its date, the next session's date or the question date)."""
-    bounds: dict[str, tuple[datetime, datetime]] = {}
+) -> dict[str, SessionWindow]:
+    """session id -> its date range; a tied next date makes the upper bound inclusive."""
+    bounds: dict[str, SessionWindow] = {}
     for index, session_id in enumerate(session_ids):
-        upper = dates[index + 1] if index + 1 < len(dates) else question_at
-        bounds[session_id] = (dates[index], upper)
+        lower = dates[index]
+        if index + 1 < len(dates):
+            upper = dates[index + 1]
+            inclusive = upper == lower
+        else:
+            upper = question_at
+            inclusive = False
+        bounds[session_id] = SessionWindow(lower, upper, inclusive)
     return bounds
 
 
 def check_memory_windows(
-    rows: Sequence[Mapping[str, Any]], bounds: Mapping[str, tuple[datetime, datetime]]
+    rows: Sequence[Mapping[str, Any]], bounds: Mapping[str, SessionWindow]
 ) -> int:
     """Every memory's valid_from is inside its own session's window; refuses otherwise."""
     checked = 0
@@ -418,8 +449,7 @@ def check_memory_windows(
         value = row.get("valid_from")
         if not isinstance(value, datetime):
             raise RemapError("A memory has no valid_from")
-        lower, upper = bounds[session_id]
-        if not lower <= _utc(value) < upper:
+        if not bounds[session_id].contains(_utc(value)):
             raise RemapError(f"Memory {row.get('id')} has valid_from outside its session's window")
         checked += 1
     return checked
@@ -453,6 +483,7 @@ async def build_plans(
         windows: list[datetime] = []
         session_dates: list[datetime] = []
         last_raw: list[datetime] = []
+        conversations: dict[str, str] = {}
         for row in rows:
             sessions = row["sessions"]
             if (
@@ -467,6 +498,7 @@ async def build_plans(
             windows.append(_utc(row["first"]))
             session_dates.append(date_by_session[sessions[0]])
             last_raw.append(_utc(row["last"]))
+            conversations[str(row["conversation_id"])] = sessions[0]
         for index in range(1, len(windows)):
             if last_raw[index - 1] >= windows[index]:
                 raise RemapError(f"{question_id}: session ingest windows overlap")
@@ -500,6 +532,7 @@ async def build_plans(
             "collapsed_ties": sum(scale == 0.0 for scale in mapper.scales),
             "min_scale": min(mapper.scales),
             "bounds": memory_session_bounds(session_ids, dates, question_at),
+            "conversations": conversations,
         }
     return mappers, plans
 
@@ -615,11 +648,42 @@ async def _assert_values_stuck(
                     )
 
 
+async def _prepared_fingerprint_check(
+    conn: Any,
+    dataset: Sequence[Mapping[str, Any]],
+    prepared: Mapping[str, Any],
+    name: str,
+) -> str:
+    """Refuse unless the copy still has the fingerprint ``prepare`` recorded.
+
+    A second ``--apply`` would map already-remapped timestamps again; the
+    fingerprint is the only evidence that this copy is still the untouched
+    clone, so the check runs before any row is written.
+    """
+    if prepared.get("schema") != PREPARE_SCHEMA:
+        raise RemapError("Prepared report has the wrong schema")
+    if prepared.get("copy", {}).get("database") != name:
+        raise RemapError("Prepared report names a different copy database")
+    expected = prepared.get("copy", {}).get("fingerprint_sha256")
+    if not isinstance(expected, str) or not expected:
+        raise RemapError("Prepared report has no copy fingerprint")
+    user_ids = [question_user_id(entry["question_id"]) for entry in dataset]
+    live = await fingerprint_benchmark_users(conn, user_ids)
+    if live["sha256"] != expected:
+        raise RemapError(
+            "The copy no longer matches the prepared fingerprint: it was already remapped "
+            "or changed since prepare. Refusing to map timestamps twice."
+        )
+    return expected
+
+
 async def run_remap(
     *,
     conn: Any,
     dataset: Sequence[Mapping[str, Any]],
     apply: bool,
+    prepared: Mapping[str, Any],
+    prepared_path: Path | str,
     output_path: Path | str,
     repo_root: Path | None = None,
     clock: Callable[[], datetime] | None = None,
@@ -652,8 +716,15 @@ async def run_remap(
         # user_created rows; a remap cannot reproduce that.
         raise RemapError(f"{explicit} user_created memories; remap fidelity is unproven")
     document["user_created_memories"] = 0
+    prepared_fingerprint = await _prepared_fingerprint_check(conn, dataset, prepared, name)
+    document["prepared"] = {
+        "path": str(prepared_path),
+        "sha256": _sha256_file(prepared_path),
+        "copy_fingerprint_sha256": prepared_fingerprint,
+    }
 
     transaction = conn.transaction(isolation="serializable")
+    plans: dict[Any, dict[str, Any]] = {}
     await transaction.start()
     try:
         mappers, plans = await build_plans(conn, dataset)
@@ -702,18 +773,41 @@ async def run_remap(
         document["sessions_per_user"] = {
             str(user_id): plan["sessions"] for user_id, plan in sorted(plans.items(), key=str)
         }
-        if apply:
-            await transaction.commit()
-            document["committed"] = True
-        else:
-            await transaction.rollback()
-            document["committed"] = False
-        if apply:
-            fingerprint = await fingerprint_benchmark_users(conn, list(plans))
-            document["remapped_fingerprint_sha256"] = fingerprint["sha256"]
+        document["session_map"] = {
+            str(user_id): plan["conversations"] for user_id, plan in sorted(plans.items(), key=str)
+        }
     except BaseException:
         await transaction.rollback()
         raise
+
+    # The commit ends the transaction block: nothing below may roll it back.
+    if apply:
+        try:
+            await transaction.commit()
+        except BaseException:
+            try:
+                await transaction.rollback()
+            except Exception:
+                pass
+            raise
+        document["committed"] = True
+    else:
+        await transaction.rollback()
+        document["committed"] = False
+
+    if apply:
+        document["post_commit"] = "committed-unverified"
+        try:
+            fingerprint = await fingerprint_benchmark_users(conn, list(plans))
+        except BaseException as error:
+            # The rows are already durable; say so and keep the report.
+            _write_document_atomic(output, document)
+            raise RemapError(
+                "The remap committed but its post-commit verification failed: the copy is "
+                "remapped and unverified. Do not re-run the remap; inspect the report."
+            ) from error
+        document["remapped_fingerprint_sha256"] = fingerprint["sha256"]
+        document["post_commit"] = "committed-verified"
     _write_document_atomic(output, document)
     return document
 
@@ -825,25 +919,40 @@ async def verify_lineage(
     source_conn: Any,
     copy_conn: Any,
     prepared: Mapping[str, Any],
-    remap_document: Mapping[str, Any],
+    apply_report: Mapping[str, Any],
     dataset: Sequence[Mapping[str, Any]],
     dataset_path: Path | str,
     script_path: Path | str,
     prepared_path: Path | str,
-    remap_path: Path | str,
+    apply_report_path: Path | str,
     output_path: Path | str,
     frozen: Any,
     repo_root: Path | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
-    """Read-only: the original is unchanged, the copy holds the remapped state."""
+    """Read-only: the original is unchanged, the copy holds the remapped state.
+
+    Ingest windows are never re-derived from the remapped copy: its stored times
+    are already historical, so re-deriving windows would see the overlaps the
+    remap itself created. Target dates come from the dataset, and each memory is
+    attributed through the session map the apply report recorded.
+    """
     output = _prepare_output(output_path, repo_root)
     if prepared.get("schema") != PREPARE_SCHEMA:
         raise RemapError("Prepared report has the wrong schema")
-    if remap_document.get("schema") != REMAP_SCHEMA:
+    if apply_report.get("schema") != REMAP_SCHEMA:
         raise RemapError("Remap report has the wrong schema")
-    if remap_document.get("committed") is not True:
+    if apply_report.get("committed") is not True:
         raise RemapError("Remap report is a dry run; there is no applied state to verify")
+    recorded_prepared = apply_report.get("prepared")
+    if not isinstance(recorded_prepared, Mapping):
+        raise RemapError("The apply report does not name a prepared report")
+    if recorded_prepared.get("sha256") != _sha256_file(prepared_path):
+        raise RemapError("The apply report does not name this prepared report")
+    if recorded_prepared.get("copy_fingerprint_sha256") != prepared.get("copy", {}).get(
+        "fingerprint_sha256"
+    ):
+        raise RemapError("The apply report was made against a different prepared fingerprint")
     source_name = assert_source_database(await source_conn.fetchval("SELECT current_database()"))
     copy_name = assert_copy_database(await copy_conn.fetchval("SELECT current_database()"))
     expected_source = prepared.get("source", {}).get("fingerprint_sha256")
@@ -856,20 +965,53 @@ async def verify_lineage(
     if source_fingerprint["sha256"] != expected_source:
         raise RemapError("The original database changed since it was fingerprinted")
     remapped_fingerprint = await fingerprint_benchmark_users(copy_conn, user_ids)
-    recorded = remap_document.get("remapped_fingerprint_sha256")
-    if recorded and recorded != remapped_fingerprint["sha256"]:
+    recorded = apply_report.get("remapped_fingerprint_sha256")
+    if not recorded:
+        raise RemapError("Remap report has no post-commit fingerprint; the apply is unverified")
+    if recorded != remapped_fingerprint["sha256"]:
         raise RemapError("The copy does not match the remapped state its report recorded")
-    _, plans = await build_plans(copy_conn, dataset)
+    session_maps = apply_report.get("session_map")
+    if not isinstance(session_maps, Mapping):
+        raise RemapError("Remap report has no session map; memories cannot be attributed")
     windows_checked = 0
-    for user_id, plan in plans.items():
+    for entry in dataset:
+        question_id = entry["question_id"]
+        user_id = question_user_id(question_id)
+        session_ids, dates = _session_schedule(entry)
+        try:
+            question_at = question_as_of(entry)
+        except ValueError:
+            raise RemapError(f"{question_id}: question_date missing or unparsable") from None
+        recorded_sessions = session_maps.get(str(user_id))
+        if not isinstance(recorded_sessions, Mapping):
+            raise RemapError(f"{question_id}: the apply report has no session map")
+        recorded_values = list(recorded_sessions.values())
+        if (
+            len(recorded_values) != len(session_ids)
+            or any(not isinstance(value, str) for value in recorded_values)
+            or set(recorded_values) != set(session_ids)
+        ):
+            raise RemapError(
+                f"{question_id}: the apply report's session map does not match the dataset"
+            )
+        bounds = memory_session_bounds(session_ids, dates, question_at)
         rows = await copy_conn.fetch(
-            """SELECT m.id, m.valid_from, c.metadata->>'session_id' AS session_id
-               FROM memories m
-               LEFT JOIN conversations c ON c.id = m.source_conversation_id
-               WHERE m.user_id = $1""",
+            """SELECT m.id, m.valid_from, m.source_conversation_id
+               FROM memories m WHERE m.user_id = $1""",
             user_id,
         )
-        windows_checked += check_memory_windows(rows, plan["bounds"])
+        attributed: list[dict[str, Any]] = []
+        for row in rows:
+            conversation_id = row["source_conversation_id"]
+            session_id = (
+                recorded_sessions.get(str(conversation_id)) if conversation_id is not None else None
+            )
+            if not isinstance(session_id, str):
+                raise RemapError(f"Memory {row['id']} cannot be attributed to one of its sessions")
+            attributed.append(
+                {"id": row["id"], "session_id": session_id, "valid_from": row["valid_from"]}
+            )
+        windows_checked += check_memory_windows(attributed, bounds)
     document = {
         "schema": LINEAGE_SCHEMA,
         "mapping_version": MAPPING_VERSION,
@@ -882,7 +1024,7 @@ async def verify_lineage(
         "remapped": {
             "database": copy_name,
             "fingerprint_sha256": remapped_fingerprint["sha256"],
-            "remap_report_sha256": _sha256_file(remap_path),
+            "apply_report_sha256": _sha256_file(apply_report_path),
         },
         "dataset": {"path": str(dataset_path), "sha256": _sha256_file(dataset_path)},
         "mapping_script": {"path": str(script_path), "sha256": _sha256_file(script_path)},
@@ -930,6 +1072,7 @@ def build_parser() -> argparse.ArgumentParser:
     remap = sub.add_parser("remap", help="Remap the copy; dry run unless --apply.")
     remap.add_argument("--dsn", required=True)
     remap.add_argument("--dataset", type=Path, required=True)
+    remap.add_argument("--prepared", type=Path, required=True)
     remap.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
     remap.add_argument("--output", type=Path, required=True)
     remap.add_argument("--apply", action="store_true")
@@ -940,7 +1083,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--copy-dsn", required=True)
     verify.add_argument("--dataset", type=Path, required=True)
     verify.add_argument("--prepared", type=Path, required=True)
-    verify.add_argument("--remap", type=Path, required=True)
+    verify.add_argument("--apply-report", type=Path, required=True)
     verify.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
     verify.add_argument("--output", type=Path, required=True)
     verify.add_argument("--repo-root", type=Path, default=None, help=argparse.SUPPRESS)
@@ -972,12 +1115,15 @@ async def _run_remap(args: argparse.Namespace, frozen: Any) -> Mapping[str, Any]
     name = db_name_from_dsn(args.dsn)
     assert_copy_database(name)
     dataset = load_dataset(args.dataset, frozen)
+    prepared = _load_report(args.prepared)
     conn = await asyncpg.connect(args.dsn, timeout=10, command_timeout=600)
     try:
         return await run_remap(
             conn=conn,
             dataset=dataset,
             apply=bool(args.apply),
+            prepared=prepared,
+            prepared_path=args.prepared,
             output_path=args.output,
             repo_root=args.repo_root,
         )
@@ -992,7 +1138,7 @@ async def _run_verify(args: argparse.Namespace, frozen: Any) -> Mapping[str, Any
     assert_copy_database(db_name_from_dsn(args.copy_dsn))
     dataset = load_dataset(args.dataset, frozen)
     prepared = _load_report(args.prepared)
-    remap_document = _load_report(args.remap)
+    apply_report = _load_report(args.apply_report)
     source_conn = await asyncpg.connect(args.source_dsn, timeout=10, command_timeout=600)
     copy_conn = await asyncpg.connect(args.copy_dsn, timeout=10, command_timeout=600)
     try:
@@ -1000,12 +1146,12 @@ async def _run_verify(args: argparse.Namespace, frozen: Any) -> Mapping[str, Any
             source_conn=source_conn,
             copy_conn=copy_conn,
             prepared=prepared,
-            remap_document=remap_document,
+            apply_report=apply_report,
             dataset=dataset,
             dataset_path=args.dataset,
             script_path=Path(__file__),
             prepared_path=args.prepared,
-            remap_path=args.remap,
+            apply_report_path=args.apply_report,
             output_path=args.output,
             frozen=frozen,
             repo_root=args.repo_root,
@@ -1042,6 +1188,7 @@ __all__ = [
     "PREPARE_SCHEMA",
     "REMAP_SCHEMA",
     "RemapError",
+    "SessionWindow",
     "SOURCE_DB_NAME",
     "assert_copy_database",
     "assert_source_database",
