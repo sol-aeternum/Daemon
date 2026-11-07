@@ -91,8 +91,6 @@ PROMPT_V2: Final[str] = (
     + " The input gives the question's date, and each memory's source session ID and session date."
     + " Resolve relative expressions in a memory ('last month', 'next week', 'recently') against"
     " that memory's session date, and compare the result with the question's date."
-    + " A memory may support the answer through a date computed this way; don't treat it as"
-    " unsupported because the memory states no absolute date."
 )
 
 PROMPT_TEMPLATE_V2: Final[str] = (
@@ -438,6 +436,33 @@ def _iso_dataset_date(value: Any) -> str:
     if parsed is None:
         raise ValueError("Dataset date missing or unparsable")
     return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def validate_question_rows_v2(rows: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse a v2 rows file that no question could ever be labelled from.
+
+    Every v2 label needs the question's own date and each memory's session id
+    and date, and those come only from the dataset fields the row carries. A
+    row missing any of ``question_date``, ``haystack_session_ids`` or
+    ``haystack_dates``, or whose two haystack lists disagree in length, is
+    refused before a journal or a document exists: a run must never finish as
+    a complete-looking document of not-answerable labels. The error carries
+    only the question id and the field, never memory text.
+    """
+    for index, row in enumerate(rows):
+        question_id = str(row.get("question_id") or f"row {index}")
+        if not str(row.get("question_date") or "").strip():
+            raise ValueError(f"{question_id}: question_date is missing or empty")
+        session_ids = row.get("haystack_session_ids")
+        dates = row.get("haystack_dates")
+        if not isinstance(session_ids, (list, tuple)) or not session_ids:
+            raise ValueError(f"{question_id}: haystack_session_ids is missing or empty")
+        if not isinstance(dates, (list, tuple)) or not dates:
+            raise ValueError(f"{question_id}: haystack_dates is missing or empty")
+        if len(session_ids) != len(dates):
+            raise ValueError(
+                f"{question_id}: haystack_session_ids and haystack_dates disagree in length"
+            )
 
 
 def session_dates_from_row(row: Mapping[str, Any]) -> dict[str, str]:
@@ -1149,7 +1174,10 @@ async def label_questions(
     invocations against different outputs can never both admit a call. A
     recorded result is reused only when the journal's batch manifest and the
     question's input digest still match; otherwise the run stops with
-    ``receipt_mismatch`` and sends nothing.
+    ``receipt_mismatch`` and sends nothing. A question whose memories cannot be
+    attributed to a dataset session and date stops the run with
+    ``unattributable`` before any dispatch, and is never recorded as a
+    not-answerable label.
     """
     from scripts.memory_query_decomposition import receipt_dict, reported_cost
 
@@ -1256,21 +1284,11 @@ async def label_questions(
             try:
                 item = build_label_input_v2(row, conversation_ids, memories)
             except ValueError:
-                # No dataset session or date for a memory: the question is refused
-                # rather than labelled from a guessed date.
-                entry = {
-                    "question_id": question_id,
-                    "schema_valid": False,
-                    "answerable_from_store": False,
-                    "reason": "unattributable",
-                    "calls": 0,
-                    "cost_usd": "0",
-                    "latency_seconds": 0.0,
-                    "serving_provider": None,
-                }
-                _append_journal(handle, {"kind": "result", "input_sha256": input_sha256, **entry})
-                entries.append(entry)
-                continue
+                # No dataset session or date for a memory: no label can be
+                # attributed, so the run stops here. This is never an entry: a
+                # refused question must not ride along as a not-answerable label.
+                stop_reason = "unattributable"
+                break
             payload = {
                 "_route_id": LABELLER_ROUTE_ID,
                 "_exact_model": True,
@@ -1401,6 +1419,7 @@ async def _run_label(
     max_spend_usd: Decimal,
 ) -> dict[str, Any]:
     """Build the real collaborators for ``label``. The tests never reach here."""
+    validate_question_rows_v2(rows)
     import asyncpg
 
     from orchestrator import compute_runtime
@@ -1507,6 +1526,12 @@ def label_main(argv: Sequence[str] | None = None) -> int:
     rows = json.loads(args.question_rows.read_text(encoding="utf-8"))
     if not isinstance(rows, list):
         raise ValueError("--question-rows must be a JSON list")
+    try:
+        # Before any journal, document, lock or call: a rows file the v2 fields
+        # cannot attribute is refused whole, so it never becomes a run.
+        validate_question_rows_v2(rows)
+    except ValueError as error:
+        parser.error(str(error))
     checkpoint = json.loads(args.checkpoint.read_text(encoding="utf-8"))
     if not isinstance(checkpoint, dict):
         raise ValueError("--checkpoint must be a JSON object")
@@ -1829,5 +1854,6 @@ __all__ = [
     "session_dates_from_row",
     "spot_check_sample",
     "spot_check_selection",
+    "validate_question_rows_v2",
     "verify_label_route",
 ]

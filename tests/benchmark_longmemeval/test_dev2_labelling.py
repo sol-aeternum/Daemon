@@ -49,9 +49,9 @@ PINNED_HASHES = {
 
 # Pinned when v2 was added: a wording or template change must be deliberate too.
 PINNED_V2_HASHES = {
-    "prompt_v2": "1e596d6c552e47fb99419c299984df7b715954e00a006fb7bde674cdcd58b08e",
+    "prompt_v2": "43e52a1839d7e4e85b8a72aec8ac0d620a663b006d1147bb4d4350137997d677",
     "label_record_schema_v2": "87255b59cda0cb8a6aa896d01f045d3d262a9aef6a1c36ff3ff2ce9a927c2a5e",
-    "request_template_v2": "e479028e456ff262a9209065a87092b5b2a6030c9ddaa3febfd4ea48b6bfedf6",
+    "request_template_v2": "2bb192d242528e3ef43776c213032cb463f9c79067c2645b2ac5bb93dac4cea1",
 }
 
 SENTINEL = "SENTINEL_MEMORY_TEXT_do_not_leak"
@@ -81,6 +81,9 @@ def test_v2_prompt_states_the_date_rules() -> None:
     assert "session date" in PROMPT_V2
     assert "question's date" in PROMPT_V2
     assert PROMPT_V2.startswith(PROMPT_V1)
+    # The biased sentence is gone: the prompt must not push toward answerable.
+    assert "don't treat it as" not in PROMPT_V2
+    assert "memory states no absolute date" not in PROMPT_V2
 
 
 def test_prompt_avoids_ranking_and_retrieval_language() -> None:
@@ -480,9 +483,13 @@ def test_route_refusal_makes_zero_calls(tmp_path: Any) -> None:
     assert calls == []
 
 
-def test_v2_unattributable_memory_refuses_without_a_dispatch(tmp_path: Any) -> None:
+def test_v2_unattributable_memory_stops_the_run(tmp_path: Any) -> None:
+    """An unattributable memory is a run-level stop, never a not-answerable label."""
+    second = ("q2", "s2", "22222222-2222-2222-2222-222222222222")
     cases = {
         "unknown conversation": {
+            "rows": [_row("q1", "s1"), _row("q2", "s2")],
+            "checkpoint": _checkpoint(("q1", "s1", Q1_CONVERSATION), second),
             "memory_reader": lambda _sql, params: [
                 ("m1", "99999999-9999-9999-9999-999999999999", SENTINEL)
             ],
@@ -490,28 +497,80 @@ def test_v2_unattributable_memory_refuses_without_a_dispatch(tmp_path: Any) -> N
         "session without a date": {
             "rows": [
                 {
-                    **_row(),
+                    **_row("q1", "s1"),
                     "haystack_session_ids": ["another-session"],
                     "haystack_dates": ["2023/05/30 (Tue) 18:00"],
-                }
+                },
+                _row("q2", "s2"),
             ],
+            "checkpoint": _checkpoint(("q1", "s1", Q1_CONVERSATION), second),
         },
     }
     for name, overrides in cases.items():
         calls: list[Any] = []
-        document, _ = _run(
+        document, output = _run(
             tmp_path,
-            rows=overrides.get("rows", [_row()]),
-            checkpoint=_q1_checkpoint(),
+            rows=overrides["rows"],
+            checkpoint=overrides["checkpoint"],
             call=lambda payload: calls.append(payload),
             memory_reader=overrides.get("memory_reader"),
             name=f"{name.replace(' ', '-')}.json",
         )
+        # No dispatch at all, including the question after the refused one.
         assert calls == [], name
-        entry = document["questions"][0]
-        assert entry["reason"] == "unattributable", name
-        assert entry["schema_valid"] is False, name
-        assert entry["calls"] == 0, name
+        assert document["stop_reason"] == "unattributable", name
+        # No entry: the refused question can never read as not-answerable.
+        assert document["questions"] == [], name
+        assert document["calls"] == 0, name
+        # A stopped document: written with a non-null stop_reason, never complete.
+        assert output.exists(), name
+        saved = json.loads(output.read_text(encoding="utf-8"))
+        assert saved["stop_reason"] == "unattributable", name
+        assert saved["questions"] == [], name
+
+
+def test_label_refuses_a_rows_file_without_dataset_dates(tmp_path: Any) -> None:
+    """A refusal before any journal or document: the file never becomes a run."""
+    valid = _row()
+    rows: list[dict[str, Any]] = []
+    for field in ("question_date", "haystack_session_ids", "haystack_dates"):
+        row = dict(valid)
+        del row[field]
+        rows.append({**row, "question_id": f"missing-{field}"})
+    rows.append({**valid, "question_id": "empty-question-date", "question_date": ""})
+    rows.append({**valid, "question_id": "empty-haystack-dates", "haystack_dates": []})
+    rows.append(
+        {
+            **valid,
+            "question_id": "length-mismatch",
+            "haystack_session_ids": ["s1", "s2"],
+            "haystack_dates": ["2023/05/30 (Tue) 18:00"],
+        }
+    )
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps(_q1_checkpoint()), encoding="utf-8")
+
+    for row in rows:
+        question_rows = tmp_path / f"{row['question_id']}.json"
+        question_rows.write_text(json.dumps([row]), encoding="utf-8")
+        output = tmp_path / f"{row['question_id']}-labels.json"
+        with pytest.raises(SystemExit) as excinfo:
+            dev2_labelling.main(
+                [
+                    "label",
+                    "--question-rows",
+                    str(question_rows),
+                    "--checkpoint",
+                    str(checkpoint),
+                    "--output",
+                    str(output),
+                    "--max-spend-usd",
+                    "1.00",
+                ]
+            )
+        assert excinfo.value.code == 2, row["question_id"]
+        assert not output.exists(), row["question_id"]
+        assert not dev2_labelling._journal_path(output).exists(), row["question_id"]
 
 
 def test_v2_spend_cap_stops_before_the_first_dispatch(tmp_path: Any) -> None:

@@ -263,6 +263,56 @@ def test_copy_names_are_exact() -> None:
         assert_source_database(COPY_DB_NAME)
 
 
+# --- scratch-server refusals --------------------------------------------------
+#
+# The integration cases drop tables and a database, so the target server is
+# checked first. Each condition is a pure function here: no live server needed.
+
+
+def test_scratch_guard_refuses_the_real_bench_port() -> None:
+    with pytest.raises(AssertionError, match="real bench port") as excinfo:
+        _refuse_real_bench_server("postgresql://owner:secret@127.0.0.1:55432/x")
+    # Neither the DSN nor its password reaches the failure message.
+    assert "secret" not in str(excinfo.value)
+    assert "postgresql://" not in str(excinfo.value)
+
+
+def test_scratch_guard_refuses_a_real_bench_database() -> None:
+    for real in ("daemon_lme_bench", "daemon_lme_bench_dev2"):
+        with pytest.raises(AssertionError, match="real bench database"):
+            _refuse_real_bench_server(
+                "postgresql://b:b@127.0.0.1:5432/daemon_lme_bench_dev2_final_remap",
+                server_databases=["postgres", real],
+            )
+
+
+def test_scratch_guard_refuses_a_marked_final_database() -> None:
+    with pytest.raises(AssertionError, match="benchmark marker comment"):
+        _refuse_real_bench_server(
+            "postgresql://b:b@127.0.0.1:5432/daemon_lme_bench_dev2_final_remap",
+            server_databases=["postgres", SOURCE_DB_NAME],
+            final_database_marker=BENCHMARK_DB_MARKER,
+        )
+
+
+def test_scratch_guard_refuses_a_final_database_with_memories() -> None:
+    with pytest.raises(AssertionError, match="memories rows"):
+        _refuse_real_bench_server(
+            "postgresql://b:b@127.0.0.1:5432/daemon_lme_bench_dev2_final_remap",
+            server_databases=["postgres", SOURCE_DB_NAME],
+            final_database_has_memories=True,
+        )
+
+
+def test_scratch_guard_allows_a_clean_scratch_server() -> None:
+    _refuse_real_bench_server(
+        "postgresql://b:b@127.0.0.1:5432/daemon_lme_bench_dev2_final_remap",
+        server_databases=["postgres", COPY_DB_NAME, SOURCE_DB_NAME],
+        final_database_marker=None,
+        final_database_has_memories=False,
+    )
+
+
 def test_run_remap_refuses_the_original_before_any_write(tmp_path: Path) -> None:
     conn = _Conn(database=SOURCE_DB_NAME)
     with pytest.raises(RemapError, match="original stays as evidence"):
@@ -677,6 +727,96 @@ def _source_dsn(copy_dsn: str) -> str:
     return urlunsplit(parts._replace(path=f"/{SOURCE_DB_NAME}"))
 
 
+# The real benchmark server is never a scratch target: refuse it, never skip.
+REAL_BENCH_DATABASES = frozenset({"daemon_lme_bench", "daemon_lme_bench_dev2"})
+REAL_BENCH_PORT = 55432
+
+
+def _refuse_real_bench_server(
+    dsn: str,
+    *,
+    server_databases: Sequence[str] = (),
+    final_database_marker: str | None = None,
+    final_database_has_memories: bool = False,
+) -> None:
+    """Fail, never skip, when this DSN could reach the real benchmark server.
+
+    Three independent signs, because a mistyped DSN is cheap and a dropped
+    database is not: the real bench port, a database name that only exists on
+    the real bench server, or the source database carrying a benchmark marker
+    comment or any ``memories`` row. ``AssertionError`` is deliberate: pytest
+    reports it as a failure, not a skip. Neither the DSN nor its password is
+    ever put in the message.
+    """
+    parts = urlsplit(dsn)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    host = parts.hostname or "the target server"
+    if port == REAL_BENCH_PORT:
+        raise AssertionError(
+            f"Refusing to run against {host}: port {REAL_BENCH_PORT} is the real bench port"
+        )
+    present = sorted(set(server_databases) & REAL_BENCH_DATABASES)
+    if present:
+        raise AssertionError(
+            f"Refusing to run against {host}: it holds the real bench database(s) "
+            + ", ".join(present)
+        )
+    if final_database_marker == BENCHMARK_DB_MARKER:
+        raise AssertionError(
+            f"Refusing to run: {SOURCE_DB_NAME} carries the benchmark marker comment"
+        )
+    if final_database_has_memories:
+        raise AssertionError(f"Refusing to run: {SOURCE_DB_NAME} holds memories rows")
+
+
+async def _memories_rows_present(conn: Any) -> bool:
+    if not await conn.fetchval("SELECT to_regclass('public.memories') IS NOT NULL"):
+        return False
+    return bool(await conn.fetchval("SELECT EXISTS (SELECT 1 FROM memories)"))
+
+
+async def _assert_safe_scratch_server(dsn: str) -> None:
+    """The one guard every integration case runs before it can write anything.
+
+    It opens its own read-only connection and returns only once the target is
+    proven not to be the real bench server, so it runs before the connection
+    the case drops tables with. The port refusal needs no connection at all.
+    """
+    asyncpg = pytest.importorskip("asyncpg")
+    _refuse_real_bench_server(dsn, server_databases=())
+    conn = await asyncpg.connect(dsn)
+    try:
+        databases = [
+            str(row["datname"]) for row in await conn.fetch("SELECT datname FROM pg_database")
+        ]
+        marker: str | None = None
+        has_memories = False
+        if SOURCE_DB_NAME in databases:
+            marker = await conn.fetchval(
+                "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = $1",
+                SOURCE_DB_NAME,
+            )
+            if urlsplit(dsn).path.lstrip("/") == SOURCE_DB_NAME:
+                has_memories = await _memories_rows_present(conn)
+            else:
+                source = await asyncpg.connect(_source_dsn(dsn))
+                try:
+                    has_memories = await _memories_rows_present(source)
+                finally:
+                    await source.close()
+        _refuse_real_bench_server(
+            dsn,
+            server_databases=databases,
+            final_database_marker=marker,
+            final_database_has_memories=has_memories,
+        )
+    finally:
+        await conn.close()
+
+
 def _write_prepared(
     tmp_path: Path, *, copy_fingerprint: str, source_fingerprint: str
 ) -> tuple[dict[str, Any], Path]:
@@ -740,6 +880,7 @@ def test_integration_dry_run_rolls_back_and_apply_commits(tmp_path: Path) -> Non
 async def _integration_case(tmp_path: Path) -> None:
     asyncpg = pytest.importorskip("asyncpg")
     dsn = os.environ["REMAP_TEST_DATABASE_URL"]
+    await _assert_safe_scratch_server(dsn)
     question_id = "bench-q1"
     user_id = question_user_id(question_id)
     ingest = datetime(2026, 11, 1, 10, 0, tzinfo=UTC)
@@ -865,6 +1006,7 @@ async def _reset_and_seed_benchmark_state(
 async def _integration_tied_case(tmp_path: Path) -> None:
     asyncpg = pytest.importorskip("asyncpg")
     dsn = os.environ["REMAP_TEST_DATABASE_URL"]
+    await _assert_safe_scratch_server(dsn)
     if urlsplit(dsn).path.lstrip("/") == SOURCE_DB_NAME:
         raise AssertionError("REMAP_TEST_DATABASE_URL must name the remap copy, not the source")
     question_id = "bench-q1"
