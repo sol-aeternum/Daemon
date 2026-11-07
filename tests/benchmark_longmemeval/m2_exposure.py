@@ -71,7 +71,9 @@ FROZEN_QUESTION_COUNT: Final[int] = 100
 ABSTENTION_COUNT: Final[int] = 6
 #: The pre-registration freezes the spend. It is not a runtime knob.
 SPEND_CAP_USD: Final[Decimal] = Decimal("0.50")
-BENCHMARK_DB_NAME: Final[str] = "daemon_lme_bench_dev2_final"
+BENCHMARK_DB_NAME: Final[str] = "daemon_lme_bench_dev2_final_remap"
+REMAP_LINEAGE_SCHEMA: Final[str] = "dev2-remap-lineage/1"
+CORPUS_KIND: Final[str] = "historical_clock_remap"
 
 GATE1_FLOOR: Final[Fraction] = Fraction(5)
 GATE1_RATE: Final[Fraction] = Fraction(1, 10)
@@ -226,6 +228,48 @@ def _prepare_output(output_path: Path | str, repo_root: Path | None) -> Path:
     if output.exists():
         raise FileExistsError(f"M2 output already exists: {output}")
     return output
+
+
+@dataclass(frozen=True, slots=True)
+class RemapLineage:
+    path: str
+    sha256: str
+    database: str
+    remapped_fingerprint_sha256: str
+
+
+def load_remap_lineage(path: Path | str) -> RemapLineage:
+    """The remap's lineage file, verified to describe exactly this M2 database."""
+    raw = Path(path).read_bytes()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("The remap lineage is not JSON") from None
+    if not isinstance(data, Mapping):
+        raise ValueError("The remap lineage must be an object")
+    if data.get("schema") != REMAP_LINEAGE_SCHEMA:
+        raise ValueError(f"The remap lineage schema is not {REMAP_LINEAGE_SCHEMA}")
+    if data.get("result") != "ok":
+        raise ValueError("The remap lineage did not verify")
+    remapped = data.get("remapped")
+    if not isinstance(remapped, Mapping):
+        raise ValueError("The remap lineage has no remapped state")
+    if remapped.get("database") != BENCHMARK_DB_NAME:
+        raise ValueError(f"The remap lineage names a different database than {BENCHMARK_DB_NAME}")
+    fingerprint = remapped.get("fingerprint_sha256")
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+        raise ValueError("The remap lineage has no remapped fingerprint")
+    return RemapLineage(str(path), _sha256_bytes(raw), BENCHMARK_DB_NAME, fingerprint)
+
+
+def check_remap_lineage(lineage: RemapLineage, fingerprint: Mapping[str, Any]) -> None:
+    """Refuse unless the database still holds the state the lineage recorded."""
+    if fingerprint.get("sha256") != lineage.remapped_fingerprint_sha256:
+        raise ValueError("The database fingerprint no longer matches the remap lineage")
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64
 
 
 def _fraction_text(value: Fraction) -> str:
@@ -622,10 +666,13 @@ def _create_start_marker(path: Path, start: Decimal) -> StartMarker:
     )
 
 
-def _generation_static_manifest(questions: Sequence[Question], start: Decimal) -> dict[str, Any]:
+def _generation_static_manifest(
+    questions: Sequence[Question], start: Decimal, remap_lineage_sha256: str
+) -> dict[str, Any]:
     return {
         "kind": "manifest",
         "version": JOURNAL_VERSION,
+        "remap_lineage_sha256": remap_lineage_sha256,
         "inputs_sha256": _sha256_json([_question_digest(question) for question in questions]),
         "prompt_sha256": _sha256_text(PROMPT_V2),
         "schema_sha256": _sha256_json(SUBQUERY_SCHEMA),
@@ -733,6 +780,7 @@ async def run_generation(
     output_path: Path | str,
     start_marker: Path | str,
     spend_cap_usd: Decimal,
+    remap_lineage_sha256: str,
     call: Callable[[Mapping[str, Any]], Any],
     check_attestation: Callable[[], Any],
     verify_route: Callable[[], Any],
@@ -756,6 +804,8 @@ async def run_generation(
         raise ValueError("Generation questions must be unique")
     if _as_spend(spend_cap_usd) != SPEND_CAP_USD:
         raise ValueError(f"M2 generation spend cap is frozen at {SPEND_CAP_USD}")
+    if not _is_sha256(remap_lineage_sha256):
+        raise ValueError("M2 generation requires the remap lineage hash")
     if not await _run_lock_acquired(acquire_run_lock):
         return _stopped_generation("run_lock_busy", Decimal(0))
 
@@ -793,7 +843,7 @@ async def run_generation(
             elif marker is not None:
                 # A later output path must not re-anchor the ceiling to the ledger.
                 start_spend = marker.start_spend_usd
-                manifest = _generation_static_manifest(questions, start_spend)
+                manifest = _generation_static_manifest(questions, start_spend, remap_lineage_sha256)
                 _append_journal(handle, manifest)
             else:
                 try:
@@ -802,7 +852,7 @@ async def run_generation(
                     return _stopped_generation("spend_unreadable", Decimal(0))
                 marker = _create_start_marker(marker_path, start_spend)
                 start_spend = marker.start_spend_usd
-                manifest = _generation_static_manifest(questions, start_spend)
+                manifest = _generation_static_manifest(questions, start_spend, remap_lineage_sha256)
                 _append_journal(handle, manifest)
         else:
             try:
@@ -819,7 +869,7 @@ async def run_generation(
                 if marker.start_spend_usd != start_spend:
                     raise ValueError("M2 start marker disagrees with the generation journal")
             if stop_reason is None and manifest != _generation_static_manifest(
-                questions, start_spend
+                questions, start_spend, remap_lineage_sha256
             ):
                 stop_reason = "receipt_mismatch"
         ceiling = start_spend + spend_cap_usd
@@ -1211,10 +1261,12 @@ def _measure_manifest(
     *,
     embedding_route_id: str,
     embedding_dimensions: int,
+    remap_lineage_sha256: str,
 ) -> dict[str, Any]:
     return {
         "kind": "manifest",
         "version": JOURNAL_VERSION,
+        "remap_lineage_sha256": remap_lineage_sha256,
         "inputs_sha256": _sha256_json([_question_digest(question) for question in questions]),
         "labels_sha256": labels.sha256,
         "subqueries_sha256": pinned_subqueries_sha256(
@@ -1283,6 +1335,7 @@ def _measure_document(
     after_log: int | None,
     stop_reason: str | None,
     stopped_by: str | None,
+    remap_lineage_sha256: str,
 ) -> dict[str, Any]:
     entries = [
         dict(results[question.question_id])
@@ -1304,6 +1357,12 @@ def _measure_document(
             list(subqueries.values()), start_spend_usd=start, spend_cap_usd=cap
         ),
         "database": BENCHMARK_DB_NAME,
+        "corpus": {
+            "kind": CORPUS_KIND,
+            "database": BENCHMARK_DB_NAME,
+            "remap_lineage_sha256": remap_lineage_sha256,
+            "note": "stored times were remapped from ingest wall clock to session time",
+        },
         "render": {
             "max_tokens": injection.DEFAULT_MAX_TOKENS,
             "subquery_quota": SUBQUERY_QUOTA,
@@ -1333,6 +1392,7 @@ async def run_measure(
     subqueries: Mapping[str, Mapping[str, Any]],
     output_path: Path | str,
     start_marker: Path | str,
+    remap_lineage_sha256: str,
     measure_question: MeasureQuestion,
     embed_texts: Embed,
     fingerprint: Fingerprint,
@@ -1356,6 +1416,8 @@ async def run_measure(
     nothing that is already recorded. The manifest binds the embedding route, so
     a resume after a route change refuses instead of mixing vectors.
     """
+    if not _is_sha256(remap_lineage_sha256):
+        raise ValueError("M2 measure requires the remap lineage hash")
     logging_enabled, logging_debug = read_retrieval_logging_flags()
     if logging_enabled or logging_debug:
         raise M2SideEffectError(
@@ -1392,6 +1454,7 @@ async def run_measure(
         cap,
         embedding_route_id=embedding_route_id,
         embedding_dimensions=embedding_dimensions,
+        remap_lineage_sha256=remap_lineage_sha256,
     )
     handle = open(journal, "a", encoding="utf-8")
     try:
@@ -1533,6 +1596,7 @@ async def run_measure(
                     after_log=after_log,
                     stop_reason=stop_reason,
                     stopped_by=stopped_by,
+                    remap_lineage_sha256=remap_lineage_sha256,
                 ),
             )
             raise
@@ -1552,6 +1616,7 @@ async def run_measure(
             after_log=after_log,
             stop_reason=None,
             stopped_by=None,
+            remap_lineage_sha256=remap_lineage_sha256,
         )
         _write_document_atomic(output, document)
         return document
@@ -1987,13 +2052,18 @@ async def _run_live_generation(
     questions: Sequence[Question],
     output_path: Path | str,
     start_marker: Path | str,
+    remap_lineage: Path | str,
 ) -> dict[str, Any]:
     import asyncpg
 
     from orchestrator import compute_runtime
     from orchestrator.config import get_settings
     from orchestrator.entitlements import attestation
-    from orchestrator.eval.bench_db import ensure_benchmark_user
+    from orchestrator.eval.bench_db import (
+        ensure_benchmark_user,
+        fingerprint_benchmark_users,
+        question_user_id,
+    )
     from tests.benchmark_longmemeval.dev2_pilot import (
         RUN_LOCK_HELD_SQL,
         SPEND_SQL,
@@ -2003,10 +2073,16 @@ async def _run_live_generation(
 
     settings = get_settings()
     check_m2_database(settings.database_url)
+    lineage = load_remap_lineage(remap_lineage)
     user_id = uuid.uuid5(M2_USER_NAMESPACE, M2_USER_NAME)
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=1)
     connection = await asyncpg.connect(settings.database_url)
     try:
+        # No spend before the corpus is proven to be the remapped copy.
+        current = await fingerprint_benchmark_users(
+            pool, [question_user_id(question.question_id) for question in questions]
+        )
+        check_remap_lineage(lineage, current)
         await ensure_benchmark_user(pool, user_id)
 
         def account_scope(_user_id: str) -> Any:
@@ -2039,6 +2115,7 @@ async def _run_live_generation(
             output_path=output_path,
             start_marker=start_marker,
             spend_cap_usd=SPEND_CAP_USD,
+            remap_lineage_sha256=lineage.sha256,
             call=call,
             check_attestation=check_attestation,
             verify_route=verify_generation_route,
@@ -2103,6 +2180,7 @@ async def _run_live_measure(
     subqueries: Mapping[str, Mapping[str, Any]],
     output_path: Path | str,
     start_marker: Path | str,
+    remap_lineage: Path | str,
 ) -> dict[str, Any]:
     import asyncpg
 
@@ -2124,6 +2202,7 @@ async def _run_live_measure(
 
     settings = get_settings()
     check_m2_database(settings.database_url)
+    lineage = load_remap_lineage(remap_lineage)
     user_id = uuid.uuid5(M2_USER_NAMESPACE, M2_USER_NAME)
     user_ids = [question_user_id(question.question_id) for question in questions]
     required_user_ids = [user_id, *user_ids]
@@ -2132,6 +2211,8 @@ async def _run_live_measure(
     store = MemoryStore(pool, ContentEncryption(settings.daemon_encryption_key))
     try:
         await assert_benchmark_database(pool, settings.database_url)
+        current = await fingerprint_benchmark_users(pool, user_ids)
+        check_remap_lineage(lineage, current)
         if settings.memory_subquery_quota != SUBQUERY_QUOTA:
             raise ValueError(f"M2 requires memory_subquery_quota={SUBQUERY_QUOTA}")
         if settings.memory_max_subqueries < MAX_SUBQUERIES:
@@ -2193,6 +2274,7 @@ async def _run_live_measure(
             subqueries=subqueries,
             output_path=output_path,
             start_marker=start_marker,
+            remap_lineage_sha256=lineage.sha256,
             measure_question=measure_question,
             embed_texts=embed,
             fingerprint=fingerprint,
@@ -2288,6 +2370,18 @@ def _add_labels(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--labels", type=Path, action="append", required=True)
 
 
+def _add_remap_lineage(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--remap-lineage",
+        type=Path,
+        required=True,
+        help=(
+            "The dev2_remap verify lineage, outside the repository: the run refuses "
+            "before any spend unless it names the remapped copy and matches its fingerprint."
+        ),
+    )
+
+
 def _add_start_marker(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--start-marker",
@@ -2315,6 +2409,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate = sub.add_parser("generate", help="One PROMPT_V2 pass on the Block D route.")
     generate.add_argument("--questions", type=Path, required=True)
     generate.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
+    _add_remap_lineage(generate)
     _add_start_marker(generate)
     _add_output(generate)
 
@@ -2322,6 +2417,7 @@ def build_parser() -> argparse.ArgumentParser:
     measure.add_argument("--questions", type=Path, required=True)
     measure.add_argument("--subqueries", type=Path, required=True)
     measure.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
+    _add_remap_lineage(measure)
     _add_start_marker(measure)
     _add_labels(measure)
     _add_output(measure)
@@ -2373,7 +2469,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         questions = load_questions(args.questions, frozen)
         document = asyncio.run(
             _run_live_generation(
-                questions=questions, output_path=args.output, start_marker=args.start_marker
+                questions=questions,
+                output_path=args.output,
+                start_marker=args.start_marker,
+                remap_lineage=args.remap_lineage,
             )
         )
         return 0 if document.get("stop_reason") is None else 1
@@ -2389,6 +2488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 subqueries=subqueries,
                 output_path=args.output,
                 start_marker=args.start_marker,
+                remap_lineage=args.remap_lineage,
             )
         )
         return 0 if document.get("stop_reason") is None else 1
@@ -2457,6 +2557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "ABSTENTION_COUNT",
     "BENCHMARK_DB_NAME",
+    "CORPUS_KIND",
     "FROZEN_IDS_PATH",
     "GATE3_TEST",
     "GATES_SCHEMA",
@@ -2466,6 +2567,8 @@ __all__ = [
     "MEASURE_SCHEMA",
     "M2SideEffectError",
     "Question",
+    "REMAP_LINEAGE_SCHEMA",
+    "RemapLineage",
     "REPORT_CATEGORIES",
     "RETENTION_CATEGORIES",
     "RETENTION_REASONS",

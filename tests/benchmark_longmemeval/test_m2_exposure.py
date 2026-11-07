@@ -35,6 +35,8 @@ from tests.benchmark_longmemeval.m2_exposure import (
 )
 
 NOW = datetime(2023, 5, 30, 23, 18, tzinfo=UTC)
+LINEAGE_SHA = "c" * 64
+REMAP_DB_NAME = "daemon_lme_bench_dev2_final_remap"
 
 
 def _ids(count: int = 100) -> tuple[str, ...]:
@@ -282,6 +284,7 @@ def _gen_kwargs(fakes: _GenFakes, directory: Path) -> dict[str, Any]:
 
     return {
         "start_marker": directory / "start-marker.json",
+        "remap_lineage_sha256": LINEAGE_SHA,
         "call": fakes.call,
         "check_attestation": attestation,
         "verify_route": lambda: _Route(),
@@ -673,7 +676,7 @@ def _generation_journal(
     path: Path, questions: Sequence[Question], document: Mapping[str, Any]
 ) -> Path:
     manifest = m2_exposure._generation_static_manifest(
-        questions, Decimal(str(document["start_spend_usd"]))
+        questions, Decimal(str(document["start_spend_usd"])), LINEAGE_SHA
     )
     lines = [json.dumps(manifest, sort_keys=True)]
     for entry in document["questions"]:
@@ -692,6 +695,7 @@ def _measure_kwargs(fakes: _MeasureFakes, directory: Path) -> dict[str, Any]:
 
     return {
         "start_marker": directory / "start-marker.json",
+        "remap_lineage_sha256": LINEAGE_SHA,
         "read_embedding_route": lambda: ("fake-embedding-route", 2),
         "measure_question": fakes.measure,
         "embed_texts": fakes.embed,
@@ -1059,13 +1063,107 @@ def test_measure_declares_no_user_writes(tmp_path: Path) -> None:
 
 def test_wrong_database_is_refused() -> None:
     assert (
-        m2_exposure.check_m2_database("postgresql://user:secret@host/daemon_lme_bench_dev2_final")
-        == "daemon_lme_bench_dev2_final"
+        m2_exposure.check_m2_database(f"postgresql://user:secret@host/{REMAP_DB_NAME}")
+        == REMAP_DB_NAME
     )
-    with pytest.raises(ValueError, match="exactly"):
-        m2_exposure.check_m2_database("postgresql://user:secret@host/daemon_lme_bench_dev2")
-    with pytest.raises(ValueError):
-        m2_exposure.check_m2_database("postgresql://user:secret@host/production")
+    # The original stays as evidence: it must never be the M2 target.
+    for name in ("daemon_lme_bench_dev2_final", "daemon_lme_bench_dev2", "production"):
+        with pytest.raises(ValueError, match="exactly"):
+            m2_exposure.check_m2_database(f"postgresql://user:secret@host/{name}")
+
+
+def _lineage_document(**overrides: Any) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "schema": "dev2-remap-lineage/1",
+        "result": "ok",
+        "source": {"database": "daemon_lme_bench_dev2_final", "fingerprint_sha256": "a" * 64},
+        "remapped": {"database": REMAP_DB_NAME, "fingerprint_sha256": "b" * 64},
+        "dataset": {"path": "/tmp/dataset.json", "sha256": "d" * 64},
+        "mapping_script": {"path": "/tmp/dev2_remap.py", "sha256": "e" * 64},
+    }
+    document.update(overrides)
+    return document
+
+
+def test_remap_lineage_parses_and_binds(tmp_path: Path) -> None:
+    path = tmp_path / "lineage.json"
+    path.write_text(json.dumps(_lineage_document()), encoding="utf-8")
+    lineage = m2_exposure.load_remap_lineage(path)
+    assert lineage.database == REMAP_DB_NAME
+    assert lineage.remapped_fingerprint_sha256 == "b" * 64
+    assert len(lineage.sha256) == 64
+    m2_exposure.check_remap_lineage(lineage, {"sha256": "b" * 64})
+    with pytest.raises(ValueError, match="no longer matches"):
+        m2_exposure.check_remap_lineage(lineage, {"sha256": "f" * 64})
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"schema": "something-else"}, "schema"),
+        ({"result": "failed"}, "did not verify"),
+        (
+            {
+                "remapped": {
+                    "database": "daemon_lme_bench_dev2_final",
+                    "fingerprint_sha256": "b" * 64,
+                }
+            },
+            "different database",
+        ),
+        ({"remapped": {"database": REMAP_DB_NAME}}, "no remapped fingerprint"),
+    ],
+)
+def test_remap_lineage_refuses_bad_documents(
+    tmp_path: Path, overrides: dict[str, Any], message: str
+) -> None:
+    path = tmp_path / "lineage.json"
+    path.write_text(json.dumps(_lineage_document(**overrides)), encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        m2_exposure.load_remap_lineage(path)
+
+
+def test_remap_lineage_refuses_non_json(tmp_path: Path) -> None:
+    path = tmp_path / "lineage.json"
+    path.write_text("not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="not JSON"):
+        m2_exposure.load_remap_lineage(path)
+
+
+def test_a_different_lineage_refuses_a_measure_resume(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    labels = _labels(frozen, [frozen.ids[0], frozen.ids[1]], tmp_path / "labels.json")
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    output = tmp_path / "out" / "measure.json"
+    output.parent.mkdir()
+    fakes = _MeasureFakes()
+    first = asyncio.run(
+        run_measure(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            output_path=output,
+            **_measure_kwargs(fakes, tmp_path),
+        )
+    )
+    assert first["corpus"]["kind"] == "historical_clock_remap"
+    assert first["corpus"]["database"] == REMAP_DB_NAME
+    assert first["corpus"]["remap_lineage_sha256"] == LINEAGE_SHA
+
+    output.unlink()
+    other = _measure_kwargs(fakes, tmp_path)
+    other["remap_lineage_sha256"] = "9" * 64
+    with pytest.raises(ValueError, match="does not match this run"):
+        asyncio.run(
+            run_measure(
+                questions=questions,
+                labels=labels,
+                subqueries=subqueries,
+                output_path=output,
+                **other,
+            )
+        )
 
 
 # --- gates --------------------------------------------------------------------
