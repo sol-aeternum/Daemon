@@ -828,16 +828,45 @@ async def _integration_case(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    not os.environ.get("REMAP_TEST_DATABASE_URL"),
-    reason="REMAP_TEST_DATABASE_URL is not set",
+    not os.environ.get("REMAP_TEST_DATABASE_URL")
+    or os.environ.get("REMAP_TEST_SCRATCH_SERVER") != "1",
+    reason="REMAP_TEST_DATABASE_URL is not set or REMAP_TEST_SCRATCH_SERVER is not 1",
 )
 def test_integration_tied_sessions_apply_and_verify(tmp_path: Path) -> None:
     asyncio.run(_integration_tied_case(tmp_path))
 
 
+async def _reset_and_seed_benchmark_state(
+    conn: Any, *, user_id: uuid.UUID, first: uuid.UUID, second: uuid.UUID, ingest: datetime
+) -> None:
+    """The minimal schema and rows, identical in the source and the copy."""
+    for table in TABLES:
+        await conn.execute(f"DROP TABLE IF EXISTS {table}")
+    for statement in DDL:
+        await conn.execute(statement)
+    await _seed_session(
+        conn,
+        user_id=user_id,
+        conversation=first,
+        session_id="bench-session-1",
+        start=ingest,
+        memory_at=ingest + timedelta(minutes=2),
+    )
+    await _seed_session(
+        conn,
+        user_id=user_id,
+        conversation=second,
+        session_id="bench-session-2",
+        start=ingest + timedelta(hours=1),
+        memory_at=ingest + timedelta(hours=1, minutes=2),
+    )
+
+
 async def _integration_tied_case(tmp_path: Path) -> None:
     asyncpg = pytest.importorskip("asyncpg")
     dsn = os.environ["REMAP_TEST_DATABASE_URL"]
+    if urlsplit(dsn).path.lstrip("/") == SOURCE_DB_NAME:
+        raise AssertionError("REMAP_TEST_DATABASE_URL must name the remap copy, not the source")
     question_id = "bench-q1"
     user_id = question_user_id(question_id)
     ingest = datetime(2026, 11, 1, 10, 0, tzinfo=UTC)
@@ -846,28 +875,19 @@ async def _integration_tied_case(tmp_path: Path) -> None:
     dataset_path = tmp_path / "dataset.json"
     dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
     conn = await asyncpg.connect(dsn)
-    source_conn = await asyncpg.connect(_source_dsn(dsn))
+    source_conn = None
     try:
-        for table in TABLES:
-            await conn.execute(f"DROP TABLE IF EXISTS {table}")
-        for statement in DDL:
-            await conn.execute(statement)
+        # The source is built on the same scratch server before the remap and is
+        # never touched by it: `verify` reads it to prove the original is unchanged.
+        await conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE_DB_NAME}"')
+        await conn.execute(f'CREATE DATABASE "{SOURCE_DB_NAME}"')
+        source_conn = await asyncpg.connect(_source_dsn(dsn))
         first, second = uuid.uuid4(), uuid.uuid4()
-        await _seed_session(
-            conn,
-            user_id=user_id,
-            conversation=first,
-            session_id="bench-session-1",
-            start=ingest,
-            memory_at=ingest + timedelta(minutes=2),
+        await _reset_and_seed_benchmark_state(
+            source_conn, user_id=user_id, first=first, second=second, ingest=ingest
         )
-        await _seed_session(
-            conn,
-            user_id=user_id,
-            conversation=second,
-            session_id="bench-session-2",
-            start=ingest + timedelta(hours=1),
-            memory_at=ingest + timedelta(hours=1, minutes=2),
+        await _reset_and_seed_benchmark_state(
+            conn, user_id=user_id, first=first, second=second, ingest=ingest
         )
         copy_fingerprint = await dev2_remap.fingerprint_benchmark_users(conn, [user_id])
         source_fingerprint = await dev2_remap.fingerprint_benchmark_users(source_conn, [user_id])
@@ -922,4 +942,5 @@ async def _integration_tied_case(tmp_path: Path) -> None:
         for table in TABLES:
             await conn.execute(f"DROP TABLE IF EXISTS {table}")
         await conn.close()
-        await source_conn.close()
+        if source_conn is not None:
+            await source_conn.close()
