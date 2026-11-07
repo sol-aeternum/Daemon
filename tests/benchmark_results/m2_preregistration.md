@@ -94,4 +94,4 @@ Whether the gates pass or fail, the report gives a per-question diagnosis for ev
 - M2 runs on a remapped copy so temporal windows and recency see session time, comparable with the 2026-11-03 sweep's historical clock.
 - The original stays untouched as evidence. No re-extraction: relative-date facts stay unanchored (#601), and dedup decisions stand as made at ingest.
 - `_abs` questions are excluded from the exposure denominator by ID; gate 4 covers them.
-- The labeller is v2, frozen separately, and the gate 1 value is computed from v2's final spot-checked labels. Gate formulas, thresholds, the USD 0.50 cap and zero restores are unchanged.
+- The labeller is v2, frozen separately, and the gate 1 value is computed from v2's final spot-checked labels. The gate 1 formula, `max(5, 10% of answerable)`, is unchanged; its input is the answerable non-`_abs` questions, and the computed value is recorded before retrieval. The USD 0.50 cap and zero restores are unchanged.
