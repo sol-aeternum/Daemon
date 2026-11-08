@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -414,6 +415,8 @@ async def load_answer_session_memories_v2(
         entry: Any = row
         memory_id = str(entry[0])
         conversation_id = entry[1]
+        if isinstance(conversation_id, uuid.UUID):
+            conversation_id = str(conversation_id)  # asyncpg returns uuid columns as UUID
         if not isinstance(conversation_id, str) or not conversation_id:
             raise ValueError("Memory has no source conversation")
         content = entry[2]

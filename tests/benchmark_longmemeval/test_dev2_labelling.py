@@ -1922,3 +1922,21 @@ def test_a_malformed_entry_refuses_before_sampling(broken: dict[str, Any]) -> No
 
 def test_the_committed_pilot_population_has_all_fourteen() -> None:
     assert len(dev2_labelling._read_population(FIXTURES / "dev2_pilot_ids.json")) == 14
+
+
+def test_v2_loader_accepts_asyncpg_uuid_columns() -> None:
+    import asyncio
+    import uuid as _uuid
+
+    from tests.benchmark_longmemeval.dev2_labelling import load_answer_session_memories_v2
+
+    conversation = _uuid.uuid4()
+    memory = _uuid.uuid4()
+
+    def reader(sql, params):
+        return [(memory, conversation, "enc")]
+
+    triples = asyncio.run(
+        load_answer_session_memories_v2(reader, lambda text: "plain", "u1", [str(conversation)])
+    )
+    assert triples == ((str(memory), str(conversation), "plain"),)
