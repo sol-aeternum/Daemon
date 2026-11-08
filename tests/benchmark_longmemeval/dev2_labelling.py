@@ -13,7 +13,8 @@ Route: ``LABELLER_ROUTE_ID`` (azure/eu, ZDR, data collection denied). The
 route precondition, attestation and cost gates live in the operator runbook
 (`dev2_labelling.md`); this module only pins the request shape.
 
-Status: frozen before any call. No call has been made.
+Final v3 contract; normal independent review/refreeze precedes paid execution.
+Historical v1/v2 requests and packets remain readable, never reused as v3 labels.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
@@ -46,11 +48,11 @@ LABELLER_MODEL: Final[str] = "openrouter/openai/gpt-6-luna"
 LABELLER_ROUTE_ID: Final[str] = "luna-azure-eu"
 LABELLER_SEED: Final[int] = 42
 LABELLER_REASONING_EFFORT: Final[str] = "medium"
-# 4000 is ample: the response is a list of memory ids plus one short note, so
-# reasoning headroom, not answer length, is the only real cost.
+# The response is groups of memory ids plus one short note; retain the pinned
+# token limit and reasoning headroom without changing the spend controls.
 LABELLER_MAX_TOKENS: Final[int] = 4000
 
-LABEL_SCHEMA: Final[dict[str, Any]] = {
+LABEL_SCHEMA_V1: Final[dict[str, Any]] = {
     "type": "object",
     "properties": {
         "memory_ids": {"type": "array", "items": {"type": "string"}},
@@ -58,6 +60,21 @@ LABEL_SCHEMA: Final[dict[str, Any]] = {
         "note": {"type": "string"},
     },
     "required": ["memory_ids", "answerable_from_store", "note"],
+    "additionalProperties": False,
+}
+
+LABEL_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "target_groups": {
+            "type": "array",
+            "items": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        },
+        "answerable_from_store": {"type": "boolean"},
+        "needs_memory_date": {"type": "boolean"},
+        "note": {"type": "string"},
+    },
+    "required": ["target_groups", "answerable_from_store", "needs_memory_date", "note"],
     "additionalProperties": False,
 }
 
@@ -104,9 +121,40 @@ PROMPT_TEMPLATE_V2: Final[str] = (
 
 LABEL_RECORD_SCHEMA_V1: Final[str] = "dev2-labelling/1"
 #: v2 documents carry the question date and per-memory session id and date.
-LABEL_RECORD_SCHEMA: Final[str] = "dev2-labelling/2"
+LABEL_RECORD_SCHEMA_V2: Final[str] = "dev2-labelling/2"
+LABEL_RECORD_SCHEMA: Final[str] = "dev2-labelling/3"
 LABEL_RECORD_SCHEMAS: Final[frozenset[str]] = frozenset(
-    {LABEL_RECORD_SCHEMA_V1, LABEL_RECORD_SCHEMA}
+    {LABEL_RECORD_SCHEMA_V1, LABEL_RECORD_SCHEMA_V2, LABEL_RECORD_SCHEMA}
+)
+
+PROMPT_V3: Final[str] = (
+    "You label an evaluation set of stored memories. You are given a question, its date, "
+    "its reference answer, and stored memories with id, text, source session ID, session date "
+    "and stored valid_from date. Use only the supplied memory ids.\n"
+    "Return target_groups: a list of nonempty lists of interchangeable memory ids. Each "
+    "group represents one distinct fact or date needed to state the reference answer. Any "
+    "one member satisfies that group; every group is required. Group paraphrases together, "
+    "rather than requiring all redundant alternatives. Same-session memories providing the "
+    "same needed fact/date via valid_from can also be interchangeable. Do not group "
+    "complementary facts together. Include all supplied interchangeable alternatives; do "
+    "not repeat an id within a group. A memory supporting multiple required facts may "
+    "appear in multiple groups.\n"
+    "Resolve relative expressions in a memory ('last month', 'next week', 'recently') "
+    "against that memory's session date, not the question date or wall clock. Dates stored "
+    "only in valid_from count as answerable evidence, even if absent from memory text. "
+    "Set needs_memory_date to true when answering requires a stored date rather than text "
+    "alone, and false otherwise. If a temporal cue was dropped at extraction, retain that "
+    "observation in the note; do not invent the missing cue or assume session time proves "
+    "an event date without support.\n"
+    "Set answerable_from_store to false if the supplied text and stored dates do not "
+    "support the reference answer, returning empty target_groups. Otherwise return at "
+    "least one group and set answerable_from_store to true. The note is one short sentence "
+    "explaining the choice.\n"
+    'Return only {"target_groups": [[string, ...], ...], "answerable_from_store": boolean, '
+    '"needs_memory_date": boolean, "note": string}.'
+)
+PROMPT_TEMPLATE_V3: Final[str] = PROMPT_TEMPLATE_V2.replace(
+    '"session_date", "text"', '"session_date", "text", "valid_from"'
 )
 
 _LABEL_FIELDS: Final[frozenset[str]] = frozenset({"memory_ids", "answerable_from_store", "note"})
@@ -157,6 +205,37 @@ class Label:
     note: str
 
 
+@dataclass(frozen=True)
+class LabelV3:
+    target_groups: tuple[tuple[str, ...], ...]
+    answerable_from_store: bool
+    needs_memory_date: bool
+    note: str
+
+
+def validate_target_groups(
+    raw: Any, *, known_ids: set[str] | None = None
+) -> tuple[tuple[str, ...], ...]:
+    """Validate the closed group structure without echoing any input values."""
+    if not isinstance(raw, list):
+        raise ValueError("Label target_groups must be an array")
+    groups: list[tuple[str, ...]] = []
+    for group in raw:
+        if not isinstance(group, list) or not group:
+            raise ValueError("Label target_groups must contain nonempty arrays")
+        seen: set[str] = set()
+        for memory_id in group:
+            if not isinstance(memory_id, str) or not memory_id.strip():
+                raise ValueError("Label group ids must be nonempty strings")
+            if memory_id in seen:
+                raise ValueError("Label group ids must be unique within each group")
+            if known_ids is not None and memory_id not in known_ids:
+                raise ValueError("Label contains a memory id outside the input")
+            seen.add(memory_id)
+        groups.append(tuple(group))
+    return tuple(groups)
+
+
 #: One v2 memory: ``(memory id, session id, session date, text)``. The session
 #: id and date come from the dataset, through the memory's source conversation.
 MemoryV2 = tuple[str, str, str, str]
@@ -204,6 +283,45 @@ class LabelInputV2:
         )
 
 
+MemoryV3 = tuple[str, str, str, str, str]
+
+
+def _stored_date(value: Any) -> str:
+    """The stored timestamp, never substituted with a dataset or wall-clock date."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            raise ValueError("Memory valid_from is missing or unparsable") from None
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Memory valid_from must be a timezone-aware timestamp")
+    return value.isoformat()
+
+
+@dataclass(frozen=True)
+class LabelInputV3:
+    question_id: str
+    question: str
+    question_date: str
+    reference_answer: str
+    memories: tuple[MemoryV3, ...]
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(entry, tuple) or len(entry) != 5 for entry in self.memories):
+            raise ValueError("Label input v3 memories require stored valid_from")
+        base = LabelInputV2(
+            self.question_id,
+            self.question,
+            self.question_date,
+            self.reference_answer,
+            tuple((mid, sid, date, text) for mid, sid, date, text, _ in self.memories),
+        )
+        dates = {entry[0]: _stored_date(entry[4]) for entry in self.memories}
+        object.__setattr__(
+            self, "memories", tuple((*entry, dates[entry[0]]) for entry in base.memories)
+        )
+
+
 def _memory_block(item: LabelInput) -> str:
     return json.dumps(
         [{"id": memory_id, "text": text} for memory_id, text in item.memories],
@@ -239,7 +357,7 @@ def request_template() -> dict[str, Any]:
         "max_tokens": LABELLER_MAX_TOKENS,
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": "memory_labels", "strict": True, "schema": LABEL_SCHEMA},
+            "json_schema": {"name": "memory_labels", "strict": True, "schema": LABEL_SCHEMA_V1},
         },
         "stream": False,
     }
@@ -290,6 +408,58 @@ def build_request_v2(item: LabelInputV2) -> dict[str, Any]:
         },
     ]
     return request
+
+
+def request_template_v3() -> dict[str, Any]:
+    template = request_template()
+    template["messages"] = [
+        {"role": "system", "content": PROMPT_V3},
+        {"role": "user", "content": PROMPT_TEMPLATE_V3},
+    ]
+    template["response_format"]["json_schema"]["schema"] = LABEL_SCHEMA
+    return template
+
+
+def build_request_v3(item: LabelInputV3) -> dict[str, Any]:
+    if not isinstance(item, LabelInputV3):
+        raise ValueError("build_request_v3 expects a LabelInputV3")
+    request = request_template_v3()
+    memories = [
+        {"id": mid, "session_id": sid, "session_date": date, "text": text, "valid_from": stored}
+        for mid, sid, date, text, stored in item.memories
+    ]
+    request["messages"][1]["content"] = PROMPT_TEMPLATE_V3.format(
+        question_date=item.question_date,
+        question=item.question,
+        reference_answer=item.reference_answer,
+        memories=json.dumps(memories, ensure_ascii=False, sort_keys=True),
+    )
+    return request
+
+
+def parse_label_v3(item: LabelInputV3, text: str) -> LabelV3:
+    if not isinstance(item, LabelInputV3):
+        raise ValueError("parse_label_v3 expects a LabelInputV3")
+    try:
+        value = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("Label is not valid JSON") from None
+    if not isinstance(value, dict) or set(value) != set(LABEL_SCHEMA["required"]):
+        raise ValueError("Label v3 fields mismatch")
+    groups = validate_target_groups(
+        value["target_groups"], known_ids={entry[0] for entry in item.memories}
+    )
+    if type(value["answerable_from_store"]) is not bool:
+        raise ValueError("Label answerable_from_store must be a boolean")
+    if type(value["needs_memory_date"]) is not bool:
+        raise ValueError("Label needs_memory_date must be a boolean")
+    if not isinstance(value["note"], str):
+        raise ValueError("Label note must be a string")
+    if bool(groups) != value["answerable_from_store"]:
+        raise ValueError("Label target_groups emptiness disagrees with answerable_from_store")
+    return LabelV3(
+        groups, value["answerable_from_store"], value["needs_memory_date"], value["note"]
+    )
 
 
 def parse_label(item: LabelInput | LabelInputV2, text: str) -> Label:
@@ -431,6 +601,41 @@ async def load_answer_session_memories_v2(
     return tuple(sorted(triples, key=lambda entry: entry[0]))
 
 
+MEMORY_SQL_V3: Final[str] = MEMORY_SQL_V2.replace(
+    "source_conversation_id, content", "source_conversation_id, content, valid_from"
+)
+
+
+async def load_answer_session_memories_v3(
+    reader: Callable[[str, Sequence[Any]], Any],
+    decrypt: Callable[[str], str],
+    user_id: str,
+    conversation_ids: Sequence[str],
+) -> tuple[tuple[str, str, str, str], ...]:
+    if not user_id:
+        raise ValueError("user_id is required")
+    if not conversation_ids:
+        return ()
+    pending = reader(MEMORY_SQL_V3, (user_id, list(conversation_ids)))
+    rows = await pending if inspect.isawaitable(pending) else pending
+    entries: list[tuple[str, str, str, str]] = []
+    for row in _rows(rows):
+        if len(row) != 4 or not isinstance(row[2], str):
+            raise ValueError("Memory v3 row must carry id, source, content and valid_from")
+        conversation_id = row[1]
+        if isinstance(conversation_id, uuid.UUID):
+            conversation_id = str(conversation_id)
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise ValueError("Memory has no source conversation")
+        text = decrypt(row[2])
+        if inspect.isawaitable(text):
+            text = await text
+        if not isinstance(text, str):
+            raise ValueError("Decrypted memory content must be a string")
+        entries.append((str(row[0]), conversation_id, text, _stored_date(row[3])))
+    return tuple(sorted(entries))
+
+
 def _iso_dataset_date(value: Any) -> str:
     """A dataset date as ``YYYY-MM-DD HH:MM``; an unparsable one refuses."""
     from orchestrator.eval.fact_harness import _parse_haystack_date
@@ -472,7 +677,7 @@ def session_dates_from_row(row: Mapping[str, Any]) -> dict[str, str]:
     """``session id -> date`` from the dataset fields carried by the row.
 
     The dates come from ``haystack_dates`` paired with ``haystack_session_ids``.
-    No database timestamp is read anywhere.
+    This helper reads no database timestamp; v3 separately reads stored valid_from.
     """
     session_ids = [str(value) for value in row.get("haystack_session_ids") or []]
     raw_dates = list(row.get("haystack_dates") or [])
@@ -522,6 +727,24 @@ def build_label_input_v2(
         question_date=question_date,
         reference_answer=str(row["answer"]),
         memories=tuple(attributed),
+    )
+
+
+def build_label_input_v3(
+    row: Mapping[str, Any],
+    conversation_ids: Mapping[str, str],
+    memories: Sequence[tuple[str, str, str, str]],
+) -> LabelInputV3:
+    base = build_label_input_v2(
+        row, conversation_ids, [(mid, cid, text) for mid, cid, text, _ in memories]
+    )
+    dates = {mid: stored for mid, _, _, stored in memories}
+    return LabelInputV3(
+        base.question_id,
+        base.question,
+        base.question_date,
+        base.reference_answer,
+        tuple((*entry, dates[entry[0]]) for entry in base.memories),
     )
 
 
@@ -593,6 +816,56 @@ def spot_check_selection(
 
     ordered = [*seeded_order, *sorted(additional)]
     return [(question_id, tuple(reasons_by_question[question_id])) for question_id in ordered]
+
+
+def seeded_spot_check_changes(
+    v2_labels: Sequence[Mapping[str, Any]],
+    v3_labels: Sequence[Mapping[str, Any]],
+    seeded_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """Only seeded questions losing a v2 target need rechecking under the owner rule.
+
+    Callers supply the original seeded draw, not a fresh sample of the changed
+    labels. Empty output means every seeded union is a superset, so the seeded
+    spot-check carries. This does not waive review of not-answerable additions.
+    """
+
+    def indexed(labels: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+        result: dict[str, Mapping[str, Any]] = {}
+        for entry in labels:
+            qid = entry.get("question_id")
+            if not isinstance(qid, str) or not qid or qid in result:
+                raise ValueError("Spot-check comparison needs unique question ids")
+            result[qid] = entry
+        return result
+
+    before, after = indexed(v2_labels), indexed(v3_labels)
+    if not seeded_ids or len(set(seeded_ids)) != len(seeded_ids):
+        raise ValueError("Spot-check comparison needs a nonempty unique seeded draw")
+    changed: list[str] = []
+    for qid in seeded_ids:
+        if qid not in before or qid not in after:
+            raise ValueError("Spot-check comparison is missing a seeded question")
+        old, new = before[qid], after[qid]
+        old_no_memories = (
+            old.get("reason") == "no_memories" and old.get("answerable_from_store") is False
+        )
+        new_no_memories = (
+            new.get("reason") == "no_memories" and new.get("answerable_from_store") is False
+        )
+        if (old.get("schema_valid") is not True and not old_no_memories) or (
+            new.get("schema_valid") is not True and not new_no_memories
+        ):
+            raise ValueError("Spot-check comparison requires valid labels")
+        old_ids = [] if old_no_memories else old.get("memory_ids")
+        if not isinstance(old_ids, list) or any(
+            not isinstance(mid, str) or not mid for mid in old_ids
+        ):
+            raise ValueError("Spot-check comparison requires v2 memory_ids")
+        groups = () if new_no_memories else validate_target_groups(new.get("target_groups"))
+        if not set(old_ids) <= {mid for group in groups for mid in group}:
+            changed.append(qid)
+    return tuple(sorted(changed))
 
 
 def _packet_label_line(entry: Mapping[str, Any]) -> str:
@@ -692,24 +965,26 @@ def build_spot_check_packet_v2(
     labels: Sequence[Mapping[str, Any]],
     rows: Sequence[Mapping[str, Any]],
     checkpoint: Mapping[str, Any],
-    memories_by_question: Mapping[str, Sequence[MemoryV2]],
+    memories_by_question: Mapping[str, Sequence[MemoryV2] | Sequence[MemoryV3]],
     *,
     label_schema: str,
     prompt_sha256: str,
 ) -> str:
-    """Render the v2 spot-check packet. Pure: no connection, no provider call.
+    """Render a dated v2/v3 spot-check packet, preserving its record version.
 
     The input's session framing is preserved: memories are grouped by session in
     date order, each group headed by its session id and date, so the owner can
     judge a relative expression against the memory's own session date.
     """
+    v3 = label_schema == LABEL_RECORD_SCHEMA
+    version = "v3" if v3 else "v2"
     entries = {str(entry["question_id"]): entry for entry in labels if isinstance(entry, Mapping)}
     rows_by_id = {str(row["question_id"]): row for row in rows}
     lines = [
-        "# dev2 labelling spot-check packet (v2)",
+        f"# dev2 labelling spot-check packet ({version})",
         "",
         f"Labeller version: `{label_schema}`",
-        f"Prompt hash (v2): `{prompt_sha256}`",
+        f"Prompt hash ({version}): `{prompt_sha256}`",
         "",
         "Error-rate rule (owner ruling): the >20% stop is computed over the seeded "
         "sample only. Questions added because they are labelled not-answerable "
@@ -741,6 +1016,13 @@ def build_spot_check_packet_v2(
             f"Reference answer: {row['answer']}",
             _packet_label_line(entry),
         ]
+        if v3 and entry.get("schema_valid") is True:
+            lines.append(f"needs_memory_date: {str(entry['needs_memory_date']).lower()}")
+            lines.append("Target groups (any member per group; every group required):")
+            lines += [
+                f"- Group {index}: " + ", ".join(group)
+                for index, group in enumerate(entry["target_groups"], start=1)
+            ]
         note = entry.get("note")
         if isinstance(note, str) and note:
             lines.append(f"Labeller's note: {note}")
@@ -759,9 +1041,18 @@ def build_spot_check_packet_v2(
         memories = memories_by_question.get(question_id, ())
         lines.append("")
         if memories:
-            labelled = {str(memory_id) for memory_id in entry.get("memory_ids") or []}
+            labelled = (
+                {mid for group in entry.get("target_groups") or [] for mid in group}
+                if v3
+                else {str(memory_id) for memory_id in entry.get("memory_ids") or []}
+            )
             groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
-            for memory_id, session_id, session_date, text in memories:
+            for memory in memories:
+                memory_id, session_id, session_date, text = memory[:4]
+                if v3:
+                    if len(memory) != 5:
+                        raise ValueError("V3 packet memories require stored valid_from")
+                    text = f"{text} (valid_from: {memory[4]})"
                 groups.setdefault((session_date, session_id), []).append((memory_id, text))
             lines.append("Answer-session memories (grouped by session, sessions in date order):")
             for session_date, session_id in sorted(groups):
@@ -775,9 +1066,14 @@ def build_spot_check_packet_v2(
         lines += [
             "",
             "Checklist:",
-            "- labelled memory IDs correct?      yes / no — correction:",
-            "- any memory missing from the label? yes / no — ids:",
+            "- target groups/interchangeability correct? yes / no — correction:"
+            if v3
+            else "- labelled memory IDs correct?      yes / no — correction:",
+            "- any group or alternative missing? yes / no — ids:"
+            if v3
+            else "- any memory missing from the label? yes / no — ids:",
             "- answerable_from_store correct?    yes / no — correction:",
+            *(["- needs_memory_date correct? yes / no — correction:"] if v3 else []),
             "- overall: accept / correct",
         ]
 
@@ -785,14 +1081,18 @@ def build_spot_check_packet_v2(
 
 
 def artifact_hashes() -> dict[str, str]:
-    """SHA-256 of each frozen artifact: v1 for provenance, v2 for the run."""
+    """Historical v1/v2 pins plus the final v3 contract (no further redesign)."""
     return {
         "prompt": _sha256(PROMPT_V1),
         "prompt_v2": _sha256(PROMPT_V2),
-        "label_schema": _sha256(_canonical(LABEL_SCHEMA)),
-        "label_record_schema_v2": _sha256(LABEL_RECORD_SCHEMA),
+        "label_schema": _sha256(_canonical(LABEL_SCHEMA_V1)),
+        "label_record_schema_v2": _sha256(LABEL_RECORD_SCHEMA_V2),
         "request_template": _sha256(_canonical(request_template())),
         "request_template_v2": _sha256(_canonical(request_template_v2())),
+        "prompt_v3": _sha256(PROMPT_V3),
+        "label_schema_v3": _sha256(_canonical(LABEL_SCHEMA)),
+        "label_record_schema_v3": _sha256(LABEL_RECORD_SCHEMA),
+        "request_template_v3": _sha256(_canonical(request_template_v3())),
     }
 
 
@@ -804,7 +1104,7 @@ def artifact_hashes() -> dict[str, str]:
 # drive the whole flow with fakes and no provider, database or dataset is touched
 # by this module's tests.
 
-#: v2 runs on the remapped copy only: the original stays untouched as evidence.
+#: Dated labelling runs on the remapped copy only; preserve the original evidence.
 LABEL_DATABASE_NAME_V2: Final[str] = "daemon_lme_bench_dev2_final_remap"
 
 
@@ -985,12 +1285,12 @@ def _batch_manifest(question_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any
 def _result_input_sha256(
     row: Mapping[str, Any],
     conversation_ids: Mapping[str, str],
-    memories: Sequence[tuple[str, str, str]],
+    memories: Sequence[tuple[str, str, str, str]],
 ) -> str:
     """One question's exact inputs, as a digest.
 
     The frozen request (which carries the prompt, the schema, the template, the
-    question date and every memory's session id and date) plus the checkpoint's
+    question date and every memory's session id, date and stored valid_from) plus the checkpoint's
     conversation mapping, so a corrected answer, a changed user, date or memory
     text, or a changed mapping all move the digest. With no memories there is no
     request, so the question fields and the mapping are hashed instead. Only the
@@ -1008,8 +1308,8 @@ def _result_input_sha256(
     }
     if memories:
         try:
-            fields["request"] = build_request_v2(
-                build_label_input_v2(row, conversation_ids, memories)
+            fields["request"] = build_request_v3(
+                build_label_input_v3(row, conversation_ids, memories)
             )
         except ValueError:
             # An unusable input can never match a recorded digest.
@@ -1252,7 +1552,7 @@ async def label_questions(
                 stop_reason = "uncertain_dispatch"
                 break
 
-            memories = await load_answer_session_memories_v2(
+            memories = await load_answer_session_memories_v3(
                 memory_reader, decrypt, user_id, list(conversation_ids.values())
             )
             input_sha256 = _result_input_sha256(row, conversation_ids, memories)
@@ -1285,7 +1585,7 @@ async def label_questions(
                 continue
 
             try:
-                item = build_label_input_v2(row, conversation_ids, memories)
+                item = build_label_input_v3(row, conversation_ids, memories)
             except ValueError:
                 # No dataset session or date for a memory: no label can be
                 # attributed, so the run stops here. This is never an entry: a
@@ -1295,7 +1595,7 @@ async def label_questions(
             payload = {
                 "_route_id": LABELLER_ROUTE_ID,
                 "_exact_model": True,
-                **build_request_v2(item),
+                **build_request_v3(item),
             }
 
             if read_ledger_spend_usd is None:
@@ -1372,7 +1672,7 @@ async def label_questions(
             entry["cost_usd"] = str(cost)
 
             try:
-                label = parse_label(item, _response_text(receipt))
+                label = parse_label_v3(item, _response_text(receipt))
             except ValueError:
                 label = None
             if label is None:
@@ -1381,7 +1681,8 @@ async def label_questions(
             else:
                 entry["schema_valid"] = True
                 entry["answerable_from_store"] = label.answerable_from_store
-                entry["memory_ids"] = list(label.memory_ids)
+                entry["target_groups"] = [list(group) for group in label.target_groups]
+                entry["needs_memory_date"] = label.needs_memory_date
                 entry["note"] = label.note
             _append_journal(handle, {"kind": "result", "input_sha256": input_sha256, **entry})
             entries.append(entry)
@@ -1590,16 +1891,25 @@ def _read_population(path: Path) -> set[str]:
     return set(ids)
 
 
-def _check_packet_entry(entry: Mapping[str, Any]) -> None:
+def _check_packet_entry(entry: Mapping[str, Any], *, v3: bool = False) -> None:
     """A label is whole or plainly invalid; a truncated one must not read as a judgment."""
     question_id = entry["question_id"]
     if entry.get("schema_valid") is True:
         answerable = entry.get("answerable_from_store")
-        memory_ids = entry.get("memory_ids")
         if type(answerable) is not bool:
             raise ValueError(f"--labels {question_id}: answerable_from_store must be a boolean")
-        if not isinstance(memory_ids, list) or not isinstance(entry.get("note"), str):
+        if v3:
+            groups = validate_target_groups(entry.get("target_groups"))
+            if bool(groups) != answerable:
+                raise ValueError("Label groups disagree with answerable_from_store")
+            if type(entry.get("needs_memory_date")) is not bool:
+                raise ValueError("Label needs_memory_date must be a boolean")
+            if "memory_ids" in entry:
+                raise ValueError("Label v3 must not carry legacy memory_ids")
+        elif not isinstance(entry.get("memory_ids"), list):
             raise ValueError(f"--labels {question_id}: memory_ids and note are required")
+        if not isinstance(entry.get("note"), str):
+            raise ValueError(f"--labels {question_id}: note is required")
     elif entry.get("schema_valid") is False:
         if not isinstance(entry.get("reason"), str):
             raise ValueError(f"--labels {question_id}: an invalid entry must carry its reason")
@@ -1616,11 +1926,12 @@ def _packet_labels(
     schema = labels.get("schema")
     if schema not in LABEL_RECORD_SCHEMAS:
         raise ValueError("--labels has an unknown record schema")
-    if schema == LABEL_RECORD_SCHEMA:
+    if schema in {LABEL_RECORD_SCHEMA_V2, LABEL_RECORD_SCHEMA}:
         # The packet's header states the prompt the labels were made with.
         artifacts = labels.get("artifacts")
-        if not isinstance(artifacts, Mapping) or not isinstance(artifacts.get("prompt_v2"), str):
-            raise ValueError("--labels v2 document has no prompt hash in `artifacts`")
+        key = "prompt_v3" if schema == LABEL_RECORD_SCHEMA else "prompt_v2"
+        if not isinstance(artifacts, Mapping) or not isinstance(artifacts.get(key), str):
+            raise ValueError("--labels dated document has no prompt hash in `artifacts`")
     if labels.get("stop_reason") is not None:
         raise ValueError(f"Labels document stopped, no packet: {labels['stop_reason']}")
     questions = labels.get("questions")
@@ -1641,7 +1952,7 @@ def _packet_labels(
     if row_ids != population:
         raise ValueError("--question-rows does not match the frozen --population")
     for entry in questions:
-        _check_packet_entry(entry)
+        _check_packet_entry(entry, v3=schema == LABEL_RECORD_SCHEMA)
     unknown = sorted(set(label_ids) - row_ids)
     if unknown:
         raise ValueError(f"--labels holds question ids absent from the rows: {unknown}")
@@ -1665,7 +1976,8 @@ async def _run_packet(
 ) -> str:
     """Read the answer-session memories read-only and render the packet.
 
-    A v2 document reads the dated v2 input and renders the v2 packet, headed by
+    A v3 document reads actual valid_from dates and displays target groups. A
+    v2 document reads the dated v2 input and renders the v2 packet, headed by
     the labeller version and the prompt hash recorded in ``artifacts``. A v1
     document keeps v1's rendering. No provider, attestation, spend or lock is
     involved: this makes no paid call.
@@ -1682,7 +1994,8 @@ async def _run_packet(
     connect = connector or asyncpg.connect
     connection = await connect(database_url)
     label_schema = str(labels["schema"])
-    v2 = label_schema == LABEL_RECORD_SCHEMA
+    v3 = label_schema == LABEL_RECORD_SCHEMA
+    dated = label_schema in {LABEL_RECORD_SCHEMA_V2, LABEL_RECORD_SCHEMA}
     memories_by_question: dict[str, Any] = {}
     try:
         decryption = decrypt or ContentEncryption(settings.daemon_encryption_key).decrypt
@@ -1699,7 +2012,23 @@ async def _run_packet(
                     question_id,
                     [str(value) for value in row.get("answer_session_ids") or []],
                 )
-                if v2:
+                if v3:
+                    loaded_v3 = await load_answer_session_memories_v3(
+                        memory_reader,
+                        decryption,
+                        str(row["user_id"]),
+                        list(conversation_ids.values()),
+                    )
+                    item_v3 = build_label_input_v3(row, conversation_ids, loaded_v3)
+                    # Reject a packet naming targets no longer in its input too.
+                    if questions:
+                        entry = next(e for e in questions if str(e["question_id"]) == question_id)
+                        if entry.get("schema_valid") is True:
+                            validate_target_groups(
+                                entry["target_groups"], known_ids={e[0] for e in item_v3.memories}
+                            )
+                    memories_by_question[question_id] = item_v3.memories
+                elif dated:
                     loaded = await load_answer_session_memories_v2(
                         memory_reader,
                         decryption,
@@ -1724,7 +2053,7 @@ async def _run_packet(
     finally:
         await connection.close()
 
-    if v2:
+    if dated:
         artifacts = labels["artifacts"]
         return build_spot_check_packet_v2(
             selection,
@@ -1733,7 +2062,7 @@ async def _run_packet(
             checkpoint,
             memories_by_question,
             label_schema=label_schema,
-            prompt_sha256=str(artifacts["prompt_v2"]),
+            prompt_sha256=str(artifacts["prompt_v3" if v3 else "prompt_v2"]),
         )
     return build_spot_check_packet(selection, questions, rows, checkpoint, memories_by_question)
 
@@ -1826,21 +2155,31 @@ __all__ = [
     "LABEL_RECORD_SCHEMA",
     "LABEL_RECORD_SCHEMAS",
     "LABEL_RECORD_SCHEMA_V1",
+    "LABEL_RECORD_SCHEMA_V2",
     "LABEL_SCHEMA",
+    "LABEL_SCHEMA_V1",
     "MEMORY_SQL",
     "MEMORY_SQL_V2",
+    "MEMORY_SQL_V3",
     "PROMPT_TEMPLATE_V2",
     "PROMPT_V1",
     "PROMPT_V2",
+    "PROMPT_V3",
+    "PROMPT_TEMPLATE_V3",
     "Label",
     "LabelInput",
     "LabelInputV2",
+    "LabelInputV3",
+    "LabelV3",
     "MemoryV2",
+    "MemoryV3",
     "artifact_hashes",
     "assert_label_database_v2",
     "build_label_input_v2",
+    "build_label_input_v3",
     "build_request",
     "build_request_v2",
+    "build_request_v3",
     "build_spot_check_packet",
     "build_spot_check_packet_v2",
     "ceiling_from_route",
@@ -1848,15 +2187,20 @@ __all__ = [
     "label_questions",
     "load_answer_session_memories",
     "load_answer_session_memories_v2",
+    "load_answer_session_memories_v3",
     "main",
     "packet_main",
     "parse_label",
+    "parse_label_v3",
     "price_ceiling_reader",
     "request_template",
     "request_template_v2",
+    "request_template_v3",
     "session_dates_from_row",
     "spot_check_sample",
     "spot_check_selection",
+    "seeded_spot_check_changes",
+    "validate_target_groups",
     "validate_question_rows_v2",
     "verify_label_route",
 ]

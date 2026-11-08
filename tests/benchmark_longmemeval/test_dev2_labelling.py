@@ -18,9 +18,9 @@ from tests.benchmark_longmemeval.dev2_labelling import (
     LABELLER_MODEL,
     LABELLER_ROUTE_ID,
     LABELLER_SEED,
-    LABEL_RECORD_SCHEMA,
+    LABEL_RECORD_SCHEMA_V2 as LABEL_RECORD_SCHEMA,
     LABEL_RECORD_SCHEMAS,
-    LABEL_SCHEMA,
+    LABEL_SCHEMA_V1 as LABEL_SCHEMA,
     MEMORY_SQL,
     MEMORY_SQL_V2,
     PROMPT_V1,
@@ -54,6 +54,13 @@ PINNED_V2_HASHES = {
     "request_template_v2": "2bb192d242528e3ef43776c213032cb463f9c79067c2645b2ac5bb93dac4cea1",
 }
 
+PINNED_V3_HASHES = {
+    "prompt_v3": "c1c715a00611ffeaa2f86e9449eb63264e7884fe691859c5d998a98b32125698",
+    "label_schema_v3": "4c8e7c091a350d7da93b680a62d5a81502f6c112db84fd0567c1afb8c48cf4b4",
+    "label_record_schema_v3": "d66afce175b7794f0d728e72d20b3a3f24623a06f732d54308b5c2aecdcd2f00",
+    "request_template_v3": "68c822ff191c4e9721635712ef15a49491492d92235645ea5339c50e594650be",
+}
+
 SENTINEL = "SENTINEL_MEMORY_TEXT_do_not_leak"
 
 ITEM = LabelInput(
@@ -71,9 +78,10 @@ def test_pinned_artifact_hashes() -> None:
     hashes = artifact_hashes()
     # v1's three pins are unchanged, so v1 stays comparable across the version bump.
     assert {key: hashes[key] for key in PINNED_HASHES} == PINNED_HASHES
-    assert set(hashes) == set(PINNED_HASHES) | set(PINNED_V2_HASHES)
+    assert set(hashes) == set(PINNED_HASHES) | set(PINNED_V2_HASHES) | set(PINNED_V3_HASHES)
     assert {key: hashes[key] for key in PINNED_V2_HASHES} == PINNED_V2_HASHES
-    assert LABEL_RECORD_SCHEMAS == {"dev2-labelling/1", LABEL_RECORD_SCHEMA}
+    assert {key: hashes[key] for key in PINNED_V3_HASHES} == PINNED_V3_HASHES
+    assert LABEL_RECORD_SCHEMAS == {"dev2-labelling/1", LABEL_RECORD_SCHEMA, "dev2-labelling/3"}
 
 
 def test_v2_prompt_states_the_date_rules() -> None:
@@ -370,7 +378,8 @@ def test_spot_check_sample_rejects_impossible_fraction() -> None:
 # Fakes only: no provider, database or dataset is touched.
 
 SENTINEL = "SENTINEL-MEMORY-TEXT-4a1f"
-LABEL_TEXT = '{"memory_ids": ["m1"], "answerable_from_store": true, "note": "the river is named"}'
+LABEL_TEXT = '{"target_groups": [["m1"]], "answerable_from_store": true, "needs_memory_date": false, "note": "the river is named"}'
+STORED_DATE = "2023-05-30T18:00:00+00:00"
 
 
 def _checkpoint(*pairs: tuple[str, str, str]) -> dict[str, Any]:
@@ -391,8 +400,8 @@ def _row(question_id: str = "q1", session_id: str = "s1") -> dict[str, Any]:
         "answer": "By the river.",
         "answer_session_ids": [session_id],
         "user_id": f"user-{question_id}",
-        # The dataset's own dates, in LongMemEval's format. No database
-        # timestamp is involved: the labeller reads only these.
+        # Synthetic dataset dates, in LongMemEval's format. V3 also reads the
+        # synthetic stored valid_from supplied by the fake memory reader.
         "question_date": "2023/05/30 (Tue) 23:18",
         "haystack_session_ids": [session_id],
         "haystack_dates": ["2023/05/30 (Tue) 18:00"],
@@ -439,7 +448,8 @@ def _run(
             acquire_run_lock=(lambda: True) if acquire_run_lock is _UNSET else acquire_run_lock,
             check_run_lock=check_run_lock or (lambda: True),
             verify_route=verify_route or (lambda: None),
-            memory_reader=memory_reader or (lambda _sql, params: [("m1", params[1][0], SENTINEL)]),
+            memory_reader=memory_reader
+            or (lambda _sql, params: [("m1", params[1][0], SENTINEL, STORED_DATE)]),
             decrypt=lambda text: text,
             read_ledger_spend_usd=ledger or (lambda: Decimal(0)),
             next_call_ceiling_usd=ceiling or (lambda payload: Decimal("0.01")),
@@ -491,7 +501,7 @@ def test_v2_unattributable_memory_stops_the_run(tmp_path: Any) -> None:
             "rows": [_row("q1", "s1"), _row("q2", "s2")],
             "checkpoint": _checkpoint(("q1", "s1", Q1_CONVERSATION), second),
             "memory_reader": lambda _sql, params: [
-                ("m1", "99999999-9999-9999-9999-999999999999", SENTINEL)
+                ("m1", "99999999-9999-9999-9999-999999999999", SENTINEL, STORED_DATE)
             ],
         },
         "session without a date": {
@@ -846,7 +856,8 @@ def test_memory_text_never_reaches_the_output(tmp_path: Any) -> None:
     entry = document["questions"][0]
     assert entry["schema_valid"] is True
     assert entry["serving_provider"] == "azure"
-    assert entry["memory_ids"] == ["m1"]
+    assert entry["target_groups"] == [["m1"]]
+    assert entry["needs_memory_date"] is False
     text = output.read_text(encoding="utf-8")
     assert SENTINEL not in text
 
@@ -919,7 +930,7 @@ def test_journal_records_intent_then_result(tmp_path: Any) -> None:
     assert set(records[0]["questions"]) == {"q1"}
     assert records[1]["question_id"] == "q1"
     assert records[2]["question_id"] == "q1"
-    assert records[2]["memory_ids"] == ["m1"]
+    assert records[2]["target_groups"] == [["m1"]]
     # The intent and the result are bound to the same inputs.
     assert records[1]["input_sha256"] == records[2]["input_sha256"]
     text = journal.read_text(encoding="utf-8")
@@ -1301,7 +1312,9 @@ def test_changed_memories_on_resume_is_a_receipt_mismatch(tmp_path: Any) -> None
         rows=rows,
         checkpoint=checkpoint,
         call=lambda payload: calls.append(payload),
-        memory_reader=lambda _sql, params: [("m1", params[1][0], "a different memory")],
+        memory_reader=lambda _sql, params: [
+            ("m1", params[1][0], "a different memory", STORED_DATE)
+        ],
     )
 
     _assert_mismatch(document, calls, output, before)
@@ -1824,7 +1837,7 @@ def _batch_rows() -> list[dict[str, Any]]:
 
 def _batch_document(*ids: str, **overrides: Any) -> dict[str, Any]:
     document: dict[str, Any] = {
-        "schema": dev2_labelling.LABEL_RECORD_SCHEMA,
+        "schema": dev2_labelling.LABEL_RECORD_SCHEMA_V2,
         "artifacts": artifact_hashes(),
         "stop_reason": None,
         "questions": [
@@ -1940,3 +1953,266 @@ def test_v2_loader_accepts_asyncpg_uuid_columns() -> None:
         load_answer_session_memories_v2(reader, lambda text: "plain", "u1", [str(conversation)])
     )
     assert triples == ((str(memory), str(conversation), "plain"),)
+
+
+def _v3_item() -> dev2_labelling.LabelInputV3:
+    return dev2_labelling.LabelInputV3(
+        "q1",
+        "When did I park?",
+        "2023-05-30 23:18",
+        "May 30",
+        (
+            ("m2", "s1", "2023-05-30 18:00", "A paraphrase", STORED_DATE),
+            ("m1", "s1", "2023-05-30 18:00", "I parked", STORED_DATE),
+        ),
+    )
+
+
+def _v3_label(**updates: Any) -> dict[str, Any]:
+    return {
+        "target_groups": [["m1", "m2"]],
+        "answerable_from_store": True,
+        "needs_memory_date": True,
+        "note": "temporal cue dropped at extraction; stored date supports it",
+        **updates,
+    }
+
+
+def test_v3_schema_request_and_stored_date_contract() -> None:
+    item = _v3_item()
+    request = dev2_labelling.build_request_v3(item)
+    schema = request["response_format"]["json_schema"]["schema"]
+    assert schema == dev2_labelling.LABEL_SCHEMA
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {
+        "target_groups",
+        "answerable_from_store",
+        "needs_memory_date",
+        "note",
+    }
+    assert schema["properties"]["target_groups"]["items"]["minItems"] == 1
+    assert schema["properties"]["needs_memory_date"] == {"type": "boolean"}
+    assert "temperature" not in request
+    assert request["model"] == LABELLER_MODEL
+    assert request["seed"] == LABELLER_SEED
+    assert request["reasoning_effort"] == "medium"
+    assert request["max_tokens"] == 4000
+    assert request["messages"][0]["content"] == dev2_labelling.PROMPT_V3
+    user = request["messages"][1]["content"]
+    assert '"valid_from"' in user and STORED_DATE in user
+    assert user.index('"id": "m1"') < user.index('"id": "m2"')
+    assert "Dates stored only in valid_from count as answerable" in dev2_labelling.PROMPT_V3
+    assert "temporal cue was dropped at extraction" in dev2_labelling.PROMPT_V3
+    label = dev2_labelling.parse_label_v3(item, json.dumps(_v3_label()))
+    assert label.target_groups == (("m1", "m2"),)
+    assert label.needs_memory_date is True
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"target_groups": "m1"},
+        {"target_groups": ["m1"]},
+        {"target_groups": [[]]},
+        {"target_groups": [[""]]},
+        {"target_groups": [[" "]]},
+        {"target_groups": [[1]]},
+        {"target_groups": [["unknown"]]},
+        {"target_groups": [["m1", "m1"]]},
+        {"target_groups": []},
+        {"answerable_from_store": False},
+        {"answerable_from_store": 1},
+        {"needs_memory_date": "true"},
+        {"needs_memory_date": 1},
+        {"needs_memory_date": None},
+        {"note": None},
+        {"memory_ids": ["m1"]},
+    ],
+)
+def test_v3_rejects_invalid_groups_unknown_ids_and_date_flags(update: dict[str, Any]) -> None:
+    with pytest.raises(ValueError) as error:
+        dev2_labelling.parse_label_v3(_v3_item(), json.dumps(_v3_label(**update)))
+    assert SENTINEL not in str(error.value)
+
+
+def test_v3_date_flag_is_required_and_negative_label_has_no_groups() -> None:
+    value = _v3_label()
+    value.pop("needs_memory_date")
+    with pytest.raises(ValueError):
+        dev2_labelling.parse_label_v3(_v3_item(), json.dumps(value))
+    label = dev2_labelling.parse_label_v3(
+        _v3_item(),
+        json.dumps(
+            _v3_label(
+                target_groups=[],
+                answerable_from_store=False,
+                needs_memory_date=False,
+            )
+        ),
+    )
+    assert not label.target_groups and not label.answerable_from_store
+    # A memory can support multiple distinct requirements; groups need not be disjoint.
+    overlap = dev2_labelling.parse_label_v3(
+        _v3_item(), json.dumps(_v3_label(target_groups=[["m1"], ["m1", "m2"]]))
+    )
+    assert overlap.target_groups == (("m1",), ("m1", "m2"))
+
+
+def test_v3_reads_actual_valid_from_and_binds_it_to_receipts() -> None:
+    import uuid
+    from datetime import datetime, UTC
+
+    stored = datetime(2023, 4, 1, tzinfo=UTC)
+    conversation = uuid.UUID(Q1_CONVERSATION)
+    sqls: list[str] = []
+
+    def reader(sql: str, params: Any) -> list[tuple[Any, ...]]:
+        sqls.append(sql)
+        return [("m1", conversation, "encrypted", stored)]
+
+    loaded = asyncio.run(
+        dev2_labelling.load_answer_session_memories_v3(
+            reader,
+            lambda _: "plain",
+            "u",
+            [str(conversation)],
+        )
+    )
+    assert sqls == [dev2_labelling.MEMORY_SQL_V3]
+    assert loaded == (("m1", Q1_CONVERSATION, "plain", stored.isoformat()),)
+    mapping = {"s1": Q1_CONVERSATION}
+    item = dev2_labelling.build_label_input_v3(_row(), mapping, loaded)
+    assert item.memories[0][2] == "2023-05-30 18:00"  # dataset session date
+    assert item.memories[0][4] == stored.isoformat()  # not substituted with session date
+    first = dev2_labelling._result_input_sha256(_row(), mapping, loaded)
+    changed = (("m1", Q1_CONVERSATION, "plain", STORED_DATE),)
+    assert first != dev2_labelling._result_input_sha256(_row(), mapping, changed)
+    for invalid in (None, "not-a-date", "2023-05-30"):
+        with pytest.raises(ValueError, match="valid_from"):
+            dev2_labelling._stored_date(invalid)
+
+
+def test_v3_packet_shows_groups_alternatives_stored_date_and_date_flag() -> None:
+    entry = {"question_id": "q1", "schema_valid": True, **_v3_label()}
+    packet = dev2_labelling.build_spot_check_packet_v2(
+        [("q1", ("seeded_sample",))],
+        [entry],
+        _packet_rows()[:1],
+        _packet_checkpoint(),
+        {"q1": _v3_item().memories},
+        label_schema=dev2_labelling.LABEL_RECORD_SCHEMA,
+        prompt_sha256=PINNED_V3_HASHES["prompt_v3"],
+    )
+    assert "(v3)" in packet and "Prompt hash (v3)" in packet
+    assert "Group 1: m1, m2" in packet
+    assert "every group required" in packet
+    assert "needs_memory_date: true" in packet
+    assert "valid_from: " + STORED_DATE in packet
+    assert "temporal cue dropped at extraction" in packet
+    assert "[LABELLED] m1:" in packet and "[LABELLED] m2:" in packet
+    assert "needs_memory_date correct?" in packet
+
+
+def test_seeded_spot_check_carries_only_per_question_supersets() -> None:
+    old = [
+        {"question_id": qid, "schema_valid": True, "memory_ids": [mid]}
+        for qid, mid in [("q1", "m1"), ("q2", "m2"), ("unseeded", "m3")]
+    ]
+    new = [
+        {"question_id": qid, "schema_valid": True, "target_groups": groups}
+        for qid, groups in [("q1", [["m1", "other"]]), ("q2", [["m2"]]), ("unseeded", [])]
+    ]
+    compare = dev2_labelling.seeded_spot_check_changes
+    assert compare(old, new, ["q2", "q1"]) == ()
+    new[0]["target_groups"] = [["m2"]]
+    # Global union still has m1 in q2, but q1 lost its own checked target.
+    new[1]["target_groups"] = [["m1", "m2"]]
+    assert compare(old, new, ["q2", "q1"]) == ("q1",)
+    with pytest.raises(ValueError, match="missing"):
+        compare(old, new[:1], ["q1", "q2"])
+    with pytest.raises(ValueError, match="nonempty"):
+        compare(old, new, [])
+
+
+def test_seeded_comparison_distinguishes_no_memories_from_parse_failure() -> None:
+    empty = {
+        "question_id": "q1",
+        "schema_valid": False,
+        "reason": "no_memories",
+        "answerable_from_store": False,
+    }
+    compare = dev2_labelling.seeded_spot_check_changes
+    assert compare([empty], [empty], ["q1"]) == ()
+    before = {"question_id": "q1", "schema_valid": True, "memory_ids": ["m1"]}
+    assert compare([before], [empty], ["q1"]) == ("q1",)
+    with pytest.raises(ValueError, match="valid labels"):
+        compare([empty], [{**empty, "reason": "parse_failure"}], ["q1"])
+
+
+def test_v3_end_to_end_driver_uses_only_v3_and_preserves_groups(tmp_path: Any) -> None:
+    calls: list[Any] = []
+    document, _ = _run(
+        tmp_path,
+        rows=[_row()],
+        checkpoint=_q1_checkpoint(),
+        call=lambda payload: (
+            calls.append(payload) or _receipt(json.dumps(_v3_label(target_groups=[["m1"]])))
+        ),
+    )
+    assert document["schema"] == "dev2-labelling/3"
+    assert document["stop_reason"] is None
+    assert calls[0]["messages"][0]["content"] == dev2_labelling.PROMPT_V3
+    assert calls[0]["response_format"]["json_schema"]["schema"] == dev2_labelling.LABEL_SCHEMA
+    entry = document["questions"][0]
+    assert "memory_ids" not in entry
+    assert entry["target_groups"] == [["m1"]] and entry["needs_memory_date"] is True
+
+
+@pytest.mark.parametrize("target", ["m1", "unknown"])
+def test_v3_packet_dispatch_uses_stored_dates_and_checks_input_ids(
+    monkeypatch: Any, target: str
+) -> None:
+    sqls: list[str] = []
+    closed: list[bool] = []
+
+    async def fetch(sql: str, *args: Any) -> list[tuple[str, str, str, str]]:
+        sqls.append(sql)
+        return [("m1", Q1_CONVERSATION, "plain", STORED_DATE)]
+
+    async def close() -> None:
+        closed.append(True)
+
+    async def connect(_url: str) -> Any:
+        return SimpleNamespace(
+            fetch=fetch, close=close, transaction=lambda **kwargs: _NullTransaction()
+        )
+
+    monkeypatch.setattr(
+        "orchestrator.config.get_settings",
+        lambda: SimpleNamespace(database_url="postgresql://user@host/synthetic"),
+    )
+    entry = {"question_id": "q1", "schema_valid": True, **_v3_label(target_groups=[[target]])}
+    labels = {
+        "schema": dev2_labelling.LABEL_RECORD_SCHEMA,
+        "artifacts": artifact_hashes(),
+        "questions": [entry],
+    }
+    pending = dev2_labelling._run_packet(
+        labels=labels,
+        rows=_packet_rows()[:1],
+        checkpoint=_packet_checkpoint(),
+        questions=[entry],
+        selection=[("q1", ("seeded_sample",))],
+        connector=connect,
+        decrypt=str,
+    )
+    if target == "unknown":
+        with pytest.raises(ValueError, match="outside the input"):
+            asyncio.run(pending)
+    else:
+        packet = asyncio.run(pending)
+        assert "Group 1: m1" in packet and "needs_memory_date: true" in packet
+        assert "valid_from: " + STORED_DATE in packet
+        assert "Prompt hash (v3)" in packet
+    assert sqls == [dev2_labelling.MEMORY_SQL_V3]
+    assert closed == [True]

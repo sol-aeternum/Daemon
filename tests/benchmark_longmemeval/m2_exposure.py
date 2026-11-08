@@ -5,10 +5,11 @@ module contacts a provider, opens a database or reads benchmark data at import
 time or in its tests.
 
 The pre-registration (``tests/benchmark_results/m2_preregistration.md``)
-governs. This module deliberately never re-implements the exposure metric: the
+governs. This module deliberately keeps rendering in the production metric: the
 ``measure`` command goes through ``measure_multi_query_exposure`` with the
 production renderer, and the arms are the pre-registered baseline, additive
-(quota 3) and evaluation-only round-robin.
+(quota 3) and evaluation-only round-robin. V3 aggregates the returned per-ID
+rendered flags into groups: any member suffices, but every group is required.
 
 Benchmark text never appears in a committed artefact. Documents written here
 carry question ids, memory ids, counts and timings; the ``report`` command is
@@ -53,21 +54,23 @@ from tests.benchmark_longmemeval.dev2_labelling import (
     _run_lock_acquired,
     _run_lock_held,
     _write_document_atomic,
+    validate_target_groups,
 )
 from tests.benchmark_longmemeval.dev2_pilot import check_output_outside_repo, db_name_from_dsn
 
-THRESHOLD_SCHEMA: Final[str] = "m2-threshold/1"
+THRESHOLD_SCHEMA: Final[str] = "m2-threshold/2"
 GENERATION_SCHEMA: Final[str] = "m2-subqueries/1"
-MEASURE_SCHEMA: Final[str] = "m2-measure/1"
-GATES_SCHEMA: Final[str] = "m2-gates/1"
+MEASURE_SCHEMA: Final[str] = "m2-measure/2"
+GATES_SCHEMA: Final[str] = "m2-gates/2"
 RETENTION_SCHEMA: Final[str] = "m2-retention/1"
 REPORT_SCHEMA: Final[str] = "m2-report/1"
 PLAUSIBILITY_SCHEMA: Final[str] = "m2-gate4-plausibility/1"
 START_MARKER_SCHEMA: Final[str] = "m2-start-marker/1"
-LABEL_SCHEMA: Final[str] = "dev2-labelling/2"
-#: A loader-compatible earlier document. Gate 1 needs v2's session dates, so
-#: ``run_threshold`` refuses a v1 document even though the other gates read it.
-LABEL_SCHEMAS: Final[frozenset[str]] = frozenset({"dev2-labelling/1", LABEL_SCHEMA})
+LABEL_SCHEMA: Final[str] = "dev2-labelling/3"
+# Historical labels remain readable, but cannot enter final M2 execution.
+LABEL_SCHEMAS: Final[frozenset[str]] = frozenset(
+    {"dev2-labelling/1", "dev2-labelling/2", LABEL_SCHEMA}
+)
 JOURNAL_VERSION: Final[int] = 1
 
 FROZEN_QUESTION_COUNT: Final[int] = 100
@@ -156,8 +159,14 @@ class FrozenIds:
 @dataclass(frozen=True, slots=True)
 class LabelEntry:
     question_id: str
-    memory_ids: tuple[str, ...]
+    target_groups: tuple[tuple[str, ...], ...]
     answerable_from_store: bool
+    needs_memory_date: bool = False
+
+    @property
+    def memory_ids(self) -> tuple[str, ...]:
+        """Flatten only for the unchanged production flat-ID diagnostic API."""
+        return tuple(sorted({mid for group in self.target_groups for mid in group}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +175,7 @@ class LabelSet:
     files: tuple[dict[str, str], ...]
     sha256: str
     #: Every record schema the merged documents declared. Empty for a set built
-    #: by hand in a test; ``run_threshold`` refuses anything but v2.
+    #: by hand in a test; final M2 refuses anything but v3.
     schemas: tuple[str, ...] = ()
 
     @property
@@ -331,7 +340,7 @@ def load_frozen_ids(path: Path | str = FROZEN_IDS_PATH) -> FrozenIds:
     return FrozenIds(tuple(ids), digest)
 
 
-def _label_entry(value: Any, frozen: set[str]) -> LabelEntry:
+def _label_entry(value: Any, frozen: set[str], schema: str) -> LabelEntry:
     if not isinstance(value, Mapping):
         raise ValueError("Label question entry must be an object")
     question_id = value.get("question_id")
@@ -342,6 +351,17 @@ def _label_entry(value: Any, frozen: set[str]) -> LabelEntry:
     answerable = value.get("answerable_from_store")
     if type(answerable) is not bool:
         raise ValueError(f"Label answerable_from_store is not a boolean: {question_id}")
+    if schema == LABEL_SCHEMA:
+        if "memory_ids" in value:
+            raise ValueError("Label v3 must not carry legacy memory_ids")
+        groups = validate_target_groups(value.get("target_groups"))
+        if bool(groups) != answerable:
+            raise ValueError(f"Label groups disagree with answerable_from_store: {question_id}")
+        needs_date = value.get("needs_memory_date")
+        if type(needs_date) is not bool:
+            raise ValueError(f"Label needs_memory_date must be a boolean: {question_id}")
+        canonical_groups = tuple(sorted(tuple(sorted(group)) for group in groups))
+        return LabelEntry(question_id, canonical_groups, answerable, needs_date)
     raw_ids = value.get("memory_ids")
     if not isinstance(raw_ids, list):
         raise ValueError(f"Label memory_ids must be a list: {question_id}")
@@ -354,7 +374,7 @@ def _label_entry(value: Any, frozen: set[str]) -> LabelEntry:
         raise ValueError(f"Label memory ids are duplicated: {question_id}")
     if (not memory_ids) != (not answerable):
         raise ValueError(f"Label ids disagree with answerable_from_store: {question_id}")
-    return LabelEntry(question_id, tuple(memory_ids), answerable)
+    return LabelEntry(question_id, tuple((mid,) for mid in memory_ids), answerable)
 
 
 def load_labels(paths: Sequence[Path | str], frozen: FrozenIds) -> LabelSet:
@@ -384,7 +404,7 @@ def load_labels(paths: Sequence[Path | str], frozen: FrozenIds) -> LabelSet:
             raise ValueError("Label document has no question entries")
         files.append({"path": str(path), "sha256": _sha256_bytes(raw)})
         for value in questions:
-            entry = _label_entry(value, frozen_set)
+            entry = _label_entry(value, frozen_set, str(schema))
             if entry.question_id in entries:
                 raise ValueError(f"Duplicate label for question: {entry.question_id}")
             entries[entry.question_id] = entry
@@ -393,12 +413,26 @@ def load_labels(paths: Sequence[Path | str], frozen: FrozenIds) -> LabelSet:
         raise ValueError(f"Label set is incomplete: {len(missing)} frozen ids have no label")
     merged = {
         qid: {
-            "memory_ids": sorted(entry.memory_ids),
+            **(
+                {
+                    "target_groups": sorted(sorted(group) for group in entry.target_groups),
+                    "needs_memory_date": entry.needs_memory_date,
+                }
+                if LABEL_SCHEMA in schemas
+                else {"memory_ids": sorted(entry.memory_ids)}
+            ),
             "answerable_from_store": entry.answerable_from_store,
         }
         for qid, entry in sorted(entries.items())
     }
     return LabelSet(entries, tuple(files), _sha256_json(merged), tuple(schemas))
+
+
+def _require_v3_labels(labels: LabelSet) -> None:
+    if not labels.schemas or any(schema != LABEL_SCHEMA for schema in labels.schemas):
+        raise ValueError(
+            f"Final M2 requires {LABEL_SCHEMA} labels; historical labels are read-only"
+        )
 
 
 def run_threshold(
@@ -410,14 +444,7 @@ def run_threshold(
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Record gate 1's exact value from the final labels, before any retrieval."""
-    if LABEL_SCHEMA not in labels.schemas or any(
-        schema != LABEL_SCHEMA for schema in labels.schemas
-    ):
-        # The amendment makes gate 1's value come from v2's dated labels, so a v1
-        # document (which has no session dates) cannot set the threshold.
-        raise ValueError(
-            f"Gate 1 requires {LABEL_SCHEMA} labels; a v1 document cannot set the threshold"
-        )
+    _require_v3_labels(labels)
     output = _prepare_output(output_path, repo_root)
     exposure_answerable = labels.exposure_answerable_ids
     exposure_excluded = labels.exposure_excluded_abs_ids
@@ -1085,24 +1112,35 @@ def _embedding_batches(texts: Sequence[str], size: int = 3) -> list[list[str]]:
     return [list(texts[index : index + size]) for index in range(0, len(texts), size)]
 
 
-def _arm_view(metrics: Mapping[str, Any], arm: str, target_ids: Sequence[str]) -> dict[str, Any]:
+def _exposed_groups(groups: Sequence[Sequence[str]], rendered: Sequence[str]) -> list[int]:
+    ids = set(rendered)
+    return [index for index, group in enumerate(groups) if ids.intersection(group)]
+
+
+def _arm_view(
+    metrics: Mapping[str, Any], arm: str, target_groups: Sequence[Sequence[str]]
+) -> dict[str, Any]:
     values = metrics.get(arm)
     if not isinstance(values, Mapping):
         raise ValueError(f"Exposure result is missing the {arm} arm")
     targets = values.get("targets")
     if not isinstance(targets, Mapping):
         raise ValueError("Exposure result is missing per-target detail")
+    target_ids = sorted({mid for group in target_groups for mid in group})
     rendered_targets = [
         target_id
         for target_id in target_ids
         if isinstance(targets.get(target_id), Mapping) and targets[target_id].get("rendered")
     ]
     rendered_ids = values.get("rendered_ids")
+    exposed_groups = _exposed_groups(target_groups, rendered_targets)
     return {
         "target_count": len(target_ids),
+        "target_group_count": len(target_groups),
+        "exposed_group_indices": exposed_groups,
         "rendered_target_ids": sorted(rendered_targets),
-        "target_exposed": bool(values.get("target_exposed")),
-        "target_any_exposed": bool(values.get("target_any_exposed")),
+        "target_exposed": bool(target_groups) and len(exposed_groups) == len(target_groups),
+        "target_any_exposed": bool(exposed_groups),
         "rendered_count": len(rendered_ids) if isinstance(rendered_ids, list) else 0,
         "rendered_ids": sorted(str(value) for value in rendered_ids)
         if isinstance(rendered_ids, list)
@@ -1297,6 +1335,7 @@ def _measure_manifest(
     return {
         "kind": "manifest",
         "version": JOURNAL_VERSION,
+        "measure_schema": MEASURE_SCHEMA,
         "remap_lineage_sha256": remap_lineage_sha256,
         "inputs_sha256": _sha256_json([_question_digest(question) for question in questions]),
         "labels_sha256": labels.sha256,
@@ -1447,6 +1486,7 @@ async def run_measure(
     nothing that is already recorded. The manifest binds the embedding route, so
     a resume after a route change refuses instead of mixing vectors.
     """
+    _require_v3_labels(labels)
     if not _is_sha256(remap_lineage_sha256):
         raise ValueError("M2 measure requires the remap lineage hash")
     logging_enabled, logging_debug = read_retrieval_logging_flags()
@@ -1577,9 +1617,9 @@ async def run_measure(
                         question, tuple(components), vectors_by_text, "round_robin", target_ids
                     )
                 )
-                baseline = _arm_view(additive, "baseline", target_ids)
-                candidate = _arm_view(additive, "candidate", target_ids)
-                baseline_round_robin = _arm_view(round_robin, "candidate", target_ids)
+                baseline = _arm_view(additive, "baseline", label.target_groups)
+                candidate = _arm_view(additive, "candidate", label.target_groups)
+                baseline_round_robin = _arm_view(round_robin, "candidate", label.target_groups)
                 entry = {
                     "question_id": key,
                     "answerable_from_store": label.answerable_from_store,
@@ -1589,6 +1629,8 @@ async def run_measure(
                     "latency_seconds": pinned.get("latency_seconds"),
                     "error_category": pinned.get("error_category"),
                     "target_count": len(target_ids),
+                    "target_groups": [list(group) for group in label.target_groups],
+                    "needs_memory_date": label.needs_memory_date,
                     "spend_high_water_usd": str(high_water),
                     "baseline": baseline,
                     "candidate": candidate,
@@ -1719,6 +1761,7 @@ def run_gates(
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Pure evaluation of gates 1, 2, 4 and 5; gate 3 is the existing unit test."""
+    _require_v3_labels(labels)
     output = _prepare_output(output_path, repo_root)
     if threshold.get("schema") != THRESHOLD_SCHEMA:
         raise ValueError("Threshold document has the wrong schema")
@@ -1760,19 +1803,23 @@ def run_gates(
         candidate = row.get("candidate")
         if not isinstance(baseline, Mapping) or not isinstance(candidate, Mapping):
             raise ValueError("Measure arm data is missing")
-        if not bool(baseline.get("target_exposed")) and bool(candidate.get("target_exposed")):
+        groups = labels.entries[question_id].target_groups
+        before = _exposed_groups(groups, baseline.get("rendered_target_ids") or [])
+        after = _exposed_groups(groups, candidate.get("rendered_target_ids") or [])
+        if len(before) < len(groups) and len(after) == len(groups):
             newly_exposed.append(question_id)
 
     gate1_pass = Fraction(len(newly_exposed)) >= threshold_value
-    losses: dict[str, list[str]] = {}
+    losses: dict[str, list[int]] = {}
     for question_id in answerable:
         row = measured[question_id]
         baseline = row.get("baseline")
         candidate = row.get("candidate")
         if not isinstance(baseline, Mapping) or not isinstance(candidate, Mapping):
             raise ValueError("Measure arm data is missing")
-        exposed_before = set(baseline.get("rendered_target_ids") or [])
-        exposed_after = set(candidate.get("rendered_target_ids") or [])
+        groups = labels.entries[question_id].target_groups
+        exposed_before = set(_exposed_groups(groups, baseline.get("rendered_target_ids") or []))
+        exposed_after = set(_exposed_groups(groups, candidate.get("rendered_target_ids") or []))
         lost = sorted(exposed_before - exposed_after)
         if lost:
             losses[question_id] = lost
@@ -1839,6 +1886,7 @@ def run_gates(
     gate2 = {
         "passed": gate2_pass,
         "losses": losses,
+        "loss_unit": "zero_based_target_group_index",
     }
     gate4 = {
         "flagged_for_owner_review": gate4_flagged,
@@ -1926,6 +1974,10 @@ def _report_category(row: Mapping[str, Any]) -> str:
         raise ValueError("Report needs both arms")
     before = bool(baseline.get("target_exposed"))
     after = bool(candidate.get("target_exposed"))
+    if set(baseline.get("exposed_group_indices") or []) - set(
+        candidate.get("exposed_group_indices") or []
+    ):
+        return "lost_target"
     if before and after:
         return "fully_exposed_both"
     if not before and after:

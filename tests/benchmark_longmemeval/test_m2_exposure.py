@@ -56,7 +56,8 @@ def _label_entry(qid: str, answerable: bool, targets: Sequence[str] = ()) -> dic
         "question_id": qid,
         "schema_valid": True,
         "answerable_from_store": answerable,
-        "memory_ids": list(targets),
+        "target_groups": [[mid] for mid in targets],
+        "needs_memory_date": False,
         "note": "",
     }
 
@@ -85,6 +86,10 @@ def _write_labels(
         "total_cost_complete": total_cost_complete,
         "questions": entries,
     }
+    if schema in {"dev2-labelling/1", "dev2-labelling/2"}:
+        for entry in entries:
+            entry["memory_ids"] = [group[0] for group in entry.pop("target_groups")]
+            entry.pop("needs_memory_date")
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
 
@@ -120,16 +125,16 @@ def test_gate1_threshold_is_exact_at_boundaries() -> None:
     assert gate1_threshold(0)["exact"] == "5"
 
 
-def test_a_v1_label_document_loads_but_cannot_set_the_threshold(tmp_path: Path) -> None:
-    # The amendment makes gate 1's value come from v2's dated labels.
+@pytest.mark.parametrize("schema", ["dev2-labelling/1", "dev2-labelling/2"])
+def test_historical_labels_load_but_cannot_set_the_threshold(tmp_path: Path, schema: str) -> None:
     frozen = _frozen()
     path = _write_labels(
-        tmp_path / "labels-v1.json", frozen, answerable=_ids()[:10], schema="dev2-labelling/1"
+        tmp_path / "labels-old.json", frozen, answerable=_ids()[:10], schema=schema
     )
     labels = load_labels([path], frozen)
-    assert labels.schemas == ("dev2-labelling/1",)
+    assert labels.schemas == (schema,)
     output = tmp_path / "out" / "threshold.json"
-    with pytest.raises(ValueError, match="dev2-labelling/2"):
+    with pytest.raises(ValueError, match="dev2-labelling/3"):
         run_threshold(labels=labels, frozen=frozen, output_path=output, repo_root=tmp_path / "repo")
     assert not output.exists()
 
@@ -1266,9 +1271,17 @@ def _gate_documents(
     if abs_answerable:
         answerable_ids.append(next(qid for qid in frozen.ids if qid.endswith("_abs")))
     labels = LabelSet(
-        {qid: LabelEntry(qid, ("m-1", "m-2"), qid in set(answerable_ids)) for qid in frozen.ids},
+        {
+            qid: LabelEntry(
+                qid,
+                (("m-1",), ("m-2",)) if qid in set(answerable_ids) else (),
+                qid in set(answerable_ids),
+            )
+            for qid in frozen.ids
+        },
         (),
         "labels-hash",
+        (m2_exposure.LABEL_SCHEMA,),
     )
     exposure_count = len([qid for qid in labels.answerable_ids if not qid.endswith("_abs")])
     threshold = {
@@ -1411,6 +1424,169 @@ def test_strict_metric_does_not_count_partial_exposure(tmp_path: Path) -> None:
     assert document["gate1"]["passed"] is False
 
 
+def test_group_aggregation_accepts_an_alternative_but_requires_every_group() -> None:
+    groups = (("m1", "paraphrase"), ("date1", "same-session-date"))
+    flat = [mid for group in groups for mid in group]
+    metrics = {"candidate": _arm(flat, ["paraphrase", "same-session-date"])}
+    # The unchanged production flat-ID API quite correctly says not all IDs render.
+    assert metrics["candidate"]["target_exposed"] is False
+    arm = m2_exposure._arm_view(metrics, "candidate", groups)
+    assert arm["target_exposed"] is True
+    assert arm["exposed_group_indices"] == [0, 1]
+    assert arm["target_group_count"] == 2
+    metrics["candidate"] = _arm(flat, ["paraphrase"])
+    arm = m2_exposure._arm_view(metrics, "candidate", groups)
+    assert arm["target_exposed"] is False
+    assert arm["target_any_exposed"] is True
+    assert arm["exposed_group_indices"] == [0]
+
+
+def test_measure_driver_flattens_only_at_api_boundary_and_records_groups(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    questions = _questions(frozen)
+    labels = _labels(frozen, frozen.ids, tmp_path / "labels.json")
+    for qid in frozen.ids:
+        labels.entries[qid] = LabelEntry(qid, (("m1", "m2"), ("date1", "date2")), True, True)
+    subqueries = _pinned(frozen, questions, tmp_path / "subqueries.json")
+    kwargs = _measure_kwargs(_MeasureFakes(), tmp_path)
+
+    async def measure(
+        _question: Question,
+        _components: tuple[str, ...],
+        _vectors: Mapping[str, EmbeddingVectorResult],
+        _merge: str,
+        targets: Sequence[str],
+    ) -> dict[str, Any]:
+        assert list(targets) == ["date1", "date2", "m1", "m2"]
+        baseline = _arm(targets, ["m1"])
+        candidate = _arm(targets, ["m2", "date2"])
+        assert candidate["target_exposed"] is False  # flat-ID API intentionally unchanged
+        return {"baseline": baseline, "candidate": candidate}
+
+    kwargs["measure_question"] = measure
+    document = asyncio.run(
+        run_measure(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            output_path=tmp_path / "measure.json",
+            repo_root=tmp_path / "repo",
+            **kwargs,
+        )
+    )
+    for row in document["questions"]:
+        assert row["target_groups"] == [["m1", "m2"], ["date1", "date2"]]
+        assert row["needs_memory_date"] is True
+        assert row["baseline"]["target_exposed"] is False
+        assert row["candidate"]["target_exposed"] is True
+        assert row["candidate"]["exposed_group_indices"] == [0, 1]
+
+
+def test_gate2_preserves_group_when_a_redundant_alternative_disappears(tmp_path: Path) -> None:
+    frozen = _frozen()
+    threshold, measure, plausibility, labels = _gate_documents(frozen, newly=6)
+    qid = _ids()[0]
+    labels.entries[qid] = LabelEntry(qid, (("m-1", "alternate"), ("m-2",)), True)
+    row = next(row for row in measure["questions"] if row["question_id"] == qid)
+    row["baseline"], row["candidate"] = _gate_arms(
+        ("m-1", "alternate", "m-2"),
+        ["m-1", "alternate"],
+        ["alternate", "m-2"],
+    )
+    output = tmp_path / "gates.json"
+    document = run_gates(
+        threshold=threshold,
+        labels=labels,
+        measure=measure,
+        plausibility=plausibility,
+        output_path=output,
+        repo_root=tmp_path / "repo",
+    )
+    assert document["gate2"]["passed"] is True
+    assert document["gate1"]["newly_exposed_count"] == 6
+    # Losing all alternatives of even a partially exposed group must still fail.
+    row["candidate"] = _arm(("m-1", "alternate", "m-2"), ["m-2"])
+    document = run_gates(
+        threshold=threshold,
+        labels=labels,
+        measure=measure,
+        plausibility=plausibility,
+        output_path=tmp_path / "lost.json",
+        repo_root=tmp_path / "repo",
+    )
+    assert document["gate2"]["passed"] is False
+    assert document["gate2"]["losses"] == {qid: [0]}
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"target_groups": [[]]},
+        {"target_groups": [["m", "m"]]},
+        {"target_groups": [[False]]},
+        {"target_groups": []},
+        {"needs_memory_date": "false"},
+        {"needs_memory_date": 0},
+        {"memory_ids": ["m"]},
+    ],
+)
+def test_m2_loader_rejects_invalid_v3_contract(tmp_path: Path, update: dict[str, Any]) -> None:
+    frozen = _frozen(2)
+    path = _write_labels(tmp_path / "labels.json", frozen, answerable=frozen.ids)
+    data = json.loads(path.read_text())
+    data["questions"][0].update(update)
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        load_labels([path], frozen)
+
+
+def test_v3_labels_hash_groups_and_date_flag_without_losing_alternatives(tmp_path: Path) -> None:
+    frozen = _frozen(2)
+    path = _write_labels(tmp_path / "labels.json", frozen, answerable=frozen.ids)
+    data = json.loads(path.read_text())
+    data["questions"][0]["target_groups"] = [["m1", "alternate"], ["date"]]
+    path.write_text(json.dumps(data))
+    first = load_labels([path], frozen)
+    assert first.entries[frozen.ids[0]].memory_ids == ("alternate", "date", "m1")
+    data["questions"][0]["target_groups"] = [["alternate", "m1"], ["date"]]
+    path.write_text(json.dumps(data))
+    assert first.sha256 == load_labels([path], frozen).sha256
+    data["questions"][0]["needs_memory_date"] = True
+    path.write_text(json.dumps(data))
+    assert first.sha256 != load_labels([path], frozen).sha256
+    data["questions"][0]["needs_memory_date"] = False
+    data["questions"][0]["target_groups"] = [["alternate"], ["m1", "date"]]
+    path.write_text(json.dumps(data))
+    assert first.sha256 != load_labels([path], frozen).sha256
+
+
+@pytest.mark.parametrize("schema", ["dev2-labelling/1", "dev2-labelling/2"])
+def test_final_measure_and_gates_refuse_historical_labels_before_effects(
+    tmp_path: Path, schema: str
+) -> None:
+    frozen = _frozen(2)
+    path = _write_labels(tmp_path / "labels.json", frozen, answerable=frozen.ids, schema=schema)
+    labels = load_labels([path], frozen)
+    fakes = _MeasureFakes()
+    kwargs = _measure_kwargs(fakes, tmp_path)
+    kwargs["labels"] = labels
+    kwargs.update(
+        questions=_questions(frozen), subqueries={}, output_path=tmp_path / "measure.json"
+    )
+    with pytest.raises(ValueError, match="dev2-labelling/3"):
+        asyncio.run(run_measure(**kwargs))
+    assert fakes.embed_calls == [] and fakes.calls == 0
+    with pytest.raises(ValueError, match="dev2-labelling/3"):
+        run_gates(
+            threshold={},
+            labels=labels,
+            measure={},
+            plausibility={},
+            output_path=tmp_path / "gates.json",
+            repo_root=tmp_path / "repo",
+        )
+
+
 def test_round_robin_cannot_change_the_result(tmp_path: Path) -> None:
     frozen = _frozen()
     threshold, measure, plausibility, labels = _gate_documents(frozen, newly=6)
@@ -1514,7 +1690,7 @@ def test_gates_refuse_mismatched_labels_and_output_overwrite(tmp_path: Path) -> 
     threshold, measure, plausibility, labels = _gate_documents(frozen, newly=6)
     output = tmp_path / "out" / "gates.json"
     output.parent.mkdir()
-    bad_labels = LabelSet(labels.entries, (), "other-hash")
+    bad_labels = LabelSet(labels.entries, (), "other-hash", labels.schemas)
     with pytest.raises(ValueError, match="different labels"):
         run_gates(
             threshold=threshold,

@@ -22,14 +22,14 @@ Sub-queries come from **one** generation pass of `PROMPT_V2` across the 100 dev2
 
 ## Metric
 
-**Strict case exposure:** a question counts as exposed only when **all** of its labelled target memories are rendered. It's computed over **answerable** questions only (`answerable_from_store=true`). Questions labelled not answerable are reported separately as the retention rate and are outside the denominator. The render budget is the production default and is pinned at freeze.
+**Strict case exposure (final v3):** a question counts as exposed only when **every target group** has at least one rendered member. Group members are interchangeable alternatives, not additional requirements. It's computed over **answerable non-`_abs`** questions only (`answerable_from_store=true`). Questions labelled not answerable are reported separately as the retention rate and are outside the denominator. The render budget is the production default and is pinned at freeze.
 
 ## Gates
 
 | # | Gate | Rule |
 |---|---|---|
 | 1 | Gain | Newly fully-exposed questions (candidate − baseline) ≥ max(5, 10% of answerable questions). **The formula is frozen.** Its value is computed unrounded from the final spot-checked labels and recorded before any retrieval. |
-| 2 | No loss, on dev2 | No answerable question loses any exposed target. Verified on the dev2 run, not assumed. |
+| 2 | No loss, on dev2 | No answerable non-`_abs` question loses an exposed target group. Losing a redundant alternative is not a loss if another member still renders; losing the last member of even a partially exposed group is a loss. Verified on the dev2 run, not assumed. |
 | 3 | Baseline subset, unit test | Under the render budget, the baseline's rendered set is a subset of the candidate's (additive merge, end-first trimming). Replaces the dev-50 coverage gate. This is a code test and uses no database. |
 | 4 | Abstention | Over the 6 dev2 abstention questions, count only plausible false-premise items rendered by the candidate and not by the baseline. **2 or more of the 6 flags for owner review, not auto-reject.** Both arms' absolute counts are reported too. |
 | 5 | Latency | Trigger rate and added p50/p95 latency reported from the Block D route. Report only. |
@@ -95,3 +95,35 @@ Whether the gates pass or fail, the report gives a per-question diagnosis for ev
 - The original stays untouched as evidence. No re-extraction: relative-date facts stay unanchored (#601), and dedup decisions stand as made at ingest.
 - `_abs` questions are excluded from the exposure denominator by ID; gate 4 covers them.
 - The labeller is v2, frozen separately, and the gate 1 value is computed from v2's final spot-checked labels. The gate 1 formula, `max(5, 10% of answerable)`, is unchanged; its input is the answerable non-`_abs` questions, and the computed value is recorded before retrieval. The USD 0.50 cap and zero restores are unchanged.
+
+## Final v3 amendment, 2026-11-08 (owner-approved; supersedes v2 labelling requirement)
+
+- Final M2 requires **only `dev2-labelling/3`** labels across all 100 questions.
+  Historical v1/v2 labels remain readable for provenance, but threshold,
+  measurement and gates refuse them (including mixed-version sets).
+- `target_groups` replaces `memory_ids`: each group is nonempty and contains
+  interchangeable supplied IDs (paraphrases or same-session memories providing
+  the same needed fact/date via `valid_from`). Any member satisfies a group;
+  strict exposure requires every group. The benchmark aggregates production
+  per-ID rendered flags; `orchestrator/eval/exposure.py` keeps its flat-ID API.
+- `needs_memory_date` is a required boolean. Dates only in stored `valid_from`
+  count as answerable; keep the temporal-cue-dropped-at-extraction note. Exposure
+  remains a rendered-ID diagnostic, **not** a claim that dates were rendered or
+  that an answer is correct. No production renderer or date-display change.
+- Gate 1's formula and non-`_abs` denominator are unchanged. Gate 2 compares
+  exposed groups, including partial cases, rather than redundant alternatives.
+  Measurement records group membership, exposed zero-based group indices and
+  the date flag. Threshold/measure/gates use `/2` schemas so old flat-target
+  outputs cannot be mistaken for final group-based results.
+- Normal independent review and refreeze of labeller and M2 code precede paid
+  work. The primary alone later relabels the 14-question batch under a USD 0.05
+  incremental cap. The original seeded spot-check carries only if **each seeded
+  question's** v3 member union is a superset of its v2 targets; otherwise report
+  only changed seeded questions. The pure comparison helper is documented in
+  `tests/benchmark_longmemeval/dev2_labelling.md`; no evidence reads here.
+- The primary then completes final 100-question labels, computes/records the
+  exact threshold before retrieval, and runs M2 only after those prerequisites.
+  **Final v3 freeze: no further labeller changes regardless of outcome.**
+- All existing fingerprint, lineage, run-lock, route/attestation, cumulative
+  ledger/unknown-dispatch, side-effect, USD 0.50 M2 spend and zero-restore
+  constraints remain unchanged. This source-only change executes no campaign.
