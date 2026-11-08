@@ -10,6 +10,12 @@ All of these must hold before freeze:
 2. **Route:** the Block D (M1.5) route chosen and attested.
 3. **Snapshot:** the dev2 snapshot qualified under the existing `baseline_qualified` rules, with its SHA-256 and fingerprint recorded.
 
+**Owner exception, 2026-11-08:** this campaign may use the completed, historically
+remapped corpus as explicitly **disqualified exploratory evidence**. Its manifest
+remains `baseline_qualified=false` (`code_changed_mid_run`), with one explicitly
+accepted extraction-failed session. This exception does not qualify the snapshot
+or change the gates, route controls, fingerprints, USD 0.50 cap or zero restores.
+
 ## Arms, on the dev2 snapshot
 
 | Arm | Definition | Role |
