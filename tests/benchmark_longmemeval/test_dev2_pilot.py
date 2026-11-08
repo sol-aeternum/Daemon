@@ -1047,6 +1047,94 @@ def test_child_command_is_exact_and_weakening_flags_are_absent() -> None:
         assert flag not in command
 
 
+def test_child_command_adds_the_accepted_key_and_never_a_forbidden_flag() -> None:
+    command = dev2_pilot.child_command(
+        arm_dataset=Path("arm.json"),
+        output_dir=Path("out"),
+        concurrency=4,
+        python="/usr/bin/python3",
+        accept_failed_sessions=("k1", "k2"),
+        allow_code_change=True,
+    )
+    assert command == [
+        "/usr/bin/python3",
+        "-m",
+        "orchestrator.eval.longmemeval",
+        "ingest",
+        "--dataset",
+        "arm.json",
+        "--output-dir",
+        "out",
+        "--concurrency",
+        "4",
+        "--accept-failed-session",
+        "k1",
+        "--accept-failed-session",
+        "k2",
+        "--allow-code-change",
+    ]
+    for flag in dev2_pilot.FORBIDDEN_CHILD_FLAGS:
+        assert flag not in command
+
+
+def test_run_arm_spawns_the_child_with_the_accepted_failed_session(tmp_path: Path) -> None:
+    spawned: list[Sequence[str]] = []
+    dev2_pilot.run_arm_command(
+        **_run_arm_kwargs(
+            tmp_path,
+            spawn=lambda command: spawned.append(command) or _FakeProcess(),
+            accept_failed_sessions=("k1",),
+            allow_code_change=True,
+        )
+    )
+    expected = dev2_pilot.child_command(
+        arm_dataset=tmp_path / "arm.json",
+        output_dir=tmp_path / "out",
+        concurrency=2,
+        python=sys.executable,
+        accept_failed_sessions=("k1",),
+        allow_code_change=True,
+    )
+    assert spawned == [expected]
+    assert "--accept-failed-session" in spawned[0] and "k1" in spawned[0]
+    for flag in dev2_pilot.FORBIDDEN_CHILD_FLAGS:
+        assert flag not in spawned[0]
+
+
+def test_an_accepted_failure_counts_as_exactly_one_failed_session() -> None:
+    checkpoint = {
+        "phases": {
+            "ingest": {
+                "results": {
+                    "q1:a": {"status": "complete", "chunk_count": 2},
+                    "q1:b": {
+                        "status": "extraction_failed",
+                        "accepted_failure": True,
+                        "chunk_count": 3,
+                        "log_rows_expected": 2,
+                    },
+                    "q2:c": {"status": "complete", "chunk_count": 1},
+                },
+                "pending_sessions": {},
+            }
+        }
+    }
+    sessions, failed = dev2_pilot.default_session_extractor(checkpoint, "q1")
+    assert sessions == ["a", "b"]
+    assert failed == ["b"]
+    invariants = checkpoint_invariants(checkpoint)
+    assert invariants["total_sessions"] == 3
+    assert invariants["failed_sessions"] == 1
+    assert invariants["completed_sessions"] == 2
+    assert invariants["questions"]["q1"] == {
+        "sessions": 2,
+        "failed": 1,
+        "completed": 1,
+        "duplicate_sessions": 0,
+    }
+    assert failed_rate(invariants) == pytest.approx(1 / 3)
+
+
 def test_db_name_from_dsn_ignores_credentials_and_refuses_query() -> None:
     assert dev2_pilot.db_name_from_dsn("postgresql://u:p@h:5432/daemon_lme_bench_dev2_final") == (
         "daemon_lme_bench_dev2_final"

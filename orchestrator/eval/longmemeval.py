@@ -120,6 +120,16 @@ def build_parser() -> argparse.ArgumentParser:
             "longer baseline-qualified.",
         )
         subparser.add_argument(
+            "--accept-failed-session",
+            action="append",
+            dest="accept_failed_sessions",
+            metavar="CORPUS_KEY",
+            default=None,
+            help="Record a session ending in extraction_failed for this corpus key as an "
+            "accepted failure and continue (it still counts as one failed session). Repeat "
+            "for more than one key; any other failure still stops the run.",
+        )
+        subparser.add_argument(
             "--concurrency",
             type=parse_positive_int,
             default=1,
@@ -166,6 +176,7 @@ def _build_runner(args: argparse.Namespace, stop: StopController | None) -> Long
         from_ingest=getattr(args, "from_ingest", None),
         ingest_snapshot=getattr(args, "ingest_snapshot", None),
         retry_failed_sessions=getattr(args, "retry_failed_sessions", False),
+        accept_failed_sessions=tuple(getattr(args, "accept_failed_sessions", None) or ()),
         allow_code_change=getattr(args, "allow_code_change", False),
         allow_state_mismatch=getattr(args, "allow_state_mismatch", False),
         concurrency=getattr(args, "concurrency", 1),

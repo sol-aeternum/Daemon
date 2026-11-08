@@ -1120,6 +1120,9 @@ class LongMemEvalFactRunner:
     retry_failed_sessions: bool = False
     allow_code_change: bool = False
     allow_state_mismatch: bool = False
+    # Corpus keys whose session may end in ``extraction_failed`` and be recorded
+    # as an accepted failure instead of stopping the run (owner ruling, #691).
+    accept_failed_sessions: tuple[str, ...] = ()
     # Question streams ingested side by side. Never changes results: no user ever
     # has two sessions in flight. Not part of the effective config.
     concurrency: int = 1
@@ -1220,6 +1223,10 @@ class LongMemEvalFactRunner:
     def _check_stop(self) -> None:
         if self.stop is not None:
             self.stop.raise_if_requested()
+
+    def _accepted_failure_keys(self) -> frozenset[str]:
+        """Corpus keys whose ``extraction_failed`` end is recorded, not raised."""
+        return frozenset(key for key in self.accept_failed_sessions if key)
 
     # -------------------------------------------------------------- manifest
     def _new_manifest(self, checkpoint: dict[str, Any]) -> dict[str, Any]:
@@ -1357,6 +1364,11 @@ class LongMemEvalFactRunner:
                     "Refusing to resume: this run's clock mode (parity exceptions) differs "
                     "from its corpus. Start a fresh --output-dir."
                 )
+        accepted = sorted(self._accepted_failure_keys())
+        if accepted:
+            # The accepted set is run evidence: recorded when the phase starts, and kept
+            # when a later phase or invocation does not repeat the flag.
+            manifest["accepted_failure_corpus_keys"] = accepted
         if self.ingest_snapshot is not None:
             manifest["ingest_snapshot"] = {
                 "path": str(self.ingest_snapshot),
@@ -1513,6 +1525,10 @@ class LongMemEvalFactRunner:
         already merged into or superseded an earlier session's memory, it
         cannot; the question is then rebuilt from its first session instead
         (see ``_rebuild_question``). No other stream ever writes to this user.
+
+        An accepted failure (``--accept-failed-session``) is a saved result with its
+        ``question_id`` and ``conversation_id``, so its conversation is referenced
+        here like any completed session's and is never rolled back as an orphan.
         """
         referenced = {
             str(result["conversation_id"])
@@ -1650,6 +1666,54 @@ class LongMemEvalFactRunner:
         save_runner_checkpoint(self.checkpoint_path, checkpoint)
         save_manifest(self.resolved_manifest_path(), manifest)
 
+    def _record_accepted_failure(
+        self,
+        stream: QuestionStream,
+        session: QuestionSession,
+        result: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> None:
+        """Record one named session's ``extraction_failed`` end and let the run continue.
+
+        Only this exact status, and only for a corpus key the owner named through
+        ``--accept-failed-session``; every other failure still stops the run. The
+        session keeps a result row, so it counts as one failed session under the 1%
+        gate and stays visible. ``log_rows_expected`` is the exact number of
+        ``memory_extraction_log`` rows that outcome left behind: ``process_extraction``
+        writes one row per chunk whose extraction succeeded
+        (``orchestrator/memory/extraction.py:823-844`` and ``:862-890``) and none for a
+        chunk that did not (``:811-812``), while ``ingest_session_parity`` counts every
+        attempted chunk in ``chunk_count`` and every unsuccessful one in
+        ``chunks_failed`` (``tests/longmemeval/ingest.py:420-430``).
+        """
+        chunk_count = int(result.get("chunk_count") or 0)
+        chunks_failed = int(result.get("chunks_failed") or 0)
+        log_rows_expected = max(chunk_count - chunks_failed, 0)
+        result["accepted_failure"] = True
+        result["log_rows_expected"] = log_rows_expected
+        # Types, IDs and counts only: a failure can carry conversation text.
+        manifest.setdefault("accepted_failures", []).append(
+            {
+                "at": utc_now_iso(),
+                "question_id": stream.question_id,
+                "session_id": session.session_id,
+                "corpus_key": session.corpus_key,
+                "conversation_id": result.get("conversation_id"),
+                "chunk_count": chunk_count,
+                "chunks_failed": chunks_failed,
+                "log_rows_expected": log_rows_expected,
+            }
+        )
+        save_manifest(self.resolved_manifest_path(), manifest)
+        logger.warning(
+            "[ingest] Accepted failed session %s of %s (%s, %s/%s chunks failed); continuing",
+            session.session_id,
+            stream.question_id,
+            result.get("status"),
+            chunks_failed,
+            chunk_count,
+        )
+
     async def _ingest_stream(
         self,
         pool: Any,
@@ -1667,6 +1731,12 @@ class LongMemEvalFactRunner:
         other streams finish their in-flight session. Resume rolls it back
         exactly and re-ingests it, or rebuilds the question if the failed
         session's partial facts had already changed other memories.
+
+        One exception, ruled by the owner (#691): a session whose corpus key the
+        run was started with ``--accept-failed-session`` and whose status is
+        exactly ``extraction_failed`` is recorded as a failed result
+        (``accepted_failure``) and the stream continues. An ``error`` result,
+        an exception, or any failure of an unlisted session still raises.
         """
         ingest_phase = checkpoint["phases"]["ingest"]
         results: dict[str, dict[str, Any]] = ingest_phase["results"]
@@ -1734,25 +1804,35 @@ class LongMemEvalFactRunner:
                     result["conversation_id"] = str(created[0])
 
             if result.get("status") != "complete":
-                # Keep only types and counts: errors can carry conversation text.
-                failure = {
-                    "at": utc_now_iso(),
-                    "session_id": session.session_id,
-                    "status": result.get("status"),
-                    "error": result.get("error"),
-                    "chunks_failed": result.get("chunks_failed"),
-                    "chunk_errors": result.get("chunk_errors"),
-                }
-                pending[stream.question_id]["failure"] = failure
-                manifest.setdefault("ingest_failures", []).append(
-                    {"question_id": stream.question_id, "corpus_key": session.corpus_key, **failure}
-                )
-                save_runner_checkpoint(self.checkpoint_path, checkpoint)
-                save_manifest(self.resolved_manifest_path(), manifest)
-                raise IngestSessionFailed(
-                    f"Session {session.session_id} of {stream.question_id} did not complete "
-                    f"({result.get('status')}); stopping. Resume to roll it back and retry it."
-                )
+                if (
+                    result.get("status") == "extraction_failed"
+                    and session.corpus_key in self._accepted_failure_keys()
+                ):
+                    self._record_accepted_failure(stream, session, result, manifest)
+                else:
+                    # Keep only types and counts: errors can carry conversation text.
+                    failure = {
+                        "at": utc_now_iso(),
+                        "session_id": session.session_id,
+                        "status": result.get("status"),
+                        "error": result.get("error"),
+                        "chunks_failed": result.get("chunks_failed"),
+                        "chunk_errors": result.get("chunk_errors"),
+                    }
+                    pending[stream.question_id]["failure"] = failure
+                    manifest.setdefault("ingest_failures", []).append(
+                        {
+                            "question_id": stream.question_id,
+                            "corpus_key": session.corpus_key,
+                            **failure,
+                        }
+                    )
+                    save_runner_checkpoint(self.checkpoint_path, checkpoint)
+                    save_manifest(self.resolved_manifest_path(), manifest)
+                    raise IngestSessionFailed(
+                        f"Session {session.session_id} of {stream.question_id} did not complete "
+                        f"({result.get('status')}); stopping. Resume to roll it back and retry it."
+                    )
 
             result["question_id"] = stream.question_id
             result["user_id"] = str(stream.user_id)

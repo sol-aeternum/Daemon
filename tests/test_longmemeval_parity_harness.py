@@ -1306,6 +1306,158 @@ async def test_a_failed_session_stops_the_run_and_resume_retries_it_exactly(
 
 
 @pytest.mark.asyncio
+async def test_an_accepted_extraction_failure_is_recorded_and_the_run_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _single_question(tmp_path, sessions=3)
+    accepted_key = build_corpus_key([{"role": "user", "content": "fact number 1"}])
+    runner = _runner(tmp_path, dataset_path, accept_failed_sessions=(accepted_key,))
+    runtime = BenchRuntime(monkeypatch)
+    calls: list[str] = []
+    conversations: dict[str, str] = {}
+
+    async def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["session_id"])
+        conversation = str(uuid.uuid4())
+        conversations[kwargs["session_id"]] = conversation
+        runtime.conversations.setdefault(kwargs["user_id"], set()).add(conversation)
+        await kwargs["on_conversation_created"](uuid.UUID(conversation))
+        failed = kwargs["session_id"] == "s-1"
+        return {
+            "session_id": kwargs["session_id"],
+            "conversation_id": conversation,
+            "status": "extraction_failed" if failed else "complete",
+            "chunk_count": 3,
+            "chunks_failed": 1 if failed else 0,
+            "chunk_errors": ["Timeout"] if failed else [],
+        }
+
+    monkeypatch.setattr(fact_harness, "ingest_session_parity", fake_ingest)
+    await runner.ingest()
+
+    # The run continued past the accepted failure and finished.
+    assert calls == ["s-0", "s-1", "s-2"]
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert ingest_phase["status"] == "completed"
+    assert ingest_phase["pending_sessions"] == {}
+    accepted = ingest_phase["results"][_key("q1", accepted_key)]
+    assert accepted["status"] == "extraction_failed"
+    assert accepted["accepted_failure"] is True
+    assert accepted["log_rows_expected"] == 2  # chunk_count 3 minus chunks_failed 1
+    assert accepted["conversation_id"] == conversations["s-1"]
+    assert {
+        result["status"]
+        for key, result in ingest_phase["results"].items()
+        if key != _key("q1", accepted_key)
+    } == {"complete"}
+    # Its conversation is referenced, so no rollback ran and it is not an orphan.
+    assert conversations["s-1"] in runtime.conversations[USER_Q1]
+    assert runtime.rollbacks == []
+
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert manifest["accepted_failure_corpus_keys"] == [accepted_key]
+    (failure,) = manifest["accepted_failures"]
+    assert failure == {
+        "at": failure["at"],
+        "question_id": "q1",
+        "session_id": "s-1",
+        "corpus_key": accepted_key,
+        "conversation_id": conversations["s-1"],
+        "chunk_count": 3,
+        "chunks_failed": 1,
+        "log_rows_expected": 2,
+    }
+    assert "ingest_failures" not in manifest
+
+
+@pytest.mark.asyncio
+async def test_an_unlisted_extraction_failure_still_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = _single_question(tmp_path, sessions=2)
+    other_key = build_corpus_key([{"role": "user", "content": "fact number 0"}])
+    runner = _runner(tmp_path, dataset_path, accept_failed_sessions=(other_key,))
+    runtime = BenchRuntime(monkeypatch)
+    monkeypatch.setattr(
+        fact_harness, "ingest_session_parity", _ingest_into(runtime, fail={"s-1": "returned"})
+    )
+    with pytest.raises(fact_harness.IngestSessionFailed):
+        await runner.ingest()
+
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert [result["session_id"] for result in ingest_phase["results"].values()] == ["s-0"]
+    assert ingest_phase["pending_sessions"]["q1"]["failure"]["status"] == "extraction_failed"
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert "accepted_failures" not in manifest
+    assert manifest["ingest_failures"][0]["session_id"] == "s-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["raised", "error"])
+async def test_a_listed_session_that_raises_or_errors_still_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    dataset_path = _single_question(tmp_path, sessions=2)
+    accepted_key = build_corpus_key([{"role": "user", "content": "fact number 1"}])
+    runner = _runner(tmp_path, dataset_path, accept_failed_sessions=(accepted_key,))
+    runtime = BenchRuntime(monkeypatch)
+    if mode == "raised":
+        monkeypatch.setattr(
+            fact_harness, "ingest_session_parity", _ingest_into(runtime, fail={"s-1": "raised"})
+        )
+    else:
+
+        async def error_ingest(**kwargs: Any) -> dict[str, Any]:
+            conversation = str(uuid.uuid4())
+            runtime.conversations.setdefault(kwargs["user_id"], set()).add(conversation)
+            await kwargs["on_conversation_created"](uuid.UUID(conversation))
+            failed = kwargs["session_id"] == "s-1"
+            return {
+                "session_id": kwargs["session_id"],
+                "conversation_id": conversation,
+                "status": "error" if failed else "complete",
+                "error": "ConnectionError" if failed else None,
+            }
+
+        monkeypatch.setattr(fact_harness, "ingest_session_parity", error_ingest)
+
+    with pytest.raises(fact_harness.IngestSessionFailed):
+        await runner.ingest()
+
+    checkpoint = json.loads(runner.checkpoint_path.read_text())
+    ingest_phase = checkpoint["phases"]["ingest"]
+    assert [result["session_id"] for result in ingest_phase["results"].values()] == ["s-0"]
+    assert ingest_phase["pending_sessions"]["q1"]["failure"]["status"] == "error"
+    manifest = json.loads((runner.output_path.parent / "run_manifest.json").read_text())
+    assert "accepted_failures" not in manifest
+
+
+def test_accept_failed_session_reaches_the_runner() -> None:
+    from orchestrator.eval import longmemeval
+
+    parser = longmemeval.build_parser()
+    args = parser.parse_args(
+        [
+            "ingest",
+            "--dataset",
+            "d.json",
+            "--accept-failed-session",
+            KEY_A,
+            "--accept-failed-session",
+            KEY_B,
+        ]
+    )
+    runner = longmemeval._build_runner(args, None)
+    assert runner.accept_failed_sessions == (KEY_A, KEY_B)
+    assert runner._accepted_failure_keys() == frozenset({KEY_A, KEY_B})
+    plain = longmemeval._build_runner(parser.parse_args(["ingest", "--dataset", "d.json"]), None)
+    assert plain.accept_failed_sessions == ()
+    assert plain._accepted_failure_keys() == frozenset()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_session_with_an_inexact_rollback_rebuilds_the_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

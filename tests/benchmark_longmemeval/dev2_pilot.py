@@ -514,11 +514,14 @@ def default_session_extractor(
 
     ``phases.ingest.results`` maps ``ingest_result_key`` (``question:corpus_key``,
     ``fact_harness.py:736``) to a result whose ``status`` is ``complete`` on success
-    (``fact_harness.py:1631``). A session that failed is never added to ``results``:
-    it stays in ``pending`` with a ``failure`` and the harness raises
+    (``fact_harness.py:1631``). An unaccepted failure never reaches ``results``: it
+    stays in ``pending`` with a ``failure`` and the harness raises
     (``fact_harness.py:1736-1755``), so pending failures count as failed sessions
-    too. Keys are unique, so a duplicate can't appear here: the resume check must
-    also compare database conversation counts.
+    too. An accepted failure (``--accept-failed-session``, owner ruling #691) is a
+    saved result with ``status`` ``extraction_failed`` and ``accepted_failure`` set,
+    so it counts as exactly one failed session under the 1% gate. Keys are unique,
+    so a duplicate can't appear here: the resume check must also compare database
+    conversation counts.
     """
     results = _ingest_results(checkpoint)
     prefix = f"{question_id}:"
@@ -1189,10 +1192,11 @@ CHILD_LOG_SEPARATOR: Final[str] = "--- dev2 ingest invocation"
 POLL_SECONDS: Final[float] = 15.0
 GRACE_SECONDS: Final[float] = 60.0
 #: Never passed to the child: each one would weaken the arm's evidence.
+#: ``--allow-code-change`` is not here: this run resumes a checkpoint pinned to an
+#: earlier SHA, so ``run-arm --allow-code-change`` passes it through deliberately.
 FORBIDDEN_CHILD_FLAGS: Final[tuple[str, ...]] = (
     "--retry-failed-sessions",
     "--allow-state-mismatch",
-    "--allow-code-change",
 )
 
 
@@ -1248,9 +1252,20 @@ def file_sha256(path: Path | str) -> str:
 
 
 def child_command(
-    *, arm_dataset: Path | str, output_dir: Path | str, concurrency: int, python: str
+    *,
+    arm_dataset: Path | str,
+    output_dir: Path | str,
+    concurrency: int,
+    python: str,
+    accept_failed_sessions: Sequence[str] = (),
+    allow_code_change: bool = False,
 ) -> list[str]:
-    """The exact ingest command, with none of the evidence-weakening flags."""
+    """The exact ingest command, with none of the evidence-weakening flags.
+
+    ``--accept-failed-session`` names one session the owner ruled may fail
+    (issue #691) and ``--allow-code-change`` resumes the checkpoint pinned to an
+    earlier SHA; the two prohibited flags are never added.
+    """
     if isinstance(concurrency, bool) or concurrency < 1:
         raise ValueError("concurrency must be at least 1")
     command = [
@@ -1265,6 +1280,10 @@ def child_command(
         "--concurrency",
         str(concurrency),
     ]
+    for corpus_key in accept_failed_sessions:
+        command.extend(["--accept-failed-session", str(corpus_key)])
+    if allow_code_change:
+        command.append("--allow-code-change")
     if any(flag in command for flag in FORBIDDEN_CHILD_FLAGS):
         raise ValueError("child command must not weaken the arm")
     return command
@@ -1498,6 +1517,8 @@ def run_arm_command(
     send_interrupt: Callable[[ProcessHandle], None],
     interrupt_after_completed: int | None = None,
     resume: bool = False,
+    accept_failed_sessions: Sequence[str] = (),
+    allow_code_change: bool = False,
     now: Callable[[], str] = _utc_now,
     poll_seconds: float = POLL_SECONDS,
     run_lock: RunLock | None = None,
@@ -1534,6 +1555,8 @@ def run_arm_command(
                     output_dir=output_dir,
                     concurrency=concurrency,
                     python=sys.executable,
+                    accept_failed_sessions=accept_failed_sessions,
+                    allow_code_change=allow_code_change,
                 ),
                 spawn=spawn,
                 read_spend_usd=spend_while_holding(lock, make_spend_reader(fetchrow_factory())),
@@ -1588,6 +1611,21 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--record", type=Path, required=True)
     parser.add_argument("--interrupt-after-completed", type=int)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--accept-failed-session",
+        action="append",
+        dest="accept_failed_sessions",
+        metavar="CORPUS_KEY",
+        default=None,
+        help="Pass --accept-failed-session CORPUS_KEY to the child (repeatable); the named "
+        "session may end in extraction_failed and the run continues, counted as failed.",
+    )
+    parser.add_argument(
+        "--allow-code-change",
+        action="store_true",
+        help="Pass --allow-code-change to the child so a checkpoint pinned to an earlier SHA "
+        "can resume; the manifest records the pin change and disqualifies the baseline.",
+    )
     args = parser.parse_args(argv)
 
     database_url = os.environ.get("DATABASE_URL")
@@ -1616,6 +1654,8 @@ def run_arm_main(argv: Sequence[str] | None = None) -> int:
         send_interrupt=send_sigint,
         interrupt_after_completed=args.interrupt_after_completed,
         resume=args.resume,
+        accept_failed_sessions=tuple(args.accept_failed_sessions or ()),
+        allow_code_change=args.allow_code_change,
     )
     print(f"run-arm stop_reason={record['run_arm']['stop_reason']} record={args.record}")
     return exit_code
