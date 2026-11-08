@@ -1,4 +1,4 @@
-"""Closed H1 metadata and structural replay; no execution, keys or runtime I/O.
+"""Closed mixed-version metadata and replay; no execution, keys or runtime I/O.
 
 Wire H1 is the owner-approved prototype format, separate from J1. Checksums
 protect integrity under cooperating writers; they do not authenticate actors.
@@ -22,11 +22,12 @@ MAX_CANONICAL = 64 * 1024 * 1024
 ZERO = bytes(32)
 DOMAIN = b"daemon.restore-history.frame.v1\n"
 ARTIFACT_DOMAIN = b"daemon.restore-history.frame.v2\n"
-Profile = Literal["h1", "artifact-v2"]
+TERMINAL_DOMAIN = b"daemon.restore-history.frame.v3\n"
+Profile = Literal["h1", "artifact-v2", "terminal-v3"]
 
 
 def check_profile(profile: Profile) -> Profile:
-    if type(profile) is not str or profile not in ("h1", "artifact-v2"):
+    if type(profile) is not str or profile not in ("h1", "artifact-v2", "terminal-v3"):
         raise HistoryError("invalid_profile")
     return profile
 
@@ -203,8 +204,25 @@ class ArtifactPrepare:
     operation_schema: Literal["first-output-csv-catalog-v1"]
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalOutputPrepare:
+    account_id: UUID
+    account_generation: int
+    task_id: UUID
+    result_message_id: UUID
+    acceptance_record_id: UUID
+    epoch: int
+    terminal_schema: Literal["native-complete-body-v1"]
+
+
 RecordData = (
-    AcceptPrepare | SendPossible | StopIntent | RestoreBegin | RestoreAssessed | ArtifactPrepare
+    AcceptPrepare
+    | SendPossible
+    | StopIntent
+    | RestoreBegin
+    | RestoreAssessed
+    | ArtifactPrepare
+    | TerminalOutputPrepare
 )
 _KINDS = {
     AcceptPrepare: ("ACCEPT_PREPARE", "backend"),
@@ -213,10 +231,25 @@ _KINDS = {
     RestoreBegin: ("RESTORE_BEGIN", "operator"),
     RestoreAssessed: ("RESTORE_ASSESSED", "operator"),
     ArtifactPrepare: ("ARTIFACT_PREPARE", "backend"),
+    TerminalOutputPrepare: ("TERMINAL_OUTPUT_PREPARE", "worker"),
 }
 
 
 def _data(kind: str, raw: Any) -> RecordData:
+    if kind == "TERMINAL_OUTPUT_PREPARE":
+        d = _keys(
+            raw,
+            "account_id account_generation task_id result_message_id acceptance_record_id epoch terminal_schema",
+        )
+        return TerminalOutputPrepare(
+            _uuid(d["account_id"]),
+            _number(d["account_generation"]),
+            _uuid(d["task_id"]),
+            _uuid(d["result_message_id"]),
+            _uuid(d["acceptance_record_id"]),
+            _number(d["epoch"], 1),
+            _literal(d["terminal_schema"], ("native-complete-body-v1",)),
+        )
     if kind == "ARTIFACT_PREPARE":
         names = "account_id account_generation task_id acceptance_record_id epoch lifecycle_id financial_scope_id metadata_scope_id producer_instance_id intent_id resource_id version_id job_id source_operation_id output_slot original_attempt_id operation_schema"
         d = _keys(raw, names)
@@ -353,12 +386,15 @@ def encode_entry(
     check_profile(profile)
     try:
         artifact = type(command.data) is ArtifactPrepare
-        if artifact and profile != "artifact-v2":
+        terminal = type(command.data) is TerminalOutputPrepare
+        if (artifact and profile not in ("artifact-v2", "terminal-v3")) or (
+            terminal and profile != "terminal-v3"
+        ):
             raise HistoryError("invalid_record")
         kind, actor = _KINDS[type(command.data)]
         payload = canonical(
             {
-                "v": 2 if artifact else 1,
+                "v": 3 if terminal else 2 if artifact else 1,
                 "history_id": str(history_id),
                 "seq": seq,
                 "prev_digest": previous.hex(),
@@ -371,7 +407,12 @@ def encode_entry(
         if not 1 <= len(payload) <= MAX_PAYLOAD:
             raise HistoryError("invalid_record")
         raw = struct.pack(">I", len(payload)) + payload
-        frame = raw + hashlib.sha256((ARTIFACT_DOMAIN if artifact else DOMAIN) + raw).digest()
+        frame = (
+            raw
+            + hashlib.sha256(
+                (TERMINAL_DOMAIN if terminal else ARTIFACT_DOMAIN if artifact else DOMAIN) + raw
+            ).digest()
+        )
         decode_entry(frame, profile=profile)
         return frame
     except (AttributeError, KeyError, TypeError, ValueError):
@@ -386,18 +427,20 @@ def decode_entry(frame: bytes, *, profile: Profile = "h1") -> Entry:
     if not 1 <= size <= MAX_PAYLOAD or len(frame) != size + 36:
         raise HistoryError("invalid_record")
     d = _keys(parse(frame[4:-32]), "v history_id seq prev_digest record_id kind actor data")
+    terminal = type(d["v"]) is int and d["v"] == 3
     artifact = type(d["v"]) is int and d["v"] == 2
-    if artifact:
-        if profile != "artifact-v2" or d["kind"] != "ARTIFACT_PREPARE":
+    if terminal:
+        if profile != "terminal-v3" or d["kind"] != "TERMINAL_OUTPUT_PREPARE":
+            raise HistoryError("invalid_record")
+    elif artifact:
+        if profile not in ("artifact-v2", "terminal-v3") or d["kind"] != "ARTIFACT_PREPARE":
             raise HistoryError("invalid_record")
     else:
         _one(d["v"])
-        if d["kind"] == "ARTIFACT_PREPARE":
+        if d["kind"] in ("ARTIFACT_PREPARE", "TERMINAL_OUTPUT_PREPARE"):
             raise HistoryError("invalid_record")
-    if not hmac.compare_digest(
-        hashlib.sha256((ARTIFACT_DOMAIN if artifact else DOMAIN) + frame[:-32]).digest(),
-        frame[-32:],
-    ):
+    domain = TERMINAL_DOMAIN if terminal else ARTIFACT_DOMAIN if artifact else DOMAIN
+    if not hmac.compare_digest(hashlib.sha256(domain + frame[:-32]).digest(), frame[-32:]):
         raise HistoryError("invalid_record")
     data = _data(d["kind"], d["data"])
     if d["actor"] != _KINDS[type(data)][1]:
@@ -434,6 +477,7 @@ def validate_chain(
     accepted: dict[UUID, AcceptPrepare] = {}
     acceptance_records: dict[UUID, UUID] = {}
     artifact_intents: set[UUID] = set()
+    terminal_tasks: set[UUID] = set()
     keys: set[tuple[UUID, int, str]] = set()
     sent: set[tuple[UUID, UUID, UUID]] = set()
     open_restore: tuple[UUID, UUID] | None = None
@@ -467,6 +511,20 @@ def validate_chain(
             keys.add(key)
             accepted[d.task_id] = d
             acceptance_records[d.task_id] = e.command.record_id
+        elif isinstance(d, TerminalOutputPrepare):
+            a = accepted.get(d.task_id)
+            if (
+                a is None
+                or (a.account_id, a.account_generation, a.result_message_id)
+                != (d.account_id, d.account_generation, d.result_message_id)
+                or acceptance_records[d.task_id] != d.acceptance_record_id
+            ):
+                raise HistoryError("ancestor_mismatch")
+            if open_restore is not None or d.task_id in stopped:
+                raise HistoryError("effect_stopped")
+            if d.task_id in terminal_tasks:
+                raise HistoryError("conflict")
+            terminal_tasks.add(d.task_id)
         elif isinstance(d, ArtifactPrepare):
             a = accepted.get(d.task_id)
             if (
@@ -475,7 +533,7 @@ def validate_chain(
                 or acceptance_records[d.task_id] != d.acceptance_record_id
             ):
                 raise HistoryError("ancestor_mismatch")
-            if open_restore is not None or d.task_id in stopped:
+            if open_restore is not None or d.task_id in stopped or d.task_id in terminal_tasks:
                 raise HistoryError("effect_stopped")
             if d.intent_id in artifact_intents:
                 raise HistoryError("conflict")
@@ -490,7 +548,7 @@ def validate_chain(
             if isinstance(d, StopIntent):
                 stopped.add(d.task_id)
             if isinstance(d, SendPossible):
-                if open_restore is not None or d.task_id in stopped:
+                if open_restore is not None or d.task_id in stopped or d.task_id in terminal_tasks:
                     raise HistoryError("effect_stopped")
                 binding = (d.reservation_id, d.runtime_identity, d.dispatch_nonce)
                 if binding in sent:

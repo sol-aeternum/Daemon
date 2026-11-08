@@ -57,7 +57,15 @@ disposition is implemented. J1 and the existing H/coordinator failure latches
 are unchanged. Exact executed results are reported separately; default CI
 skips these cases without `--compute-metadata-postgres`.
 
-## Proposed next source slice — requires owner decision
+## Approved completed-text source continuation
+
+The approved, uninstalled [terminal-v3 continuation](TERMINAL_OUTPUT_RESTORE.md)
+implements the completed-text-first contract described below. It adds negative
+metadata and a protected SQL stage only for the normal completed-output body.
+The characterization matrix above continues to describe strict artifact-v2;
+it is not evidence that terminal-v3 protects cards or partial checkpoints.
+Separate control-terminal coverage and reconciliation remain open. The following
+rationale records the boundary that was approved, rather than a live rollout.
 
 Recommend completed-text-first independent negative evidence, joined to the
 existing normal completion transaction rather than activating execution now.
@@ -83,7 +91,7 @@ artifact bytes, raw content digest or execution permission is proposed. A lost
 append/COMMIT/release acknowledgement must remain blocked; matching historical
 evidence must refuse replacement work. Existing finite history bounds would
 remain, without pruning or a silent capacity increase. Exact format, schema
-allocation and authority changes must be approved before implementation.
+allocation and authority changes are explicit in the approved terminal-v3 contract.
 
 Protecting all terminal statuses together would require a broader reviewed seam
 through those separate control transactions and their generation/refusal rules.

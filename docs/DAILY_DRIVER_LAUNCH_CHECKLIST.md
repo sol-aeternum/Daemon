@@ -11,7 +11,7 @@ open until its applicable release conditions are met or explicitly revised.
 | Protected acceptance, Send and Stop | #625/#628/#631/#637 merged; [composition boundary](RESTORE_HISTORY_COMPOSITION.md), immutable 056/057 projections and original native fences | Historical observation/client source is merged in #650; authenticated H runtime composition remains; no history record is execution authority |
 | Cross-device reopen and uncertain work | Existing owner-scoped task APIs/observer preserve persisted results; focused reconnect diagnostics exercise actual device access checks on synthetic SQL/POSIX fixtures | H-aware source responses/client refusal are merged in #650 (RESTORE_HISTORY_OBSERVATION.md); deployed cross-device and held-key acceptance still require qualification |
 | Stop and publication races | #637 Send/Stop and #653 H-ordered durable partial text/native terminal fences are merged, with no runtime execution install | Authenticated runtime wiring and streamed/partial/artifact publication qualification; Stop prevents subsequent local admission/publication, not guaranteed remote cessation or billing cancellation |
-| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–064 need their own reviewed execution scope, not incidental inclusion in the closed runner |
+| Migration path | Closed 044–050 runner merged and independently qualified on the approved index-absent synthetic profile | Fresh target/baseline verification, approved writer quiescence and exact live migration actions; 051–065 need their own reviewed execution scope, not incidental inclusion in the closed runner |
 | Principal/storage/startup binding | Separate backend A/W and W-only worker startup is merged; [startup contract](TASK_STARTUP_COMPOSITION.md) | Reviewed live credentials, exact grants, private H/J1 storage/key identity, service-specific access and a pinned deployed source; no credentials/grants/storage are provisioned by this checklist |
 | Restart and recovery | Prior isolated PostgreSQL/POSIX and service-startup tests cover specific boundaries | Pinned-runtime restart/reconnect check with original task/results and truthful uncertain outcomes; observed container source/flags/identity read back after any separately approved deployment |
 | Restored database | H/protected SQL mismatch detection exists in isolated joins; [synthetic artifact restore probes](ARTIFACT_RESTORE_BOUNDARY_QUALIFICATION.md) distinguish lost output facts; an [uninstalled v2 catalog prepare/projection join](ARTIFACT_RESTORE_PREPARE.md) adds negative catalog evidence; historical evidence does not authorize replay | Supported offline restore barrier/reconciliation, later partial/card/terminal evidence and financial/auth/key/account/file continuity; neither schema equality nor matching J1 alone is restore readiness |
@@ -166,5 +166,8 @@ After #688, the [v2 post-catalog output matrix](ARTIFACT_OUTPUT_RESTORE_BOUNDARY
 distinguishes lost cards, first/later durable partial checkpoints and completed
 text even when catalog parity matches. Independent Stop/possible-Send mismatch
 controls remain fail-closed. This test/documentation continuation changes no
-production format or SQL authority; a completed-text history/projection join and
-separate control-terminal/reconciliation contracts still need owner decisions.
+production format or SQL authority. The separately approved, uninstalled
+[terminal-v3 normal completed-text join](TERMINAL_OUTPUT_RESTORE.md) adds a
+metadata-only prepare and matching protected SQL fact in the native completion
+transaction. It remains unselected at runtime; cards, partial checkpoints,
+control-only terminal coverage and reconciliation remain separate release gaps.

@@ -177,6 +177,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "HistoryObservation",
                                     "HistoryProjection",
                                     "ArtifactHistoryProjection",
+                                    "TerminalHistoryProjection",
                                     "ReservedOutputPublisher",
                                     "OutputReservations",
                                     "NativeProfile",
@@ -517,6 +518,29 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if not isinstance(node, ast.Call):
                 continue
             target = name(node.func)
+            if target.endswith(("._stage_completed_body", "._completion_control")) or (
+                target.endswith("._worker") and path != "orchestrator/tasks/store.py"
+            ):
+                enclosing_functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing_terminal = (
+                    max(enclosing_functions, key=lambda f: f.lineno).name
+                    if enclosing_functions
+                    else ""
+                )
+                expected_terminal = {
+                    ("orchestrator/tasks/store.py", "_complete"): "self",
+                    (
+                        "orchestrator/services/restore_history/effects.py",
+                        "_complete",
+                    ): "self._tasks",
+                }.get((path, enclosing_terminal))
+                if expected_terminal is None or target.rsplit(".", 1)[0] != expected_terminal:
+                    violations.append(f"{path}:{node.lineno}:unapproved terminal transaction seam")
             if target.endswith(".retain_pool_cleanup") or target == "retain_pool_cleanup":
                 functions = [
                     f
@@ -683,6 +707,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ".HistoryAcceptance",
                         ".HistoryProjection",
                         ".ArtifactHistoryProjection",
+                        ".TerminalHistoryProjection",
                         ".HistoryEffects",
                         ".HistoryObservation",
                         ".HistoryReadSupervisor",
@@ -698,6 +723,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     "HistoryAcceptance",
                     "HistoryProjection",
                     "ArtifactHistoryProjection",
+                    "TerminalHistoryProjection",
                     "HistoryEffects",
                     "HistoryObservation",
                     "HistoryReadSupervisor",

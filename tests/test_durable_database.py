@@ -91,6 +91,9 @@ async def test_clean_migrations_and_clone_commit_rollback_ddl_isolation():
                             "task_history_decode_artifact",
                             "task_history_artifact_project",
                             "task_history_output_page",
+                            "task_history_decode_terminal",
+                            "task_history_terminal_project",
+                            "task_history_terminal_page",
                         }
                         assert all(r["proconfig"] == ["search_path=pg_catalog"] for r in functions)
                         assert all("public." not in r["definition"] for r in functions)
