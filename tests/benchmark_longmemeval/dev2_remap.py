@@ -99,6 +99,14 @@ _SKILLS: Final[str] = "skill projection bookkeeping, not user history; retrieval
 #: table -> {timestamp column: reason}. Every timestamp column of the current
 #: schema is either remapped (COLUMNS) or listed here with its reason.
 EXCLUDED: Final[dict[str, dict[str, str]]] = {
+    # Found on the live dev2 schema at the first dry run (2026-11-08): migration
+    # bookkeeping, and read-only views over the entitlement ledger.
+    "_migrations": {"applied_at": "schema migration bookkeeping, not user history"},
+    "v_entitlement_account_summary": {"updated_at": "view over the entitlement ledger"},
+    "v_entitlement_limit_encounter_summary": {
+        "first_seen_at": "view over the entitlement ledger",
+        "last_seen_at": "view over the entitlement ledger",
+    },
     "account_deletions": {
         "billing_deadline": "account deletion scheduling, not user history",
         "closed_at": "account deletion scheduling, not user history",
@@ -1204,3 +1212,7 @@ __all__ = [
     "run_remap",
     "verify_lineage",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

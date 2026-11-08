@@ -1086,3 +1086,33 @@ async def _integration_tied_case(tmp_path: Path) -> None:
         await conn.close()
         if source_conn is not None:
             await source_conn.close()
+
+
+def test_live_schema_extras_are_excluded_with_reasons() -> None:
+    from tests.benchmark_longmemeval.dev2_remap import COLUMNS, EXCLUDED
+
+    for table, column in (
+        ("_migrations", "applied_at"),
+        ("v_entitlement_account_summary", "updated_at"),
+        ("v_entitlement_limit_encounter_summary", "first_seen_at"),
+        ("v_entitlement_limit_encounter_summary", "last_seen_at"),
+    ):
+        assert EXCLUDED[table][column]
+        assert table not in COLUMNS
+
+
+def test_module_runs_as_a_script() -> None:
+    import subprocess
+    import sys
+
+    module = Path(__file__).with_name("dev2_remap.py")
+    result = subprocess.run(
+        [sys.executable, str(module), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[2],
+        env={**__import__("os").environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "prepare" in result.stdout
