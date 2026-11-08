@@ -1117,3 +1117,23 @@ def test_module_runs_as_a_script() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "prepare" in result.stdout
+
+
+def test_session_bounds_follow_ingest_date_order_not_dataset_order() -> None:
+    from datetime import UTC, datetime
+
+    from tests.benchmark_longmemeval.dev2_remap import memory_session_bounds
+
+    d = [
+        datetime(2023, 4, 29, 17, 40, tzinfo=UTC),
+        datetime(2023, 4, 29, 17, 39, tzinfo=UTC),
+        datetime(2023, 5, 1, 13, 35, tzinfo=UTC),
+    ]
+    question = datetime(2023, 5, 30, tzinfo=UTC)
+    bounds = memory_session_bounds(["late", "early", "next"], d, question)
+    assert bounds["early"].contains(datetime(2023, 4, 29, 17, 39, 30, tzinfo=UTC))
+    assert not bounds["early"].contains(d[0])
+    assert bounds["late"].contains(datetime(2023, 4, 29, 17, 40, 13, tzinfo=UTC))
+    assert not bounds["late"].contains(d[2])
+    assert bounds["next"].contains(datetime(2023, 5, 2, tzinfo=UTC))
+    assert not bounds["next"].contains(question)

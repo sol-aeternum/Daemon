@@ -431,7 +431,15 @@ class SessionWindow:
 def memory_session_bounds(
     session_ids: Sequence[str], dates: Sequence[datetime], question_at: datetime
 ) -> dict[str, SessionWindow]:
-    """session id -> its date range; a tied next date makes the upper bound inclusive."""
+    """session id -> its date range; a tied next date makes the upper bound inclusive.
+
+    Windows follow ingest order, which the harness stable-sorts by haystack date
+    (``fact_harness.build_question_streams``: key ``(date, position)``). Datasets list
+    sessions out of date order, so dataset order would give empty, backward windows.
+    """
+    order = sorted(range(len(session_ids)), key=lambda position: (dates[position], position))
+    session_ids = [session_ids[position] for position in order]
+    dates = [dates[position] for position in order]
     bounds: dict[str, SessionWindow] = {}
     for index, session_id in enumerate(session_ids):
         lower = dates[index]
