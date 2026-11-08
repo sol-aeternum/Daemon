@@ -758,13 +758,23 @@ async def run_remap(
                 user_id,
                 plan["question_at"],
             )
-            rows = await conn.fetch(
-                """SELECT m.id, m.valid_from, c.metadata->>'session_id' AS session_id
-                   FROM memories m
-                   LEFT JOIN conversations c ON c.id = m.source_conversation_id
-                   WHERE m.user_id = $1""",
+            # Attribute through the plan's message-derived map: ingest records the
+            # session on messages, never on conversations (live schema, 2026-11-08).
+            sessions_of = plan["conversations"]
+            stored = await conn.fetch(
+                "SELECT id, valid_from, source_conversation_id FROM memories WHERE user_id = $1",
                 user_id,
             )
+            rows = [
+                {
+                    "id": row["id"],
+                    "valid_from": row["valid_from"],
+                    "session_id": sessions_of.get(str(row["source_conversation_id"]))
+                    if row["source_conversation_id"] is not None
+                    else None,
+                }
+                for row in stored
+            ]
             windows_checked += check_memory_windows(rows, plan["bounds"])
         if late:
             raise RemapError(f"{late} memory timestamps at or after the question date")

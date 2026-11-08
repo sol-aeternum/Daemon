@@ -841,12 +841,13 @@ async def _seed_session(
     memory_at: datetime,
 ) -> None:
     metadata = json.dumps({"session_id": session_id, "source": "longmemeval"})
+    # As the real ingest does: the session is recorded on messages only, and the
+    # conversation carries no metadata (a seeded conversation field hid a defect).
     await conn.execute(
         "INSERT INTO conversations (id, user_id, metadata, created_at, updated_at, "
-        "last_activity_at) VALUES ($1, $2, $3::jsonb, $4, $4, $4)",
+        "last_activity_at) VALUES ($1, $2, '{}'::jsonb, $3, $3, $3)",
         conversation,
         user_id,
-        metadata,
         start,
     )
     for extra in (0, 5):
