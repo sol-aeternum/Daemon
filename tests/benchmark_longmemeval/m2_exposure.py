@@ -30,14 +30,19 @@ import time
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final
 
-from orchestrator.eval.exposure import PinnedSubqueryProvider, measure_multi_query_exposure
+from orchestrator.eval.exposure import (
+    PinnedSubqueryProvider,
+    distractor_counts,
+    measure as measure_exposure,
+    measure_multi_query_exposure,
+)
 from orchestrator.memory import injection
 from orchestrator.memory.embedding import EmbeddingVectorResult
 from orchestrator.memory.multi_query import (
@@ -45,6 +50,8 @@ from orchestrator.memory.multi_query import (
     MAX_INPUT_CHARS,
     PROMPT_V2,
     SUBQUERY_SCHEMA,
+    SUBQUERY_DEPTH,
+    merge_memories,
     validate_subqueries,
 )
 from tests.benchmark_longmemeval.dev2_labelling import (
@@ -72,6 +79,10 @@ LABEL_SCHEMAS: Final[frozenset[str]] = frozenset(
     {"dev2-labelling/1", "dev2-labelling/2", LABEL_SCHEMA}
 )
 JOURNAL_VERSION: Final[int] = 1
+RETRIEVAL_ADAPTERS: Final[dict[str, str]] = {
+    "cached_embeddings": "cached-embeddings/1",
+    "lexical": "m2-lexical/1",
+}
 
 FROZEN_QUESTION_COUNT: Final[int] = 100
 ABSTENTION_COUNT: Final[int] = 6
@@ -215,6 +226,11 @@ MeasureQuestion = Callable[
     [Question, tuple[str, ...], Mapping[str, EmbeddingVectorResult], str, Sequence[str]],
     Awaitable[dict[str, Any]],
 ]
+MeasureLexicalQuestion = Callable[
+    [Question, tuple[str, ...], str, Sequence[str]], Awaitable[dict[str, Any]]
+]
+LexicalCorpusReader = Callable[[], Awaitable[Sequence[Mapping[str, Any]]]]
+LedgerStateReader = Callable[[], Awaitable[Mapping[str, Any]]]
 Fingerprint = Callable[[], Awaitable[dict[str, Any]]]
 LogCount = Callable[[], Awaitable[int]]
 SpendReader = Callable[[], Awaitable[Any]]
@@ -1321,6 +1337,155 @@ def _read_measure_journal(
     return results, vectors, manifest
 
 
+def _retrieval_identity(mode: str) -> dict[str, str]:
+    if mode not in RETRIEVAL_ADAPTERS:
+        raise ValueError("Invalid M2 retrieval mode")
+    return {"retrieval_mode": mode, "retrieval_adapter": RETRIEVAL_ADAPTERS[mode]}
+
+
+def _document_retrieval_identity(document: Mapping[str, Any]) -> dict[str, str]:
+    # Untagged historical outputs are embedding outputs, never lexical outputs.
+    mode = document.get("retrieval_mode", "cached_embeddings")
+    if not isinstance(mode, str):
+        raise ValueError("Invalid M2 retrieval mode")
+    identity = _retrieval_identity(mode)
+    adapter = document.get("retrieval_adapter")
+    if adapter != identity["retrieval_adapter"] and not (
+        mode == "cached_embeddings" and "retrieval_mode" not in document and adapter is None
+    ):
+        raise ValueError("M2 retrieval adapter mismatch")
+    return identity
+
+
+def _legacy_embedding_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {**manifest, **_document_retrieval_identity(manifest)}
+
+
+LEXICAL_CORPUS_SQL: Final[str] = (
+    "SELECT u.id::text AS user_id, count(m.id) AS memories, "
+    "count(m.embedding) AS embedded, count(m.embedding_model) AS modelled "
+    "FROM users u LEFT JOIN memories m ON m.user_id = u.id "
+    "WHERE u.id = ANY($1::uuid[]) GROUP BY u.id ORDER BY u.id"
+)
+LEXICAL_LEDGER_SQL: Final[str] = (
+    "SELECT coalesce(sum(actual_microusd) FILTER (WHERE status = 'settled'), 0) "
+    "AS settled_microusd, coalesce(sum(reserved_microusd) FILTER (WHERE status = 'open'), 0) "
+    "AS held_microusd, count(*) FILTER (WHERE status = 'open') AS open_holds, "
+    "md5(coalesce(string_agg(md5(r::text), '' ORDER BY r.id), '')) AS digest "
+    "FROM entitlement_reservations r"
+)
+
+
+def _nonnegative_int(value: Any) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError("Lexical safety counts must be nonnegative integers")
+    return value
+
+
+def _lexical_ledger(value: Mapping[str, Any], ceiling: Decimal) -> dict[str, Any]:
+    counts = {
+        key: _nonnegative_int(value.get(key))
+        for key in ("settled_microusd", "held_microusd", "open_holds")
+    }
+    digest = value.get("digest")
+    if not isinstance(digest, str) or len(digest) != 32:
+        raise ValueError("Lexical ledger digest is missing")
+    if counts["open_holds"] or counts["held_microusd"]:
+        raise M2SideEffectError("Lexical measurement refuses open ledger holds")
+    if Decimal(counts["settled_microusd"]) / Decimal(1_000_000) > ceiling:
+        raise M2SideEffectError("M2 spend cap exceeded before lexical measurement")
+    return {**counts, "digest": digest}
+
+
+def _lexical_corpus(
+    rows: Sequence[Mapping[str, Any]],
+    questions: Sequence[Question],
+    fingerprint: Mapping[str, Any],
+) -> dict[str, Any]:
+    from orchestrator.eval.bench_db import question_user_id
+
+    expected = {str(question_user_id(q.question_id)) for q in questions}
+    if len(questions) != FROZEN_QUESTION_COUNT or len(expected) != FROZEN_QUESTION_COUNT:
+        raise ValueError("Lexical admission requires exactly 100 unique question users")
+    seen: set[str] = set()
+    memories = 0
+    for row in rows:
+        user = str(row.get("user_id"))
+        if user not in expected or user in seen:
+            raise ValueError("Lexical corpus user coverage is invalid")
+        seen.add(user)
+        memories += _nonnegative_int(row.get("memories"))
+        if _nonnegative_int(row.get("embedded")) or _nonnegative_int(row.get("modelled")):
+            raise ValueError("Lexical admission refuses embedded or model-attributed memories")
+    if seen != expected:
+        raise ValueError("Lexical corpus does not cover all 100 users")
+    fp_rows = fingerprint.get("rows")
+    if not isinstance(fp_rows, Mapping) or _nonnegative_int(fp_rows.get("memories")) != memories:
+        raise ValueError("Lexical corpus memory count disagrees with fingerprint")
+    return {
+        "users": len(seen),
+        "users_sha256": _sha256_json(sorted(seen)),
+        "memories": memories,
+        "embedded": 0,
+        "modelled": 0,
+    }
+
+
+async def _lexical_snapshot(
+    *,
+    questions: Sequence[Question],
+    fingerprint: Fingerprint,
+    read_corpus: LexicalCorpusReader,
+    retrieval_log_count: LogCount,
+    read_ledger_state: LedgerStateReader,
+    ceiling: Decimal,
+    strict: bool = True,
+) -> dict[str, Any]:
+    # The live readers share one asyncpg connection: serialize them, but do not
+    # let one failed observation suppress the remaining safety checks.
+    async def observe(reader: Callable[[], Any], name: str) -> Any:
+        try:
+            return await _maybe_await(reader())
+        except Exception:
+            return ValueError(f"Lexical {name} observation unavailable")
+
+    raw_fp = await observe(fingerprint, "fingerprint")
+    raw_corpus = await observe(read_corpus, "corpus")
+    raw_log = await observe(retrieval_log_count, "retrieval log")
+    raw_ledger = await observe(read_ledger_state, "ledger")
+    state: dict[str, Any] = {}
+    failures: list[Exception] = []
+    errors: list[str] = []
+
+    def check(name: str, raw: Any, validate: Callable[[Any], Any]) -> None:
+        try:
+            if isinstance(raw, Exception):
+                raise raw
+            state[name] = validate(raw)
+        except Exception as error:
+            failures.append(error)
+            errors.append(name)
+
+    def validate_fp(value: Any) -> Mapping[str, Any]:
+        if not isinstance(value, Mapping):
+            raise ValueError("Lexical fingerprint is unreadable")
+        _require_fingerprint(value, FROZEN_QUESTION_COUNT)
+        return value
+
+    check("fingerprint", raw_fp, validate_fp)
+    check(
+        "corpus",
+        raw_corpus,
+        lambda value: _lexical_corpus(value, questions, state.get("fingerprint", {})),
+    )
+    check("retrieval_log_count", raw_log, _nonnegative_int)
+    check("ledger", raw_ledger, lambda value: _lexical_ledger(value, ceiling))
+    state["errors"] = errors
+    if strict and failures:
+        raise failures[0]
+    return state
+
+
 def _measure_manifest(
     questions: Sequence[Question],
     labels: LabelSet,
@@ -1328,14 +1493,16 @@ def _measure_manifest(
     start: Decimal,
     cap: Decimal,
     *,
-    embedding_route_id: str,
-    embedding_dimensions: int,
+    embedding_route_id: str | None,
+    embedding_dimensions: int | None,
     remap_lineage_sha256: str,
+    retrieval_mode: str = "cached_embeddings",
 ) -> dict[str, Any]:
     return {
         "kind": "manifest",
         "version": JOURNAL_VERSION,
         "measure_schema": MEASURE_SCHEMA,
+        **_retrieval_identity(retrieval_mode),
         "remap_lineage_sha256": remap_lineage_sha256,
         "inputs_sha256": _sha256_json([_question_digest(question) for question in questions]),
         "labels_sha256": labels.sha256,
@@ -1351,7 +1518,12 @@ def _measure_manifest(
     }
 
 
-def _prepare_resumable_output(output: Path, repo_root: Path | None, journal: Path) -> None:
+def _prepare_resumable_output(
+    output: Path,
+    repo_root: Path | None,
+    journal: Path,
+    retrieval_mode: str = "cached_embeddings",
+) -> None:
     """A fresh output, or a stopped document that still has its journal."""
     root = _repository_root() if repo_root is None else repo_root
     check_output_outside_repo(output, root)
@@ -1368,6 +1540,8 @@ def _prepare_resumable_output(output: Path, repo_root: Path | None, journal: Pat
     )
     if not stopped:
         raise FileExistsError(f"M2 output already exists: {output}")
+    if _document_retrieval_identity(data) != _retrieval_identity(retrieval_mode):
+        raise ValueError("Stopped M2 output has a different retrieval mode or adapter")
     if not journal.exists():
         raise ValueError("A stopped M2 measure document has no journal to resume from")
 
@@ -1406,6 +1580,7 @@ def _measure_document(
     stop_reason: str | None,
     stopped_by: str | None,
     remap_lineage_sha256: str,
+    retrieval_mode: str = "cached_embeddings",
 ) -> dict[str, Any]:
     entries = [
         dict(results[question.question_id])
@@ -1414,6 +1589,7 @@ def _measure_document(
     ]
     return {
         "schema": MEASURE_SCHEMA,
+        **_retrieval_identity(retrieval_mode),
         "stop_reason": stop_reason,
         "stopped_by": stopped_by,
         "completed_question_count": len(entries),
@@ -1475,6 +1651,10 @@ async def run_measure(
     read_retrieval_logging_flags: Callable[[], tuple[bool, bool]] = retrieval_logging_flags,
     check_users_present: Callable[[], Any] | None = None,
     repo_root: Path | None = None,
+    retrieval_mode: str = "cached_embeddings",
+    measure_lexical_question: MeasureLexicalQuestion | None = None,
+    read_lexical_corpus: LexicalCorpusReader | None = None,
+    read_ledger_state: LedgerStateReader | None = None,
 ) -> dict[str, Any]:
     """Measure the three arms, journalled per question, with side effects off.
 
@@ -1487,6 +1667,26 @@ async def run_measure(
     a resume after a route change refuses instead of mixing vectors.
     """
     _require_v3_labels(labels)
+    _retrieval_identity(retrieval_mode)
+    if retrieval_mode == "lexical":
+        return await _run_lexical_measure(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            output_path=output_path,
+            start_marker=start_marker,
+            remap_lineage_sha256=remap_lineage_sha256,
+            measure_question=measure_lexical_question,
+            read_corpus=read_lexical_corpus,
+            read_ledger_state=read_ledger_state,
+            fingerprint=fingerprint,
+            retrieval_log_count=retrieval_log_count,
+            acquire_run_lock=acquire_run_lock,
+            check_run_lock=check_run_lock,
+            read_logging_flags=read_retrieval_logging_flags,
+            check_users_present=check_users_present,
+            repo_root=repo_root,
+        )
     if not _is_sha256(remap_lineage_sha256):
         raise ValueError("M2 measure requires the remap lineage hash")
     logging_enabled, logging_debug = read_retrieval_logging_flags()
@@ -1500,7 +1700,12 @@ async def run_measure(
     _prepare_resumable_output(output, repo_root, journal)
     marker = _read_start_marker(_start_marker_path(start_marker, repo_root))
     if not await _run_lock_acquired(acquire_run_lock):
-        return {"schema": MEASURE_SCHEMA, "stop_reason": "run_lock_busy", "questions": []}
+        return {
+            "schema": MEASURE_SCHEMA,
+            **_retrieval_identity("cached_embeddings"),
+            "stop_reason": "run_lock_busy",
+            "questions": [],
+        }
 
     start, cap = _spend_of_document(subqueries)
     if marker.start_spend_usd != start:
@@ -1539,7 +1744,7 @@ async def run_measure(
             if results or recorded_vectors:
                 raise ValueError("M2 measure journal has no manifest")
             _append_journal(handle, manifest)
-        elif stored_manifest != manifest:
+        elif _legacy_embedding_manifest(stored_manifest) != manifest:
             raise ValueError("M2 measure journal does not match this run")
 
         cache = {key: _vector_from_record(record) for key, record in recorded_vectors.items()}
@@ -1697,6 +1902,189 @@ async def run_measure(
         handle.close()
 
 
+async def _run_lexical_measure(
+    *,
+    questions: Sequence[Question],
+    labels: LabelSet,
+    subqueries: Mapping[str, Mapping[str, Any]],
+    output_path: Path | str,
+    start_marker: Path | str,
+    remap_lineage_sha256: str,
+    measure_question: MeasureLexicalQuestion | None,
+    read_corpus: LexicalCorpusReader | None,
+    read_ledger_state: LedgerStateReader | None,
+    fingerprint: Fingerprint,
+    retrieval_log_count: LogCount,
+    acquire_run_lock: Callable[[], Any],
+    check_run_lock: Callable[[], Any],
+    read_logging_flags: Callable[[], tuple[bool, bool]],
+    check_users_present: Callable[[], Any] | None,
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """No inference collaborators exist on this read-only, explicitly selected path."""
+    if measure_question is None or read_corpus is None or read_ledger_state is None:
+        raise ValueError("Lexical measurement requires explicit safety readers and adapter")
+    ids = {q.question_id for q in questions}
+    if len(questions) != FROZEN_QUESTION_COUNT or len(ids) != FROZEN_QUESTION_COUNT:
+        raise ValueError("Lexical measurement requires exactly 100 unique questions")
+    if ids != set(labels.entries) or ids != set(subqueries):
+        raise ValueError("Lexical questions, labels and frozen subqueries must agree exactly")
+    if not _is_sha256(remap_lineage_sha256):
+        raise ValueError("M2 measure requires the remap lineage hash")
+    if any(read_logging_flags()):
+        raise M2SideEffectError("Lexical measurement refuses retrieval logging")
+    output = Path(output_path)
+    journal = _journal_path(output)
+    _prepare_resumable_output(output, repo_root, journal, retrieval_mode="lexical")
+    marker = _read_start_marker(_start_marker_path(start_marker, repo_root))
+    start, cap = _spend_of_document(subqueries)
+    if marker.start_spend_usd != start or marker.spend_cap_usd != cap:
+        raise ValueError("M2 start marker disagrees with the generation document")
+    if cap != SPEND_CAP_USD:
+        raise ValueError("M2 lexical spend cap is not the frozen cap")
+    if not await _run_lock_acquired(acquire_run_lock):
+        return {
+            "schema": MEASURE_SCHEMA,
+            **_retrieval_identity("lexical"),
+            "stop_reason": "run_lock_busy",
+            "questions": [],
+        }
+    if check_users_present is not None:
+        await _maybe_await(check_users_present())
+    ceiling = start + cap
+    # Admission is repeated even for a journal whose every question is complete.
+    # It precedes journal creation and every retrieval, never infers from a sample.
+    before = await _lexical_snapshot(
+        questions=questions,
+        fingerprint=fingerprint,
+        read_corpus=read_corpus,
+        retrieval_log_count=retrieval_log_count,
+        read_ledger_state=read_ledger_state,
+        ceiling=ceiling,
+    )
+    manifest = _measure_manifest(
+        questions,
+        labels,
+        subqueries,
+        start,
+        cap,
+        embedding_route_id=None,
+        embedding_dimensions=None,
+        remap_lineage_sha256=remap_lineage_sha256,
+        retrieval_mode="lexical",
+    )
+    manifest["lexical_admission"] = before
+    with open(journal, "a", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise RuntimeError("M2 lexical measure journal is held") from None
+        results, vectors, stored = _read_measure_journal(journal)
+        if vectors:
+            raise ValueError("Lexical journal must not contain embedding records")
+        if set(results) - ids:
+            raise ValueError("Lexical journal contains unknown question results")
+        if stored is None:
+            if results:
+                raise ValueError("Lexical journal has results without a manifest")
+            _append_journal(handle, manifest)
+        elif stored != manifest:
+            raise ValueError("M2 lexical journal does not match this mode, adapter or admission")
+        high_water = max(start, Decimal(before["ledger"]["settled_microusd"]) / Decimal(1_000_000))
+        failure: BaseException | None = None
+        safety_verified = False
+        after: dict[str, Any] = {}
+        try:
+            for question in questions:
+                key = question.question_id
+                if key in results:
+                    continue
+                if not await _run_lock_held(check_run_lock):
+                    raise RuntimeError("M2 lexical measure lost the benchmark run lock")
+                if any(read_logging_flags()):
+                    raise M2SideEffectError("Lexical measurement refuses retrieval logging")
+                ledger = _lexical_ledger(await _maybe_await(read_ledger_state()), ceiling)
+                if ledger != before["ledger"]:
+                    raise M2SideEffectError("Lexical measurement changed the ledger")
+                pinned = subqueries[key]
+                _, components = _embedding_texts(question, list(pinned.get("subqueries") or []))
+                label = labels.entries[key]
+                targets = list(label.memory_ids)
+                additive = await measure_question(question, tuple(components), "additive", targets)
+                round_robin = await measure_question(
+                    question, tuple(components), "round_robin", targets
+                )
+                baseline = _arm_view(additive, "baseline", label.target_groups)
+                candidate = _arm_view(additive, "candidate", label.target_groups)
+                entry = {
+                    "question_id": key,
+                    "answerable_from_store": label.answerable_from_store,
+                    "abstention": question.abstention,
+                    "triggered": bool(components),
+                    "subquery_count": len(components),
+                    "latency_seconds": pinned.get("latency_seconds"),
+                    "error_category": pinned.get("error_category"),
+                    "target_count": len(targets),
+                    "target_groups": [list(group) for group in label.target_groups],
+                    "needs_memory_date": label.needs_memory_date,
+                    "spend_high_water_usd": str(high_water),
+                    "baseline": baseline,
+                    "candidate": candidate,
+                    "round_robin": _arm_view(round_robin, "candidate", label.target_groups),
+                    "candidate_only_rendered_ids": sorted(
+                        set(candidate["rendered_ids"]) - set(baseline["rendered_ids"])
+                    ),
+                }
+                _append_journal(handle, {"kind": "result", **entry})
+                results[key] = entry
+            if not await _run_lock_held(check_run_lock):
+                raise RuntimeError("M2 lexical measure lost the benchmark run lock")
+        except BaseException as error:
+            failure = error
+        # The adapter drains producers before returning/raising. Check all safety
+        # observations even after a retrieval error or cancellation, not just success.
+        try:
+            after = await _lexical_snapshot(
+                questions=questions,
+                fingerprint=fingerprint,
+                read_corpus=read_corpus,
+                retrieval_log_count=retrieval_log_count,
+                read_ledger_state=read_ledger_state,
+                ceiling=ceiling,
+                strict=False,
+            )
+            if after != before:
+                raise M2SideEffectError("Lexical measurement changed safety observations")
+            if any(read_logging_flags()):
+                raise M2SideEffectError("Lexical measurement enabled retrieval logging")
+            safety_verified = True
+        except BaseException as error:
+            failure = error
+        document = _measure_document(
+            questions=questions,
+            labels=labels,
+            subqueries=subqueries,
+            results=results,
+            start=start,
+            cap=cap,
+            ceiling=ceiling,
+            high_water=high_water,
+            before_fingerprint=before["fingerprint"],
+            before_log=before["retrieval_log_count"],
+            after_fingerprint=after.get("fingerprint", {}),
+            after_log=after.get("retrieval_log_count"),
+            stop_reason=_measure_stop_reason(failure) if failure is not None else None,
+            stopped_by=type(failure).__name__ if failure is not None else None,
+            remap_lineage_sha256=remap_lineage_sha256,
+            retrieval_mode="lexical",
+        )
+        document["lexical_safety"] = {"verified": safety_verified, "before": before, "after": after}
+        _write_document_atomic(output, document)
+        if failure is not None:
+            raise failure
+        return document
+
+
 def _require_fingerprint(value: Mapping[str, Any], users: int) -> None:
     if not isinstance(value, Mapping) or not isinstance(value.get("sha256"), str):
         raise ValueError("Fingerprint is unreadable")
@@ -1767,6 +2155,11 @@ def run_gates(
         raise ValueError("Threshold document has the wrong schema")
     if measure.get("schema") != MEASURE_SCHEMA:
         raise ValueError("Measure document has the wrong schema")
+    retrieval_identity = _document_retrieval_identity(measure)
+    if retrieval_identity["retrieval_mode"] == "lexical":
+        safety = measure.get("lexical_safety")
+        if not isinstance(safety, Mapping) or safety.get("verified") is not True:
+            raise ValueError("Lexical gates require verified side-effect observations")
     if threshold.get("labels_sha256") != labels.sha256:
         raise ValueError("Threshold was computed from different labels")
     if measure.get("labels_sha256") != labels.sha256:
@@ -1907,6 +2300,7 @@ def run_gates(
     )
     document = {
         "schema": GATES_SCHEMA,
+        **retrieval_identity,
         "result": result,
         "route_mapping": ROUTE_MAPPING,
         "gate1": gate1,
@@ -2028,6 +2422,9 @@ def run_report(
     output = _prepare_output(output_path, repo_root)
     if measure.get("schema") != MEASURE_SCHEMA or gates.get("schema") != GATES_SCHEMA:
         raise ValueError("Report inputs have the wrong schemas")
+    retrieval_identity = _document_retrieval_identity(measure)
+    if _document_retrieval_identity(gates) != retrieval_identity:
+        raise ValueError("Report inputs have different retrieval modes or adapters")
     raw_questions = measure.get("questions")
     if not isinstance(raw_questions, list):
         raise ValueError("Report needs the measure question list")
@@ -2062,6 +2459,7 @@ def run_report(
         raise ValueError("Gate result is not a recognised outcome")
     document = {
         "schema": REPORT_SCHEMA,
+        **retrieval_identity,
         "question_count": len(questions),
         "category_counts": {name: counts.get(name, 0) for name in REPORT_CATEGORIES},
         "retention_category_counts": {
@@ -2215,6 +2613,163 @@ async def _run_live_generation(
         await pool.close()
 
 
+async def measure_question_lexical(
+    store: Any,
+    *,
+    question: Question,
+    subqueries: tuple[str, ...],
+    merge: str,
+    target_ids: Sequence[str],
+) -> dict[str, Any]:
+    """M2-only assembly; scoring, merge and renderer remain production-owned."""
+    from orchestrator.eval.bench_db import question_user_id
+    from orchestrator.memory import retrieval
+    from orchestrator.memory.embedding import raise_if_embedding_accounting_error
+    from time import monotonic
+
+    if merge not in {"additive", "round_robin"}:
+        raise ValueError("Invalid exposure merge")
+    query = injection._normalize_content(question.message)
+    components = validate_subqueries(list(subqueries), query, max_subqueries=MAX_SUBQUERIES)
+    user_id = question_user_id(question.question_id)
+    reference = question.reference_time
+    reference = (
+        reference.replace(tzinfo=UTC) if reference.tzinfo is None else reference.astimezone(UTC)
+    )
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def retrieve(text: str, limit: int, role: str | None) -> list[dict[str, object]]:
+        return await retrieval.retrieve_memories_for_text(
+            store=store,
+            query_text=text,
+            user_id=user_id,
+            query_embedding=None,
+            allow_query_embedding=False,
+            touch_results=False,
+            limit=limit,
+            include_local=False,
+            log_retrieval=False,
+            query_reference_time=reference,
+            record_query_text=False,
+            query_role=role,
+        )
+
+    async def baseline_inputs() -> injection.MemoryContextInputs:
+        l0 = await store.get_l0_memories(user_id, include_local=False)
+        l0 = [row for row in l0 if row.get("local_only") is False]
+        summaries_task = asyncio.create_task(
+            store.get_recent_summaries(
+                user_id, limit=injection.MAX_SUMMARY_ITEMS, include_local=False
+            )
+        )
+        tasks.append(summaries_task)
+        rows: list[dict[str, object]] = []
+        mode = "none"
+        if query:
+            try:
+                rows = await retrieve(query, injection.MAX_MEMORY_ITEMS, None)
+                mode = "lexical"
+            except Exception as error:
+                raise_if_embedding_accounting_error(error)
+                mode = "failed"
+        summaries = await summaries_task
+        return injection.MemoryContextInputs(
+            l0_memories=l0,
+            retrieved=rows,
+            summaries=[row for row in summaries if row.get("local_only") is False],
+            retrieval_mode=mode,
+        )
+
+    async def component_inputs() -> list[list[dict[str, object]]] | None:
+        if not components:
+            return None
+        owned: list[asyncio.Task[Any]] = []
+        deadline = monotonic() + injection.COMPONENT_RETRIEVAL_TIMEOUT_SECONDS
+        try:
+            arms = [
+                asyncio.create_task(retrieve(text, SUBQUERY_DEPTH, f"sub:{i}"))
+                for i, text in enumerate(components)
+            ]
+            owned.extend(arms)
+
+            async def collect() -> list[list[dict[str, object]]]:
+                return await asyncio.gather(*arms)
+
+            collector = asyncio.create_task(collect())
+            owned.append(collector)
+            return await injection._before_component_deadline(collector, deadline)
+        except Exception as error:
+            raise_if_embedding_accounting_error(error)
+            return None  # Production's all-or-nothing component fallback.
+        finally:
+            await injection._cancel_and_drain(owned)
+
+    clock = retrieval.RECENCY_REFERENCE_TIME.set(reference)
+    try:
+        baseline_task = asyncio.create_task(baseline_inputs())
+        tasks.append(baseline_task)
+        component_task = asyncio.create_task(component_inputs())
+        tasks.append(component_task)
+        baseline, arms = await asyncio.gather(baseline_task, component_task)
+        candidate = baseline
+        if arms is not None:
+            try:
+                merged = merge_memories(
+                    baseline.retrieved, arms, quota=SUBQUERY_QUOTA, mode=merge, evaluation=True
+                )
+                existing = {str(row.get("id")) for row in baseline.retrieved}
+                added = tuple(
+                    row["id"]
+                    for row in merged
+                    if isinstance(row.get("id"), uuid.UUID) and str(row["id"]) not in existing
+                )
+                if added:
+                    candidate = replace(
+                        baseline,
+                        retrieved=merged,
+                        added_memory_ids=added,
+                        retrieved_limit=len(merged)
+                        if len(merged) > injection.MAX_MEMORY_ITEMS
+                        else None,
+                    )
+            except Exception as error:
+                raise_if_embedding_accounting_error(error)
+                candidate = baseline
+        before = measure_exposure(
+            baseline,
+            target_ids=target_ids,
+            gold_conversation_ids=(),
+            source_conversations={},
+            ranking=baseline.retrieved,
+        )
+        after = measure_exposure(
+            candidate,
+            target_ids=target_ids,
+            gold_conversation_ids=(),
+            source_conversations={},
+            ranking=candidate.retrieved,
+        )
+        rendered = injection.rendered_memory_rows(
+            candidate, injection.render_memory_context(candidate)
+        )
+        original = set(before["rendered_ids"])
+        return {
+            "baseline": before,
+            "candidate": after,
+            "merge": merge,
+            "subquery_count": len(components),
+            "distractors": distractor_counts(
+                query, [r for r in rendered if str(r["id"]) not in original]
+            ),
+            "exposure_regression": before["target_exposed"] and not after["target_exposed"],
+        }
+    finally:
+        try:
+            await injection._cancel_and_drain(tasks)
+        finally:
+            retrieval.RECENCY_REFERENCE_TIME.reset(clock)
+
+
 def measure_question_live(
     store: Any,
     labels: LabelSet,
@@ -2264,6 +2819,7 @@ async def _run_live_measure(
     output_path: Path | str,
     start_marker: Path | str,
     remap_lineage: Path | str,
+    retrieval_mode: str = "cached_embeddings",
 ) -> dict[str, Any]:
     import asyncpg
 
@@ -2318,7 +2874,10 @@ async def _run_live_measure(
                 )
 
         async def fingerprint() -> dict[str, Any]:
-            return await fingerprint_benchmark_users(pool, user_ids)
+            state = await fingerprint_benchmark_users(pool, user_ids)
+            if retrieval_mode == "lexical":
+                check_remap_lineage(lineage, state)
+            return state
 
         async def log_count() -> int:
             value = await connection.fetchval("SELECT count(*) FROM retrieval_log")
@@ -2351,6 +2910,35 @@ async def _run_live_measure(
                 target_ids=target_ids,
             )
 
+        async def lexical_question(
+            question: Question,
+            components: tuple[str, ...],
+            merge: str,
+            target_ids: Sequence[str],
+        ) -> dict[str, Any]:
+            return await measure_question_lexical(
+                store,
+                question=question,
+                subqueries=components,
+                merge=merge,
+                target_ids=target_ids,
+            )
+
+        async def read_corpus() -> Sequence[Mapping[str, Any]]:
+            return await connection.fetch(LEXICAL_CORPUS_SQL, user_ids)
+
+        async def read_ledger_state() -> Mapping[str, Any]:
+            row = await connection.fetchrow(LEXICAL_LEDGER_SQL)
+            if row is None:
+                raise ValueError("Lexical ledger state is unreadable")
+            return {
+                **dict(row),
+                **{
+                    key: int(row[key])
+                    for key in ("settled_microusd", "held_microusd", "open_holds")
+                },
+            }
+
         return await run_measure(
             questions=questions,
             labels=labels,
@@ -2372,6 +2960,10 @@ async def _run_live_measure(
                 bool(settings.retrieval_logging_debug),
             ),
             check_users_present=check_users_present,
+            retrieval_mode=retrieval_mode,
+            measure_lexical_question=lexical_question,
+            read_lexical_corpus=read_corpus,
+            read_ledger_state=read_ledger_state,
         )
     finally:
         await connection.close()
@@ -2497,6 +3089,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output(generate)
 
     measure = sub.add_parser("measure", help="Three arms through the production exposure metric.")
+    measure.add_argument(
+        "--retrieval-mode",
+        choices=tuple(RETRIEVAL_ADAPTERS),
+        default="cached_embeddings",
+        help="Explicit lexical mode never calls an embedding route.",
+    )
     measure.add_argument("--questions", type=Path, required=True)
     measure.add_argument("--subqueries", type=Path, required=True)
     measure.add_argument("--frozen-ids", type=Path, default=FROZEN_IDS_PATH)
@@ -2572,6 +3170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_path=args.output,
                 start_marker=args.start_marker,
                 remap_lineage=args.remap_lineage,
+                retrieval_mode=args.retrieval_mode,
             )
         )
         return 0 if document.get("stop_reason") is None else 1

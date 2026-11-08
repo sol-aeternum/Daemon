@@ -133,3 +133,45 @@ Whether the gates pass or fail, the report gives a per-question diagnosis for ev
 - All existing fingerprint, lineage, run-lock, route/attestation, cumulative
   ledger/unknown-dispatch, side-effect, USD 0.50 M2 spend and zero-restore
   constraints remain unchanged. This source-only change executes no campaign.
+
+## M2-only lexical amendment (owner-approved, 2026-11-09)
+
+- Measurement may explicitly select `--retrieval-mode lexical` for the existing
+  unembedded corpus. The default remains `cached_embeddings`; an empty selector
+  never selects lexical mode automatically. This repairs measurement only: no
+  generation, labelling, reembedding, route enablement, provider call or restore.
+- Before any lexical measurement **or resume**, admit exactly all 100 expected
+  question users. Aggregate over all their memories, without status/tier filters:
+  every `embedding` and `embedding_model` must be SQL NULL. Include zero-memory
+  users via a left join; aggregate memory count must agree with the fingerprint.
+  Missing/duplicate/foreign users, non-null vectors/models or unavailable evidence
+  refuse before retrieval. Repeat admission on resumed completed journals too.
+- The benchmark adapter calls production `retrieve_memories_for_text` with
+  `query_embedding=None`, `allow_query_embedding=False`, `touch_results=False`
+  and logging disabled. No synthetic vectors or embedding receipts are created.
+  Production's internal empty-list representation of absent embeddings remains
+  its native lexical path, not a numerical dummy vector.
+- Baseline k=5, component depth 10, quota 3, ID de-duplication, scoring, temporal
+  filtering/entity expansion, locality filtering, L0/summaries, UUID added-row
+  replacement and production rendering stay unchanged. Merge uses production
+  `merge_memories`; round-robin remains report-only. No-trigger questions remain
+  identical to baseline. Component retrieval retains its shared deadline,
+  all-or-nothing fallback and owned cancellation/draining.
+- **Historical recency ruling:** both lexical baseline and components inherit
+  each question's historical reference date through `RECENCY_REFERENCE_TIME`.
+  Reset the context after success, error, timeout or cancellation. This explicitly
+  resolves the prior baseline/component clock asymmetry; embedding mode is not
+  changed by this amendment.
+- Bind retrieval mode, adapter version, corpus admission, fingerprint and ledger
+  observation into the lexical measurement journal. Reject cross-mode resumes,
+  incompatible adapters, untagged-as-lexical journals and any lexical journal
+  containing embedding records. Mode/version propagate to measure, gates and
+  sanitized reports. Historical untagged embedding evidence stays embedding-only.
+- Preserve the frozen labels/subqueries, generation receipts and original start
+  marker plus USD 0.50 cap. No re-anchoring. Lexical measurement requires no open
+  holds, compares ledger actuals/holds/counts and a reservation-row digest, and
+  checks unchanged fingerprint/retrieval-log/ledger observations after success
+  **and failure**, once producers drain. Missing verification prevents success.
+- Normal independent review/refreeze precedes live resumption. The final v3
+  labeller remains frozen regardless of outcome; this source-only amendment does
+  not execute any benchmark or inspect real corpus/evidence.

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -37,6 +39,10 @@ from tests.benchmark_longmemeval.m2_exposure import (
 NOW = datetime(2023, 5, 30, 23, 18, tzinfo=UTC)
 LINEAGE_SHA = "c" * 64
 REMAP_DB_NAME = "daemon_lme_bench_dev2_final_remap"
+
+
+def _forbidden(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("Inference/embedding collaborator must not be reached")
 
 
 def _ids(count: int = 100) -> tuple[str, ...]:
@@ -797,6 +803,718 @@ def test_measure_no_trigger_stays_in_the_denominator_as_baseline(tmp_path: Path)
     assert untriggered["triggered"] is False
     assert untriggered["candidate"]["target_exposed"] is True  # baseline, unchanged
     assert document["side_effects"]["fingerprint_before"] == "a"
+
+
+def _lexical_rows() -> list[dict[str, Any]]:
+    from orchestrator.eval.bench_db import question_user_id
+
+    return [
+        {
+            "user_id": str(question_user_id(qid)),
+            "memories": int(index < 99),
+            "embedded": 0,
+            "modelled": 0,
+        }
+        for index, qid in enumerate(_ids())
+    ]
+
+
+@dataclass
+class _LexicalFakes(_MeasureFakes):
+    corpus_rows: list[dict[str, Any]] = field(default_factory=_lexical_rows)
+    ledger_state: dict[str, Any] = field(
+        default_factory=lambda: {
+            "settled_microusd": 306398,
+            "held_microusd": 0,
+            "open_holds": 0,
+            "digest": "d" * 32,
+        }
+    )
+    memory_count: int = 99
+    snapshot_calls: int = 0
+    mutate_after_retrieval: Any = None
+
+    async def fingerprint(self) -> dict[str, Any]:
+        self.snapshot_calls += 1
+        return {
+            "sha256": self.fingerprint_sha,
+            "users": 100,
+            "rows": {"memories": self.memory_count},
+        }
+
+    async def read_corpus(self) -> Sequence[Mapping[str, Any]]:
+        return self.corpus_rows
+
+    async def read_ledger(self) -> Mapping[str, Any]:
+        return dict(self.ledger_state)
+
+    async def lexical_question(
+        self,
+        question: Question,
+        components: tuple[str, ...],
+        merge: str,
+        targets: Sequence[str],
+    ) -> dict[str, Any]:
+        self.calls += 1
+        self.measured_ids.append(question.question_id)
+        if self.mutate_after_retrieval is not None:
+            self.mutate_after_retrieval(self)
+        if question.question_id == self.fail_on_question:
+            raise RuntimeError("Synthetic lexical retrieval failed")
+        return {"baseline": _arm(targets, targets), "candidate": _arm(targets, targets)}
+
+
+def _lexical_kwargs(directory: Path, fakes: _LexicalFakes) -> dict[str, Any]:
+    frozen = _frozen()
+    questions = _questions(frozen)
+    return {
+        **_measure_kwargs(fakes, directory),
+        "questions": questions,
+        "labels": _labels(frozen, frozen.ids[:51], directory / "labels.json"),
+        "subqueries": _pinned(frozen, questions, directory / "subqueries.json"),
+        "output_path": directory / "measure.json",
+        "repo_root": directory / "repo",
+        "retrieval_mode": "lexical",
+        "read_lexical_corpus": fakes.read_corpus,
+        "read_ledger_state": fakes.read_ledger,
+        "measure_lexical_question": fakes.lexical_question,
+        "read_embedding_route": _forbidden,
+        "embedding_ceiling_usd": _forbidden,
+        "embed_texts": _forbidden,
+        "read_ledger_spend_usd": _forbidden,
+        "measure_question": _forbidden,
+    }
+
+
+def test_lexical_driver_has_no_embedding_collaborators_and_preserves_budget(tmp_path: Path) -> None:
+    fakes = _LexicalFakes()
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    preserved = {
+        path: path.read_bytes()
+        for path in (
+            tmp_path / "labels.json",
+            tmp_path / "subqueries.json",
+            m2_exposure._journal_path(tmp_path / "subqueries.json"),
+            tmp_path / "start-marker.json",
+        )
+    }
+    document = asyncio.run(run_measure(**kwargs))
+    assert document["stop_reason"] is None
+    assert document["retrieval_mode"] == "lexical"
+    assert document["retrieval_adapter"] == "m2-lexical/1"
+    assert document["completed_question_count"] == 100
+    assert document["start_spend_usd"] == "0.30"
+    assert document["spend_ceiling_usd"] == "0.80"
+    assert document["spend_high_water_usd"] == "0.306398"
+    assert document["lexical_safety"]["verified"] is True
+    assert document["lexical_safety"]["before"]["corpus"]["memories"] == 99
+    assert fakes.snapshot_calls == 2 and fakes.calls == 200
+    assert all(path.read_bytes() == value for path, value in preserved.items())
+    records = [
+        json.loads(line)
+        for line in m2_exposure._journal_path(kwargs["output_path"]).read_text().splitlines()
+    ]
+    assert records[0]["embedding_route_id"] is None
+    assert records[0]["retrieval_mode"] == "lexical"
+    assert all(row["kind"] != "embedding" for row in records)
+
+
+@pytest.mark.parametrize(
+    "invalid", ["vector", "model", "missing", "duplicate", "foreign", "count", "holds"]
+)
+def test_lexical_admission_refuses_before_journal_or_retrieval(
+    tmp_path: Path, invalid: str
+) -> None:
+    fakes = _LexicalFakes()
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    if invalid == "vector":
+        fakes.corpus_rows[0]["embedded"] = 1
+    elif invalid == "model":
+        fakes.corpus_rows[0]["modelled"] = 1
+    elif invalid == "missing":
+        fakes.corpus_rows.pop()
+    elif invalid == "duplicate":
+        fakes.corpus_rows[-1] = fakes.corpus_rows[0]
+    elif invalid == "foreign":
+        fakes.corpus_rows[-1]["user_id"] = str(uuid.UUID(int=1))
+    elif invalid == "count":
+        fakes.memory_count = 100
+    else:
+        fakes.ledger_state.update(open_holds=1, held_microusd=0)
+    with pytest.raises((ValueError, m2_exposure.M2SideEffectError)):
+        asyncio.run(run_measure(**kwargs))
+    assert fakes.calls == 0
+    assert not m2_exposure._journal_path(kwargs["output_path"]).exists()
+
+
+def test_lexical_admission_requires_100_unique_questions_and_readers(tmp_path: Path) -> None:
+    kwargs = _lexical_kwargs(tmp_path, _LexicalFakes())
+    kwargs["questions"] = kwargs["questions"][:-1]
+    with pytest.raises(ValueError, match="100"):
+        asyncio.run(run_measure(**kwargs))
+    kwargs["questions"] = _questions(_frozen())
+    kwargs["read_ledger_state"] = None
+    with pytest.raises(ValueError, match="safety readers"):
+        asyncio.run(run_measure(**kwargs))
+
+
+@pytest.mark.parametrize("changed", ["fingerprint", "log", "actual", "hold", "ledger_digest"])
+@pytest.mark.parametrize("retrieval_fails", [False, True])
+def test_lexical_checks_safety_after_success_and_failure(
+    tmp_path: Path,
+    changed: str,
+    retrieval_fails: bool,
+) -> None:
+    fakes = _LexicalFakes()
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+
+    def mutate(state: _LexicalFakes) -> None:
+        if changed == "fingerprint":
+            state.fingerprint_sha = "changed"
+        elif changed == "log":
+            state.log_count = 4
+        elif changed == "actual":
+            state.ledger_state["settled_microusd"] = 306399
+        elif changed == "hold":
+            state.ledger_state["open_holds"] = 1
+        else:
+            state.ledger_state["digest"] = "e" * 32
+
+    fakes.mutate_after_retrieval = mutate
+    if retrieval_fails:
+        fakes.fail_on_question = _ids()[0]
+    with pytest.raises(m2_exposure.M2SideEffectError):
+        asyncio.run(run_measure(**kwargs))
+    document = json.loads(Path(kwargs["output_path"]).read_text())
+    assert document["stop_reason"] == "side_effect"
+    assert document["lexical_safety"]["verified"] is False
+    assert fakes.snapshot_calls == 2
+
+
+def test_lexical_resume_rechecks_corpus_and_retains_completed_questions(tmp_path: Path) -> None:
+    fakes = _LexicalFakes(fail_on_question=_ids()[1])
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    with pytest.raises(RuntimeError, match="Synthetic lexical"):
+        asyncio.run(run_measure(**kwargs))
+    stopped = json.loads(Path(kwargs["output_path"]).read_text())
+    assert stopped["completed_question_count"] == 1
+    assert stopped["lexical_safety"]["verified"] is True
+    fakes.fail_on_question = None
+    fakes.corpus_rows[-1]["modelled"] = 1
+    calls = fakes.calls
+    with pytest.raises(ValueError, match="model-attributed"):
+        asyncio.run(run_measure(**kwargs))
+    assert fakes.calls == calls
+    fakes.corpus_rows[-1]["modelled"] = 0
+    document = asyncio.run(run_measure(**kwargs))
+    assert document["completed_question_count"] == 100
+    assert fakes.measured_ids.count(_ids()[0]) == 2  # No repeat of either completed arm.
+
+
+@pytest.mark.parametrize("corruption", ["cross_mode", "untagged", "adapter", "embedding"])
+def test_lexical_resume_rejects_mode_and_vector_contamination(
+    tmp_path: Path, corruption: str
+) -> None:
+    fakes = _LexicalFakes(fail_on_question=_ids()[1])
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    with pytest.raises(RuntimeError):
+        asyncio.run(run_measure(**kwargs))
+    journal = m2_exposure._journal_path(kwargs["output_path"])
+    rows = [json.loads(line) for line in journal.read_text().splitlines()]
+    if corruption == "cross_mode":
+        rows[0].update(m2_exposure._retrieval_identity("cached_embeddings"))
+    elif corruption == "untagged":
+        rows[0].pop("retrieval_mode")
+        rows[0].pop("retrieval_adapter")
+    elif corruption == "adapter":
+        rows[0]["retrieval_adapter"] = "m2-lexical/foreign"
+    else:
+        rows.append({"kind": "embedding", "text_sha256": "synthetic-no-vector"})
+    journal.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    calls = fakes.calls
+    with pytest.raises(ValueError, match="journal"):
+        asyncio.run(run_measure(**kwargs))
+    assert fakes.calls == calls
+
+
+def test_measure_cli_requires_explicit_lexical_mode() -> None:
+    args = [
+        "measure",
+        "--questions",
+        "q",
+        "--subqueries",
+        "s",
+        "--labels",
+        "l",
+        "--start-marker",
+        "m",
+        "--remap-lineage",
+        "r",
+        "--output",
+        "o",
+    ]
+    parser = m2_exposure.build_parser()
+    assert parser.parse_args(args).retrieval_mode == "cached_embeddings"
+    assert parser.parse_args([*args, "--retrieval-mode", "lexical"]).retrieval_mode == "lexical"
+
+
+@pytest.mark.parametrize("mode", ["cached_embeddings", "untagged"])
+def test_stopped_output_cannot_be_repurposed_as_lexical(tmp_path: Path, mode: str) -> None:
+    fakes = _LexicalFakes(fail_on_question=_ids()[1])
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    with pytest.raises(RuntimeError):
+        asyncio.run(run_measure(**kwargs))
+    output = Path(kwargs["output_path"])
+    data = json.loads(output.read_text())
+    if mode == "untagged":
+        data.pop("retrieval_mode")
+        data.pop("retrieval_adapter")
+    else:
+        data.update(m2_exposure._retrieval_identity(mode))
+    output.write_text(json.dumps(data))
+    calls = fakes.calls
+    with pytest.raises(ValueError, match="different retrieval mode"):
+        asyncio.run(run_measure(**kwargs))
+    assert fakes.calls == calls
+    assert json.loads(output.read_text()) == data
+
+
+def test_untagged_historical_embedding_manifest_stays_embedding_only() -> None:
+    legacy = {"kind": "manifest", "embedding_route_id": "synthetic", "embedding_dimensions": 2}
+    normalized = m2_exposure._legacy_embedding_manifest(legacy)
+    assert normalized == {**legacy, **m2_exposure._retrieval_identity("cached_embeddings")}
+    assert normalized != {**legacy, **m2_exposure._retrieval_identity("lexical")}
+
+
+def _native_lexical_setup(monkeypatch: Any) -> tuple[Any, list[dict[str, Any]]]:
+    from orchestrator.memory import embedding, injection, retrieval
+    from datetime import timedelta
+
+    settings = SimpleNamespace(
+        embedding_route_id="",
+        embedding_document_model="voyage-4-large",
+        embedding_query_model="voyage-4-lite",
+        embedding_fallback_providers="",
+        retrieval_logging_enabled=False,
+        retrieval_logging_debug=False,
+    )
+    monkeypatch.setattr(embedding, "get_settings", lambda: settings)
+    monkeypatch.setattr(retrieval, "get_settings", lambda: settings)
+    for module, name in (
+        (retrieval, "embed_query_for_configured_storage_models"),
+        (injection, "embed_query_with_metadata"),
+        (injection, "embed_queries_with_metadata"),
+        (m2_exposure, "selected_embedding_route"),
+        (m2_exposure, "embedding_route_identity"),
+        (m2_exposure, "embedding_ceiling_usd"),
+        (m2_exposure, "_embed_texts_live"),
+    ):
+        monkeypatch.setattr(module, name, _forbidden)
+    monkeypatch.setattr(injection.ProductionSubqueryProvider, "get_subqueries", _forbidden)
+    monkeypatch.setattr("orchestrator.compute_runtime.account_compute", _forbidden)
+    monkeypatch.setattr("orchestrator.compute_runtime.guarded_completion", _forbidden)
+    calls: list[dict[str, Any]] = []
+
+    def memory(index: int, **fields: Any) -> dict[str, Any]:
+        return {
+            "id": uuid.UUID(int=index),
+            "content": f"Synthetic fact {index}",
+            "category": "fact",
+            "local_only": False,
+            "status": "active",
+            "bm25_score": 1.0,
+            "confidence": 1.0,
+            "trust_score": 0.5,
+            "last_accessed_at": NOW - timedelta(days=1),
+            "valid_from": NOW,
+            "embedding_model": None,
+            **fields,
+        }
+
+    class Store:
+        async def get_l0_memories(self, user_id: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            assert kwargs["include_local"] is False
+            return [memory(100, tier="l0"), memory(101, local_only=True)]
+
+        async def get_recent_summaries(self, user_id: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            assert kwargs == {"limit": 3, "include_local": False}
+            return [memory(200, content="Synthetic summary"), memory(201, local_only=True)]
+
+        async def search_memories_bm25(self, **kwargs: Any) -> list[dict[str, Any]]:
+            assert kwargs["match_any_term"] is True
+            assert kwargs["include_local"] is False
+            query = kwargs["query"]
+            numbers = (
+                range(1, 7)
+                if query == "Question"
+                else range(10, 14)
+                if query == "one"
+                else range(20, 24)
+            )
+            return [memory(index) for index in numbers]
+
+        async def find_entities_by_alias(self, *args: Any) -> list[Any]:
+            return []
+
+        async def get_entity_by_lookup_key(self, *args: Any) -> None:
+            return None
+
+        search_memories = staticmethod(_forbidden)
+        bulk_touch_memories = staticmethod(_forbidden)
+        log_retrieval = staticmethod(_forbidden)
+
+    native = retrieval.retrieve_memories_for_text
+
+    async def spy(*args: Any, **kwargs: Any) -> list[dict[str, object]]:
+        assert retrieval.RECENCY_REFERENCE_TIME.get() == NOW
+        assert kwargs["query_embedding"] is None
+        assert kwargs["allow_query_embedding"] is False
+        assert kwargs["touch_results"] is False
+        assert kwargs["log_retrieval"] is False
+        assert kwargs["query_reference_time"] == NOW
+        calls.append(kwargs)
+        rows = await native(*args, **kwargs)
+        assert all(row["final_score"] == pytest.approx(0.4) for row in rows)
+        return rows
+
+    monkeypatch.setattr(retrieval, "retrieve_memories_for_text", spy)
+    return Store(), calls
+
+
+@pytest.mark.parametrize("merge", ["additive", "round_robin"])
+@pytest.mark.parametrize("triggered", [False, True])
+def test_lexical_adapter_uses_production_scoring_merge_render_and_historical_clock(
+    monkeypatch: Any,
+    merge: str,
+    triggered: bool,
+) -> None:
+    from orchestrator.memory import retrieval
+
+    store, calls = _native_lexical_setup(monkeypatch)
+    question = Question("synthetic", "Question", NOW, False, ())
+
+    async def run() -> dict[str, Any]:
+        prior = datetime(2001, 1, 1, tzinfo=UTC)
+        token = retrieval.RECENCY_REFERENCE_TIME.set(prior)
+        try:
+            result = await m2_exposure.measure_question_lexical(
+                store,
+                question=question,
+                subqueries=("one", "two") if triggered else (),
+                merge=merge,
+                target_ids=[str(uuid.UUID(int=10))],
+            )
+            assert retrieval.RECENCY_REFERENCE_TIME.get() == prior
+            return result
+        finally:
+            retrieval.RECENCY_REFERENCE_TIME.reset(token)
+
+    result = asyncio.run(run())
+    assert [c["limit"] for c in calls if c["query_role"] is None] == [5]
+    assert [c["limit"] for c in calls if c["query_role"] is not None] == (
+        [10, 10] if triggered else []
+    )
+    assert result["baseline"]["retrieved_ids"] == [str(uuid.UUID(int=i)) for i in range(1, 6)]
+    assert str(uuid.UUID(int=100)) in result["baseline"]["rendered_ids"]
+    assert str(uuid.UUID(int=101)) not in result["baseline"]["rendered_ids"]
+    if triggered:
+        assert len(result["candidate"]["retrieved_ids"]) == 11
+        assert result["candidate"]["target_exposed"] is True
+        if merge == "additive":
+            assert result["candidate"]["retrieved_ids"][:5] == result["baseline"]["retrieved_ids"]
+    else:
+        assert result["baseline"] == result["candidate"]
+
+
+@pytest.mark.parametrize("added_kind", ["existing_uuid", "non_uuid"])
+def test_lexical_replacement_requires_a_new_uuid_even_for_round_robin(
+    monkeypatch: Any,
+    added_kind: str,
+) -> None:
+    from orchestrator.memory import retrieval
+
+    store, _ = _native_lexical_setup(monkeypatch)
+    native = retrieval.retrieve_memories_for_text
+
+    async def retrieve(**kwargs: Any) -> list[dict[str, object]]:
+        if kwargs["query_role"] is None:
+            return await native(**kwargs)
+        if added_kind == "non_uuid":
+            return [{"id": "not-a-uuid", "content": "Synthetic alternative"}]
+        return [
+            {"id": uuid.UUID(int=i), "content": "Synthetic duplicate"}
+            for i in reversed(range(1, 6))
+        ]
+
+    monkeypatch.setattr(retrieval, "retrieve_memories_for_text", retrieve)
+    result = asyncio.run(
+        m2_exposure.measure_question_lexical(
+            store,
+            question=Question("synthetic", "Question", NOW, False, ()),
+            subqueries=("one",),
+            merge="round_robin",
+            target_ids=(),
+        )
+    )
+    assert result["candidate"] == result["baseline"]
+
+
+@pytest.mark.parametrize("stop", ["failure", "timeout", "cancel"])
+def test_lexical_component_fallback_drains_tasks_and_resets_clock(
+    monkeypatch: Any, stop: str
+) -> None:
+    from orchestrator.memory import injection, retrieval
+
+    store, _ = _native_lexical_setup(monkeypatch)
+
+    async def run() -> None:
+        started = asyncio.Event()
+        drained = asyncio.Event()
+        blocker = asyncio.Event()
+        prior = retrieval.RECENCY_REFERENCE_TIME.get()
+
+        async def retrieve(**kwargs: Any) -> list[dict[str, object]]:
+            assert retrieval.RECENCY_REFERENCE_TIME.get() == NOW
+            if kwargs["query_role"] is None:
+                return []
+            if kwargs["query_role"] == "sub:0":
+                try:
+                    started.set()
+                    await blocker.wait()
+                finally:
+                    drained.set()
+            await started.wait()
+            if stop == "failure":
+                raise RuntimeError("Synthetic component error")
+            await blocker.wait()
+            return []
+
+        monkeypatch.setattr(retrieval, "retrieve_memories_for_text", retrieve)
+        if stop == "timeout":
+
+            async def timeout(task: Any, deadline: float) -> Any:
+                await started.wait()
+                raise TimeoutError
+
+            monkeypatch.setattr(injection, "_before_component_deadline", timeout)
+        task = asyncio.create_task(
+            m2_exposure.measure_question_lexical(
+                store,
+                question=Question("synthetic", "Question", NOW, False, ()),
+                subqueries=("one", "two"),
+                merge="additive",
+                target_ids=(),
+            )
+        )
+        await started.wait()
+        if stop == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            result = await task
+            assert result["baseline"] == result["candidate"]
+        assert drained.is_set()
+        assert retrieval.RECENCY_REFERENCE_TIME.get() == prior
+
+    asyncio.run(run())
+
+
+def test_live_lexical_wiring_reads_only_aggregate_safety_and_native_retrieval(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    from orchestrator.eval import bench_db
+    from orchestrator.memory import store as store_module
+    from tests.benchmark_longmemeval.dev2_pilot import RUN_LOCK_SQL, RUN_LOCK_HELD_SQL
+
+    native_store, native_calls = _native_lexical_setup(monkeypatch)
+    fakes = _LexicalFakes()
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    closed: list[str] = []
+    sqls: list[str] = []
+
+    class Pool:
+        async def close(self) -> None:
+            closed.append("pool")
+
+    class Connection:
+        async def close(self) -> None:
+            closed.append("connection")
+
+        async def fetch(self, sql: str, users: Any) -> list[dict[str, Any]]:
+            sqls.append(sql)
+            if sql == m2_exposure.LEXICAL_CORPUS_SQL:
+                assert len(users) == 100
+                return fakes.corpus_rows
+            assert sql == "SELECT id FROM users WHERE id = ANY($1::uuid[])"
+            assert len(users) == 101
+            return [{"id": user} for user in users]
+
+        async def fetchrow(self, sql: str) -> Mapping[str, Any]:
+            assert sql == m2_exposure.LEXICAL_LEDGER_SQL
+            return {**fakes.ledger_state, "settled_microusd": Decimal(306398)}
+
+        async def fetchval(self, sql: str, *args: Any) -> Any:
+            if sql == RUN_LOCK_SQL:
+                return True
+            if sql == RUN_LOCK_HELD_SQL:
+                return 1
+            assert sql == "SELECT count(*) FROM retrieval_log"
+            return 0
+
+    async def pool(*args: Any, **kw: Any) -> Pool:
+        return Pool()
+
+    async def connect(*args: Any) -> Connection:
+        return Connection()
+
+    async def fingerprint(*args: Any) -> dict[str, Any]:
+        return await fakes.fingerprint()
+
+    async def assert_database(*args: Any) -> None:
+        return None
+
+    monkeypatch.setattr("asyncpg.create_pool", pool)
+    monkeypatch.setattr("asyncpg.connect", connect)
+    monkeypatch.setattr(bench_db, "assert_benchmark_database", assert_database)
+    monkeypatch.setattr(bench_db, "fingerprint_benchmark_users", fingerprint)
+    monkeypatch.setattr(store_module, "MemoryStore", lambda *args: native_store)
+    monkeypatch.setattr("orchestrator.memory.encryption.ContentEncryption", lambda *args: object())
+    monkeypatch.setattr(
+        "orchestrator.config.get_settings",
+        lambda: SimpleNamespace(
+            database_url=f"postgresql://synthetic@invalid/{REMAP_DB_NAME}",
+            daemon_encryption_key="synthetic",
+            memory_subquery_quota=3,
+            memory_max_subqueries=3,
+            retrieval_logging_enabled=False,
+            retrieval_logging_debug=False,
+        ),
+    )
+    monkeypatch.setattr(
+        m2_exposure,
+        "load_remap_lineage",
+        lambda _: m2_exposure.RemapLineage("synthetic", LINEAGE_SHA, REMAP_DB_NAME, "a"),
+    )
+    document = asyncio.run(
+        m2_exposure._run_live_measure(
+            questions=kwargs["questions"],
+            labels=kwargs["labels"],
+            subqueries=kwargs["subqueries"],
+            output_path=kwargs["output_path"],
+            start_marker=kwargs["start_marker"],
+            remap_lineage=tmp_path / "unused-lineage",
+            retrieval_mode="lexical",
+        )
+    )
+    assert document["stop_reason"] is None
+    assert document["lexical_safety"]["verified"] is True
+    assert len(native_calls) >= 200
+    assert sqls.count(m2_exposure.LEXICAL_CORPUS_SQL) == 2
+    assert closed == ["connection", "pool"]
+
+
+def test_lexical_mode_and_adapter_propagate_through_gates_and_sanitized_report(
+    tmp_path: Path,
+) -> None:
+    threshold, measure, plausibility, labels = _gate_documents(_frozen(), newly=6)
+    measure.update(m2_exposure._retrieval_identity("lexical"))
+    measure["lexical_safety"] = {"verified": True}
+    gates = run_gates(
+        threshold=threshold,
+        labels=labels,
+        measure=measure,
+        plausibility=plausibility,
+        output_path=tmp_path / "gates.json",
+        repo_root=tmp_path / "repo",
+    )
+    report = run_report(
+        measure=measure,
+        gates=gates,
+        retention_categories=_categories(labels),
+        output_path=tmp_path / "report.json",
+        repo_root=tmp_path / "repo",
+    )
+    for document in (gates, report):
+        assert document["retrieval_mode"] == "lexical"
+        assert document["retrieval_adapter"] == "m2-lexical/1"
+    gates.update(m2_exposure._retrieval_identity("cached_embeddings"))
+    with pytest.raises(ValueError, match="different retrieval modes"):
+        run_report(
+            measure=measure,
+            gates=gates,
+            retention_categories=_categories(labels),
+            output_path=tmp_path / "bad-report.json",
+            repo_root=tmp_path / "repo",
+        )
+    measure["lexical_safety"]["verified"] = False
+    with pytest.raises(ValueError, match="verified side-effect"):
+        run_gates(
+            threshold=threshold,
+            labels=labels,
+            measure=measure,
+            plausibility=plausibility,
+            output_path=tmp_path / "bad-gates.json",
+            repo_root=tmp_path / "repo",
+        )
+
+
+def test_completed_lexical_resume_rechecks_admission_even_without_retrieval(tmp_path: Path) -> None:
+    fakes = _LexicalFakes()
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    asyncio.run(run_measure(**kwargs))
+    # Simulate loss of only the output document after the journal was fully durable.
+    Path(kwargs["output_path"]).unlink()
+    fakes.corpus_rows[-1]["embedded"] = 1
+    with pytest.raises(ValueError, match="embedded"):
+        asyncio.run(run_measure(**kwargs))
+    assert fakes.calls == 200
+
+
+def test_lexical_unreadable_postcheck_cannot_succeed(tmp_path: Path) -> None:
+    fakes = _LexicalFakes(fail_on_question=_ids()[0])
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+
+    async def read() -> Mapping[str, Any]:
+        if fakes.calls:
+            raise RuntimeError("Synthetic ledger read failure")
+        return fakes.ledger_state
+
+    kwargs["read_ledger_state"] = read
+    with pytest.raises(m2_exposure.M2SideEffectError, match="safety observations"):
+        asyncio.run(run_measure(**kwargs))
+    result = json.loads(Path(kwargs["output_path"]).read_text())
+    assert result["lexical_safety"]["verified"] is False
+    assert result["lexical_safety"]["after"]["errors"] == ["ledger"]
+    assert result["stop_reason"] is not None
+
+
+def test_failed_fingerprint_postcheck_does_not_skip_ledger_or_log_observation(
+    tmp_path: Path,
+) -> None:
+    fakes = _LexicalFakes(fail_on_question=_ids()[0])
+    kwargs = _lexical_kwargs(tmp_path, fakes)
+    ledger_reads: list[bool] = []
+
+    async def fingerprint() -> dict[str, Any]:
+        if fakes.calls:
+            raise RuntimeError("Synthetic fingerprint read failure")
+        return await fakes.fingerprint()
+
+    async def ledger() -> Mapping[str, Any]:
+        ledger_reads.append(True)
+        return fakes.ledger_state
+
+    kwargs.update(fingerprint=fingerprint, read_ledger_state=ledger)
+    with pytest.raises(m2_exposure.M2SideEffectError):
+        asyncio.run(run_measure(**kwargs))
+    result = json.loads(Path(kwargs["output_path"]).read_text())
+    after = result["lexical_safety"]["after"]
+    assert after["ledger"] == fakes.ledger_state
+    assert after["retrieval_log_count"] == fakes.log_count
+    assert "fingerprint" in after["errors"]
+    assert len(ledger_reads) == 3  # admission, pre-question, post-failure
 
 
 def test_measure_fingerprint_change_is_a_hard_failure(tmp_path: Path) -> None:
