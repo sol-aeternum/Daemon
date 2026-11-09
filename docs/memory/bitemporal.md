@@ -329,3 +329,89 @@ binary, retain history on rollback and keep incompatible writers stopped. The
 backup-restore erasure limitation, historical-answer/model quality and production
 capacity remain unqualified. No commit, production migration or deployment was
 performed. The non-blocking browser failures remain tracked in #490.
+
+### PR #693 review repairs — bounded qualification
+
+The review repairs preserve migration 066 and public contracts: extraction logs
+use the existing NOT NULL-compatible empty-string scrub; nested tools reuse their
+owner-qualified originating capture; direct/combined/L0/component retrieval logs
+carry a capture from before candidate reads and publish inside the existing
+erasure-serialized mutation transaction. Logs do not create assertion revisions.
+Historical BM25 retains any-term matching when requested, consolidation discovery
+carries exact parent revision IDs, and ordinary summaries select current assertion
+segments rather than future projection content. Scope A still preserves original
+conversation bodies; backup/restore and deployment restrictions above remain.
+
+Synthetic PostgreSQL regressions in `tests/test_memory_pr693_postgres.py` first
+reproduced every reported defect (13 failures, three passing controls;
+`pr693-before.xml`). The expanded final core/execution batch passed 36 cases with
+zero skips (`pr693-final-core-execution.xml`), including pre-read captures,
+event-controlled detached/buffered erasure races, an actual PostgreSQL lock wait
+through log commit, nonzero stale epochs, owner/generation refusals, historical
+qualification before LIMIT, consolidation dependencies and ordinary prompt-summary
+selection. Evidence is retained outside the repository under the registered
+`memory-temporal-pr` task. This is not a full-project gate or final-review claim.
+
+CI's 26 fixture incompatibilities are addressed using initialized synthetic
+accounts and registered mutation connections, not disabled triggers. The lexical
+and rollback modules passed 13 cases, trust passed five, and entity producers
+passed 14 recording variants. Subsequent owned-Redis qualification passed all
+14 previously skipped entity variants plus the native acceptance lost-wakeup
+case (`pr693-owned-redis-entity-live.xml`: 15 passed, zero skips). The existing
+digest-qualified cached Redis fixture remained network-none; a one-shot private
+loopback relay supplied the unchanged legacy opt-in flags, and exact container
+removal was recorded in `pr693-entity-redis-receipt.json`. The initial benchmark
+fixture-only workaround is superseded by the actual-helper qualification below;
+no excluded benchmark checkout or real benchmark run is changed or executed.
+The owner's later explicit fail-closed choice resolves the two missing-account
+request-bound compatibility cases: tests retain the actual stream/capture guard
+and require truthful terminal failure, no provider dispatch, assistant/derived
+publication, task enqueue or account provisioning. See the scoped superseding
+clarification in `docs/ACCOUNT_CONTROL_PERSISTENCE.md`; this is not an all-task
+fence or deployment claim. Both revised request-bound cases and ten adjacent
+durable acceptance refusals passed on real PostgreSQL
+(`pr693-missing-account-owner-choice.xml`: 12 passed, zero skips). The subsequent
+complete acceptance module, including owned Redis, passed all 57 cases without
+skips (`pr693-acceptance-final-owned.xml`).
+
+### Approved synthetic benchmark reset compatibility
+
+The owner approved the narrow actual-helper repair, not account reset or a
+temporal rewind. `bench_db.py` now checks the marked database and exact synthetic
+owner, retains the originating capture, and owns the actual READ COMMITTED
+account-guarded/temporal-barrier transaction. Orphan rollback erases lineages and
+derived copies before deleting synthetic source conversations. Full content reset
+also purges uncascaded dependency edges; revision segments and sources cascade.
+No account generation is advanced and no spend/ledger records are removed.
+
+Knowledge clocks, mutation history, tombstones and erased source spans remain
+monotonic. Even an empty-payload reset advances the existing erasure epoch to
+reject pre-reset captures. Owner-qualified fingerprints now include immutable
+bundles, joined segments, dependencies, sources and retained protection, using
+their deterministic keys. An interrupted session whose complete earlier state
+cannot be proven restored causes a conservative question rebuild, including the
+self-contained case; no clock rewind or falsely exact baseline is permitted.
+Payload-zero checks and `reset_verify_helper.py` explicitly distinguish retained
+deletion protection from leftover content.
+
+Canonical reset commits per owner, reports completed versus unconfirmed owners,
+and unlinks its checkpoint only after acknowledged database completion. SQL
+failure, cancellation or uncertain COMMIT leaves checkpoint evidence intact;
+checkpoint failure after an acknowledged purge does not imply rollback or replay.
+There is no new global transaction, production-erasure policy or deployment claim.
+
+The masking test transaction wrapper was removed. Actual raw-pool helper tests
+and runner reconciliation passed **29 real-PostgreSQL cases**, plus two
+no-replay confirmation units, **31 cases with zero skips**
+(`pr693-benchmark-reset-qualified.xml`), covering lineage/derived cleanup,
+uncascaded edges, preserved account/spend/foreign owners, stale captures and old
+watermarks, temporal-only fingerprints, partial-owner failure, deferred failed
+COMMIT, lost COMMIT receipt, cancellation and checkpoint failure. Source and
+guarded SQL are real; the lost-receipt wrapper raises only after an actual commit.
+These are synthetic qualification cases, not benchmark inference or restored
+backup safety. The verifier refuses automatic confirmation after an uncertain
+reset or unexplained payload leftovers. A further 329 affected unit/catalogue
+checks passed (`pr693-benchmark-compat-final.xml`); full Ruff/format/types and
+focused high-severity Bandit also passed. Expanded fingerprints intentionally
+do not certify pre-066 pinned baselines; no frozen evidence was rewritten.
+Primary final review and full project gates remain separate.

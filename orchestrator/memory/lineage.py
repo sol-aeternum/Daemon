@@ -132,7 +132,7 @@ async def erase(store: Any, conn: Any, owner: UUID, roots: list[UUID], *, hard: 
         owner,
     )
     await conn.execute(
-        "UPDATE memory_extraction_log SET input_snippet=NULL,extracted_facts='[]'::jsonb,dedup_results='{}'::jsonb "
+        "UPDATE memory_extraction_log SET input_snippet='',extracted_facts='[]'::jsonb,dedup_results='{}'::jsonb "
         "WHERE user_id=$1",
         owner,
     )

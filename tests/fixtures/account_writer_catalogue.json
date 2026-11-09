@@ -2301,25 +2301,26 @@
       "owner_source": "orchestrator.eval.bench_db",
       "qualname": "fingerprint_benchmark_state",
       "kind": "sql_dynamic",
-      "fingerprint": "886b4ca9084ec35a",
+      "fingerprint": "6dda289e2f5df2b5",
       "tables": [],
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Read-only count/md5 fingerprint over a fixed list of interpolated benchmark table names; the scanner cannot resolve targets. Benchmark-only, not a mutation. Uncovered."
+      "rationale": "Read-only fixed-scope benchmark fingerprint including owner-qualified revision segments, composite keys and retained temporal protections. Scanner cannot resolve interpolated relations; no production fence claim."
     },
     {
       "owner_source": "orchestrator.eval.bench_db",
-      "qualname": "rollback_orphan_conversations",
+      "qualname": "_erase_synthetic_lineages",
       "kind": "sql_inline",
-      "fingerprint": "7b2c7fef86559065",
+      "line_hint": 268,
+      "fingerprint": "3f009d374547ef9b",
       "tables": [
-        "memories"
+        "memory_knowledge_clock"
       ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
-      "rationale": "Benchmark-only LongMemEval resume rollback of interrupted-session rows; runs only after assert_benchmark_database accepts the marked daemon_lme_bench database. Not a production path; no runtime account fence. Uncovered."
+      "rationale": "Benchmark-only empty-payload erasure-epoch advance inside the original-capture mutation transaction; existing lineage erasure handles nonempty roots. Clock/tombstones/spend retained; no production fence claim."
     },
     {
       "owner_source": "orchestrator.eval.bench_db",
@@ -2356,7 +2357,19 @@
       "unknown": true,
       "uncovered": true,
       "category": "deferred",
-      "rationale": "Benchmark-only LongMemEval question rebuild: executes the harness's fixed per-user reset DELETE statements for one per-question user in the marked daemon_lme_bench database, reached only from ingest after assert_benchmark_database; the scanner cannot resolve the passed statements. Not a production path; no runtime account fence. Uncovered."
+      "rationale": "Benchmark-only fixed content DELETE statements after positive database/user ownership and original-capture mutation admission. Retains temporal protections/account/spend; scanner cannot resolve passed SQL. No production fence claim."
+    },
+    {
+      "owner_source": "orchestrator.eval.bench_db",
+      "qualname": "wipe_benchmark_user",
+      "kind": "sql_dynamic",
+      "line_hint": 356,
+      "fingerprint": "6e564ae2b9094906",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Read-only fixed content-scope counts on the admitted benchmark reset connection; interpolated table names remain scanner-unknown. Counts are returned only after acknowledged owner commit."
     },
     {
       "owner_source": "orchestrator.eval.chunk_harness",
@@ -3645,17 +3658,6 @@
     },
     {
       "owner_source": "orchestrator.eval.fact_harness",
-      "qualname": "reset_canonical_benchmark",
-      "kind": "sql_unresolvable",
-      "fingerprint": "29221bdd6284e9c6",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.eval.fact_harness",
       "qualname": "utc_now_iso",
       "kind": "filesystem_write",
       "fingerprint": "7fbe40f60530b9c8",
@@ -4382,7 +4384,7 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.log_retrieval",
+      "qualname": "MemoryStore._insert_retrieval_log",
       "kind": "sql_inline",
       "fingerprint": "0129697f0d1b539e",
       "tables": [
@@ -4391,11 +4393,11 @@
       "unknown": false,
       "uncovered": true,
       "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+      "rationale": "Private INSERT under log_retrieval's original-capture mutation transaction; PR #693 covers scoped erasure races. No global account-fence coverage claimed."
     },
     {
       "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.log_retrieval",
+      "qualname": "MemoryStore._insert_retrieval_log",
       "kind": "sql_inline",
       "fingerprint": "5e1c2da9dbc54077",
       "tables": [
@@ -4404,7 +4406,7 @@
       "unknown": false,
       "uncovered": true,
       "category": "content",
-      "rationale": "Explicit role-bearing retrieval-log INSERT; sub-query text/vector suppression precedes this call. Same account ownership as the legacy INSERT; no runtime account-fence coverage claimed."
+      "rationale": "Role-bearing private INSERT under log_retrieval's original-capture mutation transaction; sub-query text/vector suppression precedes this call. No global account-fence coverage claimed."
     },
     {
       "owner_source": "orchestrator.memory.store",
@@ -7978,7 +7980,7 @@
       "qualname": "erase",
       "kind": "sql_inline",
       "line_hint": 134,
-      "fingerprint": "7c7f5ea7b6fe351b",
+      "fingerprint": "165df6a9d982e08b",
       "tables": [
         "memory_extraction_log"
       ],

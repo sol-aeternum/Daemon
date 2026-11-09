@@ -31,6 +31,7 @@ from orchestrator.memory.embedding import (
 )
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
 from orchestrator.memory.revisions import (
+    Capture,
     current_read_scope,
     pool_for,
     search as search_revisions,
@@ -39,7 +40,7 @@ from orchestrator.memory.revisions import (
     capture_for,
     mutation,
 )
-from orchestrator.memory.temporal import EventScope
+from orchestrator.memory.temporal import EventScope, TemporalRefusal
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -2922,6 +2923,7 @@ class MemoryStore:
                 category=category,
                 slot=memory_slot,
                 source_ids=source_conversation_ids,
+                match_any_term=match_any_term,
             )
         # By design, L0 memories remain directly searchable for explicit recall
         # queries. Dedup callers opt out so frozen memories cannot be mutated.
@@ -3234,7 +3236,7 @@ class MemoryStore:
             return []  # Current derived summaries do not reconstruct historical evidence.
         rows = await self._pool.fetch(
             """
-            SELECT * FROM memories
+            SELECT * FROM memory_current_assertions
             WHERE user_id = $1
               AND category = 'summary'
               AND ($3::boolean OR local_only IS FALSE)
@@ -3706,6 +3708,7 @@ class MemoryStore:
         retrieval_triggered_by: str | None = None,
         record_query_text: bool = True,
         query_role: str | None = None,
+        originating_capture: Capture | None = None,
     ) -> dict[str, Any]:
         if (
             query_role is not None
@@ -3717,6 +3720,10 @@ class MemoryStore:
             record_query_text = False
         if not record_query_text:
             query_text, query_embedding = "", None
+        if originating_capture is None:
+            raise TemporalRefusal("retrieval_log_original_capture_required")
+        if originating_capture.origin.account_id != user_id:
+            raise TemporalRefusal("memory_capture_owner_mismatch")
         embedding_str = _format_vector(query_embedding) if query_embedding else None
         args = [
             user_id,
@@ -3732,6 +3739,14 @@ class MemoryStore:
             retrieval_context,
             retrieval_triggered_by,
         ]
+        # The capture predates candidate reads. Validation and INSERT share the
+        # erasure serialization transaction; never recapture a detached writer.
+        async with mutation(self, originating_capture):
+            return await self._insert_retrieval_log(args, query_role)
+
+    async def _insert_retrieval_log(
+        self, args: list[Any], query_role: str | None
+    ) -> dict[str, Any]:
         if query_role is None:
             row = await self._pool.fetchrow(
                 """

@@ -19,6 +19,11 @@ def normalized(sql: str) -> str:
 
 def validate_write(sql: str, args: tuple) -> None:
     q = normalized(sql)
+    if q.startswith("INSERT INTO retrieval_log"):
+        assert len(args) in (12, 13) and "RETURNING *" in q, q
+        assert "$6::uuid[]" in q and "$7::jsonb" in q and "$8::uuid[]" in q, q
+        assert ("query_role" in q) == (len(args) == 13), q
+        return
     if q.startswith("INSERT INTO memories"):
         assert len(args) in (12, 18), q
         assert "content_hash" in q and "content_tsv" in q, q

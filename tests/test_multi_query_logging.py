@@ -15,6 +15,9 @@ from orchestrator.memory import retrieval
 from orchestrator.compute_runtime import ComputeUnavailable, FAILURE_SETTLEMENT_FAILED
 from orchestrator.memory.embedding import EmbeddingConfigurationError
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.revisions import Capture
+from orchestrator.services.account_control.guard import CapturedGeneration
+from tests.memory_store_sql_support import RegisteredStorePool
 from orchestrator.eval import diagnostics
 from scripts import memory_exposure_sweep as sweep
 
@@ -25,6 +28,7 @@ MID = uuid.UUID(int=2)
 
 def _store():
     return SimpleNamespace(
+        _database_pool=RegisteredStorePool(None),
         log_retrieval=AsyncMock(return_value={}),
         search_memories=AsyncMock(
             return_value=[{"id": MID, "content": SENTINEL, "similarity": 1.0}]
@@ -216,7 +220,7 @@ async def test_sentinel_early_returns_do_not_log(logging_fakes, caplog, reason):
 @pytest.mark.asyncio
 async def test_sentinel_store_role_defense_and_original_row_shape():
     pool = SimpleNamespace(fetchrow=AsyncMock(return_value={}))
-    store = MemoryStore(cast(Any, pool), cast(Any, Mock()))
+    store = MemoryStore(cast(Any, RegisteredStorePool(pool)), cast(Any, Mock()))
     args: dict[str, Any] = dict(
         user_id=USER,
         query_text=SENTINEL,
@@ -227,6 +231,7 @@ async def test_sentinel_store_role_defense_and_original_row_shape():
         selected_memory_ids=[],
         l0_included=False,
         latency_ms=1,
+        originating_capture=Capture(CapturedGeneration(USER, 0), 0),
     )
     await store.log_retrieval(**args, query_role="sub:0")
     call = pool.fetchrow.await_args.args

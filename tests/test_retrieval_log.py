@@ -16,11 +16,13 @@ from orchestrator.memory.embedding import (
 )
 from orchestrator.memory.retrieval import retrieve_memories, retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
+from tests.memory_store_sql_support import RegisteredStorePool
 
 
 @pytest.fixture
 def mock_store() -> MemoryStore:
     store = AsyncMock(spec=MemoryStore)
+    store._database_pool = RegisteredStorePool(None)
     store.search_memories = AsyncMock(return_value=[])
     store.search_memories_bm25 = AsyncMock(return_value=[])
     store.get_conversation = AsyncMock(return_value=None)

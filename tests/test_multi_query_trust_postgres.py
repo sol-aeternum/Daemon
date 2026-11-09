@@ -18,8 +18,11 @@ from typing import Any, cast
 import asyncpg
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.encryption import ContentEncryption
+from tests.durable_tasks_support import seed_entitlement
 from orchestrator.memory.trust_signals import (
     _record_added_retrieved_memories,
     record_retrieved_memories,
@@ -52,6 +55,7 @@ async def db(
                 conversation_id,
                 user_id,
             )
+            await seed_entitlement(pool, user_id)
             yield pool, user_id, conversation_id
         finally:
             await asyncio.wait_for(pool.close(), timeout=10)
@@ -63,17 +67,13 @@ def _store(pool: asyncpg.Pool) -> MemoryStore:
 
 
 async def _seed_memories(pool: asyncpg.Pool, user_id: uuid.UUID, count: int) -> list[uuid.UUID]:
-    memory_ids = [uuid.uuid4() for _ in range(count)]
-    for index, memory_id in enumerate(memory_ids):
-        await pool.execute(
-            """
-            INSERT INTO memories (id, user_id, content, category, source_type)
-            VALUES ($1, $2, $3, 'fact', 'manual')
-            """,
-            memory_id,
-            user_id,
-            f"synthetic memory {index} {memory_id}",
+    store = MemoryStore(pool, ContentEncryption(Fernet.generate_key().decode()))
+    memory_ids = []
+    for index in range(count):
+        row = await store.insert_memory(
+            user_id, f"synthetic memory {index} {uuid.uuid4()}", "fact", "manual"
         )
+        memory_ids.append(row["id"])
     return memory_ids
 
 

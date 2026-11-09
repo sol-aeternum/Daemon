@@ -143,7 +143,7 @@ async def find_memory_clusters(
     rows = await store._pool.fetch(
         """
         SELECT id, content, category, memory_slot, embedding, confidence, 
-               created_at, access_count, trust_score
+               created_at, access_count, trust_score, head_revision_id
         FROM memories
         WHERE user_id = $1
           AND status = 'active'

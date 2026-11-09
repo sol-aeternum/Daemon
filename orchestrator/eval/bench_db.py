@@ -20,6 +20,12 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from orchestrator.config import get_settings
+from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.memory.lineage import erase
+from orchestrator.memory.revisions import capture_for, mutation
+from orchestrator.memory.store import MemoryStore
+
 logger = logging.getLogger(__name__)
 
 BENCHMARK_DB_NAME_PREFIX = "daemon_lme_bench"
@@ -34,6 +40,42 @@ FINGERPRINT_TABLES: tuple[tuple[str, str], ...] = (
     ("memories", "user_id"),
     ("memory_extraction_log", "user_id"),
     ("entities", "user_id"),
+    ("memory_revisions", "user_id"),
+    ("memory_revision_segments", "user_id"),  # Owner is qualified through its revision.
+    ("memory_dependencies", "user_id"),
+    ("memory_sources", "user_id"),
+    ("memory_knowledge_clock", "user_id"),
+    ("memory_mutations", "user_id"),
+    ("memory_tombstones", "user_id"),
+    ("memory_erased_sources", "user_id"),
+)
+# A synthetic content reset is NOT an account reset or a temporal-history rewind.
+RETAINED_PROTECTION_TABLES = frozenset(
+    {"memory_knowledge_clock", "memory_mutations", "memory_tombstones", "memory_erased_sources"}
+)
+_FINGERPRINT_KEYS = {
+    "memory_dependencies": "t.user_id,t.parent_memory_id,t.parent_revision_id,t.dependent_kind,t.dependent_id",
+    "memory_sources": "t.user_id,t.memory_id,t.source_kind,t.source_id",
+    "memory_knowledge_clock": "t.user_id",
+    "memory_mutations": "t.user_id,t.sequence",
+    "memory_tombstones": "t.user_id,t.memory_id",
+    "memory_erased_sources": "t.user_id,t.source_kind,t.source_id,t.memory_id",
+}
+
+# Fixed content-only reset scope; arbitrary caller SQL cannot delete protections
+# or the account/compute ledger. Revision bundles/segments/sources cascade.
+BENCHMARK_RESET_STATEMENTS: tuple[tuple[str, str], ...] = tuple(
+    (table, f"DELETE FROM {table} WHERE user_id = $1")
+    for table in (
+        "retrieval_log",
+        "dream_log",
+        "entities",
+        "memories",
+        "memory_dependencies",
+        "memory_extraction_log",
+        "messages",
+        "conversations",
+    )
 )
 # What one session's extraction can change outside its own conversation (dedup
 # merges, supersessions, entity rows). Messages are excluded: a session only
@@ -148,10 +190,18 @@ async def fingerprint_benchmark_state(
         raise ValueError("fingerprint tables must come from FINGERPRINT_TABLES")
     digests: dict[str, dict[str, Any]] = {}
     for table, owner_column in tables:
+        if table == "memory_revision_segments":
+            relation = (
+                "memory_revision_segments t JOIN memory_revisions r ON r.id=t.revision_id "
+                "WHERE r.user_id = $1"
+            )
+        else:
+            relation = f"{table} t WHERE t.{owner_column} = $1"
+        key = _FINGERPRINT_KEYS.get(table, "t.id")
         row = await pool.fetchrow(
             f"SELECT count(*) AS rows, "  # nosec B608 - fixed identifiers from FINGERPRINT_TABLES
-            f"md5(coalesce(string_agg(md5(t::text), '' ORDER BY t.id), '')) AS digest "
-            f"FROM {table} t WHERE t.{owner_column} = $1",
+            f"md5(coalesce(string_agg(md5(t::text), '' ORDER BY {key}), '')) AS digest "
+            f"FROM {relation}",
             user_id,
         )
         digests[table] = {
@@ -189,41 +239,89 @@ async def list_benchmark_conversation_ids(pool: Any, user_id: uuid.UUID) -> set[
     return {str(row["id"]) for row in rows}
 
 
+async def _benchmark_owner(conn: Any, user_id: uuid.UUID) -> bool:
+    """Existing synthetic users only; never adopt an unrelated identity or provision."""
+    email = await conn.fetchval("SELECT email FROM users WHERE id=$1", user_id)
+    if email is None:
+        return False
+    if email != f"longmemeval+{user_id.hex}@daemon.test" and not (
+        user_id == uuid.UUID("12345678-1234-5678-1234-567812345678")
+        and email == "longmemeval@daemon.test"
+    ):
+        raise BenchmarkDatabaseGuardError("Refusing to reset an unowned benchmark user")
+    return True
+
+
+async def _reset_store(pool: Any, user_id: uuid.UUID) -> MemoryStore | None:
+    settings = get_settings()
+    await assert_benchmark_database(pool, settings.database_url)
+    if not await _benchmark_owner(pool, user_id):
+        return None
+    return MemoryStore(pool, ContentEncryption(settings.daemon_encryption_key))
+
+
+async def _erase_synthetic_lineages(store: MemoryStore, conn: Any, owner: uuid.UUID, roots):
+    count = await erase(store, conn, owner, roots, hard=True)
+    if count == 0:
+        # Even an empty-memory reset removes source inputs. Fence prior captures
+        # without inventing a lineage, clearing tombstones or resetting the clock.
+        await conn.execute(
+            "UPDATE memory_knowledge_clock SET erasure_epoch=erasure_epoch+1 WHERE user_id=$1",
+            owner,
+        )
+    return count
+
+
 async def rollback_orphan_conversations(
     pool: Any, user_id: uuid.UUID, conversation_ids: set[str]
 ) -> dict[str, int]:
     """Delete everything an interrupted session ingest wrote.
 
-    Memories and extraction logs reference conversations with ON DELETE SET
-    NULL, so they are deleted explicitly before the conversation (messages
-    cascade). Dedup merges or supersessions applied to memories of *other*
-    sessions are not undone here: callers must verify the result (see
-    ``LongMemEvalFactRunner._reconcile_interrupted_session``).
+    Original-capture admission and lineage erasure precede synthetic source
+    deletion on the same READ COMMITTED connection. Temporal deletion protection
+    is retained, not rolled back. Changes to earlier sessions and conservative
+    invalidation can make exact restoration unprovable; the caller must rebuild
+    the question rather than accept an inexact baseline.
     """
     if not conversation_ids:
         return {"conversations": 0, "memories": 0, "memory_extraction_log": 0}
     ids = [uuid.UUID(value) for value in sorted(conversation_ids)]
     counts: dict[str, int] = {}
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            memories = await conn.execute(
-                "DELETE FROM memories WHERE user_id = $1 AND source_conversation_id = ANY($2::uuid[])",
-                user_id,
-                ids,
-            )
-            logs = await conn.execute(
-                "DELETE FROM memory_extraction_log "
-                "WHERE user_id = $1 AND conversation_id = ANY($2::uuid[])",
-                user_id,
-                ids,
-            )
-            conversations = await conn.execute(
-                "DELETE FROM conversations WHERE user_id = $1 AND id = ANY($2::uuid[])",
-                user_id,
-                ids,
-            )
+    store = await _reset_store(pool, user_id)
+    if store is None:
+        raise BenchmarkDatabaseGuardError("Orphan rollback requires an existing benchmark owner")
+    original = await capture_for(store, user_id)
+    async with mutation(store, original) as conn:
+        await _benchmark_owner(conn, user_id)
+        owned = await conn.fetch(
+            "SELECT id FROM conversations WHERE user_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE",
+            user_id,
+            ids,
+        )
+        if {row["id"] for row in owned} != set(ids):
+            raise BenchmarkDatabaseGuardError("Orphan conversation ownership changed or is foreign")
+        roots = await conn.fetch(
+            "SELECT id FROM memories WHERE user_id=$1 AND source_conversation_id=ANY($2::uuid[])",
+            user_id,
+            ids,
+        )
+        before = await conn.fetchval("SELECT count(*) FROM memories WHERE user_id=$1", user_id)
+        await _erase_synthetic_lineages(store, conn, user_id, [row["id"] for row in roots])
+        counts["memories"] = before - await conn.fetchval(
+            "SELECT count(*) FROM memories WHERE user_id=$1", user_id
+        )
+        logs = await conn.execute(
+            "DELETE FROM memory_extraction_log "
+            "WHERE user_id = $1 AND conversation_id = ANY($2::uuid[])",
+            user_id,
+            ids,
+        )
+        conversations = await conn.execute(
+            "DELETE FROM conversations WHERE user_id = $1 AND id = ANY($2::uuid[])",
+            user_id,
+            ids,
+        )
     for key, status in (
-        ("memories", memories),
         ("memory_extraction_log", logs),
         ("conversations", conversations),
     ):
@@ -239,19 +337,31 @@ async def wipe_benchmark_user(
 ) -> dict[str, int]:
     """Delete one benchmark user's memory state in a single transaction.
 
-    ``statements`` are ``(table, "DELETE ... WHERE user_id = $1")`` pairs (the
-    harness passes its per-user reset statements). The user row, entitlement
-    account and compute ledger stay, so spend remains accounted.
+    Only the fixed content statements are accepted. Existing lineage erasure
+    removes revision payloads and derived copies, including uncascaded edges.
+    Clocks/mutations/tombstones/erased spans, the user, account generation and
+    compute ledger stay. Counts are returned only after acknowledged commit.
     """
     counts: dict[str, int] = {}
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            for table, statement in statements:
-                status = await conn.execute(statement, user_id)
-                try:
-                    counts[table] = int(str(status).split()[-1])
-                except (ValueError, IndexError):
-                    counts[table] = 0
+    if tuple(statements) != BENCHMARK_RESET_STATEMENTS:
+        raise ValueError("Benchmark reset requires the fixed content-only statements")
+    store = await _reset_store(pool, user_id)
+    if store is None:
+        return {table: 0 for table, _ in statements}
+    original = await capture_for(store, user_id)
+    async with mutation(store, original) as conn:
+        await _benchmark_owner(conn, user_id)
+        # Counts describe rows actually removed by this acknowledged owner txn,
+        # including lineage erasure's conservative derived-record invalidation.
+        for table, _ in statements:
+            counts[table] = await conn.fetchval(
+                f"SELECT count(*) FROM {table} WHERE user_id=$1",
+                user_id,
+            )
+        roots = await conn.fetch("SELECT id FROM memories WHERE user_id=$1", user_id)
+        await _erase_synthetic_lineages(store, conn, user_id, [row["id"] for row in roots])
+        for _, statement in statements:
+            await conn.execute(statement, user_id)
     return counts
 
 

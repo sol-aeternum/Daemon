@@ -171,7 +171,9 @@ async def capture_for(store: Any, owner: UUID) -> Capture:
 
 @asynccontextmanager
 async def original_capture(store: Any, owner: UUID):
-    value = await capture(store, owner)
+    # Nested tools retain the request's original epoch, even after erasure.
+    # capture_for also rejects a foreign owner instead of replacing its origin.
+    value = await capture_for(store, owner)
     token = _capture.set(value)
     try:
         yield value
@@ -497,6 +499,7 @@ async def search(
     source_ids: list[UUID] | None = None,
     tier: str | None = None,
     memory_id: UUID | None = None,
+    match_any_term: bool = False,
 ):
     """All qualification precedes ranking/LIMIT; no current-text historical join."""
     if scope.watermark is None:
@@ -506,7 +509,12 @@ async def search(
         raise TemporalRefusal("invalid_knowledge_watermark")
     event_at = scope.event_at
     sql = """
-        WITH chosen AS (
+        WITH lexical_query AS (
+            SELECT CASE WHEN $15::bool
+                THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
+                      FROM unnest(tsvector_to_array(to_tsvector('english',$11))) AS lexeme)::tsquery
+                ELSE plainto_tsquery('english',$11) END AS tsq
+        ), chosen AS (
             SELECT DISTINCT ON(memory_id) r.* FROM memory_revisions r
             WHERE r.user_id=$1 AND r.sequence<=$2 AND ($14::uuid IS NULL OR r.memory_id=$14)
             ORDER BY memory_id,sequence DESC,ordinal DESC
@@ -540,12 +548,12 @@ async def search(
                e.id AS revision_id,e.segment_id,e.sequence AS knowledge_sequence,
                e.event_start,e.event_end,e.precision,
                CASE WHEN $10::vector IS NULL THEN 0 ELSE 1-(e.embedding<=>$10::vector) END AS similarity,
-               CASE WHEN $11::text IS NULL THEN 0 ELSE ts_rank(e.content_tsv,plainto_tsquery('english',$11)) END AS bm25_score
-        FROM eligible e
+               CASE WHEN $11::text IS NULL THEN 0 ELSE ts_rank(e.content_tsv,q.tsq) END AS bm25_score
+        FROM eligible e CROSS JOIN lexical_query q
         WHERE ($10::vector IS NULL OR (e.embedding IS NOT NULL AND e.embedding_model=$12))
-          AND ($11::text IS NULL OR e.content_tsv @@ plainto_tsquery('english',$11))
+          AND ($11::text IS NULL OR e.content_tsv @@ q.tsq)
         ORDER BY CASE WHEN $10::vector IS NOT NULL THEN e.embedding<=>$10::vector END ASC NULLS LAST,
-                 CASE WHEN $11::text IS NOT NULL THEN ts_rank(e.content_tsv,plainto_tsquery('english',$11)) END DESC,
+                 CASE WHEN $11::text IS NOT NULL THEN ts_rank(e.content_tsv,q.tsq) END DESC,
                  e.memory_id,e.segment_id
         LIMIT $13
     """
@@ -565,6 +573,7 @@ async def search(
         embedding_model,
         max(1, min(limit, 500)),
         memory_id,
+        match_any_term,
     )
     return [store._memory_row_to_dict(row) for row in rows]
 

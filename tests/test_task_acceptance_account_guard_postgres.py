@@ -28,7 +28,7 @@ from tests.durable_tasks_support import durable_env_fixture
 from tests.test_account_write_guard import blocked
 from tests.test_entity_enqueue_chain import entity_queue as entity_queue
 from tests.test_entity_producer_postgres import queued
-from tests.test_task_api_postgres import api as api
+from tests.test_task_api_postgres import api as api, _events
 
 env = durable_env_fixture(initialized=True)
 
@@ -787,9 +787,11 @@ async def test_durable_capable_bound_home_followup_retains_request_bound_context
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("eligibility", ["flag_off", "unsupported"])
-async def test_missing_account_capture_does_not_expand_new_acceptance_to_other_paths(
+async def test_missing_account_request_bound_chat_refuses_before_model_and_publication(
     api, monkeypatch, eligibility
 ):
+    from orchestrator.memory import revisions
+
     await api.env.pool.execute("DELETE FROM entitlement_accounts WHERE user_id=$1", api.env.alice)
     if eligibility == "flag_off":
         monkeypatch.setenv("DURABLE_CHAT_ENABLED", "false")
@@ -798,8 +800,52 @@ async def test_missing_account_capture_does_not_expand_new_acceptance_to_other_p
         api.client.headers.pop("X-Daemon-Client-Features")
     accept_spy = AsyncMock(side_effect=AssertionError("ineligible clients stay request bound"))
     monkeypatch.setattr(type(api.env.tasks), "accept", accept_spy)
+    # Retain the actual request-bound stream and account capture guard. Only the
+    # downstream provider is forbidden; a guard bypass must not manufacture a reply.
+    provider = AsyncMock(side_effect=AssertionError("missing account cannot dispatch a model"))
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", provider)
+    capture = AsyncMock(wraps=revisions.capture_generation)
+    monkeypatch.setattr(revisions, "capture_generation", capture)
     response = await api.client.post("/chat", json={"message": "hello"})
     assert response.status_code == 200 and "X-Daemon-Task-Id" not in response.headers
-    assert await counts(api.env) == (1, 2, 0, 0)
+    events = _events(response.text)
+    terminal = [
+        (kind, event["data"]) for kind, event in events if kind in {"final", "error", "done"}
+    ]
+    assert [kind for kind, _ in terminal] == ["final", "error", "done"]
+    assert terminal[0][1]["finish_reason"] == "error"
+    assert terminal[0][1]["message"]["content"] == ""
+    assert terminal[1][1]["code"] == "internal_error" and terminal[1][1]["retryable"] is False
+    assert terminal[2][1] == {"ok": False}
+    assert not any(kind in {"token", "tool_call", "tool_result", "task"} for kind, _ in events)
+    provider.assert_not_called()
+    capture.assert_awaited_once()
+    assert capture.await_args is not None
+    assert capture.await_args.args[1] == api.env.alice
+    # The already-saved original user message remains; no assistant success,
+    # derived payload, task or opportunistically provisioned account appears.
+    assert await counts(api.env) == (1, 1, 0, 0)
+    assert await api.env.pool.fetchval("SELECT count(*) FROM messages WHERE role!='user'") == 0
+    assert (
+        await api.env.pool.fetchval("SELECT count(*) FROM conversations WHERE summary IS NOT NULL")
+        == 0
+    )
+    for table in (
+        "memories",
+        "memory_revisions",
+        "memory_mutations",
+        "memory_knowledge_clock",
+        "memory_extraction_log",
+        "retrieval_log",
+        "entities",
+        "dream_log",
+    ):
+        assert await api.env.pool.fetchval(f"SELECT count(*) FROM {table}") == 0
+    assert (
+        await api.env.pool.fetchval(
+            "SELECT count(*) FROM entitlement_accounts WHERE user_id=$1", api.env.alice
+        )
+        == 0
+    )
     accept_spy.assert_not_called()
-    assert not any(name == "run_chat_task" for name, _, _ in api.redis.enqueued)
+    assert api.redis.enqueued == []

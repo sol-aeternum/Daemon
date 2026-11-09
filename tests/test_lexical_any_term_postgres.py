@@ -3,8 +3,9 @@
 import pytest
 
 from tests.durable_tasks_support import durable_env_fixture
+from tests.test_entity_account_guard_postgres import registered_sql
 
-env = durable_env_fixture()
+env = durable_env_fixture(initialized=True)
 
 QUESTION = "What book am I currently reading?"
 
@@ -80,10 +81,10 @@ async def _hidden_row(env, kind):
         ), {"include_local": True}
     row = await env.memory.insert_memory(env.alice, content, "fact", "manual")
     if kind == "deleted":
-        await env.pool.execute("UPDATE memories SET status = 'deleted' WHERE id = $1", row["id"])
+        await registered_sql(env, "UPDATE memories SET status = 'deleted' WHERE id = $1", row["id"])
         return row, None
     if kind == "historical":
-        await env.pool.execute("UPDATE memories SET valid_to = now() WHERE id = $1", row["id"])
+        await registered_sql(env, "UPDATE memories SET valid_to = now() WHERE id = $1", row["id"])
         return row, {"include_historical": True}
     raise AssertionError(kind)
 

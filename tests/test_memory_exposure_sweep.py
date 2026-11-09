@@ -448,14 +448,28 @@ class FakePool:
                 AND ($2::boolean OR local_only IS FALSE)
                 AND status = 'active' AND valid_to IS NULL ORDER BY created_at ASC
             """,
+            "summary": """
+                SELECT * FROM memory_current_assertions
+                WHERE user_id = $1 AND category = 'summary'
+                AND ($3::boolean OR local_only IS FALSE)
+                AND valid_to IS NULL AND status != 'deleted'
+                ORDER BY created_at DESC LIMIT $2
+            """,
         }
         assert kind in expected
         assert " ".join(sql.split()) == " ".join(expected[kind].split()), sql
         assert isinstance(args[0], uuid.UUID)
-        assert len(args) == {"vector": 10, "bm25": 11, "l0": 2}[kind]
-        boolean_positions = {"vector": (3, 4, 7), "bm25": (2, 3, 6, 9, 10), "l0": (1,)}
+        assert len(args) == {"vector": 10, "bm25": 11, "l0": 2, "summary": 3}[kind]
+        boolean_positions = {
+            "vector": (3, 4, 7),
+            "bm25": (2, 3, 6, 9, 10),
+            "l0": (1,),
+            "summary": (2,),
+        }
         assert all(type(args[pos]) is bool for pos in boolean_positions[kind])
-        if kind != "l0" and not (self._allows_unbounded_reference() and args[5] is None):
+        if kind == "summary":
+            assert type(args[1]) is int and args[1] > 0
+        elif kind != "l0" and not (self._allows_unbounded_reference() and args[5] is None):
             assert type(args[5]) is int and args[5] > 0
 
     async def fetchrow(self, sql, *args):
@@ -480,7 +494,9 @@ class FakePool:
             self.verify_current_projection(sql, args, "bm25")
             return []
         if "FROM memory_current_assertions" in sql:
-            self.verify_current_projection(sql, args, "l0")
+            self.verify_current_projection(
+                sql, args, "summary" if "category = 'summary'" in sql else "l0"
+            )
             return []
         if "FROM memories" in sql or "FROM entities" in sql:
             return []

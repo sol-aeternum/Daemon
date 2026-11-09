@@ -295,6 +295,7 @@ final_score = 0.5 × vector_sim + 0.3 × bm25_normalized + 0.2 × recency × con
 
 - **Vector search** via pgvector cosine distance (`embedding <=>`) — `voyage-4-lite` query model
 - **BM25 search** via PostgreSQL `ts_rank(content_tsv, plainto_tsquery)` — supports lexical/exact-match queries. When the pass has a query vector, every query term must match. When it has none (local or denied query embedding), the query's stemmed lexemes are ORed and `ts_rank` orders the candidates, so a whole question can still match a stored fact. Dedup always requires every term.
+- Explicit historical BM25 reads retain the same any-term/all-term choice over qualified revision segments; they never fall back to current text. Recent summary injection uses currently applicable assertion segments, not a scheduled future projection.
 - **Scoring factors:** recency (7d/30d/90d decay since last access, measured against the wall clock; only the LongMemEval harness pins that clock, via `RECENCY_REFERENCE_TIME`), source boost (`project`/`important` +10%), access count boost (up to +15%), confidence, trust score
 - **Minimum threshold:** final_score ≥ 0.15
 - **Max returned:** 5 memories
@@ -364,6 +365,13 @@ The item-limit override preserves the
 existing token budget. Component log rows store an empty query and no vector,
 with a nullable query role (migration 063); original-query plaintext is pre-existing (#663).
 See [the design and offline evaluation gates](docs/memory/multi_query_retrieval.md).
+
+Retrieval-log publication retains an owner-qualified account/erasure capture from
+before candidate reads, including detached and buffered component rows. The
+existing mutation transaction serializes capture validation and insertion with
+erasure; stale, foreign or absent publication origins are refused, not refreshed.
+Nested memory tools likewise retain the chat's original capture. This is scoped
+memory-derived persistence protection, not a completed account/request-output fence.
 
 ### 10. Queued entity projection
 
