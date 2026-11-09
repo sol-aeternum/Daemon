@@ -28,13 +28,22 @@ from orchestrator.resource_store import ReservedOutputPublisher, Publication
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks._invocation import InferenceInvocation, block
 from orchestrator.tasks.inference import InferenceRecovery
-from orchestrator.tasks.store import CancelOutcome, Claim, TaskStore
+from orchestrator.tasks.store import CancelOutcome, Claim, TaskStore, TaskControlled
 from orchestrator.tasks.states import TaskStatus
 
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
 from .artifact_projection import ArtifactHistoryProjection
-from .model import AcceptPrepare, ArtifactPrepare, Command, HistoryError, SendPossible, StopIntent
+from .terminal_projection import TerminalHistoryProjection
+from .model import (
+    AcceptPrepare,
+    ArtifactPrepare,
+    Command,
+    HistoryError,
+    SendPossible,
+    StopIntent,
+    TerminalOutputPrepare,
+)
 from .projection import compare_projections
 from .store import _check_time
 
@@ -56,7 +65,8 @@ class HistoryEffects:
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection) not in (HistoryProjection, ArtifactHistoryProjection)
+            or type(projection)
+            not in (HistoryProjection, ArtifactHistoryProjection, TerminalHistoryProjection)
             or history.profile != projection.profile
             or type(tasks._inference) is not InferenceRecovery
         ):
@@ -165,12 +175,17 @@ class HistoryEffects:
         return matches[0]
 
     @staticmethod
-    def _no_stop(state: Any, task: UUID) -> None:
+    def _no_stop(state: Any, task: UUID, *, positive: bool = True) -> None:
         if any(
             type(e.command.data) is StopIntent and e.command.data.task_id == task
             for e in state.entries
         ):
             raise HistoryError("historical_stop", uncertain=True)
+        if positive and any(
+            type(e.command.data) is TerminalOutputPrepare and e.command.data.task_id == task
+            for e in state.entries
+        ):
+            raise HistoryError("historical_terminal", uncertain=True)
 
     async def prepare_output(
         self,
@@ -525,7 +540,7 @@ class HistoryEffects:
         async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
             state = await self._parity(operation, deadline)
             accepted = self._accepted(state, account, task)
-            self._no_stop(state, task)
+            self._no_stop(state, task, positive=False)
 
             async def stage(conn: Any, row: Any, outcome: CancelOutcome) -> None:
                 origin = self._tasks._origin(row)
@@ -676,9 +691,67 @@ class HistoryEffects:
             if accepted.account_generation != binding.origin.generation:
                 raise HistoryError("effects_origin_refused")
             self._no_stop(state, task)
-            result = await self._tasks.complete(
-                task, epoch, content=content, message_fields=message_fields, binding=binding
-            )
+            projection = self._projection
+            if type(projection) is TerminalHistoryProjection:
+                fields = dict(message_fields or {})
+                if (binding.task_id, binding.epoch, binding.user_id, binding.result_message_id) != (
+                    task,
+                    epoch,
+                    accepted.account_id,
+                    accepted.result_message_id,
+                ):
+                    raise HistoryError("effects_origin_refused")
+                try:
+                    async with self._tasks._worker(
+                        task, epoch, binding, allow_interrupted=True
+                    ) as (conn, row):
+                        if await self._tasks._completion_control(conn, row):
+                            result = TaskStatus.NEEDS_ATTENTION
+                        else:
+                            await projection.qualify(conn, writing=False, deadline=deadline)
+                            ancestor = next(
+                                e.command.record_id
+                                for e in state.entries
+                                if type(e.command.data) is AcceptPrepare
+                                and e.command.data.task_id == task
+                            )
+                            prepared = await operation.append(
+                                Command(
+                                    uuid4(),
+                                    TerminalOutputPrepare(
+                                        accepted.account_id,
+                                        accepted.account_generation,
+                                        task,
+                                        accepted.result_message_id,
+                                        ancestor,
+                                        epoch,
+                                        "native-complete-body-v1",
+                                    ),
+                                )
+                            )
+                            if not prepared.created:
+                                raise HistoryError("historical_terminal", uncertain=True)
+                            _check_time(deadline)
+                            result = await self._tasks._stage_completed_body(
+                                conn,
+                                row,
+                                task,
+                                epoch,
+                                content=content,
+                                message_fields=fields,
+                            )
+                            if not (
+                                await projection.stage_terminal(
+                                    conn, prepared.entry, deadline=deadline
+                                )
+                            ).inserted:
+                                raise HistoryError("historical_terminal", uncertain=True)
+                except TaskControlled as controlled:
+                    result = controlled.status
+            else:
+                result = await self._tasks.complete(
+                    task, epoch, content=content, message_fields=message_fields, binding=binding
+                )
             _check_time(deadline)
         _check_time(deadline)
         return result
@@ -741,7 +814,10 @@ class HistoryEffects:
                 # snapshot grants filesystem effects.
                 prepared = None
                 projection = self._projection
-                if type(projection) is ArtifactHistoryProjection:
+                if (
+                    type(projection) is ArtifactHistoryProjection
+                    or type(projection) is TerminalHistoryProjection
+                ):
                     await projection.qualify_publisher(conn, deadline=deadline)
                     command = observed["_command"]
                     if (
@@ -789,7 +865,10 @@ class HistoryEffects:
                     _check_time(deadline)
                 result = await publisher._publish_reserved(conn, identity, intent_id, content)
                 if prepared is not None:
-                    assert type(projection) is ArtifactHistoryProjection
+                    assert (
+                        type(projection) is ArtifactHistoryProjection
+                        or type(projection) is TerminalHistoryProjection
+                    )
                     if not (
                         await projection.stage_artifact(conn, prepared.entry, deadline=deadline)
                     ).inserted:

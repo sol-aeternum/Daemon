@@ -13,7 +13,7 @@
       "category": "control",
       "owner_source": "migrations/057_restore_history_effects.sql",
       "ownership_path": "root:task_history_binding <- task_history_projection",
-      "rationale": "Approved closed H1 acceptance/send/Stop metadata, including account/task identities and possible-effect tuples. No content, cascade, pruning, live retention activation or dispatch permission. Uncalled synthetic boundary only; uncovered."
+      "rationale": "Closed immutable mixed-version acceptance/Send/Stop/catalog/completed-text prepare metadata. No content, cascade, pruning, live retention activation or dispatch permission. Source/synthetic boundary only; account lifecycle remains uncovered."
     },
     "task_history_binding": {
       "category": "control",
@@ -7034,7 +7034,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore._complete",
+      "qualname": "TaskStore._stage_completed_body",
       "kind": "sql_inline",
       "fingerprint": "402c026c33b75ace",
       "tables": [
@@ -7874,6 +7874,17 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Uninstalled artifact-v2 metadata qualification only; fixed SQL/string catalog construction remains outside bounded static resolution. Explicitly uncovered: no runtime authority, ordinary content permission, activation or restore readiness is claimed."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.terminal_projection",
+      "qualname": "<module>",
+      "kind": "filesystem_write",
+      "fingerprint": "3deb93e5ebdb7242",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "String-only closed catalog replacement retained as a conservative unresolved scanner candidate, not filesystem mutation or account-fence qualification. Uncalled terminal-v3 source; uncovered."
     }
   ]
 }

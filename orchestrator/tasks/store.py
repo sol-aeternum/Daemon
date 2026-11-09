@@ -2030,47 +2030,69 @@ class TaskStore:
     ) -> TaskStatus:
         fields = dict(message_fields or {})
         async with self._worker(task_id, epoch, binding, allow_interrupted=True) as (conn, row):
-            shared = invocation.get()
-            if shared is not None and shared.call_failed:
-                if not await self._quarantine(conn, row):
-                    raise ObservationBlocked("inference_coverage_unavailable")
+            if await self._completion_control(conn, row):
                 return TaskStatus.NEEDS_ATTENTION
-            status = TaskStatus.COMPLETED
-            metadata = dict(fields.pop("metadata", None) or {})
-            metadata["terminal_status"] = _MESSAGE_STATUS[status]
-            await _disclose_regeneration(conn, metadata, row)
-            if status is TaskStatus.CANCELLED:
-                # Cancelled rows leave history; keep any started action visible.
-                started = await self._started_tools(conn, task_id)
-                if started:
-                    metadata["uncertain_tools"] = started
-            await self._memory.update_message(
-                row["result_message_id"],
-                content=content,
-                status=_MESSAGE_STATUS[status],
-                metadata=metadata,
-                conn=conn,
-                **fields,
+            return await self._stage_completed_body(
+                conn, row, task_id, epoch, content=content, message_fields=fields
             )
-            code = "cancelled" if status is TaskStatus.CANCELLED else None
-            await self._end_attempt(
-                conn, task_id, epoch, _ATTEMPT_OUTCOME[status], code, row["result_message_id"]
-            )
-            await conn.execute(
-                """
-                UPDATE tasks
-                SET status = $2, terminal_code = $3, finished_at = now(), updated_at = now(),
-                    lease_owner = NULL, lease_expires_at = NULL
-                WHERE id = $1
-                """,
-                task_id,
-                status.value,
-                code,
-            )
-            await self._append_event(
-                conn, task_id, "finished", {"status": status.value, "code": code}
-            )
-            return status
+
+    async def _completion_control(self, conn: Any, row: Any) -> bool:
+        """Existing quarantine prelude; not a completed-text publication."""
+        shared = invocation.get()
+        if shared is not None and shared.call_failed:
+            if not await self._quarantine(conn, row):
+                raise ObservationBlocked("inference_coverage_unavailable")
+            return True
+        return False
+
+    async def _stage_completed_body(
+        self,
+        conn: Any,
+        row: Any,
+        task_id: uuid.UUID,
+        epoch: int,
+        *,
+        content: str,
+        message_fields: dict[str, Any] | None,
+    ) -> TaskStatus:
+        """Fixed body on the caller's guarded transaction; never commits/releases."""
+        if not conn.is_in_transaction():
+            raise ObservationBlocked("terminal_transaction_required")
+        fields = dict(message_fields or {})
+        status = TaskStatus.COMPLETED
+        metadata = dict(fields.pop("metadata", None) or {})
+        metadata["terminal_status"] = _MESSAGE_STATUS[status]
+        await _disclose_regeneration(conn, metadata, row)
+        if status is TaskStatus.CANCELLED:
+            # Cancelled rows leave history; keep any started action visible.
+            started = await self._started_tools(conn, task_id)
+            if started:
+                metadata["uncertain_tools"] = started
+        await self._memory.update_message(
+            row["result_message_id"],
+            content=content,
+            status=_MESSAGE_STATUS[status],
+            metadata=metadata,
+            conn=conn,
+            **fields,
+        )
+        code = "cancelled" if status is TaskStatus.CANCELLED else None
+        await self._end_attempt(
+            conn, task_id, epoch, _ATTEMPT_OUTCOME[status], code, row["result_message_id"]
+        )
+        await conn.execute(
+            """
+            UPDATE tasks
+            SET status = $2, terminal_code = $3, finished_at = now(), updated_at = now(),
+                lease_owner = NULL, lease_expires_at = NULL
+            WHERE id = $1
+            """,
+            task_id,
+            status.value,
+            code,
+        )
+        await self._append_event(conn, task_id, "finished", {"status": status.value, "code": code})
+        return status
 
     async def fail_attempt(
         self,
