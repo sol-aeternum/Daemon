@@ -19,6 +19,7 @@ from orchestrator.config import get_settings  # noqa: E402
 from orchestrator.memory.store import MemoryStore  # noqa: E402
 from orchestrator.model_routing import routing_context  # noqa: E402
 from orchestrator.services.account_control.guard import CapturedGeneration  # noqa: E402
+from orchestrator.memory.temporal import EventScope, aware  # noqa: E402
 
 # Structured fact extraction is a short unattended workload.
 EXTRACTION_PROFILE = "background"
@@ -147,6 +148,7 @@ class ExtractedFact:
     category: str  # 'fact', 'preference', 'project', 'summary'
     confidence: float
     slot: str | None = None
+    event_scope: EventScope | None = None
 
 
 @dataclass
@@ -284,10 +286,20 @@ Return JSON object with exactly one key:
       "content": "<single atomic fact>",
       "category": "fact|preference|project|correction|summary",
       "confidence": 0.0,
-      "slot": "<optional canonical slot, e.g. vehicle, location.city, allergy.shellfish, project.daemon>"
+      "slot": "<optional canonical slot, e.g. vehicle, location.city, allergy.shellfish, project.daemon>",
+      "event_scope": {{"start": null, "end": null, "start_kind": "unknown", "end_kind": "unknown", "precision": "unknown", "expression": "<original time expression, if any>"}}
     }}
   ]
 }}
+
+Event-time evidence:
+- event_scope is optional; omit it when no event-time expression exists.
+- Preserve original date/relative/approximate expressions and uncertainty. Date-only,
+  month-only, missing timezone and ambiguous local times are NOT exact instants.
+- Exact bounds require complete offset-bearing timestamps explicitly in this excerpt.
+  Never invent a start, end, duration, midnight or timezone. Unknown is not unbounded.
+- Event times are NOT knowledge times. Never emit a known_at or inferred correction/
+  replacement relationship. Different/uncertain facts remain separate assertions.
 
 Implicit preferences:
 - Users reveal preferences through choices and behavior, not just direct statements.
@@ -391,6 +403,7 @@ def calibrate_confidence(fact: ExtractedFact) -> ExtractedFact:
         category=fact.category,
         confidence=fact.confidence,
         slot=fact.slot,
+        event_scope=fact.event_scope,
     )
 
     if calibrated.category == "correction":
@@ -461,6 +474,38 @@ def validate_fact(fact: ExtractedFact) -> bool:
             logger.debug("Extraction validation rejected fact: meta content pattern")
             return False
     return True
+
+
+def extracted_event_scope(raw: Any, source_text: str) -> EventScope | None:
+    """Model output cannot invent exact offsets/bounds absent from its source."""
+    if not isinstance(raw, dict):
+        return None
+    expression = raw.get("expression")
+    expression = expression[:2000] if isinstance(expression, str) else None
+    try:
+        scope = EventScope.model_validate(raw)
+        if scope.precision == "exact":
+            evidence = set()
+            for token in re.findall(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})",
+                source_text,
+            ):
+                try:
+                    evidence.add(aware(datetime.fromisoformat(token.replace("Z", "+00:00"))))
+                except ValueError:
+                    continue
+            bounds = [bound for bound in (scope.start, scope.end) if bound is not None]
+            if not bounds or any(bound not in evidence for bound in bounds):
+                return EventScope(expression=expression, precision="unknown")
+        return scope
+    except ValueError:
+        precision = raw.get("precision")
+        return EventScope(
+            expression=expression,
+            precision=precision
+            if precision in ("date", "month", "year", "approximate")
+            else "unknown",
+        )
 
 
 async def extract_facts_from_text(
@@ -680,6 +725,9 @@ async def extract_facts_from_text(
                             item.get("confidence", DEFAULT_EXTRACTED_CONFIDENCE)
                         ),
                         slot=item.get("slot"),
+                        event_scope=extracted_event_scope(
+                            item.get("event_scope"), text[-MAX_EXTRACTION_INPUT_CHARS:]
+                        ),
                     )
                 )
 

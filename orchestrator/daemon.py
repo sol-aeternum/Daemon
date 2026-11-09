@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from orchestrator.memory.revisions import scoped_stream
+from orchestrator.memory.temporal import TemporalReadScope
+
 # pyright: reportMissingImports=false
 
 import asyncio
@@ -327,6 +330,7 @@ def _summary_job_payload(captured: CapturedGeneration | None, user_id: Any) -> d
     }
 
 
+@scoped_stream
 async def stream_sse_chat(
     settings: Settings,
     provider_config: ProviderConfig,
@@ -353,6 +357,7 @@ async def stream_sse_chat(
     message_sink: Any = None,
     tool_guard: Callable[[Any], None] | None = None,
     summary_generation: CapturedGeneration | None = None,
+    temporal_scope: TemporalReadScope | None = None,
 ) -> AsyncIterator[str]:
     """Stream one chat turn as SSE frames.
 

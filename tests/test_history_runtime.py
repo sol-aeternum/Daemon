@@ -275,7 +275,15 @@ async def test_selected_unready_host_refuses_even_audited_route_and_legacy_is_un
 async def test_h_lifespan_has_auth_but_no_producer_jobs_and_closes_on_startup_failure(monkeypatch):
     from orchestrator import main
 
-    state = SimpleNamespace(settings=selected(), history_runtime=object(), db_pool=object())
+    async def schema_present(sql):
+        assert "to_regclass('memory_mutations')" in sql
+        return True
+
+    state = SimpleNamespace(
+        settings=selected(),
+        history_runtime=object(),
+        db_pool=SimpleNamespace(fetchval=schema_present),
+    )
     monkeypatch.setattr(main.app.state, "app_state", state, raising=False)
     monkeypatch.setattr(main.app.state, "settings", state.settings, raising=False)
     events = []

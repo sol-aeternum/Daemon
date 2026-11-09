@@ -193,6 +193,7 @@ async def test_update_conversation_summary_persists_baseline_atomically() -> Non
     updated = await store.update_conversation_summary(
         conversation_id,
         summary="summary",
+        expected_memory_erasure_epoch=0,
         expected_summary_updated_at=summary_time,
         summarized_message_count=42,
         captured_generation=captured,
@@ -238,6 +239,7 @@ async def test_update_conversation_summary_persists_snapshot_timestamp() -> None
     updated = await store.update_conversation_summary(
         conversation_id,
         summary="summary",
+        expected_memory_erasure_epoch=0,
         expected_summary_updated_at=summary_time,
         summarized_message_count=42,
         summary_snapshot_at=snapshot,
@@ -330,6 +332,13 @@ class _SeamConn:
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         upper = " ".join(query.split()).upper()
+        if "ERASURE_EPOCH" in upper:
+            self._record("fetchval", "erasure_epoch", query, args)
+            return 0
+        if "CLOCK_TIMESTAMP()" in upper:
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+        if "SELECT SEQUENCE FROM MEMORY_MUTATIONS" in upper:
+            return 1
         if "TXID_CURRENT" in upper:
             self._record("fetchval", "txid", query, args)
             return self.xid
@@ -346,6 +355,12 @@ class _SeamConn:
 
     async def fetchrow(self, query: str, *args: Any) -> Any:
         upper = " ".join(query.split()).upper()
+        if "FROM MEMORY_KNOWLEDGE_CLOCK" in upper:
+            return {
+                "account_generation": 7,
+                "erasure_epoch": 0,
+                "last_clock_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            }
         if "ENTITLEMENT_ACCOUNTS" in upper:
             self._record("fetchrow", "account_for_share", query, args)
             return dict(self.account)
@@ -362,6 +377,23 @@ class _SeamConn:
             self._record("fetchrow", "update", query, args)
             return self.update_row
         raise AssertionError(f"unexpected fetchrow: {query!r}")
+
+    async def execute(self, query: str, *args: Any) -> str:
+        assert any(
+            token in query
+            for token in (
+                "pg_advisory_xact_lock",
+                "INSERT INTO memory_knowledge_clock",
+                "UPDATE memory_mutations",
+            )
+        ), query
+        self._record("execute", "revision_registration", query, args)
+        return "SELECT 1"
+
+    async def fetch(self, query: str, *args: Any) -> list:
+        assert "FROM memory_erased_sources" in query
+        self._record("fetch", "erased_sources", query, args)
+        return []
 
     def _record(self, kind: str, label: str, query: str, args: tuple) -> None:
         event = (kind, label)

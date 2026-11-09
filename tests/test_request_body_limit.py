@@ -12,6 +12,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from orchestrator.config import Settings
 from orchestrator.request_body_limit import RequestBodyLimitMiddleware, _RequestBodyTooLarge
+from tests.test_chat_rate_limit import chat_client as chat_client
+from tests.test_identity_rate_limiter import FakeRedis
 
 MIB = 1024 * 1024
 APPROVED_GLOBAL_LIMIT = 50 * MIB
@@ -333,18 +335,25 @@ async def test_production_stack_rejects_declared_oversized_bodies(
     path: str,
     content_length: int,
     expected_limit: int,
+    chat_client: AsyncClient,
 ) -> None:
     from orchestrator.main import app
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as client:
-        response = await client.post(
-            path,
-            content=b"",
-            headers={"Content-Length": str(content_length)},
-        )
+    # The existing chat fixture supplies AppState and a fresh strict Redis
+    # double. Keep both the actual pre-body IP limiter and body middleware;
+    # ASGITransport alone does not enter lifespan or install AppState.
+    response = await chat_client.post(
+        path,
+        content=b"",
+        headers={"Content-Length": str(content_length)},
+    )
 
     assert response.status_code == 413
     assert response.json()["max_bytes"] == expected_limit
+    redis = cast(FakeRedis, app.state.app_state.redis)
+    if path in {"/chat", "/chat/completions", "/v1/chat/completions"}:
+        assert len(redis.script.calls) == 1
+        assert len(redis.store) == 1
+        assert next(iter(redis.store.values()))[0] == 1
+    else:
+        assert redis.store == {}

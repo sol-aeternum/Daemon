@@ -780,6 +780,9 @@ async def test_dedup_guard_actual_source_and_local_fact_no_embedding(monkeypatch
     from orchestrator.memory import dedup
 
     store = MagicMock()
+    from tests.memory_capture_support import install_capture_pool
+
+    install_capture_pool(store)
     store.get_conversation = AsyncMock(
         return_value={"user_id": installed.scope.user_id, "pipeline": "local"}
     )
@@ -832,6 +835,9 @@ async def test_outer_http_scope_reuses_same_user_never_nests(monkeypatch, instal
 
     monkeypatch.setattr(memories, "account_compute", forbidden)
     app_state = SimpleNamespace(memory_store=SimpleNamespace(_pool=object()))
+    from tests.memory_capture_support import install_capture_pool
+
+    install_capture_pool(app_state.memory_store)
     auth = SimpleNamespace(user_id=installed.scope.user_id)
     gen = memories._embedding_account_scope(cast(Any, app_state), cast(Any, auth))
     await anext(gen)
@@ -845,6 +851,9 @@ async def test_outer_http_scope_established_for_unscoped_writer(monkeypatch, ins
 
     monkeypatch.setattr(runtime, "EntitlementService", lambda pool: installed.service)
     app_state = SimpleNamespace(memory_store=SimpleNamespace(_pool=object()))
+    from tests.memory_capture_support import install_capture_pool
+
+    install_capture_pool(app_state.memory_store)
     auth = SimpleNamespace(user_id=installed.scope.user_id)
     token = runtime._scope.set(None)
     try:
@@ -856,6 +865,9 @@ async def test_outer_http_scope_established_for_unscoped_writer(monkeypatch, ins
             pass
         assert installed.service.reserve.await_args.kwargs["scope_id"] == active.scope_id
         await gen.aclose()
+        with pytest.raises(runtime.ComputeUnavailable) as error:
+            runtime.current_scope()
+        assert error.value.code == "account_unavailable"
     finally:
         runtime._scope.reset(token)
 

@@ -268,6 +268,7 @@ async def _generate_or_update_summary_result(
             summary=summary,
             expected_summary_updated_at=summary_updated_at,
             summarized_message_count=claimed_message_count,
+            expected_memory_erasure_epoch=conversation["memory_erasure_epoch"],
             summary_snapshot_at=iteration_snapshot,
             summary_continuation_pending=pre_persist_continuation or conversation["has_hole"],
             captured_generation=captured_generation,

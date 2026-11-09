@@ -13,6 +13,7 @@ asyncpg.
 from __future__ import annotations
 
 import uuid
+from inspect import unwrap
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,8 +63,11 @@ async def test_close_memory_returns_affected_row_result_without_user_scope() -> 
     pool.fetchval = AsyncMock(side_effect=[memory_id, None])
     store = _memory_store(pool)
 
-    assert await store.close_memory(memory_id) is True
-    assert await store.close_memory(memory_id) is False
+    # SQL-only unit contract; capture/transaction fencing is qualified by the
+    # real PostgreSQL writer suites rather than this executor double.
+    close = unwrap(MemoryStore.close_memory)
+    assert await close(store, memory_id) is True
+    assert await close(store, memory_id) is False
 
     for call in pool.fetchval.await_args_list:
         sql = call.args[0]
@@ -83,8 +87,9 @@ async def test_close_memory_returns_affected_row_result_with_user_scope() -> Non
     pool.fetchval = AsyncMock(side_effect=[memory_id, None])
     store = _memory_store(pool)
 
-    assert await store.close_memory(memory_id, user_id=user_id) is True
-    assert await store.close_memory(memory_id, user_id=user_id) is False
+    close = unwrap(MemoryStore.close_memory)
+    assert await close(store, memory_id, user_id=user_id) is True
+    assert await close(store, memory_id, user_id=user_id) is False
 
     for call in pool.fetchval.await_args_list:
         sql = call.args[0]

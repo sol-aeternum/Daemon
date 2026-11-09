@@ -30,6 +30,16 @@ from orchestrator.memory.embedding import (
     get_selected_embedding_route_id,
 )
 from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
+from orchestrator.memory.revisions import (
+    current_read_scope,
+    pool_for,
+    search as search_revisions,
+    semantic_write,
+    trace_write,
+    capture_for,
+    mutation,
+)
+from orchestrator.memory.temporal import EventScope
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -91,11 +101,21 @@ class MemoryStore:
     """
 
     def __init__(self, db_pool: asyncpg.Pool, encryption: ContentEncryption) -> None:
-        self._pool = db_pool
+        self._database_pool = db_pool
         self._enc = encryption
         # Only the explicit isolated task factory binds this; defaults stay inert.
         self._task_composition: object | None = None
         self._resource_inputs: Any = None
+
+    @property
+    def _pool(self) -> Any:
+        return pool_for(self)
+
+    @_pool.setter
+    def _pool(self, value: Any) -> None:
+        # Preserve existing explicitly injected test/store executors. Runtime
+        # mutation binding remains task-local and does not use this setter.
+        self._database_pool = value
 
     @property
     def encryption(self) -> ContentEncryption:
@@ -200,6 +220,7 @@ class MemoryStore:
               AND local_only = $3
               AND status = 'active'
               AND valid_to IS NULL
+              AND NOT provenance_unknown
             ORDER BY created_at ASC
             LIMIT 1
             """,
@@ -244,17 +265,23 @@ class MemoryStore:
                     row["id"],
                     exc_info=True,
                 )
-                await self._pool.execute(
-                    """
-                    UPDATE memories
-                    SET valid_to = NOW(),
-                        updated_at = NOW()
-                    WHERE id = $1
-                      AND content_hash IS NULL
-                      AND valid_to IS NULL
-                    """,
-                    row["id"],
+                owner = await self._pool.fetchval(
+                    "SELECT user_id FROM memories WHERE id=$1", row["id"]
                 )
+                if owner is None:
+                    continue
+                async with mutation(self, await capture_for(self, owner)) as conn:
+                    await conn.execute(
+                        """
+                        UPDATE memories
+                        SET valid_to = NOW(),
+                            updated_at = NOW()
+                        WHERE id = $1
+                          AND content_hash IS NULL
+                          AND valid_to IS NULL
+                        """,
+                        row["id"],
+                    )
                 continue
             if result == "UPDATE 1":
                 backfilled += 1
@@ -648,42 +675,39 @@ class MemoryStore:
             if running is not None:
                 raise ConversationBusy(running)
             return deleted
-        result = await self._pool.execute(
-            "DELETE FROM conversations WHERE id = $1",
-            conversation_id,
+        from orchestrator.memory.revisions import capture, mutation
+
+        owner = user_id or await self._pool.fetchval(
+            "SELECT user_id FROM conversations WHERE id=$1", conversation_id
         )
+        if owner is None:
+            return False
+        original = await capture(self, owner)
+        async with mutation(self, original) as conn:
+            result = await conn.execute(
+                "DELETE FROM conversations WHERE id = $1 AND user_id=$2", conversation_id, owner
+            )
         return result == "DELETE 1"
 
     async def run_garbage_collect(self) -> dict[str, int]:
         """Physically delete expired non-active memory rows."""
-        scanned = await self._pool.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
+        rows = await self._pool.fetch(
+            "SELECT m.id,m.user_id FROM memories m LEFT JOIN memory_tombstones t "
+            "ON t.user_id=m.user_id AND t.memory_id=m.id WHERE "
+            "(t.purge_after IS NOT NULL AND t.purge_after<=clock_timestamp()) "
+            "OR (t.memory_id IS NULL AND ((m.status='inactive' AND m.updated_at<clock_timestamp()-interval '90 days') "
+            "OR (m.status IN ('pending','rejected','deleted') AND m.updated_at<clock_timestamp()-interval '30 days')))"
         )
-
-        result = await self._pool.execute(
-            """
-            DELETE FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-        deleted = int(result.split()[-1]) if result else 0
-        return {"scanned": int(scanned or 0), "deleted": deleted}
+        deleted = 0
+        for row in rows:
+            deleted += int(await self.delete_memory(row["id"], user_id=row["user_id"], soft=False))
+        return {"scanned": len(rows), "deleted": deleted}
 
     # ------------------------------------------------------------------
     # Message operations
     # ------------------------------------------------------------------
 
+    @trace_write
     async def insert_message(
         self,
         conversation_id: uuid.UUID,
@@ -1233,13 +1257,32 @@ class MemoryStore:
                 assert batch is not None
                 result.update(dict(batch))
                 result["persisted_baseline"] = baseline
+                result["memory_erasure_epoch"] = int(
+                    await conn.fetchval(
+                        "SELECT erasure_epoch FROM memory_knowledge_clock WHERE user_id=$1",
+                        captured_generation.account_id,
+                    )
+                    or 0
+                )
                 result["snapshot_at"] = snapshot
                 raw_messages = batch["messages"]
                 messages = (
                     json.loads(raw_messages) if isinstance(raw_messages, str) else raw_messages
                 )
+                erased_rows = await conn.fetch(
+                    "SELECT source_id FROM memory_erased_sources WHERE user_id=$1 AND source_kind='message' "
+                    "AND source_id=ANY($2::uuid[])",
+                    captured_generation.account_id,
+                    [uuid.UUID(str(m["id"])) for m in messages],
+                )
+                erased = {str(r["source_id"]) for r in erased_rows}
                 result["messages"] = [
-                    {**message, "content": self._enc.decrypt(message["content"])}
+                    {
+                        **message,
+                        "content": ""
+                        if str(message["id"]) in erased
+                        else self._enc.decrypt(message["content"]),
+                    }
                     for message in messages
                 ]
                 return result
@@ -1330,6 +1373,7 @@ class MemoryStore:
         summary_snapshot_at: datetime | None = None,
         summary_continuation_pending: bool = False,
         captured_generation: CapturedGeneration,
+        expected_memory_erasure_epoch: int | None = None,
     ) -> bool:
         """Atomically persist a summary and its finalized-message baseline.
 
@@ -1351,6 +1395,15 @@ class MemoryStore:
             snapshot_iso = summary_snapshot_at.isoformat()
         async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
             async with guard_content_write(conn, captured_generation):
+                from orchestrator.memory.revisions import Capture, enter
+
+                if expected_memory_erasure_epoch is None:
+                    raise ValueError(
+                        "Summary publication requires its original memory erasure epoch"
+                    )
+                await enter(
+                    conn, Capture(captured_generation, expected_memory_erasure_epoch), ordered=True
+                )
                 row = await conn.fetchrow(
                     """
             UPDATE conversations
@@ -1388,6 +1441,7 @@ class MemoryStore:
                 )
         return row is not None
 
+    @trace_write
     async def update_message(
         self,
         message_id: uuid.UUID,
@@ -1760,6 +1814,7 @@ class MemoryStore:
     # Memory operations
     # ------------------------------------------------------------------
 
+    @semantic_write
     async def insert_memory(
         self,
         user_id: uuid.UUID,
@@ -1776,6 +1831,7 @@ class MemoryStore:
         memory_slot: str | None = None,
         metadata: dict[str, Any] | None = None,
         conn: Any | None = None,
+        event_scope: EventScope | None = None,
     ) -> dict[str, Any]:
         memory, _ = await self._insert_memory_with_outcome(
             user_id,
@@ -1791,9 +1847,11 @@ class MemoryStore:
             memory_slot=memory_slot,
             metadata=metadata,
             conn=conn,
+            event_scope=event_scope,
         )
         return memory
 
+    @semantic_write
     async def _insert_memory_with_outcome(
         self,
         user_id: uuid.UUID,
@@ -1811,6 +1869,7 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
         conn: Any | None = None,
         row_qualifier: Any | None = None,
+        event_scope: EventScope | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Internal reliable INSERT/reuse disposition; public row shape is unchanged."""
         encrypted_content = self._enc.encrypt(content)
@@ -1823,6 +1882,13 @@ class MemoryStore:
         # 040), so an omitted/None ``metadata`` must still land as a real
         # empty JSON object rather than a NULL that would violate the column.
         metadata_json = json.dumps(metadata if metadata is not None else {})
+        temporal_spec = json.dumps(event_scope.storage()) if event_scope else "{}"
+        temporal_key = event_scope.fingerprint() if event_scope else "untimed"
+        expression = (
+            self._enc.encrypt(event_scope.expression)
+            if event_scope and event_scope.expression
+            else None
+        )
 
         # When ``conn`` is supplied, every SQL call in this method runs
         # on that connection inside the caller's transaction. This is
@@ -1842,8 +1908,9 @@ class MemoryStore:
                 INSERT INTO memories
                     (user_id, content, content_hash, content_tsv, embedding, embedding_model,
                      category, source_type, source_conversation_id, local_only, confidence,
-                     status, memory_slot, metadata)
-                VALUES ($1, $2, $3, to_tsvector('english', $14), $4::vector, $5, $6, $7, (SELECT id FROM conversations WHERE id = $8), $9, $10, $11, $12, $13)
+                     status, memory_slot, metadata,temporal_spec,temporal_scope_hash,
+                     temporal_expression_ciphertext,provenance_unknown)
+                VALUES ($1, $2, $3, to_tsvector('english', $14), $4::vector, $5, $6, $7, (SELECT id FROM conversations WHERE id = $8 AND user_id=$1), $9, $10, $11, $12, $13,$15::jsonb,$16,$17,$18)
                 ON CONFLICT DO NOTHING
                 RETURNING *
                 """,
@@ -1861,6 +1928,11 @@ class MemoryStore:
                 memory_slot,
                 metadata_json,
                 content,  # plaintext for tsvector computation
+                temporal_spec,
+                temporal_key,
+                expression,
+                source_conversation_id is None
+                and source_type not in ("manual", "import", "user_created"),
             )
 
         try:
@@ -1887,11 +1959,14 @@ class MemoryStore:
                 SELECT * FROM memories
                 WHERE user_id = $1 AND content_hash = $2
                   AND local_only = $3 AND status = 'active' AND valid_to IS NULL
+                  AND temporal_scope_hash=$4
+                  AND NOT provenance_unknown
                 ORDER BY created_at ASC LIMIT 1
                 """,
                 user_id,
                 content_hash,
                 local_only,
+                temporal_key,
             )
             if row is None:
                 raise RuntimeError("insert_memory: conflict returned no active duplicate")
@@ -2036,6 +2111,11 @@ class MemoryStore:
             # transaction-scoped advisory lock would be released as soon
             # as the SELECT completed, reopening the TOCTOU race.
             await conn.execute("BEGIN")
+            from orchestrator.memory.revisions import capture_for, enter
+
+            original = await capture_for(self, user_id)
+            async with guard_content_write(conn, original.origin):
+                await enter(conn, original, ordered=True)
             await conn.execute(
                 "SELECT pg_advisory_xact_lock($1::int, $2::int)",
                 classid,
@@ -2104,10 +2184,22 @@ class MemoryStore:
         )
         return int(row["count"]) if row else 0
 
-    async def get_memory(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
+    async def get_memory(
+        self, memory_id: uuid.UUID, *, user_id: uuid.UUID | None = None
+    ) -> dict[str, Any] | None:
+        scope = current_read_scope()
+        if scope is not None:
+            if scope.watermark is None:
+                raise ValueError("Resolved parent knowledge watermark required")
+            owner = user_id or scope.watermark.user_id
+            rows = await search_revisions(self, owner, scope, memory_id=memory_id, limit=1)
+            return rows[0] if rows else None
         row = await self._pool.fetchrow(
-            "SELECT * FROM memories WHERE id = $1",
+            "SELECT * FROM memories WHERE id = $1 AND status!='deleted' "
+            "AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.user_id=memories.user_id AND t.memory_id=memories.id) "
+            "AND ($2::uuid IS NULL OR user_id=$2)",
             memory_id,
+            user_id,
         )
         if not row:
             return None
@@ -2132,7 +2224,7 @@ class MemoryStore:
 
         One builder keeps a page and its total on identical predicates.
         """
-        conditions = ["user_id = $1", "($2::bool OR local_only = FALSE)"]
+        conditions = ["user_id = $1", "($2::bool OR local_only = FALSE)", "status!='deleted'"]
         params: list[Any] = [user_id, include_local]
         if category is not None:
             params.append(category)
@@ -2248,6 +2340,7 @@ class MemoryStore:
             results.append(d)
         return results
 
+    @semantic_write
     async def update_memory_content(
         self,
         memory_id: uuid.UUID,
@@ -2261,6 +2354,12 @@ class MemoryStore:
         user_id: uuid.UUID | None = None,
         require_content_hash: bool = False,
         expected_content_hash: str | None = None,
+        expected_revision_id: uuid.UUID | None = None,
+        event_scope: EventScope | None = None,
+        relationship: str = "correction",
+        conn: Any | None = None,
+        expected_source_pipeline: str | None = None,
+        memory_slot: str | None = None,
     ) -> dict[str, Any] | None:
         """Replace a memory's content in one write.
 
@@ -2274,12 +2373,26 @@ class MemoryStore:
         matching the old text. With neither, the vector is left as is.
         ``user_id`` additionally scopes the write to its owner.
         """
+        if expected_source_pipeline is not None:
+            source = await self._pool.fetchrow(
+                "SELECT c.id FROM memories m JOIN conversations c ON c.id=m.source_conversation_id "
+                "WHERE m.id=$1 AND m.user_id=$2 AND c.user_id=$2 AND c.pipeline=$3 FOR SHARE OF c",
+                memory_id,
+                user_id,
+                expected_source_pipeline,
+            )
+            if source is None:
+                return None
         encrypted_content = self._enc.encrypt(content)
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_model = (
             (embedding_model or _default_embedding_model()) if embedding_str is not None else None
         )
+        if relationship not in ("correction", "world_change"):
+            raise ValueError("Explicit update relationship must be correction or world_change")
+        if relationship == "world_change" and (event_scope is None or event_scope.start is None):
+            raise ValueError("World change requires an exact event start")
         try:
             row = await self._pool.fetchrow(
                 """
@@ -2297,12 +2410,19 @@ class MemoryStore:
                     END,
                     confidence = COALESCE($4, confidence),
                     category   = COALESCE($9, category),
+                    memory_slot = COALESCE($18,memory_slot),
                     content_tsv = to_tsvector('english', $5),
                     content_hash = $6,
-                    updated_at = NOW()
+                    updated_at = NOW(),
+                    revision_kind=$14,
+                    temporal_spec=COALESCE($15::jsonb,temporal_spec),
+                    temporal_scope_hash=COALESCE($16,temporal_scope_hash),
+                    temporal_expression_ciphertext=CASE WHEN $15::jsonb IS NULL THEN temporal_expression_ciphertext ELSE $17 END
                 WHERE id = $1
                   AND ($10::uuid IS NULL OR user_id = $10)
                   AND (NOT $11::bool OR content_hash IS NOT DISTINCT FROM $12)
+                  AND ($13::uuid IS NULL OR head_revision_id=$13)
+                  AND status!='deleted'
                 RETURNING *
                 """,
                 memory_id,
@@ -2317,6 +2437,14 @@ class MemoryStore:
                 user_id,
                 require_content_hash,
                 expected_content_hash,
+                expected_revision_id,
+                relationship,
+                json.dumps(event_scope.storage()) if event_scope else None,
+                event_scope.fingerprint() if event_scope else None,
+                self._enc.encrypt(event_scope.expression)
+                if event_scope and event_scope.expression
+                else None,
+                memory_slot,
             )
         except asyncpg.UniqueViolationError as exc:
             raise MemoryContentConflictError(
@@ -2373,11 +2501,14 @@ class MemoryStore:
             confidence=confidence,
         )
 
+    @semantic_write
     async def update_memory_status(
         self,
         memory_id: uuid.UUID,
         status: str,
     ) -> bool:
+        if status == "deleted":
+            return await self.delete_memory(memory_id)
         if status == "active":
             row = await self._pool.fetchrow(
                 "SELECT content, content_hash FROM memories WHERE id = $1",
@@ -2422,10 +2553,13 @@ class MemoryStore:
         status = "active" if confirmed else "rejected"
         return await self.update_memory_status(memory_id, status)
 
+    @semantic_write
     async def update_memory_tier(
         self,
         memory_id: uuid.UUID,
         tier: str,
+        *,
+        expected_revision_id: uuid.UUID | None = None,
     ) -> bool:
         """Update the tier of a memory (l0, l1, or l2)."""
         if tier not in ("l0", "l1", "l2"):
@@ -2434,17 +2568,21 @@ class MemoryStore:
             """
             UPDATE memories
             SET tier = $2, updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND ($3::uuid IS NULL OR head_revision_id=$3) AND status!='deleted'
             """,
             memory_id,
             tier,
+            expected_revision_id,
         )
         return result == "UPDATE 1"
 
+    @semantic_write
     async def update_memory_metadata(
         self,
         memory_id: uuid.UUID,
         metadata: dict[str, Any],
+        *,
+        expected_revision_id: uuid.UUID | None = None,
     ) -> bool:
         """Update metadata fields on a memory (merged/patched with existing)."""
         result = await self._pool.execute(
@@ -2452,13 +2590,51 @@ class MemoryStore:
             UPDATE memories
             SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND ($3::uuid IS NULL OR head_revision_id=$3) AND status!='deleted'
             """,
             memory_id,
             json.dumps(metadata),
+            expected_revision_id,
         )
         return result == "UPDATE 1"
 
+    @semantic_write
+    async def publish_derived_memory(
+        self,
+        user_id: uuid.UUID,
+        content: str,
+        category: str,
+        source_type: str,
+        *,
+        parents: list[dict[str, Any]],
+        metadata=None,
+        **kwargs,
+    ):
+        from orchestrator.memory.lineage import depend
+
+        # Validate parent revisions before inserting anything; all publication
+        # and dependency edges share this transaction and erasure capture.
+        for parent in sorted(parents, key=lambda p: str(p["id"])):
+            row = await self._pool.fetchrow(
+                "SELECT head_revision_id,status FROM memories WHERE user_id=$1 AND id=$2 FOR SHARE",
+                user_id,
+                parent["id"],
+            )
+            if (
+                row is None
+                or row["status"] == "deleted"
+                or row["head_revision_id"] != parent.get("head_revision_id")
+            ):
+                from orchestrator.memory.temporal import TemporalRefusal
+
+                raise TemporalRefusal("memory_dependency_changed")
+        memory = await self.insert_memory(
+            user_id, content, category, source_type, metadata=metadata, **kwargs
+        )
+        await depend(self._pool, user_id, parents, "memory", memory["id"])
+        return memory
+
+    @semantic_write
     async def supersede_memory(
         self,
         old_memory_id: uuid.UUID,
@@ -2475,114 +2651,33 @@ class MemoryStore:
         memory_slot: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Create a new memory and mark the old one as superseded (transaction)."""
-        encrypted_content = self._enc.encrypt(new_content)
-        content_hash = compute_memory_content_hash(new_content)
-        embedding_str = _format_vector(embedding) if embedding else None
-        effective_embedding_model = (
-            (embedding_model or _default_embedding_model()) if embedding_str is not None else None
+        """Compatibility helper: explicit correction retains the stable lineage ID."""
+        row = await self._pool.fetchrow(
+            "SELECT head_revision_id FROM memories WHERE user_id=$1 AND id=$2 AND status!='deleted'",
+            user_id,
+            old_memory_id,
         )
-        # ``memories.metadata`` is ``JSONB NOT NULL DEFAULT '{}'`` (migration
-        # 040), so an omitted/None ``metadata`` must still land as a real
-        # empty JSON object rather than a NULL that would violate the column.
-        metadata_json = json.dumps(metadata if metadata is not None else {})
-
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-
-                async def _insert(
-                    conversation_id: uuid.UUID | None,
-                ) -> asyncpg.Record:
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO memories
-                            (user_id, content, content_hash, embedding, embedding_model, category,
-                             source_type, source_conversation_id, confidence, status, memory_slot,
-                             metadata, content_tsv)
-                        VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, to_tsvector('english', $13))
-                        RETURNING *
-                        """,
-                        user_id,
-                        encrypted_content,
-                        content_hash,
-                        embedding_str,
-                        effective_embedding_model,
-                        new_category,
-                        new_source_type,
-                        conversation_id,
-                        confidence,
-                        new_status,
-                        memory_slot,
-                        metadata_json,
-                        new_content,
-                    )
-                    if row is None:
-                        raise RuntimeError("supersede_memory: insert returned no row")
-                    return row
-
-                async def _get_active_duplicate() -> asyncpg.Record | None:
-                    return await conn.fetchrow(
-                        """
-                        SELECT *
-                        FROM memories
-                        WHERE user_id = $1
-                          AND content_hash = $2
-                          AND local_only = FALSE
-                          AND status = 'active'
-                          AND valid_to IS NULL
-                        ORDER BY created_at ASC
-                        LIMIT 1
-                        """,
-                        user_id,
-                        content_hash,
-                    )
-
-                try:
-                    async with conn.transaction():
-                        try:
-                            new_row = await _insert(source_conversation_id)
-                        except asyncpg.ForeignKeyViolationError as error:
-                            if source_conversation_id is None:
-                                raise
-                            logger.warning(
-                                "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                                source_conversation_id,
-                                error,
-                            )
-                            new_row = await _insert(None)
-                except asyncpg.UniqueViolationError:
-                    # PostgreSQL aborts the inner transaction on the unique
-                    # violation, but the savepoint above scopes the rollback
-                    # so the outer transaction stays usable. The recovery
-                    # lookup and update below run against the still-alive
-                    # outer transaction.
-                    duplicate_row = await _get_active_duplicate()
-                    if duplicate_row is None:
-                        raise
-                    logger.warning(
-                        "supersede_memory: recovered existing active memory after content_hash conflict",
-                        exc_info=True,
-                    )
-                    if duplicate_row["id"] == old_memory_id:
-                        return self._memory_row_to_dict(duplicate_row)
-                    new_row = duplicate_row
-
-                update_result = await conn.execute(
-                    """
-                    UPDATE memories
-                    SET valid_to = NOW(),
-                        updated_at = NOW()
-                    WHERE id = $1
-                      AND user_id = $2
-                      AND valid_to IS NULL
-                    """,
-                    old_memory_id,
-                    user_id,
-                )
-                if update_result != "UPDATE 1":
-                    raise RuntimeError("Supersede failed to close source memory in active state")
-
-        return self._memory_row_to_dict(new_row)
+        if row is None:
+            raise ValueError("memory_unavailable")
+        updated = await self.update_memory_content(
+            old_memory_id,
+            new_content,
+            category=new_category,
+            embedding=embedding,
+            embedding_model=embedding_model,
+            clear_embedding=embedding is None,
+            confidence=confidence,
+            user_id=user_id,
+            expected_revision_id=row["head_revision_id"],
+        )
+        if updated is None:
+            raise ValueError("memory_revision_changed")
+        if metadata is not None:
+            await self.update_memory_metadata(old_memory_id, metadata)
+        # Source origin is immutable; a replacement cannot launder old provenance.
+        current = await self.get_memory(old_memory_id, user_id=user_id)
+        assert current is not None
+        return current
 
     async def touch_memory(self, memory_id: uuid.UUID, *, conn: Any | None = None) -> None:
         executor = conn if conn is not None else self._pool
@@ -2609,6 +2704,7 @@ class MemoryStore:
             memory_ids,
         )
 
+    @semantic_write
     async def close_memory(
         self,
         memory_id: uuid.UUID,
@@ -2660,6 +2756,7 @@ class MemoryStore:
         result = await executor.fetchval(update_query, *update_args)
         return result is not None
 
+    @semantic_write
     async def delete_memory(
         self,
         memory_id: uuid.UUID,
@@ -2667,50 +2764,14 @@ class MemoryStore:
         soft: bool = True,
         user_id: uuid.UUID | None = None,
     ) -> bool:
-        # `user_id` is defense-in-depth for the `MemoryWriteTool` IDOR:
-        # when provided, both soft and hard delete paths filter on
-        # `user_id` so a future caller that forgets the application-layer
-        # guard cannot affect another user's row. Trusted callers (e.g.
-        # `dedup.py`, operating on already-user-scoped rows) may omit it.
-        if soft:
-            if user_id is None:
-                result = await self._pool.execute(
-                    """
-                    UPDATE memories
-                    SET status = 'deleted',
-                        valid_to = COALESCE(valid_to, NOW()),
-                        updated_at = NOW()
-                    WHERE id = $1
-                    """,
-                    memory_id,
-                )
-            else:
-                result = await self._pool.execute(
-                    """
-                    UPDATE memories
-                    SET status = 'deleted',
-                        valid_to = COALESCE(valid_to, NOW()),
-                        updated_at = NOW()
-                    WHERE id = $1
-                      AND user_id = $2
-                    """,
-                    memory_id,
-                    user_id,
-                )
-            return result == "UPDATE 1"
+        from orchestrator.memory.lineage import erase
 
-        if user_id is None:
-            result = await self._pool.execute(
-                "DELETE FROM memories WHERE id = $1",
-                memory_id,
-            )
-        else:
-            result = await self._pool.execute(
-                "DELETE FROM memories WHERE id = $1 AND user_id = $2",
-                memory_id,
-                user_id,
-            )
-        return result == "DELETE 1"
+        owner = user_id or await self._pool.fetchval(
+            "SELECT user_id FROM memories WHERE id=$1", memory_id
+        )
+        if owner is None:
+            return False
+        return bool(await erase(self, self._pool, owner, [memory_id], hard=not soft))
 
     async def search_memories(
         self,
@@ -2728,6 +2789,20 @@ class MemoryStore:
         embedding_model: str | None = None,
         conn: Any | None = None,
     ) -> list[dict[str, Any]]:
+        scope = current_read_scope()
+        if scope is not None:
+            return await search_revisions(
+                self,
+                user_id,
+                scope,
+                vector=_format_vector(query_embedding),
+                embedding_model=embedding_model or _default_embedding_model(),
+                limit=limit,
+                include_local=include_local,
+                category=category,
+                slot=memory_slot,
+                source_ids=source_conversation_ids,
+            )
         storage_model_metadata = getattr(query_embedding, "storage_model", None)
         inferred_embedding_model = (
             storage_model_metadata if isinstance(storage_model_metadata, str) else None
@@ -2744,7 +2819,7 @@ class MemoryStore:
                 """
                 SELECT *,
                        1 - (embedding <=> $2::vector) AS similarity
-                FROM memories
+                FROM memory_current_assertions
                 WHERE user_id = $1
                   AND status != 'deleted'
                   AND tier != 'l0'
@@ -2777,7 +2852,7 @@ class MemoryStore:
                 """
                 SELECT *,
                        1 - (embedding <=> $2::vector) AS similarity
-                FROM memories
+                FROM memory_current_assertions
                 WHERE user_id = $1
                   AND status != 'deleted'
                   AND tier != 'l0'
@@ -2835,6 +2910,19 @@ class MemoryStore:
         term; ``match_any_term`` ORs the query's lexemes instead and lets
         ts_rank order the candidates, so a whole question can still match (#580).
         """
+        scope = current_read_scope()
+        if scope is not None:
+            return await search_revisions(
+                self,
+                user_id,
+                scope,
+                query=query,
+                limit=limit,
+                include_local=include_local,
+                category=category,
+                slot=memory_slot,
+                source_ids=source_conversation_ids,
+            )
         # By design, L0 memories remain directly searchable for explicit recall
         # queries. Dedup callers opt out so frozen memories cannot be mutated.
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
@@ -2845,7 +2933,7 @@ class MemoryStore:
                 """
                 SELECT *,
                        ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
-                FROM memories,
+                FROM memory_current_assertions,
                      (SELECT CASE WHEN $12::bool
                                   THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                                         FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
@@ -2884,7 +2972,7 @@ class MemoryStore:
                 """
                 SELECT *,
                        ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
-                FROM memories,
+                FROM memory_current_assertions,
                      (SELECT CASE WHEN $11::bool
                                   THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                                         FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
@@ -3057,23 +3145,24 @@ class MemoryStore:
             results = [r for r in results if r.get("source_type") in source_types]
         return results
 
+    @semantic_write
     async def delete_memories_by_source(
         self,
         source_conversation_id: uuid.UUID,
     ) -> int:
-        result = await self._pool.execute(
-            """
-            UPDATE memories
-            SET status = 'deleted',
-                valid_to = COALESCE(valid_to, NOW()),
-                updated_at = NOW()
-            WHERE source_conversation_id = $1
-              AND status != 'deleted'
-            """,
+        from orchestrator.memory.lineage import erase
+
+        rows = await self._pool.fetch(
+            "SELECT id,user_id FROM memories WHERE source_conversation_id=$1 AND status!='deleted'",
             source_conversation_id,
         )
-        return int(result.split()[-1])
+        if not rows:
+            return 0
+        return await erase(
+            self, self._pool, rows[0]["user_id"], [r["id"] for r in rows], hard=False
+        )
 
+    @semantic_write
     async def delete_all_memories(
         self,
         user_id: uuid.UUID,
@@ -3085,24 +3174,14 @@ class MemoryStore:
         soft (default): sets status='deleted' and relies on GC cleanup
         hard: permanent removal from the DB
         """
-        if hard:
-            result = await self._pool.execute(
-                "DELETE FROM memories WHERE user_id = $1",
-                user_id,
-            )
-            return int(result.split()[-1])
+        from orchestrator.memory.lineage import erase
 
-        result = await self._pool.execute(
-            """
-            UPDATE memories
-            SET status = 'deleted',
-                valid_to = COALESCE(valid_to, NOW()),
-                updated_at = NOW()
-            WHERE user_id = $1 AND status != 'deleted'
-            """,
-            user_id,
+        rows = await self._pool.fetch(
+            "SELECT id FROM memories WHERE user_id=$1 AND status!='deleted'", user_id
         )
-        return int(result.split()[-1])
+        if hard:
+            rows = await self._pool.fetch("SELECT id FROM memories WHERE user_id=$1", user_id)
+        return await erase(self, self._pool, user_id, [row["id"] for row in rows], hard=hard)
 
     # ------------------------------------------------------------------
     # Summary operations
@@ -3119,9 +3198,14 @@ class MemoryStore:
         L0 memories are always injected into every prompt without
         embedding-based retrieval. They bypass the normal memory pipeline.
         """
+        scope = current_read_scope()
+        if scope is not None:
+            return await search_revisions(
+                self, user_id, scope, include_local=include_local, tier="l0", limit=500
+            )
         rows = await self._pool.fetch(
             """
-            SELECT * FROM memories
+            SELECT * FROM memory_current_assertions
             WHERE user_id = $1
               AND tier = 'l0'
               AND ($2::boolean OR local_only IS FALSE)
@@ -3146,6 +3230,8 @@ class MemoryStore:
         *,
         include_local: bool = False,
     ) -> list[dict[str, Any]]:
+        if current_read_scope() is not None:
+            return []  # Current derived summaries do not reconstruct historical evidence.
         rows = await self._pool.fetch(
             """
             SELECT * FROM memories
@@ -4085,6 +4171,7 @@ class MemoryStore:
             """
             SELECT * FROM memories
             WHERE user_id = $1 AND status = $2
+              AND status!='deleted'
             ORDER BY created_at ASC
             """,
             user_id,
@@ -4097,6 +4184,7 @@ class MemoryStore:
             results.append(d)
         return results
 
+    @semantic_write
     async def import_memories(
         self,
         user_id: uuid.UUID,

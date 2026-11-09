@@ -49,6 +49,8 @@ class MockPool:
         return to_delete
 
     async def fetchval(self, sql, *args):
+        if "to_regclass('memory_mutations')" in sql:
+            return True
         if "DELETE FROM sessions" in sql:
             self._delete_sql = sql
             self._events.append("delete")

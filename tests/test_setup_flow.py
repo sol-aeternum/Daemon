@@ -153,6 +153,8 @@ class MockPool:
         self._system_state["auth.setup_token_hash"] = hash_token(plaintext)
 
     async def fetchval(self, sql, *args):
+        if "to_regclass('memory_mutations')" in sql:
+            return True
         if "COUNT(*)" in sql and "devices" in sql:
             return self._active_count
         if "EXISTS" in sql and "SELECT 1" in sql and "sessions" in sql:

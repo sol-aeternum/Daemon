@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from orchestrator.auth import (
     AuthenticatedDevice,
@@ -26,6 +27,15 @@ from orchestrator.memory.embedding import (
 from orchestrator.compute_runtime import account_compute, current_scope, ComputeUnavailable
 from orchestrator.memory.store import MemoryContentConflictError, compute_memory_content_hash
 
+from orchestrator.memory.temporal import EventScope
+from orchestrator.memory.revisions import original_capture
+from orchestrator.memory.temporal import TemporalReadScope, TemporalRefusal
+from orchestrator.memory.revisions import (
+    resolve as resolve_temporal,
+    search as search_temporal,
+    history as memory_history,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/memories", tags=["memories"])
@@ -39,6 +49,7 @@ ImportCategory = Literal["fact", "preference", "project", "summary", "correction
 class MemoryCreate(BaseModel):
     content: str = Field(min_length=1)
     category: str = "fact"
+    event_scope: EventScope | None = None
 
     @field_validator("content", mode="before")
     @classmethod
@@ -56,6 +67,9 @@ class MemoryUpdate(BaseModel):
 
     content: str = Field(min_length=1, max_length=MAX_EDIT_CONTENT_CHARS)
     category: Literal["fact", "preference", "project", "summary", "correction"] | None = None
+    event_scope: EventScope | None = None
+    relationship: Literal["correction", "world_change"] = "correction"
+    expected_revision_id: uuid.UUID | None = None
 
     @field_validator("content", mode="before")
     @classmethod
@@ -69,6 +83,8 @@ class MemoryConfirm(BaseModel):
 
 class MemoryExportRequest(BaseModel):
     status: str = "active"
+    temporal_scope: TemporalReadScope | None = None
+    history: bool = False
 
 
 class ImportedMemory(BaseModel):
@@ -109,7 +125,19 @@ async def _embedding_account_scope(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> AsyncGenerator[None, None]:
     """Outer scope for HTTP writers, never a scope created inside the adapter."""
-    if not get_selected_embedding_route_id() or app_state.memory_store is None:
+    if app_state.memory_store is None:
+        yield
+        return
+    async with (
+        original_capture(app_state.memory_store, auth.user_id),
+        aclosing(_embedding_compute_scope(app_state, auth)) as scope,
+    ):
+        async for _ in scope:
+            yield
+
+
+async def _embedding_compute_scope(app_state, auth):
+    if not get_selected_embedding_route_id():
         yield
         return
     try:
@@ -201,7 +229,25 @@ async def export_memories(
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
+    if data.temporal_scope is not None:
+        try:
+            scope = await resolve_temporal(store, auth.user_id, data.temporal_scope)
+            memories = await search_temporal(
+                store, auth.user_id, scope, include_local=True, limit=500
+            )
+        except TemporalRefusal as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return {
+            "memories": memories,
+            "resolved_scope": scope.model_dump(mode="json"),
+            "history_complete": False,
+            "limit": 500,
+            "note": "Bounded snapshot export; not a historical restore format",
+        }
     memories = await store.export_memories(auth.user_id, status=data.status)
+    if data.history:
+        for memory in memories:
+            memory["revisions"] = await memory_history(store, auth.user_id, memory["id"])
     return {"memories": memories}
 
 
@@ -295,6 +341,9 @@ async def import_memories(
             counts["merged"] += len(result.merged)
             counts["superseded"] += len(result.superseded)
             processed += 1
+            from orchestrator.memory.revisions import observe_committed
+
+            await observe_committed(store, auth.user_id)
             await apply_deferred_supersede_effects(store, result.deferred_supersede_effects)
 
     return {
@@ -411,17 +460,55 @@ async def delete_all_memories(
     return {"deleted": deleted, "hard": hard}
 
 
+@router.get("/{memory_id}/history")
+async def get_memory_history(
+    memory_id: uuid.UUID,
+    app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+):
+    store = app_state.memory_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="Memory store unavailable")
+    rows = await memory_history(store, auth.user_id, memory_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Memory history unavailable")
+    return {
+        "memory_id": memory_id,
+        "revisions": rows,
+        "note": "Timestamp fields are visibility bounds, not commit times",
+    }
+
+
 @router.get("/{memory_id}")
 async def get_memory(
     memory_id: uuid.UUID,
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
+    event_at: str | None = None,
+    known_at: str | None = None,
 ):
     """Get single memory."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    memory = await store.get_memory(memory_id)
+    if event_at is not None or known_at is not None:
+        try:
+            scope = await resolve_temporal(
+                store,
+                auth.user_id,
+                TemporalReadScope.model_validate({"event_at": event_at, "known_at": known_at}),
+            )
+            rows = await search_temporal(
+                store, auth.user_id, scope, memory_id=memory_id, include_local=True, limit=1
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409 if isinstance(exc, TemporalRefusal) else 422, detail=str(exc)
+            ) from None
+        if not rows:
+            raise HTTPException(status_code=404, detail="Memory not available in requested scope")
+        return {**rows[0], "resolved_scope": scope.model_dump(mode="json")}
+    memory = await store.get_memory(memory_id, user_id=auth.user_id)
 
     if not memory or memory.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -454,6 +541,7 @@ async def create_memory(
             source_type="user_created",
             category=data.category,
             conversation_id=None,
+            event_scope=data.event_scope,
         )
     except EmbeddingRequestError as exc:
         raise HTTPException(status_code=503, detail="Memory embedding service unavailable") from exc
@@ -480,14 +568,23 @@ async def update_memory(
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    existing = await store.get_memory(memory_id)
+    existing = await store.get_memory(memory_id, user_id=auth.user_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     content_changed = data.content != existing.get("content")
+    source_pipeline = None
+    cloud_allowed = existing.get("local_only") is False
+    if existing.get("source_conversation_id") is not None:
+        source = await store.get_conversation(existing["source_conversation_id"])
+        cloud_allowed = cloud_allowed and bool(
+            source and source.get("user_id") == auth.user_id and source.get("pipeline") == "cloud"
+        )
+        if cloud_allowed:
+            source_pipeline = "cloud"
     embedding: list[float] | None = None
     embedding_model: str | None = None
-    if content_changed and existing.get("local_only") is False:
+    if content_changed and cloud_allowed:
         from orchestrator.memory.dedup import _embedding_text
 
         try:
@@ -519,6 +616,10 @@ async def update_memory(
             # request's vector decision.
             require_content_hash=True,
             expected_content_hash=existing.get("content_hash"),
+            expected_revision_id=data.expected_revision_id or existing.get("head_revision_id"),
+            event_scope=data.event_scope,
+            relationship=data.relationship,
+            expected_source_pipeline=source_pipeline,
         )
     except MemoryContentConflictError as exc:
         raise HTTPException(
@@ -526,7 +627,7 @@ async def update_memory(
             detail="Memory content duplicates an existing active memory",
         ) from exc
     if updated is None:
-        current = await store.get_memory(memory_id)
+        current = await store.get_memory(memory_id, user_id=auth.user_id)
         if current and current.get("user_id") == auth.user_id:
             raise HTTPException(
                 status_code=412,
@@ -547,10 +648,12 @@ async def delete_memory(
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    existing = await store.get_memory(memory_id)
-    if not existing or existing.get("user_id") != auth.user_id:
+    exists = await store._pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM memories WHERE id=$1 AND user_id=$2)", memory_id, auth.user_id
+    )
+    if not exists:
         raise HTTPException(status_code=404, detail="Memory not found")
-    await store.delete_memory(memory_id, soft=not hard)
+    await store.delete_memory(memory_id, soft=not hard, user_id=auth.user_id)
     return {"status": "deleted", "hard": hard}
 
 
@@ -565,7 +668,7 @@ async def confirm_memory(
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    existing = await store.get_memory(memory_id)
+    existing = await store.get_memory(memory_id, user_id=auth.user_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
     confirmed = data.status == "confirmed"

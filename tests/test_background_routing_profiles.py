@@ -361,7 +361,7 @@ async def test_dreaming_provenance_records_every_route_actually_selected() -> No
         },
     ]
     store.get_dream_runs.return_value = []
-    store.insert_memory.side_effect = lambda **kw: {"id": uuid.uuid4()}
+    store.publish_derived_memory.side_effect = lambda *args, **kw: {"id": uuid.uuid4()}
 
     served: list[str] = []
 
@@ -573,6 +573,7 @@ def _summary_cursor_store() -> Any:
         return_value={
             "summary": None,
             "summary_updated_at": None,
+            "memory_erasure_epoch": 0,
             "persisted_baseline": 0,
             "current_message_count": 50,
             "contiguous_count": 50,

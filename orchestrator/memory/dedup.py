@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from orchestrator.memory.temporal import EventScope
+from orchestrator.memory.revisions import captured_operation
+
 from orchestrator.compute_runtime import guarded_completion
 from orchestrator.memory.completion import read_completeness
 from orchestrator.memory.embedding import EmbeddingConfigurationError, EmbeddingRequestError
@@ -1083,11 +1086,13 @@ async def _commit_memory_plan(
         embedding=_single_vector(embedding_result) if embedding_result is not None else None,
         embedding_model=embedding_result.storage_model if embedding_result is not None else None,
         conn=conn,
+        event_scope=incoming.event_scope,
     )
     (result.new if inserted else result.merged).append(memory)
     return result
 
 
+@captured_operation
 async def deduplicate_facts(
     store: MemoryStore,
     user_id: uuid.UUID,
@@ -1157,6 +1162,7 @@ async def deduplicate_facts(
                 getattr(fact, "slot", None),
                 getattr(fact, "confidence", 0.8),
                 status,
+                event_scope=getattr(fact, "event_scope", None),
             )
             await fencing.check(store, extraction_inputs)
             embedding_result = None
@@ -1205,6 +1211,7 @@ async def deduplicate_facts(
             confidence=getattr(fact, "confidence", 0.8),
             status=status,
             local_only=getattr(fact, "local_only", False),
+            event_scope=getattr(fact, "event_scope", None),
         )
         embedding_result = prepared_embeddings[index] if prepared_embeddings is not None else None
         if type(incoming.local_only) is not bool:
@@ -1267,6 +1274,7 @@ async def deduplicate_facts(
     return result
 
 
+@captured_operation
 async def dedup_and_store(
     store: MemoryStore,
     user_id: uuid.UUID,
@@ -1283,6 +1291,7 @@ async def dedup_and_store(
     deferred_supersede_effects: list[DeferredSupersedeEffects] | None = None,
     prepared_plan: EquivalencePlan | None = None,
     locked_rows: dict[uuid.UUID, dict[str, Any]] | None = None,
+    event_scope: EventScope | None = None,
 ) -> uuid.UUID:
     """Store a single memory with deduplication.
 
@@ -1304,8 +1313,9 @@ async def dedup_and_store(
         category: str
         confidence: float = 0.8
         slot: str | None = None
+        event_scope: EventScope | None = None
 
-    fact = SimpleFact(content=content, category=category, slot=slot)
+    fact = SimpleFact(content=content, category=category, slot=slot, event_scope=event_scope)
     result = await deduplicate_facts(
         store=store,
         user_id=user_id,

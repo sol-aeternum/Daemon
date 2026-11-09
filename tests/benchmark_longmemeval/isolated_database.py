@@ -238,38 +238,46 @@ async def assert_memory_metadata_contract(
             f"metadata-contract+{user_id.hex}@daemon.test",
             "metadata_contract",
         )
+        await conn.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
         try:
-            # An omitted column must land as a real empty JSON object, decided
-            # server-side so the check does not depend on asyncpg JSON codecs.
-            probe = await conn.fetchrow(
-                """
-                INSERT INTO memories (user_id, content, category, source_type)
-                VALUES ($1, $2, 'fact', 'import')
-                RETURNING
-                    metadata IS NULL AS is_null,
-                    jsonb_typeof(metadata) AS kind,
-                    metadata = '{}'::jsonb AS is_empty_object
-                """,
-                user_id,
-                "migration 040 default probe",
-            )
-            assert probe is not None, "metadata default probe returned no row"
-            assert probe["is_null"] is False, "memories.metadata default produced NULL"
-            assert probe["kind"] == "object", probe["kind"]
-            assert probe["is_empty_object"] is True, "omitted metadata was not the empty object"
+            # Register a real synthetic mutation; do not bypass revision capture.
+            # The outer probe savepoint also protects cleanup from unexpected SQL
+            # failures, preserving the original exception rather than masking it.
+            async with conn.transaction():
+                from orchestrator.memory.revisions import Capture, enter
+                from orchestrator.services.account_control.guard import (
+                    CapturedGeneration,
+                    guard_content_write,
+                )
 
-            # NOT NULL must be enforced, not merely declared. The probe runs in a
-            # savepoint so the deliberate violation does not poison the cleanup.
-            with pytest.raises(asyncpg.NotNullViolationError):
-                async with conn.transaction():
-                    await conn.execute(
+                original = CapturedGeneration(user_id, 0)
+                async with guard_content_write(conn, original):
+                    await enter(conn, Capture(original, 0))
+                    probe = await conn.fetchrow(
                         """
-                        INSERT INTO memories (user_id, content, category, source_type, metadata)
-                        VALUES ($1, $2, 'fact', 'import', NULL)
+                        INSERT INTO memories (user_id, content, category, source_type)
+                        VALUES ($1, $2, 'fact', 'import')
+                        RETURNING metadata IS NULL AS is_null,
+                            jsonb_typeof(metadata) AS kind,
+                            metadata = '{}'::jsonb AS is_empty_object
                         """,
                         user_id,
-                        "migration 040 null probe",
+                        "migration 040 default probe",
                     )
+                    assert probe is not None, "metadata default probe returned no row"
+                    assert probe["is_null"] is False, "memories.metadata default produced NULL"
+                    assert probe["kind"] == "object", probe["kind"]
+                    assert probe["is_empty_object"] is True, (
+                        "omitted metadata was not the empty object"
+                    )
+                    with pytest.raises(asyncpg.NotNullViolationError):
+                        async with conn.transaction():
+                            await conn.execute(
+                                "INSERT INTO memories(user_id,content,category,source_type,metadata) "
+                                "VALUES($1,$2,'fact','import',NULL)",
+                                user_id,
+                                "migration 040 null probe",
+                            )
         finally:
             await conn.execute("DELETE FROM users WHERE id = $1", user_id)
 

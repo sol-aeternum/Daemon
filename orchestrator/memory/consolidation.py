@@ -6,7 +6,6 @@ within the same slot family for potential consolidation.
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -478,7 +477,7 @@ async def consolidate_cluster(
         # block the maintenance operation that reduces active-row pressure.
         for summary_text in summaries:
             # Create memory with correct metadata
-            memory = await store.insert_memory(
+            memory = await store.publish_derived_memory(
                 user_id=user_id,
                 content=summary_text,
                 category="summary",
@@ -486,6 +485,11 @@ async def consolidate_cluster(
                 memory_slot=f"{cluster.slot_family}.consolidated",
                 confidence=0.85,
                 local_only=False,
+                parents=cluster.members,
+                metadata={
+                    "source_memory_ids": source_memory_ids,
+                    "consolidated_from": len(cluster.members),
+                },
             )
 
             # Update tier to L1 (insert_memory defaults might differ)
@@ -495,18 +499,6 @@ async def consolidate_cluster(
             )
 
             # Add metadata with source IDs
-            metadata_json = json.dumps(
-                {"source_memory_ids": source_memory_ids, "consolidated_from": len(cluster.members)}
-            )
-            await store._pool.execute(
-                """
-                UPDATE memories
-                SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
-                WHERE id = $1
-                """,
-                uuid.UUID(str(memory["id"])),
-                metadata_json,
-            )
 
             created_memories.append(memory)
 
@@ -518,6 +510,7 @@ async def consolidate_cluster(
                     await store.update_memory_tier(
                         memory_id=uuid.UUID(str(mem_id)),
                         tier="l2",
+                        expected_revision_id=mem.get("head_revision_id"),
                     )
                 except Exception:
                     pass  # Best effort

@@ -305,6 +305,9 @@ async def test_dedup_supersession_proceeds_on_llm_failure() -> None:
 @pytest.mark.asyncio
 async def test_denied_embeddings_merge_exact_fact_on_cap_lock_connection() -> None:
     store = AsyncMock()
+    from tests.memory_capture_support import install_capture_pool
+
+    install_capture_pool(store)
     user_id = uuid.uuid4()
     lock_conn = AsyncMock()
     existing = {

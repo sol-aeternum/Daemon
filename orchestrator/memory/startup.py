@@ -7,6 +7,22 @@ from typing import Any
 from orchestrator.config import Settings
 
 
+async def require_revision_schema(pool: Any) -> None:
+    """Matching source and applied migration are both mandatory; no auto-DDL."""
+    if pool is None:
+        return  # Existing database-unavailable behavior is not an enabled memory service.
+    present = await pool.fetchval(
+        "SELECT to_regclass('memory_mutations') IS NOT NULL AND "
+        "to_regclass('memory_revision_segments') IS NOT NULL AND "
+        "EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('memories') "
+        "AND tgname='memory_revision_capture' AND tgenabled='O')"
+    )
+    if present is not True:
+        raise RuntimeError(
+            "Memory revisions require migration 066 and matching writer capture; do not bypass rollback guards"
+        )
+
+
 async def require_multi_query_schema(pool: Any, settings: Settings) -> None:
     if not settings.memory_multi_query_enabled:
         return

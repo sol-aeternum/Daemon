@@ -144,6 +144,8 @@ from orchestrator.routes.tasks import (
 )
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.tasks.inputs import RequestFingerprint, chat_request_fingerprint
+from orchestrator.memory.temporal import TemporalReadScope, TemporalRefusal
+from orchestrator.memory.revisions import resolve as resolve_memory_scope
 from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import ConversationBusy, IdempotencyConflict, TaskNotFound
 from orchestrator.models_cache import fetch_openrouter_models
@@ -304,9 +306,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from orchestrator.inference_transport import get_handler
 
         get_handler()
-        from orchestrator.memory.startup import require_multi_query_schema
+        from orchestrator.memory.startup import require_multi_query_schema, require_revision_schema
 
         await require_multi_query_schema(state.db_pool, settings)
+        await require_revision_schema(state.db_pool)
         if state.db_pool is not None and state.history_runtime is None:
             await initialize_development_pepper(settings, state.db_pool)
             if state.memory_store is not None:
@@ -827,6 +830,18 @@ async def _account_chat_frames(
     request_id = kwargs.get("request_id")
 
     async def source() -> AsyncIterator[str]:
+        from orchestrator.memory.revisions import original_capture
+
+        memory = kwargs.get("memory_store")
+        if memory is not None:
+            async with original_capture(memory, scope_user_id):
+                async for frame in captured_source():
+                    yield frame
+        else:
+            async for frame in captured_source():
+                yield frame
+
+    async def captured_source() -> AsyncIterator[str]:
         if prepare_system_prompt is not None:
             kwargs["system_prompt"] = await prepare_system_prompt()
         async for frame in stream_sse_chat(**kwargs):
@@ -2206,6 +2221,7 @@ async def _durable_chat(
     actual_model: str,
     routing_info: dict[str, Any],
     title_generation: CapturedGeneration | None,
+    temporal_scope: TemporalReadScope | None = None,
 ) -> StreamingResponse | None:
     """Accept a native chat turn durably and observe it (DURABLE_REQUEST_DESIGN §7).
 
@@ -2264,6 +2280,8 @@ async def _durable_chat(
         task_input["answer_detail"] = payload.answer_detail
     if payload.research_effort is not None:
         task_input["research_effort"] = payload.research_effort
+    if temporal_scope is not None:
+        task_input["temporal_scope"] = temporal_scope.model_dump(mode="json")
     fingerprint = _durable_request_fingerprint(payload, settings, conversation_uuid, user_message)
     try:
         accepted = await store.accept(
@@ -2425,6 +2443,9 @@ def _durable_request_fingerprint(
         ),
         answer_detail=payload.answer_detail,
         research_effort=payload.research_effort,
+        temporal_scope=payload.temporal_scope.model_dump(mode="json")
+        if payload.temporal_scope
+        else None,
     )
 
 
@@ -2586,6 +2607,21 @@ async def chat(
             logger.warning("Skipping title/summary scheduling: account capture unavailable")
 
     incoming_messages = payload.messages or []
+    temporal_scope = None
+    if payload.temporal_scope is not None:
+        if app_state.memory_store is None:
+            raise HTTPException(status_code=503, detail="historical_memory_store_required")
+        try:
+            temporal_scope = await resolve_memory_scope(
+                app_state.memory_store, auth.user_id, payload.temporal_scope
+            )
+        except TemporalRefusal as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        if payload.suggestion_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Unversioned suggestion context is unavailable in historical scope",
+            )
     attachments = payload.attachments or []
     suggestion_context: dict[str, Any] | None = None
     suggestion_destination: uuid.UUID | None = None
@@ -2639,6 +2675,8 @@ async def chat(
     is_council_command = (
         user_message.lstrip().startswith("/council") and not is_council_config_response
     )
+    if temporal_scope is not None and (is_council_command or is_council_config_response):
+        raise HTTPException(status_code=422, detail="Historical council context is not qualified")
 
     if is_council_config_response and council_config_response is not None:
         interview_prompt = _extract_latest_council_prompt(incoming_messages)
@@ -2717,6 +2755,7 @@ async def chat(
     ):
         durable = await _durable_chat(
             payload=payload,
+            temporal_scope=temporal_scope,
             request=request,
             settings=settings,
             app_state=app_state,
@@ -2897,7 +2936,7 @@ async def chat(
                 raise HTTPException(
                     status_code=503, detail="Bound source context unavailable"
                 ) from exc
-    if conversation_exists and store and conversation_uuid:
+    if conversation_exists and store and conversation_uuid and temporal_scope is None:
         try:
             db_messages = await store.get_recent_messages(
                 conversation_uuid,
@@ -2940,6 +2979,8 @@ async def chat(
                 break
     if suggestion_context is not None and not history_messages:
         history_messages = [{"role": "user", "content": prepared_user_content}]
+    if temporal_scope is not None:
+        history_messages = [{"role": "user", "content": prepared_user_content}]
 
     council_user_message = user_message
     if bound_home_turn is not None:
@@ -2972,10 +3013,14 @@ async def chat(
             user_settings = await store.get_user_settings(user_id)
             user_timezone = extract_timezone_name(user_settings)
             preferences_block = format_preferences_block(user_settings)
+            if temporal_scope is not None:
+                preferences_block = ""
         except Exception:
             logger.warning("Memory injection failed, using base prompt")
 
     if skills_block and skills_block not in assembled_system_prompt:
+        if temporal_scope is not None:
+            skills_block = ""
         assembled_system_prompt = f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
 
     async def prepare_native_system_prompt() -> str:
@@ -2987,13 +3032,17 @@ async def chat(
             from orchestrator.memory.injection import assemble_system_prompt, build_memory_context
 
             try:
-                context = await build_memory_context(store, conversation_uuid)
+                context = await build_memory_context(
+                    store, conversation_uuid, temporal_scope=temporal_scope, query_text=user_message
+                )
                 prompt = await assemble_system_prompt(
                     memory_context=context,
                     preferences_block=preferences_block,
                     conversation_id=conversation_uuid,
                 )
             except Exception as error:
+                if isinstance(error, TemporalRefusal):
+                    raise
                 raise_if_embedding_accounting_error(error)
                 logger.warning("Memory injection failed, using base prompt")
         if skills_block and skills_block not in prompt:
@@ -3096,6 +3145,7 @@ async def chat(
                 conversation_uuid=conversation_uuid,
                 queue=app_state.redis if app_state else None,
                 summary_generation=title_generation,
+                temporal_scope=temporal_scope,
                 db_pool=app_state.db_pool if app_state else None,
                 trusted_spawn_context=trusted_spawn_context,
                 disable_memory_write=bool(payload.disable_memory_write),

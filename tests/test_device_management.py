@@ -115,6 +115,8 @@ class MockPool:
         self._connections = []
 
     async def fetchval(self, sql, *args):
+        if "to_regclass('memory_mutations')" in sql:
+            return True  # Synthetic matching revision schema; real guards are PG-tested.
         return None
 
     async def fetchrow(self, sql, *args):

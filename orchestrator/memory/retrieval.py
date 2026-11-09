@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orchestrator.memory.revisions import current_read_scope
+
 import asyncio
 import datetime as dt
 import logging
@@ -960,9 +962,13 @@ async def retrieve_memories(
         or get_primary_embedding_storage_model()
     )
     effective_user_id: uuid.UUID | None = user_id
-    temporal_window = _detect_temporal_query_window(
-        normalized_query,
-        query_reference_time=query_reference_time,
+    temporal_window = (
+        None
+        if current_read_scope() is not None
+        else _detect_temporal_query_window(
+            normalized_query,
+            query_reference_time=query_reference_time,
+        )
     )
     effective_include_historical = include_historical or temporal_window is not None
 
@@ -1030,7 +1036,7 @@ async def retrieve_memories(
     candidate_map: dict[str, dict[str, object]] = {}
 
     for c in vector_candidates:
-        memory_id = str(c.get("id", ""))
+        memory_id = str(c.get("segment_id") or c.get("id", ""))
         if memory_id:
             entry = dict(c)
             entry["vector_sim"] = _as_float(entry.get("similarity"), 0.0)
@@ -1040,7 +1046,7 @@ async def retrieve_memories(
             candidate_map[memory_id] = entry
 
     for c in bm25_candidates:
-        memory_id = str(c.get("id", ""))
+        memory_id = str(c.get("segment_id") or c.get("id", ""))
         if memory_id:
             if memory_id in candidate_map:
                 candidate_map[memory_id]["bm25_score"] = _as_float(c.get("bm25_score"), 0.0)
@@ -1056,7 +1062,7 @@ async def retrieve_memories(
 
     # Entity expansion: runs even when vector/BM25 candidates are empty
     # to support alias-only/entity-only queries that rely on entity-linked retrieval
-    if normalized_query and effective_user_id:
+    if normalized_query and effective_user_id and current_read_scope() is None:
         try:
             entity_candidates = await _get_entity_expanded_candidates(
                 store,

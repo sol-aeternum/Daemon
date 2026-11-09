@@ -14,6 +14,7 @@ from orchestrator.skill_evaluator import (
 from orchestrator.worker.jobs import run_skill_evaluation_job
 from orchestrator.redis_jobs import account_job_id
 from tests.redis_jobs_support import install_fake_enqueue
+from tests.memory_capture_support import install_capture_pool
 
 
 @pytest.fixture(autouse=True)
@@ -156,6 +157,7 @@ class TestDaemonHookEnqueueLogic:
         mock_queue.enqueue_job = fake_enqueue_job
 
         mock_store = MagicMock()
+        install_capture_pool(mock_store)
         mock_store.insert_message = AsyncMock(return_value={"id": msg_uuid})
         mock_store.update_message = AsyncMock()
 
@@ -242,6 +244,7 @@ class TestDaemonHookEnqueueLogic:
         mock_queue.enqueue_job = fake_enqueue_job
 
         mock_store = MagicMock()
+        install_capture_pool(mock_store)
         mock_store.insert_message = AsyncMock(return_value={"id": msg_uuid})
         mock_store.update_message = AsyncMock()
 

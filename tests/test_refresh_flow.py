@@ -231,6 +231,8 @@ class MockPool:
         self._events = []
 
     async def fetchval(self, sql, *args):
+        if "to_regclass('memory_mutations')" in sql:
+            return True
         if "COUNT(*)" in sql and "devices" in sql:
             return self._active_count
         return None

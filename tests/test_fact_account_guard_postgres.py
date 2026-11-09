@@ -16,6 +16,7 @@ import pytest
 from arq import Retry
 
 from orchestrator.memory import dedup, equivalence, extraction, extraction_fencing as fencing
+from orchestrator.memory import revisions
 from orchestrator.memory.extraction import ExtractedFact, ExtractionOutcome
 from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 from orchestrator.worker import jobs
@@ -82,6 +83,12 @@ async def counts(env):
             for table in ("memories", "memory_extraction_log")
         ]
     )
+
+
+async def registered_sql(env, sql, *args):
+    original = await revisions.capture(env.memory, env.alice)
+    async with revisions.mutation(env.memory, original) as conn:
+        return await conn.execute(sql, *args)
 
 
 @pytest.mark.asyncio
@@ -271,7 +278,7 @@ async def test_exact_ineligible_winner_never_decrypts_or_checkpoints(env, monkey
     canonical = await env.memory.insert_memory(
         env.alice, "User likes blue stars.", "fact", "extracted", source_conversation_id=foreign
     )
-    await env.pool.execute("UPDATE memories SET content='poison' WHERE id=$1", canonical["id"])
+    await registered_sql(env, "UPDATE memories SET content='poison' WHERE id=$1", canonical["id"])
     assert (await run(env, conv))["status"] == "skipped"
     assert await counts(env) == (1, 0)
 
@@ -550,7 +557,8 @@ async def test_canonical_stale_semantics_fallback_but_privacy_refuses(env, monke
     plan = await equivalence.plan_equivalence(plan.incoming, rows)
     assert plan.selected is not None
     if change == "semantic":
-        await env.pool.execute(
+        await registered_sql(
+            env,
             "UPDATE memories SET content=$2,updated_at=now() WHERE id=$1",
             canonical["id"],
             env.memory.encryption.encrypt("User likes red stars."),
@@ -561,8 +569,10 @@ async def test_canonical_stale_semantics_fallback_but_privacy_refuses(env, monke
         assert inserted is True and row["id"] != canonical["id"]
     else:
         if change == "local":
-            await env.pool.execute(
-                "UPDATE memories SET local_only=TRUE,content='poison' WHERE id=$1", canonical["id"]
+            await registered_sql(
+                env,
+                "UPDATE memories SET local_only=TRUE,content='poison' WHERE id=$1",
+                canonical["id"],
             )
         else:
             await env.pool.execute(
@@ -780,7 +790,7 @@ async def test_malformed_one_input_embedding_receipt_never_writes_or_checkpoints
 
 
 @pytest.mark.asyncio
-async def test_exact_winner_edit_between_conflict_read_and_lock_retries_without_false_checkpoint(
+async def test_exact_winner_clock_serializes_independent_aba_without_false_checkpoint(
     env, monkeypatch
 ):
     conv, _, _, _ = await prepare(env, monkeypatch)
@@ -789,40 +799,66 @@ async def test_exact_winner_edit_between_conflict_read_and_lock_retries_without_
     canonical = await env.memory.insert_memory(
         env.alice, "User likes blue stars.", "preference", "manual"
     )
-    original_insert = env.memory._insert_memory_with_outcome
-    changed = False
+    inputs, plan = await empty_plan(env, conv)
+    key = uuid4().int % (2**63 - 1)
+    await env.pool.execute(f"""CREATE FUNCTION exact_aba_pause() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$""")
+    await env.pool.execute(
+        "CREATE TRIGGER exact_aba_pause BEFORE INSERT ON memories "
+        "FOR EACH ROW EXECUTE FUNCTION exact_aba_pause()"
+    )
+    original = await revisions.capture(env.memory, env.alice)
+    async with (
+        env.pool.acquire() as first,
+        env.pool.acquire() as editor,
+        env.pool.acquire() as holder,
+    ):
+        await holder.execute("SELECT pg_advisory_lock($1)", key)
+        a = asyncio.create_task(
+            fencing.commit_fact(bound_store(env, first), inputs, plan, None, {}, {})
+        )
+        b = None
+        try:
+            await blocked(env.pool, first.get_server_pid(), holder.get_server_pid())
 
-    async def interleaved_insert(*args, **kwargs):
-        qualify = kwargs["row_qualifier"]
+            async def edit_aba():
+                async with editor.transaction():
+                    async with revisions.mutation(env.memory, original, conn=editor, ordered=True):
+                        await env.memory.update_memory_content(
+                            canonical["id"], "User likes red stars.", user_id=env.alice
+                        )
+                        await env.memory.update_memory_content(
+                            canonical["id"], "User likes blue stars.", user_id=env.alice
+                        )
 
-        async def edit_before_lock(raw):
-            nonlocal changed
-            if raw["id"] == canonical["id"] and not changed:
-                updated = await asyncio.wait_for(
-                    env.memory.update_memory_content(
-                        canonical["id"],
-                        "User likes red stars.",
-                        user_id=env.alice,
-                        require_content_hash=True,
-                        expected_content_hash=canonical["content_hash"],
-                    ),
-                    5,
-                )
-                assert updated is not None
-                changed = True
-            return await qualify(raw)
-
-        kwargs["row_qualifier"] = edit_before_lock
-        return await original_insert(*args, **kwargs)
-
-    monkeypatch.setattr(env.memory, "_insert_memory_with_outcome", interleaved_insert)
-    with pytest.raises(Retry):
-        await run(env, conv)
-    assert changed and await counts(env) == (1, 0)
+            b = asyncio.create_task(edit_aba())
+            await blocked(env.pool, editor.get_server_pid(), first.get_server_pid())
+            assert await counts(env) == (1, 0)
+            await holder.execute("SELECT pg_advisory_unlock($1)", key)
+            row, inserted = await asyncio.wait_for(a, 10)
+            assert not inserted and row["id"] == canonical["id"]
+            await asyncio.wait_for(b, 10)
+        finally:
+            await holder.execute("SELECT pg_advisory_unlock($1)", key)
+            for task in (a, b):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(*[t for t in (a, b) if t is not None], return_exceptions=True)
+    current = await env.memory.get_memory(canonical["id"])
+    assert current and current["content_hash"] == canonical["content_hash"]
+    assert current["head_revision_id"] != canonical["head_revision_id"]
+    assert (
+        await env.memory.update_memory_content(
+            canonical["id"],
+            "Stale overwrite",
+            user_id=env.alice,
+            expected_revision_id=canonical["head_revision_id"],
+        )
+        is None
+    )
+    assert await counts(env) == (1, 0)  # A committed fact is not an extraction checkpoint.
     assert (await run(env, conv))["status"] == "ok"
-    assert await counts(env) == (2, 1)
-    row = await env.pool.fetchrow("SELECT content FROM memories WHERE category='fact'")
-    assert env.memory.encryption.decrypt(row["content"]) == "User likes blue stars."
+    assert await counts(env) == (1, 1)
 
 
 @pytest.mark.asyncio
@@ -1132,6 +1168,7 @@ async def test_committed_summary_recovery_ignores_unrelated_message_snapshot_not
     assert await env.memory.update_conversation_summary(
         conv,
         "Already committed synthetic summary",
+        expected_memory_erasure_epoch=0,
         expected_summary_updated_at=None,
         summarized_message_count=0,
         summary_continuation_pending=True,

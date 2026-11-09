@@ -1398,6 +1398,10 @@ async def test_explicit_memory_write_remains_local_when_embeddings_unapproved(
 
 
 def _install_memory_mutation_context(store: Any) -> None:
+    from tests.memory_capture_support import install_capture_pool
+
+    install_capture_pool(store)
+
     @asynccontextmanager
     async def transaction():
         yield

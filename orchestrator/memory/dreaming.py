@@ -457,7 +457,7 @@ async def run_dreaming(
                     # Dream observations are bounded internal lifecycle
                     # output, not user-invoked tool writes; they intentionally
                     # remain outside the MemoryWriteTool abuse quota.
-                    observation = await active_store.insert_memory(
+                    observation = await active_store.publish_derived_memory(
                         user_id=user_id,
                         content=observation_text,
                         category="observation",
@@ -468,6 +468,12 @@ async def run_dreaming(
                         ),
                         confidence=float(observation_payload["confidence"]),
                         memory_slot=f"{family}.observation",
+                        parents=[m for m in members if m["id"] in source_memory_ids],
+                        metadata={
+                            "source_memory_ids": [str(mid) for mid in source_memory_ids],
+                            "dream_family": family,
+                            "dream_cluster_size": len(members),
+                        },
                     )
                     observation_id = uuid.UUID(str(observation["id"]))
                     _ = await active_store.update_memory_tier(observation_id, "l1")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from orchestrator.memory.temporal import TemporalReadScope
 
 
 # ============== OpenAI Compatible Models ==============
@@ -98,6 +99,7 @@ class OpenAIModelList(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    temporal_scope: TemporalReadScope | None = None
     answer_detail: Literal["brief", "balanced", "detailed"] | None = None
     research_effort: Literal["auto", "research"] | None = None
     conversation_id: str | None = None

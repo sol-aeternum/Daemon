@@ -10,6 +10,9 @@ optimisation for attached observers, never the record.
 
 from __future__ import annotations
 
+from orchestrator.memory.temporal import TemporalReadScope, TemporalRefusal
+from orchestrator.memory.revisions import original_capture
+
 import asyncio
 import contextlib
 import hashlib
@@ -612,6 +615,8 @@ async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[
     assumed absent. The task's own placeholder is a streaming row and is
     excluded.
     """
+    if claim.task_input.get("temporal_scope") is not None:
+        return [{"role": "user", "content": prepared or str(claim.task_input.get("message") or "")}]
     rows = await store.get_recent_messages(
         claim.conversation_id,
         limit=limit,
@@ -658,23 +663,36 @@ async def _system_prompt(memory: Any, db_pool: Any, claim: Claim) -> tuple[str, 
     except Exception:
         logger.warning("Skills injection failed, continuing without skills", exc_info=True)
         skills_block = ""
+    if claim.task_input.get("temporal_scope") is not None:
+        skills_block = ""
     preferences_block = ""
     user_timezone = None
     try:
         user_settings = await memory.get_user_settings(claim.user_id)
         user_timezone = extract_timezone_name(user_settings)
         preferences_block = format_preferences_block(user_settings)
+        if claim.task_input.get("temporal_scope") is not None:
+            preferences_block = ""
     except Exception:
         logger.warning("Preference injection failed, using base prompt", exc_info=True)
     prompt = DAEMON_SYSTEM_PROMPT
     try:
-        context = await build_memory_context(memory, claim.conversation_id)
+        context = await build_memory_context(
+            memory,
+            claim.conversation_id,
+            temporal_scope=TemporalReadScope.model_validate(claim.task_input["temporal_scope"])
+            if claim.task_input.get("temporal_scope")
+            else None,
+            query_text=str(claim.task_input.get("message") or ""),
+        )
         prompt = await assemble_system_prompt(
             memory_context=context,
             preferences_block=preferences_block,
             conversation_id=claim.conversation_id,
         )
     except Exception as error:
+        if isinstance(error, TemporalRefusal):
+            raise
         raise_if_embedding_accounting_error(error)
         logger.warning("Memory injection failed, using base prompt", exc_info=True)
     if skills_block and skills_block not in prompt:
@@ -732,6 +750,8 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
     db_pool = ctx["db_pool"]
     redis = ctx.get("redis")
     task_input = claim.task_input
+    if memory is None and task_input.get("temporal_scope") is not None:
+        raise TemporalRefusal("historical_memory_store_required")
     summary_generation = None
     # Old/malformed task input suppresses optional extraction persistence. No capture read
     # on resumption: task retries retain the original acceptance-time origin.
@@ -787,14 +807,17 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             )
             await store._inference.register(identity, shared)
 
-    async with account_compute(
-        db_pool,
-        claim.user_id,
-        auto_route=bool(task_input.get("auto_route", True)),
-        profile=str(task_input.get("profile") or "routine"),
-        request_id=request_id,
-        inference_identity=identity,
-        inference_recovery=store._inference if claim.inference_covered else None,
+    async with (
+        account_compute(
+            db_pool,
+            claim.user_id,
+            auto_route=bool(task_input.get("auto_route", True)),
+            profile=str(task_input.get("profile") or "routine"),
+            request_id=request_id,
+            inference_identity=identity,
+            inference_recovery=store._inference if claim.inference_covered else None,
+        ),
+        original_capture(memory, claim.user_id) if memory is not None else contextlib.nullcontext(),
     ):
         scope_id = current_scope().scope_id
         try:
@@ -863,6 +886,9 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             message_sink=AttemptSink(store, state),
             tool_guard=lambda registry: _guard_tools(registry, store, state),
             summary_generation=summary_generation,
+            temporal_scope=TemporalReadScope.model_validate(task_input["temporal_scope"])
+            if task_input.get("temporal_scope")
+            else None,
         )
         async for frame in frames:
             if state.blocked is not None:

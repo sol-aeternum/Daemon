@@ -48,6 +48,7 @@ def chat_request_fingerprint(
     content_parts: list[dict[str, Any]] | None = None,
     answer_detail: AnswerDetail | None = None,
     research_effort: ResearchEffort | None = None,
+    temporal_scope: dict[str, Any] | None = None,
 ) -> RequestFingerprint:
     """Keyed fingerprint of what a submission asks for (see ``chat_request_hash``)."""
     if not key:
@@ -69,6 +70,8 @@ def chat_request_fingerprint(
         accepted["answer_detail"] = answer_detail
     if research_effort is not None:
         accepted["research_effort"] = research_effort
+    if temporal_scope is not None:
+        accepted["temporal_scope"] = temporal_scope
     canonical = canonical_json(accepted)
     digest = hmac.new(
         key.encode("utf-8"),
@@ -91,6 +94,7 @@ def chat_request_hash(
     content_parts: list[dict[str, Any]] | None = None,
     answer_detail: AnswerDetail | None = None,
     research_effort: ResearchEffort | None = None,
+    temporal_scope: dict[str, Any] | None = None,
 ) -> str:
     """Keyed fingerprint (HMAC-SHA-256) of what a submission *asks for*.
 
@@ -112,4 +116,5 @@ def chat_request_hash(
         content_parts=content_parts,
         answer_detail=answer_detail,
         research_effort=research_effort,
+        temporal_scope=temporal_scope,
     ).digest

@@ -20,7 +20,8 @@ from orchestrator.memory.dedup import (
     prepare_memory_embedding,
     prepare_memory_plan,
 )
-from orchestrator.memory.equivalence import CandidateSnapshot, IncomingMemory
+from orchestrator.memory.equivalence import IncomingMemory
+from orchestrator.memory.equivalence import CandidateSnapshot as CandidateSnapshot
 from orchestrator.memory.embedding import (
     EmbeddingConfigurationError,
     embed_documents_with_metadata,
@@ -28,6 +29,13 @@ from orchestrator.memory.embedding import (
     embed_query_with_metadata,
 )
 from orchestrator.tools.registry import Tool
+from orchestrator.memory.revisions import (
+    original_capture,
+    current_read_scope,
+    temporal_tool,
+    search as search_revisions,
+)
+from orchestrator.memory.temporal import EventScope
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +157,18 @@ class MemoryReadTool(Tool):
         "type": "object",
         "properties": {
             "query": {"type": "string"},
+            "event_at": {
+                "type": "string",
+                "description": "Exact event-time ISO8601 cutoff with offset",
+            },
+            "known_at": {
+                "type": "string",
+                "description": "Wall-clock knowledge cutoff; ambiguous commit visibility returns indeterminate",
+            },
+            "watermark": {
+                "type": "object",
+                "description": "Previously observed committed account watermark",
+            },
             "mode": {
                 "type": "string",
                 "enum": ["semantic", "temporal"],
@@ -183,6 +203,7 @@ class MemoryReadTool(Tool):
         self.user_id = user_id
         self.conversation_id = conversation_id
 
+    @temporal_tool
     async def execute(self, **kwargs: Any) -> str:
         # Locality comes only from the server-bound conversation, never tool args.
         pipeline = None
@@ -198,6 +219,26 @@ class MemoryReadTool(Tool):
         slot = kwargs.get("slot")
         after_raw = kwargs.get("after")
         before_raw = kwargs.get("before")
+        scope = current_read_scope()
+        if scope is not None:
+            memories = await search_revisions(
+                self.store,
+                self.user_id,
+                scope,
+                query=query or None,
+                limit=max(1, min(int(limit), 50)),
+                include_local=include_local,
+                slot=slot,
+            )
+            from orchestrator.memory.provenance import noted_suffix
+
+            return (
+                "\n".join(
+                    f"- [{str(m.get('category', 'fact')).upper()}] {m['content']}{noted_suffix(m)}"
+                    for m in memories
+                )
+                or "No relevant memories found."
+            )
 
         def parse_dt(value: str | None) -> datetime | None:
             if not value:
@@ -334,6 +375,12 @@ class MemoryWriteTool(Tool):
             "category": {"type": "string", "default": "fact"},
             "memory_id": {"type": "string"},
             "slot": {"type": "string"},
+            "event_scope": {
+                "type": "object",
+                "description": "Explicit event bounds/precision; unknown dates stay unresolved",
+            },
+            "relationship": {"type": "string", "enum": ["correction", "world_change"]},
+            "expected_revision_id": {"type": "string"},
         },
         "required": ["action"],
     }
@@ -626,6 +673,10 @@ class MemoryWriteTool(Tool):
         return _WriteQuotaDecision(refusal=None, reservation=reservation)
 
     async def execute(self, **kwargs: Any) -> str:
+        async with original_capture(self.store, self.user_id):
+            return await self._execute_captured(**kwargs)
+
+    async def _execute_captured(self, **kwargs: Any) -> str:
         action = kwargs.get("action")
 
         if action == "create":
@@ -639,6 +690,11 @@ class MemoryWriteTool(Tool):
             if category not in self.allowed_categories:
                 allowed = ", ".join(sorted(self.allowed_categories))
                 return f"Invalid category '{category}'. Use one of: {allowed}."
+            event_scope = (
+                EventScope.model_validate(kwargs["event_scope"])
+                if kwargs.get("event_scope")
+                else None
+            )
             # Quota check runs after cheap input validation and before
             # `dedup_and_store`, which is what issues the billed
             # embedding request.
@@ -655,7 +711,13 @@ class MemoryWriteTool(Tool):
             prepared_plan = await prepare_memory_plan(
                 self.store,
                 IncomingMemory(
-                    self.user_id, content, category, "user_created", None, effective_slot
+                    self.user_id,
+                    content,
+                    category,
+                    "user_created",
+                    None,
+                    effective_slot,
+                    event_scope=event_scope,
                 ),
                 embedding_result=embedding_result,
             )
@@ -732,6 +794,7 @@ class MemoryWriteTool(Tool):
                     embedding_result=embedding_result,
                     deferred_supersede_effects=deferred_effects,
                     prepared_plan=prepared_plan,
+                    event_scope=event_scope,
                 )
                 # Commit the cap-locked transaction so the advisory
                 # lock is released (it is transaction-scoped). The
@@ -759,6 +822,9 @@ class MemoryWriteTool(Tool):
                 # transient store fault into unlimited billed
                 # embeddings by retrying.
                 raise
+            from orchestrator.memory.revisions import observe_committed
+
+            await observe_committed(self.store, self.user_id)
             await self._apply_deferred_supersede_effects(deferred_effects)
             await self._check_and_set_contradiction(memory_id, content, effective_slot)
             return f"Memory created (ID: {memory_id})."
@@ -773,7 +839,7 @@ class MemoryWriteTool(Tool):
                 return "Invalid memory_id format"
 
             # Fetch the existing memory
-            old_memory = await self.store.get_memory(memory_id)
+            old_memory = await self.store.get_memory(memory_id, user_id=self.user_id)
             if not old_memory:
                 return "Memory not found"
 
@@ -849,7 +915,6 @@ class MemoryWriteTool(Tool):
             content = kwargs.get("content", old_memory.get("content", ""))
             category = kwargs.get("category", old_memory.get("category", "fact"))
             slot = kwargs.get("slot", old_memory.get("memory_slot"))
-            replacement_snapshot = CandidateSnapshot.capture(old_memory)
 
             # Compute the external embedding before opening the database
             # transaction, then serialize the authoritative count, close,
@@ -858,118 +923,43 @@ class MemoryWriteTool(Tool):
                 embedding_result = await prepare_memory_embedding(content, slot)
             except EmbeddingConfigurationError:
                 embedding_result = None
-            prepared_plan = await prepare_memory_plan(
-                self.store,
-                IncomingMemory(
-                    self.user_id,
-                    content,
-                    category,
-                    "user_created",
-                    old_memory.get("source_conversation_id"),
-                    slot,
-                ),
-                embedding_result=embedding_result,
-                excluded_memory_ids={memory_id},
-            )
-            cap_conn = None
-            deferred_effects = []
+            expected = kwargs.get("expected_revision_id")
+            if expected is not None:
+                expected = uuid.UUID(str(expected))
+            cap_conn, _ = await self.store.acquire_user_cap_lock(self.user_id)
             try:
-                cap_conn, _ = await self.store.acquire_user_cap_lock(self.user_id)
-                active_rows = await self.store.count_active_memories_for_user_within_lock(
-                    cap_conn, self.user_id
-                )
-                if active_rows >= MEMORY_WRITE_MAX_ACTIVE_ROWS and not replace_active:
-                    # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
-                    # tools.py:727): embedding was billed before this
-                    # refusal, so the rate-limit reservation must
-                    # remain consumed.
-                    await cap_conn.execute("ROLLBACK")
-                    await self.store._pool.release(cap_conn)
-                    cap_conn = None
-                    return (
-                        f"Memory storage cap reached ({MEMORY_WRITE_MAX_ACTIVE_ROWS} "
-                        "active memories). Delete an existing memory before writing "
-                        "a new one."
-                    )
-
-                # The advisory cap lock does not serialize admin edits. Lock the
-                # target AND selected merge row in UUID order, on this connection,
-                # and compare full plaintext/state before closing anything.
-                lock_ids = [memory_id]
-                if prepared_plan.equivalent_id is not None:
-                    lock_ids.append(prepared_plan.equivalent_id)
-                locked_rows = await self.store._lock_memory_rows(
-                    self.user_id,
-                    lock_ids,
-                    conn=cap_conn,
-                )
-                replacement = locked_rows.get(memory_id)
-                if replacement is None or not replacement_snapshot.matches(replacement):
-                    await cap_conn.execute("ROLLBACK")
-                    await self.store._pool.release(cap_conn)
-                    cap_conn = None
-                    return (
-                        "Memory was modified concurrently and could not be replaced. "
-                        "Retry the update."
-                    )
-                close_took_effect = await self.store.close_memory(
-                    memory_id, user_id=self.user_id, conn=cap_conn
-                )
-                if replace_active and not close_took_effect:
-                    # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
-                    # tools.py:741): embedding was billed before this
-                    # refusal, so the rate-limit reservation must
-                    # remain consumed.
-                    await cap_conn.execute("ROLLBACK")
-                    await self.store._pool.release(cap_conn)
-                    cap_conn = None
-                    return (
-                        "Memory was modified concurrently and could not be replaced. "
-                        "Retry the update."
-                    )
-
-                new_memory_id = await dedup_and_store(
-                    store=self.store,
-                    user_id=self.user_id,
-                    content=content,
-                    source_type="user_created",
+                updated = await self.store.update_memory_content(
+                    memory_id,
+                    content,
                     category=category,
-                    conversation_id=old_memory.get("source_conversation_id"),
-                    slot=slot,
-                    lock_conn=cap_conn,
-                    embedding_result=embedding_result,
-                    # Exclude the replacement target from every candidate
-                    # source after closing it on this transaction. Otherwise
-                    # it can still be selected as the best match and trigger
-                    # a redundant second close.
-                    excluded_memory_ids={memory_id},
-                    deferred_supersede_effects=deferred_effects,
-                    prepared_plan=prepared_plan,
-                    locked_rows=locked_rows,
+                    user_id=self.user_id,
+                    memory_slot=slot,
+                    embedding=embedding_result.embeddings[0] if embedding_result else None,
+                    embedding_model=embedding_result.storage_model if embedding_result else None,
+                    clear_embedding=embedding_result is None,
+                    expected_revision_id=expected or old_memory.get("head_revision_id"),
+                    event_scope=EventScope.model_validate(kwargs["event_scope"])
+                    if kwargs.get("event_scope")
+                    else None,
+                    relationship=kwargs.get("relationship", "correction"),
+                    conn=cap_conn,
+                    expected_source_pipeline="cloud"
+                    if source_conversation_id is not None
+                    else None,
                 )
+                if updated is None:
+                    await cap_conn.execute("ROLLBACK")
+                    return "Memory was modified concurrently; reload it before updating."
                 await cap_conn.execute("COMMIT")
-                await self.store._pool.release(cap_conn)
-                cap_conn = None
             except BaseException:
-                if cap_conn is not None:
-                    try:
-                        await cap_conn.execute("ROLLBACK")
-                    except Exception:
-                        pass
-                    try:
-                        await self.store._pool.release(cap_conn)
-                    except Exception:
-                        pass
-                # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
-                # tools.py:774): the embedding has already been
-                # billed in the update path before this point, so a
-                # store fault must consume the rate-limit reservation
-                # to prevent unlimited billed-embedding retries.
+                await cap_conn.execute("ROLLBACK")
                 raise
+            finally:
+                await self.store._pool.release(cap_conn)
+            from orchestrator.memory.revisions import observe_committed
 
-            await self._apply_deferred_supersede_effects(deferred_effects)
-            await self._check_and_set_contradiction(new_memory_id, content, slot)
-            return f"Memory updated. Old ID: {memory_id}, New ID: {new_memory_id}."
+            await observe_committed(self.store, self.user_id)
+            return f"Memory updated (ID: {memory_id}, revision: {updated['head_revision_id']})."
 
         elif action == "delete":
             memory_id_str = kwargs.get("memory_id")
@@ -979,7 +969,7 @@ class MemoryWriteTool(Tool):
                 memory_id = uuid.UUID(memory_id_str)
             except ValueError:
                 return "Invalid memory_id format"
-            old_memory = await self.store.get_memory(memory_id)
+            old_memory = await self.store.get_memory(memory_id, user_id=self.user_id)
             if not old_memory:
                 return "Memory not found"
             # Same authorization guard as `update` above: the target memory

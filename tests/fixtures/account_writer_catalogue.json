@@ -386,20 +386,98 @@
       "owner_source": "migrations/041_web_snapshots.sql",
       "ownership_path": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots",
       "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "memory_dependencies": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "root:users <- memory_dependencies",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_erased_sources": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "root:users <- memory_erased_sources",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_knowledge_clock": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "root:users <- memory_knowledge_clock",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_mutations": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "root:users <- memory_mutations",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_revision_segments": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "<cycle:memories> <- memories <- memory_revisions <- memory_revision_segments | root:users <- conversations <- memories <- memory_revisions <- memory_revision_segments | root:users <- memories <- memory_revisions <- memory_revision_segments | root:users <- memory_mutations <- memory_revisions <- memory_revision_segments | root:users <- memory_revisions <- memory_revision_segments",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_revisions": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "<cycle:memories> <- memories <- memory_revisions | root:users <- conversations <- memories <- memory_revisions | root:users <- memories <- memory_revisions | root:users <- memory_mutations <- memory_revisions | root:users <- memory_revisions",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_sources": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "<cycle:memories> <- memories <- memory_sources | root:users <- conversations <- memories <- memory_sources | root:users <- memories <- memory_sources | root:users <- memory_sources",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
+    },
+    "memory_tombstones": {
+      "category": "content",
+      "owner_source": "migrations/066_memory_bitemporal.sql",
+      "ownership_path": "root:users <- memory_tombstones",
+      "rationale": "Account/reset memory content or opaque erasure/knowledge metadata. Cascade verified by #601 synthetic PostgreSQL; no completed global fence or backup-restore guarantee."
     }
   },
   "fk_edges": {
-    "task_history_projection": ["task_history_binding"],
-    "resource_presentations": ["messages", "users"],
-    "resource_input_batches": ["tasks", "users"],
-    "resource_input_intents": ["resource_input_batches"],
-    "artifact_namespaces": ["deletion_journal_binding"],
-    "resource_catalog_heads": ["users"],
-    "resources": ["users"],
-    "resource_versions": ["resources"],
-    "resource_publications": ["artifact_namespaces", "resource_versions"],
-    "resource_references": ["conversations", "messages", "resource_versions", "tasks"],
-    "resource_version_intents": ["artifact_output_jobs", "resources", "users"],
+    "task_history_projection": [
+      "task_history_binding"
+    ],
+    "resource_presentations": [
+      "messages",
+      "users"
+    ],
+    "resource_input_batches": [
+      "tasks",
+      "users"
+    ],
+    "resource_input_intents": [
+      "resource_input_batches"
+    ],
+    "artifact_namespaces": [
+      "deletion_journal_binding"
+    ],
+    "resource_catalog_heads": [
+      "users"
+    ],
+    "resources": [
+      "users"
+    ],
+    "resource_versions": [
+      "resources"
+    ],
+    "resource_publications": [
+      "artifact_namespaces",
+      "resource_versions"
+    ],
+    "resource_references": [
+      "conversations",
+      "messages",
+      "resource_versions",
+      "tasks"
+    ],
+    "resource_version_intents": [
+      "artifact_output_jobs",
+      "resources",
+      "users"
+    ],
     "artifact_output_jobs": [
       "users"
     ],
@@ -550,6 +628,33 @@
     "web_snapshots": [
       "conversations",
       "users"
+    ],
+    "memory_knowledge_clock": [
+      "users"
+    ],
+    "memory_mutations": [
+      "users"
+    ],
+    "memory_revisions": [
+      "memories",
+      "memory_mutations",
+      "users"
+    ],
+    "memory_revision_segments": [
+      "memory_revisions"
+    ],
+    "memory_dependencies": [
+      "users"
+    ],
+    "memory_sources": [
+      "memories",
+      "users"
+    ],
+    "memory_tombstones": [
+      "users"
+    ],
+    "memory_erased_sources": [
+      "users"
     ]
   },
   "ownership_paths": {
@@ -615,7 +720,15 @@
     "users": "root:users",
     "video_credit_balances": "root:users <- video_credit_balances",
     "video_credit_transactions": "root:users <- video_credit_transactions",
-    "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots"
+    "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots",
+    "memory_dependencies": "root:users <- memory_dependencies",
+    "memory_erased_sources": "root:users <- memory_erased_sources",
+    "memory_knowledge_clock": "root:users <- memory_knowledge_clock",
+    "memory_mutations": "root:users <- memory_mutations",
+    "memory_revision_segments": "<cycle:memories> <- memories <- memory_revisions <- memory_revision_segments | root:users <- conversations <- memories <- memory_revisions <- memory_revision_segments | root:users <- memories <- memory_revisions <- memory_revision_segments | root:users <- memory_mutations <- memory_revisions <- memory_revision_segments | root:users <- memory_revisions <- memory_revision_segments",
+    "memory_revisions": "<cycle:memories> <- memories <- memory_revisions | root:users <- conversations <- memories <- memory_revisions | root:users <- memories <- memory_revisions | root:users <- memory_mutations <- memory_revisions | root:users <- memory_revisions",
+    "memory_sources": "<cycle:memories> <- memories <- memory_sources | root:users <- conversations <- memories <- memory_sources | root:users <- memories <- memory_sources | root:users <- memory_sources",
+    "memory_tombstones": "root:users <- memory_tombstones"
   },
   "writer_sites": [
     {
@@ -663,105 +776,220 @@
       "rationale": "Task-local ContextVar.reset restores lexical cleanup ownership; no application-data mutation or runtime guard claim. Bounded scanner treats reset as an unknown store write."
     },
     {
-      "owner_source": "orchestrator.resource_catalog", "qualname": "instant",
-      "kind": "filesystem_write", "fingerprint": "237c731376375320", "tables": [],
-      "unknown": true, "uncovered": true, "category": "deferred",
+      "owner_source": "orchestrator.resource_catalog",
+      "qualname": "instant",
+      "kind": "filesystem_write",
+      "fingerprint": "237c731376375320",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
       "rationale": "Conservative scanner candidate for timestamp string replace, not actual file I/O. Explicitly inventoried, no runtime-fence claim. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_csv", "qualname": "encode_csv",
-      "kind": "filesystem_write", "fingerprint": "09699fa1c6a4904a", "tables": [],
-      "unknown": true, "uncovered": true, "category": "deferred",
+      "owner_source": "orchestrator.resource_csv",
+      "qualname": "encode_csv",
+      "kind": "filesystem_write",
+      "fingerprint": "09699fa1c6a4904a",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
       "rationale": "Conservative scanner candidate for bounded StringIO write, not filesystem publication. Actual R0/registry authority remains separate. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_presentations", "qualname": "ResourcePresentations.detachment",
-      "kind": "sql_inline", "fingerprint": "c23fef24929ce643", "tables": ["resource_presentations"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_presentations",
+      "qualname": "ResourcePresentations.detachment",
+      "kind": "sql_inline",
+      "fingerprint": "c23fef24929ce643",
+      "tables": [
+        "resource_presentations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "Owner-approved two-pass bounded same-transaction presentation detachment with expected-source qualification and encrypted source-deleted provenance; no resource cascade or complete lifecycle-fence claim. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_presentations", "qualname": "ResourcePresentations.record",
-      "kind": "sql_inline", "fingerprint": "f4d1e2ec15153a2c", "tables": ["resource_presentations"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_presentations",
+      "qualname": "ResourcePresentations.record",
+      "kind": "sql_inline",
+      "fingerprint": "f4d1e2ec15153a2c",
+      "tables": [
+        "resource_presentations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "Explicit isolated C1 account-qualified immutable pinned presentation, actual task/message ownership and lease checks; no completed lifecycle fence. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._replay",
-      "kind": "sql_inline", "fingerprint": "689a6a7dd933a9e8", "tables": ["tasks"],
-      "unknown": false, "uncovered": true, "category": "deferred",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._replay",
+      "kind": "sql_inline",
+      "fingerprint": "689a6a7dd933a9e8",
+      "tables": [
+        "tasks"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
       "rationale": "Legacy canonical replay refreshes rotated request digest under the same account transaction; no new task, input backfill or complete writer fence. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
-      "kind": "sql_inline", "fingerprint": "51b67b0c9e49bdad", "tables": ["resource_references"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._detach",
+      "kind": "sql_inline",
+      "fingerprint": "51b67b0c9e49bdad",
+      "tables": [
+        "resource_references"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "Explicit C1 same-transaction encrypted provenance and live-source detachment; complete lifecycle fencing remains unqualified. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
-      "kind": "sql_inline", "fingerprint": "780c6b6456692f75", "tables": ["resource_catalog_heads"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._detach",
+      "kind": "sql_inline",
+      "fingerprint": "780c6b6456692f75",
+      "tables": [
+        "resource_catalog_heads"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "Explicit C1 source-detachment filter revision, not account/reset erasure. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._detach",
-      "kind": "sql_inline", "fingerprint": "a73fad343307edd3", "tables": ["resource_input_batches"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._detach",
+      "kind": "sql_inline",
+      "fingerprint": "a73fad343307edd3",
+      "tables": [
+        "resource_input_batches"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "Atomic canonical request erasure and closed deleted-key marker. Complete lifecycle fencing remains unqualified. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
-      "kind": "sql_inline", "fingerprint": "2824a2a25a4e0a66", "tables": ["resources"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline",
+      "fingerprint": "2824a2a25a4e0a66",
+      "tables": [
+        "resources"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 input resource insertion joined to actual task transaction; no completed lifecycle claim. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
-      "kind": "sql_inline", "fingerprint": "88d6a01a9f888aac", "tables": ["resource_catalog_heads"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline",
+      "fingerprint": "88d6a01a9f888aac",
+      "tables": [
+        "resource_catalog_heads"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 generation-bound catalog initialization on actual acceptance transaction. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
-      "kind": "sql_inline", "fingerprint": "97b96eaf8d0bf820", "tables": ["resource_catalog_heads"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline",
+      "fingerprint": "97b96eaf8d0bf820",
+      "tables": [
+        "resource_catalog_heads"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 input version watermark committed with task and ordered references. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
-      "kind": "sql_inline", "fingerprint": "b2b755a3892e2d2a", "tables": ["resource_versions"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline",
+      "fingerprint": "b2b755a3892e2d2a",
+      "tables": [
+        "resource_versions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 immutable received representation insertion; account/reset content. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
-      "kind": "sql_inline", "fingerprint": "c0130b6802d63f59", "tables": ["resource_references"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline",
+      "fingerprint": "c0130b6802d63f59",
+      "tables": [
+        "resource_references"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 account-qualified ordered pinned input reference on actual acceptance connection. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._publish",
-      "kind": "sql_inline", "fingerprint": "c4a48280fae5e460", "tables": ["resource_publications"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._publish",
+      "kind": "sql_inline",
+      "fingerprint": "c4a48280fae5e460",
+      "tables": [
+        "resource_publications"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 actual verified byte-bearing input publication; metadata-only has no row. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._reserve",
-      "kind": "sql_inline", "fingerprint": "21b61fc02de4a2f6", "tables": ["resource_input_batches"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._reserve",
+      "kind": "sql_inline",
+      "fingerprint": "21b61fc02de4a2f6",
+      "tables": [
+        "resource_input_batches"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 stable account-bound keyed submission identity committed before effects. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._reserve",
-      "kind": "sql_inline", "fingerprint": "713b80de8c1f6433", "tables": ["resource_input_intents"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._reserve",
+      "kind": "sql_inline",
+      "fingerprint": "713b80de8c1f6433",
+      "tables": [
+        "resource_input_intents"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "C1 ordered immutable received representation intent tracking before filesystem effects. Uncovered."
     },
     {
-      "owner_source": "orchestrator.resource_inputs", "qualname": "ResourceInputs._accept_with_stage",
-      "kind": "sql_inline", "fingerprint": "4bf57b8de6afd945", "tables": ["resource_input_batches"],
-      "unknown": false, "uncovered": true, "category": "content",
+      "owner_source": "orchestrator.resource_inputs",
+      "qualname": "ResourceInputs._accept_with_stage",
+      "kind": "sql_inline",
+      "fingerprint": "4bf57b8de6afd945",
+      "tables": [
+        "resource_input_batches"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
       "rationale": "Actual same-account task/message/origin validation before accepted pointer transition; no completed fence. Uncovered."
     },
     {
@@ -769,7 +997,9 @@
       "qualname": "NamespaceController._ensure",
       "kind": "sql_inline",
       "fingerprint": "414aa47231b8518e",
-      "tables": ["artifact_namespaces"],
+      "tables": [
+        "artifact_namespaces"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "control",
@@ -780,7 +1010,9 @@
       "qualname": "NamespaceController._ensure",
       "kind": "sql_inline",
       "fingerprint": "93a2077245cb15c9",
-      "tables": ["deletion_journal_applied"],
+      "tables": [
+        "deletion_journal_applied"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "control",
@@ -791,7 +1023,9 @@
       "qualname": "NamespaceController._ensure",
       "kind": "sql_inline",
       "fingerprint": "ce1ef98e23f59828",
-      "tables": ["artifact_namespaces"],
+      "tables": [
+        "artifact_namespaces"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "control",
@@ -1011,7 +1245,9 @@
       "qualname": "ResourceStore.publish_output",
       "kind": "sql_inline",
       "fingerprint": "0637a128968b8b91",
-      "tables": ["resource_publications"],
+      "tables": [
+        "resource_publications"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -1022,7 +1258,9 @@
       "qualname": "ResourceStore.publish_output",
       "kind": "sql_inline",
       "fingerprint": "12f8e0c25c0940ca",
-      "tables": ["resource_catalog_heads"],
+      "tables": [
+        "resource_catalog_heads"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -1033,7 +1271,9 @@
       "qualname": "ResourceStore.publish_output",
       "kind": "sql_inline",
       "fingerprint": "6262a87a27ccace3",
-      "tables": ["resources"],
+      "tables": [
+        "resources"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -1044,7 +1284,9 @@
       "qualname": "ResourceStore.publish_output",
       "kind": "sql_inline",
       "fingerprint": "77a5713cd53b0b63",
-      "tables": ["resource_references"],
+      "tables": [
+        "resource_references"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -1055,7 +1297,9 @@
       "qualname": "ResourceStore.publish_output",
       "kind": "sql_inline",
       "fingerprint": "dcd2fca830d8e93a",
-      "tables": ["resource_catalog_heads"],
+      "tables": [
+        "resource_catalog_heads"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -1066,7 +1310,9 @@
       "qualname": "ResourceStore.publish_output",
       "kind": "sql_inline",
       "fingerprint": "f6784cd6d80d0689",
-      "tables": ["resource_versions"],
+      "tables": [
+        "resource_versions"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -1077,7 +1323,9 @@
       "qualname": "ResourceStore.reserve_version",
       "kind": "sql_inline",
       "fingerprint": "0cedf05b2b317bb6",
-      "tables": ["resource_version_intents"],
+      "tables": [
+        "resource_version_intents"
+      ],
       "unknown": false,
       "uncovered": true,
       "category": "content",
@@ -3554,19 +3802,6 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
-      "owner_source": "orchestrator.memory.consolidation",
-      "qualname": "consolidate_cluster",
-      "kind": "sql_inline",
-      "fingerprint": "376c512541f9a1c4",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
       "owner_source": "orchestrator.memory.dedup",
       "qualname": "_as_datetime_or_none",
       "kind": "filesystem_write",
@@ -3672,7 +3907,9 @@
       "qualname": "save_plan",
       "kind": "sql_inline",
       "fingerprint": "4096c85b9c136fcf",
-      "tables": ["entities"],
+      "tables": [
+        "entities"
+      ],
       "unknown": false,
       "uncovered": false,
       "category": "content",
@@ -3684,7 +3921,9 @@
       "qualname": "save_plan",
       "kind": "sql_inline",
       "fingerprint": "72a0ba343380fe5e",
-      "tables": ["entities"],
+      "tables": [
+        "entities"
+      ],
       "unknown": false,
       "uncovered": false,
       "category": "content",
@@ -3696,7 +3935,9 @@
       "qualname": "save_plan",
       "kind": "sql_inline",
       "fingerprint": "eb14e145bb977947",
-      "tables": ["entities"],
+      "tables": [
+        "entities"
+      ],
       "unknown": false,
       "uncovered": false,
       "category": "content",
@@ -3793,35 +4034,9 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore._insert_memory_with_outcome._insert",
-      "kind": "sql_inline",
-      "fingerprint": "3cbc4c73b239b8e6",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.backfill_memory_content_hashes",
       "kind": "sql_inline",
       "fingerprint": "dc03d6871710ba69",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.backfill_memory_content_hashes",
-      "kind": "sql_inline",
-      "fingerprint": "f2b79771aec8a722",
       "tables": [
         "memories"
       ],
@@ -3914,110 +4129,6 @@
       "fingerprint": "1bde1cd9ede99b4c",
       "tables": [
         "conversations"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_all_memories",
-      "kind": "sql_inline",
-      "fingerprint": "5e83dda7673b1b33",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_all_memories",
-      "kind": "sql_inline",
-      "fingerprint": "7928671ada6042cf",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_conversation",
-      "kind": "sql_inline",
-      "fingerprint": "77ff4890950e5bd9",
-      "tables": [
-        "conversations"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_memories_by_source",
-      "kind": "sql_inline",
-      "fingerprint": "7f95cba4b7f60218",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_memory",
-      "kind": "sql_inline",
-      "fingerprint": "1a422dfe14332931",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_memory",
-      "kind": "sql_inline",
-      "fingerprint": "216560129904f3a5",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_memory",
-      "kind": "sql_inline",
-      "fingerprint": "aafd6a45ffb1ef03",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.delete_memory",
-      "kind": "sql_inline",
-      "fingerprint": "f637bbc72eae1a32",
-      "tables": [
-        "memories"
       ],
       "unknown": false,
       "uncovered": true,
@@ -4349,19 +4460,6 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.run_garbage_collect",
-      "kind": "sql_inline",
-      "fingerprint": "e7bd7dd01727e95f",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.save_generated_conversation_title",
       "kind": "sql_inline",
       "fingerprint": "47b3049b3332065d",
@@ -4373,32 +4471,6 @@
       "guard_contract": "tests/test_title_account_guard_postgres.py",
       "category": "content",
       "rationale": "J1c-1b generated titles only: originating account guard and owner-qualified SQL in one transaction; both workers carry capture. Initial titles, manual renames and all other writers remain uncovered. Not a completed account fence."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.supersede_memory",
-      "kind": "sql_inline",
-      "fingerprint": "51051090e59c64d5",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.supersede_memory._insert",
-      "kind": "sql_inline",
-      "fingerprint": "15c3c3cbb430d1c6",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
       "owner_source": "orchestrator.memory.store",
@@ -4481,35 +4553,9 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.update_memory_content",
-      "kind": "sql_inline",
-      "fingerprint": "ed1413cf731b2204",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.update_memory_embedding",
       "kind": "sql_inline",
       "fingerprint": "4421bc955b72b7da",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.update_memory_metadata",
-      "kind": "sql_inline",
-      "fingerprint": "6bb14b46a86391e9",
       "tables": [
         "memories"
       ],
@@ -4536,19 +4582,6 @@
       "qualname": "MemoryStore.update_memory_status",
       "kind": "sql_inline",
       "fingerprint": "9d62c01ea9992410",
-      "tables": [
-        "memories"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.update_memory_tier",
-      "kind": "sql_inline",
-      "fingerprint": "81be6dc809693140",
       "tables": [
         "memories"
       ],
@@ -7841,6 +7874,460 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Uncalled synthetic packet owner: self.expire retires inactive RAM payloads while preserving assignment tombstones and active ownership. Conservatively retained as deferred and uncovered; no persistent write or runtime fence is claimed."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "depend",
+      "kind": "sql_inline",
+      "line_hint": 36,
+      "fingerprint": "01cdf813d495ab8c",
+      "tables": [
+        "memory_dependencies"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 80,
+      "fingerprint": "0838e6c02da038ea",
+      "tables": [
+        "memory_knowledge_clock"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 145,
+      "fingerprint": "0e006588502e8885",
+      "tables": [
+        "dream_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 109,
+      "fingerprint": "12e25ea1b7ca0a89",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 187,
+      "fingerprint": "156f89fe9a0841a8",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 90,
+      "fingerprint": "1b7f05b8a8c28b38",
+      "tables": [
+        "memory_erased_sources"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 99,
+      "fingerprint": "6ec02bcb7e2bf840",
+      "tables": [
+        "memory_tombstones"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 134,
+      "fingerprint": "7c7f5ea7b6fe351b",
+      "tables": [
+        "memory_extraction_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 123,
+      "fingerprint": "853aba0bc01f5cae",
+      "tables": [
+        "entities"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 116,
+      "fingerprint": "9aa8522c54f886db",
+      "tables": [
+        "memory_revision_segments"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 196,
+      "fingerprint": "a30033d8251a6d94",
+      "tables": [
+        "memory_dependencies"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 84,
+      "fingerprint": "ad7fe2ad23073bae",
+      "tables": [
+        "memory_erased_sources"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 139,
+      "fingerprint": "b011132f77321af5",
+      "tables": [
+        "retrieval_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 193,
+      "fingerprint": "b8e4b999139f29a7",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 181,
+      "fingerprint": "c6ccb90a1f81c481",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "erase",
+      "kind": "sql_inline",
+      "line_hint": 129,
+      "fingerprint": "f102a5291e9ce643",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.lineage",
+      "qualname": "record_sources",
+      "kind": "sql_inline",
+      "line_hint": 13,
+      "fingerprint": "6a4e10080f99d523",
+      "tables": [
+        "memory_sources"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "_observe",
+      "kind": "sql_inline",
+      "line_hint": 382,
+      "fingerprint": "1f15aa6e68c2fe4f",
+      "tables": [
+        "memory_knowledge_clock"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "_observe",
+      "kind": "sql_inline",
+      "line_hint": 389,
+      "fingerprint": "3119c72b8c5b6d41",
+      "tables": [
+        "memory_mutations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "enter",
+      "kind": "sql_inline",
+      "line_hint": 220,
+      "fingerprint": "2e2afeda7bbb5c39",
+      "tables": [
+        "memory_knowledge_clock"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "enter",
+      "kind": "sql_inline",
+      "line_hint": 206,
+      "fingerprint": "395cb5f9c5bcdeff",
+      "tables": [
+        "memory_mutations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "enter",
+      "kind": "sql_inline",
+      "line_hint": 227,
+      "fingerprint": "930e139bc04d1829",
+      "tables": [
+        "memory_mutations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "enter",
+      "kind": "sql_inline",
+      "line_hint": 189,
+      "fingerprint": "cb8325c6053cfb63",
+      "tables": [
+        "memory_knowledge_clock"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "original_capture",
+      "kind": "store_write",
+      "line_hint": 171,
+      "fingerprint": "6aeff482e13c3366",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "read_scope",
+      "kind": "store_write",
+      "line_hint": 48,
+      "fingerprint": "fcfc21f32a3a74e6",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore._insert_memory_with_outcome._insert",
+      "kind": "sql_inline",
+      "line_hint": 1886,
+      "fingerprint": "3e05a1d1e02af920",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.delete_conversation",
+      "kind": "sql_inline",
+      "line_hint": 669,
+      "fingerprint": "15346507a16cc1e8",
+      "tables": [
+        "conversations"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_metadata",
+      "kind": "sql_inline",
+      "line_hint": 2565,
+      "fingerprint": "fc6065a0c95b624f",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_tier",
+      "kind": "sql_inline",
+      "line_hint": 2544,
+      "fingerprint": "942e437287c9e488",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.update_memory_content",
+      "kind": "sql_inline",
+      "line_hint": 2377,
+      "fingerprint": "b782391dd7cd9a06",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.extraction",
+      "qualname": "extracted_event_scope",
+      "kind": "filesystem_write",
+      "line_hint": 494,
+      "fingerprint": "bd3afa1b88caa539",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.revisions",
+      "qualname": "mutation",
+      "kind": "store_write",
+      "line_hint": 263,
+      "fingerprint": "812752f4c76569cc",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "#601 scoped memory revision/erasure path; execution qualification is separate. Scanner classification is not global account fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.backfill_memory_content_hashes",
+      "kind": "sql_inline",
+      "line_hint": 274,
+      "fingerprint": "f0ffd05b937b3d7d",
+      "tables": [
+        "memories"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "#601 conditional duplicate-backfill closure inside a registered mutation; null-hash/current-row predicates preserve concurrent completion. Explicit classification only, not a global account fence or deployment qualification."
     },
     {
       "owner_source": "orchestrator.services.restore_history.artifact_projection",

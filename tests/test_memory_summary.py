@@ -78,6 +78,7 @@ def _conversation_input(
         "has_hole": has_hole,
         "messages": messages if messages is not None else [],
         "snapshot_at": SimpleNamespace(),
+        "memory_erasure_epoch": 0,
     }
     return payload
 

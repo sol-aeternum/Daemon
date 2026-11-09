@@ -13,6 +13,7 @@ import pytest
 from orchestrator.memory.dedup import dedup_and_store, deduplicate_facts
 from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.memory.extraction import ExtractedFact
+from tests.memory_capture_support import memory_store_mock
 
 
 def _new_fact(content: str, slot: str | None = None) -> ExtractedFact:
@@ -51,7 +52,7 @@ def _mock_contradiction_check(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dedup_slot_supersedes_with_similarity_threshold() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     store.search_memories.return_value = [
         {
             "id": uuid.uuid4(),
@@ -85,7 +86,7 @@ async def test_dedup_slot_supersedes_with_similarity_threshold() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_slot_merges_when_similarity_is_high() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = [
         {
@@ -115,7 +116,7 @@ async def test_dedup_slot_merges_when_similarity_is_high() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_without_slot_falls_back_to_similarity() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     store.search_memories.return_value = [
         {
             "id": uuid.uuid4(),
@@ -142,7 +143,7 @@ async def test_dedup_without_slot_falls_back_to_similarity() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_same_slot_mid_similarity_supersedes() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     store.search_memories.return_value = [
         {
             "id": uuid.uuid4(),
@@ -182,7 +183,7 @@ async def test_dedup_same_slot_mid_similarity_supersedes() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_same_slot_very_low_similarity_inserts_new_active() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     store.search_memories.return_value = [
         {
             "id": uuid.uuid4(),
@@ -216,7 +217,7 @@ async def test_dedup_same_slot_very_low_similarity_inserts_new_active() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_queries_include_historical() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     store.search_memories.return_value = []
     store.insert_memory.return_value = {
         "id": uuid.uuid4(),
@@ -239,7 +240,7 @@ async def test_dedup_queries_include_historical() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_fallback_embedding_uses_lexical_existing_memory() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = []
     store.search_memories_bm25.return_value = [
@@ -278,7 +279,7 @@ async def test_dedup_fallback_embedding_uses_lexical_existing_memory() -> None:
 
 @pytest.mark.asyncio
 async def test_dedup_primary_embedding_checks_lexical_fallback_memories() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = []
     store.search_memories_bm25.return_value = [
@@ -316,7 +317,7 @@ async def test_dedup_primary_embedding_checks_lexical_fallback_memories() -> Non
 
 @pytest.mark.asyncio
 async def test_dedup_fallback_embedding_checks_same_slot_outside_bm25() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = []
     store.search_memories_bm25.return_value = []
@@ -358,7 +359,7 @@ async def test_dedup_fallback_embedding_checks_same_slot_outside_bm25() -> None:
 
 @pytest.mark.asyncio
 async def test_memory_write_slot_passthrough_to_dedup() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     with patch(
         "orchestrator.memory.dedup.embed_documents_with_metadata", new_callable=AsyncMock
     ) as embed:
@@ -383,7 +384,7 @@ async def test_memory_write_slot_passthrough_to_dedup() -> None:
 
 @pytest.mark.asyncio
 async def test_current_vehicle_closes_other_active_vehicle_family() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     old_vehicle_id = uuid.uuid4()
     keep_id = uuid.uuid4()
     store.search_memories.return_value = [
@@ -422,7 +423,7 @@ async def test_current_vehicle_closes_other_active_vehicle_family() -> None:
 
 @pytest.mark.asyncio
 async def test_current_vehicle_closes_high_similarity_no_slot_memory() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     no_slot_id = uuid.uuid4()
     keep_id = uuid.uuid4()
     store.search_memories.return_value = [
@@ -461,7 +462,7 @@ async def test_current_vehicle_closes_high_similarity_no_slot_memory() -> None:
 
 @pytest.mark.asyncio
 async def test_extracted_does_not_supersede_user_created_same_conversation() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     conversation_id = uuid.uuid4()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = [
@@ -495,7 +496,7 @@ async def test_extracted_does_not_supersede_user_created_same_conversation() -> 
 
 @pytest.mark.asyncio
 async def test_extracted_does_not_supersede_recent_user_created_within_window() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = [
         {
@@ -528,7 +529,7 @@ async def test_extracted_does_not_supersede_recent_user_created_within_window() 
 
 @pytest.mark.asyncio
 async def test_extracted_can_supersede_user_created_outside_window() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     existing_id = uuid.uuid4()
     store.search_memories.return_value = [
         {

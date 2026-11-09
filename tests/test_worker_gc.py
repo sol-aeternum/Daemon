@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 from orchestrator.artifacts import user_artifact_directory
 from orchestrator.memory.encryption import ContentEncryption
@@ -24,21 +25,92 @@ def _memory_store(pool: AsyncMock) -> MemoryStore:
 
 @pytest.mark.asyncio
 async def test_memory_store_run_garbage_collect_deletes_expired_non_active_rows() -> None:
+    now = datetime(2026, 11, 9, tzinfo=UTC)
+    owner = uuid.uuid4()
+
+    def row(
+        status: str,
+        days: int,
+        *,
+        purge_after: datetime | None = None,
+        tombstone: bool = False,
+        valid_to: datetime | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": uuid.uuid4(),
+            "user_id": owner,
+            "status": status,
+            "updated_at": now - timedelta(days=days),
+            "purge_after": purge_after,
+            "tombstone": tombstone,
+            "valid_to": valid_to,
+        }
+
+    candidates = [
+        row("deleted", 30, tombstone=True, purge_after=now),
+        row("inactive", 91),
+        row("pending", 31),
+    ]
+    retained = [
+        row("deleted", 29, tombstone=True, purge_after=now + timedelta(days=1)),
+        # A tombstone's own grace governs, even if the old row timestamp expired.
+        row("deleted", 100, tombstone=True, purge_after=now + timedelta(days=1)),
+        row("inactive", 90),
+        row("pending", 30),
+        row("rejected", 30),
+        row("deleted", 30),
+        # Superseded history is not age-capped: neither explicit nor legacy closed rows.
+        row("superseded", 1000),
+        row("active", 1000, valid_to=now - timedelta(days=999)),
+        row("active", 1000),
+    ]
+
+    async def eligible_rows(sql, *args):
+        # Pin the real tombstone/clock query, not a permissive SQL substring.
+        assert " ".join(sql.split()) == (
+            "SELECT m.id,m.user_id FROM memories m LEFT JOIN memory_tombstones t "
+            "ON t.user_id=m.user_id AND t.memory_id=m.id WHERE "
+            "(t.purge_after IS NOT NULL AND t.purge_after<=clock_timestamp()) "
+            "OR (t.memory_id IS NULL AND ((m.status='inactive' AND m.updated_at<clock_timestamp()-interval '90 days') "
+            "OR (m.status IN ('pending','rejected','deleted') AND m.updated_at<clock_timestamp()-interval '30 days')))"
+        )
+        assert args == ()
+        eligible = [
+            item
+            for item in [*candidates, *retained]
+            if (item["purge_after"] is not None and item["purge_after"] <= now)
+            or (
+                not item["tombstone"]
+                and (
+                    (item["status"] == "inactive" and item["updated_at"] < now - timedelta(days=90))
+                    or (
+                        item["status"] in {"pending", "rejected", "deleted"}
+                        and item["updated_at"] < now - timedelta(days=30)
+                    )
+                )
+            )
+        ]
+        assert eligible == candidates
+        return [{"id": item["id"], "user_id": item["user_id"]} for item in eligible]
+
     pool = AsyncMock()
-    pool.fetchval.return_value = 3
-    pool.execute.return_value = "DELETE 2"
+    pool.fetch.side_effect = eligible_rows
     store = _memory_store(pool)
+    # GC delegates physical lineage purge to the public owner-qualified method,
+    # which owns registered mutation/erasure-clock handling (real-PG tested).
+    # One selected row disappears before deletion; count only acknowledged purges.
+    delete = AsyncMock(side_effect=[True, False, True])
+    store.delete_memory = delete
 
     result = await store.run_garbage_collect()
 
     assert result == {"scanned": 3, "deleted": 2}
-    assert pool.fetchval.await_count == 1
-    assert pool.execute.await_count == 1
-    count_sql = pool.fetchval.await_args.args[0]
-    delete_sql = pool.execute.await_args.args[0]
-    for status in ("inactive", "rejected", "pending", "deleted"):
-        assert f"status = '{status}'" in count_sql
-        assert f"status = '{status}'" in delete_sql
+    pool.fetch.assert_awaited_once()
+    assert delete.await_args_list == [
+        call(item["id"], user_id=owner, soft=False) for item in candidates
+    ]
+    pool.fetchval.assert_not_awaited()
+    pool.execute.assert_not_awaited()  # No unguarded bulk-delete shortcut.
 
 
 @pytest.mark.asyncio

@@ -769,6 +769,14 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "guard_content_write"),
     },
+    # #601 preserves the same account-generation guard at its registered
+    # revision transaction seam; no journal/request/phase API is admitted.
+    "orchestrator/memory/revisions.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+        ("orchestrator.services.account_control.guard", "capture_generation"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
+    },
     "orchestrator/worker/jobs.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
@@ -821,6 +829,7 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
     },
     "orchestrator/tasks/store.py": {
+        ("orchestrator.services.account_control.guard", "capture_generation"),
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
         ("orchestrator.services.account_control.guard", "guard_content_write"),
@@ -979,7 +988,7 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         ),
         (
             "orchestrator/tasks/store.py",
-            "from orchestrator.services.account_control.guard import capture_generation",
+            "from orchestrator.services.account_control.store import record_request_facts",
         ),
         (
             "orchestrator/tasks/store.py",

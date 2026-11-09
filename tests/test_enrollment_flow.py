@@ -209,6 +209,8 @@ class MockPool:
     async def fetchval(self, sql, *args):
         if "COUNT(*)" in sql and "devices" in sql and "created_at >=" in sql:
             return self._recent_device_creations_count
+        if "to_regclass('memory_mutations')" in sql:
+            return True
         if "COUNT(*)" in sql and "devices" in sql:
             return self._active_count
         if "SELECT NOW()" in sql:

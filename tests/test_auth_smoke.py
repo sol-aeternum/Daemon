@@ -38,6 +38,8 @@ class MockConn:
         self._in_transaction = False
 
     async def fetchval(self, sql, *args):
+        if "to_regclass('memory_mutations')" in sql:
+            return True  # Synthetic matching-schema fixture; real startup is PG-tested.
         if "SELECT user_id FROM entitlement_accounts" in sql:
             return SINGLETON_ID if self._pool._entitlement_exists else None
         if "FROM system_state" in sql:
@@ -440,6 +442,8 @@ class MockPool:
         self._system_state: dict[str, str] = {}
 
     async def fetchval(self, sql, *args):
+        if "to_regclass('memory_mutations')" in sql:
+            return True
         if "FROM system_state" in sql:
             return self._system_state.get(args[0])
         if "COUNT(*)" in sql and "devices" in sql:

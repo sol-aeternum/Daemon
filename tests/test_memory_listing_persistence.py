@@ -45,6 +45,7 @@ async def _seed(pool: asyncpg.Pool, store: MemoryStore) -> uuid.UUID:
         user_id,
         f"memory-listing+{user_id.hex}@daemon.test",
     )
+    await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
     plan = (
         [("active", "extracted")] * 14
         + [("active", "user_created")] * 5
@@ -64,10 +65,12 @@ async def _seed(pool: asyncpg.Pool, store: MemoryStore) -> uuid.UUID:
         )
         assert memory is not None
     # Force created_at ties so paging must rely on the id tie-breaker.
-    await pool.execute(
-        "UPDATE memories SET created_at = '2026-01-01T00:00:00Z' WHERE user_id = $1",
-        user_id,
-    )
+    from orchestrator.memory.revisions import capture, mutation
+
+    async with mutation(store, await capture(store, user_id)) as conn:
+        await conn.execute(
+            "UPDATE memories SET created_at='2026-01-01T00:00:00Z' WHERE user_id=$1", user_id
+        )
     return user_id
 
 

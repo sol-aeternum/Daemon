@@ -399,6 +399,65 @@ class FakePool:
                 }
             )
 
+    def _allows_unbounded_reference(self) -> bool:
+        return False
+
+    def verify_current_projection(self, sql, args, kind):
+        """Pin the actual projection, scope filters, ranking and limit contract.
+
+        This is a query-shape double, not an implementation of the SQL view.
+        In particular, accepting any SELECT mentioning a memory table would
+        silently hide a regression back to unqualified current-row retrieval.
+        """
+        expected = {
+            "vector": """
+                SELECT *, 1 - (embedding <=> $2::vector) AS similarity
+                FROM memory_current_assertions
+                WHERE user_id = $1 AND status != 'deleted' AND tier != 'l0'
+                AND ($4::bool OR valid_to IS NULL)
+                AND ($5::bool OR local_only = FALSE)
+                AND ($8::bool OR source_type != 'dream')
+                AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
+                AND embedding IS NOT NULL
+                AND ($10::text IS NULL OR embedding_model = $10)
+                AND ($7::text IS NULL OR memory_slot = $7)
+                AND 1 - (embedding <=> $2::vector) >= $3
+                ORDER BY embedding <=> $2::vector LIMIT $6
+            """,
+            "bm25": """
+                SELECT *, ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
+                FROM memory_current_assertions,
+                (SELECT CASE WHEN $11::bool
+                    THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
+                        FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
+                    ELSE plainto_tsquery('english', $2) END AS tsq) AS bm25_query
+                WHERE user_id = $1 AND status != 'deleted'
+                AND ($3::bool OR valid_to IS NULL)
+                AND ($4::bool OR local_only = FALSE)
+                AND ($7::bool OR source_type != 'dream')
+                AND ($8::uuid[] IS NULL OR source_conversation_id = ANY($8::uuid[]))
+                AND (embedding_model = ANY($9::text[]) OR embedding_model IS NULL)
+                AND ($10::bool OR tier != 'l0')
+                AND content_tsv IS NOT NULL AND content_tsv @@ bm25_query.tsq
+                AND ($5::text IS NULL OR memory_slot = $5)
+                ORDER BY bm25_score DESC LIMIT $6
+            """,
+            "l0": """
+                SELECT * FROM memory_current_assertions
+                WHERE user_id = $1 AND tier = 'l0'
+                AND ($2::boolean OR local_only IS FALSE)
+                AND status = 'active' AND valid_to IS NULL ORDER BY created_at ASC
+            """,
+        }
+        assert kind in expected
+        assert " ".join(sql.split()) == " ".join(expected[kind].split()), sql
+        assert isinstance(args[0], uuid.UUID)
+        assert len(args) == {"vector": 10, "bm25": 11, "l0": 2}[kind]
+        boolean_positions = {"vector": (3, 4, 7), "bm25": (2, 3, 6, 9, 10), "l0": (1,)}
+        assert all(type(args[pos]) is bool for pos in boolean_positions[kind])
+        if kind != "l0" and not (self._allows_unbounded_reference() and args[5] is None):
+            assert type(args[5]) is int and args[5] > 0
+
     async def fetchrow(self, sql, *args):
         assert sql.lstrip().startswith("SELECT count(*) AS rows")
         return {"rows": 0, "digest": "synthetic"}
@@ -410,18 +469,31 @@ class FakePool:
         if sql.startswith("SELECT id, user_id, source_conversation_id FROM memories"):
             return self.rows
         if "AS similarity" in sql:
+            self.verify_current_projection(sql, args, "vector")
             self.retrievals += 1
             self.vector_limits.append(args[5])
             rows = [row for row in self.rows if row["user_id"] == args[0]]
-            if args[0] == self.drop_prefix_user and args[5] > 10:
+            if args[0] == self.drop_prefix_user and args[5] is not None and args[5] > 10:
                 rows = rows[1:]
             return rows[: args[5]]
+        if "AS bm25_score" in sql:
+            self.verify_current_projection(sql, args, "bm25")
+            return []
+        if "FROM memory_current_assertions" in sql:
+            self.verify_current_projection(sql, args, "l0")
+            return []
         if "FROM memories" in sql or "FROM entities" in sql:
             return []
         raise AssertionError(sql)
 
     async def fetchval(self, sql, *args):
         if "SELECT EXISTS" in sql:
+            assert " ".join(sql.split()) == (
+                "SELECT EXISTS ( SELECT 1 FROM memories WHERE user_id = $1 "
+                "AND embedding_model = $2 AND status != 'deleted' AND tier != 'l0' "
+                "AND ($3::bool OR valid_to IS NULL) AND ($4::bool OR local_only = FALSE) )"
+            ), sql
+            assert len(args) == 4 and isinstance(args[0], uuid.UUID)
             return False
         raise AssertionError(sql)
 

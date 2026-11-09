@@ -185,7 +185,7 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
             "run_completed_at": last_run_completed_at,
         }
     ]
-    store.insert_memory.return_value = {"id": uuid.uuid4()}
+    store.publish_derived_memory.return_value = {"id": uuid.uuid4()}
     for memory in store.get_dream_candidate_memories.return_value:
         memory["local_only"] = False
     store.log_dream_run.return_value = {"id": uuid.uuid4()}
@@ -220,11 +220,14 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
     assert result["observations_created"] == 1
     assert "hobby.music" in result["skipped_families"]
     assert mock_dream.await_count == 1
-    insert_call = store.insert_memory.await_args.kwargs
+    insert_call = store.publish_derived_memory.await_args.kwargs
     assert insert_call["category"] == "observation"
     assert insert_call["source_type"] == "dream"
     assert insert_call["content"].startswith("User ")
     assert insert_call["confidence"] == 0.88
+    assert len(insert_call["parents"]) == 2
+    assert insert_call["metadata"]["dream_family"] == "food.coffee"
+    store.insert_memory.assert_not_awaited()
     metadata_call = store.update_memory_metadata.await_args.args[1]
     assert metadata_call["dream_family"] == "food.coffee"
     assert len(metadata_call["source_memory_ids"]) == 2

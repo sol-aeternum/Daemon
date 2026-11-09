@@ -60,6 +60,12 @@ their approved retention, quota, deletion and export contract is documented in
 
 ### Tables
 
+Source-only #601 adds immutable revision bundles, explicit event scopes and
+committed knowledge watermarks in `migrations/066_memory_bitemporal.sql`.
+The legacy `valid_from`/`valid_to` fields below describe row lifetime, **not**
+event validity or commit visibility. See [the contract and release blockers](docs/memory/bitemporal.md).
+Qualification is in progress; this is not deployment or migration-application evidence.
+
 #### `conversations`
 ```sql
 id UUID PRIMARY KEY
