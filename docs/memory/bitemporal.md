@@ -415,3 +415,52 @@ checks passed (`pr693-benchmark-compat-final.xml`); full Ruff/format/types and
 focused high-severity Bandit also passed. Expanded fingerprints intentionally
 do not certify pre-066 pinned baselines; no frozen evidence was rewritten.
 Primary final review and full project gates remain separate.
+
+### PR #693 follow-up — diagnostic bookkeeping and checkpoint publication
+
+The default benchmark fingerprint compares protected evaluation state, not a
+byte-for-byte recovery image. Erasure-fenced retrieval diagnostics can advance
+the clock sequence/time, append assertion-free mutations and seal post-commit
+observations without changing retrieval inputs. Those bookkeeping changes are
+excluded. The fingerprint retains current account generation/restrictions,
+erasure epoch, clock-regression status, revision-bearing mutation identity and
+write lower bounds, complete revisions/segments, dependencies, sources,
+tombstones, erased spans, and existing ranking/locality/source inputs. An absent
+clock and its first zero-epoch diagnostic clock normalize alike. A missing or
+rewound clock below existing assertion revisions remains invalid protected state.
+This does not certify unchanged historical wall-clock bounds; diagnostic exclusion neither
+rewinds nor deletes any clock/mutation/protection records. Orphan erasure still
+advances the epoch and forces conservative rebuild when restoration is inexact.
+No state-mismatch override or frozen benchmark evidence is changed.
+
+Migration 066 deduplicates legacy owner/generation pairs before evaluating the
+volatile baseline timestamp. Multiple memories per owner therefore share one
+baseline mutation without inventing earlier knowledge or suppressing conflicts.
+
+Queued extraction checkpoints now use the same account-first, ordered temporal
+mutation boundary as fact commits, with the original input erasure epoch. The
+barrier precedes source locks, owner/conversation arguments must match the input
+capture, and the log/cursor is returned only after acknowledged commit. Erasure
+either scrubs an earlier checkpoint or rejects stale later publication, including
+when the last fact has committed but an unchanged NULL summary and trace-free
+source messages would otherwise pass source validation. No generation recapture,
+schema/API expansion, global account fence or deployment is implied.
+
+The final focused owned-PostgreSQL batch passed **129 cases, with 19 Redis-opt-in
+skips** (`pr693-followup-protected-clock-pg.xml`), including missing/rewound
+assertion-clock controls. The twelve named follow-up evaluation,
+checkpoint-race/scope, migration and bookkeeping cases passed without skips.
+The 19 Redis-opt-in cases subsequently passed against the owned disposable Redis
+fixture (`pr693-followup-fact-live.xml`), with zero skips.
+Actual runner/retrieval/logger tests script inference only, compare the original
+ingest fingerprint on resume without an override, and cover logging before the
+first memory clock exists. The runner's fixture-pool startup and compute scope
+are injected; this is not provider-attestation or startup qualification. Both
+final-fact race orders use the actual extraction path; the checkpoint-first case
+observes PostgreSQL's wait-for edge before release. Deferred COMMIT failures also
+verify rollback of clock/mutation state. Orphan/rebuild controls remain covered.
+Offline runner/parity/catalogue compatibility passed **198 cases without skips**
+(`pr693-followup-unit-final.xml`). Evidence is retained outside the repository
+under the registered `memory-temporal-pr` task. Full-suite verification on the
+new head and fresh final review remain primary-owned, separate gates; no
+deployment or real benchmark inference is claimed.

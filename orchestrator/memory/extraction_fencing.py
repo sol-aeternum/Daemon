@@ -402,8 +402,17 @@ async def commit_fact(
 
 
 async def checkpoint(store: Any, inputs: ExtractionInputs, **kwargs):
+    if not isinstance(inputs, ExtractionInputs):
+        raise ExtractionRefused("checkpoint_original_capture_required")
+    if (
+        kwargs.get("user_id") != inputs.origin.account_id
+        or kwargs.get("conversation_id") != inputs.conversation.id
+    ):
+        raise ExtractionRefused("checkpoint_scope_mismatch")
     async with store._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
-        async with guard_content_write(conn, inputs.origin):
+        async with mutation(
+            store, Capture(inputs.origin, inputs.erasure_epoch), conn=conn, ordered=True
+        ):
             await validate(conn, inputs)
             result = await store.log_extraction(conn=conn, **kwargs)
     return result

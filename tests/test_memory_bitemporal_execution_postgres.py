@@ -128,29 +128,59 @@ async def test_legacy_baseline_is_migration_knowledge_and_reset_inventory(env):
             for path in sorted(migrations.glob("*.sql")):
                 if path.name < "066_memory_bitemporal.sql":
                     await conn.execute(migration_sql_for_schema(path, schema))
-            uid, mid = uuid4(), uuid4()
-            await conn.execute(
-                "INSERT INTO users(id,email,name,username) VALUES($1,$2,'Synthetic','synthetic')",
-                uid,
-                f"{uid}@daemon.test",
-            )
-            await conn.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", uid)
             ciphertext = env.memory.encryption.encrypt("Legacy extant text only.")
-            await conn.execute(
-                "INSERT INTO memories(id,user_id,content,category,source_type,created_at) VALUES($1,$2,$3,'fact','manual','1990-01-01T00:00:00Z')",
-                mid,
-                uid,
-                ciphertext,
-            )
+            owners = [(uuid4(), 3, 4), (uuid4(), 7, 3), (uuid4(), None, 2)]
+            memories = []
+            for owner, generation, count in owners:
+                await conn.execute(
+                    "INSERT INTO users(id,email,name,username) VALUES($1,$2,'Synthetic',$2)",
+                    owner,
+                    f"{owner}@daemon.test",
+                )
+                if generation is not None:
+                    await conn.execute(
+                        "INSERT INTO entitlement_accounts(user_id,content_generation) VALUES($1,$2)",
+                        owner,
+                        generation,
+                    )
+                for _ in range(count):
+                    mid = uuid4()
+                    memories.append((owner, mid))
+                    await conn.execute(
+                        "INSERT INTO memories(id,user_id,content,category,source_type,created_at) VALUES($1,$2,$3,'fact','manual','1990-01-01T00:00:00Z')",
+                        mid,
+                        owner,
+                        ciphertext,
+                    )
             before = await conn.fetchval("SELECT clock_timestamp()")
             await conn.execute((migrations / "066_memory_bitemporal.sql").read_text())
         store = MemoryStore(pool, env.memory.encryption)
-        retained = await store.get_memory(mid)
-        assert retained is not None and retained["content"] == "Legacy extant text only."
-        assert await pool.fetchval("SELECT count(*) FROM memory_revisions") == 1
+        for owner, mid in memories:
+            retained = await store.get_memory(mid)
+            assert retained is not None and retained["content"] == "Legacy extant text only."
+            assert retained["user_id"] == owner
+        assert await pool.fetchval("SELECT count(*) FROM memory_revisions") == len(memories)
+        assert await pool.fetchval("SELECT count(*) FROM memory_revision_segments") == len(memories)
+        assert await pool.fetchval("SELECT count(*) FROM memory_knowledge_clock") == len(owners)
+        assert await pool.fetchval("SELECT count(*) FROM memory_mutations") == len(owners)
+        for owner, generation, count in owners:
+            clock = await pool.fetchrow(
+                "SELECT * FROM memory_knowledge_clock WHERE user_id=$1", owner
+            )
+            assert clock["account_generation"] == (generation or 0) and clock["sequence"] == 1
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM memory_revisions r JOIN memory_mutations k "
+                    "ON k.user_id=r.user_id AND k.sequence=r.sequence "
+                    "WHERE r.user_id=$1 AND k.account_generation=$2 AND r.relationship='baseline'",
+                    owner,
+                    generation or 0,
+                )
+                == count
+            )
         assert await pool.fetchval("SELECT min(write_lower_at) FROM memory_mutations") >= before
         with pytest.raises(TemporalRefusal, match="before_available_history"):
-            await revisions.resolve(store, uid, TemporalReadScope(known_at=before))
+            await revisions.resolve(store, owners[0][0], TemporalReadScope(known_at=before))
         manifest = json.loads(
             (migrations.parent / "tests/fixtures/account_writer_catalogue.json").read_text()
         )

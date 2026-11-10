@@ -118,8 +118,9 @@ CREATE UNIQUE INDEX idx_memories_active_content_hash_unique
 
 -- Baseline is migration knowledge, not the row's historical creation time.
 INSERT INTO memory_knowledge_clock(user_id,account_generation,sequence,last_clock_at)
-SELECT DISTINCT m.user_id,COALESCE(a.content_generation,0),1,clock_timestamp()
-FROM memories m LEFT JOIN entitlement_accounts a ON a.user_id=m.user_id;
+SELECT owners.user_id,owners.account_generation,1,clock_timestamp()
+FROM (SELECT DISTINCT m.user_id,COALESCE(a.content_generation,0) AS account_generation
+      FROM memories m LEFT JOIN entitlement_accounts a ON a.user_id=m.user_id) owners;
 INSERT INTO memory_mutations(user_id,sequence,account_generation,transaction_id,write_lower_at)
 SELECT user_id,1,account_generation,pg_current_xact_id(),last_clock_at FROM memory_knowledge_clock;
 

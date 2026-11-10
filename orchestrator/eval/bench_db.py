@@ -33,7 +33,9 @@ BENCHMARK_DB_MARKER = "daemon-longmemeval-benchmark-v1"
 
 # Tables whose content determines what evaluation can retrieve and rank.
 # retrieval_log is deliberately excluded: evaluate appends diagnostics there and
-# nothing in ranking reads it.
+# nothing in ranking reads it. Its erasure-fenced publication also advances the
+# clock and commit observations without changing an assertion. Hash protection
+# state and revision-bearing mutations, not that diagnostic bookkeeping.
 FINGERPRINT_TABLES: tuple[tuple[str, str], ...] = (
     ("conversations", "user_id"),
     ("messages", "user_id"),
@@ -180,17 +182,44 @@ async def fingerprint_benchmark_state(
     *,
     tables: tuple[tuple[str, str], ...] = FINGERPRINT_TABLES,
 ) -> dict[str, Any]:
-    """Content hash of every row evaluation can read for the benchmark user.
+    """Hash evaluation inputs and current temporal protection for one owner.
 
     Equal fingerprints before and after a phase prove the phase did not change
     retrieval or ranking inputs (access counts, timestamps, trust, status).
+    Diagnostic-only mutations, clock sequence/time and post-commit observations
+    are not evaluation inputs. Revision-bearing mutation identity/lower bounds,
+    account permissions, erasure epochs and clock-regression flags remain covered.
+    An absent zero-state clock and its first diagnostic publication are equivalent.
+    This is not a byte-for-byte recovery hash or a historical-clock certification.
     ``tables`` must be drawn from :data:`FINGERPRINT_TABLES`.
     """
     if not set(tables) <= set(FINGERPRINT_TABLES):
         raise ValueError("fingerprint tables must come from FINGERPRINT_TABLES")
     digests: dict[str, dict[str, Any]] = {}
     for table, owner_column in tables:
-        if table == "memory_revision_segments":
+        if table == "memory_knowledge_clock":
+            relation = (
+                "(SELECT u.id AS user_id,"
+                "COALESCE(k.account_generation,a.content_generation,0) AS account_generation,"
+                "COALESCE(k.erasure_epoch,0) AS erasure_epoch,"
+                "COALESCE(k.clock_regressed,FALSE) AS clock_regressed,"
+                "EXISTS(SELECT 1 FROM memory_revisions r WHERE r.user_id=u.id "
+                "AND r.sequence>COALESCE(k.sequence,0)) AS revision_clock_invalid,"
+                "a.content_generation AS current_generation,a.status AS account_status,"
+                "EXISTS(SELECT 1 FROM account_deletions d WHERE d.account_id=u.id "
+                "AND d.closed_at IS NULL) AS open_operation,"
+                "EXISTS(SELECT 1 FROM account_suspension_causes c WHERE c.account_id=u.id) AS suspended "
+                "FROM users u LEFT JOIN entitlement_accounts a ON a.user_id=u.id "
+                "LEFT JOIN memory_knowledge_clock k ON k.user_id=u.id WHERE u.id=$1) t"
+            )
+        elif table == "memory_mutations":
+            relation = (
+                "(SELECT k.user_id,k.sequence,k.account_generation,k.transaction_id,k.write_lower_at "
+                "FROM memory_mutations k WHERE k.user_id=$1 AND EXISTS("
+                "SELECT 1 FROM memory_revisions r WHERE r.user_id=k.user_id "
+                "AND r.sequence=k.sequence)) t"
+            )
+        elif table == "memory_revision_segments":
             relation = (
                 "memory_revision_segments t JOIN memory_revisions r ON r.id=t.revision_id "
                 "WHERE r.user_id = $1"

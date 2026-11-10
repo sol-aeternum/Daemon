@@ -231,7 +231,22 @@ async def test_reset_refusals_never_recapture_provision_or_mutate_payload(env, r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["segment", "dependency", "source", "clock", "mutation", "tombstone", "erased_source"]
+    "change",
+    [
+        "segment",
+        "dependency",
+        "source",
+        "clock",
+        "mutation",
+        "tombstone",
+        "erased_source",
+        "generation",
+        "clock_regressed",
+        "missing_clock",
+        "clock_rewind",
+        "permission",
+        "account_restricted",
+    ],
 )
 async def test_temporal_only_changes_are_in_owner_qualified_fingerprints(env, change):
     _, _, root = await seed(env)
@@ -256,13 +271,36 @@ async def test_temporal_only_changes_are_in_owner_qualified_fingerprints(env, ch
         )
     elif change == "clock":
         await env.pool.execute(
-            "UPDATE memory_knowledge_clock SET last_clock_at=last_clock_at+interval '1 second' WHERE user_id=$1",
+            "UPDATE memory_knowledge_clock SET erasure_epoch=erasure_epoch+1 WHERE user_id=$1",
             env.alice,
         )
     elif change == "mutation":
         await env.pool.execute(
-            "UPDATE memory_mutations SET observed_committed_by=observed_committed_by+interval '1 second' WHERE user_id=$1",
+            "UPDATE memory_mutations SET write_lower_at=write_lower_at-interval '1 second' WHERE user_id=$1",
             env.alice,
+        )
+    elif change == "generation":
+        await env.pool.execute(
+            "UPDATE entitlement_accounts SET content_generation=content_generation+1 WHERE user_id=$1",
+            env.alice,
+        )
+    elif change == "clock_regressed":
+        await env.pool.execute(
+            "UPDATE memory_knowledge_clock SET clock_regressed=TRUE WHERE user_id=$1", env.alice
+        )
+    elif change == "missing_clock":
+        await env.pool.execute("DELETE FROM memory_knowledge_clock WHERE user_id=$1", env.alice)
+    elif change == "clock_rewind":
+        await env.pool.execute(
+            "UPDATE memory_knowledge_clock SET sequence=0 WHERE user_id=$1", env.alice
+        )
+    elif change == "permission":
+        await env.pool.execute(
+            "UPDATE conversations SET pipeline='local' WHERE user_id=$1", env.alice
+        )
+    elif change == "account_restricted":
+        await env.pool.execute(
+            "UPDATE entitlement_accounts SET status='suspended' WHERE user_id=$1", env.alice
         )
     elif change == "tombstone":
         await env.pool.execute(
@@ -279,6 +317,28 @@ async def test_temporal_only_changes_are_in_owner_qualified_fingerprints(env, ch
         )
     assert (await fingerprint(env))["sha256"] != before["sha256"]
     assert await fingerprint(env, env.bob) == foreign
+
+
+@pytest.mark.asyncio
+async def test_commit_observation_bookkeeping_is_not_evaluation_contamination(env):
+    await seed(env)
+    before = await fingerprint(env)
+    physical = await env.pool.fetchval(
+        "SELECT t::text FROM memory_knowledge_clock t WHERE user_id=$1", env.alice
+    )
+    async with revisions.mutation(env.memory, await revisions.capture(env.memory, env.alice)):
+        pass  # Diagnostic-only publication; no assertion/dependency/source changes.
+    assert (
+        await env.pool.fetchval(
+            "SELECT t::text FROM memory_knowledge_clock t WHERE user_id=$1", env.alice
+        )
+        != physical
+    )
+    await env.pool.execute(
+        "UPDATE memory_mutations SET observed_committed_by=observed_committed_by+interval '1 second' WHERE user_id=$1",
+        env.alice,
+    )
+    assert await fingerprint(env) == before
 
 
 @pytest.mark.asyncio
@@ -348,6 +408,7 @@ async def test_helper_rechecks_original_account_capture_without_refresh(env, mon
     capture = bench_db.capture_for
 
     async def change_after_capture(store, owner):
+        nonlocal before
         original = await capture(store, owner)
         sql = (
             "UPDATE entitlement_accounts SET content_generation=content_generation+1 WHERE user_id=$1"
@@ -355,6 +416,9 @@ async def test_helper_rechecks_original_account_capture_without_refresh(env, mon
             else "UPDATE entitlement_accounts SET status='suspended' WHERE user_id=$1"
         )
         await env.pool.execute(sql, owner)
+        changed = await fingerprint(env)
+        assert changed != before  # Current account permissions are protected too.
+        before = changed  # The refused reset must not mutate this new control state.
         return original
 
     monkeypatch.setattr(bench_db, "capture_for", change_after_capture)

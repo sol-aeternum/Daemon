@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ from arq import Retry
 from orchestrator.memory import dedup, equivalence, extraction, extraction_fencing as fencing
 from orchestrator.memory import revisions
 from orchestrator.memory.extraction import ExtractedFact, ExtractionOutcome
+from orchestrator.memory.temporal import TemporalRefusal
 from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 from orchestrator.worker import jobs
 from tests.durable_tasks_support import durable_env_fixture
@@ -99,6 +102,159 @@ async def test_real_fact_and_independent_checkpoint(env, monkeypatch):
     assert (await env.memory.get_last_extraction_cursor(conv))[1] == str(mid)
     assert (await run(env, conv))["processed_chunks"] == 0
     extractor.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["erasure", "checkpoint"])
+async def test_final_fact_checkpoint_serializes_with_erasure(env, monkeypatch, first):
+    conv, mid, _, _ = await prepare(env, monkeypatch)
+    await env.pool.execute("UPDATE messages SET tool_calls=NULL,tool_results=NULL WHERE id=$1", mid)
+    # Start from a genuinely nonzero epoch, not an assumed default capture.
+    old = await env.memory.insert_memory(env.alice, "Synthetic older fact.", "fact", "manual")
+    await env.memory.delete_memory(old["id"], user_id=env.alice)
+    monkeypatch.setattr(
+        "orchestrator.memory.summary._generate_or_update_summary_result",
+        AsyncMock(return_value=SimpleNamespace(continuation_needed=False)),
+    )
+    entered, release, eraser_entered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    actual_checkpoint, actual_log = fencing.checkpoint, env.memory.log_extraction
+    actual_enter = revisions.enter
+    observed = {}
+    eraser = None
+
+    async def enter(conn, value, *, ordered=False):
+        if asyncio.current_task() is eraser:
+            observed["eraser_pid"] = conn.get_server_pid()
+            eraser_entered.set()
+        return await actual_enter(conn, value, ordered=ordered)
+
+    async def checkpoint(store, inputs, **kwargs):
+        assert inputs.erasure_epoch == 1
+        observed["inputs"] = inputs
+        assert (
+            await env.pool.fetchval(
+                "SELECT count(*) FROM memories WHERE user_id=$1 AND status='active'", env.alice
+            )
+            == 1
+        )  # The last fact has already committed independently.
+        if first == "erasure":
+            entered.set()
+            await release.wait()
+            # Original summary NULL and messages without tool traces still match:
+            # source/account validation alone cannot close this publication race.
+            await fencing.check(store, inputs)
+            return await actual_checkpoint(store, inputs, **kwargs)
+        return await actual_checkpoint(store, inputs, **kwargs)
+
+    async def log(**kwargs):
+        result = await actual_log(**kwargs)
+        observed["pid"] = kwargs["conn"].get_server_pid()
+        entered.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(fencing, "checkpoint", checkpoint)
+    monkeypatch.setattr(revisions, "enter", enter)
+    if first == "checkpoint":
+        monkeypatch.setattr(env.memory, "log_extraction", log)
+    writer = asyncio.create_task(run(env, conv))
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        root = await env.pool.fetchval(
+            "SELECT id FROM memories WHERE user_id=$1 AND status='active'", env.alice
+        )
+        assert await env.pool.fetchrow(
+            "SELECT id FROM conversations WHERE id=$1 AND summary IS NULL AND summary_updated_at IS NULL",
+            conv,
+        )
+        assert await env.pool.fetchrow(
+            "SELECT id FROM messages WHERE id=$1 AND tool_calls IS NULL AND tool_results IS NULL",
+            mid,
+        )
+        if first == "erasure":
+            assert await env.memory.delete_memory(root, user_id=env.alice)
+            release.set()
+            with pytest.raises(Retry):
+                await asyncio.wait_for(writer, 10)
+            assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
+        else:
+            eraser = asyncio.create_task(env.memory.delete_memory(root, user_id=env.alice))
+            await asyncio.wait_for(eraser_entered.wait(), 10)
+            await blocked(env.pool, observed["eraser_pid"], observed["pid"])
+            # No checkpoint receipt/cursor is visible before acknowledged COMMIT.
+            assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
+            release.set()
+            assert (await asyncio.wait_for(writer, 10))["status"] == "ok"
+            assert await asyncio.wait_for(eraser, 10)
+            row = await env.pool.fetchrow("SELECT * FROM memory_extraction_log")
+            assert row["input_snippet"] == "" and json.loads(row["extracted_facts"]) == []
+            assert json.loads(row["dedup_results"]) == {}
+        assert (
+            await env.pool.fetchval(
+                "SELECT erasure_epoch FROM memory_knowledge_clock WHERE user_id=$1", env.alice
+            )
+            == 2
+        )
+        assert await env.pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM memory_erased_sources WHERE user_id=$1 AND source_id=$2)",
+            env.alice,
+            mid,
+        )
+        assert (
+            await env.pool.fetchval("SELECT content FROM messages WHERE id=$1", mid)
+            == dict(observed["inputs"].messages[0].values)["content"]
+        )
+    finally:
+        release.set()
+        for task in (writer, eraser):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(t for t in (writer, eraser) if t is not None), return_exceptions=True
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid", ["missing", "owner", "foreign_capture", "conversation", "stale", "erased"]
+)
+async def test_checkpoint_requires_original_qualified_scope(env, monkeypatch, invalid):
+    conv, _, _, _ = await prepare(env, monkeypatch)
+    inputs, _ = await fencing.read_page(env.memory, CapturedGeneration(env.alice, 7), conv)
+    owner, cid = env.alice, conv
+    if invalid == "missing":
+        inputs = None
+    elif invalid == "owner":
+        owner = env.bob
+    elif invalid == "foreign_capture":
+        owner = env.bob
+        inputs = replace(inputs, origin=CapturedGeneration(owner, 7))
+    elif invalid == "conversation":
+        cid = (await env.memory.create_conversation(env.bob))["id"]
+    elif invalid == "stale":
+        inputs = replace(inputs, origin=CapturedGeneration(env.alice, 6))
+    else:
+        root = await env.memory.insert_memory(env.alice, "Synthetic erased fact.", "fact", "manual")
+        await env.memory.delete_memory(root["id"], user_id=env.alice)
+    before = [
+        dict(r)
+        for r in await env.pool.fetch("SELECT * FROM memory_mutations ORDER BY user_id,sequence")
+    ]
+    with pytest.raises((fencing.ExtractionRefused, WriteGuardRefusal, TemporalRefusal)):
+        await fencing.checkpoint(
+            env.memory,
+            cast(
+                fencing.ExtractionInputs, inputs
+            ),  # Deliberately missing capture is a negative case.
+            user_id=owner,
+            conversation_id=cid,
+            input_snippet="Synthetic derived text",
+        )
+    assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
+    assert [
+        dict(r)
+        for r in await env.pool.fetch("SELECT * FROM memory_mutations ORDER BY user_id,sequence")
+    ] == before
 
 
 @pytest.mark.asyncio
@@ -363,6 +519,12 @@ async def test_concurrent_exact_writers_share_one_committed_winner(env, monkeypa
 async def test_real_failed_commit_and_subsequent_pool_reuse(env, monkeypatch, seam):
     conv, _, _, _ = await prepare(env, monkeypatch)
     inputs, plan = await empty_plan(env, conv)
+    clock_before = await env.pool.fetchval(
+        "SELECT t::text FROM memory_knowledge_clock t WHERE user_id=$1", env.alice
+    )
+    mutations_before = await env.pool.fetch(
+        "SELECT t::text FROM memory_mutations t WHERE user_id=$1 ORDER BY sequence", env.alice
+    )
     table = "memories" if seam == "fact" else "memory_extraction_log"
     await env.pool.execute("""
         CREATE FUNCTION fact_commit_failure() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -380,6 +542,18 @@ async def test_real_failed_commit_and_subsequent_pool_reuse(env, monkeypatch, se
                 env.memory, inputs, user_id=env.alice, conversation_id=conv, input_snippet=""
             )
     assert await counts(env) == (0, 0)
+    assert (
+        await env.pool.fetchval(
+            "SELECT t::text FROM memory_knowledge_clock t WHERE user_id=$1", env.alice
+        )
+        == clock_before
+    )
+    assert (
+        await env.pool.fetch(
+            "SELECT t::text FROM memory_mutations t WHERE user_id=$1 ORDER BY sequence", env.alice
+        )
+        == mutations_before
+    )
     await env.pool.execute(f"DROP TRIGGER fact_commit_failure ON {table}")
     assert (await fencing.commit_fact(env.memory, inputs, plan, None, {}, {}))[1] is True
 
