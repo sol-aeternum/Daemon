@@ -1191,6 +1191,7 @@ async def generate_summary_job(
             summary=summary,
             expected_summary_updated_at=last_summary_time,
             summarized_message_count=summarized_message_count,
+            expected_memory_erasure_epoch=conversation["memory_erasure_epoch"],
             summary_snapshot_at=iteration_snapshot,
             summary_continuation_pending=continuation_pending,
             captured_generation=captured,

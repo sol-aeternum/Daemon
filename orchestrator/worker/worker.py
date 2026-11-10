@@ -95,7 +95,7 @@ async def on_startup(ctx: WorkerContext) -> None:
     from orchestrator.litellm_runtime import require_local_model_cost_map
 
     require_local_model_cost_map()
-    from orchestrator.memory.startup import require_multi_query_schema
+    from orchestrator.memory.startup import require_multi_query_schema, require_revision_schema
     from orchestrator.tasks.composition import qualify_worker_composition
     from orchestrator.tasks.startup import task_startup_selected, require_legacy_task_schema
 
@@ -124,6 +124,7 @@ async def on_startup(ctx: WorkerContext) -> None:
                 raise JournalError("database_required") from None
             db_pool = pool
             await require_multi_query_schema(db_pool, app_settings)
+            await require_revision_schema(db_pool)
             encryption = ContentEncryption(app_settings.daemon_encryption_key)
             async with history.qualify_before_recovery(pool, deadline=deadline):
                 await qualify_worker_composition(
@@ -168,6 +169,7 @@ async def on_startup(ctx: WorkerContext) -> None:
         raise JournalError("database_required") from None
     try:
         await require_multi_query_schema(db_pool, app_settings)
+        await require_revision_schema(db_pool)
         if not composed:
             await require_legacy_task_schema(db_pool)
         await require_unselected_history(db_pool)

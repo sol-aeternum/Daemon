@@ -496,6 +496,7 @@ async def _insert_isolated_user(pool: asyncpg.Pool, label: str) -> uuid.UUID:
         f"metadata-isolation+{user_id.hex}@daemon.test",
         label,
     )
+    await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
     return user_id
 
 
@@ -588,11 +589,11 @@ async def test_insert_memory_persists_metadata_contract(
 
 
 @pytest.mark.asyncio
-async def test_supersede_memory_persists_metadata_and_supersedes_old_row(
+async def test_supersede_memory_persists_metadata_and_retains_old_revision(
     monkeypatch: pytest.MonkeyPatch,
     isolated_meta_pool: tuple[asyncpg.Pool, str],
 ) -> None:
-    """Real ``supersede_memory`` writes the 040 contract and closes the old row."""
+    """The compatibility correction retains its ID, metadata and immutable old text."""
     pool, _scoped_dsn = isolated_meta_pool
     encryption = _fresh_runtime_crypto(monkeypatch)
     store = MemoryStore(pool, encryption)
@@ -658,9 +659,15 @@ async def test_supersede_memory_persists_metadata_and_supersedes_old_row(
                 old["id"],
             )
             assert lifecycle is not None, f"{label}: old row disappeared"
-            assert lifecycle["superseded"] is True, (
-                f"{label}: old row must be closed by the supersede transaction"
+            assert lifecycle["superseded"] is False
+            assert (
+                result["id"] == old["id"] and result["head_revision_id"] != old["head_revision_id"]
             )
+            prior = await pool.fetchval(
+                "SELECT content FROM memory_revision_segments WHERE revision_id=$1",
+                old["head_revision_id"],
+            )
+            assert encryption.decrypt(prior) == f"supersede old case {label}"
 
             assert _decoded_metadata(result["metadata"]) == expected, (
                 f"{label}: returned metadata shape mismatch"

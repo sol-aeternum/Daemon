@@ -28,6 +28,7 @@ from orchestrator.memory.embedding import (
 from orchestrator.memory.extraction import ExtractedFact
 from orchestrator.memory.tools import MemoryWriteTool
 from orchestrator.routes import memories as memories_router
+from tests.memory_capture_support import memory_store_mock
 
 USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 BLANKS = ["", " ", "   ", "\t", "\n", " \t\n\r ", " ", "  ", "　"]
@@ -54,7 +55,7 @@ async def auth_client(monkeypatch):
     async def device() -> AuthenticatedDevice:
         return AuthenticatedDevice(user_id=USER_ID, device_id=uuid.uuid4(), session_id=uuid.uuid4())
 
-    store = AsyncMock()
+    store = memory_store_mock()
     state = MagicMock(spec=AppState)
     state.history_runtime = None
     state.settings = get_settings()
@@ -113,7 +114,7 @@ async def test_create_maps_a_missing_vector_to_503_not_500(auth_client) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content", [*BLANKS, None, 7])
 async def test_tool_create_rejects_blank_before_quota_or_embedding(content: Any) -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     tool = MemoryWriteTool(store, USER_ID)
     quota = AsyncMock()
     with (
@@ -131,7 +132,7 @@ async def test_tool_create_rejects_blank_before_quota_or_embedding(content: Any)
 @pytest.mark.parametrize("content", ["   ", "\n\t", " "])
 async def test_tool_update_rejects_blank_before_quota_close_or_embedding(content: str) -> None:
     memory_id = uuid.uuid4()
-    store = AsyncMock()
+    store = memory_store_mock()
     store.get_memory = AsyncMock(
         return_value={
             "id": memory_id,
@@ -158,7 +159,7 @@ async def test_tool_update_rejects_blank_before_quota_close_or_embedding(content
 @pytest.mark.asyncio
 async def test_tool_update_without_content_still_inherits_existing_text() -> None:
     memory_id = uuid.uuid4()
-    store = AsyncMock()
+    store = memory_store_mock()
     store.get_memory = AsyncMock(
         return_value={
             "id": memory_id,
@@ -198,7 +199,7 @@ async def test_prepare_memory_embedding_rejects_blank_and_missing_vectors() -> N
 
 @pytest.mark.asyncio
 async def test_mixed_batch_skips_blank_facts_and_keeps_vectors_aligned() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     store.search_memories.return_value = []
     store.search_memories_bm25.return_value = []
     inserted: list[tuple[str, list[float]]] = []
@@ -230,7 +231,7 @@ async def test_mixed_batch_skips_blank_facts_and_keeps_vectors_aligned() -> None
 
 @pytest.mark.asyncio
 async def test_empty_provider_result_for_real_text_is_a_clear_error_not_index_error() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     with pytest.raises(EmbeddingRequestError):
         await deduplicate_facts(
             store,
@@ -244,7 +245,7 @@ async def test_empty_provider_result_for_real_text_is_a_clear_error_not_index_er
 
 @pytest.mark.asyncio
 async def test_unqualified_embeddings_keep_the_lexical_fallback() -> None:
-    store = AsyncMock()
+    store = memory_store_mock()
     from contextlib import asynccontextmanager
     from unittest.mock import MagicMock
 

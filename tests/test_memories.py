@@ -32,6 +32,7 @@ from orchestrator.auth import AuthenticatedDevice
 from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.routes import memories as memories_router
 from orchestrator.memory.store import MemoryContentConflictError
+from tests.memory_capture_support import install_capture_pool
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +102,17 @@ async def auth_client(monkeypatch):
 
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     """Create a mock AppState with optional memory store."""
+    if mock_store is not None:
+        install_capture_pool(mock_store)
+
+        async def owned_memory_exists(sql, memory_id, owner):
+            assert "SELECT EXISTS(SELECT 1 FROM memories WHERE id=$1 AND user_id=$2)" in sql
+            row = mock_store.get_memory.return_value
+            return (
+                isinstance(row, dict) and row.get("id") == memory_id and row.get("user_id") == owner
+            )
+
+        mock_store._pool.fetchval = AsyncMock(side_effect=owned_memory_exists)
     app_state = MagicMock(spec=AppState)
     app_state.history_runtime = None
     app_state.settings = get_settings()
@@ -140,6 +152,7 @@ def create_mock_memory(memory_id: uuid.UUID | None = None, **overrides) -> dict[
         "created_at": datetime.now(),
         "updated_at": datetime.now(),
         "valid_to": None,
+        "head_revision_id": uuid.uuid4(),
         **overrides,
     }
 
@@ -287,7 +300,7 @@ async def test_get_memory_by_id(auth_client, monkeypatch) -> None:
     assert response.status_code == 200
     data = response.json()
     assert str(data["id"]) == str(memory_id)
-    mock_store.get_memory.assert_called_once_with(memory_id)
+    mock_store.get_memory.assert_called_once_with(memory_id, user_id=mock_memory["user_id"])
 
 
 @pytest.mark.asyncio
@@ -1348,6 +1361,7 @@ async def test_update_memory_writes_only_against_the_content_it_read(auth_client
     kwargs = store.update_memory_content.call_args.kwargs
     assert kwargs["require_content_hash"] is True
     assert kwargs["expected_content_hash"] == "hash-old"
+    assert kwargs["expected_revision_id"] == existing["head_revision_id"]
 
 
 @pytest.mark.asyncio

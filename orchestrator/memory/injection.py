@@ -134,7 +134,7 @@ def _format_l0_block(l0_memories: list[dict[str, object]]) -> str:
     for memory in l0_memories:
         text = _truncate_to_chars(_normalize_content(memory.get("content")), MAX_L0_CHARS)
         if text:
-            lines.append(f"- {text}")
+            lines.append(f"- {text}{provenance.noted_suffix(memory)}")
     return "\n".join(lines)
 
 
@@ -892,6 +892,34 @@ def render_memory_context(
 
 
 async def build_memory_context(
+    store: MemoryStore,
+    conversation_id: uuid.UUID,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    *,
+    temporal_scope=None,
+    query_text: str | None = None,
+) -> str:
+    from orchestrator.memory.revisions import read_scope, resolve
+    from orchestrator.memory.temporal import HISTORICAL_CONTEXT_NOTE, TemporalRefusal
+
+    if temporal_scope is None:
+        return await _build_current_memory_context(store, conversation_id, max_tokens)
+    conversation = await store.get_conversation(conversation_id)
+    if not conversation or not isinstance(conversation.get("user_id"), uuid.UUID):
+        raise TemporalRefusal("historical_context_owner_unavailable")
+    scope = await resolve(store, conversation["user_id"], temporal_scope)
+    async with read_scope(scope):
+        inputs = await _gather_single_query_inputs(
+            store,
+            user_id=conversation["user_id"],
+            pipeline=conversation.get("pipeline"),
+            query_text=query_text or "",
+            record_side_effects=False,
+        )
+        return HISTORICAL_CONTEXT_NOTE + "\n" + render_memory_context(inputs, max_tokens)
+
+
+async def _build_current_memory_context(
     store: MemoryStore,
     conversation_id: uuid.UUID,
     max_tokens: int = DEFAULT_MAX_TOKENS,

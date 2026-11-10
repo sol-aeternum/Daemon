@@ -514,6 +514,30 @@ outside the DB-only guard, startup stays fail closed, and no applier, marker,
 session drain, S1 retirement, reset/deletion, deployment or flag enablement is
 implemented here. **#477 remains open.**
 
+### Later #601 owner choice — missing-capture request-bound chat
+
+For #601/PR #693 the owner explicitly chose **fail closed**, superseding the
+earlier J1c-1f compatibility expectation that missing account capture would still
+permit a completed request-bound native chat. When the memory-backed stream
+cannot obtain its original account/erasure capture, it refuses before prompt
+preparation or model execution; it does not provision an account, refresh a stale
+origin, bypass the guard or silently switch to a no-memory mode.
+
+For durable-ineligible requests (flag off or unsupported client), this retains
+the existing streaming HTTP response: empty error-final, sanitized non-retryable
+error and `done.ok=false`, not a successful assistant reply. An original user
+message saved before the stream may remain. No assistant/derived publication,
+task acceptance or queued follow-up is authorized by the failed capture. NEW
+durable acceptance retains its separate atomic `task_unavailable` HTTP refusal.
+The real-PostgreSQL regressions in
+`tests/test_task_acceptance_account_guard_postgres.py` retain the actual
+request-bound stream and original capture guard, asserting both refusal effects
+and absence of model dispatch, account provisioning and derived writes.
+
+This later scoped choice does not fence all request-bound persistence, council,
+worker outputs or generic task writers, and does not complete #477, account
+reset/deletion, deployment or no-memory compatibility qualification.
+
 ## S0 — uncalled general task-origin classification
 
 The owner authorized only the first new #477 prerequisite slice on 14 October

@@ -14,6 +14,7 @@ from orchestrator.tasks._origin import OriginalTaskOrigin
 from orchestrator.services.account_control.transaction import ObservationBlocked
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.tasks.store import TaskStore
+from orchestrator.memory.temporal import TemporalRefusal
 from tests.progressive_research_support import (
     Delivery,
     ENDING,
@@ -262,6 +263,18 @@ async def test_missing_durable_writer_stops_before_the_continuing_read():
     assert delivery.read.calls == 0
     assert not any(event.payload["name"] == "web_fetch" for event in delivery.store.events)
     assert delivery.state.result is None
+
+
+@pytest.mark.asyncio
+async def test_historical_scope_without_memory_refuses_before_dispatch_or_task_mutation():
+    delivery = Delivery(missing_writer=True)
+    delivery.claim.task_input["temporal_scope"] = {
+        "watermark": {"user_id": str(delivery.claim.user_id), "generation": 7, "sequence": 0}
+    }
+    with pytest.raises(TemporalRefusal, match="historical_memory_store_required"):
+        await asyncio.wait_for(delivery.run(), 5)
+    assert delivery.calls == 0 and delivery.read.calls == 0
+    assert delivery.store.mutations == [] and delivery.store.events == []
 
 
 @pytest.mark.asyncio

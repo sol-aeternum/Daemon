@@ -2348,6 +2348,18 @@ class TaskStore:
         self, conn: Any, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> tuple[bool, uuid.UUID | None]:
         """Caller owns transaction; composed caller also owns account/journal guard."""
+        from orchestrator.memory.revisions import Capture, enter
+        from orchestrator.services.account_control.guard import (
+            capture_generation,
+            guard_content_write,
+        )
+
+        origin = await capture_generation(conn, user_id)
+        epoch = await conn.fetchval(
+            "SELECT erasure_epoch FROM memory_knowledge_clock WHERE user_id=$1", user_id
+        )
+        async with guard_content_write(conn, origin):
+            await enter(conn, Capture(origin, int(epoch or 0)), ordered=True)
         owner = await conn.fetchval(
             "SELECT user_id FROM conversations WHERE id = $1 FOR UPDATE", conversation_id
         )

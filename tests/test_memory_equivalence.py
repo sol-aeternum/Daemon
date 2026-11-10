@@ -55,6 +55,7 @@ def row(**kwargs: Any) -> dict[str, Any]:
         confidence=0.9,
         metadata={},
         source_conversation_id=None,
+        head_revision_id=uuid.UUID(int=10),
     )
     values.update(kwargs)
     return values
@@ -360,6 +361,7 @@ class _Pool:
         self.acquires = 0
         self.events = []
         self.fail_insert = None
+        self.fail_update = None
         self.conversation = None
         self.fail_conversation = None
 
@@ -372,9 +374,16 @@ class _Pool:
         self.slot.release()
 
     async def fetchrow(self, sql, *args):
+        if "FROM entitlement_accounts" in sql:
+            return {"status": "active", "content_generation": 0}
         async with self.acquire() as conn:
             conn.autocommit = True
             return await conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql, *args):
+        if "erasure_epoch" in sql:
+            return 0
+        raise AssertionError(sql)
 
     async def fetch(self, sql, *args):
         assert "LIMIT 6" in sql
@@ -405,7 +414,7 @@ class _Connection:
         self.autocommit = False
 
     @asynccontextmanager
-    async def transaction(self):
+    async def transaction(self, **_kwargs):
         await self.execute("BEGIN")
         try:
             yield
@@ -414,6 +423,9 @@ class _Connection:
             raise
         else:
             await self.execute("COMMIT")
+
+    def is_in_transaction(self):
+        return self.in_transaction
 
     async def execute(self, sql, *args):
         if sql == "BEGIN":
@@ -426,6 +438,10 @@ class _Connection:
                 self.pool.rows = self.before
             self.in_transaction = False
         elif "pg_advisory_xact_lock" in sql:
+            assert self.in_transaction
+        elif any(table in sql for table in ("memory_knowledge_clock", "memory_mutations")):
+            # Synthetic transaction observations only, not a temporal SQL model.
+            # Actual commit visibility, guards and immutable revisions are PG-tested.
             assert self.in_transaction
         elif "last_accessed_at" in sql:
             assert self.in_transaction
@@ -450,6 +466,58 @@ class _Connection:
         return "SELECT 1"
 
     async def fetchrow(self, sql, *args):
+        if "FROM entitlement_accounts" in sql:
+            return {"status": "active", "content_generation": 0}
+        if "AS operation" in sql:
+            return {"operation": False, "cause": False}
+        if "FROM memory_knowledge_clock" in sql:
+            return {
+                "account_generation": 0,
+                "erasure_epoch": 0,
+                "last_clock_at": NOW,
+                "observed_at": NOW,
+                "sequence": 1,
+                "clock_regressed": False,
+            }
+        if "FROM memories m JOIN conversations c" in sql:
+            self.pool.events.append(("conversation", self.in_transaction))
+            if self.pool.fail_conversation is not None:
+                raise self.pool.fail_conversation
+            source = self.pool.conversation
+            target = self.pool.rows.get(args[0])
+            return (
+                copy.deepcopy(source)
+                if (
+                    target
+                    and source
+                    and target["source_conversation_id"] == source["id"]
+                    and target["user_id"] == args[1] == source["user_id"]
+                    and source["pipeline"] == args[2]
+                )
+                else None
+            )
+        if "UPDATE memories" in sql and "SET content" in sql:
+            assert self.in_transaction
+            if self.pool.fail_update is not None:
+                raise self.pool.fail_update
+            target = self.pool.rows.get(args[0])
+            if (
+                target is None
+                or target["status"] == "deleted"
+                or (args[9] is not None and target["user_id"] != args[9])
+                or (args[10] and target["content_hash"] != args[11])
+                or (args[12] is not None and target["head_revision_id"] != args[12])
+            ):
+                return None
+            target.update(
+                content=args[1], content_hash=args[5], head_revision_id=uuid.uuid4(), updated_at=NOW
+            )
+            if args[8] is not None:
+                target["category"] = args[8]
+            if args[17] is not None:
+                target["memory_slot"] = args[17]
+            self.pool.events.append(("update", args[0]))
+            return copy.deepcopy(target)
         if "FROM conversations c" in sql:
             self.pool.events.append(("conversation", self.in_transaction))
             if self.pool.fail_conversation is not None:
@@ -487,7 +555,9 @@ class _Connection:
                 slot,
                 metadata,
                 _,
+                *temporal_fields,
             ) = args
+            assert len(temporal_fields) == 4
             conflict = any(
                 r["user_id"] == owner
                 and r.get("content_hash") == content_hash
@@ -534,6 +604,16 @@ class _Connection:
         raise AssertionError(sql)
 
     async def fetchval(self, sql, *args):
+        if sql == "SELECT txid_current()":
+            return 1
+        if sql == "SHOW transaction_isolation":
+            return "read committed"
+        if "pg_try_advisory_xact_lock" in sql:
+            return True
+        if sql == "SELECT clock_timestamp()":
+            return NOW
+        if "SELECT sequence FROM memory_mutations" in sql:
+            return 1
         assert "RETURNING id" in sql
         return args[0] if await self.execute(sql, *args) == "UPDATE 1" else None
 
@@ -715,7 +795,9 @@ async def test_concurrent_empty_plans_retain_both_paraphrases(store, judge):
     results = await asyncio.gather(commit(store, first, plans[0]), commit(store, second, plans[1]))
     assert all(len(result.new) == 1 for result in results)
     assert len(store._pool.rows) == 2  # No claim of global semantic exactly-once.
-    assert "BEGIN" not in store._pool.events  # Standalone inserts need no explicit tx.
+    # Registered standalone writers now commit assertions and visibility receipts.
+    assert store._pool.events.count("BEGIN") == store._pool.events.count("COMMIT")
+    assert store._pool.events.count("insert") == 2
     judge.assert_not_awaited()
 
 
@@ -796,7 +878,7 @@ async def test_tool_create_plan_before_lock_one_slot(store, judge, tool_offline)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "outcome", ["cloud", "local", "missing", "wrong-owner", "failure", "cancel", "insert-failure"]
+    "outcome", ["cloud", "local", "missing", "wrong-owner", "failure", "cancel", "update-failure"]
 )
 async def test_update_source_guard_uses_held_slot_and_rolls_back(
     store, judge, tool_offline, monkeypatch, outcome
@@ -831,8 +913,8 @@ async def test_update_source_guard_uses_held_slot_and_rolls_back(
                 if outcome == "cancel"
                 else RuntimeError("synthetic read failure")
             )
-        elif outcome == "insert-failure":
-            pool.fail_insert = RuntimeError("synthetic insert failure")
+        elif outcome == "update-failure":
+            pool.fail_update = RuntimeError("synthetic update failure")
         return None
 
     monkeypatch.setattr(
@@ -849,14 +931,18 @@ async def test_update_source_guard_uses_held_slot_and_rolls_back(
 
     if outcome == "cloud":
         assert "Memory updated" in await update()
-        assert pool.rows[target]["valid_to"] is not None
-        assert len(pool.rows) == 2
+        assert pool.rows[target]["valid_to"] is None
+        assert pool.rows[target]["head_revision_id"] != before[target]["head_revision_id"]
+        assert len(pool.rows) == 1
+    elif outcome in ("local", "missing", "wrong-owner"):
+        assert "modified concurrently" in await update()
+        assert pool.rows == before and "ROLLBACK" in pool.events
     else:
         error = (
             asyncio.CancelledError
             if outcome == "cancel"
             else RuntimeError
-            if outcome in ("failure", "insert-failure")
+            if outcome in ("failure", "update-failure")
             else embedding.EmbeddingConfigurationError
         )
         with pytest.raises(error):
@@ -865,8 +951,9 @@ async def test_update_source_guard_uses_held_slot_and_rolls_back(
         assert "ROLLBACK" in pool.events
     assert ("conversation", True) in pool.events
     assert pool.events.count(("conversation", False)) == 1
-    assert ("close", target) in pool.events
-    assert pool.events.index(("close", target)) < pool.events.index(("conversation", True))
+    assert ("close", target) not in pool.events and "insert" not in pool.events
+    if outcome == "cloud":
+        assert pool.events.index(("conversation", True)) < pool.events.index(("update", target))
     start = pool.events.index("BEGIN")
     end = pool.events.index("COMMIT" if outcome == "cloud" else "ROLLBACK", start)
     assert "release" not in pool.events[start:end]
@@ -958,14 +1045,17 @@ async def test_update_invalid_source_preflight_never_prepares_or_locks(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("selected,source", [("", uuid.UUID(int=7)), ("selected", None)])
-async def test_update_skips_source_lookup_without_selected_route_or_source(
+async def test_update_commit_checks_source_even_without_embedding_route(
     store, judge, tool_offline, monkeypatch, selected, source
 ):
     from orchestrator.memory import embedding
 
     monkeypatch.setattr(embedding, "get_selected_embedding_route_id", lambda: selected)
     target = add_row(store, source_type="extracted", source_conversation_id=source)
-    store._pool.fail_conversation = AssertionError("Unexpected source lookup")
+    if source is not None:
+        store._pool.conversation = {"id": source, "user_id": USER, "pipeline": "cloud"}
+    else:
+        store._pool.fail_conversation = AssertionError("Unexpected source lookup")
     result = await asyncio.wait_for(
         tool_offline.execute(
             action="update", memory_id=str(target), content="Replacement pizza fact"
@@ -973,28 +1063,26 @@ async def test_update_skips_source_lookup_without_selected_route_or_source(
         1,
     )
     assert "Memory updated" in result
-    assert not any(
-        isinstance(event, tuple) and event[0] == "conversation" for event in store._pool.events
-    )
+    assert (("conversation", True) in store._pool.events) == (source is not None)
+    assert ("conversation", False) not in store._pool.events
     assert not store._pool.slot.locked()
 
 
 @pytest.mark.asyncio
 async def test_update_concurrent_admin_edit_refuses_without_close(store, judge, tool_offline):
     target = add_row(store, source_type="user_created")
-    original_prepare = tools.prepare_memory_plan
 
-    async def edit_after_plan(*args, **kwargs):
-        plan = await original_prepare(*args, **kwargs)
+    async def edit_after_embedding(*args, **kwargs):
         store._pool.rows[target]["content"] = "encrypted:Admin changed content"
-        return plan
+        store._pool.rows[target]["head_revision_id"] = uuid.uuid4()
+        return None
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(tools, "prepare_memory_plan", edit_after_plan)
+        patch.setattr(tools, "prepare_memory_embedding", edit_after_embedding)
         result = await tool_offline.execute(
             action="update", memory_id=str(target), content="Replacement pizza fact"
         )
-    assert "Retry the update" in result
+    assert "modified concurrently" in result
     assert store._pool.rows[target]["content"] == "encrypted:Admin changed content"
     assert store._pool.rows[target]["valid_to"] is None
     assert "ROLLBACK" in store._pool.events
@@ -1044,9 +1132,9 @@ async def test_other_owner_locality_not_disclosed(store, judge, tool_offline, mo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("insert failed"), asyncio.CancelledError()])
-async def test_update_close_insert_failure_rolls_back(store, judge, tool_offline, failure):
+async def test_update_revision_failure_rolls_back(store, judge, tool_offline, failure):
     target = add_row(store)
-    store._pool.fail_insert = failure
+    store._pool.fail_update = failure
     with pytest.raises(type(failure)):
         await tool_offline.execute(
             action="update", memory_id=str(target), content="Replacement pizza fact"
@@ -1057,7 +1145,9 @@ async def test_update_close_insert_failure_rolls_back(store, judge, tool_offline
 
 
 @pytest.mark.asyncio
-async def test_update_excludes_target_and_locks_merge_in_uuid_order(store, judge, tool_offline):
+async def test_update_preserves_lineage_without_judging_or_merging_another_fact(
+    store, judge, tool_offline
+):
     target = add_row(store, id=uuid.UUID(int=5))
     merge = add_row(
         store,
@@ -1073,12 +1163,9 @@ async def test_update_excludes_target_and_locks_merge_in_uuid_order(store, judge
         slot="food.favorite_pizza",
     )
     assert "Memory updated" in result
-    payload = json.loads(judge.await_args.kwargs["messages"][1]["content"])
-    assert [c["candidate_id"] for c in payload["candidates"]] == [str(merge)]
-    assert [e[1] for e in store._pool.events if isinstance(e, tuple) and e[0] == "rowlock"] == [
-        merge,
-        target,
-    ]
-    assert store._pool.rows[target]["valid_to"] is not None
+    judge.assert_not_awaited()
+    assert ("update", target) in store._pool.events
+    assert ("update", merge) not in store._pool.events
+    assert store._pool.rows[target]["valid_to"] is None
     assert store._pool.rows[merge]["valid_to"] is None
     assert len(store._pool.rows) == 2 and "insert" not in store._pool.events

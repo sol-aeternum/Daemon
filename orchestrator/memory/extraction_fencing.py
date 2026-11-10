@@ -12,6 +12,8 @@ from typing import Any
 from uuid import UUID
 
 from orchestrator.memory.entity_projection import RowSnapshot
+from orchestrator.memory.revisions import Capture, mutation, observe_committed
+from orchestrator.memory.lineage import record_sources
 from orchestrator.services.account_control.guard import (
     CapturedGeneration,
     Connection,
@@ -39,10 +41,15 @@ class ExtractionInputs:
     conversation: RowSnapshot
     messages: tuple[RowSnapshot, ...]
     summary: tuple[Any, ...] | None = None
+    erasure_epoch: int = 0
 
     def subset(self, ids: set[UUID]) -> ExtractionInputs:
         return ExtractionInputs(
-            self.origin, self.conversation, tuple(m for m in self.messages if m.id in ids)
+            self.origin,
+            self.conversation,
+            tuple(m for m in self.messages if m.id in ids),
+            self.summary,
+            self.erasure_epoch,
         )
 
 
@@ -84,10 +91,17 @@ async def read_page(store: Any, origin: CapturedGeneration, cid: UUID):
                 mid,
             )
             rows = _finalized_prefix(rows)
-            snapshot = ExtractionInputs(
-                origin, RowSnapshot.read(conversation), tuple(RowSnapshot.read(r) for r in rows)
+            epoch = await conn.fetchval(
+                "SELECT erasure_epoch FROM memory_knowledge_clock WHERE user_id=$1",
+                origin.account_id,
             )
-            messages = [_decode(store, row) for row in rows]
+            snapshot = ExtractionInputs(
+                origin,
+                RowSnapshot.read(conversation),
+                tuple(RowSnapshot.read(r) for r in rows),
+                erasure_epoch=int(epoch or 0),
+            )
+            messages = await _decode_allowed(store, conn, origin.account_id, rows)
     return snapshot, messages
 
 
@@ -108,6 +122,22 @@ def _decode(store, row):
         message["content"] = store.encryption.decrypt(message["content"])
         store._decrypt_message_tool_traces(message)
     return message
+
+
+async def _decode_allowed(store, conn, owner, rows):
+    erased = await conn.fetch(
+        "SELECT source_id FROM memory_erased_sources WHERE user_id=$1 AND source_kind='message' "
+        "AND source_id=ANY($2::uuid[])",
+        owner,
+        [r["id"] for r in rows],
+    )
+    suppressed = {r["source_id"] for r in erased}
+    return [
+        dict(row, content="", tool_calls=[], tool_results=[], _extraction_skip=True)
+        if row["id"] in suppressed
+        else _decode(store, row)
+        for row in rows
+    ]
 
 
 async def read_references(store: Any, origin: CapturedGeneration, cid: UUID, ids: list[UUID]):
@@ -167,10 +197,17 @@ async def read_references(store: Any, origin: CapturedGeneration, cid: UUID, ids
             if not covered_ids <= prefix.keys():
                 raise ExtractionRefused("source_unavailable")
             selected = [prefix[mid] for mid in ids if mid in covered_ids]
-            snapshot = ExtractionInputs(
-                origin, RowSnapshot.read(conversation), tuple(RowSnapshot.read(r) for r in selected)
+            epoch = await conn.fetchval(
+                "SELECT erasure_epoch FROM memory_knowledge_clock WHERE user_id=$1",
+                origin.account_id,
             )
-            messages = [_decode(store, row) for row in selected]
+            snapshot = ExtractionInputs(
+                origin,
+                RowSnapshot.read(conversation),
+                tuple(RowSnapshot.read(r) for r in selected),
+                erasure_epoch=int(epoch or 0),
+            )
+            messages = await _decode_allowed(store, conn, origin.account_id, selected)
     return snapshot, messages
 
 
@@ -214,7 +251,9 @@ async def with_summary(store: Any, inputs: ExtractionInputs):
             values = tuple(row.values())
             # Conversation summaries retain their existing storage representation.
             summary = row["summary"]
-    return ExtractionInputs(inputs.origin, inputs.conversation, inputs.messages, values), summary
+    return ExtractionInputs(
+        inputs.origin, inputs.conversation, inputs.messages, values, inputs.erasure_epoch
+    ), summary
 
 
 async def discover(store: Any, inputs: ExtractionInputs, incoming: Any, embedding: Any):
@@ -281,7 +320,9 @@ async def commit_fact(
     incoming = plan.incoming
     result = None
     async with store._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
-        async with guard_content_write(conn, inputs.origin):
+        async with mutation(
+            store, Capture(inputs.origin, inputs.erasure_epoch), conn=conn, ordered=True
+        ):
             # Conversation dependencies precede all message/memory locks.
             conversations = {**dependencies, inputs.conversation.id: inputs.conversation}
             for cid, expected in sorted(conversations.items()):
@@ -348,15 +389,30 @@ async def commit_fact(
                     embedding_model=embedding.storage_model if embedding else None,
                     conn=conn,
                     row_qualifier=qualify,
+                    event_scope=incoming.event_scope,
                 )
+            assert result is not None
+            await record_sources(
+                conn, inputs.origin.account_id, result[0]["id"], [m.id for m in inputs.messages]
+            )
     if result is None:
         raise RuntimeError("fact disposition unavailable")
+    await observe_committed(store, inputs.origin.account_id)
     return result  # Only a committed fact can become prefix evidence.
 
 
 async def checkpoint(store: Any, inputs: ExtractionInputs, **kwargs):
+    if not isinstance(inputs, ExtractionInputs):
+        raise ExtractionRefused("checkpoint_original_capture_required")
+    if (
+        kwargs.get("user_id") != inputs.origin.account_id
+        or kwargs.get("conversation_id") != inputs.conversation.id
+    ):
+        raise ExtractionRefused("checkpoint_scope_mismatch")
     async with store._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
-        async with guard_content_write(conn, inputs.origin):
+        async with mutation(
+            store, Capture(inputs.origin, inputs.erasure_epoch), conn=conn, ordered=True
+        ):
             await validate(conn, inputs)
             result = await store.log_extraction(conn=conn, **kwargs)
     return result

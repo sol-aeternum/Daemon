@@ -55,6 +55,7 @@ async def _user(pool: asyncpg.Pool) -> uuid.UUID:
         user_id,
         f"memory-edit+{user_id.hex}@daemon.test",
     )
+    await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
     return user_id
 
 
@@ -242,10 +243,10 @@ async def test_concurrent_edit_cannot_mix_text_and_vector_or_be_overwritten(
     real_get = store.get_memory
     reads = 0
 
-    async def get_then_let_b_commit(memory_id_arg: uuid.UUID):
+    async def get_then_let_b_commit(memory_id_arg: uuid.UUID, **kwargs):
         nonlocal reads
         reads += 1
-        row = await real_get(memory_id_arg)
+        row = await real_get(memory_id_arg, **kwargs)
         if reads == 1:
             # B's edit commits between A's read and A's write.
             await store.update_memory_content(

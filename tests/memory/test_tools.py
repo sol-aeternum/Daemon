@@ -24,6 +24,14 @@ def _install_cap_lock_mocks(store: AsyncMock, *, active_rows: int = 0) -> AsyncM
     return conn
 
 
+def _initialize_mock_account(store):
+    store._database_pool = AsyncMock()
+    store._database_pool.fetchrow = AsyncMock(
+        return_value={"status": "active", "content_generation": 0}
+    )
+    store._database_pool.fetchval = AsyncMock(return_value=0)
+
+
 @pytest.fixture(autouse=True)
 def _stub_prepared_write_embedding(monkeypatch):
     """Keep tool tests offline while writes prepare embeddings before locks."""
@@ -56,6 +64,18 @@ def _stub_prepared_write_embedding(monkeypatch):
         return EquivalencePlan(incoming)
 
     monkeypatch.setattr(tools_module, "prepare_memory_plan", plan)
+    # These are business-logic unit doubles, not database-fence proofs. Supply
+    # explicit synthetic account/epoch observations to the real capture reader;
+    # real transaction/receipt behavior is exercised by the PostgreSQL suites.
+    original_init = MemoryWriteTool.__init__
+
+    def initialized_tool(self, store, user_id):
+        if isinstance(store, AsyncMock):
+            _initialize_mock_account(store)
+        original_init(self, store, user_id)
+
+    monkeypatch.setattr(MemoryWriteTool, "__init__", initialized_tool)
+    monkeypatch.setattr("orchestrator.memory.revisions.observe_committed", AsyncMock())
     return mock
 
 
@@ -277,8 +297,8 @@ async def test_memory_write_create_passes_slot_to_dedup_and_store():
 
 
 @pytest.mark.asyncio
-async def test_memory_write_update_calls_close_then_dedup():
-    """Test that update action calls close_memory before dedup_and_store."""
+async def test_memory_write_update_revises_stable_lineage_without_close_or_dedup():
+    """An explicit correction must not replace/deduplicate away its lineage ID."""
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
 
@@ -324,12 +344,15 @@ async def test_memory_write_update_calls_close_then_dedup():
             action="update", memory_id=str(existing_memory_id), content="new content"
         )
 
-        # Verify close_memory was called with user_id for defense-in-depth.
-        mock_store.close_memory.assert_called_once_with(
-            existing_memory_id, user_id=user_id, conn=cap_conn
+        mock_store.close_memory.assert_not_called()
+        mock_dedup.assert_not_called()
+        mock_store.update_memory_content.assert_awaited_once()
+        assert mock_store.update_memory_content.call_args.args == (
+            existing_memory_id,
+            "new content",
         )
-        # Verify dedup_and_store was called after close
-        mock_dedup.assert_called_once()
+        assert mock_store.update_memory_content.call_args.kwargs["user_id"] == user_id
+        assert mock_store.update_memory_content.call_args.kwargs["conn"] is cap_conn
 
 
 @pytest.mark.asyncio
@@ -380,10 +403,11 @@ async def test_memory_write_update_inherits_category_and_slot():
             action="update", memory_id=str(existing_memory_id), content="new content"
         )
 
-        mock_dedup.assert_called_once()
-        call_kwargs = mock_dedup.call_args[1]
+        mock_dedup.assert_not_called()
+        mock_store.update_memory_content.assert_awaited_once()
+        call_kwargs = mock_store.update_memory_content.call_args[1]
         assert call_kwargs["category"] == "preference"
-        assert call_kwargs["slot"] == "inherited_slot"
+        assert call_kwargs["memory_slot"] == "inherited_slot"
 
 
 @pytest.mark.asyncio
@@ -1010,8 +1034,9 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
         # Net-neutral: close + insert happened, no refusal surfaced.
         assert "rate limit" not in result.lower()
         assert "cap" not in result.lower()
-        store.close_memory.assert_called_once()
-        mock_dedup.assert_called_once()
+        store.close_memory.assert_not_called()
+        mock_dedup.assert_not_called()
+        store.update_memory_content.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1149,8 +1174,9 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
 
         assert "rate limit" not in result.lower()
         assert "cap" not in result.lower()
-        store.close_memory.assert_called_once()
-        mock_dedup.assert_called_once()
+        store.close_memory.assert_not_called()
+        mock_dedup.assert_not_called()
+        store.update_memory_content.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1179,6 +1205,7 @@ async def test_memory_write_update_concurrent_close_is_refused(monkeypatch):
             }
         )
         store.close_memory = AsyncMock(return_value=False)
+        store.update_memory_content = AsyncMock(return_value=None)  # Revision CAS lost.
         tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
@@ -1244,8 +1271,9 @@ async def test_memory_write_update_post_close_success_proceeds(monkeypatch):
         assert "concurrently" not in result.lower()
         assert "rate limit" not in result.lower()
         assert "cap" not in result.lower()
-        store.close_memory.assert_called_once()
-        mock_dedup.assert_called_once()
+        store.close_memory.assert_not_called()
+        mock_dedup.assert_not_called()
+        store.update_memory_content.assert_awaited_once()
         assert len(tools_module._attempt_log[user_id]) == 1
 
 
@@ -1298,6 +1326,7 @@ async def test_memory_write_update_close_no_op_is_refused(monkeypatch):
             }
         )
         store.close_memory = AsyncMock(return_value=False)
+        store.update_memory_content = AsyncMock(return_value=None)  # Revision CAS lost.
         tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
@@ -1347,6 +1376,7 @@ async def test_memory_write_update_close_already_closed_is_refused(monkeypatch):
         )
         # `close_memory` returns False (UPDATE matched zero rows).
         store.close_memory = AsyncMock(return_value=False)
+        store.update_memory_content = AsyncMock(return_value=None)  # Revision CAS lost.
         tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
@@ -1409,12 +1439,10 @@ async def test_memory_write_update_close_target_excluded_from_dedup_search(monke
         result = await tool.execute(action="update", memory_id=str(old_memory_id), content="new")
 
         assert "updated" in result.lower()
-        store.close_memory.assert_called_once()
-        mock_dedup.assert_called_once()
-        # The closed ID must reach the dedup call so the candidate
-        # pool is filtered before best-match selection.
-        kwargs = mock_dedup.call_args.kwargs
-        assert old_memory_id in kwargs.get("excluded_memory_ids", set())
+        store.close_memory.assert_not_called()
+        mock_dedup.assert_not_called()
+        store.update_memory_content.assert_awaited_once()
+        assert store.update_memory_content.call_args.args[0] == old_memory_id
 
 
 @pytest.mark.asyncio
@@ -1437,6 +1465,7 @@ async def test_memory_dedup_candidate_reads_route_to_lock_conn():
     lock_conn.fetch = AsyncMock(return_value=[])
 
     mock_store = AsyncMock(spec=MemoryStore)
+    _initialize_mock_account(mock_store)
     mock_store.search_memories = AsyncMock(return_value=[])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[])
     mock_store.list_memories_by_slot_family = AsyncMock(return_value=[])
@@ -1504,6 +1533,7 @@ async def test_deduplicate_facts_locked_unplanned_preserves_without_supersede():
     lock_conn = AsyncMock(name="lock_conn")
 
     mock_store = AsyncMock(spec=MemoryStore)
+    _initialize_mock_account(mock_store)
     mock_store.search_memories = AsyncMock(
         return_value=[
             {
@@ -1789,6 +1819,7 @@ async def test_memory_write_update_store_error_retains_rate_reservation(monkeypa
             }
         )
         store.close_memory = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        store.update_memory_content = AsyncMock(side_effect=RuntimeError("database unavailable"))
         tool = MemoryWriteTool(store, user_id)
 
         with pytest.raises(RuntimeError, match="database unavailable"):
@@ -2057,7 +2088,8 @@ async def test_memory_write_update_below_cap_of_historical_target_proceeds(monke
         # not refuse with "concurrently".
         assert "concurrently" not in result.lower()
         assert "Memory updated" in result
-        mock_dedup.assert_awaited_once()
+        mock_dedup.assert_not_awaited()
+        store.update_memory_content.assert_awaited_once()
 
 
 # ------------------------------------------------------------------

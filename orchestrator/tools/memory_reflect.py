@@ -13,6 +13,8 @@ from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.model_routing import routing_context
 from orchestrator.tools.registry import Tool
+from orchestrator.memory.revisions import temporal_tool
+from orchestrator.memory.provenance import noted_suffix
 
 REFLECT_PROFILE = "reasoning"
 
@@ -62,6 +64,7 @@ class MemoryReflectTool(Tool):
         self.model = model
         self.conversation_id = conversation_id
 
+    @temporal_tool
     async def execute(self, **kwargs: Any) -> str:
         topic = kwargs.get("topic", "")
         if not topic or not topic.strip():
@@ -164,7 +167,9 @@ class MemoryReflectTool(Tool):
             source = mem.get("source", "unknown")
 
             slot_text = f" (slot={slot})" if slot else ""
-            lines.append(f"{i}. [{category.upper()}]{slot_text} [source={source}] {content}")
+            lines.append(
+                f"{i}. [{category.upper()}]{slot_text} [source={source}] {content}{noted_suffix(mem)}"
+            )
 
         return "\n".join(lines)
 

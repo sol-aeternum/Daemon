@@ -474,12 +474,8 @@ async def test_gather_without_side_effects_never_records_trust_or_touches(
 
 
 # ------------------------------------------------------------- durable task call site
-def test_task_runner_call_site_uses_unchanged_wrapper() -> None:
-    """orchestrator/tasks/runner.py must keep calling build_memory_context(memory, conv_id).
-
-    The durable task path then renders through the same renderer the benchmark
-    measures without any task-runner edit.
-    """
+def test_task_runner_call_site_uses_shared_wrapper_with_explicit_temporal_inputs() -> None:
+    """Durable context keeps the shared renderer and forwards accepted T/K and query."""
     tree = ast.parse((REPO_ROOT / "orchestrator/tasks/runner.py").read_text())
     calls = [
         node
@@ -490,7 +486,11 @@ def test_task_runner_call_site_uses_unchanged_wrapper() -> None:
     ]
     assert len(calls) == 1
     call = calls[0]
-    assert call.keywords == []
+    keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in call.keywords}
+    assert keywords == {
+        "temporal_scope": "TemporalReadScope.model_validate(claim.task_input['temporal_scope']) if claim.task_input.get('temporal_scope') else None",
+        "query_text": "str(claim.task_input.get('message') or '')",
+    }
     assert [ast.unparse(arg) for arg in call.args] == ["memory", "claim.conversation_id"]
 
     signature = inspect.signature(injection.build_memory_context)
@@ -498,6 +498,8 @@ def test_task_runner_call_site_uses_unchanged_wrapper() -> None:
         ("store", inspect.Parameter.empty),
         ("conversation_id", inspect.Parameter.empty),
         ("max_tokens", injection.DEFAULT_MAX_TOKENS),
+        ("temporal_scope", None),
+        ("query_text", None),
     ]
 
 

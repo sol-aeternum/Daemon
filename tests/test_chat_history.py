@@ -24,6 +24,7 @@ from orchestrator.daemon import stream_sse_chat, with_runtime_datetime_context
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from tests.qualified_compute import install_qualified_compute
+from tests.memory_capture_support import install_capture_pool
 
 pytestmark = pytest.mark.usefixtures("unpaced_mock_stream")
 
@@ -84,6 +85,7 @@ async def client(monkeypatch):
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     """Create a mock AppState with optional memory store."""
     if mock_store is not None:
+        install_capture_pool(mock_store)
         mock_store.get_user_settings = AsyncMock(return_value=None)
         for method in ("get_l0_memories", "get_recent_summaries", "find_entities_by_alias"):
             mocked = getattr(mock_store, method)

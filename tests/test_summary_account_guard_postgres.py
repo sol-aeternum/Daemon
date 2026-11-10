@@ -357,6 +357,7 @@ async def test_inflight_compute_cannot_publish_stale_or_competing_result(
             assert await env.memory.update_conversation_summary(
                 conv,
                 "Winner",
+                expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
                 summary_continuation_pending=True,
@@ -459,6 +460,7 @@ async def test_fence_first_real_summary_writer_waits_then_refuses(env, monkeypat
             bound_store(env, writer).update_conversation_summary(
                 conv,
                 "Stale",
+                expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
                 summary_continuation_pending=True,
@@ -497,6 +499,7 @@ async def test_writer_first_lock_is_account_before_conversation_through_commit(e
             bound_store(env, writer).update_conversation_summary(
                 conv,
                 "Winner",
+                expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
                 summary_continuation_pending=True,
@@ -558,6 +561,7 @@ async def test_cancel_real_lock_wait_rolls_back_and_connection_reusable(env, mon
             else store.update_conversation_summary(
                 conv,
                 "X",
+                expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
                 captured_generation=capture,
@@ -616,6 +620,7 @@ async def test_cancel_during_actual_commit_rolls_back_summary_cursor_and_pending
             store.update_conversation_summary(
                 conv,
                 "Uncommitted",
+                expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
                 summary_continuation_pending=True,
@@ -709,6 +714,7 @@ async def test_legacy_and_refused_extraction_preserve_summary_without_fact_check
     await env.memory.update_conversation_summary(
         conv,
         "Existing",
+        expected_memory_erasure_epoch=0,
         expected_summary_updated_at=None,
         summarized_message_count=0,
         summary_continuation_pending=True,
@@ -765,6 +771,7 @@ async def test_noop_clear_cannot_erase_competing_summary_version(env, monkeypatc
     assert await env.memory.update_conversation_summary(
         conv,
         "First",
+        expected_memory_erasure_epoch=0,
         expected_summary_updated_at=None,
         summarized_message_count=1,
         summary_continuation_pending=True,
@@ -774,6 +781,7 @@ async def test_noop_clear_cannot_erase_competing_summary_version(env, monkeypatc
     assert await env.memory.update_conversation_summary(
         conv,
         "Second",
+        expected_memory_erasure_epoch=0,
         expected_summary_updated_at=observed["summary_updated_at"],
         summarized_message_count=1,
         summary_continuation_pending=True,

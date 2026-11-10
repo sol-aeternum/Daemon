@@ -23,7 +23,7 @@ from orchestrator.memory.embedding import EmbeddingConfigurationError
 from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator.worker import jobs
 from tests.durable_tasks_support import expire_lease
-from tests.test_entity_account_guard_postgres import env as env, prepare, rows
+from tests.test_entity_account_guard_postgres import env as env, prepare, registered_sql, rows
 from tests.test_entity_enqueue_chain import entity_queue as entity_queue
 from tests.test_task_api_postgres import api as api
 
@@ -72,8 +72,8 @@ async def test_actual_fact_checkpoint_native_enqueue_worker_preserves_origin(
     env, monkeypatch, entity_queue, failed_suffix
 ):
     queue, pipeline = entity_queue
-    _, conv, _, _ = await prepare(env, monkeypatch)
-    await env.pool.execute("DELETE FROM memories WHERE user_id=$1", env.alice)
+    mid, conv, _, _ = await prepare(env, monkeypatch)
+    await registered_sql(env, "DELETE FROM memories WHERE id=$1", mid)
     for _ in range(2 if failed_suffix else 1):
         await env.memory.insert_message(conv, env.alice, "user", "x" * 3000, status="complete")
     extractor = script_facts(monkeypatch, failed_suffix=failed_suffix)
@@ -112,8 +112,8 @@ async def test_invalid_origin_suppresses_facts_checkpoints_and_entities(
     env, monkeypatch, entity_queue, origin_kind
 ):
     queue, pipeline = entity_queue
-    _, conv, _, _ = await prepare(env, monkeypatch)
-    await env.pool.execute("DELETE FROM memories WHERE user_id=$1", env.alice)
+    mid, conv, _, _ = await prepare(env, monkeypatch)
+    await registered_sql(env, "DELETE FROM memories WHERE id=$1", mid)
     await env.memory.insert_message(
         conv, env.alice, "user", "Fictional short fact source", status="complete"
     )
@@ -146,8 +146,8 @@ async def test_chunk_continuation_and_entity_jobs_share_original_capture(
     env, monkeypatch, entity_queue
 ):
     queue, pipeline = entity_queue
-    _, conv, _, _ = await prepare(env, monkeypatch)
-    await env.pool.execute("DELETE FROM memories WHERE user_id=$1", env.alice)
+    mid, conv, _, _ = await prepare(env, monkeypatch)
+    await registered_sql(env, "DELETE FROM memories WHERE id=$1", mid)
     for _ in range(2):
         await env.memory.insert_message(conv, env.alice, "user", "x" * 3000, status="complete")
     script_facts(monkeypatch)
@@ -326,8 +326,8 @@ async def test_native_stream_duplicate_followup_retains_origin_to_entity_worker(
     from orchestrator.daemon import stream_sse_chat
 
     queue, pipeline = entity_queue
-    _, conv, _, _ = await prepare(env, monkeypatch)
-    await env.pool.execute("DELETE FROM memories WHERE user_id=$1", env.alice)
+    mid, conv, _, _ = await prepare(env, monkeypatch)
+    await registered_sql(env, "DELETE FROM memories WHERE id=$1", mid)
     if pipeline is not None:
         # Model key existence faithfully while running the actual native adapter;
         # never open a socket to an ambient Redis for the recording variant.

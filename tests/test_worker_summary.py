@@ -52,6 +52,7 @@ def _summary_input(
     contiguous_count: int | None = None,
     has_hole: bool = False,
     messages: list[dict[str, str]] | None = None,
+    memory_erasure_epoch: int = 0,
 ) -> dict[str, object]:
     finalized = finalized_count if finalized_count is not None else current_count
     contiguous = contiguous_count if contiguous_count is not None else current_count
@@ -65,6 +66,7 @@ def _summary_input(
         "has_hole": has_hole,
         "messages": messages if messages is not None else [],
         "snapshot_at": SimpleNamespace(),
+        "memory_erasure_epoch": memory_erasure_epoch,
     }
 
 
@@ -154,6 +156,7 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
             finalized_count=100,
             contiguous_count=100,
             messages=messages,
+            memory_erasure_epoch=11,
         )
     )
     store.check_conversation_summary_generation = AsyncMock(return_value=True)
@@ -205,6 +208,7 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
     # guarded persist as the summary/cursor).
     assert update_kwargs["summary_continuation_pending"] is True
     assert update_kwargs["captured_generation"] == captured
+    assert update_kwargs["expected_memory_erasure_epoch"] == 11
     # The guard recheck ran inside the account scope before inference.
     store.check_conversation_summary_generation.assert_awaited_once_with(
         conversation_id,
@@ -234,6 +238,7 @@ async def test_generate_summary_job_uses_contiguous_baseline_not_raw_count(
             finalized_count=41,
             contiguous_count=40,
             messages=messages,
+            memory_erasure_epoch=12,
         )
     )
     store.check_conversation_summary_generation = AsyncMock(return_value=True)
@@ -255,6 +260,7 @@ async def test_generate_summary_job_uses_contiguous_baseline_not_raw_count(
     fetch_args = store.update_conversation_summary.await_args
     assert fetch_args is not None
     assert fetch_args.kwargs["summarized_message_count"] == 40
+    assert fetch_args.kwargs["expected_memory_erasure_epoch"] == 12
 
 
 @pytest.mark.asyncio
@@ -386,6 +392,7 @@ async def test_generate_summary_job_hole_preserves_pending_flag(
             finalized_count=70,
             contiguous_count=50,
             messages=messages,
+            memory_erasure_epoch=13,
         )
     )
     store.check_conversation_summary_generation = AsyncMock(return_value=True)
@@ -408,6 +415,7 @@ async def test_generate_summary_job_hole_preserves_pending_flag(
     assert update_kwargs["summarized_message_count"] == 50
     # Hole keeps the persistent recovery flag with the summary persist.
     assert update_kwargs["summary_continuation_pending"] is True
+    assert update_kwargs["expected_memory_erasure_epoch"] == 13
     assert result["status"] == "success"
     assert result["summarized_message_count"] == 50
     assert result["continuation_enqueued"] is False

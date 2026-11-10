@@ -50,6 +50,7 @@ async def _user(pool: asyncpg.Pool) -> uuid.UUID:
         user_id,
         f"memory-import+{user_id.hex}@daemon.test",
     )
+    await pool.execute("INSERT INTO entitlement_accounts(user_id) VALUES($1)", user_id)
     return user_id
 
 

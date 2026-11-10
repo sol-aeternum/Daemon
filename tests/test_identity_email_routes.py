@@ -169,6 +169,8 @@ class RouteMockPool:
         return challenge_id
 
     async def fetchval(self, query: str, *args):
+        if "to_regclass('memory_mutations')" in query:
+            return True
         return 0
 
     async def fetchrow(self, query: str, *args):

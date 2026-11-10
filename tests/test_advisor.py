@@ -105,6 +105,10 @@ class _FakeMemoryStore:
     """Fake memory store that tracks advisor call counts."""
 
     def __init__(self, advisor_call_count: int = 0) -> None:
+        # Synthetic account/erasure observations for the native producer capture.
+        self._database_pool = AsyncMock()
+        self._database_pool.fetchrow.return_value = {"status": "active", "content_generation": 0}
+        self._database_pool.fetchval.return_value = 0
         self._advisor_call_count = advisor_call_count
         self._increment_calls = 0
         self._inserted_messages: list[dict[str, Any]] = []

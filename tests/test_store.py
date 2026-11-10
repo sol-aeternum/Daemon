@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import uuid
 import asyncio
-from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -22,6 +21,7 @@ from orchestrator.memory.store import (
     MemoryStore,
     compute_memory_content_hash,
 )
+from tests.memory_store_sql_support import RegisteredStorePool, normalized
 
 
 class MockRecord:
@@ -51,6 +51,11 @@ class MockRecord:
 HASH_TEST_PEPPER = "test-pepper-for-memory-content-hash-12345678901234567890"
 
 
+def _registered_store(pool, encryption) -> MemoryStore:
+    registered = pool if isinstance(pool, RegisteredStorePool) else RegisteredStorePool(pool)
+    return MemoryStore(cast(asyncpg.Pool, registered), encryption)
+
+
 @pytest_asyncio.fixture
 async def mock_db_pool():
     """Create a mock asyncpg pool for testing."""
@@ -70,7 +75,7 @@ async def mock_encryption():
 @pytest_asyncio.fixture
 async def memory_store(mock_db_pool, mock_encryption):
     """Create a MemoryStore instance with mocked dependencies."""
-    return MemoryStore(db_pool=mock_db_pool, encryption=mock_encryption)
+    return _registered_store(mock_db_pool, mock_encryption)
 
 
 def _patch_memory_hash_settings(monkeypatch) -> None:
@@ -94,7 +99,7 @@ def test_compute_memory_content_hash_is_keyed_and_normalized(monkeypatch) -> Non
 
 class UniqueMemoryPool:
     def __init__(self) -> None:
-        self._rows_by_hash: dict[tuple[str, bool], MockRecord] = {}
+        self._rows_by_hash: dict[tuple, MockRecord] = {}
         self._lock = asyncio.Lock()
         self.insert_attempts = 0
 
@@ -102,12 +107,14 @@ class UniqueMemoryPool:
         if "INSERT INTO memories" in sql:
             content_hash = args[2]
             local_only = bool(args[8])
-            key = (content_hash, local_only)
+            assert "ON CONFLICT DO NOTHING" in sql and len(args) == 18
+            assert args[17] is False  # These uniqueness fixtures have known manual origin.
+            key = (args[0], content_hash, local_only, args[15])
             async with self._lock:
                 self.insert_attempts += 1
                 existing = self._rows_by_hash.get(key)
                 if existing is not None:
-                    raise asyncpg.UniqueViolationError("duplicate memory content_hash")
+                    return None  # PostgreSQL ON CONFLICT disposition, not a failed transaction.
                 row = MockRecord(
                     id=uuid.uuid4(),
                     user_id=args[0],
@@ -124,9 +131,10 @@ class UniqueMemoryPool:
                 return row
 
         if "content_hash = $2" in sql:
-            return self._rows_by_hash.get((args[1], bool(args[2])))
+            assert "AND temporal_scope_hash=$4" in sql and "AND NOT provenance_unknown" in sql
+            return self._rows_by_hash.get((args[0], args[1], bool(args[2]), args[3]))
 
-        return None
+        raise AssertionError(sql)
 
 
 @pytest.mark.asyncio
@@ -136,21 +144,21 @@ async def test_insert_memory_recovers_existing_row_on_content_hash_conflict(monk
     encryption = MagicMock(spec=ContentEncryption)
     encryption.encrypt = MagicMock(side_effect=lambda value: value)
     encryption.decrypt = MagicMock(side_effect=lambda value: value)
-    store = MemoryStore(cast(asyncpg.Pool, pool), encryption)
+    store = _registered_store(pool, encryption)
     user_id = uuid.uuid4()
 
     first = await store.insert_memory(
         user_id=user_id,
         content="User drives a blue car",
         category="fact",
-        source_type="extracted",
+        source_type="manual",
         embedding=[0.1] * 1024,
     )
     second = await store.insert_memory(
         user_id=user_id,
         content="User drives a blue car",
         category="fact",
-        source_type="extracted",
+        source_type="manual",
         embedding=[0.1] * 1024,
     )
 
@@ -173,28 +181,31 @@ async def test_internal_insert_disposition_comes_from_returning_not_timestamps(
         content="User likes pizza",
         updated_at=datetime.now(),
     )
-    conn = AsyncMock()
-    conn.fetchrow.side_effect = [existing, None, existing]
-    first, inserted = await memory_store._insert_memory_with_outcome(
-        owner,
-        "User likes pizza",
-        "fact",
-        "extracted",
-        conn=conn,
-    )
-    reused, inserted_again = await memory_store._insert_memory_with_outcome(
-        owner,
-        "  User   likes pizza  ",
-        "preference",
-        "user_created",
-        conn=conn,
-    )
+    raw = AsyncMock()
+    raw.fetchrow.side_effect = [existing, None, existing]
+    conn = cast(RegisteredStorePool, memory_store._database_pool).connection(raw)
+    async with conn.transaction():
+        first, inserted = await memory_store._insert_memory_with_outcome(
+            owner,
+            "User likes pizza",
+            "fact",
+            "manual",
+            conn=conn,
+        )
+        reused, inserted_again = await memory_store._insert_memory_with_outcome(
+            owner,
+            "  User   likes pizza  ",
+            "preference",
+            "user_created",
+            conn=conn,
+        )
     assert inserted is True and inserted_again is False
     assert first == reused  # Even identical timestamps are not disposition evidence.
-    assert conn.fetchrow.await_count == 3
-    assert "ON CONFLICT DO NOTHING" in conn.fetchrow.await_args_list[0].args[0]
-    assert "content_hash = $2" in conn.fetchrow.await_args_list[2].args[0]
-    conn.transaction.assert_not_called()  # ON CONFLICT does not need a savepoint.
+    assert raw.fetchrow.await_count == 3
+    assert "ON CONFLICT DO NOTHING" in raw.fetchrow.await_args_list[0].args[0]
+    assert "content_hash = $2" in raw.fetchrow.await_args_list[2].args[0]
+    assert conn.transaction_entries == 1  # Caller-owned transaction; no hidden savepoint.
+    raw.transaction.assert_not_called()
     mock_db_pool.fetchrow.assert_not_awaited()
 
 
@@ -204,17 +215,21 @@ async def test_internal_insert_unexpected_database_failure_propagates(
     monkeypatch,
 ) -> None:
     _patch_memory_hash_settings(monkeypatch)
-    conn = AsyncMock()
-    conn.fetchrow.side_effect = asyncpg.UniqueViolationError("mock cannot emulate ON CONFLICT")
+    raw = AsyncMock()
+    raw.fetchrow.side_effect = asyncpg.UniqueViolationError("mock cannot emulate ON CONFLICT")
+    conn = cast(RegisteredStorePool, memory_store._database_pool).connection(raw)
     with pytest.raises(asyncpg.UniqueViolationError):
-        await memory_store._insert_memory_with_outcome(
-            uuid.uuid4(),
-            "User likes pizza",
-            "fact",
-            "extracted",
-            conn=conn,
-        )
-    conn.transaction.assert_not_called()
+        async with conn.transaction():
+            await memory_store._insert_memory_with_outcome(
+                uuid.uuid4(),
+                "User likes pizza",
+                "fact",
+                "manual",
+                conn=conn,
+            )
+    assert conn.transaction_entries == 1
+    assert cast(RegisteredStorePool, memory_store._database_pool).events[-1] == "ROLLBACK"
+    raw.transaction.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -246,7 +261,7 @@ async def test_concurrent_same_content_inserts_create_one_memory(monkeypatch) ->
     encryption = MagicMock(spec=ContentEncryption)
     encryption.encrypt = MagicMock(side_effect=lambda value: value)
     encryption.decrypt = MagicMock(side_effect=lambda value: value)
-    store = MemoryStore(cast(asyncpg.Pool, pool), encryption)
+    store = _registered_store(pool, encryption)
     user_id = uuid.uuid4()
 
     async def insert_one() -> uuid.UUID:
@@ -254,7 +269,7 @@ async def test_concurrent_same_content_inserts_create_one_memory(monkeypatch) ->
             user_id=user_id,
             content="User drives a blue car",
             category="fact",
-            source_type="extracted",
+            source_type="manual",
             embedding=[0.1] * 1024,
         )
         return row["id"]
@@ -272,14 +287,14 @@ async def test_same_content_local_and_global_memories_do_not_conflict(monkeypatc
     encryption = MagicMock(spec=ContentEncryption)
     encryption.encrypt = MagicMock(side_effect=lambda value: value)
     encryption.decrypt = MagicMock(side_effect=lambda value: value)
-    store = MemoryStore(cast(asyncpg.Pool, pool), encryption)
+    store = _registered_store(pool, encryption)
     user_id = uuid.uuid4()
 
     global_memory = await store.insert_memory(
         user_id=user_id,
         content="User drives a blue car",
         category="fact",
-        source_type="extracted",
+        source_type="manual",
         embedding=[0.1] * 1024,
         local_only=False,
     )
@@ -287,7 +302,7 @@ async def test_same_content_local_and_global_memories_do_not_conflict(monkeypatc
         user_id=user_id,
         content="User drives a blue car",
         category="fact",
-        source_type="extracted",
+        source_type="manual",
         embedding=[0.1] * 1024,
         local_only=True,
     )
@@ -368,20 +383,30 @@ async def test_backfill_memory_content_hashes_skips_legacy_duplicates(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("completed_elsewhere", [False, True])
 async def test_backfill_memory_content_hashes_closes_legacy_duplicates(
     memory_store: MemoryStore,
     mock_db_pool,
     monkeypatch,
+    completed_elsewhere,
 ) -> None:
     _patch_memory_hash_settings(monkeypatch)
     duplicate_id = uuid.uuid4()
     mock_db_pool.fetch.return_value = [
         MockRecord(id=duplicate_id, content="encrypted legacy duplicate")
     ]
-    mock_db_pool.execute.side_effect = [
-        asyncpg.UniqueViolationError("duplicate memory content_hash"),
-        "UPDATE 1",
-    ]
+    closed = False
+
+    async def conflicting_backfill_then_conditional_close(sql, *args):
+        nonlocal closed
+        if "SET content_hash = $2" in sql:
+            raise asyncpg.UniqueViolationError("duplicate memory content_hash")
+        assert "AND content_hash IS NULL" in sql and "AND valid_to IS NULL" in sql
+        assert args == (duplicate_id,)
+        closed = not completed_elsewhere
+        return "UPDATE 1" if closed else "UPDATE 0"
+
+    mock_db_pool.execute.side_effect = conflicting_backfill_then_conditional_close
 
     backfilled = await memory_store.backfill_memory_content_hashes()
 
@@ -391,42 +416,41 @@ async def test_backfill_memory_content_hashes_closes_legacy_duplicates(
     assert "SET valid_to = NOW()" in close_sql
     assert "content_hash IS NULL" in close_sql
     assert mock_db_pool.execute.await_args_list[1].args[1] == duplicate_id
+    assert closed is (not completed_elsewhere)
+    assert "COMMIT" in cast(RegisteredStorePool, memory_store._database_pool).events
 
 
 class SupersedeConflictConn:
     def __init__(self, duplicate_row: MockRecord) -> None:
         self.duplicate_row = duplicate_row
         self.closed_memory_id: uuid.UUID | None = None
-
-    @asynccontextmanager
-    async def transaction(self):
-        yield self
+        self.head_revision_id = uuid.uuid4()
 
     async def fetchrow(self, sql: str, *args):
-        if "INSERT INTO memories" in sql:
+        if "SELECT head_revision_id FROM memories" in sql:
+            return {"head_revision_id": self.head_revision_id}
+        if "UPDATE memories" in sql and "SET content" in sql:
+            assert args[12] == self.head_revision_id
             raise asyncpg.UniqueViolationError("duplicate memory content_hash")
-        if "content_hash = $2" in sql:
-            return self.duplicate_row
-        return None
+        raise AssertionError(sql)
 
     async def execute(self, sql: str, *args):
-        if "SET valid_to = NOW()" in sql:
-            self.closed_memory_id = args[0]
-            return "UPDATE 1"
-        return "UPDATE 0"
+        raise AssertionError(sql)
 
 
 class SupersedeConflictPool:
     def __init__(self, conn: SupersedeConflictConn) -> None:
         self.conn = conn
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
+    async def fetchrow(self, sql, *args):
+        return await self.conn.fetchrow(sql, *args)
+
+    async def execute(self, sql, *args):
+        return await self.conn.execute(sql, *args)
 
 
 @pytest.mark.asyncio
-async def test_supersede_memory_recovers_existing_row_on_content_hash_conflict(
+async def test_supersede_memory_refuses_cross_lineage_hash_conflict_without_closing_old_row(
     monkeypatch,
 ) -> None:
     _patch_memory_hash_settings(monkeypatch)
@@ -446,19 +470,20 @@ async def test_supersede_memory_recovers_existing_row_on_content_hash_conflict(
     encryption = MagicMock(spec=ContentEncryption)
     encryption.encrypt = MagicMock(side_effect=lambda value: value)
     encryption.decrypt = MagicMock(side_effect=lambda value: value)
-    store = MemoryStore(cast(asyncpg.Pool, SupersedeConflictPool(conn)), encryption)
+    store = _registered_store(SupersedeConflictPool(conn), encryption)
 
-    result = await store.supersede_memory(
-        old_memory_id=old_memory_id,
-        new_content="duplicate replacement",
-        new_category="fact",
-        new_source_type="extracted",
-        user_id=duplicate_row["user_id"],
-        embedding=[0.1] * 1024,
-    )
-
-    assert result["id"] == duplicate_id
-    assert conn.closed_memory_id == old_memory_id
+    with pytest.raises(MemoryContentConflictError):
+        await store.supersede_memory(
+            old_memory_id=old_memory_id,
+            new_content="duplicate replacement",
+            new_category="fact",
+            new_source_type="extracted",
+            user_id=duplicate_row["user_id"],
+            embedding=[0.1] * 1024,
+        )
+    assert duplicate_row["id"] == duplicate_id
+    assert conn.closed_memory_id is None
+    assert cast(RegisteredStorePool, store._database_pool).events[-1] == "ROLLBACK"
 
 
 @pytest.mark.asyncio
@@ -519,6 +544,7 @@ async def test_search_memories_infers_embedding_model_from_vector_metadata(
     )
 
     mock_db_pool.fetch.assert_called_once()
+    assert "FROM memory_current_assertions" in mock_db_pool.fetch.call_args.args[0]
     assert mock_db_pool.fetch.call_args.args[10] == "openai:text-embedding-3-small"
 
 
@@ -535,6 +561,7 @@ async def test_search_memories_defaults_plain_vectors_to_primary_model(
     )
 
     assert mock_db_pool.fetch.call_args.args[10] == "voyage-4-large"
+    assert "FROM memory_current_assertions" in mock_db_pool.fetch.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -553,6 +580,7 @@ async def test_search_memories_bm25_filters_enabled_models_and_can_exclude_l0(
     )
 
     call_args = mock_db_pool.fetch.call_args.args
+    assert "FROM memory_current_assertions" in call_args[0]
     assert "embedding_model = ANY($9::text[])" in call_args[0]
     assert "($10::bool OR tier != 'l0')" in call_args[0]
     assert call_args[9] == sorted(enabled_models)
@@ -989,10 +1017,9 @@ async def test_get_conversation_returns_none_when_missing(
 # ---------------------------------------------------------------------------
 # metadata JSONB NOT NULL DEFAULT '{}' regressions (migration 040 contract)
 #
-# ``MemoryStore.insert_memory`` and ``MemoryStore.supersede_memory`` must
-# serialize an omitted or ``None`` ``metadata`` as a real empty JSON object
-# (``'{}'``) instead of SQL NULL, because the column is NOT NULL. Provided
-# metadata — including nested objects — must pass through ``json.dumps``.
+# ``insert_memory`` serializes omitted/None metadata as a real empty JSON
+# object, never SQL NULL. Stable-ID ``supersede_memory`` preserves the existing
+# nonnull object when metadata is absent and merges a supplied JSON object.
 # Verifying the exact ``metadata_json`` argument keeps these tests strict:
 # any regression back to ``json.dumps(metadata)`` re-raises
 # ``NotNullViolationError`` on real PostgreSQL.
@@ -1029,7 +1056,7 @@ async def test_insert_memory_omitted_metadata_becomes_empty_object(monkeypatch) 
     _patch_memory_hash_settings(monkeypatch)
     returned = MockRecord(id=uuid.uuid4(), content="fresh note", metadata="{}")
     pool = MetadataCapturePool(row=returned)
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    store = _registered_store(pool, _pass_through_encryption())
 
     result = await store.insert_memory(
         user_id=uuid.uuid4(),
@@ -1046,7 +1073,7 @@ async def test_insert_memory_omitted_metadata_becomes_empty_object(monkeypatch) 
 async def test_insert_memory_none_metadata_becomes_empty_object(monkeypatch) -> None:
     _patch_memory_hash_settings(monkeypatch)
     pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    store = _registered_store(pool, _pass_through_encryption())
 
     await store.insert_memory(
         user_id=uuid.uuid4(),
@@ -1065,7 +1092,7 @@ async def test_insert_memory_empty_metadata_dict_serializes_to_empty_object(
 ) -> None:
     _patch_memory_hash_settings(monkeypatch)
     pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    store = _registered_store(pool, _pass_through_encryption())
 
     await store.insert_memory(
         user_id=uuid.uuid4(),
@@ -1082,7 +1109,7 @@ async def test_insert_memory_empty_metadata_dict_serializes_to_empty_object(
 async def test_insert_memory_nested_metadata_object_is_preserved(monkeypatch) -> None:
     _patch_memory_hash_settings(monkeypatch)
     pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    store = _registered_store(pool, _pass_through_encryption())
 
     nested = {"key": "value", "nested": {"list": [1, 2, 3], "bool": True}}
 
@@ -1102,51 +1129,73 @@ async def test_insert_memory_uses_caller_conn_on_conn_path(monkeypatch) -> None:
     """On the atomic-cap path every call must go through the provided conn."""
     _patch_memory_hash_settings(monkeypatch)
     pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=MockRecord(id=uuid.uuid4(), content="fresh note"))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    raw = AsyncMock()
+    raw.fetchrow = AsyncMock(return_value=MockRecord(id=uuid.uuid4(), content="fresh note"))
+    store = _registered_store(pool, _pass_through_encryption())
+    conn = cast(RegisteredStorePool, store._database_pool).connection(raw)
 
-    await store.insert_memory(
-        user_id=uuid.uuid4(),
-        content="fresh note",
-        category="fact",
-        source_type="import",
-        conn=cast(Any, conn),
-    )
+    async with conn.transaction():
+        await store.insert_memory(
+            user_id=uuid.uuid4(),
+            content="fresh note",
+            category="fact",
+            source_type="import",
+            conn=cast(Any, conn),
+        )
 
     assert pool.calls == 0
-    assert conn.fetchrow.await_count == 1
+    assert raw.fetchrow.await_count == 1
     # AsyncMock records SQL at args[0]; metadata is PostgreSQL parameter $13.
-    assert conn.fetchrow.await_args.args[13] == "{}"
+    assert raw.fetchrow.await_args.args[13] == "{}"
+    assert conn.transaction_entries == 1
 
 
-def _supersede_conn(*, insert_result: MockRecord | None | BaseException) -> MagicMock:
-    """Build a mock conn modelling the supersede transaction surface."""
+def _supersede_conn(*, update_result: MockRecord | BaseException) -> MagicMock:
+    """Model stable-ID correction SQL, retaining all non-target metadata."""
     conn = MagicMock()
-    conn.fetchrow = AsyncMock()
-    conn.execute = AsyncMock(return_value="UPDATE 1")
+    row = (
+        dict(update_result)
+        if isinstance(update_result, MockRecord)
+        else dict(_supersede_new_row(metadata_json="{}"))
+    )
 
-    def make_transaction() -> MagicMock:
-        tx = MagicMock()
-        tx.__aenter__ = AsyncMock(return_value=None)
-        tx.__aexit__ = AsyncMock(return_value=False)
-        return tx
+    async def fetchrow(sql, *args):
+        q = normalized(sql)
+        if q.startswith("SELECT head_revision_id FROM memories"):
+            assert "user_id=$1 AND id=$2 AND status!='deleted'" in q
+            assert args == (row["user_id"], row["id"])
+            return {"head_revision_id": row["head_revision_id"]}
+        if q.startswith("UPDATE memories SET content = $2,"):
+            assert args[0] == row["id"] and args[9] == row["user_id"]
+            assert args[12] == row["head_revision_id"]
+            if isinstance(update_result, BaseException):
+                raise update_result
+            row.update(
+                content=args[1],
+                content_hash=args[5],
+                category=args[8],
+                head_revision_id=uuid.uuid4(),
+            )
+            return dict(row)
+        assert q.startswith("SELECT * FROM memories WHERE id = $1 AND status!='deleted'")
+        assert "memory_tombstones" in q and "user_id=$2" in q
+        assert args == (row["id"], row["user_id"])
+        return dict(row)
 
-    conn.transaction = MagicMock(side_effect=make_transaction)
-    if isinstance(insert_result, BaseException):
-        conn.fetchrow.side_effect = insert_result
-    else:
-        conn.fetchrow.return_value = insert_result
+    async def execute(sql, *args):
+        assert normalized(sql).startswith("UPDATE memories SET metadata = COALESCE")
+        assert args[0] == row["id"]
+        row["metadata"] = json.dumps({**json.loads(row["metadata"]), **json.loads(args[1])})
+        return "UPDATE 1"
+
+    conn.fetchrow = AsyncMock(side_effect=fetchrow)
+    conn.execute = AsyncMock(side_effect=execute)
+    conn.current_row = row
     return conn
 
 
-def _supersede_pool_with_conn(conn: MagicMock) -> MagicMock:
-    pool = MagicMock()
-    acquire_cm = MagicMock()
-    acquire_cm.__aenter__ = AsyncMock(return_value=conn)
-    acquire_cm.__aexit__ = AsyncMock(return_value=False)
-    pool.acquire = MagicMock(return_value=acquire_cm)
-    return pool
+def _supersede_pool_with_conn(conn: MagicMock) -> RegisteredStorePool:
+    return RegisteredStorePool(conn)
 
 
 def _supersede_new_row(*, metadata_json: str | None) -> MockRecord:
@@ -1156,74 +1205,81 @@ def _supersede_new_row(*, metadata_json: str | None) -> MockRecord:
         content="encrypted-new-content",
         content_hash=compute_memory_content_hash("superseded content"),
         metadata=metadata_json,
+        head_revision_id=uuid.uuid4(),
+        status="active",
     )
 
 
 @pytest.mark.asyncio
-async def test_supersede_memory_omitted_metadata_becomes_empty_object(monkeypatch) -> None:
+async def test_supersede_memory_omitted_metadata_preserves_nonnull_object(monkeypatch) -> None:
     _patch_memory_hash_settings(monkeypatch)
     row = _supersede_new_row(metadata_json="{}")
-    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=row))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    pool = _supersede_pool_with_conn(_supersede_conn(update_result=row))
+    store = _registered_store(pool, _pass_through_encryption())
 
-    await store.supersede_memory(uuid.uuid4(), "new content", "fact", "import", uuid.uuid4())
+    result = await store.supersede_memory(
+        row["id"], "new content", "fact", "import", row["user_id"]
+    )
 
-    conn = pool.acquire.return_value.__aenter__.return_value
-    metadata_json = conn.fetchrow.await_args.args[12]
-    assert metadata_json == "{}"
+    assert result["id"] == row["id"] and result["head_revision_id"] != row["head_revision_id"]
+    assert result["metadata"] == "{}"
+    pool.executor.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_supersede_memory_none_metadata_becomes_empty_object(monkeypatch) -> None:
+async def test_supersede_memory_none_metadata_preserves_existing_object(monkeypatch) -> None:
     _patch_memory_hash_settings(monkeypatch)
-    row = _supersede_new_row(metadata_json="{}")
-    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=row))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    row = _supersede_new_row(metadata_json='{"retained": true}')
+    pool = _supersede_pool_with_conn(_supersede_conn(update_result=row))
+    store = _registered_store(pool, _pass_through_encryption())
 
-    await store.supersede_memory(
-        uuid.uuid4(),
+    result = await store.supersede_memory(
+        row["id"],
         "new content",
         "fact",
         "import",
-        uuid.uuid4(),
+        row["user_id"],
         metadata=None,
     )
 
-    conn = pool.acquire.return_value.__aenter__.return_value
-    assert conn.fetchrow.await_args.args[12] == "{}"
+    assert result["metadata"] == '{"retained": true}'
+    pool.executor.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_supersede_memory_nested_metadata_object_is_preserved(monkeypatch) -> None:
     _patch_memory_hash_settings(monkeypatch)
     row = _supersede_new_row(metadata_json="{}")
-    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=row))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    pool = _supersede_pool_with_conn(_supersede_conn(update_result=row))
+    store = _registered_store(pool, _pass_through_encryption())
 
     nested = {"evidence": {"detected_by": "dedup", "score": 0.9}}
 
     await store.supersede_memory(
-        uuid.uuid4(),
+        row["id"],
         "new content",
         "fact",
         "import",
-        uuid.uuid4(),
+        row["user_id"],
         metadata=nested,
     )
 
-    conn = pool.acquire.return_value.__aenter__.return_value
-    assert conn.fetchrow.await_args.args[12] == json.dumps(nested)
+    conn = pool.executor
+    assert conn.execute.await_args.args[2] == json.dumps(nested)
+    assert json.loads(conn.current_row["metadata"]) == nested
 
 
 @pytest.mark.asyncio
 async def test_supersede_memory_failure_runs_no_implicit_update(monkeypatch) -> None:
-    """A failing insert must abort the transaction without updating old row."""
+    """A failing correction aborts without any implicit metadata mutation."""
     _patch_memory_hash_settings(monkeypatch)
-    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=RuntimeError("insert exploded")))
-    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+    pool = _supersede_pool_with_conn(_supersede_conn(update_result=RuntimeError("update exploded")))
+    store = _registered_store(pool, _pass_through_encryption())
+    row = dict(pool.executor.current_row)
 
-    with pytest.raises(RuntimeError, match="insert exploded"):
-        await store.supersede_memory(uuid.uuid4(), "new content", "fact", "import", uuid.uuid4())
+    with pytest.raises(RuntimeError, match="update exploded"):
+        await store.supersede_memory(row["id"], "new content", "fact", "import", row["user_id"])
 
-    conn = pool.acquire.return_value.__aenter__.return_value
+    conn = pool.executor
     assert conn.execute.await_count == 0
+    assert conn.current_row == row and pool.events[-1] == "ROLLBACK"

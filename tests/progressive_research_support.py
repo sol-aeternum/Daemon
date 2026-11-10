@@ -346,6 +346,8 @@ class Delivery:
         return chunks()
 
     async def run(self):
+        from tests.memory_capture_support import install_capture_pool
+
         config = ProviderConfig(name="mock", model="mock/research", requires_auth=False)
         settings = SimpleNamespace(
             mock_llm=False,
@@ -390,12 +392,14 @@ class Delivery:
             )
             assert asyncio.get_running_loop() is real_loop
             if self.durable:
+                memory = None
+                if not self.missing_writer:
+                    memory = SimpleNamespace(get_user_settings=AsyncMock(return_value={}))
+                    install_capture_pool(memory, generation=self.claim.origin.generation)
                 await runner._execute(
                     {
                         "settings": settings,
-                        "store": None
-                        if self.missing_writer
-                        else SimpleNamespace(get_user_settings=AsyncMock(return_value={})),
+                        "store": memory,
                         "db_pool": object(),
                         "redis": self.redis,
                     },
@@ -406,6 +410,7 @@ class Delivery:
                 # Legacy request-bound writes stay best-effort. Use the same
                 # synthetic row writer, but deliberately no message_sink.
                 writer = LegacyMessageWriter(self.store, self.state)
+                install_capture_pool(writer, generation=self.claim.origin.generation)
                 async for frame in daemon.stream_sse_chat(
                     settings=cast(Settings, settings),
                     provider_config=config,

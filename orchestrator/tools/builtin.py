@@ -290,6 +290,7 @@ def create_default_registry(
     registry.register(GenerateDocumentTool(user_id=user_id))
 
     if memory_store and user_id:
+        from orchestrator.memory.revisions import current_read_scope
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
         from orchestrator.tools.memory_promote import MemoryPromoteTool
         from orchestrator.tools.memory_demote import MemoryDemoteTool
@@ -306,10 +307,11 @@ def create_default_registry(
         registry.register(
             MemoryReadTool(memory_store, user_id, conversation_id=memory_conversation_id)
         )
-        if not disable_memory_write:
+        if not disable_memory_write and current_read_scope() is None:
             registry.register(MemoryWriteTool(memory_store, user_id))
-        registry.register(MemoryPromoteTool(memory_store, user_id))
-        registry.register(MemoryDemoteTool(memory_store, user_id))
+        if current_read_scope() is None:
+            registry.register(MemoryPromoteTool(memory_store, user_id))
+            registry.register(MemoryDemoteTool(memory_store, user_id))
         registry.register(
             MemoryReflectTool(memory_store, user_id, conversation_id=memory_conversation_id)
         )

@@ -6,6 +6,8 @@ serialization, locks and commits are real; skips do not qualify this slice.
 
 from __future__ import annotations
 
+from orchestrator.memory import revisions
+
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -263,7 +265,7 @@ async def test_mixed_source_rows_exclude_foreign_missing_local_and_unknown_befor
     foreign = await source(env, owner=env.bob, text="foreign secret sentinel")
     local = await source(env, text="local secret sentinel", local=True)
     orphan = await source(env, text="unknown secret sentinel")
-    await env.pool.execute("UPDATE memories SET source_type='conversation' WHERE id=$1", orphan)
+    await registered_sql(env, "UPDATE memories SET source_type='conversation' WHERE id=$1", orphan)
     bad_ciphertexts = await env.pool.fetch(
         "SELECT content FROM memories WHERE id=ANY($1::uuid[])", [foreign, local, orphan]
     )
@@ -304,7 +306,7 @@ async def test_canonical_lineage_qualifies_before_name_decrypt_or_embedding(
         text="restricted lineage",
     )
     if bad_lineage == "orphan":
-        await env.pool.execute("UPDATE memories SET source_type='conversation' WHERE id=$1", bad)
+        await registered_sql(env, "UPDATE memories SET source_type='conversation' WHERE id=$1", bad)
     primary = (
         None
         if bad_lineage == "null"
@@ -344,31 +346,61 @@ async def test_foreign_canonical_never_decrypts(env, monkeypatch):
     embedding.assert_not_awaited()
 
 
+async def registered_sql(env, sql, *args, connection=None):
+    owner = await env.pool.fetchval("SELECT user_id FROM memories WHERE id=$1", args[0])
+    original = await revisions.capture(env.memory, owner)
+    if connection is None:
+        async with revisions.mutation(env.memory, original) as conn:
+            return await conn.execute(sql, *args)
+    async with connection.transaction():
+        async with revisions.mutation(env.memory, original, conn=connection, ordered=True):
+            return await connection.execute(sql, *args)
+
+
 async def change_source(env, mid, conv, change):
     if change == "content":
-        await env.pool.execute(
+        await registered_sql(
+            env,
             "UPDATE memories SET content=$2 WHERE id=$1",
             mid,
             env.memory.encryption.encrypt("the name Changed"),
         )
     elif change == "slot":
-        await env.pool.execute("UPDATE memories SET memory_slot='person.updated' WHERE id=$1", mid)
+        await registered_sql(
+            env, "UPDATE memories SET memory_slot='person.updated' WHERE id=$1", mid
+        )
     elif change == "local":
-        await env.pool.execute("UPDATE memories SET local_only=true WHERE id=$1", mid)
+        await registered_sql(env, "UPDATE memories SET local_only=true WHERE id=$1", mid)
     elif change == "owner":
-        await env.pool.execute("UPDATE memories SET user_id=$2 WHERE id=$1", mid, env.bob)
+        # Owner changes themselves fail closed. Replacing the old identity with
+        # a foreign-owned row still discriminates the reader's ownership check.
+        with pytest.raises(
+            asyncpg.ObjectNotInPrerequisiteStateError, match="memory_owner_immutable"
+        ):
+            await registered_sql(env, "UPDATE memories SET user_id=$2 WHERE id=$1", mid, env.bob)
+        await env.memory.delete_memory(mid, user_id=env.alice, soft=False)
+        original = await revisions.capture(env.memory, env.bob)
+        async with revisions.mutation(env.memory, original) as conn:
+            await conn.execute(
+                "INSERT INTO memories(id,user_id,content,category,source_type) VALUES($1,$2,$3,'fact','manual')",
+                mid,
+                env.bob,
+                env.memory.encryption.encrypt("Foreign replacement"),
+            )
     elif change == "deleted":
-        await env.pool.execute("DELETE FROM memories WHERE id=$1", mid)
+        await env.memory.delete_memory(mid, user_id=env.alice, soft=False)
     elif change == "status":
-        await env.pool.execute("UPDATE memories SET status='deleted' WHERE id=$1", mid)
+        await env.memory.delete_memory(mid, user_id=env.alice)
     elif change == "closed":
-        await env.pool.execute("UPDATE memories SET valid_to=NOW() WHERE id=$1", mid)
+        await registered_sql(env, "UPDATE memories SET valid_to=NOW() WHERE id=$1", mid)
     elif change == "pipeline":
         await env.pool.execute("UPDATE conversations SET pipeline='local' WHERE id=$1", conv)
     elif change == "conversation_owner":
         await env.pool.execute("UPDATE conversations SET user_id=$2 WHERE id=$1", conv, env.bob)
     elif change == "provenance":
-        await env.pool.execute("UPDATE memories SET source_conversation_id=NULL WHERE id=$1", mid)
+        await registered_sql(
+            env, "UPDATE memories SET source_conversation_id=NULL WHERE id=$1", mid
+        )
     elif change == "reset":
         await env.pool.execute(
             "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
@@ -413,8 +445,10 @@ async def test_admission_wait_rechecks_original_snapshot_before_providers(env, m
     assert result["status"] == "skipped" and result["entities_created"] == 0
     embedding.assert_not_awaited()
     model.assert_not_awaited()
-    # Source deletion legitimately nulls the entity FK, not a projection write.
-    if change != "deleted":
+    # Scope A erasure removes derived projections; stale workers cannot replace them.
+    if change in ("deleted", "status", "owner"):
+        assert await rows(env) == []
+    else:
         assert await rows(env) == before
 
 
@@ -902,7 +936,12 @@ async def test_source_lock_remains_through_actual_commit_not_just_validation(env
         try:
             await blocked(env.pool, writer.get_server_pid(), holder.get_server_pid())
             edit = asyncio.create_task(
-                editor.execute("UPDATE memories SET memory_slot='late.edit' WHERE id=$1", mid)
+                registered_sql(
+                    env,
+                    "UPDATE memories SET memory_slot='late.edit' WHERE id=$1",
+                    mid,
+                    connection=editor,
+                )
             )
             await blocked(env.pool, editor.get_server_pid(), writer.get_server_pid())
             assert await rows(env) == []  # uncommitted insertion is not published

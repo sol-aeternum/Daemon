@@ -27,6 +27,19 @@ def _marked_database_for_reset_tests(
     if request.node.name.startswith("test_reset_canonical_benchmark"):
         monkeypatch.setattr("orchestrator.eval.fact_harness.assert_benchmark_database", AsyncMock())
 
+        async def completed_owner_reset(pool, user_id, statements):
+            # These unit cases test orchestration/reporting, not SQL guards.
+            # Actual raw-pool transaction/erasure proofs run on owned PostgreSQL.
+            counts = {}
+            for table, statement in statements:
+                status = await pool.execute(statement, user_id)
+                counts[table] = int(status.split()[-1])
+            return counts
+
+        monkeypatch.setattr(
+            "orchestrator.eval.fact_harness.wipe_benchmark_user", completed_owner_reset
+        )
+
 
 def write_dataset(path: Path, payload: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(payload))

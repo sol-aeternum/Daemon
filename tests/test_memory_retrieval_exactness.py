@@ -255,6 +255,13 @@ class FakeConnection(synthetic.FakePool):
         self.settings[name] = value
         self.statements.append(sql)
 
+    def _allows_unbounded_reference(self):
+        # Only the audit's exact, read-only snapshot mode may replay a captured
+        # query with LIMIT NULL. Production/harness widths remain positive ints.
+        return self.in_transaction and all(
+            self.settings[name] == "off" for name in audit.ENABLE_SETTINGS
+        )
+
     async def fetch(self, sql, *args):
         assert self.in_transaction
         if "FROM pg_settings" in sql:
@@ -284,6 +291,7 @@ class FakeConnection(synthetic.FakePool):
         if "GROUP BY user_id" in sql:
             return [{"user_id": user, "count": 20} for user in args[0]]
         if " AS bm25_score" in sql:
+            self.verify_current_projection(sql, args, "bm25")
             self.bm25_limits.append(args[5])
             if args[0] == self.empty_retrieval_user and args[5] == self.empty_retrieval_limit:
                 return []
@@ -341,6 +349,9 @@ class FakeConnection(synthetic.FakePool):
         if "FROM pg_extension" in sql:
             return "0.8.0"
         if sql.startswith(audit.EXPLAIN):
+            query = sql.removeprefix(audit.EXPLAIN)
+            kind = "vector" if " AS similarity" in query else "bm25"
+            self.verify_current_projection(query, args, kind)
             exact = self.settings["enable_indexscan"] == "off" and not self.force_bad_exact_plan
             node = {"Node Type": "Seq Scan" if exact else "Index Scan"}
             if not exact:
@@ -512,6 +523,28 @@ async def test_captured_queries_and_parameters_drive_exact_reference_without_ret
         assert len(clean["approximations"]) == 6
         assert clean["approximations"][0]["recall10"] == 1
         assert clean["approximations"][0]["recall50"] == 0.5
+        production = synthetic.FakePool([], connection.encryption)
+        for captured in queries.values():
+            reference = captured.with_limit(None)
+            # Exposure/production doubles must still reject unbounded widths.
+            with pytest.raises(AssertionError):
+                production.verify_current_projection(reference.sql, reference.args, reference.kind)
+            with pytest.raises(AssertionError):
+                await reference.fetch(reader)  # Harness mode is not an exact reference.
+            async with controls.mode("exact"):
+                assert len(await reference.fetch(reader)) == 20
+                for invalid in (0, -1, True, 1.5):
+                    with pytest.raises(AssertionError):
+                        await captured.with_limit(cast(Any, invalid)).fetch(reader)
+                args = list(reference.args)
+                args[3] = None  # Unbounded LIMIT never exempts scope argument checks.
+                with pytest.raises(AssertionError):
+                    await reader.fetch(reference.sql, *args)
+                with pytest.raises(AssertionError):
+                    await reader.fetch(
+                        reference.sql.replace("memory_current_assertions", "memories"),
+                        *reference.args,
+                    )
         connection.force_bad_exact_plan = True
         with pytest.raises(ValueError, match="still uses an index"):
             await audit.ranking_audit(reader, controls, queries, [], verify_probes100=False)

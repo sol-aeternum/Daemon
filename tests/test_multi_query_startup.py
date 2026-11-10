@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 
 from orchestrator.config import Settings
 from orchestrator.entitlements import attestation
-from orchestrator.memory.startup import require_multi_query_schema
+from orchestrator.memory.startup import require_multi_query_schema, require_revision_schema
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,14 @@ async def test_startup_schema_guard_in_both_services(
         retrieval_logging_enabled=logging,
     )
     pool = AsyncMock()
-    pool.fetchval.return_value = present
+
+    async def schema_present(sql):
+        if "to_regclass('memory_mutations')" in sql:
+            return True
+        assert "pg_catalog.pg_attribute" in sql and "query_role" in sql
+        return present
+
+    pool.fetchval.side_effect = schema_present
     if service == "http":
         from orchestrator import main
 
@@ -70,12 +77,12 @@ async def test_startup_schema_guard_in_both_services(
         close.assert_awaited_once()
     else:
         await start()
-    if enabled:
-        pool.fetchval.assert_awaited_once()
-        assert "pg_catalog.pg_attribute" in pool.fetchval.await_args.args[0]
-        assert "query_role" in pool.fetchval.await_args.args[0]
-    else:
-        pool.fetchval.assert_not_awaited()
+    queries = [call.args[0] for call in pool.fetchval.await_args_list]
+    assert sum("pg_catalog.pg_attribute" in sql for sql in queries) == int(enabled)
+    assert sum("to_regclass('memory_mutations')" in sql for sql in queries) == int(
+        not (enabled and not present)
+    )
+    assert len(queries) == int(enabled) + int(not (enabled and not present))
 
 
 @pytest.mark.asyncio
@@ -85,3 +92,12 @@ async def test_unknown_schema_fails_closed(pool):
         await require_multi_query_schema(
             pool, cast(Any, SimpleNamespace(memory_multi_query_enabled=True))
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("present", [False, None, 0, 1])
+async def test_revision_schema_requires_explicit_true(present):
+    pool = SimpleNamespace(fetchval=AsyncMock(return_value=present))
+    with pytest.raises(RuntimeError, match="migration 066"):
+        await require_revision_schema(pool)
+    pool.fetchval.assert_awaited_once()

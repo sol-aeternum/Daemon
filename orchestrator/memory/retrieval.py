@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orchestrator.memory.revisions import Capture, capture_for, current_read_scope
+
 import asyncio
 import datetime as dt
 import logging
@@ -548,6 +550,9 @@ async def retrieve_memories_for_text(
         record_query_text = False
 
     start_time = time.monotonic()
+    log_capture = (
+        await capture_for(store, user_id) if _is_retrieval_logging_enabled(log_retrieval) else None
+    )
     normalized_query = _normalize_query_text(query_text)
     normalized_slot = _normalize_memory_slot(memory_slot)
     effective_embedding = query_embedding
@@ -662,6 +667,7 @@ async def retrieve_memories_for_text(
                 query_embedding_model=embedding_model_used,
                 touch_results=False,
                 scored_candidates_out=partial_scored,
+                originating_capture=log_capture,
                 **_query_log_controls(record_query_text, query_role),
             )
             for candidate in partial_scored:
@@ -731,6 +737,7 @@ async def retrieve_memories_for_text(
                 await _emit_retrieval_log(
                     store,
                     user_id=user_id,
+                    originating_capture=log_capture,
                     query_text=(normalized_query or "") if record_query_text else "",
                     query_embedding_model=l0_log_embedding_model
                     or get_settings().embedding_query_model,
@@ -797,6 +804,7 @@ async def retrieve_memories_for_text(
                     await _emit_retrieval_log(
                         store,
                         user_id=user_id,
+                        originating_capture=log_capture,
                         query_text=(normalized_query or "") if record_query_text else "",
                         query_embedding_model=l0_log_embedding_model
                         or get_settings().embedding_query_model,
@@ -943,6 +951,7 @@ async def retrieve_memories(
     scored_candidates_out: list[dict[str, object]] | None = None,
     record_query_text: bool = True,
     query_role: str | None = None,
+    originating_capture: Capture | None = None,
 ) -> list[dict[str, object]]:
     if query_role is not None and query_role.startswith("sub:"):
         record_query_text = False
@@ -960,9 +969,13 @@ async def retrieve_memories(
         or get_primary_embedding_storage_model()
     )
     effective_user_id: uuid.UUID | None = user_id
-    temporal_window = _detect_temporal_query_window(
-        normalized_query,
-        query_reference_time=query_reference_time,
+    temporal_window = (
+        None
+        if current_read_scope() is not None
+        else _detect_temporal_query_window(
+            normalized_query,
+            query_reference_time=query_reference_time,
+        )
     )
     effective_include_historical = include_historical or temporal_window is not None
 
@@ -985,6 +998,15 @@ async def retrieve_memories(
     if effective_user_id is None:
         logger.debug("No user_id provided for memory retrieval")
         return []
+
+    log_capture = originating_capture
+    if _is_retrieval_logging_enabled(log_retrieval):
+        if log_capture is None:
+            log_capture = await capture_for(store, effective_user_id)
+        if log_capture.origin.account_id != effective_user_id:
+            from orchestrator.memory.temporal import TemporalRefusal
+
+            raise TemporalRefusal("memory_capture_owner_mismatch")
 
     target_limit = max(1, limit)
     vector_limit = max(INITIAL_VECTOR_CANDIDATES, target_limit)
@@ -1030,7 +1052,7 @@ async def retrieve_memories(
     candidate_map: dict[str, dict[str, object]] = {}
 
     for c in vector_candidates:
-        memory_id = str(c.get("id", ""))
+        memory_id = str(c.get("segment_id") or c.get("id", ""))
         if memory_id:
             entry = dict(c)
             entry["vector_sim"] = _as_float(entry.get("similarity"), 0.0)
@@ -1040,7 +1062,7 @@ async def retrieve_memories(
             candidate_map[memory_id] = entry
 
     for c in bm25_candidates:
-        memory_id = str(c.get("id", ""))
+        memory_id = str(c.get("segment_id") or c.get("id", ""))
         if memory_id:
             if memory_id in candidate_map:
                 candidate_map[memory_id]["bm25_score"] = _as_float(c.get("bm25_score"), 0.0)
@@ -1056,7 +1078,7 @@ async def retrieve_memories(
 
     # Entity expansion: runs even when vector/BM25 candidates are empty
     # to support alias-only/entity-only queries that rely on entity-linked retrieval
-    if normalized_query and effective_user_id:
+    if normalized_query and effective_user_id and current_read_scope() is None:
         try:
             entity_candidates = await _get_entity_expanded_candidates(
                 store,
@@ -1188,6 +1210,7 @@ async def retrieve_memories(
                 await _emit_retrieval_log(
                     store,
                     user_id=effective_user_id,
+                    originating_capture=log_capture,
                     query_text=(normalized_query or "") if record_query_text else "",
                     query_embedding_model=logged_embedding_model,
                     query_embedding=query_embedding if record_query_text else None,

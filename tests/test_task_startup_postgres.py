@@ -5,6 +5,7 @@ No application DSN, provider credential, migration or service is accessed.
 """
 
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -34,6 +35,10 @@ def dsn(db, principal):
 
 @pytest_asyncio.fixture
 async def services(db, tmp_path, monkeypatch):
+    # This narrow startup lane otherwise stops at 050. Apply the actual memory
+    # schema before exercising startup, without a fake guard or extra grants.
+    migration = Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql"
+    db.sql("BEGIN;" + migration.read_text() + "COMMIT;")
     path, identity = tmp_path / "journal", uuid4()
     initialize(path, identity)
     value = settings()

@@ -25,7 +25,9 @@ from orchestrator.compute_runtime import account_compute
 from orchestrator.config import get_settings
 from orchestrator.eval.bench_db import (
     BENCHMARK_USER_NAMESPACE,
+    BENCHMARK_RESET_STATEMENTS,
     CROSS_SESSION_TABLES,
+    RETAINED_PROTECTION_TABLES,
     assert_benchmark_database,
     check_benchmark_dsn,
     ensure_benchmark_user,
@@ -757,17 +759,10 @@ class ResetSummary:
     redis_keys_deleted: int = 0
     redis_error: str | None = None
     error: str | None = None
+    owner_outcomes: dict[str, str] = field(default_factory=dict)
 
 
-CANONICAL_RESET_STATEMENTS: tuple[tuple[str, str], ...] = (
-    ("retrieval_log", "DELETE FROM retrieval_log WHERE user_id = $1"),
-    ("dream_log", "DELETE FROM dream_log WHERE user_id = $1"),
-    ("entities", "DELETE FROM entities WHERE user_id = $1"),
-    ("memories", "DELETE FROM memories WHERE user_id = $1"),
-    ("memory_extraction_log", "DELETE FROM memory_extraction_log WHERE user_id = $1"),
-    ("messages", "DELETE FROM messages WHERE user_id = $1"),
-    ("conversations", "DELETE FROM conversations WHERE user_id = $1"),
-)
+CANONICAL_RESET_STATEMENTS = BENCHMARK_RESET_STATEMENTS
 CANONICAL_RESET_TABLES: tuple[str, ...] = tuple(
     table for table, _statement in CANONICAL_RESET_STATEMENTS
 )
@@ -856,8 +851,11 @@ async def reset_canonical_benchmark(
     Raises ``BenchmarkDatabaseGuardError`` unless the pool is connected to a
     marked benchmark database.
 
-    When a checkpoint path is supplied, the checkpoint is deleted along with the
-    database rows so the next ingest cannot resume past missing benchmark state.
+    Each owner has its own guarded content transaction, retaining temporal
+    deletion protection and spend. The checkpoint is removed only after every
+    owner operation returns acknowledged completion. Failed/uncertain commits
+    leave checkpoint evidence intact; earlier owner commits are reported, never
+    replayed or represented as a global transaction.
 
     When ``cleanup_redis`` is True, ARQ extraction Redis keys matching
     ``REDIS_EXTRACT_PATTERNS`` are also deleted after the DB cleanup succeeds.
@@ -870,27 +868,32 @@ async def reset_canonical_benchmark(
     total = 0
     checkpoint_reset: dict[str, Any] = {}
     redis_keys_deleted = 0
+    owner_outcomes: dict[str, str] = {}
+    current_owner = None
     try:
-        checkpoint_reset = _reset_checkpoint_file(checkpoint_path)
         question_users = await pool.fetch(
-            "SELECT id FROM users WHERE email LIKE 'longmemeval+%@daemon.test'"
+            "SELECT id FROM users WHERE email LIKE 'longmemeval+%@daemon.test' ORDER BY id"
         )
-        user_ids = [TEST_USER_ID, *(row["id"] for row in question_users or [])]
-
-        for table, statement in CANONICAL_RESET_STATEMENTS:
-            deleted = 0
-            for user_id in user_ids:
-                result = await pool.execute(statement, user_id)
-                deleted += int(str(result).split()[-1]) if isinstance(result, str) else 0
-            tables_cleared[table] = deleted
-            total += deleted
+        user_ids = list(dict.fromkeys([TEST_USER_ID, *(row["id"] for row in question_users or [])]))
+        for current_owner in user_ids:
+            owner_outcomes[str(current_owner)] = "not_confirmed"
+            deleted = await wipe_benchmark_user(pool, current_owner, CANONICAL_RESET_STATEMENTS)
+            owner_outcomes[str(current_owner)] = "completed"
+            for table, count in deleted.items():
+                tables_cleared[table] = tables_cleared.get(table, 0) + count
+                total += count
+        current_owner = None
+        # A stale checkpoint is preferable to losing recovery evidence before
+        # a failed/uncertain DB commit. Never infer completion from attempted SQL.
+        checkpoint_reset = _reset_checkpoint_file(checkpoint_path)
     except Exception as exc:
         return ResetSummary(
             success=False,
             tables_cleared=tables_cleared,
             total_rows_deleted=total,
             checkpoint_reset=checkpoint_reset,
-            error=str(exc),
+            error=f"Benchmark reset not completed ({type(exc).__name__}); owner={current_owner}",
+            owner_outcomes=owner_outcomes,
         )
 
     redis_error_value: str | None = None
@@ -906,6 +909,7 @@ async def reset_canonical_benchmark(
         checkpoint_reset=checkpoint_reset,
         redis_keys_deleted=redis_keys_deleted,
         redis_error=redis_error_value,
+        owner_outcomes=owner_outcomes,
     )
 
 
@@ -1587,7 +1591,9 @@ class LongMemEvalFactRunner:
         deleted = await wipe_benchmark_user(pool, stream.user_id, CANONICAL_RESET_STATEMENTS)
         remaining = await fingerprint_benchmark_state(pool, stream.user_id)
         leftover = {
-            table: digest["rows"] for table, digest in remaining["tables"].items() if digest["rows"]
+            table: digest["rows"]
+            for table, digest in remaining["tables"].items()
+            if digest["rows"] and table not in RETAINED_PROTECTION_TABLES
         }
         if leftover:
             raise RuntimeError(
@@ -1610,6 +1616,11 @@ class LongMemEvalFactRunner:
                 "after_failure": "failure" in pending,
                 "sessions_discarded": len(discarded),
                 "deleted": deleted,
+                "retained_protection": {
+                    table: digest["rows"]
+                    for table, digest in remaining["tables"].items()
+                    if table in RETAINED_PROTECTION_TABLES
+                },
             }
         )
         save_manifest(self.resolved_manifest_path(), manifest)
@@ -1636,13 +1647,14 @@ class LongMemEvalFactRunner:
         # the run stops being a baseline.
         counts = {"conversations": 0, "memories": 0, "memory_extraction_log": 0}
         for key in failed:
-            result = results.pop(key)
+            result = results[key]
             if result.get("conversation_id") and result.get("user_id"):
                 removed = await rollback_orphan_conversations(
                     pool, uuid.UUID(result["user_id"]), {str(result["conversation_id"])}
                 )
                 for name, value in removed.items():
                     counts[name] = counts.get(name, 0) + value
+            results.pop(key)
         manifest.setdefault("ingest_retries", []).append(
             {"at": utc_now_iso(), "sessions": len(failed), **counts}
         )

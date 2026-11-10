@@ -89,7 +89,9 @@ class HistoryAcceptance:
             "content_parts",
         }
         if (
-            not required <= set(value) <= required | {"answer_detail", "research_effort"}
+            not required
+            <= set(value)
+            <= required | {"answer_detail", "research_effort", "temporal_scope"}
             or type(value["message"]) is not str
             or type(value["model"]) is not str
             or (value["provider"] is not None and type(value["provider"]) is not str)

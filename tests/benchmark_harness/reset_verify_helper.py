@@ -28,11 +28,13 @@ from typing import Any
 
 import asyncpg
 
+from orchestrator.eval.bench_db import RETAINED_PROTECTION_TABLES
+
 
 # Fixed test user UUID used across benchmark harness scripts
 TEST_USER_ID: uuid.UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
-# Additional tables to reset beyond the 7 core tables in
+# Additional payload tables beyond the canonical content reset in
 # cleanup_canonical_benchmark_state(). These are identified in
 # wave0_state_reset_audit_v2.md Section 2.2 as missing from
 # the production reset scope.
@@ -42,8 +44,8 @@ EXTENDED_RESET_QUERIES = {
 }
 EXTENDED_RESET_TABLES = list(EXTENDED_RESET_QUERIES)
 
-# All tables that should reach zero-row state after a full reset.
-# Includes the 7 core tables + 2 extended tables.
+# Payload tables must reach zero. Clocks, mutations, tombstones and erased
+# source spans deliberately do not; they are reported separately below.
 ALL_RESET_COUNT_QUERIES = {
     "conversations": "SELECT COUNT(*) FROM conversations WHERE user_id = $1",
     "messages": "SELECT COUNT(*) FROM messages WHERE user_id = $1",
@@ -54,6 +56,13 @@ ALL_RESET_COUNT_QUERIES = {
     "entities": "SELECT COUNT(*) FROM entities WHERE user_id = $1",
     "skill_consolidation_log": ("SELECT COUNT(*) FROM skill_consolidation_log WHERE user_id = $1"),
     "skill_nudge_user_state": ("SELECT COUNT(*) FROM skill_nudge_user_state WHERE user_id = $1"),
+    "memory_revisions": "SELECT COUNT(*) FROM memory_revisions WHERE user_id = $1",
+    "memory_revision_segments": (
+        "SELECT COUNT(*) FROM memory_revision_segments s JOIN memory_revisions r "
+        "ON r.id=s.revision_id WHERE r.user_id=$1"
+    ),
+    "memory_dependencies": "SELECT COUNT(*) FROM memory_dependencies WHERE user_id = $1",
+    "memory_sources": "SELECT COUNT(*) FROM memory_sources WHERE user_id = $1",
 }
 ALL_RESET_TABLES = list(ALL_RESET_COUNT_QUERIES)
 
@@ -77,6 +86,8 @@ class ExtendedResetResult:
     total_rows_deleted: int = 0
     row_counts_after_reset: dict[str, int] = field(default_factory=dict)
     all_zero: bool = False
+    retained_protection: dict[str, int] = field(default_factory=dict)
+    owner_outcomes: dict[str, str] = field(default_factory=dict)
     error: str | None = None
 
 
@@ -112,7 +123,7 @@ async def get_table_row_counts(pool: asyncpg.Pool) -> dict[str, int]:
 
 async def verify_zero_row_state(pool: asyncpg.Pool) -> tuple[bool, dict[str, int]]:
     """
-    Check whether all benchmark tables have zero rows for TEST_USER_ID.
+    Check zero payload rows for TEST_USER_ID, not deletion-protection rows.
 
     Returns (all_zero, counts) where all_zero is True only when every
     table has 0 rows.
@@ -120,6 +131,20 @@ async def verify_zero_row_state(pool: asyncpg.Pool) -> tuple[bool, dict[str, int
     counts = await get_table_row_counts(pool)
     all_zero = all(v == 0 for v in counts.values())
     return all_zero, counts
+
+
+async def retained_protection_counts(pool: asyncpg.Pool) -> dict[str, int]:
+    """These intentionally nonzero rows are deletion protection, not reset debt."""
+    async with pool.acquire() as conn:
+        return {
+            table: int(
+                await conn.fetchval(
+                    f"SELECT count(*) FROM {table} WHERE user_id=$1",
+                    TEST_USER_ID,
+                )
+            )
+            for table in sorted(RETAINED_PROTECTION_TABLES)
+        }
 
 
 async def cleanup_runner_redis() -> dict[str, Any]:
@@ -174,7 +199,7 @@ async def full_reset_with_verification(
     with:
     1. Extended table cleanup (skill_consolidation_log, skill_nudge_user_state)
     2. Optional Redis key cleanup
-    3. Post-reset zero-row verification
+    3. Post-reset zero-payload verification and explicit retained-protection counts
 
     Parameters
     ----------
@@ -203,6 +228,7 @@ async def full_reset_with_verification(
             cleanup_redis=False,  # We handle redis below
         )
         result.tables_cleared = dict(summary.tables_cleared)
+        result.owner_outcomes = dict(summary.owner_outcomes)
         result.total_rows_deleted = summary.total_rows_deleted
         if not summary.success:
             result.success = False
@@ -236,6 +262,7 @@ async def full_reset_with_verification(
         all_zero, counts = await verify_zero_row_state(pool)
         result.row_counts_after_reset = counts
         result.all_zero = all_zero
+        result.retained_protection = await retained_protection_counts(pool)
     except Exception as exc:
         result.success = False
         result.error = f"verification query failed: {exc}"
@@ -262,10 +289,15 @@ async def double_reset_for_confirmation(
     """
     first_result = await full_reset_with_verification(pool, checkpoint_path, cleanup_redis=True)
 
-    # Small delay to allow any remaining async tasks to settle
-    await asyncio.sleep(0.5)
-
-    second_result = await full_reset_with_verification(pool, checkpoint_path, cleanup_redis=True)
+    if first_result.success and first_result.all_zero:
+        # Explicit confirmation only after acknowledged, verified completion.
+        await asyncio.sleep(0.5)
+        second_result = await full_reset_with_verification(
+            pool, checkpoint_path, cleanup_redis=True
+        )
+    else:
+        # Do not replay a failed/uncertain purge or erase unexplained leftovers.
+        second_result = ExtendedResetResult(success=False, error="confirmation_not_attempted")
 
     return {
         "first_result": {
@@ -275,6 +307,8 @@ async def double_reset_for_confirmation(
             "total_rows_deleted": first_result.total_rows_deleted,
             "row_counts_after_reset": first_result.row_counts_after_reset,
             "all_zero": first_result.all_zero,
+            "retained_protection": first_result.retained_protection,
+            "owner_outcomes": first_result.owner_outcomes,
             "error": first_result.error,
         },
         "second_result": {
@@ -284,6 +318,8 @@ async def double_reset_for_confirmation(
             "total_rows_deleted": second_result.total_rows_deleted,
             "row_counts_after_reset": second_result.row_counts_after_reset,
             "all_zero": second_result.all_zero,
+            "retained_protection": second_result.retained_protection,
+            "owner_outcomes": second_result.owner_outcomes,
             "error": second_result.error,
         },
         "confirmed_clean": second_result.all_zero,

@@ -117,7 +117,9 @@ async def test_worker_refuses_acceptor_credential_without_opening_any_pool(host)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("service", ["http", "worker"])
 async def test_removed_configuration_cannot_downgrade_migrated_host(host, service):
-    host.pool.fetchval.return_value = False  # 050 exists, no task content queried
+    # 066 is independently present; the legacy-composition query still observes
+    # the migrated 050 host and must refuse removed inference configuration.
+    host.pool.fetchval.side_effect = lambda sql, *args: "to_regclass('memory_mutations')" in sql
     with pytest.raises(ObservationBlocked, match="inference_configuration_required"):
         await initialize(host, service)
     host.pool.close.assert_awaited_once()

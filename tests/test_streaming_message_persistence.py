@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from tests.redis_jobs_support import install_fake_enqueue
@@ -16,6 +16,9 @@ from orchestrator.redis_jobs import account_job_id
 
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.daemon import stream_sse_chat
+from orchestrator.memory import revisions
+from orchestrator.memory.temporal import KnowledgeWatermark, TemporalReadScope
+from tests.memory_capture_support import install_capture_pool
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +27,10 @@ def _producer_queue_seam(monkeypatch):
 
 
 class FakeMemoryStore:
+    _database_pool: Any
+
     def __init__(self) -> None:
+        install_capture_pool(self)
         self.message_id = uuid.uuid4()
         self.insert_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
@@ -180,19 +186,42 @@ async def test_streaming_generator_close_forced_status_cancelled() -> None:
                 frames.append(frame)
 
     stream_task = asyncio.create_task(collect_stream())
-    while not store.insert_calls:
-        await asyncio.sleep(0)
-    while not any("event: token" in frame for frame in frames):
-        await asyncio.sleep(0)
-
-    stream_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await stream_task
+    try:
+        async with asyncio.timeout(5):
+            while not store.insert_calls or not any("event: token" in frame for frame in frames):
+                if stream_task.done():
+                    await (
+                        stream_task
+                    )  # Surface the original producer failure, not a stalled waiter.
+                    pytest.fail("Streaming producer finished before publishing its first token")
+                await asyncio.sleep(0)
+        stream_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stream_task
+    finally:
+        if not stream_task.done():
+            stream_task.cancel()
+        await asyncio.gather(stream_task, return_exceptions=True)
 
     assert store.row is not None
     assert store.row["status"] == "cancelled"
     assert store.row["content"] == "partial"
     assert any("event: token" in frame for frame in frames)
+
+
+@pytest.mark.asyncio
+async def test_capture_failure_stops_stream_before_message_or_model_work() -> None:
+    store = FakeMemoryStore()
+    store._database_pool.fetchrow.side_effect = RuntimeError("synthetic capture refusal")
+
+    async def forbidden_completion() -> AsyncIterator[dict[str, Any]]:
+        pytest.fail("Model work must not start after capture failure")
+        yield {}
+
+    with pytest.raises(RuntimeError, match="synthetic capture refusal"):
+        async with asyncio.timeout(5):
+            await _collect_stream(store, forbidden_completion())
+    assert store.insert_calls == [] and store.update_calls == []
 
 
 @pytest.mark.asyncio
@@ -379,6 +408,7 @@ def _build_stream(
     conversation_uuid: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
     mock_llm: bool = False,
+    temporal_scope: TemporalReadScope | None = None,
 ) -> AsyncGenerator[str, None]:
     effective_conversation_uuid = conversation_uuid or uuid.uuid4()
     # stream_sse_chat is an async generator function annotated as AsyncIterator;
@@ -397,6 +427,7 @@ def _build_stream(
             user_id=user_id or uuid.uuid4(),
             conversation_uuid=effective_conversation_uuid,
             queue=queue,
+            temporal_scope=temporal_scope,
         ),
     )
 
@@ -606,8 +637,20 @@ async def test_asyncio_cancellation_never_persists_complete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_early_generator_close_never_persists_complete() -> None:
+@pytest.mark.parametrize("historical", [False, True])
+async def test_early_generator_close_never_persists_complete(historical, monkeypatch) -> None:
+    owner = uuid.uuid4()
+    scope = (
+        TemporalReadScope(watermark=KnowledgeWatermark(user_id=owner, generation=0, sequence=0))
+        if historical
+        else None
+    )
+    resolver = AsyncMock(return_value=scope)
+    # Stream-lifecycle fixture only; real cutoff adjudication is PostgreSQL-tested.
+    monkeypatch.setattr(revisions, "resolve", resolver)
+
     async def completion() -> AsyncIterator[dict[str, Any]]:
+        assert revisions.current_read_scope() == scope
         yield {"type": "content_delta", "content": "par"}
         yield {"type": "content_delta", "content": "tial"}
         yield {"type": "done", "finish_reason": "stop"}
@@ -621,7 +664,13 @@ async def test_early_generator_close_never_persists_complete() -> None:
             yield event
 
     with patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools):
-        stream = _build_stream(store, is_disconnected=_not_disconnected, queue=queue)
+        stream = _build_stream(
+            store,
+            is_disconnected=_not_disconnected,
+            queue=queue,
+            user_id=owner,
+            temporal_scope=scope,
+        )
         async for frame in stream:
             frames.append(frame)
             if "event: token" in frame:
@@ -636,6 +685,11 @@ async def test_early_generator_close_never_persists_complete() -> None:
     assert queue.attempts == []
     assert "final" not in [event_type for event_type, _ in _parse_frames(frames)]
     assert "done" not in [event_type for event_type, _ in _parse_frames(frames)]
+    assert revisions.current_read_scope() is None
+    if historical:
+        resolver.assert_awaited_once_with(store, owner, scope)
+    else:
+        resolver.assert_not_awaited()
 
 
 @pytest.mark.asyncio

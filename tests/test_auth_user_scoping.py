@@ -67,7 +67,13 @@ async def authenticated_app(monkeypatch):
     app_state.db_pool.acquire = acquire
     app_state.db_pool.fetch = AsyncMock(return_value=[])
     app_state.db_pool.fetchrow = AsyncMock(return_value=None)
-    app_state.db_pool.fetchval = AsyncMock(return_value=1)
+
+    async def pool_fetchval(query, *_args):
+        if "to_regclass('memory_mutations')" in query:
+            return True
+        return 1
+
+    app_state.db_pool.fetchval = AsyncMock(side_effect=pool_fetchval)
     app_state.db_pool.execute = AsyncMock(return_value="UPDATE 0")
     app_state.db_pool.close = AsyncMock()
     app_state.redis = None

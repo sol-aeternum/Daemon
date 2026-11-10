@@ -13,6 +13,7 @@ from typing import Any
 
 from orchestrator.compute_runtime import ComputeUnavailable, current_scope, guarded_completion
 from orchestrator.model_routing import routing_context
+from orchestrator.memory.temporal import EventScope
 
 MAX_CANDIDATES = 6
 MAX_FACT_CHARS = 2000
@@ -35,6 +36,8 @@ SNAPSHOT_FIELDS = (
     "confidence",
     "metadata",
     "source_conversation_id",
+    "head_revision_id",
+    "temporal_scope_hash",
 )
 
 
@@ -50,6 +53,7 @@ class IncomingMemory:
     status: str = "active"
     local_only: bool = False
     tier: str = "l1"
+    event_scope: EventScope | None = None
 
 
 def eligible(row: dict[str, Any], incoming: IncomingMemory) -> bool:
@@ -61,11 +65,14 @@ def eligible(row: dict[str, Any], incoming: IncomingMemory) -> bool:
         and row.get("local_only") is False
         and row.get("valid_to") is None
         and row.get("source_type") != "dream"
+        and not row.get("provenance_unknown", False)
         and isinstance(row.get("content"), str)
         and bool(row["content"].strip())
         and len(row["content"]) <= MAX_FACT_CHARS
         and isinstance(row.get("id"), uuid.UUID)
         and row.get("updated_at") is not None
+        and (row.get("temporal_scope_hash") or "untimed")
+        == (incoming.event_scope.fingerprint() if incoming.event_scope else "untimed")
     )
 
 

@@ -27,6 +27,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | File | Tier | Owner/Source | Classification | Derived-from/Authority |
 |------|------|--------------|----------------|------------------------|
 | `MEMORY_LAYER.md` | T1 | Engineering | gated | `orchestrator/config.py`, `orchestrator/memory/` |
+| `docs/memory/bitemporal.md` | N/A | Engineering/Product | ungated-reference | #601 source-only revision/event/committed-watermark and scoped-erasure contract; qualification in progress, backup-restore and rollout blockers remain |
 | `docs/MEMORY_EMBEDDING_SCREEN.md` | N/A | Engineering | raw-log | Owner-approved fictional-only #445 embedding screen; dated route/control results, not private-provider qualification or deployment evidence |
 | `docs/MEMORY_EMBEDDING_ADAPTER.md` | N/A | Engineering/Operator | ungated-reference | Owner-approved dedicated token-metered Azure embedding contract and prospective qualification criteria; implementation and activation require separate final-state evidence |
 | `docs/MEMORY_JUDGE_QUALIFICATION.md` | N/A | Engineering | raw-log | Fictional PR #447 judge screens: original failed, fresh audited follow-up passed; not deployment approval |

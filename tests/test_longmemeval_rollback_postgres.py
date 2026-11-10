@@ -1,10 +1,9 @@
 """Real-PostgreSQL regression for interrupted LongMemEval ingest sessions.
 
-Deleting an interrupted session's own rows is an exact rollback only when its
-extraction changed nothing else. When it already superseded an earlier
-session's memory (``supersede_memory`` closes the old row via ``valid_to``), the
-harness must not baseline the altered state: it wipes that question's user and
-rebuilds the question from its first session, leaving every other user alone.
+Deletion protection and knowledge clocks are monotonic, including for a
+self-contained interrupted session. The actual raw-pool helper must not pretend
+to restore the earlier temporal fingerprint: conservatively rebuild that
+question while preserving protection, spend and every other user's state.
 
 Requires ``TASKS_TEST_DATABASE_URL`` (CI provides it); skips otherwise.
 """
@@ -19,9 +18,11 @@ import pytest
 
 from orchestrator.eval.bench_db import CROSS_SESSION_TABLES, fingerprint_benchmark_state
 from orchestrator.eval.fact_harness import LongMemEvalFactRunner, QuestionStream
-from tests.durable_tasks_support import Env, durable_env_fixture
+from orchestrator.eval.bench_db import RETAINED_PROTECTION_TABLES
+from tests.durable_tasks_support import Env
+from tests.benchmark_reset_support import benchmark_env_fixture
 
-env = durable_env_fixture()
+env = benchmark_env_fixture()
 
 
 def _runner(tmp_path: Path) -> LongMemEvalFactRunner:
@@ -68,7 +69,7 @@ async def _pending(env: Env) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_rollback_of_a_self_contained_session_restores_the_pre_session_state(
+async def test_self_contained_rollback_rebuilds_when_monotonic_history_prevents_exact_restoration(
     env: Env, tmp_path: Path
 ) -> None:
     results, _memory_id = await _checkpointed_session(env)
@@ -87,9 +88,10 @@ async def test_rollback_of_a_self_contained_session_restores_the_pre_session_sta
         env.pool, _stream(env), pending, results, manifest
     )
 
-    assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is True
+    assert manifest["ingest_rollbacks"][0]["restored_pre_session_state"] is False
     assert manifest["ingest_rollbacks"][0]["memories"] == 1
     assert "q1" not in pending
+    assert results == {} and manifest["question_rebuilds"][0]["retained_protection"]
 
 
 @pytest.mark.asyncio
@@ -127,6 +129,10 @@ async def test_rollback_after_superseding_an_earlier_memory_rebuilds_only_that_u
     assert pending == {}
     assert results == {}
     alice_after = await fingerprint_benchmark_state(env.pool, env.alice)
-    assert all(digest["rows"] == 0 for digest in alice_after["tables"].values())
+    assert all(
+        digest["rows"] == 0
+        for table, digest in alice_after["tables"].items()
+        if table not in RETAINED_PROTECTION_TABLES
+    )
     assert await env.pool.fetchval("SELECT count(*) FROM users WHERE id = $1", env.alice) == 1
     assert await fingerprint_benchmark_state(env.pool, env.bob) == bob_before
