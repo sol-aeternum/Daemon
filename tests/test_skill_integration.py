@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.skill_pool import lockable_pool
+
 from orchestrator.config import Settings
 from orchestrator.memory.store import MemoryStore
 from orchestrator.skill_evaluator import (
@@ -248,7 +250,7 @@ class TestSkillLifecycleRetrieve:
             "# Test Skill\n\nThis is the full content that should NOT appear in list results."
         )
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.fetch.return_value = []
 
         from orchestrator.tools.skill_manage import SkillManageTool
@@ -286,7 +288,7 @@ class TestSkillLifecycleRetrieve:
             "# Usage Skill\n\nFull content here."
         )
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.execute.return_value = "UPDATE 1"
 
         from orchestrator.tools.skill_manage import SkillManageTool
@@ -760,7 +762,7 @@ class TestSkillRegressionManualFlows:
         """Manual skill creation via API should still work."""
         from orchestrator.tools.skill_manage import SkillManageTool
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="manual-new-skill",
             name="Manual New Skill",
@@ -815,7 +817,7 @@ class TestSkillRegressionManualFlows:
             "---\nname: Auto Skill\ndescription: An autonomous skill\nenabled: true\n---\n\nOld content."
         )
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="auto-skill",
             name="Auto Skill",

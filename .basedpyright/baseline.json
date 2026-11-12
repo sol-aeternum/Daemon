@@ -2408,14 +2408,6 @@
                     "endColumn": 55,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportUnusedParameter",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/test_skill_pipeline_hooks.py": [

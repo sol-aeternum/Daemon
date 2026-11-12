@@ -639,7 +639,8 @@ class TestSkillSyncService:
                     results = await service.backfill_existing_skills()
         assert len(results) == 1
         assert results[0].success is False
-        assert results[0].error is not None and "DB error" in results[0].error
+        assert results[0].error is not None and "Embedding failed" in results[0].error
+        mock_db_pool.fetchrow.assert_not_called()
 
 
 class TestStartupBackfillIntegration:
@@ -688,8 +689,8 @@ class TestStartupBackfillIntegration:
         )
         mock_db_pool.fetchrow.return_value = None
         store = SkillProjectionStore(mock_db_pool)
+        # Sync is one statement now: no read precedes the upsert.
         mock_db_pool.fetchrow.side_effect = [
-            None,
             MockRecord(
                 skill_id="pre-existing-skill",
                 name="Pre-existing Skill",
@@ -744,8 +745,8 @@ class TestStartupBackfillIntegration:
             "---\nname: Manifest Skill\ndescription: A repo-managed skill\nenabled: true\n---\n# Manifest Skill\n\nContent."
         )
         store = SkillProjectionStore(mock_db_pool)
+        # Sync is one statement now: no read precedes the upsert.
         mock_db_pool.fetchrow.side_effect = [
-            None,
             MockRecord(
                 skill_id="manifest-skill",
                 name="Manifest Skill",

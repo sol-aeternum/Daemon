@@ -12,13 +12,13 @@ import pytest
 from orchestrator.tools.skill_manage import (
     SkillManageTool,
 )
+from tests.skill_pool import lockable_pool
 from tests.test_skill_projection_sync import MockRecord
 
 
 @pytest.fixture
 def mock_db_pool() -> AsyncMock:
-    pool = AsyncMock()
-    return pool
+    return lockable_pool()
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ class TestProtectionCannotBeDeclaredAway:
         skill_file.write_text(
             "---\nname: System Skill\ndescription: A system skill\nenabled: true\n---\n# System Skill\n\nOriginal content."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="system-skill",
@@ -81,7 +81,7 @@ class TestProtectionCannotBeDeclaredAway:
         skill_file.write_text(
             "---\nname: Imported Skill\ndescription: An imported skill\nenabled: true\n---\n# Imported Skill\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="imported-skill",
@@ -128,7 +128,7 @@ class TestProtectionAutonomousBlocked:
         skill_file.write_text(
             "---\nname: Protected System\ndescription: A protected system skill\nenabled: true\n---\n# Protected System\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="protected-system",
@@ -174,7 +174,7 @@ class TestProtectionAutonomousBlocked:
         skill_file.write_text(
             "---\nname: Protected Imported\ndescription: A protected imported skill\nenabled: true\n---\n# Protected Imported\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="protected-imported",
@@ -218,7 +218,7 @@ class TestProtectionAutonomousBlocked:
         skill_file.write_text(
             "---\nname: Protected Manual\ndescription: A protected manual skill\nenabled: true\n---\n# Protected Manual\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="protected-manual",
@@ -266,7 +266,7 @@ class TestProtectionAutonomousAllowed:
         skill_file.write_text(
             "---\nname: My Autonomous Skill\ndescription: My skill\nenabled: true\n---\n# My Autonomous Skill\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="my-autonomous-skill",
@@ -311,7 +311,7 @@ class TestProtectionAutonomousAllowed:
         skill_file.write_text(
             "---\nname: Flagged System\ndescription: A flagged system skill\nenabled: true\n---\n# Flagged System\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="flagged-system",
@@ -356,7 +356,7 @@ class TestProtectionAutonomousAllowed:
         skill_file.write_text(
             "---\nname: Override System\ndescription: An override system skill\nenabled: true\n---\n# Override System\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="override-system",
@@ -401,7 +401,7 @@ class TestProtectionCreate:
     async def test_autonomous_cannot_create_system_skill(
         self, tool: SkillManageTool, tmp_path: Path
     ) -> None:
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
@@ -421,7 +421,7 @@ class TestProtectionCreate:
     async def test_autonomous_can_create_autonomous_skill(
         self, tool: SkillManageTool, tmp_path: Path
     ) -> None:
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="new-autonomous-skill",
@@ -490,7 +490,7 @@ class TestAuthorityArgumentsRefused:
         skill_file = tmp_path / "guarded.md"
         original = "---\nname: Guarded\ndescription: d\nenabled: true\n---\nBody."
         skill_file.write_text(original)
-        pool = AsyncMock()
+        pool = lockable_pool()
         tool = SkillManageTool(db_pool=pool)
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):

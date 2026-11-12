@@ -8,6 +8,7 @@ Task 2 projection/sync layer for metadata and usage tracking.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from orchestrator.skills_projection import SkillProjectionStore
@@ -294,6 +295,33 @@ class SkillManageTool(Tool):
             indent=2,
         )
 
+    async def _locked_mutation(self, skill_id: str, mutate: Callable[[], str | None]) -> str | None:
+        """Run ``mutate`` only while the stored grant allows it and its row is locked.
+
+        Returns an error payload, or None when ``mutate`` ran and succeeded.
+        The row lock is the revocation boundary: a revocation committed before
+        the lock refuses the mutation, and one issued during it waits (#696).
+        """
+        import json
+
+        store = self._projection_store
+        if store is None:
+            return json.dumps({"error": _check_modification_allowed(None)[1]})
+        try:
+            if self._sync_service and await store.get_projection(skill_id) is None:
+                # Unknown skill file: record it as protected ('manual') first.
+                await self._sync_service.sync_skill(skill_id)
+            async with store.locked_projection(skill_id) as projection:
+                allowed, reason = _check_modification_allowed(projection)
+                if not allowed:
+                    return json.dumps({"error": reason})
+                return mutate()
+        except Exception as exc:
+            logger.warning("Protection check for skill %s failed: %s", skill_id, exc)
+            return json.dumps(
+                {"error": "Cannot determine protection status: skill projection unavailable."}
+            )
+
     async def _patch(
         self,
         skill_id: str,
@@ -303,56 +331,43 @@ class SkillManageTool(Tool):
         import json
 
         try:
-            detail = get_skill(skill_id)
+            get_skill(skill_id)
         except FileNotFoundError:
             return json.dumps({"error": f"Skill '{skill_id}' not found"})
         except Exception as exc:
             logger.error("patch get skill %s failed: %s", skill_id, exc)
             return json.dumps({"error": f"patch failed: {exc}"})
 
-        current_content = detail["content"]
-
-        projection = None
-        if self._projection_store:
+        def mutate() -> str | None:
+            # Read and write inside the lock so concurrent patches cannot interleave.
             try:
-                projection = await self._projection_store.get_projection(skill_id)
-            except Exception as exc:
-                logger.warning("Failed to load projection for protection check: %s", exc)
-
-        if projection is None and self._sync_service:
-            sync_result = await self._sync_service.sync_skill(skill_id)
-            if sync_result.success and self._projection_store:
-                try:
-                    projection = await self._projection_store.get_projection(skill_id)
-                except Exception:
-                    pass
-
-        allowed, reason = _check_modification_allowed(projection)
-        if not allowed:
-            return json.dumps({"error": reason})
-
-        if old_text not in current_content:
-            return json.dumps(
-                {
-                    "error": (
-                        "old_text not found in skill content. patch requires exact substring match."
+                current_content = get_skill(skill_id)["content"]
+                if old_text not in current_content:
+                    return json.dumps(
+                        {
+                            "error": (
+                                "old_text not found in skill content. "
+                                "patch requires exact substring match."
+                            )
+                        }
                     )
-                }
-            )
+                update_skill(
+                    skill_id,
+                    name=None,
+                    description=None,
+                    content=current_content.replace(old_text, new_text, 1),
+                    enabled=None,
+                )
+            except FileNotFoundError:
+                return json.dumps({"error": f"Skill '{skill_id}' not found"})
+            except Exception as exc:
+                logger.error("patch update skill %s failed: %s", skill_id, exc)
+                return json.dumps({"error": f"patch failed: {exc}"})
+            return None
 
-        new_content = current_content.replace(old_text, new_text, 1)
-
-        try:
-            update_skill(
-                skill_id,
-                name=None,
-                description=None,
-                content=new_content,
-                enabled=None,
-            )
-        except Exception as exc:
-            logger.error("patch update skill %s failed: %s", skill_id, exc)
-            return json.dumps({"error": f"patch failed: {exc}"})
+        error = await self._locked_mutation(skill_id, mutate)
+        if error is not None:
+            return error
 
         if self._sync_service:
             try:
@@ -373,32 +388,19 @@ class SkillManageTool(Tool):
     async def _delete(self, skill_id: str) -> str:
         import json
 
-        projection = None
-        if self._projection_store:
+        def mutate() -> str | None:
             try:
-                projection = await self._projection_store.get_projection(skill_id)
+                delete_skill(skill_id)
+            except FileNotFoundError:
+                return json.dumps({"error": f"Skill '{skill_id}' not found"})
             except Exception as exc:
-                logger.warning("Failed to load projection for protection check: %s", exc)
+                logger.error("delete skill %s failed: %s", skill_id, exc)
+                return json.dumps({"error": f"delete failed: {exc}"})
+            return None
 
-        if projection is None and self._sync_service:
-            sync_result = await self._sync_service.sync_skill(skill_id)
-            if sync_result.success and self._projection_store:
-                try:
-                    projection = await self._projection_store.get_projection(skill_id)
-                except Exception:
-                    pass
-
-        allowed, reason = _check_modification_allowed(projection)
-        if not allowed:
-            return json.dumps({"error": reason})
-
-        try:
-            delete_skill(skill_id)
-        except FileNotFoundError:
-            return json.dumps({"error": f"Skill '{skill_id}' not found"})
-        except Exception as exc:
-            logger.error("delete skill %s failed: %s", skill_id, exc)
-            return json.dumps({"error": f"delete failed: {exc}"})
+        error = await self._locked_mutation(skill_id, mutate)
+        if error is not None:
+            return error
 
         if self._sync_service:
             try:
