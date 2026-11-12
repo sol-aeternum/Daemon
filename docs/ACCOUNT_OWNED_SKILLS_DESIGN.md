@@ -1,7 +1,10 @@
 # Account-owned skills design
 
-**Status:** Proposed design for review. It implements nothing, changes no feature
-status, and authorises no migration, deployment or API change. Each change it
+**Status:** Design accepted by the owner. Step 1 of §8 (migration
+`068_account_owned_skills.sql`, `orchestrator/services/skills.py` and its
+PostgreSQL tests) is implemented and called by nothing; the running application
+still uses the file-backed store. This document changes no feature status and
+authorises no deployment or API change. Each change it
 describes still needs approval under the Rules of Engagement in `AGENTS.md`.
 
 **Supersedes:** §4 "Published skills and portable editing" of the earlier
@@ -96,6 +99,20 @@ design touches.
 | `skill_consolidation_log.skill_name`, `.skill_description`, `.reason` | Name and description columns dropped; the row references the skill id. `reason` becomes an enumerated code. | Existing plaintext copies of skill content in an account-owned audit table (`migrations/029_skill_consolidation_nudge.sql`). |
 | `source_type`, `actor`, `enabled`, `allow_autonomous_edit`, `revision`, counts, timestamps | Plaintext. | Enumerations, flags, numbers and times; no free text. |
 
+**Key binding.** A third table, `skill_store_key`, holds one row: a keyed
+check value of the encryption key the skill tables were written under (never
+the key, and nothing derived from content). The slug lookup digest depends on
+the key, so under a different valid key every lookup would miss, the store
+would read as empty, and a create would add rows the correct key cannot read.
+Every store operation therefore compares its key with the binding first and
+refuses on a mismatch. The first write inserts the binding; concurrent first
+writers race on that insert and all but the winner's key refuse. Only key
+rotation changes it: `rotate_skill_store_key` takes the binding exclusively,
+re-encrypts every envelope, recomputes every lookup digest and moves the
+binding in one transaction, and aborts unchanged if the old key cannot read
+any row. A wrong key on the very first write of a new database binds that key;
+nothing can detect that, since there is nothing yet to compare against.
+
 **Residual leakage, accepted and documented.** The embedding is stored in
 plaintext because pgvector cannot search ciphertext; this is the same
 convention and the same exposure as memory embeddings. An embedding can reveal
@@ -122,7 +139,10 @@ A save is one transaction:
    every account write.
 3. For an autonomous or consolidation actor, require `allow_autonomous_edit`
    to be exactly true, read under the lock. This keeps the #697 boundary: a
-   grant revoked before the lock is taken stops the write.
+   grant revoked before the lock is taken stops the write. A skill created by
+   an autonomous actor starts with the grant set, so the evaluator can refine
+   its own work as it does today; a skill a person writes or imports starts
+   without it. After creation only the owner changes the grant.
 4. If the caller sent an expected revision and it differs, refuse with a
    conflict and change nothing.
 5. Insert the new `skill_revisions` row, update the head row, and trim
@@ -216,7 +236,7 @@ Proposed sequence of small changes:
 
 | Step | Content | Ships behaviour? |
 | --- | --- | --- |
-| 1 | Migration, write service and store, PostgreSQL tests. | No |
+| 1 | Migration, write service and store, PostgreSQL tests. **Implemented.** | No |
 | 2 | Cutover of all readers and writers; account scoping; catalogue update. | Yes |
 | 3 | Revision list and revert endpoints, settings UI. | Yes |
 | 4 | Shipped-skill loader; removal of projection, sync and upgrade code. | Cleanup |
