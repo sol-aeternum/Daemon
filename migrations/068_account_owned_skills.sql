@@ -2,7 +2,7 @@
 -- Account-owned, database-authoritative skills
 -- (docs/ACCOUNT_OWNED_SKILLS_DESIGN.md, step 1).
 --
--- Additive only: two new tables and their indexes. Nothing reads or writes
+-- Additive only: three new tables and their indexes. Nothing reads or writes
 -- them yet; the file-backed store and skill_projections stay in use until the
 -- cutover change. Nothing is imported from data/skills or skill_projections:
 -- those skills have no owner.
@@ -17,6 +17,11 @@
 --     the plaintext pgvector embedding was computed from.
 --   - `skills` holds the current revision; `skill_revisions` holds every
 --     retained save, including the current one.
+--   - `skill_store_key` is one row binding these tables to one encryption key.
+--     It holds a keyed check value of the key, never the key or any content.
+--     The store refuses every operation under a different key, so a
+--     misconfigured key cannot read the store as empty or add rows the correct
+--     key cannot read. The first write inserts it; only key rotation updates it.
 SET LOCAL lock_timeout = '1s';
 SET LOCAL statement_timeout = '5s';
 
@@ -61,4 +66,10 @@ CREATE TABLE IF NOT EXISTS skill_revisions (
     actor TEXT NOT NULL CHECK (actor IN ('user', 'autonomous', 'consolidation', 'shipped')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (skill_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS skill_store_key (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    verifier BYTEA NOT NULL CHECK (octet_length(verifier) = 32),
+    bound_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -99,6 +99,20 @@ design touches.
 | `skill_consolidation_log.skill_name`, `.skill_description`, `.reason` | Name and description columns dropped; the row references the skill id. `reason` becomes an enumerated code. | Existing plaintext copies of skill content in an account-owned audit table (`migrations/029_skill_consolidation_nudge.sql`). |
 | `source_type`, `actor`, `enabled`, `allow_autonomous_edit`, `revision`, counts, timestamps | Plaintext. | Enumerations, flags, numbers and times; no free text. |
 
+**Key binding.** A third table, `skill_store_key`, holds one row: a keyed
+check value of the encryption key the skill tables were written under (never
+the key, and nothing derived from content). The slug lookup digest depends on
+the key, so under a different valid key every lookup would miss, the store
+would read as empty, and a create would add rows the correct key cannot read.
+Every store operation therefore compares its key with the binding first and
+refuses on a mismatch. The first write inserts the binding; concurrent first
+writers race on that insert and all but the winner's key refuse. Only key
+rotation changes it: `rotate_skill_store_key` takes the binding exclusively,
+re-encrypts every envelope, recomputes every lookup digest and moves the
+binding in one transaction, and aborts unchanged if the old key cannot read
+any row. A wrong key on the very first write of a new database binds that key;
+nothing can detect that, since there is nothing yet to compare against.
+
 **Residual leakage, accepted and documented.** The embedding is stored in
 plaintext because pgvector cannot search ciphertext; this is the same
 convention and the same exposure as memory embeddings. An embedding can reveal

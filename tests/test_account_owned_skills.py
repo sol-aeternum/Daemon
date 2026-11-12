@@ -32,7 +32,9 @@ from orchestrator.services.skills import (
     REVISION_RETENTION,
     SkillError,
     SkillStore,
+    derive_key_verifier,
     derive_slug_lookup_key,
+    rotate_skill_store_key,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -666,16 +668,6 @@ async def test_no_content_or_unkeyed_digest_is_stored_in_plaintext(pool: asyncpg
     assert await pool.fetchval("SELECT count(*) FROM skills WHERE embedding IS NOT NULL") == 0
 
 
-@pytest.mark.asyncio
-async def test_wrong_key_raises_and_finds_nothing_by_slug(pool: asyncpg.Pool) -> None:
-    alice = await _user(pool)
-    await _create(_store(pool), alice)
-    other = _store(pool)
-    assert await _reason(other.get(alice, "deploy-notes")) == "not_found"
-    with pytest.raises(ValueError, match="decryption failed"):
-        await other.list(alice)
-
-
 # ---- Derived state --------------------------------------------------------
 
 
@@ -719,7 +711,7 @@ async def test_usage_and_switches_are_not_revisions(pool: asyncpg.Pool) -> None:
 
 async def _snapshot(pool: asyncpg.Pool) -> list[tuple[Any, ...]]:
     rows: list[tuple[Any, ...]] = []
-    for table in ("skills", "skill_revisions"):
+    for table in ("skills", "skill_revisions", "skill_store_key"):
         for row in await pool.fetch(f"SELECT * FROM {table} ORDER BY 1, 2"):
             rows.append((table, *row.values()))
     return rows
@@ -817,3 +809,247 @@ async def test_corrupt_shipped_row_refuses_republication_unchanged(pool: asyncpg
     with pytest.raises(ValueError, match="decryption failed"):
         await store.publish_shipped("pdf-export", name="PDF", description="d", body="b2")
     assert await _snapshot(pool) == before
+
+
+# ---- Key binding ----------------------------------------------------------
+
+
+def test_key_verifier_is_keyed_and_distinct_from_other_derived_keys() -> None:
+    key = Fernet.generate_key().decode()
+    verifier = derive_key_verifier(key)
+    assert len(verifier) == 32 and verifier == derive_key_verifier(key)
+    assert verifier != derive_key_verifier(Fernet.generate_key().decode())
+    assert verifier != derive_slug_lookup_key(key)
+    assert verifier.hex() not in key
+
+
+@pytest.mark.asyncio
+async def test_empty_unbound_store_reads_as_empty_and_first_write_binds(
+    pool: asyncpg.Pool,
+) -> None:
+    key = Fernet.generate_key().decode()
+    store = _store(pool, key)
+    alice = await _user(pool)
+    assert await store.list(alice) == []
+    assert await _reason(store.get(alice, "deploy-notes")) == "not_found"
+    assert await pool.fetchval("SELECT count(*) FROM skill_store_key") == 0
+
+    await _create(store, alice)
+    assert await pool.fetchval("SELECT verifier FROM skill_store_key") == derive_key_verifier(key)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_first_write_binds_nothing(pool: asyncpg.Pool) -> None:
+    store = _store(pool)
+    assert await _reason(_create(store, uuid.uuid4())) == "account_unavailable"
+    assert await pool.fetchval("SELECT count(*) FROM skill_store_key") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_different_valid_key_refuses_every_operation_unchanged(
+    pool: asyncpg.Pool,
+) -> None:
+    """The reviewed failure: key B must not fork a store that key A wrote."""
+    good = _store(pool)
+    alice = await _user(pool)
+    created = await _create(good, alice, actor="autonomous")
+    await good.publish_shipped("pdf-export", name="PDF", description="d", body="b")
+    skill_id = uuid.UUID(created["id"])
+    before = await _snapshot(pool)
+
+    other = _store(pool)
+    attempts = [
+        lambda: _create(other, alice),  # same logical slug
+        lambda: _create(other, alice, "Something Else"),  # different slug
+        lambda: other.publish_shipped("pdf-export", name="PDF", description="d", body="b2"),
+        lambda: other.publish_shipped("brand-new", name="New", description="", body="b"),
+        lambda: other.remove_shipped("pdf-export"),
+        lambda: other.save(alice, "deploy-notes", body="x"),
+        lambda: other.revert(alice, "deploy-notes", 1),
+        lambda: other.delete(alice, "deploy-notes"),
+        lambda: other.set_enabled(alice, "deploy-notes", False),
+        lambda: other.set_autonomous_edit(alice, "deploy-notes", False),
+        lambda: other.store_embedding(skill_id, 1, [0.5] * EMBEDDING_DIMENSIONS),
+        lambda: other.touch_usage(alice, "deploy-notes"),
+        lambda: other.get(alice, "deploy-notes"),
+        lambda: other.get(alice, "never-existed"),
+        lambda: other.list(alice),
+        lambda: other.list_revisions(alice, "deploy-notes"),
+    ]
+    for attempt in attempts:
+        assert await _reason(attempt()) == "encryption_key_mismatch"
+        assert await _snapshot(pool) == before
+
+    # The bound key is unaffected.
+    assert [s["slug"] for s in await good.list(alice)] == ["deploy-notes", "pdf-export"]
+    assert (await good.save(alice, "deploy-notes", body="two"))["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_first_writes_under_two_keys_bind_exactly_one(
+    pool: asyncpg.Pool,
+) -> None:
+    first, second = _store(pool), _store(pool)
+    alice, bob = await _user(pool), await _user(pool)
+    outcomes = await asyncio.gather(
+        *(_create(first, alice, f"First {i}") for i in range(4)),
+        *(_create(second, bob, f"Second {i}") for i in range(4)),
+        return_exceptions=True,
+    )
+    won = [o for o in outcomes if isinstance(o, dict)]
+    lost = [o for o in outcomes if isinstance(o, SkillError)]
+    assert len(won) == 4 and len(lost) == 4, outcomes
+    assert {e.reason for e in lost} == {"encryption_key_mismatch"}
+    assert await pool.fetchval("SELECT count(*) FROM skill_store_key") == 1
+    assert await pool.fetchval("SELECT count(*) FROM skills") == 4
+    assert await pool.fetchval("SELECT count(DISTINCT user_id) FROM skills") == 1
+    # Every stored row is readable by the key that won.
+    winner, owner = (first, alice) if won[0]["name"].startswith("First") else (second, bob)
+    assert len(await winner.list(owner)) == 4
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_first_writes_under_one_key_all_succeed(pool: asyncpg.Pool) -> None:
+    key = Fernet.generate_key().decode()
+    alice = await _user(pool)
+    results = await asyncio.gather(
+        *(_create(_store(pool, key), alice, f"Skill {i}") for i in range(6))
+    )
+    assert len({r["id"] for r in results}) == 6
+    assert await pool.fetchval("SELECT count(*) FROM skill_store_key") == 1
+
+
+@pytest.mark.asyncio
+async def test_database_holds_at_most_one_key_binding(pool: asyncpg.Pool) -> None:
+    await pool.execute("INSERT INTO skill_store_key (verifier) VALUES ($1)", b"a" * 32)
+    with pytest.raises(asyncpg.PostgresError):
+        await pool.execute(
+            "INSERT INTO skill_store_key (singleton, verifier) VALUES (FALSE, $1)", b"b" * 32
+        )
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await pool.execute("INSERT INTO skill_store_key (verifier) VALUES ($1)", b"b" * 32)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute("UPDATE skill_store_key SET verifier = $1", b"short")
+
+
+# ---- Key rotation ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rotation_moves_everything_to_the_new_key_and_shuts_out_the_old(
+    pool: asyncpg.Pool,
+) -> None:
+    old_key, new_key = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+    old = _store(pool, old_key)
+    alice, bob = await _user(pool), await _user(pool)
+    await _create(old, alice, trigger_conditions="when deploying")
+    await old.save(alice, "deploy-notes", body="two")
+    await _create(old, bob, body="Bob's own.")
+    await old.publish_shipped("pdf-export", name="PDF", description="d", body="b")
+    expected = {
+        "alice": await old.list(alice),
+        "bob": await old.list(bob),
+        "history": await old.list_revisions(alice, "deploy-notes"),
+    }
+    raw_before = {r["id"]: r for r in await pool.fetch("SELECT * FROM skills")}
+
+    assert await rotate_skill_store_key(pool, old_key, new_key) == 3
+
+    new = _store(pool, new_key)
+    assert await new.list(alice) == expected["alice"]
+    assert await new.list(bob) == expected["bob"]
+    assert await new.list_revisions(alice, "deploy-notes") == expected["history"]
+    assert (await new.get(bob, "pdf-export"))["scope"] == "shipped"
+    assert (await new.save(alice, "deploy-notes", body="three"))["revision"] == 3
+    assert await pool.fetchval("SELECT verifier FROM skill_store_key") == derive_key_verifier(
+        new_key
+    )
+    for row in await pool.fetch("SELECT * FROM skills"):
+        for column in ("slug_lookup", "slug_encrypted", "body_encrypted"):
+            assert row[column] != raw_before[row["id"]][column], column
+
+    assert await _reason(old.list(alice)) == "encryption_key_mismatch"
+    assert await _reason(old.save(alice, "deploy-notes", body="x")) == "encryption_key_mismatch"
+    assert await _reason(_create(old, alice, "Late")) == "encryption_key_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_rotation_refuses_unchanged_with_the_wrong_old_key_or_an_unreadable_row(
+    pool: asyncpg.Pool,
+) -> None:
+    key, new_key = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+    store = _store(pool, key)
+    alice = await _user(pool)
+    await _create(store, alice)
+    await store.save(alice, "deploy-notes", body="two")
+
+    before = await _snapshot(pool)
+    assert (
+        await _reason(rotate_skill_store_key(pool, Fernet.generate_key().decode(), new_key))
+        == "encryption_key_mismatch"
+    )
+    assert await _snapshot(pool) == before
+
+    await pool.execute(
+        "UPDATE skill_revisions SET body_encrypted = 'not-an-envelope' WHERE revision = 1"
+    )
+    before = await _snapshot(pool)
+    with pytest.raises(ValueError, match="decryption failed"):
+        await rotate_skill_store_key(pool, key, new_key)
+    assert await _snapshot(pool) == before
+    assert (await store.get(alice, "deploy-notes"))["body"] == "two"
+
+
+@pytest.mark.asyncio
+async def test_rotation_of_a_never_written_store_binds_nothing(pool: asyncpg.Pool) -> None:
+    old_key, new_key = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+    assert await rotate_skill_store_key(pool, old_key, new_key) == 0
+    assert await pool.fetchval("SELECT count(*) FROM skill_store_key") == 0
+    alice = await _user(pool)
+    assert (await _create(_store(pool, new_key), alice))["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_write_waiting_behind_rotation_refuses_under_the_old_key(
+    pool: asyncpg.Pool,
+) -> None:
+    old_key, new_key = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+    old = _store(pool, old_key)
+    alice = await _user(pool)
+    await _create(old, alice)
+
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        # Stand in for a rotation that has taken the binding and not committed.
+        await conn.fetchval("SELECT verifier FROM skill_store_key WHERE singleton FOR UPDATE")
+        save = asyncio.create_task(old.save(alice, "deploy-notes", body="late"))
+        await _wait_for_lock_wait(pool, "FROM skill_store_key WHERE singleton FOR SHARE")
+        await conn.execute("UPDATE skill_store_key SET verifier = $1", derive_key_verifier(new_key))
+        await tx.commit()
+
+    assert await _reason(save) == "encryption_key_mismatch"
+    assert await pool.fetchval("SELECT count(*) FROM skill_revisions") == 1
+
+
+@pytest.mark.asyncio
+async def test_rotation_waits_for_a_write_in_flight_and_then_includes_it(
+    pool: asyncpg.Pool,
+) -> None:
+    old_key, new_key = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+    old = _store(pool, old_key)
+    alice = await _user(pool)
+    await _create(old, alice)
+
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        # Stand in for a write under the old key that has not committed.
+        await conn.fetchval("SELECT verifier FROM skill_store_key WHERE singleton FOR SHARE")
+        rotation = asyncio.create_task(rotate_skill_store_key(pool, old_key, new_key))
+        await _wait_for_lock_wait(pool, "FROM skill_store_key WHERE singleton FOR UPDATE")
+        assert not rotation.done()
+        await tx.commit()
+
+    assert await rotation == 1
+    assert (await _store(pool, new_key).get(alice, "deploy-notes"))["body"] == "Step one."

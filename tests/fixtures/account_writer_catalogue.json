@@ -405,6 +405,12 @@
       "ownership_path": "root:users <- skills <- skill_revisions",
       "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
     },
+    "skill_store_key": {
+      "category": "shared_unowned",
+      "owner_source": "migrations/068_account_owned_skills.sql",
+      "ownership_path": "root:skill_store_key",
+      "rationale": "Shared deployment state: one row binding the skill store to its encryption key. Holds a keyed check value, no account content. Uncovered."
+    },
     "memory_dependencies": {
       "category": "content",
       "owner_source": "migrations/066_memory_bitemporal.sql",
@@ -751,6 +757,7 @@
     "reminders": "root:users <- reminders",
     "skills": "root:users <- skills",
     "skill_revisions": "root:users <- skills <- skill_revisions",
+    "skill_store_key": "root:skill_store_key",
     "memory_dependencies": "root:users <- memory_dependencies",
     "memory_erased_sources": "root:users <- memory_erased_sources",
     "memory_knowledge_clock": "root:users <- memory_knowledge_clock",
@@ -6023,6 +6030,19 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore._verify_key_for_write",
+      "kind": "sql_inline",
+      "fingerprint": "fd9928e9d26c128d",
+      "tables": [
+        "skill_store_key"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Key-binding row for the skill store; shared deployment state, no account content."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
       "qualname": "SkillStore.create",
       "kind": "sql_inline",
       "fingerprint": "2f2d863eb3d8ba25",
@@ -6064,7 +6084,7 @@
       "owner_source": "orchestrator.services.skills",
       "qualname": "SkillStore.remove_shipped",
       "kind": "sql_inline",
-      "fingerprint": "dc66ad11ed40d1d9",
+      "fingerprint": "5edd55eb8aab036b",
       "tables": [
         "skills"
       ],
@@ -6103,7 +6123,7 @@
       "owner_source": "orchestrator.services.skills",
       "qualname": "SkillStore.store_embedding",
       "kind": "sql_inline",
-      "fingerprint": "ec9638338c9a3dc4",
+      "fingerprint": "bd07aa2b7963f252",
       "tables": [
         "skills"
       ],
@@ -6116,7 +6136,7 @@
       "owner_source": "orchestrator.services.skills",
       "qualname": "SkillStore.touch_usage",
       "kind": "sql_inline",
-      "fingerprint": "e0ffd607cb2884ff",
+      "fingerprint": "e193d6faf8e220ff",
       "tables": [
         "skills"
       ],
@@ -6124,6 +6144,45 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "rotate_skill_store_key",
+      "kind": "sql_inline",
+      "fingerprint": "60403fc494ff2e4c",
+      "tables": [
+        "skill_revisions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "rotate_skill_store_key",
+      "kind": "sql_inline",
+      "fingerprint": "7b626b14ae5299b5",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "rotate_skill_store_key",
+      "kind": "sql_inline",
+      "fingerprint": "a88b43e65ade3cfd",
+      "tables": [
+        "skill_store_key"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Key-binding row for the skill store; shared deployment state, no account content."
     },
     {
       "owner_source": "orchestrator.services.web_snapshots",

@@ -4,3 +4,4 @@
 SET LOCAL lock_timeout = '1s';
 DROP TABLE IF EXISTS skill_revisions;
 DROP TABLE IF EXISTS skills;
+DROP TABLE IF EXISTS skill_store_key;

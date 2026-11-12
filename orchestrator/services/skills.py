@@ -15,6 +15,11 @@ Rules this module holds:
   a keyed digest bound to its owner; no hash of content is stored.
 - A save is one transaction: it appends a revision, moves the head and trims
   old revisions together.
+- The database is bound to one encryption key (``skill_store_key``). Every
+  operation checks the configured key against that binding first, so a
+  misconfigured key refuses instead of reading the store as empty or writing
+  rows that the correct key cannot read. The first write binds the key;
+  :func:`rotate_skill_store_key` is the only way the binding changes.
 """
 
 from __future__ import annotations
@@ -52,6 +57,8 @@ _ACCOUNT_ACTORS: frozenset[str] = frozenset({"user", "autonomous", "consolidatio
 _GRANT_ACTORS: frozenset[str] = frozenset({"autonomous", "consolidation"})
 
 _SLUG_LOOKUP_INFO = b"daemon/skills/slug-lookup/v1"
+_KEY_VERIFIER_INFO = b"daemon/skills/key-verifier/v1"
+_KEY_VERIFIER_MESSAGE = b"skill-store-key-binding"
 _SHIPPED_SCOPE = b"shipped"
 
 # The one query that reads skill content. Every statement in this module is a
@@ -72,23 +79,37 @@ class SkillError(Exception):
         self.reason = reason
 
 
-def derive_slug_lookup_key(encryption_key: str) -> bytes:
-    """Derive the slug-lookup key from the content-encryption key.
-
-    The digest key is separate from the Fernet key so a digest never exposes
-    key material used for encryption. Rotating the content-encryption key
-    changes this key, so a rotation must recompute ``slug_lookup`` for every
-    row in the same operation that re-encrypts content.
-    """
+def _derive(encryption_key: str, info: bytes) -> bytes:
     try:
         material = base64.urlsafe_b64decode(encryption_key.encode())
     except (ValueError, TypeError) as exc:
         raise EncryptionKeyMissing("DAEMON_ENCRYPTION_KEY is not valid base64") from exc
     if len(material) != 32:
         raise EncryptionKeyMissing("DAEMON_ENCRYPTION_KEY must decode to 32 bytes")
-    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=_SLUG_LOOKUP_INFO).derive(
-        material
-    )
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(material)
+
+
+def derive_slug_lookup_key(encryption_key: str) -> bytes:
+    """Derive the slug-lookup key from the content-encryption key.
+
+    The digest key is separate from the Fernet key so a digest never exposes
+    key material used for encryption. A different encryption key gives a
+    different lookup key, which is why the store is bound to one key and
+    rotation recomputes ``slug_lookup`` (:func:`rotate_skill_store_key`).
+    """
+    return _derive(encryption_key, _SLUG_LOOKUP_INFO)
+
+
+def derive_key_verifier(encryption_key: str) -> bytes:
+    """A keyed check value identifying the encryption key, not any content.
+
+    It is an HMAC of a fixed message under its own derived key, so it reveals
+    neither the encryption key nor the lookup key, and says nothing about what
+    the store holds.
+    """
+    return hmac.new(
+        _derive(encryption_key, _KEY_VERIFIER_INFO), _KEY_VERIFIER_MESSAGE, hashlib.sha256
+    ).digest()
 
 
 def _validated_text(value: object, limit: int, reason: str, *, required: bool = False) -> str:
@@ -131,10 +152,41 @@ class SkillStore:
         self._pool = pool
         self._enc = ContentEncryption(encryption_key)
         self._lookup_key = derive_slug_lookup_key(encryption_key)
+        self._verifier = derive_key_verifier(encryption_key)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _verify_key_for_write(self, conn: _Connection) -> None:
+        """Refuse unless this store's key is the one the database is bound to.
+
+        Must be the first statement of a write transaction. The first write
+        ever binds the key: concurrent first writers race on the insert, one
+        wins, and every other one then compares against the winner's binding.
+        The shared row lock is held to commit, so a rotation (which takes the
+        row exclusively) never overlaps a write under the old key.
+        """
+        await conn.execute(
+            "INSERT INTO skill_store_key (verifier) VALUES ($1) ON CONFLICT (singleton) DO NOTHING",
+            self._verifier,
+        )
+        bound = await conn.fetchval(
+            "SELECT verifier FROM skill_store_key WHERE singleton FOR SHARE"
+        )
+        if bound is None or not hmac.compare_digest(bytes(bound), self._verifier):
+            raise SkillError("encryption_key_mismatch")
+
+    async def _verify_key_for_read(self, conn: _Connection) -> None:
+        """Refuse a read under a key the database is not bound to.
+
+        No binding means no write has ever committed, so the store really is
+        empty. With a binding, a lookup under any other key would find nothing
+        and must not be reported as "not found" or as an empty list.
+        """
+        bound = await conn.fetchval("SELECT verifier FROM skill_store_key WHERE singleton")
+        if bound is not None and not hmac.compare_digest(bytes(bound), self._verifier):
+            raise SkillError("encryption_key_mismatch")
 
     def _lookup(self, user_id: uuid.UUID | None, slug: str) -> bytes:
         scope = user_id.bytes if user_id is not None else _SHIPPED_SCOPE
@@ -299,6 +351,7 @@ class SkillStore:
         slug_envelope = self._enc.encrypt(slug)
         try:
             async with self._pool.acquire() as conn, conn.transaction():
+                await self._verify_key_for_write(conn)
                 # Same per-account serialization point as reminders and web
                 # snapshots, so the count limit holds across processes.
                 found = await conn.fetchval(
@@ -363,6 +416,7 @@ class SkillStore:
                 trigger_conditions, MAX_TRIGGER_CONDITIONS_CHARS, "trigger_conditions"
             )
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
             row = await self._lock_account_skill(conn, user_id, slug)
             self._require_grant(row, actor)
             if expected_revision is not None and expected_revision != row["revision"]:
@@ -394,6 +448,7 @@ class SkillStore:
         """Write a retained revision's content as a new revision. Owner only."""
         slug = _slug_from_id(slug)
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
             row = await self._lock_account_skill(conn, user_id, slug)
             if expected_revision is not None and expected_revision != row["revision"]:
                 raise SkillError("revision_conflict")
@@ -423,6 +478,7 @@ class SkillStore:
     async def delete(self, user_id: uuid.UUID, slug: str, *, actor: Actor = "user") -> None:
         slug = _slug_from_id(slug)
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
             row = await self._lock_account_skill(conn, user_id, slug)
             self._require_grant(row, actor)
             await conn.execute("DELETE FROM skills WHERE id = $1", row["id"])
@@ -433,6 +489,7 @@ class SkillStore:
             raise SkillError("enabled_invalid")
         slug = _slug_from_id(slug)
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
             row = await self._lock_account_skill(conn, user_id, slug)
             await conn.execute(
                 "UPDATE skills SET enabled = $2, updated_at = NOW() WHERE id = $1",
@@ -451,6 +508,7 @@ class SkillStore:
             raise SkillError("allowed_invalid")
         slug = _slug_from_id(slug)
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
             row = await self._lock_account_skill(conn, user_id, slug)
             await conn.execute(
                 "UPDATE skills SET allow_autonomous_edit = $2, updated_at = NOW() WHERE id = $1",
@@ -480,6 +538,7 @@ class SkillStore:
         envelopes = self._encrypt_content(name, description, body, "")
         lookup = self._lookup(None, slug)
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
             # Serialize publication of one slug across processes.
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lookup.hex()
@@ -519,10 +578,12 @@ class SkillStore:
 
     async def remove_shipped(self, slug: str) -> bool:
         slug = _slug_from_id(slug)
-        result = await self._pool.execute(
-            "DELETE FROM skills WHERE user_id IS NULL AND slug_lookup = $1",
-            self._lookup(None, slug),
-        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
+            result = await conn.execute(
+                "DELETE FROM skills WHERE user_id IS NULL AND slug_lookup = $1",
+                self._lookup(None, slug),
+            )
         return result == "DELETE 1"
 
     # ------------------------------------------------------------------
@@ -533,6 +594,7 @@ class SkillStore:
         """The caller's own skill, else the shipped skill with that slug."""
         slug = _slug_from_id(slug)
         async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
             skill_id = await conn.fetchval(
                 "SELECT id FROM skills WHERE (user_id = $1 AND slug_lookup = $2) "
                 "OR (user_id IS NULL AND slug_lookup = $3) "
@@ -550,6 +612,7 @@ class SkillStore:
     ) -> list[dict[str, Any]]:
         """The account's skills, then shipped skills its own slugs do not shadow."""
         async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
             ids = await conn.fetch(
                 "SELECT id FROM skills WHERE (user_id = $1 OR ($3 AND user_id IS NULL)) "
                 "AND ($2::boolean IS NULL OR enabled = $2) "
@@ -573,14 +636,16 @@ class SkillStore:
     async def list_revisions(self, user_id: uuid.UUID, slug: str) -> list[dict[str, Any]]:
         """Retained revisions of the caller's own skill, newest first."""
         slug = _slug_from_id(slug)
-        rows = await self._pool.fetch(
-            "SELECT r.revision, r.name_encrypted, r.description_encrypted, r.body_encrypted, "
-            "r.trigger_conditions_encrypted, r.actor, r.created_at "
-            "FROM skill_revisions r JOIN skills s ON s.id = r.skill_id "
-            "WHERE s.user_id = $1 AND s.slug_lookup = $2 ORDER BY r.revision DESC",
-            user_id,
-            self._lookup(user_id, slug),
-        )
+        async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
+            rows = await conn.fetch(
+                "SELECT r.revision, r.name_encrypted, r.description_encrypted, "
+                "r.body_encrypted, r.trigger_conditions_encrypted, r.actor, r.created_at "
+                "FROM skill_revisions r JOIN skills s ON s.id = r.skill_id "
+                "WHERE s.user_id = $1 AND s.slug_lookup = $2 ORDER BY r.revision DESC",
+                user_id,
+                self._lookup(user_id, slug),
+            )
         if not rows:
             raise SkillError("not_found")
         return [
@@ -610,24 +675,28 @@ class SkillStore:
         """
         if len(embedding) != EMBEDDING_DIMENSIONS:
             raise SkillError("embedding_invalid")
-        result = await self._pool.execute(
-            "UPDATE skills SET embedding = $3::vector, embedding_revision = $2 "
-            "WHERE id = $1 AND revision = $2",
-            skill_id,
-            revision,
-            _format_vector(embedding),
-        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
+            result = await conn.execute(
+                "UPDATE skills SET embedding = $3::vector, embedding_revision = $2 "
+                "WHERE id = $1 AND revision = $2",
+                skill_id,
+                revision,
+                _format_vector(embedding),
+            )
         return result == "UPDATE 1"
 
     async def touch_usage(self, user_id: uuid.UUID, slug: str) -> bool:
         """Count a use of the caller's own skill."""
         slug = _slug_from_id(slug)
-        result = await self._pool.execute(
-            "UPDATE skills SET use_count = use_count + 1, last_used_at = NOW() "
-            "WHERE user_id = $1 AND slug_lookup = $2",
-            user_id,
-            self._lookup(user_id, slug),
-        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
+            result = await conn.execute(
+                "UPDATE skills SET use_count = use_count + 1, last_used_at = NOW() "
+                "WHERE user_id = $1 AND slug_lookup = $2",
+                user_id,
+                self._lookup(user_id, slug),
+            )
         return result == "UPDATE 1"
 
 
@@ -638,3 +707,73 @@ def create_skill_store(pool: asyncpg.Pool, settings: Settings | None = None) -> 
     if not key:
         raise EncryptionKeyMissing("DAEMON_ENCRYPTION_KEY is required")
     return SkillStore(pool, key)
+
+
+async def rotate_skill_store_key(pool: asyncpg.Pool, old_key: str, new_key: str) -> int:
+    """Re-encrypt every skill under ``new_key`` and rebind the store to it.
+
+    One transaction: it takes the key binding exclusively, so no write under
+    the old key overlaps it and writers that were waiting see the new binding
+    and refuse. Every envelope is decrypted with ``old_key`` first; any row the
+    old key cannot read aborts the whole rotation with nothing changed. Slug
+    lookup digests are recomputed, since they depend on the key.
+
+    Returns the number of skills re-encrypted. The caller is responsible for
+    switching the deployment's configured key to ``new_key`` afterwards; until
+    then every store built from the old key refuses.
+    """
+    old, new = SkillStore(pool, old_key), SkillStore(pool, new_key)
+
+    def recode(envelope: str) -> str:
+        return new._enc.encrypt(old._enc.decrypt(envelope))
+
+    async with pool.acquire() as conn, conn.transaction():
+        bound = await conn.fetchval(
+            "SELECT verifier FROM skill_store_key WHERE singleton FOR UPDATE"
+        )
+        if bound is None:
+            # Nothing has ever been written, so there is nothing to re-encrypt
+            # and no binding to move: the first write under the new key binds.
+            return 0
+        if not hmac.compare_digest(bytes(bound), old._verifier):
+            raise SkillError("encryption_key_mismatch")
+        skills = await conn.fetch(
+            "SELECT id, user_id, slug_encrypted, name_encrypted, description_encrypted, "
+            "body_encrypted, trigger_conditions_encrypted FROM skills ORDER BY id FOR UPDATE"
+        )
+        for row in skills:
+            slug = old._enc.decrypt(row["slug_encrypted"])
+            await conn.execute(
+                "UPDATE skills SET slug_encrypted = $2, slug_lookup = $3, name_encrypted = $4, "
+                "description_encrypted = $5, body_encrypted = $6, "
+                "trigger_conditions_encrypted = $7 WHERE id = $1",
+                row["id"],
+                new._enc.encrypt(slug),
+                new._lookup(row["user_id"], slug),
+                recode(row["name_encrypted"]),
+                recode(row["description_encrypted"]),
+                recode(row["body_encrypted"]),
+                recode(row["trigger_conditions_encrypted"]),
+            )
+        revisions = await conn.fetch(
+            "SELECT skill_id, revision, name_encrypted, description_encrypted, "
+            "body_encrypted, trigger_conditions_encrypted FROM skill_revisions "
+            "ORDER BY skill_id, revision"
+        )
+        for row in revisions:
+            await conn.execute(
+                "UPDATE skill_revisions SET name_encrypted = $3, description_encrypted = $4, "
+                "body_encrypted = $5, trigger_conditions_encrypted = $6 "
+                "WHERE skill_id = $1 AND revision = $2",
+                row["skill_id"],
+                row["revision"],
+                recode(row["name_encrypted"]),
+                recode(row["description_encrypted"]),
+                recode(row["body_encrypted"]),
+                recode(row["trigger_conditions_encrypted"]),
+            )
+        await conn.execute(
+            "UPDATE skill_store_key SET verifier = $1, bound_at = NOW() WHERE singleton",
+            new._verifier,
+        )
+    return len(skills)
