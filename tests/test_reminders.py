@@ -145,16 +145,57 @@ def test_legacy_file_state(tmp_path: Path, name: str, content: str | None, state
     assert reminders_module.legacy_file_state(_legacy(tmp_path, content)) == state
 
 
-def test_inaccessible_legacy_file_is_unreadable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "failure",
+    [PermissionError("denied"), NotADirectoryError("not a dir"), OSError("i/o error")],
+    ids=["permission", "not-a-directory", "io-error"],
+)
+def test_any_open_failure_except_not_found_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: OSError
 ) -> None:
-    path = _legacy(tmp_path, json.dumps({"reminders": []}))
+    """A forced open failure never reads as absent, whether or not the file exists."""
 
-    def denied(*_args: Any, **_kwargs: Any) -> str:
-        raise PermissionError("denied")
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise failure
 
-    monkeypatch.setattr(Path, "read_text", denied)
-    assert reminders_module.legacy_file_state(path) == "unreadable"
+    present = _legacy(tmp_path, json.dumps({"reminders": []}))
+    missing = tmp_path / "missing" / "reminders.json"
+    monkeypatch.setattr(Path, "open", fail)
+    assert reminders_module.legacy_file_state(present) == "unreadable"
+    assert reminders_module.legacy_file_state(missing) == "unreadable"
+    monkeypatch.undo()
+    assert reminders_module.legacy_file_state(present) == "empty"
+    assert reminders_module.legacy_file_state(missing) == "absent"
+
+
+def test_classifier_does_not_use_exists() -> None:
+    import inspect
+
+    source = inspect.getsource(reminders_module.legacy_file_state)
+    assert ".exists()" not in source.split('"""')[2]
+    assert "except FileNotFoundError" in source
+
+
+@pytest.mark.asyncio
+async def test_unsearchable_parent_directory_refuses(tmp_path: Path) -> None:
+    """Real filesystem: notes under a directory the process cannot traverse."""
+    parent = tmp_path / "data"
+    parent.mkdir()
+    path = parent / "reminders.json"
+    path.write_text(json.dumps({"reminders": [{"id": 1, "text": MARKER}]}))
+    parent.chmod(0o000)
+    try:
+        if os.access(path, os.R_OK):
+            pytest.skip("this user can traverse a 0o000 directory (root or CAP_DAC_OVERRIDE)")
+        assert path.exists() is False  # what the previous check saw
+        assert reminders_module.legacy_file_state(path) == "unreadable"
+        store = AsyncMock()
+        result = json.loads(await ReminderListTool(store, uuid.uuid4(), legacy_file=path).execute())
+        assert result["legacy_reminders"] == "unreadable" and "reminders" not in result
+        assert store.mock_calls == []
+    finally:
+        parent.chmod(0o700)
+    assert MARKER in path.read_text()
 
 
 @pytest.mark.asyncio

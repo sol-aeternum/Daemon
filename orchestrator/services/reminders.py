@@ -37,11 +37,15 @@ def legacy_file_state(path: Path = LEGACY_REMINDERS_FILE) -> LegacyState:
     automatically. ``pending`` (it holds notes) and ``unreadable`` (corrupt,
     unexpected shape or inaccessible) are unresolved states that only an
     operator can settle; callers must not answer as if migration were complete.
+
+    Only a definite ``FileNotFoundError`` from opening the file means ``absent``.
+    ``Path.exists()`` is not used: it returns False for a path it cannot stat,
+    such as one under an unsearchable directory, which would hide legacy notes.
     """
     try:
-        if not path.exists():
-            return "absent"
         document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "absent"
     except (OSError, ValueError):
         return "unreadable"
     if not isinstance(document, dict) or not isinstance(document.get("reminders"), list):
