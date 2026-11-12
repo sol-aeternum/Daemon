@@ -387,6 +387,12 @@
       "ownership_path": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots",
       "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
     },
+    "reminders": {
+      "category": "content",
+      "owner_source": "migrations/067_account_reminders.sql",
+      "ownership_path": "root:users <- reminders",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
     "memory_dependencies": {
       "category": "content",
       "owner_source": "migrations/066_memory_bitemporal.sql",
@@ -629,6 +635,9 @@
       "conversations",
       "users"
     ],
+    "reminders": [
+      "users"
+    ],
     "memory_knowledge_clock": [
       "users"
     ],
@@ -721,6 +730,7 @@
     "video_credit_balances": "root:users <- video_credit_balances",
     "video_credit_transactions": "root:users <- video_credit_transactions",
     "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots",
+    "reminders": "root:users <- reminders",
     "memory_dependencies": "root:users <- memory_dependencies",
     "memory_erased_sources": "root:users <- memory_erased_sources",
     "memory_knowledge_clock": "root:users <- memory_knowledge_clock",
@@ -5940,6 +5950,19 @@
       "rationale": "H1 prototype store; later observation-only startup/reads use its lifecycle, while mutating joins remain unactivated; account-linked restore metadata, cooperating POSIX writers only. No runtime account/SQL guard or restore readiness."
     },
     {
+      "owner_source": "orchestrator.services.reminders",
+      "qualname": "ReminderStore.add",
+      "kind": "sql_inline",
+      "fingerprint": "36a1783fa7ad5a2f",
+      "tables": [
+        "reminders"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
       "owner_source": "orchestrator.services.web_snapshots",
       "qualname": "WebSnapshotStore._purge_account_expired",
       "kind": "sql_inline",
@@ -7438,39 +7461,6 @@
       "qualname": "ToolExecutor.execute_invocation",
       "kind": "sql_unresolvable",
       "fingerprint": "7e0f775592446c56",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.tools.reminder",
-      "qualname": "ReminderStorage.__init__",
-      "kind": "filesystem_write",
-      "fingerprint": "b10a2c299c3dcd6c",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.tools.reminder",
-      "qualname": "ReminderStorage._ensure_file_exists",
-      "kind": "filesystem_write",
-      "fingerprint": "e0fb8c3465c0dc22",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.tools.reminder",
-      "qualname": "ReminderStorage._save",
-      "kind": "filesystem_write",
-      "fingerprint": "a3006b369704bd6f",
       "tables": [],
       "unknown": true,
       "uncovered": true,

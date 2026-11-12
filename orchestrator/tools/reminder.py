@@ -1,69 +1,33 @@
-from __future__ import annotations
+"""Reminder note tools. Notes are owned by the authenticated account (#695)."""
 
 import json
-from datetime import datetime, timezone
+import logging
+import uuid
 from typing import Any
-from pathlib import Path
 
+from orchestrator.services.reminders import ReminderError, ReminderStore
 from orchestrator.tools.registry import Tool
 
+logger = logging.getLogger(__name__)
 
-class ReminderStorage:
-    """Simple JSON file storage for reminders."""
-
-    def __init__(self, data_dir: str = "./data"):
-        self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.reminders_file = self.data_dir / "reminders.json"
-        self._ensure_file_exists()
-
-    def _ensure_file_exists(self):
-        if not self.reminders_file.exists():
-            self.reminders_file.write_text(json.dumps({"reminders": []}))
-
-    def _load(self) -> dict:
-        try:
-            return json.loads(self.reminders_file.read_text())
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {"reminders": []}
-
-    def _save(self, data: dict):
-        self.reminders_file.write_text(json.dumps(data, indent=2))
-
-    def add(self, text: str, due_time: str | None = None) -> dict:
-        data = self._load()
-        reminder = {
-            "id": len(data["reminders"]) + 1,
-            "text": text,
-            "due_time": due_time,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "completed": False,
-        }
-        data["reminders"].append(reminder)
-        self._save(data)
-        return reminder
-
-    def list(self, completed: bool | None = None) -> list[dict]:
-        data = self._load()
-        reminders = data["reminders"]
-        if completed is not None:
-            reminders = [r for r in reminders if r["completed"] == completed]
-        return sorted(reminders, key=lambda x: x["created_at"], reverse=True)
-
-    def complete(self, reminder_id: int) -> dict | None:
-        data = self._load()
-        for r in data["reminders"]:
-            if r["id"] == reminder_id:
-                r["completed"] = True
-                r["completed_at"] = datetime.now(timezone.utc).isoformat()
-                self._save(data)
-                return r
-        return None
+_UNAVAILABLE = "Reminders are unavailable: no authenticated account or database."
 
 
-class ReminderSetTool(Tool):
+class _ReminderTool(Tool):
+    def __init__(
+        self, store: ReminderStore | None = None, user_id: uuid.UUID | None = None
+    ) -> None:
+        # Owner comes from trusted execution context, never from tool arguments.
+        self._store = store
+        self._user_id = user_id
+
+
+class ReminderSetTool(_ReminderTool):
     name = "reminder_set"
-    description = "Set a reminder for future reference"
+    description = (
+        "Save a reminder note for the user. This only stores the note: "
+        "no notification is scheduled or sent."
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -79,32 +43,34 @@ class ReminderSetTool(Tool):
         "required": ["text"],
     }
 
-    def __init__(self, storage: ReminderStorage | None = None) -> None:
-        self.storage = storage or ReminderStorage()
-
     async def execute(self, **kwargs: Any) -> str:
         text = kwargs.get("text", "")
         due_time = kwargs.get("due_time")
 
         if not text:
             return json.dumps({"error": "Reminder text is required"})
+        if self._store is None or self._user_id is None:
+            return json.dumps({"error": _UNAVAILABLE})
 
         try:
-            reminder = self.storage.add(text, due_time)
-            return json.dumps(
-                {
-                    "success": True,
-                    "reminder": reminder,
-                    "message": f"Reminder set: {text}",
-                }
-            )
-        except Exception as e:
-            return json.dumps({"error": f"Failed to set reminder: {str(e)}"})
+            reminder = await self._store.add(self._user_id, text, due_time)
+        except ReminderError as exc:
+            return json.dumps({"error": f"Failed to set reminder: {exc.reason}"})
+        except Exception as exc:
+            logger.error("reminder_set failed: %s", type(exc).__name__)
+            return json.dumps({"error": "Failed to set reminder: storage error"})
+        return json.dumps(
+            {
+                "success": True,
+                "reminder": reminder,
+                "message": "Saved reminder note. Automatic notifications are not enabled.",
+            }
+        )
 
 
-class ReminderListTool(Tool):
+class ReminderListTool(_ReminderTool):
     name = "reminder_list"
-    description = "List all reminders"
+    description = "List the user's saved reminder notes"
     parameters = {
         "type": "object",
         "properties": {
@@ -115,19 +81,16 @@ class ReminderListTool(Tool):
         },
     }
 
-    def __init__(self, storage: ReminderStorage | None = None) -> None:
-        self.storage = storage or ReminderStorage()
-
     async def execute(self, **kwargs: Any) -> str:
         completed = kwargs.get("completed")
+        if completed is not None and not isinstance(completed, bool):
+            return json.dumps({"error": "Failed to list reminders: completed must be a boolean"})
+        if self._store is None or self._user_id is None:
+            return json.dumps({"error": _UNAVAILABLE})
 
         try:
-            reminders = self.storage.list(completed)
-            return json.dumps(
-                {
-                    "count": len(reminders),
-                    "reminders": reminders,
-                }
-            )
-        except Exception as e:
-            return json.dumps({"error": f"Failed to list reminders: {str(e)}"})
+            reminders = await self._store.list(self._user_id, completed)
+        except Exception as exc:
+            logger.error("reminder_list failed: %s", type(exc).__name__)
+            return json.dumps({"error": "Failed to list reminders: storage error"})
+        return json.dumps({"count": len(reminders), "reminders": reminders})
