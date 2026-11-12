@@ -27,7 +27,7 @@ from orchestrator.tasks.store import TaskStore
 from tests.inference_composition_support import ADMITTED, composition_violations
 from tests.restore_history_support import HISTORY, KEY, key_check
 
-IMPORT = "from orchestrator.services.restore_history.observation import HistoryObservation\n"
+IMPORT = "from orchestrator.services.restore_history.observation import HistoricalObservation, HistoryObservation\n"
 ROUTE = "orchestrator/routes/tasks.py"
 
 
@@ -37,10 +37,8 @@ def test_only_exact_observation_import_is_admitted_without_startup_or_constructi
     for path in ("orchestrator/db.py", "orchestrator/worker/worker.py", "orchestrator/other.py"):
         assert composition_violations({path: IMPORT})
     for source in (
-        IMPORT.replace("import HistoryObservation", "import HistoryObservation as Observer"),
-        IMPORT.replace(
-            "import HistoryObservation", "import HistoryObservation, HistoryCoordinator"
-        ),
+        IMPORT.replace("HistoryObservation\n", "HistoryObservation as Observer\n"),
+        IMPORT.replace("HistoryObservation\n", "HistoryObservation, HistoryCoordinator\n"),
         IMPORT.replace("orchestrator.services", "..services"),
         IMPORT + "HistoryObservation(tasks,history,projection,key)",
         IMPORT + "state.history_observation=observer",

@@ -26,7 +26,10 @@ from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import TaskNotFound, TaskSnapshot, TaskStore
 from orchestrator.tasks.composition import TaskComposition
 from orchestrator.services.account_control.transaction import ObservationBlocked
-from orchestrator.services.restore_history.observation import HistoryObservation
+from orchestrator.services.restore_history.observation import (
+    HistoricalObservation,
+    HistoryObservation,
+)
 from orchestrator.services.restore_history.read_supervisor import HistoryReadSupervisor
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -192,6 +195,34 @@ def task_out(snapshot: TaskSnapshot) -> TaskOut:
     )
 
 
+def historical_task_out(observed: HistoricalObservation) -> TaskOut:
+    """The existing no-store historical lookup contract, shared by isolated hosts."""
+    headers = {"Cache-Control": "no-store"}
+    if observed.kind == "denied":
+        raise HTTPException(
+            status_code=401, detail="Invalid or expired access token", headers=headers
+        )
+    if observed.kind == "recovery":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "restore_recovery_required",
+                "task_id": str(observed.task_id) if observed.task_id else None,
+                "retry_safe": False,
+            },
+            headers=headers,
+        )
+    if observed.kind == "task" and observed.snapshot is not None:
+        return task_out(observed.snapshot)
+    if observed.kind == "unknown":
+        raise HTTPException(status_code=404, detail="Task not found", headers=headers)
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "history_unavailable", "task_id": None, "retry_safe": False},
+        headers=headers,
+    )
+
+
 @router.get("/by-key/{idempotency_key}", response_model=TaskOut)
 async def get_task_by_key(
     idempotency_key: str,
@@ -234,27 +265,7 @@ async def get_task_by_key(
             observed = await reader.lookup(auth, idempotency_key, deadline=time.monotonic() + 5.0)
         except Exception:
             raise unavailable() from None
-        if observed.kind == "denied":
-            raise HTTPException(
-                status_code=401, detail="Invalid or expired access token", headers=headers
-            )
-        if observed.kind == "unavailable":
-            raise unavailable()
-        if observed.kind == "recovery":
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "restore_recovery_required",
-                    "task_id": str(observed.task_id) if observed.task_id else None,
-                    "retry_safe": False,
-                },
-                headers=headers,
-            )
-        if observed.kind == "task" and observed.snapshot is not None:
-            return task_out(observed.snapshot)
-        if observed.kind != "unknown":
-            raise unavailable()
-        raise HTTPException(status_code=404, detail="Task not found", headers=headers)
+        return historical_task_out(observed)
     # Preserve pre-H deployments, but never manufacture SQL-only absence when
     # protected H schema exists or that catalog evidence cannot be obtained.
     # Startup does not initialize/install H in this source slice.

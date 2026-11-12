@@ -1679,7 +1679,7 @@
     },
     {
       "owner_source": "orchestrator.auth",
-      "qualname": "_verify_access_token",
+      "qualname": "_verify_access_token_on_connection",
       "kind": "sql_inline",
       "fingerprint": "b26dd5bddb76617e",
       "tables": [
@@ -7808,6 +7808,39 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Observation-only H startup/read lifecycle: conservative open/close call discovery. Existing operator-provisioned identity/key/storage only; no initializer, H append, native acceptance/send/Stop/output installation or account deletion/restore readiness. Classified explicitly, still uncovered; this entry grants no runtime authority."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.acceptance_host",
+      "qualname": "IsolatedAcceptanceHost._open",
+      "kind": "filesystem_write",
+      "fingerprint": "9f2520cf52340db3",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit isolated acceptance H-owner open; bounded scanner records an attribute-open filesystem candidate. RAM active/stream/latch ownership is not scanner coverage; no completed account fence or new guard contract is claimed. Deferred and uncovered; no default runtime installation."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.acceptance_host",
+      "qualname": "IsolatedAcceptanceHost._open",
+      "kind": "filesystem_write",
+      "fingerprint": "b5dece75bd26416e",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit isolated observation H-owner open; bounded scanner records an attribute-open filesystem candidate. RAM active/stream/latch ownership is not scanner coverage; no completed account fence or new guard contract is claimed. Deferred and uncovered; no default runtime installation."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.acceptance_host",
+      "qualname": "IsolatedAcceptanceHost._submit",
+      "kind": "filesystem_write",
+      "fingerprint": "48637c0d6167574f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Pure conversation-ID string replacement; conservative scanner records replace as a filesystem candidate. This is not coverage of accepted content or RAM active/stream/latch state; no completed account fence or new guard contract is claimed. Deferred and uncovered."
     },
     {
       "owner_source": "orchestrator.services.restore_history.read_supervisor",

@@ -1,4 +1,4 @@
-"""Uncalled acceptance-only H1/native join; no startup, dispatch or recovery grant.
+"""Explicit acceptance-only H1/native join; no startup, dispatch or recovery grant.
 
 The isolated trusted host supplies the already opened history owner, independent
 identity/key, qualified SQL projection and actual native TaskStore. Only a fresh
@@ -16,12 +16,16 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
+from orchestrator.services.connection_cleanup import (
+    pool_connection,
+    require_pool_cleanup,
+    retain_pool_cleanup,
+)
 from orchestrator.tasks._invocation import block
 from orchestrator.tasks.store import AcceptedTask, IdempotencyConflict, TaskStore
 
 from .acceptance import AcceptanceProjection
-from .coordination import HistoryCoordinator
+from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
 from .model import MAX_CANONICAL, AcceptPrepare, Command, HistoryError, commitments, parse
 from .projection import compare_projections
@@ -169,75 +173,117 @@ class HistoryAcceptance:
             self._history.operation(deadline=deadline) as operation,
             retain_pool_cleanup(),
         ):
-            state = await operation.verify()
-            for entry in state.entries:
-                data = entry.command.data
-                if (
-                    isinstance(data, AcceptPrepare)
-                    and data.account_id == options["user_id"]
-                    and hmac.compare_digest(data.key_commitment, lookup)
-                ):
-                    if not hmac.compare_digest(data.request_commitment, request):
-                        raise IdempotencyConflict("history key reused for a different request")
-                    raise HistoryError("historical_acceptance", uncertain=True)
-            # Full supplied-facts comparison deliberately retains non-acceptance
-            # H records: this acceptance-only slice cannot qualify their absence
-            # from SQL, open restore intervals or an older restored database.
-            facts = []
-            async with pool_connection(self._tasks._pool) as conn:
-                if conn.is_in_transaction():
-                    raise HistoryError("acceptance_transaction_owner_refused")
-                async with conn.transaction(isolation="read_committed"):
-                    await self._projection.qualify(conn, writing=True, deadline=deadline)
-                    cursor = 0
-                    while True:
-                        page = await self._projection.page(
-                            conn, after_seq=cursor, deadline=deadline
-                        )
-                        facts.extend(page)
-                        if len(page) < 32:
-                            break
-                        cursor = page[-1].seq
-            report = compare_projections(self._projection.expected.history_id, state, tuple(facts))
-            if report.missing or report.extra or report.mismatched or report.restore_required:
-                raise HistoryError("acceptance_reconciliation_required", uncertain=True)
-            staged = False
-
-            async def stage(conn: Any, pending: AcceptedTask) -> None:
-                nonlocal staged
-                if staged or type(pending) is not AcceptedTask or not pending.created:
-                    raise HistoryError("acceptance_stage_refused", uncertain=True)
-                capture = options["captured_generation"]
-                prepared = await operation.append(
-                    Command(
-                        uuid4(),
-                        AcceptPrepare(
-                            options["user_id"],
-                            capture.generation,
-                            pending.task_id,
-                            pending.conversation_id,
-                            pending.user_message_id,
-                            pending.result_message_id,
-                            1,
-                            1,
-                            lookup,
-                            request,
-                            "chat-canonical-3715-v1",
-                        ),
-                    )
-                )
-                if not prepared.created:
-                    raise HistoryError("historical_acceptance", uncertain=True)
-                projection = await self._projection.stage(conn, prepared.entry, deadline=deadline)
-                if not projection.inserted:
-                    raise HistoryError("historical_acceptance", uncertain=True)
-                staged = True
-
-            pending = await self._tasks._accept_with_stage(stage=stage, **options)
-            if not staged or not pending.created:
-                raise HistoryError("native_acceptance_not_fresh", uncertain=True)
-            _check_time(deadline)
+            pending = await self._accept_owned(operation, deadline, options, lookup, request)
         # Native COMMIT + connection release and H operation release are complete.
         # This is acceptance only, never authority to dispatch an external effect.
+        _check_time(deadline)
+        return pending
+
+    async def _accept_owned(
+        self,
+        operation: HistoryOperation,
+        deadline: float,
+        options: dict[str, Any],
+        lookup: str,
+        request: str,
+    ) -> AcceptedTask:
+        """Private same-task join; result remains pending until the host releases H.
+
+        The isolated authenticated host retains a distinct W auth transaction
+        around this original A transaction. No callback, borrowed A transaction,
+        replacement owner, retry or independent acknowledgement is introduced.
+        """
+        require_pool_cleanup()
+        if (
+            type(operation) is not HistoryOperation
+            or operation._coordinator is not self._history
+            or operation._deadline != deadline
+            or self._blocked
+            or type(self._projection) not in (AcceptanceProjection, HistoryProjection)
+            or self._history._expected != self._projection.expected
+            or type(self._tasks) is not TaskStore
+            or type(self._tasks._pool) is not asyncpg.Pool
+            or self._tasks._pool is not self._tasks._memory._pool
+            or self._tasks._cover_new_inference is not True
+            or self._tasks._inference is not None
+        ):
+            raise HistoryError("acceptance_operation_refused")
+        operation._check()
+        if self._request(options) != (lookup, request):
+            raise HistoryError("acceptance_request_refused")
+        state = await operation.verify()
+        for entry in state.entries:
+            data = entry.command.data
+            if (
+                isinstance(data, AcceptPrepare)
+                and data.account_id == options["user_id"]
+                and hmac.compare_digest(data.key_commitment, lookup)
+            ):
+                if not hmac.compare_digest(data.request_commitment, request):
+                    raise IdempotencyConflict("history key reused for a different request")
+                raise HistoryError("historical_acceptance", uncertain=True)
+        facts = []
+        native_exists: Any = None
+        async with pool_connection(self._tasks._pool) as conn:
+            if conn.is_in_transaction():
+                raise HistoryError("acceptance_transaction_owner_refused")
+            async with conn.transaction(isolation="read_committed"):
+                await self._projection.qualify(conn, writing=True, deadline=deadline)
+                cursor = 0
+                while True:
+                    page = await self._projection.page(conn, after_seq=cursor, deadline=deadline)
+                    facts.extend(page)
+                    if len(page) < 32:
+                        break
+                    cursor = page[-1].seq
+                # A surviving SQL-only key is negative evidence, never native
+                # replay authority. Refuse before _by_key can refresh a legacy
+                # digest or return an unprotected historical task. Matching H
+                # keys already refused above, with their original conflict rule.
+                native_exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM public.tasks WHERE user_id=$1 AND idempotency_key=$2)",
+                    options["user_id"],
+                    options["idempotency_key"],
+                )
+        report = compare_projections(self._projection.expected.history_id, state, tuple(facts))
+        if report.missing or report.extra or report.mismatched or report.restore_required:
+            raise HistoryError("acceptance_reconciliation_required", uncertain=True)
+        if native_exists is not False:
+            raise HistoryError("native_acceptance_not_fresh", uncertain=True)
+        staged = False
+
+        async def stage(conn: Any, pending: AcceptedTask) -> None:
+            nonlocal staged
+            if staged or type(pending) is not AcceptedTask or not pending.created:
+                raise HistoryError("acceptance_stage_refused", uncertain=True)
+            capture = options["captured_generation"]
+            prepared = await operation.append(
+                Command(
+                    uuid4(),
+                    AcceptPrepare(
+                        options["user_id"],
+                        capture.generation,
+                        pending.task_id,
+                        pending.conversation_id,
+                        pending.user_message_id,
+                        pending.result_message_id,
+                        1,
+                        1,
+                        lookup,
+                        request,
+                        "chat-canonical-3715-v1",
+                    ),
+                )
+            )
+            if not prepared.created:
+                raise HistoryError("historical_acceptance", uncertain=True)
+            projection = await self._projection.stage(conn, prepared.entry, deadline=deadline)
+            if not projection.inserted:
+                raise HistoryError("historical_acceptance", uncertain=True)
+            staged = True
+
+        pending = await self._tasks._accept_with_stage(stage=stage, **options)
+        if not staged or not pending.created:
+            raise HistoryError("native_acceptance_not_fresh", uncertain=True)
         _check_time(deadline)
         return pending

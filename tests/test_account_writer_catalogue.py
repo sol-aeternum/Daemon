@@ -165,6 +165,45 @@ def test_transport_context_and_event_candidates_claim_no_new_account_fence() -> 
         assert entry["category"] == "deferred" and "guard_contract" not in entry
 
 
+def test_auth_write_relocation_retains_its_uncovered_control_classification() -> None:
+    manifest = json.loads(catalogue.MANIFEST_PATH.read_text(encoding="utf-8"))
+    candidates = [
+        entry for entry in manifest["writer_sites"] if entry["owner_source"] == "orchestrator.auth"
+    ]
+    assert len(candidates) == 1
+    entry = candidates[0]
+    assert entry["qualname"] == "_verify_access_token_on_connection"
+    assert entry["kind"] == "sql_inline" and entry["fingerprint"] == "b26dd5bddb76617e"
+    assert entry["tables"] == ["devices"] and entry["category"] == "control"
+    assert entry["unknown"] is False and entry["uncovered"] is True
+    assert "guard_contract" not in entry
+    assert entry["rationale"] == (
+        "Direct mutation candidate; no runtime guard. "
+        "Path-specific content/control integration pending."
+    )
+
+
+def test_isolated_host_candidates_remain_exact_deferred_unknown_and_uncovered() -> None:
+    manifest = json.loads(catalogue.MANIFEST_PATH.read_text(encoding="utf-8"))
+    candidates = [
+        entry
+        for entry in manifest["writer_sites"]
+        if entry["owner_source"] == "orchestrator.services.restore_history.acceptance_host"
+    ]
+    expected = {
+        ("IsolatedAcceptanceHost._open", "9f2520cf52340db3"),
+        ("IsolatedAcceptanceHost._open", "b5dece75bd26416e"),
+        ("IsolatedAcceptanceHost._submit", "48637c0d6167574f"),
+    }
+    assert len(candidates) == len(expected)
+    assert {(entry["qualname"], entry["fingerprint"]) for entry in candidates} == expected
+    for entry in candidates:
+        assert entry["kind"] == "filesystem_write" and entry["tables"] == []
+        assert entry["unknown"] is True and entry["uncovered"] is True
+        assert entry["category"] == "deferred" and "guard_contract" not in entry
+        assert "RAM" in entry["rationale"] and "no completed account fence" in entry["rationale"]
+
+
 @pytest.mark.parametrize(
     "call",
     [
