@@ -393,6 +393,18 @@
       "ownership_path": "root:users <- reminders",
       "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
     },
+    "skills": {
+      "category": "content",
+      "owner_source": "migrations/068_account_owned_skills.sql",
+      "ownership_path": "root:users <- skills",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
+    "skill_revisions": {
+      "category": "content",
+      "owner_source": "migrations/068_account_owned_skills.sql",
+      "ownership_path": "root:users <- skills <- skill_revisions",
+      "rationale": "Account content or derived content; FK paths are dependency evidence, not independent ownership authorization. Uncovered."
+    },
     "memory_dependencies": {
       "category": "content",
       "owner_source": "migrations/066_memory_bitemporal.sql",
@@ -638,6 +650,12 @@
     "reminders": [
       "users"
     ],
+    "skills": [
+      "users"
+    ],
+    "skill_revisions": [
+      "skills"
+    ],
     "memory_knowledge_clock": [
       "users"
     ],
@@ -731,6 +749,8 @@
     "video_credit_transactions": "root:users <- video_credit_transactions",
     "web_snapshots": "root:users <- conversations <- web_snapshots | root:users <- web_snapshots",
     "reminders": "root:users <- reminders",
+    "skills": "root:users <- skills",
+    "skill_revisions": "root:users <- skills <- skill_revisions",
     "memory_dependencies": "root:users <- memory_dependencies",
     "memory_erased_sources": "root:users <- memory_erased_sources",
     "memory_knowledge_clock": "root:users <- memory_knowledge_clock",
@@ -5956,6 +5976,149 @@
       "fingerprint": "36a1783fa7ad5a2f",
       "tables": [
         "reminders"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore._append_revision",
+      "kind": "sql_inline",
+      "fingerprint": "24d17563c49d76c2",
+      "tables": [
+        "skill_revisions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore._append_revision",
+      "kind": "sql_inline",
+      "fingerprint": "e348f20c112cdd1d",
+      "tables": [
+        "skill_revisions"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore._move_head",
+      "kind": "sql_inline",
+      "fingerprint": "83ba59f1a720f2ec",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.create",
+      "kind": "sql_inline",
+      "fingerprint": "2f2d863eb3d8ba25",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.delete",
+      "kind": "sql_inline",
+      "fingerprint": "82d452cc2ed220ac",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.publish_shipped",
+      "kind": "sql_inline",
+      "fingerprint": "5a044d417908c61d",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.remove_shipped",
+      "kind": "sql_inline",
+      "fingerprint": "dc66ad11ed40d1d9",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.set_autonomous_edit",
+      "kind": "sql_inline",
+      "fingerprint": "ffbe9121865a2a25",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.set_enabled",
+      "kind": "sql_inline",
+      "fingerprint": "6f36bf6c2c1f949a",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.store_embedding",
+      "kind": "sql_inline",
+      "fingerprint": "ec9638338c9a3dc4",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.touch_usage",
+      "kind": "sql_inline",
+      "fingerprint": "e0ffd607cb2884ff",
+      "tables": [
+        "skills"
       ],
       "unknown": false,
       "uncovered": true,

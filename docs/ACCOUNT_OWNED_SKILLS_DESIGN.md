@@ -1,7 +1,10 @@
 # Account-owned skills design
 
-**Status:** Proposed design for review. It implements nothing, changes no feature
-status, and authorises no migration, deployment or API change. Each change it
+**Status:** Design accepted by the owner. Step 1 of §8 (migration
+`068_account_owned_skills.sql`, `orchestrator/services/skills.py` and its
+PostgreSQL tests) is implemented and called by nothing; the running application
+still uses the file-backed store. This document changes no feature status and
+authorises no deployment or API change. Each change it
 describes still needs approval under the Rules of Engagement in `AGENTS.md`.
 
 **Supersedes:** §4 "Published skills and portable editing" of the earlier
@@ -122,7 +125,10 @@ A save is one transaction:
    every account write.
 3. For an autonomous or consolidation actor, require `allow_autonomous_edit`
    to be exactly true, read under the lock. This keeps the #697 boundary: a
-   grant revoked before the lock is taken stops the write.
+   grant revoked before the lock is taken stops the write. A skill created by
+   an autonomous actor starts with the grant set, so the evaluator can refine
+   its own work as it does today; a skill a person writes or imports starts
+   without it. After creation only the owner changes the grant.
 4. If the caller sent an expected revision and it differs, refuse with a
    conflict and change nothing.
 5. Insert the new `skill_revisions` row, update the head row, and trim
@@ -216,7 +222,7 @@ Proposed sequence of small changes:
 
 | Step | Content | Ships behaviour? |
 | --- | --- | --- |
-| 1 | Migration, write service and store, PostgreSQL tests. | No |
+| 1 | Migration, write service and store, PostgreSQL tests. **Implemented.** | No |
 | 2 | Cutover of all readers and writers; account scoping; catalogue update. | Yes |
 | 3 | Revision list and revert endpoints, settings UI. | Yes |
 | 4 | Shipped-skill loader; removal of projection, sync and upgrade code. | Cleanup |
