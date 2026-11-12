@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import asyncpg
 
@@ -20,6 +21,32 @@ from orchestrator.memory.encryption import ContentEncryption
 MAX_TEXT_CHARS = 2000
 MAX_DUE_TIME_CHARS = 100
 MAX_REMINDERS_PER_ACCOUNT = 500
+
+
+# Where the pre-#695 shared, unowned, plaintext store lived (relative to the
+# process working directory, as the old code resolved it).
+LEGACY_REMINDERS_FILE = Path("./data/reminders.json")
+
+LegacyState = Literal["absent", "empty", "pending", "unreadable"]
+
+
+def legacy_file_state(path: Path = LEGACY_REMINDERS_FILE) -> LegacyState:
+    """Classify the legacy shared reminder file without modifying it.
+
+    The old notes have no owner, so they are never imported or assigned
+    automatically. ``pending`` (it holds notes) and ``unreadable`` (corrupt,
+    unexpected shape or inaccessible) are unresolved states that only an
+    operator can settle; callers must not answer as if migration were complete.
+    """
+    try:
+        if not path.exists():
+            return "absent"
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unreadable"
+    if not isinstance(document, dict) or not isinstance(document.get("reminders"), list):
+        return "unreadable"
+    return "pending" if document["reminders"] else "empty"
 
 
 class ReminderError(Exception):

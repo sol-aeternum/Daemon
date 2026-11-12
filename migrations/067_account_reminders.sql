@@ -2,7 +2,10 @@
 -- Account-owned reminder notes (#695).
 --
 -- Replaces the shared data/reminders.json file, which had no owner. Additive
--- only: one new table and one index. Nothing is imported from the legacy file.
+-- only: one new table and one index. Nothing is imported from the legacy file:
+-- its notes have no owner. While that file still holds notes, or cannot be
+-- read, the reminder tools refuse instead of answering with an empty list
+-- (orchestrator/services/reminders.py:legacy_file_state).
 --
 --   - Every row is owned by an authenticated account; the foreign key cascades,
 --     so deleting the account removes its reminders.

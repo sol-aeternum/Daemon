@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations/067_account_reminders.sql"
 ROLLBACK = ROOT / "migrations/rollback/067_account_reminders.down.sql"
 MARKER = "reminder-plaintext-marker"
+ABSENT = Path("/nonexistent/legacy/reminders.json")
 
 
 # --------------------------------------------------------------------------
@@ -45,8 +46,10 @@ MARKER = "reminder-plaintext-marker"
     [(None, None), (None, uuid.uuid4()), (AsyncMock(), None)],
 )
 async def test_tools_refuse_without_store_or_owner(store: Any, owner: uuid.UUID | None) -> None:
-    set_result = json.loads(await ReminderSetTool(store, owner).execute(text="call"))
-    list_result = json.loads(await ReminderListTool(store, owner).execute())
+    set_result = json.loads(
+        await ReminderSetTool(store, owner, legacy_file=ABSENT).execute(text="call")
+    )
+    list_result = json.loads(await ReminderListTool(store, owner, legacy_file=ABSENT).execute())
     assert "unavailable" in set_result["error"]
     assert "unavailable" in list_result["error"]
     if store is not None:
@@ -60,8 +63,12 @@ async def test_owner_comes_from_construction_not_arguments() -> None:
     store.add.return_value = {"id": str(uuid.uuid4()), "text": "call"}
     store.list.return_value = []
 
-    await ReminderSetTool(store, owner).execute(text="call", user_id=str(forged), owner=forged)
-    await ReminderListTool(store, owner).execute(user_id=str(forged), owner=forged)
+    await ReminderSetTool(store, owner, legacy_file=ABSENT).execute(
+        text="call", user_id=str(forged), owner=forged
+    )
+    await ReminderListTool(store, owner, legacy_file=ABSENT).execute(
+        user_id=str(forged), owner=forged
+    )
 
     store.add.assert_awaited_once_with(owner, "call", None)
     store.list.assert_awaited_once_with(owner, None)
@@ -79,8 +86,8 @@ async def test_result_shapes_match_the_durable_fence_and_disclose_no_notificatio
     store.add.return_value = {"id": str(uuid.uuid4()), "text": "call"}
     store.list.return_value = [store.add.return_value]
 
-    set_result = await ReminderSetTool(store, owner).execute(text="call")
-    list_result = await ReminderListTool(store, owner).execute()
+    set_result = await ReminderSetTool(store, owner, legacy_file=ABSENT).execute(text="call")
+    list_result = await ReminderListTool(store, owner, legacy_file=ABSENT).execute()
 
     assert is_material("reminder_set")
     assert outcome_of_tool_result("reminder_set", set_result) == "succeeded"
@@ -95,8 +102,8 @@ async def test_storage_failure_reports_error_without_content() -> None:
     store.add.side_effect = RuntimeError(MARKER)
     store.list.side_effect = RuntimeError(MARKER)
 
-    set_result = await ReminderSetTool(store, owner).execute(text="call")
-    list_result = await ReminderListTool(store, owner).execute()
+    set_result = await ReminderSetTool(store, owner, legacy_file=ABSENT).execute(text="call")
+    list_result = await ReminderListTool(store, owner, legacy_file=ABSENT).execute()
 
     assert "error" in json.loads(set_result) and MARKER not in set_result
     assert "error" in json.loads(list_result) and MARKER not in list_result
@@ -112,11 +119,81 @@ async def test_default_registry_without_account_keeps_tools_registered_but_refus
     assert "unavailable" in result["error"]
 
 
+# Legacy shared file: never read as data, never modified, never an empty success.
+
+LEGACY_CASES = [
+    ("absent", None, "absent"),
+    ("empty", json.dumps({"reminders": []}), "empty"),
+    ("pending", json.dumps({"reminders": [{"id": 1, "text": MARKER}]}), "pending"),
+    ("corrupt", "{not json", "unreadable"),
+    ("wrong-shape", json.dumps([{"id": 1}]), "unreadable"),
+    ("no-list", json.dumps({"reminders": "x"}), "unreadable"),
+    ("blank", "", "unreadable"),
+]
+LEGACY_IDS = [case[0] for case in LEGACY_CASES]
+
+
+def _legacy(tmp_path: Path, content: str | None) -> Path:
+    path = tmp_path / "reminders.json"
+    if content is not None:
+        path.write_text(content)
+    return path
+
+
+@pytest.mark.parametrize(("name", "content", "state"), LEGACY_CASES, ids=LEGACY_IDS)
+def test_legacy_file_state(tmp_path: Path, name: str, content: str | None, state: str) -> None:
+    assert reminders_module.legacy_file_state(_legacy(tmp_path, content)) == state
+
+
+def test_inaccessible_legacy_file_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _legacy(tmp_path, json.dumps({"reminders": []}))
+
+    def denied(*_args: Any, **_kwargs: Any) -> str:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    assert reminders_module.legacy_file_state(path) == "unreadable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "content", "state"), LEGACY_CASES, ids=LEGACY_IDS)
+async def test_unresolved_legacy_file_refuses_instead_of_empty_success(
+    tmp_path: Path, name: str, content: str | None, state: str
+) -> None:
+    path = _legacy(tmp_path, content)
+    owner = uuid.uuid4()
+    store = AsyncMock()
+    store.add.return_value = {"id": str(uuid.uuid4()), "text": "call"}
+    store.list.return_value = []
+
+    set_result = await ReminderSetTool(store, owner, legacy_file=path).execute(text="call")
+    list_result = await ReminderListTool(store, owner, legacy_file=path).execute()
+
+    if state in ("pending", "unreadable"):
+        for result in (set_result, list_result):
+            parsed = json.loads(result)
+            assert parsed["legacy_reminders"] == state
+            assert "operator" in parsed["error"] and "reminders" not in parsed
+            assert MARKER not in result
+        assert outcome_of_tool_result("reminder_list", list_result) != "succeeded"
+        assert store.mock_calls == []
+    else:
+        assert json.loads(set_result)["success"] is True
+        assert json.loads(list_result) == {"count": 0, "reminders": []}
+    # The legacy bytes are never rewritten, moved or deleted.
+    assert path.exists() is (content is not None)
+    if content is not None:
+        assert path.read_text() == content
+
+
 def test_legacy_shared_file_storage_is_gone() -> None:
     import orchestrator.tools.reminder as tool_module
 
     assert not hasattr(tool_module, "ReminderStorage")
-    assert "reminders.json" not in Path(tool_module.__file__).read_text()
+    source = Path(tool_module.__file__).read_text()
+    assert "write_text" not in source and "open(" not in source
 
 
 def test_migration_is_additive_account_owned_and_has_a_rollback() -> None:
@@ -187,7 +264,9 @@ async def test_two_accounts_never_see_each_other(pool: asyncpg.Pool) -> None:
     assert await store.list(uuid.uuid4()) == []
 
     # Through the tools: a forged owner argument still lists only the bound account.
-    listed = json.loads(await ReminderListTool(store, b).execute(user_id=str(a)))
+    listed = json.loads(
+        await ReminderListTool(store, b, legacy_file=ABSENT).execute(user_id=str(a))
+    )
     assert listed["count"] == 1 and listed["reminders"][0]["text"] == "b note"
 
 
@@ -207,7 +286,7 @@ async def test_wrong_key_raises_instead_of_returning_an_empty_list(pool: asyncpg
     await _store(pool).add(owner, "note")
     with pytest.raises(ValueError, match="Invalid ciphertext"):
         await _store(pool).list(owner)
-    result = json.loads(await ReminderListTool(_store(pool), owner).execute())
+    result = json.loads(await ReminderListTool(_store(pool), owner, legacy_file=ABSENT).execute())
     assert "error" in result and "reminders" not in result
 
 
