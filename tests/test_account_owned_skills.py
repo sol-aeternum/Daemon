@@ -138,8 +138,7 @@ async def _user(pool: asyncpg.Pool) -> uuid.UUID:
 
 
 def _store(pool: asyncpg.Pool, key: str | None = None) -> SkillStore:
-    resolved = key or Fernet.generate_key().decode()
-    return SkillStore(pool, ContentEncryption(resolved), derive_slug_lookup_key(resolved))
+    return SkillStore(pool, key or Fernet.generate_key().decode())
 
 
 async def _create(store: SkillStore, user_id: uuid.UUID, name: str = "Deploy Notes", **kw: Any):
@@ -713,3 +712,108 @@ async def test_usage_and_switches_are_not_revisions(pool: asyncpg.Pool) -> None:
     assert [s["slug"] for s in await store.list(alice, enabled=False)] == ["deploy-notes"]
     assert await _reason(store.set_enabled(alice, "deploy-notes", "yes")) == "enabled_invalid"  # type: ignore[arg-type]
     assert await pool.fetchval("SELECT count(*) FROM skill_revisions") == 1
+
+
+# ---- Key and envelope integrity -------------------------------------------
+
+
+async def _snapshot(pool: asyncpg.Pool) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    for table in ("skills", "skill_revisions"):
+        for row in await pool.fetch(f"SELECT * FROM {table} ORDER BY 1, 2"):
+            rows.append((table, *row.values()))
+    return rows
+
+
+async def _assert_every_write_refuses_unchanged(
+    pool: asyncpg.Pool, store: SkillStore, owner: uuid.UUID, slug: str
+) -> None:
+    before = await _snapshot(pool)
+    attempts = [
+        lambda: store.save(owner, slug, body="new body"),
+        lambda: store.save(owner, slug, name="New", description="d", body="b"),
+        lambda: store.save(owner, slug, body="x", actor="autonomous"),
+        lambda: store.revert(owner, slug, 1),
+        lambda: store.delete(owner, slug),
+        lambda: store.set_enabled(owner, slug, False),
+        lambda: store.set_autonomous_edit(owner, slug, False),
+    ]
+    for attempt in attempts:
+        with pytest.raises(ValueError, match="decryption failed"):
+            await attempt()
+        assert await _snapshot(pool) == before
+
+
+def test_store_cannot_be_built_with_separate_cipher_and_lookup_keys() -> None:
+    import inspect
+
+    parameters = list(inspect.signature(SkillStore.__init__).parameters)
+    assert parameters == ["self", "pool", "encryption_key"]
+
+
+@pytest.mark.asyncio
+async def test_right_lookup_key_with_wrong_content_key_changes_nothing(
+    pool: asyncpg.Pool,
+) -> None:
+    """The reviewed failure: the row is found, but the cipher cannot read it."""
+    key = Fernet.generate_key().decode()
+    good = _store(pool, key)
+    alice = await _user(pool)
+    await _create(good, alice, actor="autonomous")
+    await good.save(alice, "deploy-notes", body="two", actor="autonomous")
+
+    mixed = _store(pool, key)
+    mixed._enc = ContentEncryption(Fernet.generate_key().decode())
+    await _assert_every_write_refuses_unchanged(pool, mixed, alice, "deploy-notes")
+
+    # The correct key still reads everything, and can still write.
+    assert (await good.get(alice, "deploy-notes"))["body"] == "two"
+    assert (await good.save(alice, "deploy-notes", body="three"))["revision"] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "column",
+    [
+        "slug_encrypted",
+        "name_encrypted",
+        "description_encrypted",
+        "body_encrypted",
+        "trigger_conditions_encrypted",
+    ],
+)
+async def test_corrupt_head_envelope_refuses_every_write_unchanged(
+    pool: asyncpg.Pool, column: str
+) -> None:
+    store = _store(pool)
+    alice = await _user(pool)
+    await _create(store, alice, actor="autonomous")
+    await pool.execute(f"UPDATE skills SET {column} = 'not-an-envelope'")
+    await _assert_every_write_refuses_unchanged(pool, store, alice, "deploy-notes")
+
+
+@pytest.mark.asyncio
+async def test_corrupt_revision_envelope_refuses_revert_unchanged(pool: asyncpg.Pool) -> None:
+    store = _store(pool)
+    alice = await _user(pool)
+    await _create(store, alice)
+    await store.save(alice, "deploy-notes", body="two")
+    await pool.execute(
+        "UPDATE skill_revisions SET description_encrypted = 'not-an-envelope' WHERE revision = 1"
+    )
+    before = await _snapshot(pool)
+    with pytest.raises(ValueError, match="decryption failed"):
+        await store.revert(alice, "deploy-notes", 1)
+    assert await _snapshot(pool) == before
+    assert (await store.save(alice, "deploy-notes", body="three"))["revision"] == 3
+
+
+@pytest.mark.asyncio
+async def test_corrupt_shipped_row_refuses_republication_unchanged(pool: asyncpg.Pool) -> None:
+    store = _store(pool)
+    await store.publish_shipped("pdf-export", name="PDF", description="d", body="b")
+    await pool.execute("UPDATE skills SET body_encrypted = 'not-an-envelope'")
+    before = await _snapshot(pool)
+    with pytest.raises(ValueError, match="decryption failed"):
+        await store.publish_shipped("pdf-export", name="PDF", description="d", body="b2")
+    assert await _snapshot(pool) == before

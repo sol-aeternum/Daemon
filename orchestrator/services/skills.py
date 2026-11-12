@@ -122,14 +122,15 @@ def _format_vector(embedding: list[float]) -> str:
 
 
 class SkillStore:
-    def __init__(
-        self, pool: asyncpg.Pool, encryption: ContentEncryption, slug_lookup_key: bytes
-    ) -> None:
-        if len(slug_lookup_key) < 32:
-            raise ValueError("slug lookup key must be at least 32 bytes")
+    def __init__(self, pool: asyncpg.Pool, encryption_key: str) -> None:
+        """Bind the content cipher and the slug-lookup key to one key.
+
+        They are never supplied separately: a store that could find a row by
+        slug but not read it would otherwise be constructible by mistake.
+        """
         self._pool = pool
-        self._enc = encryption
-        self._lookup_key = slug_lookup_key
+        self._enc = ContentEncryption(encryption_key)
+        self._lookup_key = derive_slug_lookup_key(encryption_key)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -188,7 +189,12 @@ class SkillStore:
             self._lookup(user_id, slug),
         )
         if skill_id is not None:
-            return await self._head(conn, skill_id)
+            row = await self._head(conn, skill_id)
+            # Refuse before any mutation if the active key cannot read the
+            # row: writing next to ciphertext this key cannot decrypt would
+            # commit a skill that no single key can read.
+            self._decode_head(row)
+            return row
         shipped = await conn.fetchval(
             "SELECT 1 FROM skills WHERE user_id IS NULL AND slug_lookup = $1",
             self._lookup(None, slug),
@@ -321,12 +327,13 @@ class SkillStore:
                     complexity_origin,
                 )
                 await self._append_revision(conn, skill_id, 1, envelopes, actor)
-                row = await self._head(conn, skill_id)
+                # Decode inside the transaction: a failure rolls the write back.
+                created = self._decode_head(await self._head(conn, skill_id))
         except asyncpg.UniqueViolationError as exc:
             raise SkillError("slug_taken") from exc
         except asyncpg.ForeignKeyViolationError as exc:
             raise SkillError("account_unavailable") from exc
-        return self._decode_head(row)
+        return created
 
     async def save(
         self,
@@ -373,7 +380,8 @@ class SkillStore:
             revision = row["revision"] + 1
             await self._append_revision(conn, row["id"], revision, envelopes, actor)
             head = await self._move_head(conn, row["id"], revision, envelopes)
-        return self._decode_head(head)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
 
     async def revert(
         self,
@@ -404,10 +412,13 @@ class SkillStore:
                 old["body_encrypted"],
                 old["trigger_conditions_encrypted"],
             )
+            for envelope in envelopes:
+                self._enc.decrypt(envelope)
             next_revision = row["revision"] + 1
             await self._append_revision(conn, row["id"], next_revision, envelopes, "user")
             head = await self._move_head(conn, row["id"], next_revision, envelopes)
-        return self._decode_head(head)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
 
     async def delete(self, user_id: uuid.UUID, slug: str, *, actor: Actor = "user") -> None:
         slug = _slug_from_id(slug)
@@ -429,7 +440,8 @@ class SkillStore:
                 enabled,
             )
             head = await self._head(conn, row["id"])
-        return self._decode_head(head)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
 
     async def set_autonomous_edit(
         self, user_id: uuid.UUID, slug: str, allowed: bool
@@ -446,7 +458,8 @@ class SkillStore:
                 allowed,
             )
             head = await self._head(conn, row["id"])
-        return self._decode_head(head)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
 
     # ------------------------------------------------------------------
     # Shipped skills
@@ -501,7 +514,8 @@ class SkillStore:
                 revision = row["revision"] + 1
                 await self._append_revision(conn, row["id"], revision, envelopes, "shipped")
                 head = await self._move_head(conn, row["id"], revision, envelopes)
-        return self._decode_head(head)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
 
     async def remove_shipped(self, slug: str) -> bool:
         slug = _slug_from_id(slug)
@@ -620,8 +634,7 @@ class SkillStore:
 def create_skill_store(pool: asyncpg.Pool, settings: Settings | None = None) -> SkillStore:
     """Build a store from the shared pool; a deployment with no key fails closed."""
     resolved = settings if settings is not None else get_settings()
-    encryption = ContentEncryption(resolved.daemon_encryption_key)
-    # ContentEncryption has already refused a missing or malformed key.
-    return SkillStore(
-        pool, encryption, derive_slug_lookup_key(resolved.daemon_encryption_key or "")
-    )
+    key = resolved.daemon_encryption_key
+    if not key:
+        raise EncryptionKeyMissing("DAEMON_ENCRYPTION_KEY is required")
+    return SkillStore(pool, key)
