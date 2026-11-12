@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -28,6 +29,7 @@ from orchestrator.services.restore_history.coordination import HistoryCoordinato
 from orchestrator.services.restore_history.effects_projection import HistoryProjection
 from orchestrator.services.restore_history.model import AcceptPrepare, HistoryError
 from orchestrator.services.restore_history.observation import HistoryObservation
+from orchestrator.services.restore_history.terminal_projection import TerminalHistoryProjection
 from orchestrator.tasks.store import TaskStore
 from tests.history_cleanup_support import held_reset
 from tests.restore_history_support import KEY
@@ -43,10 +45,33 @@ from tests.test_history_observation_boundary_postgres import device
 from tests.test_restore_history_store import owned
 
 
-@pytest_asyncio.fixture
-async def isolated(projection_db, tmp_path, monkeypatch):
+def install_terminal(database):
+    """Actual unchanged ancestry on the disposable owned database, never live SQL."""
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    for path in sorted(migrations.glob("*.sql")):
+        if "058_" <= path.name < "066_":
+            database.sql("BEGIN;" + path.read_text() + "COMMIT;")
+    database.cluster.sql(
+        "DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='reserved_p') "
+        "THEN CREATE ROLE reserved_p LOGIN; END IF; END $$;"
+    )
+    database.sql(
+        "GRANT USAGE ON SCHEMA public TO reserved_p;"
+        "GRANT EXECUTE ON FUNCTION resource_output_catalog_snapshot(jsonb,uuid),"
+        "task_history_artifact_project(bytea) TO reserved_p;"
+        "GRANT EXECUTE ON FUNCTION task_history_output_page(uuid,bigint,text),"
+        "task_history_terminal_page(uuid,bigint,text) TO md_app,md_acceptor;"
+        "GRANT EXECUTE ON FUNCTION task_history_terminal_project(bytea) TO md_app;"
+    )
+
+
+@pytest_asyncio.fixture(params=["h1", "terminal-v3"])
+async def isolated(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     install(database)
+    profile = request.param
+    if profile == "terminal-v3":
+        install_terminal(database)
     async with database.connection() as conn:
         account = await database.account(conn)
     path = tmp_path / "h"
@@ -74,12 +99,24 @@ async def isolated(projection_db, tmp_path, monkeypatch):
             )
             tasks = TaskStore(a, encryption, MemoryStore(a, encryption), cover_new_inference=True)
             worker = TaskStore(w, encryption, MemoryStore(w, encryption))
-            projection = HistoryProjection(identity, acceptor="md_acceptor", worker="md_app")
+            projection = (
+                TerminalHistoryProjection(
+                    identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
+                )
+                if profile == "terminal-v3"
+                else HistoryProjection(identity, acceptor="md_acceptor", worker="md_app")
+            )
             acceptance = HistoryAcceptance(
-                tasks, HistoryCoordinator(path, identity, ownership), projection, KEY
+                tasks,
+                HistoryCoordinator(path, identity, ownership, profile=profile),
+                projection,
+                KEY,
             )
             reader = HistoryObservation(
-                worker, HistoryCoordinator(path, identity, ownership), projection, KEY
+                worker,
+                HistoryCoordinator(path, identity, ownership, profile=profile),
+                projection,
+                KEY,
             )
             host = IsolatedAcceptanceHost(
                 acceptance,

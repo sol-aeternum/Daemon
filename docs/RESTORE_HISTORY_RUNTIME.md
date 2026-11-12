@@ -77,6 +77,12 @@ An explicitly constructed [isolated acceptance host](RESTORE_HISTORY_COMPOSITION
 supplies a bounded authenticated source qualification seam. It is not selected
 here, adds no default route/environment switch, and cannot execute accepted work.
 It neither removes this barrier nor qualifies an answer/CSV pilot.
+Its explicit source profile can be H1 or terminal-v3 with exact matched A/W
+projection bindings; this does not change this production host's H1 selection.
+`HistoryReadSupervisor` rejects terminal projections before creating an owner or
+performing I/O. Isolated second-device persisted-text reads and in-process
+host/pool reconstruction are prerequisites, not process-restart or live restore
+qualification, and install no execution/partial-restore/control-terminal graph.
 
 ## Read-only owner renewal and shutdown
 

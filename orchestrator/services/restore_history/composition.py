@@ -30,6 +30,7 @@ from .effects_projection import HistoryProjection
 from .model import MAX_CANONICAL, AcceptPrepare, Command, HistoryError, commitments, parse
 from .projection import compare_projections
 from .store import _check_time
+from .terminal_projection import TerminalHistoryProjection
 
 
 class HistoryAcceptance:
@@ -47,10 +48,20 @@ class HistoryAcceptance:
         projection: AcceptanceProjection,
         key: bytes,
     ) -> None:
+        self._tasks, self._history, self._projection, self._key = tasks, history, projection, key
+        self._validate()
+        self._blocked = False
+
+    def _validate(self) -> None:
+        tasks, history, projection = self._tasks, self._history, self._projection
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection) not in (AcceptanceProjection, HistoryProjection)
+            or type(projection)
+            not in (AcceptanceProjection, HistoryProjection, TerminalHistoryProjection)
+            or projection.profile
+            != ("terminal-v3" if type(projection) is TerminalHistoryProjection else "h1")
+            or history.profile != projection.profile
             or history._expected != projection.expected
             or tasks._memory._pool is not tasks._pool
             or type(tasks._pool) is not asyncpg.Pool
@@ -58,9 +69,7 @@ class HistoryAcceptance:
             or tasks._inference is not None
         ):
             raise HistoryError("acceptance_composition_refused")
-        projection.expected.verify_key(key)
-        self._tasks, self._history, self._projection, self._key = tasks, history, projection, key
-        self._blocked = False
+        projection.expected.verify_key(self._key)
 
     def _request(self, options: dict[str, Any]) -> tuple[str, str]:
         account, key, canonical = (
@@ -122,15 +131,8 @@ class HistoryAcceptance:
         authentication authority after H ownership, not wrap this call in an
         already-held native transaction. No HTTP/client caller is wired here.
         """
+        self._validate()
         self._history._bind()  # PID/loop refusal before touching inherited owners.
-        if (
-            self._history._expected != self._projection.expected
-            or self._tasks._pool is not self._tasks._memory._pool
-            or type(self._tasks._pool) is not asyncpg.Pool
-            or self._tasks._cover_new_inference is not True
-            or self._tasks._inference is not None
-        ):
-            raise HistoryError("acceptance_composition_refused")
         if self._blocked:
             raise HistoryError("acceptance_composition_blocked")
         _check_time(deadline)
@@ -194,18 +196,12 @@ class HistoryAcceptance:
         replacement owner, retry or independent acknowledgement is introduced.
         """
         require_pool_cleanup()
+        self._validate()
         if (
             type(operation) is not HistoryOperation
             or operation._coordinator is not self._history
             or operation._deadline != deadline
             or self._blocked
-            or type(self._projection) not in (AcceptanceProjection, HistoryProjection)
-            or self._history._expected != self._projection.expected
-            or type(self._tasks) is not TaskStore
-            or type(self._tasks._pool) is not asyncpg.Pool
-            or self._tasks._pool is not self._tasks._memory._pool
-            or self._tasks._cover_new_inference is not True
-            or self._tasks._inference is not None
         ):
             raise HistoryError("acceptance_operation_refused")
         operation._check()
@@ -245,7 +241,12 @@ class HistoryAcceptance:
                     options["user_id"],
                     options["idempotency_key"],
                 )
-        report = compare_projections(self._projection.expected.history_id, state, tuple(facts))
+        report = compare_projections(
+            self._projection.expected.history_id,
+            state,
+            tuple(facts),
+            profile=self._projection.profile,
+        )
         if report.missing or report.extra or report.mismatched or report.restore_required:
             raise HistoryError("acceptance_reconciliation_required", uncertain=True)
         if native_exists is not False:

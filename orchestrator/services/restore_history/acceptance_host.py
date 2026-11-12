@@ -48,11 +48,13 @@ from orchestrator.tasks.store import (
 )
 
 from .composition import HistoryAcceptance
+from .coordination import HistoryCoordinator
 from .effects_projection import HistoryProjection
 from .model import HistoryError
 from .observation import HistoricalObservation, HistoryObservation
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
+from .terminal_projection import TerminalHistoryProjection
 
 T = TypeVar("T")
 HEADERS = {"Cache-Control": "no-store"}
@@ -92,15 +94,8 @@ class IsolatedAcceptanceHost:
         if (
             type(acceptance) is not HistoryAcceptance
             or type(observation) is not HistoryObservation
-            or type(acceptance._projection) is not HistoryProjection
-            or type(observation._projection) is not HistoryProjection
-            or acceptance._projection.expected != observation._projection.expected
-            or acceptance._projection.acceptor != observation._projection.acceptor
-            or acceptance._projection.worker != observation._projection.worker
-            or acceptance._history is observation._history
-            or acceptance._history._path != observation._history._path
-            or acceptance._history.profile != "h1"
-            or observation._history.profile != "h1"
+            or type(acceptance._history) is not HistoryCoordinator
+            or type(observation._history) is not HistoryCoordinator
             or not fingerprint_key
             or type(max_body_bytes) is not int
             or max_body_bytes < 1
@@ -120,9 +115,32 @@ class IsolatedAcceptanceHost:
         self._validate()
 
     def _validate(self) -> None:
-        a, w = self._acceptance._tasks, self._reader._tasks
+        acceptance, observation = self._acceptance, self._reader
+        ap, wp = acceptance._projection, observation._projection
+        a, w = acceptance._tasks, observation._tasks
         if (
-            type(a) is not TaskStore
+            type(acceptance) is not HistoryAcceptance
+            or type(observation) is not HistoryObservation
+            or type(acceptance._history) is not HistoryCoordinator
+            or type(observation._history) is not HistoryCoordinator
+            or type(ap) not in (HistoryProjection, TerminalHistoryProjection)
+            or type(ap) is not type(wp)
+            or ap.profile != ("terminal-v3" if type(ap) is TerminalHistoryProjection else "h1")
+            or ap.profile != wp.profile
+            or acceptance._history.profile != ap.profile
+            or observation._history.profile != wp.profile
+            or acceptance._history._expected != ap.expected
+            or observation._history._expected != wp.expected
+            or ap.expected != wp.expected
+            or ap.acceptor != wp.acceptor
+            or ap.worker != wp.worker
+            or (
+                type(ap) is TerminalHistoryProjection
+                and (type(wp) is not TerminalHistoryProjection or ap.publisher != wp.publisher)
+            )
+            or acceptance._history is observation._history
+            or acceptance._history._path != observation._history._path
+            or type(a) is not TaskStore
             or type(w) is not TaskStore
             or type(a._pool) is not asyncpg.Pool
             or type(w._pool) is not asyncpg.Pool

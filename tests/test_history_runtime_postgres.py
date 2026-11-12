@@ -7,6 +7,7 @@ This fixture supplies synthetic material and does not provision host identities.
 import asyncio
 import importlib
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -50,8 +51,17 @@ def dsn(s, principal):
 
 
 @pytest_asyncio.fixture
-async def host(effects, tmp_path, monkeypatch):
+async def host(effects, tmp_path, monkeypatch, request):
     s = effects
+    revision = getattr(request, "param", "ready")
+    assert revision in ("ready", "missing", "disabled")
+    # The shared history fixture intentionally stops at 057. This startup lane
+    # needs the real current memory prerequisite, not a mocked/relaxed guard.
+    if revision != "missing":
+        migration = Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql"
+        s.db.sql("BEGIN;" + migration.read_text() + "COMMIT;")
+        if revision == "disabled":
+            s.db.sql("ALTER TABLE memories DISABLE TRIGGER memory_revision_capture")
     value = settings()
     value.database_url = dsn(s, "md_app")
     value.daemon_task_acceptor_database_url = dsn(s, "md_acceptor")
@@ -92,6 +102,47 @@ async def host(effects, tmp_path, monkeypatch):
     return SimpleNamespace(s=s, settings=value, loads=loads)
 
 
+def worker_startup(host, monkeypatch):
+    wsettings = host.settings.model_copy(
+        update={
+            "daemon_task_acceptor_database_url": None,
+            "daemon_restore_history_key_file": None,
+        }
+    )
+    monkeypatch.setattr(worker, "get_settings", lambda: wsettings)
+    # Execute actual AuditedWorker/ARQ startup; only Redis transport/logging is
+    # synthetic. Track the real pool so every refusal must physically close it.
+    ctx = {"settings": wsettings}
+    monkeypatch.setattr(worker.worker, "ctx", ctx)
+    monkeypatch.setattr(worker.worker, "_pool", object())
+    monkeypatch.setattr("arq.worker.log_redis_info", AsyncMock())
+    poll = AsyncMock(side_effect=AssertionError("job loop bypassed startup barrier"))
+    monkeypatch.setattr(worker.worker, "_poll_iteration", poll)
+    pools = []
+    native = worker.asyncpg.create_pool
+
+    def create_pool(*args, **kwargs):
+        pool = native(*args, **kwargs)
+        pools.append(pool)
+        return pool
+
+    monkeypatch.setattr(worker.asyncpg, "create_pool", create_pool)
+    return ctx, poll, pools
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["missing", "disabled"], indirect=True)
+async def test_worker_revision_schema_guard_precedes_h_barrier_and_closes_pool(host, monkeypatch):
+    ctx, poll, pools = worker_startup(host, monkeypatch)
+    with pytest.raises(RuntimeError, match="Memory revisions require migration 066"):
+        await worker.worker.main()
+    poll.assert_not_awaited()
+    assert pools and all(pool._closed for pool in pools)
+    assert not any(ctx.get(key) for key in ("task_store", "store", "db_pool", "task_composition"))
+    assert host.loads == ["worker"]
+    assert host.s.db.sql("SELECT count(*) FROM deletion_journal_binding") == "0"
+
+
 @pytest.mark.asyncio
 async def test_real_backend_installs_renewable_authenticated_reader_and_worker_never_runs_jobs(
     host, monkeypatch
@@ -118,24 +169,11 @@ async def test_real_backend_installs_renewable_authenticated_reader_and_worker_n
             assert (
                 await client.post(f"/tasks/{host.s.accepted.task_id}/cancel", headers=headers)
             ).status_code == 503
-        wsettings = host.settings.model_copy(
-            update={
-                "daemon_task_acceptor_database_url": None,
-                "daemon_restore_history_key_file": None,
-            }
-        )
-        monkeypatch.setattr(worker, "get_settings", lambda: wsettings)
-        # Execute the actual configured AuditedWorker/ARQ main lifecycle. Only
-        # Redis transport/logging is synthetic; its real startup callback runs.
-        ctx = {"settings": wsettings}
-        monkeypatch.setattr(worker.worker, "ctx", ctx)
-        monkeypatch.setattr(worker.worker, "_pool", object())
-        monkeypatch.setattr("arq.worker.log_redis_info", AsyncMock())
-        poll = AsyncMock(side_effect=AssertionError("job loop bypassed startup barrier"))
-        monkeypatch.setattr(worker.worker, "_poll_iteration", poll)
+        ctx, poll, pools = worker_startup(host, monkeypatch)
         with pytest.raises(HistoryError, match="history_observation_only"):
             await worker.worker.main()
         poll.assert_not_awaited()
+        assert pools and all(pool._closed for pool in pools)
         assert not any(
             ctx.get(key) for key in ("task_store", "store", "db_pool", "task_composition")
         )

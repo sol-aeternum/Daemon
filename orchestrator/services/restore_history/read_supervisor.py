@@ -28,6 +28,7 @@ from .model import MAX_RECORDS, HistoryError
 from .observation import HistoricalObservation, HistoryObservation
 from .projection import compare_projections
 from .store import Ownership, _check_time
+from .terminal_projection import TerminalHistoryProjection
 
 T = TypeVar("T")
 
@@ -40,6 +41,16 @@ async def qualify_read_history(
     deadline: float,
 ) -> None:
     """Complete H/SQL checks on the actual W connection, never an effect permit."""
+    if (
+        type(operation) is not HistoryOperation
+        or type(pool) is not asyncpg.Pool
+        or type(projection) not in (HistoryProjection, TerminalHistoryProjection)
+        or projection.profile
+        != ("terminal-v3" if type(projection) is TerminalHistoryProjection else "h1")
+        or operation._coordinator.profile != projection.profile
+        or operation._coordinator._expected != projection.expected
+    ):
+        raise HistoryError("reader_composition_refused")
     state = await operation.verify()
     facts = []
     async with retain_pool_cleanup(), pool_connection(pool) as conn:
@@ -66,7 +77,9 @@ async def qualify_read_history(
                 if len(page) < 32:
                     break
                 cursor = page[-1].seq
-    report = compare_projections(projection.expected.history_id, state, tuple(facts))
+    report = compare_projections(
+        projection.expected.history_id, state, tuple(facts), profile=projection.profile
+    )
     if report.missing or report.extra or report.mismatched or report.restore_required:
         raise HistoryError("reader_reconciliation_required", uncertain=True)
     _check_time(deadline)
@@ -121,6 +134,9 @@ class HistoryReadSupervisor:
         ownership: Ownership,
         key: bytes,
     ) -> None:
+        # Production renewal remains H1-only; terminal is explicit isolated use.
+        if type(projection) is not HistoryProjection or projection.profile != "h1":
+            raise HistoryError("reader_composition_refused")
         self._pid = os.getpid()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks, self._path, self._projection = tasks, path, projection
