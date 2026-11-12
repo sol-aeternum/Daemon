@@ -173,6 +173,8 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "InferenceRecovery",
                                     "TaskStore",
                                     "HistoryAcceptance",
+                                    "IsolatedAcceptanceHost",
+                                    "create_isolated_acceptance_app",
                                     "HistoryEffects",
                                     "HistoryObservation",
                                     "HistoryProjection",
@@ -196,6 +198,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "_reserved_namespace",
                                     "_owned",
                                     "_accept_with_stage",
+                                    "_accept_owned",
                                     "_mark_with_stage",
                                     "_request_cancel_with_stage",
                                     "_accept_once",
@@ -461,7 +464,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         and node.level == 0
                         and node.module == "orchestrator.services.restore_history.observation"
                         and [(item.name, item.asname) for item in node.names]
-                        == [("HistoryObservation", None)]
+                        == [("HistoricalObservation", None), ("HistoryObservation", None)]
                     )
                     startup_imports = {
                         ("orchestrator/db.py", "configuration"): {"configured_history"},
@@ -553,6 +556,9 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     (path, enclosing)
                     not in {
                         ("orchestrator/services/restore_history/composition.py", "_accept"),
+                        ("orchestrator/services/restore_history/acceptance_host.py", "_open"),
+                        ("orchestrator/services/restore_history/acceptance_host.py", "_submit"),
+                        ("orchestrator/services/restore_history/acceptance_host.py", "_lookup"),
                         ("orchestrator/services/restore_history/observation.py", "_lookup"),
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
@@ -686,7 +692,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                 )
                 history_join = (
                     path == "orchestrator/services/restore_history/composition.py"
-                    and enclosing == "_accept"
+                    and enclosing == "_accept_owned"
                     and function == "self._tasks._accept_with_stage"
                     and keywords == {"stage": "stage", None: "options"}
                 )
@@ -699,12 +705,39 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                 )
                 if node.args or not (default_only or c1_join or history_join or native_join):
                     violations.append(f"{path}:{node.lineno}:unapproved history staging seam")
+            if target.endswith("._accept_owned") or target == "_accept_owned":
+                functions = [
+                    f
+                    for f in nodes
+                    if isinstance(f, ast.AsyncFunctionDef)
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ]
+                enclosing = max(functions, key=lambda f: f.lineno).name if functions else ""
+                expected = {
+                    (
+                        "orchestrator/services/restore_history/composition.py",
+                        "_accept",
+                    ): "self._accept_owned",
+                    (
+                        "orchestrator/services/restore_history/acceptance_host.py",
+                        "_submit",
+                    ): "self._acceptance._accept_owned",
+                }.get((path, enclosing))
+                if (
+                    ast.unparse(node.func) != expected
+                    or node.keywords
+                    or [ast.unparse(arg) for arg in node.args]
+                    != ["operation", "deadline", "options", "lookup", "request"]
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved owned acceptance seam")
             if not path.startswith("orchestrator/services/restore_history/"):
                 if target.endswith(
                     (
                         ".AcceptanceProjection",
                         ".HistoryCoordinator",
                         ".HistoryAcceptance",
+                        ".IsolatedAcceptanceHost",
+                        ".create_isolated_acceptance_app",
                         ".HistoryProjection",
                         ".ArtifactHistoryProjection",
                         ".TerminalHistoryProjection",
@@ -721,6 +754,8 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     "AcceptanceProjection",
                     "HistoryCoordinator",
                     "HistoryAcceptance",
+                    "IsolatedAcceptanceHost",
+                    "create_isolated_acceptance_app",
                     "HistoryProjection",
                     "ArtifactHistoryProjection",
                     "TerminalHistoryProjection",

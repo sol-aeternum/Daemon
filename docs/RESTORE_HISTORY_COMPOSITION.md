@@ -1,6 +1,69 @@
 # H1 acceptance composition — isolated source slice
 
-This is an owner-approved uncalled source/test join, not production activation.
+## Explicit isolated authenticated acceptance host
+
+`IsolatedAcceptanceHost` / `create_isolated_acceptance_app` in
+`orchestrator/services/restore_history/acceptance_host.py` are explicitly
+constructed qualification adapters, never selected by startup. Constructors do
+no I/O. The host borrows distinct actual A/W stores/pools with the same encryption
+and independent H identity/K1. It owns separate writer/read coordinators: open
+before requests, drain aclose before closing borrowed pools, reconstruct all
+owners/pools for restart. No blocked writer/read owner is renewed automatically.
+
+Only isolated `POST /chat` and existing `GET /tasks/by-key/{key}` are installed.
+POST uses ChatRequest, a mandatory existing-format stable key, the task-ID header
+and existing task/conversation SSE acceptance frames. It emits no tokens, progress
+or completion. The stream stays open while qualified by-key reads still show
+queued work; another state/refusal ends the stream, not the task. Reads poll every
+two seconds until disconnect or shutdown, without a stream-lifetime limit; they
+share H operation serialization with acceptance. This is isolated qualification,
+not a production admission or capacity policy. Attachments,
+structured content, suggestions, supplied user identity and temporal-memory scope
+refuse without fallback. All responses, including size/validation errors, are
+no-store. GET reuses HistoryObservation and the existing TaskOut/refusal mapping.
+This is neither a new public deployment/API/SSE format nor an answer/output stream.
+
+The supervised child takes H OP and retained cleanup before SQL. Its distinct W
+READ COMMITTED auth transaction takes session-cleanup then auth-runtime advisory
+locks, then device/session row locks **before** actual bearer verification and
+last-seen mutation. A separate post-wait query rechecks both owners, revocation
+and clock_timestamp expiry. Row locks also cover logout, which does not take the
+auth advisory lock. W captures generation once before deriving accepted input,
+without an account row lock. It retains auth authority across the original A
+acceptance transaction, known COMMIT and actual A reset. Native A still applies
+the original-generation account guard before content locks. Auth is not acquired
+late in the staging callback, and no supplied account/context is authentication.
+
+Private `_accept_owned` requires the same active task-affine operation and cleanup
+scope. It preserves the original staging closure, single-use prepare, top-level
+COMMIT, parity and historical refusal. Its result remains pending until W
+transaction/reset, scope cleanup and H release settle within the original absolute
+host budget. W has explicit local SQL limits; A limits do not bound W/logout.
+Auth controls serialize while those rows/advisories are held. Physical cleanup
+can exceed logical deadlines. Cancellation/shutdown drain actual children and
+resets before H closure; errors never become acknowledgements. Historical matching
+submissions block the writer. Other exceptions inside the H operation, including
+conversation-busy/not-found and a concurrent account fence, also conservatively
+block subsequent submissions, even with a different key, until controlled restart.
+Observation never renews the writer or retries the failed submission.
+SQL-only keys already visible in the qualified A preflight refuse before native
+replay can refresh a stored request digest. This negative check is not a fence
+against an out-of-contract non-H writer racing that preflight; the isolated host
+must not be mixed with legacy producers. It creates no readback or acceptance
+authority; ordinary uncomposed native replay is unchanged.
+
+The host requires exact combined 057 HistoryProjection/H1. Existing acceptance
+type checks are not expanded. Artifact-v2/terminal-v3 compatibility remains a
+separate gate; incompatible profile/schema/parity refuses without downgrade.
+No queue wakeup, attempt, provider/search/tool call, output or memory extraction
+is installed. Accepted queued work is not dispatch authority. Answer/CSV delivery
+still requires authenticated Send/Stop/output composition, original attempt
+authority and restart fencing. Production observation-only startup, worker refusal,
+grants and deployment gates are unchanged. #477 stays open.
+
+## Underlying source join
+
+This is an owner-approved source/test join, not production activation.
 `HistoryAcceptance` in `orchestrator/services/restore_history/composition.py`
 borrows an explicitly opened HistoryCoordinator, independent Identity/K1 binding,
 AcceptanceProjection and actual native TaskStore sharing one actual asyncpg.Pool.
@@ -70,7 +133,7 @@ that reset detached. A task-affine cleanup scope is entered after H ownership
 and exits before H release. Projection scans, native replay/readback/acceptance,
 the optional A/W preflight, and every participating C1 namespace/account lease
 use the same actual pools with retained release inside that scope. No pool is
-replaced and no runtime host enters the scope. Outside it, the helper delegates
+replaced and no production runtime host enters the scope. Outside it, the helper delegates
 to original pool acquisition/convenience behavior. Acquisitions stay directly
 cancellable; release tasks are shielded and drained through repeated cancellation
 or deadline expiry. A late reset or failed reset cannot become an acknowledgement

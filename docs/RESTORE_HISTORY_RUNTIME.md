@@ -73,6 +73,11 @@ closes resources before ARQ's job loop or attestation. No job registry entry,
 including an unclassified future job, can run through that failed startup.
 This temporary availability barrier must not be described as usable execution.
 
+An explicitly constructed [isolated acceptance host](RESTORE_HISTORY_COMPOSITION.md#explicit-isolated-authenticated-acceptance-host)
+supplies a bounded authenticated source qualification seam. It is not selected
+here, adds no default route/environment switch, and cannot execute accepted work.
+It neither removes this barrier nor qualifies an answer/CSV pilot.
+
 ## Read-only owner renewal and shutdown
 
 `HistoryReadSupervisor` owns a separate H coordinator and snapshots auth context

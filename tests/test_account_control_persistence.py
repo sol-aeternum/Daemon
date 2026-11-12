@@ -704,6 +704,12 @@ async def test_exact_marker_checks_cannot_be_replaced_by_sequence_presence(env, 
 
 
 TITLE_GUARD_IMPORTS = {
+    # Explicit isolated acceptance captures once on W; native A retains its
+    # original guard. No journal/request/phase APIs or default installation.
+    "orchestrator/services/restore_history/acceptance_host.py": {
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+        ("orchestrator.services.account_control.guard", "capture_generation"),
+    },
     # Approved historical observation reuses the original-generation read
     # fence only. No new generation capture or deletion/reset request/phase API.
     "orchestrator/services/restore_history/observation.py": {

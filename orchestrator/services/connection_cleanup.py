@@ -1,8 +1,9 @@
 """Opt-in task-owned pool release draining; no pool replacement or authority.
 
-Only the uncalled history join enters this scope. Outside it the helpers use
-the original pool operations. Acquisition remains directly cancellable; once a
-connection is returned its actual release task must settle before scope exit.
+Only inventoried H joins and the explicit isolated acceptance host enter this
+scope. Outside it the helpers use the original pool operations. Acquisition
+remains directly cancellable; once a connection is returned its actual release
+task must settle before scope exit.
 """
 
 from __future__ import annotations

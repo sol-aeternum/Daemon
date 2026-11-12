@@ -42,6 +42,13 @@ acceptance: authenticated acceptance/Send/Stop/output composition, real identiti
 keys, restricted grants, schema upgrade and restore/launch qualification remain
 unchecked operational gates. #477 stays open. Benchmark qualification is separate.
 
+The explicit isolated authenticated acceptance host joins real device/session
+bearer checks, original-generation H-protected text acceptance and existing by-key
+observation, without default installation or execution. Queued-task/restart
+qualification is not the answer/file target: authenticated Send/Stop/output,
+worker execution, profile compatibility and deployed phone/browser acceptance
+remain separate gates. See the [bounded host contract](RESTORE_HISTORY_COMPOSITION.md#explicit-isolated-authenticated-acceptance-host).
+
 
 ## Remaining runtime and artifact authority
 

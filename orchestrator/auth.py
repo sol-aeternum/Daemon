@@ -27,9 +27,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hmac
 import uuid
+from typing import Any
 
 from fastapi import HTTPException, Request
 import asyncpg
+
+from orchestrator.services.connection_cleanup import pool_connection
 
 
 @dataclass
@@ -67,13 +70,22 @@ async def _verify_access_token(
     and looked up in sessions.access_token_hash. The session must be unexpired
     and unrevoked, and its device must be unrevoked.
     """
+    async with pool_connection(db_pool) as conn:
+        return await _verify_access_token_on_connection(conn, token)
+
+
+async def _verify_access_token_on_connection(conn: Any, token: str) -> AuthenticatedDevice | None:
+    """Existing bearer verification on the caller's lease; no transaction authority.
+
+    The isolated H host additionally locks/revalidates auth on this same W lease.
+    Ordinary authentication retains its original queries and last-seen behavior.
+    """
     from orchestrator.auth_tokens import hash_token
 
     token_hash = hash_token(token)
 
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
+    row = await conn.fetchrow(
+        """
             SELECT
                 s.user_id,
                 s.device_id,
@@ -85,41 +97,37 @@ async def _verify_access_token(
             JOIN devices d ON d.id = s.device_id
             WHERE s.access_token_hash = $1
             """,
-            token_hash,
-        )
+        token_hash,
+    )
 
-        if row is None:
-            return None
+    if row is None:
+        return None
 
-        if row["session_revoked_at"] is not None:
-            return None
+    if row["session_revoked_at"] is not None:
+        return None
 
-        now = await conn.fetchval("SELECT NOW()")
-        if row["access_expires_at"] <= now:
-            return None
+    now = await conn.fetchval("SELECT NOW()")
+    if row["access_expires_at"] <= now:
+        return None
 
-        if row["device_revoked_at"] is not None:
-            return None
+    if row["device_revoked_at"] is not None:
+        return None
 
-        user_id: uuid.UUID = row["user_id"]
-        device_id: uuid.UUID = row["device_id"]
-        session_id: uuid.UUID = row["session_id"]
+    user_id: uuid.UUID = row["user_id"]
+    device_id: uuid.UUID = row["device_id"]
+    session_id: uuid.UUID = row["session_id"]
 
-        await conn.execute(
-            """
+    await conn.execute(
+        """
             UPDATE devices
             SET last_seen_at = NOW()
             WHERE id = $1
               AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '5 minutes')
             """,
-            device_id,
-        )
+        device_id,
+    )
 
-        return AuthenticatedDevice(
-            user_id=user_id,
-            device_id=device_id,
-            session_id=session_id,
-        )
+    return AuthenticatedDevice(user_id=user_id, device_id=device_id, session_id=session_id)
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:

@@ -40,16 +40,14 @@ def test_ordinary_staging_seam_admits_only_default_none(path):
 
 
 def test_exact_internal_history_seam_not_general_admission():
-    source = (
-        "async def _accept(self):\n await self._tasks._accept_with_stage(stage=stage, **options)"
-    )
+    source = "async def _accept_owned(self):\n await self._tasks._accept_with_stage(stage=stage, **options)"
     assert HISTORY not in ADMITTED
     assert composition_violations({HISTORY: source}) == []
     for wrong in ("orchestrator/main.py", "orchestrator/resource_inputs.py"):
         assert composition_violations({wrong: source})
     assert composition_violations({HISTORY: source.replace("stage=stage", "stage=other")})
     assert composition_violations({HISTORY: source.replace("**options", "**replacement")})
-    assert composition_violations({HISTORY: source.replace("def _accept(", "def install(")})
+    assert composition_violations({HISTORY: source.replace("def _accept_owned(", "def install(")})
 
 
 def test_cleanup_scope_is_only_admitted_inside_exact_uncalled_history_owner():
