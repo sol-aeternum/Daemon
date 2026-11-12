@@ -655,7 +655,6 @@ class SkillEvaluator:
             description=draft.description,
             content=draft.skill_markdown,
             source_type="autonomous",
-            caller_autonomous=True,
         )
         payload = _extract_json_object(response)
         if payload is None:
@@ -787,7 +786,6 @@ class SkillEvaluator:
             skill_id=matched_skill_id,
             old_text=refinement.old_text,
             new_text=refinement.new_text,
-            caller_autonomous=True,
         )
         payload = _extract_json_object(response)
         if payload is None:

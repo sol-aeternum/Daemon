@@ -230,7 +230,6 @@ async def scenario_skill_manage_roundtrip() -> dict[str, Any]:
                     description="Benchmark roundtrip verification.",
                     content="# Benchmark Skill\n\n## Purpose\n\nReusable verification steps.",
                     source_type="autonomous",
-                    caller_autonomous=True,
                 )
             )
             list_payload = json.loads(await tool.execute(action="list"))
@@ -367,7 +366,7 @@ async def scenario_autonomous_create() -> dict[str, Any]:
     assert result.created_skill_id == "debug-workflow"
     assert len(skill_manage_tool.call_args) == 1
     assert skill_manage_tool.call_args[0]["action"] == "create"
-    assert skill_manage_tool.call_args[0]["caller_autonomous"] is True
+    assert "caller_autonomous" not in skill_manage_tool.call_args[0]
     projection_store.update_autonomous_metadata.assert_awaited_once_with(
         "debug-workflow",
         trigger_conditions="Use when debugging errors in the repository.",

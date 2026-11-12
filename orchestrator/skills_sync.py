@@ -102,27 +102,17 @@ class SkillSyncService:
         name = metadata.get("name") or skill_id
         description = metadata.get("description") or summary_desc(skill_id)
         enabled = metadata.get("enabled", "true").lower() in ("true", "1", "yes", "on")
-        projection = await self._store.get_projection(skill_id)
         embedding = await embed_skill_content(name, description, body)
-        await self._store.upsert_projection(
+        # One statement, no read first: stored authority and provenance survive.
+        await self._store.sync_file_projection(
             skill_id=skill_id,
             name=name,
             description=description,
             source_file_path=str(path),
             source_hash=source_hash,
             enabled=enabled,
-            source_type=projection.get("source_type", source_type) if projection else source_type,
-            created_by=projection.get("created_by", "system") if projection else "system",
-            origin_url=projection.get("origin_url", "") if projection else "",
             embedding=embedding,
-            repo_version=projection.get("repo_version", "0.0.0") if projection else "0.0.0",
-            local_version="0.0.0",
-            pending_update=projection.get("pending_update") if projection else None,
-            allow_autonomous_edit=projection.get("allow_autonomous_edit", False)
-            if projection
-            else False,
-            trigger_conditions=projection.get("trigger_conditions", "") if projection else "",
-            complexity_origin=projection.get("complexity_origin", 0) if projection else 0,
+            source_type=source_type,
         )
         return SyncResult(
             skill_id=skill_id,

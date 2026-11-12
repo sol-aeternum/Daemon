@@ -12,13 +12,13 @@ import pytest
 from orchestrator.tools.skill_manage import (
     SkillManageTool,
 )
+from tests.skill_pool import lockable_pool
 from tests.test_skill_projection_sync import MockRecord
 
 
 @pytest.fixture
 def mock_db_pool() -> AsyncMock:
-    pool = AsyncMock()
-    return pool
+    return lockable_pool()
 
 
 @pytest.fixture
@@ -26,16 +26,16 @@ def tool(mock_db_pool: AsyncMock) -> SkillManageTool:
     return SkillManageTool(db_pool=mock_db_pool)
 
 
-class TestProtectionDirectUserBypass:
+class TestProtectionCannotBeDeclaredAway:
     @pytest.mark.asyncio
-    async def test_direct_user_can_patch_system_skill(
+    async def test_omitted_caller_flag_cannot_patch_system_skill(
         self, tool: SkillManageTool, tmp_path: Path
     ) -> None:
         skill_file = tmp_path / "system-skill.md"
         skill_file.write_text(
             "---\nname: System Skill\ndescription: A system skill\nenabled: true\n---\n# System Skill\n\nOriginal content."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="system-skill",
@@ -67,21 +67,21 @@ class TestProtectionDirectUserBypass:
                 skill_id="system-skill",
                 old_text="Original content.",
                 new_text="Modified by direct user.",
-                caller_autonomous=False,
             )
 
         parsed = json.loads(result)
-        assert parsed["patched"] is True
+        assert "protected" in parsed["error"]
+        assert "Original content." in skill_file.read_text()
 
     @pytest.mark.asyncio
-    async def test_direct_user_can_delete_imported_skill(
+    async def test_omitted_caller_flag_cannot_delete_imported_skill(
         self, tool: SkillManageTool, tmp_path: Path
     ) -> None:
         skill_file = tmp_path / "imported-skill.md"
         skill_file.write_text(
             "---\nname: Imported Skill\ndescription: An imported skill\nenabled: true\n---\n# Imported Skill\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="imported-skill",
@@ -112,11 +112,11 @@ class TestProtectionDirectUserBypass:
             result = await tool.execute(
                 action="delete",
                 skill_id="imported-skill",
-                caller_autonomous=False,
             )
 
         parsed = json.loads(result)
-        assert parsed["deleted"] is True
+        assert "protected" in parsed["error"]
+        assert skill_file.exists()
 
 
 class TestProtectionAutonomousBlocked:
@@ -128,7 +128,7 @@ class TestProtectionAutonomousBlocked:
         skill_file.write_text(
             "---\nname: Protected System\ndescription: A protected system skill\nenabled: true\n---\n# Protected System\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="protected-system",
@@ -160,7 +160,6 @@ class TestProtectionAutonomousBlocked:
                 skill_id="protected-system",
                 old_text="Content.",
                 new_text="Modified.",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -175,7 +174,7 @@ class TestProtectionAutonomousBlocked:
         skill_file.write_text(
             "---\nname: Protected Imported\ndescription: A protected imported skill\nenabled: true\n---\n# Protected Imported\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="protected-imported",
@@ -205,7 +204,6 @@ class TestProtectionAutonomousBlocked:
             result = await tool.execute(
                 action="delete",
                 skill_id="protected-imported",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -220,7 +218,7 @@ class TestProtectionAutonomousBlocked:
         skill_file.write_text(
             "---\nname: Protected Manual\ndescription: A protected manual skill\nenabled: true\n---\n# Protected Manual\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="protected-manual",
@@ -252,7 +250,6 @@ class TestProtectionAutonomousBlocked:
                 skill_id="protected-manual",
                 old_text="Content.",
                 new_text="Modified.",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -269,7 +266,7 @@ class TestProtectionAutonomousAllowed:
         skill_file.write_text(
             "---\nname: My Autonomous Skill\ndescription: My skill\nenabled: true\n---\n# My Autonomous Skill\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="my-autonomous-skill",
@@ -301,7 +298,6 @@ class TestProtectionAutonomousAllowed:
                 skill_id="my-autonomous-skill",
                 old_text="Content.",
                 new_text="Modified by autonomous.",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -315,7 +311,7 @@ class TestProtectionAutonomousAllowed:
         skill_file.write_text(
             "---\nname: Flagged System\ndescription: A flagged system skill\nenabled: true\n---\n# Flagged System\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="flagged-system",
@@ -347,7 +343,6 @@ class TestProtectionAutonomousAllowed:
                 skill_id="flagged-system",
                 old_text="Content.",
                 new_text="Modified with flag.",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -361,7 +356,7 @@ class TestProtectionAutonomousAllowed:
         skill_file.write_text(
             "---\nname: Override System\ndescription: An override system skill\nenabled: true\n---\n# Override System\n\nContent."
         )
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="override-system",
@@ -393,12 +388,12 @@ class TestProtectionAutonomousAllowed:
                 skill_id="override-system",
                 old_text="Content.",
                 new_text="Modified with override.",
-                caller_autonomous=True,
                 allow_autonomous_edit=True,
             )
 
         parsed = json.loads(result)
-        assert parsed["patched"] is True
+        assert "Unsupported argument" in parsed["error"]
+        assert "Modified with override." not in skill_file.read_text()
 
 
 class TestProtectionCreate:
@@ -406,7 +401,7 @@ class TestProtectionCreate:
     async def test_autonomous_cannot_create_system_skill(
         self, tool: SkillManageTool, tmp_path: Path
     ) -> None:
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
@@ -416,7 +411,6 @@ class TestProtectionCreate:
                 description="A new system skill",
                 content="# New System Skill\n\nContent.",
                 source_type="system",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -427,7 +421,7 @@ class TestProtectionCreate:
     async def test_autonomous_can_create_autonomous_skill(
         self, tool: SkillManageTool, tmp_path: Path
     ) -> None:
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="new-autonomous-skill",
@@ -464,9 +458,80 @@ class TestProtectionCreate:
                     description="A new autonomous skill",
                     content="# New Autonomous Skill\n\nContent.",
                     source_type="autonomous",
-                    caller_autonomous=True,
                 )
 
         parsed = json.loads(result)
         assert parsed["created"] is True
         assert parsed["source_type"] == "autonomous"
+
+
+class TestAuthorityArgumentsRefused:
+    """#696: caller identity and edit grants are never model-supplied inputs."""
+
+    def test_schema_exposes_no_authority_fields(self) -> None:
+        properties = SkillManageTool.parameters["properties"]
+        assert not {"caller_autonomous", "allow_autonomous_edit", "source_type"} & set(properties)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "forged",
+        [
+            {"caller_autonomous": False},
+            {"caller_autonomous": True},
+            {"allow_autonomous_edit": True},
+            {"allow_autonomous_edit": False},
+            {"caller_autonomous": False, "allow_autonomous_edit": True},
+        ],
+    )
+    @pytest.mark.parametrize("action", ["create", "patch", "delete", "list", "view"])
+    async def test_forged_authority_refused_before_any_store_access(
+        self, tmp_path: Path, action: str, forged: dict[str, bool]
+    ) -> None:
+        skill_file = tmp_path / "guarded.md"
+        original = "---\nname: Guarded\ndescription: d\nenabled: true\n---\nBody."
+        skill_file.write_text(original)
+        pool = lockable_pool()
+        tool = SkillManageTool(db_pool=pool)
+
+        with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
+            result = await tool.execute(
+                action=action,
+                skill_id="guarded",
+                name="Another",
+                content="x",
+                old_text="Body.",
+                new_text="Changed.",
+                **forged,
+            )
+
+        assert "Unsupported argument" in json.loads(result)["error"]
+        assert skill_file.read_text() == original
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["guarded.md"]
+        assert pool.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_type", ["system", "imported", "manual", ""])
+    async def test_protected_source_type_cannot_be_created(
+        self, tmp_path: Path, source_type: str
+    ) -> None:
+        tool = SkillManageTool(db_pool=AsyncMock())
+        with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
+            result = await tool.execute(
+                action="create", name="Spoof", content="x", source_type=source_type
+            )
+        assert "autonomous context" in json.loads(result)["error"]
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_missing_projection_store_refuses_modification(self, tmp_path: Path) -> None:
+        skill_file = tmp_path / "unprojected.md"
+        skill_file.write_text("---\nname: U\ndescription: d\nenabled: true\n---\nBody.")
+        tool = SkillManageTool(db_pool=None)
+        with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
+            patched = await tool.execute(
+                action="patch", skill_id="unprojected", old_text="Body.", new_text="Changed."
+            )
+            deleted = await tool.execute(action="delete", skill_id="unprojected")
+        assert "no projection row" in json.loads(patched)["error"]
+        assert "no projection row" in json.loads(deleted)["error"]
+        assert "Body." in skill_file.read_text()
