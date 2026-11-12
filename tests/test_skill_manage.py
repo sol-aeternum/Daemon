@@ -53,47 +53,40 @@ def tool(mock_db_pool: AsyncMock) -> SkillManageTool:
 
 
 class TestCheckModificationAllowed:
-    def test_direct_user_bypass(self) -> None:
-        projection = {"source_type": "system", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=False)
-        assert allowed is True
-        assert reason == ""
+    def test_stored_flag_must_be_exactly_true(self) -> None:
+        projection = {"source_type": "system", "allow_autonomous_edit": "yes"}
+        allowed, reason = _check_modification_allowed(projection)
+        assert allowed is False
+        assert "protected" in reason
 
     def test_autonomous_can_modify_autonomous_skill(self) -> None:
         projection = {"source_type": "autonomous", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is True
 
     def test_autonomous_cannot_modify_system_skill_without_flag(self) -> None:
         projection = {"source_type": "system", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is False
         assert "protected" in reason
 
     def test_autonomous_can_modify_system_skill_with_flag(self) -> None:
         projection = {"source_type": "system", "allow_autonomous_edit": True}
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
-        assert allowed is True
-
-    def test_autonomous_can_modify_with_override_flag(self) -> None:
-        projection = {"source_type": "system", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True, allow_autonomous_edit=True
-        )
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is True
 
     def test_autonomous_cannot_modify_imported_skill(self) -> None:
         projection = {"source_type": "imported", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is False
 
     def test_autonomous_cannot_modify_manual_skill(self) -> None:
         projection = {"source_type": "manual", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is False
 
     def test_no_projection_fails_closed_for_autonomous(self) -> None:
-        allowed, reason = _check_modification_allowed(None, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(None)
         assert allowed is False
         assert "no projection row" in reason
 
@@ -304,7 +297,6 @@ class TestSkillManageToolCreate:
                 description="A protected skill",
                 content="# Protected Skill\n\nContent.",
                 source_type="system",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -470,7 +462,6 @@ class TestSkillManageToolDelete:
             result = await tool.execute(
                 action="delete",
                 skill_id="delete-test",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -563,7 +554,6 @@ class TestSkillManageToolMissingProjectionProtection:
                     skill_id="no-projection-skill",
                     old_text="Content.",
                     new_text="Modified.",
-                    caller_autonomous=True,
                 )
 
         parsed = json.loads(result)
@@ -588,7 +578,6 @@ class TestSkillManageToolMissingProjectionProtection:
                 result = await tool.execute(
                     action="delete",
                     skill_id="no-projection-delete",
-                    caller_autonomous=True,
                 )
 
         parsed = json.loads(result)
@@ -646,7 +635,6 @@ class TestSkillManageToolMissingProjectionProtection:
                         skill_id="sync-to-autonomous",
                         old_text="Content.",
                         new_text="Modified by autonomous.",
-                        caller_autonomous=True,
                     )
 
         parsed = json.loads(result)

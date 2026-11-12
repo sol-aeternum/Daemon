@@ -2378,14 +2378,6 @@
                 }
             },
             {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportUnusedParameter",
                 "range": {
                     "startColumn": 37,

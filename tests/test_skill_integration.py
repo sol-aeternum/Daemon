@@ -798,12 +798,12 @@ class TestSkillRegressionManualFlows:
                     description="Created manually",
                     content="# Manual New Skill\n\nContent.",
                     source_type="manual",
-                    caller_autonomous=False,
                 )
 
+        # The tool is model-facing: it can never mint a protected source type (#696).
         parsed = json.loads(result)
-        assert parsed["created"] is True
-        assert parsed["skill_id"] == "manual-new-skill"
+        assert "autonomous context" in parsed["error"]
+        assert not (tmp_path / "manual-new-skill.md").exists()
 
     @pytest.mark.asyncio
     async def test_autonomous_skill_patch_requires_caller_context(self, tmp_path: Path) -> None:
@@ -849,7 +849,6 @@ class TestSkillRegressionManualFlows:
                 skill_id="auto-skill",
                 old_text="Old content.",
                 new_text="New content from autonomous.",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -906,7 +905,7 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": False,
         }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is False
         assert "protected" in reason
 
@@ -921,7 +920,7 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": True,
         }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is True
 
     @pytest.mark.asyncio
@@ -933,18 +932,14 @@ class TestSkillProtectionIntegration:
             "source_type": "autonomous",
             "allow_autonomous_edit": False,  # Even if False, autonomous can modify
         }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is True
 
     @pytest.mark.asyncio
-    async def test_direct_user_bypasses_protection(self) -> None:
-        """Direct user calls should bypass protection checks."""
+    async def test_missing_projection_refuses_modification(self) -> None:
+        """Unknown protection state refuses rather than relaxing (#696)."""
         from orchestrator.tools.skill_manage import _check_modification_allowed
 
-        projection = {
-            "source_type": "system",
-            "allow_autonomous_edit": False,
-        }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=False)
-        assert allowed is True
-        assert reason == ""
+        allowed, reason = _check_modification_allowed(None)
+        assert allowed is False
+        assert "no projection row" in reason
