@@ -6129,7 +6129,7 @@
       "owner_source": "orchestrator.skill_evaluator",
       "qualname": "SkillEvaluator._create_skill",
       "kind": "sql_unresolvable",
-      "fingerprint": "00f6c559feb093a7",
+      "fingerprint": "39214a700f317036",
       "tables": [],
       "unknown": true,
       "uncovered": true,
@@ -6140,7 +6140,7 @@
       "owner_source": "orchestrator.skill_evaluator",
       "qualname": "SkillEvaluator._refine_or_skip_match",
       "kind": "sql_unresolvable",
-      "fingerprint": "22e1ba74fe61140d",
+      "fingerprint": "2faf429d9c470634",
       "tables": [],
       "unknown": true,
       "uncovered": true,
@@ -6271,9 +6271,22 @@
     },
     {
       "owner_source": "orchestrator.skills_projection",
+      "qualname": "SkillProjectionStore.sync_file_projection",
+      "kind": "sql_inline",
+      "fingerprint": "cb746cb6098307e8",
+      "tables": [
+        "skill_projections"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.skills_projection",
       "qualname": "SkillProjectionStore.upsert_projection",
       "kind": "sql_inline",
-      "fingerprint": "4e7f21c7092cfa16",
+      "fingerprint": "13767a0f4130d172",
       "tables": [
         "skill_projections"
       ],
@@ -7479,7 +7492,7 @@
     },
     {
       "owner_source": "orchestrator.tools.skill_manage",
-      "qualname": "SkillManageTool._patch",
+      "qualname": "SkillManageTool._patch.mutate",
       "kind": "filesystem_write",
       "fingerprint": "9f787b1cedb67fe7",
       "tables": [],

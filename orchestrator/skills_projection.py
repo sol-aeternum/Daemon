@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Mapping
 
 import asyncpg
@@ -67,6 +69,13 @@ class SkillProjectionStore:
         trigger_conditions: str = "",
         complexity_origin: int = 0,
     ) -> dict[str, Any]:
+        """Insert or replace a projection.
+
+        ``allow_autonomous_edit`` applies to a new row only. On an existing row
+        the stored grant is kept: callers read it before slow work, and writing
+        that copy back could undo a revocation. Only ``update_autonomous_edit``
+        changes the grant.
+        """
         embedding_str = _format_vector(embedding)
         row = await self._pool.fetchrow(
             """
@@ -89,7 +98,6 @@ class SkillProjectionStore:
                 repo_version      = EXCLUDED.repo_version,
                 local_version     = EXCLUDED.local_version,
                 pending_update    = EXCLUDED.pending_update,
-                allow_autonomous_edit = EXCLUDED.allow_autonomous_edit,
                 trigger_conditions = EXCLUDED.trigger_conditions,
                 complexity_origin = EXCLUDED.complexity_origin,
                 updated_at        = NOW(),
@@ -114,6 +122,70 @@ class SkillProjectionStore:
             complexity_origin,
         )
         return projection_from_row(row)
+
+    async def sync_file_projection(
+        self,
+        skill_id: str,
+        name: str,
+        description: str,
+        source_file_path: str,
+        source_hash: str,
+        enabled: bool,
+        embedding: list[float] | None,
+        source_type: str = "manual",
+    ) -> dict[str, Any]:
+        """Record what the markdown file says, in one statement.
+
+        An existing row keeps every stored authority and provenance column
+        (``source_type``, ``allow_autonomous_edit``, ``created_by`` and the
+        rest): only file-derived columns change. There is no read before the
+        write, so a sync that was slow to embed cannot restore a grant the
+        owner revoked meanwhile (#696). ``source_type`` applies to a new row only.
+        """
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO skill_projections
+                (skill_id, name, description, source_file_path, source_hash,
+                 enabled, source_type, embedding)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)
+            ON CONFLICT (skill_id) DO UPDATE SET
+                name              = EXCLUDED.name,
+                description       = EXCLUDED.description,
+                source_file_path  = EXCLUDED.source_file_path,
+                source_hash       = EXCLUDED.source_hash,
+                enabled           = EXCLUDED.enabled,
+                embedding         = COALESCE(EXCLUDED.embedding, skill_projections.embedding),
+                local_version     = '0.0.0',
+                updated_at        = NOW(),
+                last_synced_at    = NOW()
+            RETURNING *
+            """,
+            skill_id,
+            name,
+            description,
+            source_file_path,
+            source_hash,
+            enabled,
+            source_type,
+            _format_vector(embedding),
+        )
+        return projection_from_row(row)
+
+    @asynccontextmanager
+    async def locked_projection(self, skill_id: str) -> AsyncIterator[dict[str, Any] | None]:
+        """Yield the stored projection with its row locked until the block exits.
+
+        This is the revocation boundary for model-driven file mutations: a grant
+        change committed before the lock is taken is what the caller sees, and a
+        grant change issued while the block runs waits for it to finish.
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM skill_projections WHERE skill_id = $1 FOR UPDATE",
+                    skill_id,
+                )
+                yield projection_from_row(row) if row else None
 
     async def get_projection(self, skill_id: str) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(

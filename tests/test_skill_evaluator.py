@@ -157,7 +157,6 @@ async def test_evaluator_creates_novel_autonomous_skill() -> None:
         description="Turn a successful debugging turn into a reusable flow.",
         content="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
         source_type="autonomous",
-        caller_autonomous=True,
     )
     projection_store.update_autonomous_metadata.assert_awaited_once_with(
         "debug-workflow",
@@ -322,7 +321,6 @@ async def test_evaluator_patches_overlapping_autonomous_skill() -> None:
         skill_id="debug-workflow",
         old_text="## Purpose\n\nOld section",
         new_text="## Purpose\n\nUpdated section",
-        caller_autonomous=True,
     )
     projection_store.update_autonomous_metadata.assert_awaited_once_with(
         "debug-workflow",

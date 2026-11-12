@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.skill_pool import lockable_pool
+
 from orchestrator.config import Settings
 from orchestrator.memory.store import MemoryStore
 from orchestrator.skill_evaluator import (
@@ -248,7 +250,7 @@ class TestSkillLifecycleRetrieve:
             "# Test Skill\n\nThis is the full content that should NOT appear in list results."
         )
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.fetch.return_value = []
 
         from orchestrator.tools.skill_manage import SkillManageTool
@@ -286,7 +288,7 @@ class TestSkillLifecycleRetrieve:
             "# Usage Skill\n\nFull content here."
         )
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.execute.return_value = "UPDATE 1"
 
         from orchestrator.tools.skill_manage import SkillManageTool
@@ -760,7 +762,7 @@ class TestSkillRegressionManualFlows:
         """Manual skill creation via API should still work."""
         from orchestrator.tools.skill_manage import SkillManageTool
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="manual-new-skill",
             name="Manual New Skill",
@@ -798,12 +800,12 @@ class TestSkillRegressionManualFlows:
                     description="Created manually",
                     content="# Manual New Skill\n\nContent.",
                     source_type="manual",
-                    caller_autonomous=False,
                 )
 
+        # The tool is model-facing: it can never mint a protected source type (#696).
         parsed = json.loads(result)
-        assert parsed["created"] is True
-        assert parsed["skill_id"] == "manual-new-skill"
+        assert "autonomous context" in parsed["error"]
+        assert not (tmp_path / "manual-new-skill.md").exists()
 
     @pytest.mark.asyncio
     async def test_autonomous_skill_patch_requires_caller_context(self, tmp_path: Path) -> None:
@@ -815,7 +817,7 @@ class TestSkillRegressionManualFlows:
             "---\nname: Auto Skill\ndescription: An autonomous skill\nenabled: true\n---\n\nOld content."
         )
 
-        mock_db_pool = AsyncMock()
+        mock_db_pool = lockable_pool()
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="auto-skill",
             name="Auto Skill",
@@ -849,7 +851,6 @@ class TestSkillRegressionManualFlows:
                 skill_id="auto-skill",
                 old_text="Old content.",
                 new_text="New content from autonomous.",
-                caller_autonomous=True,
             )
 
         parsed = json.loads(result)
@@ -906,7 +907,7 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": False,
         }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is False
         assert "protected" in reason
 
@@ -921,7 +922,7 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": True,
         }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is True
 
     @pytest.mark.asyncio
@@ -933,18 +934,14 @@ class TestSkillProtectionIntegration:
             "source_type": "autonomous",
             "allow_autonomous_edit": False,  # Even if False, autonomous can modify
         }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
+        allowed, reason = _check_modification_allowed(projection)
         assert allowed is True
 
     @pytest.mark.asyncio
-    async def test_direct_user_bypasses_protection(self) -> None:
-        """Direct user calls should bypass protection checks."""
+    async def test_missing_projection_refuses_modification(self) -> None:
+        """Unknown protection state refuses rather than relaxing (#696)."""
         from orchestrator.tools.skill_manage import _check_modification_allowed
 
-        projection = {
-            "source_type": "system",
-            "allow_autonomous_edit": False,
-        }
-        allowed, reason = _check_modification_allowed(projection, caller_autonomous=False)
-        assert allowed is True
-        assert reason == ""
+        allowed, reason = _check_modification_allowed(None)
+        assert allowed is False
+        assert "no projection row" in reason

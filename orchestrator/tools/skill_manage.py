@@ -8,6 +8,7 @@ Task 2 projection/sync layer for metadata and usage tracking.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from orchestrator.skills_projection import SkillProjectionStore
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Source types that are protected from autonomous modification
 _PROTECTED_SOURCE_TYPES = frozenset({"system", "imported", "manual"})
+
+# Every caller of this tool is model-driven (chat tool calls and the background
+# skill evaluator), so every call is autonomous. Authority is never an argument:
+# these fields are refused rather than ignored so a spoof attempt is visible (#696).
+_REFUSED_AUTHORITY_ARGUMENTS = ("caller_autonomous", "allow_autonomous_edit")
 
 
 def _build_list_response(skills: list[Any]) -> str:
@@ -52,18 +58,11 @@ def _build_list_response(skills: list[Any]) -> str:
     return json.dumps(summaries, indent=2)
 
 
-def _check_modification_allowed(
-    projection: dict[str, Any] | None,
-    caller_autonomous: bool,
-    allow_autonomous_edit: bool | None = None,
-) -> tuple[bool, str]:
-    """Check if modification is allowed based on protection rules.
+def _check_modification_allowed(projection: dict[str, Any] | None) -> tuple[bool, str]:
+    """Check if this tool may modify a skill, from its stored projection only.
 
-    Returns (allowed, reason).
+    Returns (allowed, reason). A missing projection refuses.
     """
-    if not caller_autonomous:
-        return True, ""
-
     source_type = projection.get("source_type") if projection else None
 
     if source_type is None:
@@ -76,16 +75,11 @@ def _check_modification_allowed(
     if source_type not in _PROTECTED_SOURCE_TYPES:
         return True, ""
 
-    if allow_autonomous_edit is None:
-        allow_autonomous_edit = (
-            projection.get("allow_autonomous_edit", False) if projection else False
-        )
-
-    if not allow_autonomous_edit:
+    if projection is None or projection.get("allow_autonomous_edit") is not True:
         return (
             False,
             f"Skill with source_type='{source_type}' is protected from autonomous "
-            "modification. Explicit allow_autonomous_edit=true required.",
+            "modification. The owner can allow autonomous edits for it in skill settings.",
         )
 
     return True, ""
@@ -98,8 +92,9 @@ class SkillManageTool(Tool):
         "list returns L0-safe metadata summaries (no content). "
         "view returns full skill content and increments usage metadata. "
         "patch performs targeted substring replacement in skill content. "
-        "Protected skills (system/imported/manual) cannot be modified by autonomous "
-        "agents unless allow_autonomous_edit=true."
+        "Protected skills (system/imported/manual) cannot be modified here unless "
+        "the owner has allowed autonomous edits for that skill in settings. "
+        "New skills are always created as autonomous."
     )
     parameters = {
         "type": "object",
@@ -133,20 +128,6 @@ class SkillManageTool(Tool):
                 "type": "string",
                 "description": "Replacement text (for patch). If empty, effectively deletes old_text.",
             },
-            "source_type": {
-                "type": "string",
-                "enum": ["system", "imported", "manual", "autonomous"],
-                "description": "Source type when creating a new skill (default: autonomous).",
-            },
-            "allow_autonomous_edit": {
-                "type": "boolean",
-                "description": "Override allow_autonomous_edit flag for protected skills (autonomous callers only).",
-            },
-            "caller_autonomous": {
-                "type": "boolean",
-                "default": False,
-                "description": "Whether the caller is an autonomous agent (affects protection enforcement).",
-            },
         },
         "required": ["action"],
     }
@@ -167,8 +148,23 @@ class SkillManageTool(Tool):
         import json
 
         action = kwargs.get("action")
-        caller_autonomous = bool(kwargs.get("caller_autonomous", False))
-        allow_autonomous_override = kwargs.get("allow_autonomous_edit")
+        refused = [key for key in _REFUSED_AUTHORITY_ARGUMENTS if key in kwargs]
+        if refused:
+            return json.dumps(
+                {
+                    "error": f"Unsupported argument(s): {', '.join(refused)}. Authority is not an input."
+                }
+            )
+        source_type = kwargs.get("source_type", "autonomous")
+        if source_type != "autonomous":
+            return json.dumps(
+                {
+                    "error": (
+                        f"Cannot use source_type='{source_type}' from autonomous context. "
+                        "Skills created here are always source_type='autonomous'."
+                    )
+                }
+            )
 
         if action == "list":
             return await self._list()
@@ -191,23 +187,13 @@ class SkillManageTool(Tool):
                         "error": "old_text is required for patch action (targeted substring replacement)"
                     }
                 )
-            return await self._patch(
-                skill_id,
-                old_text,
-                new_text,
-                caller_autonomous,
-                allow_autonomous_override,
-            )
+            return await self._patch(skill_id, old_text, new_text)
 
         if action == "delete":
             skill_id = kwargs.get("skill_id")
             if not skill_id:
                 return json.dumps({"error": "skill_id is required for delete action"})
-            return await self._delete(
-                skill_id,
-                caller_autonomous,
-                allow_autonomous_override,
-            )
+            return await self._delete(skill_id)
 
         if action == "create":
             name = kwargs.get("name")
@@ -215,14 +201,7 @@ class SkillManageTool(Tool):
                 return json.dumps({"error": "name is required for create action"})
             description = kwargs.get("description", "")
             content = kwargs.get("content", "")
-            source_type = kwargs.get("source_type", "autonomous")
-            return await self._create(
-                name,
-                description,
-                content,
-                source_type,
-                caller_autonomous,
-            )
+            return await self._create(name, description, content)
 
         return json.dumps({"error": f"Unknown action: {action}"})
 
@@ -281,20 +260,10 @@ class SkillManageTool(Tool):
         name: str,
         description: str,
         content: str,
-        source_type: str,
-        caller_autonomous: bool,
     ) -> str:
         import json
 
-        if caller_autonomous and source_type in _PROTECTED_SOURCE_TYPES:
-            return json.dumps(
-                {
-                    "error": (
-                        f"Cannot create skill with source_type='{source_type}' "
-                        "from autonomous context. Use source_type='autonomous' instead."
-                    )
-                }
-            )
+        source_type = "autonomous"
 
         try:
             detail = create_skill(
@@ -326,71 +295,79 @@ class SkillManageTool(Tool):
             indent=2,
         )
 
+    async def _locked_mutation(self, skill_id: str, mutate: Callable[[], str | None]) -> str | None:
+        """Run ``mutate`` only while the stored grant allows it and its row is locked.
+
+        Returns an error payload, or None when ``mutate`` ran and succeeded.
+        The row lock is the revocation boundary: a revocation committed before
+        the lock refuses the mutation, and one issued during it waits (#696).
+        """
+        import json
+
+        store = self._projection_store
+        if store is None:
+            return json.dumps({"error": _check_modification_allowed(None)[1]})
+        try:
+            if self._sync_service and await store.get_projection(skill_id) is None:
+                # Unknown skill file: record it as protected ('manual') first.
+                await self._sync_service.sync_skill(skill_id)
+            async with store.locked_projection(skill_id) as projection:
+                allowed, reason = _check_modification_allowed(projection)
+                if not allowed:
+                    return json.dumps({"error": reason})
+                return mutate()
+        except Exception as exc:
+            logger.warning("Protection check for skill %s failed: %s", skill_id, exc)
+            return json.dumps(
+                {"error": "Cannot determine protection status: skill projection unavailable."}
+            )
+
     async def _patch(
         self,
         skill_id: str,
         old_text: str,
         new_text: str,
-        caller_autonomous: bool,
-        allow_autonomous_override: bool | None,
     ) -> str:
         import json
 
         try:
-            detail = get_skill(skill_id)
+            get_skill(skill_id)
         except FileNotFoundError:
             return json.dumps({"error": f"Skill '{skill_id}' not found"})
         except Exception as exc:
             logger.error("patch get skill %s failed: %s", skill_id, exc)
             return json.dumps({"error": f"patch failed: {exc}"})
 
-        current_content = detail["content"]
-
-        projection = None
-        if self._projection_store:
+        def mutate() -> str | None:
+            # Read and write inside the lock so concurrent patches cannot interleave.
             try:
-                projection = await self._projection_store.get_projection(skill_id)
-            except Exception as exc:
-                logger.warning("Failed to load projection for protection check: %s", exc)
-
-        if projection is None and caller_autonomous and self._sync_service:
-            sync_result = await self._sync_service.sync_skill(skill_id)
-            if sync_result.success and self._projection_store:
-                try:
-                    projection = await self._projection_store.get_projection(skill_id)
-                except Exception:
-                    pass
-
-        allowed, reason = _check_modification_allowed(
-            projection,
-            caller_autonomous,
-            allow_autonomous_override,
-        )
-        if not allowed:
-            return json.dumps({"error": reason})
-
-        if old_text not in current_content:
-            return json.dumps(
-                {
-                    "error": (
-                        "old_text not found in skill content. patch requires exact substring match."
+                current_content = get_skill(skill_id)["content"]
+                if old_text not in current_content:
+                    return json.dumps(
+                        {
+                            "error": (
+                                "old_text not found in skill content. "
+                                "patch requires exact substring match."
+                            )
+                        }
                     )
-                }
-            )
+                update_skill(
+                    skill_id,
+                    name=None,
+                    description=None,
+                    content=current_content.replace(old_text, new_text, 1),
+                    enabled=None,
+                )
+            except FileNotFoundError:
+                return json.dumps({"error": f"Skill '{skill_id}' not found"})
+            except Exception as exc:
+                logger.error("patch update skill %s failed: %s", skill_id, exc)
+                return json.dumps({"error": f"patch failed: {exc}"})
+            return None
 
-        new_content = current_content.replace(old_text, new_text, 1)
-
-        try:
-            update_skill(
-                skill_id,
-                name=None,
-                description=None,
-                content=new_content,
-                enabled=None,
-            )
-        except Exception as exc:
-            logger.error("patch update skill %s failed: %s", skill_id, exc)
-            return json.dumps({"error": f"patch failed: {exc}"})
+        error = await self._locked_mutation(skill_id, mutate)
+        if error is not None:
+            return error
 
         if self._sync_service:
             try:
@@ -408,44 +385,22 @@ class SkillManageTool(Tool):
             indent=2,
         )
 
-    async def _delete(
-        self,
-        skill_id: str,
-        caller_autonomous: bool,
-        allow_autonomous_override: bool | None,
-    ) -> str:
+    async def _delete(self, skill_id: str) -> str:
         import json
 
-        projection = None
-        if self._projection_store:
+        def mutate() -> str | None:
             try:
-                projection = await self._projection_store.get_projection(skill_id)
+                delete_skill(skill_id)
+            except FileNotFoundError:
+                return json.dumps({"error": f"Skill '{skill_id}' not found"})
             except Exception as exc:
-                logger.warning("Failed to load projection for protection check: %s", exc)
+                logger.error("delete skill %s failed: %s", skill_id, exc)
+                return json.dumps({"error": f"delete failed: {exc}"})
+            return None
 
-        if projection is None and caller_autonomous and self._sync_service:
-            sync_result = await self._sync_service.sync_skill(skill_id)
-            if sync_result.success and self._projection_store:
-                try:
-                    projection = await self._projection_store.get_projection(skill_id)
-                except Exception:
-                    pass
-
-        allowed, reason = _check_modification_allowed(
-            projection,
-            caller_autonomous,
-            allow_autonomous_override,
-        )
-        if not allowed:
-            return json.dumps({"error": reason})
-
-        try:
-            delete_skill(skill_id)
-        except FileNotFoundError:
-            return json.dumps({"error": f"Skill '{skill_id}' not found"})
-        except Exception as exc:
-            logger.error("delete skill %s failed: %s", skill_id, exc)
-            return json.dumps({"error": f"delete failed: {exc}"})
+        error = await self._locked_mutation(skill_id, mutate)
+        if error is not None:
+            return error
 
         if self._sync_service:
             try:
