@@ -15,6 +15,7 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v4) de
 
 **Tools Available:**
 - `get_time`, `calculate`, `web_search`, `web_fetch` (with transcript support), `http_request`, `notification_send`, `reminder_set`, `reminder_list`, `spawn_agent`, `spawn_multiple`, `generate_document`.
+- Reminder notes are account-owned and encrypted (#695). **Limitation:** a pre-#695 `data/reminders.json` is never imported, because its notes have no owner. While that file holds notes or cannot be read, `reminder_set`/`reminder_list` refuse. The file stays on disk as unowned plaintext outside account erasure until an operator reviews it and moves it out of `data/` by hand; there is no claim or disposition tool.
 
 **Subagent Dispatch:**
 - `@research`: Retained news/fact-checking/research implementation; registered `spawn_agent` and `spawn_multiple` currently return `capacity_unavailable` before dispatch pending qualified bounded adapters.

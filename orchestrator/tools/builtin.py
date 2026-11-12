@@ -279,8 +279,23 @@ def create_default_registry(
         registry.register(WebFetchTool())
     registry.register(HttpRequestTool())
     registry.register(NotificationSendTool())
-    registry.register(ReminderSetTool())
-    registry.register(ReminderListTool())
+    reminder_store = None
+    reminder_owner = None
+    if db_pool is not None and user_id is not None:
+        import uuid
+
+        from orchestrator.memory.encryption import EncryptionInitError
+        from orchestrator.services.reminders import create_reminder_store
+
+        try:
+            reminder_store = create_reminder_store(db_pool)
+            reminder_owner = uuid.UUID(str(user_id))
+        except (EncryptionInitError, ValueError):
+            # No key or no valid owner: never fall back to unowned or plaintext storage.
+            reminder_store = None
+    # Without an account and database the tools stay registered but refuse.
+    registry.register(ReminderSetTool(reminder_store, reminder_owner))
+    registry.register(ReminderListTool(reminder_store, reminder_owner))
     # Retained spawn implementations deny dispatch. Do not advertise them as tools.
 
     from orchestrator.tools.skill_manage import SkillManageTool
