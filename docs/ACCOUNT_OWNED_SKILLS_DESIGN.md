@@ -247,9 +247,9 @@ The owner accepted the proposed answer to each question below.
 | O4 | Refuse skill tools while unowned legacy files remain? | No. Log the count at startup. Unlike reminders, nothing presents the legacy files as the account's own data once the readers are switched. |
 | O5 | Encrypt shipped skill content? | Yes, for one code path, although the content is public. |
 
-Raised in review and **not yet decided by the owner**:
+Raised in review; the owner accepted the proposed answers on 2026-11-12:
 
-| ID | Question | Proposed |
+| ID | Question | Decision |
 | --- | --- | --- |
 | O6 | How is a skill addressed without a plaintext slug? | Keyed lookup digest (§3.1), which keeps the existing route paths. The alternative is to address skills by UUID, which is simpler to store but changes every skill route and the settings UI. |
 | O7 | Existing `skill_consolidation_log` rows hold plaintext names and descriptions. | Drop the two columns in the cutover migration; the history loses its captions but keeps actions, times and skill ids. |
