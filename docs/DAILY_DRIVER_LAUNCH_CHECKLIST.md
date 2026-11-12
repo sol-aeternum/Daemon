@@ -178,3 +178,11 @@ production format or SQL authority. The separately approved, uninstalled
 metadata-only prepare and matching protected SQL fact in the native completion
 transaction. It remains unselected at runtime; cards, partial checkpoints,
 control-only terminal coverage and reconciliation remain separate release gaps.
+The explicit isolated acceptance/observation host now admits exact matched
+terminal-v3 projections without selecting them at production startup. Synthetic
+bearer acceptance and original native test-only output/readback, including
+second-device observation after in-process host/pool reconstruction, are bounded
+prerequisites only. Exact mixed-page/fault coverage and unmet cases require local
+receipts. No execution graph, partial/card/control-terminal restore support,
+output reconstruction, process-restart proof or deployed phone qualification is
+claimed; observation-only ingress and worker refusal remain unchanged.

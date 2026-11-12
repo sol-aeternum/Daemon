@@ -47,8 +47,13 @@ The explicit qualifier requires the complete 16-function schema and exact ACLs.
 Older strict H1/artifact-v2 qualifiers refuse that expanded schema; there is no
 fallback. Deployment must coordinate schema/profile compatibility separately.
 The new reader returns every history kind, rather than hiding terminal facts to
-manufacture parity. The existing acceptance/observation/runtime installers do
-not select this new profile.
+manufacture parity. Explicit `HistoryAcceptance`, `HistoryObservation` and
+`IsolatedAcceptanceHost` now admit the exact terminal projection with matching
+terminal-v3 coordinators; artifact-v2 alone and subclasses remain refused. A/W
+types, profile, identity, principals and publisher must match at construction and
+request admission. Fresh acceptance still stages unchanged v1 bytes on the
+original native transaction. Production installers do not select this profile;
+the production read supervisor remains H1-only and refuses terminal before I/O.
 
 ## Fixed normal-completion transaction
 
@@ -89,9 +94,18 @@ capacity and principal/ACL/binding/backfill refusals. Default CI skips opt-in
 database cases without `--compute-metadata-postgres`; exact executed commands
 and counts belong to the accompanying local receipts, not this coverage list.
 
+The terminal-host prerequisite tests additionally exercise actual bearer
+acceptance and original native test-only partial/completed text followed by
+second-device observation and in-process host/pool reconstruction. Existing
+isolated-host auth, uncertain-acceptance and physical cleanup cases run against
+both H1 and terminal-v3. Mixed-page and mismatch probes use full history rather
+than filtering expanded facts. Test presence is not evidence of a passing run;
+executed results and unmet cases remain in the accompanying receipts. No
+executor/provider/queue graph is installed by this acceptance/observation slice.
+
 This proves neither arbitrary privileged selective-tamper detection nor text
 integrity after a restore. Cards, durable partial checkpoints, all control-only
-terminal outcomes, controlled reconciliation, authenticated runtime composition,
+terminal outcomes, controlled reconciliation, authenticated execution composition,
 original ACL/key/account/file continuity and live restore qualification remain
 open. No real grant, migration, provisioning, deployment, recovery action or
 activation follows from source tests or matching metadata.

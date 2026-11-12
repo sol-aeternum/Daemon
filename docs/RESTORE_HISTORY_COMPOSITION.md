@@ -1,4 +1,4 @@
-# H1 acceptance composition — isolated source slice
+# Acceptance composition — isolated source slice
 
 ## Explicit isolated authenticated acceptance host
 
@@ -8,7 +8,8 @@ constructed qualification adapters, never selected by startup. Constructors do
 no I/O. The host borrows distinct actual A/W stores/pools with the same encryption
 and independent H identity/K1. It owns separate writer/read coordinators: open
 before requests, drain aclose before closing borrowed pools, reconstruct all
-owners/pools for restart. No blocked writer/read owner is renewed automatically.
+owners/pools for in-process reconstruction. This does not prove process restart.
+No blocked writer/read owner is renewed automatically.
 
 Only isolated `POST /chat` and existing `GET /tasks/by-key/{key}` are installed.
 POST uses ChatRequest, a mandatory existing-format stable key, the task-ID header
@@ -52,14 +53,32 @@ against an out-of-contract non-H writer racing that preflight; the isolated host
 must not be mixed with legacy producers. It creates no readback or acceptance
 authority; ordinary uncomposed native replay is unchanged.
 
-The host requires exact combined 057 HistoryProjection/H1. Existing acceptance
-type checks are not expanded. Artifact-v2/terminal-v3 compatibility remains a
-separate gate; incompatible profile/schema/parity refuses without downgrade.
+The host accepts exact combined 057 `HistoryProjection`/`h1`, or exact
+`TerminalHistoryProjection`/`terminal-v3` with the complete schema through 065.
+Both sides must use the same concrete projection type, profile, identity,
+acceptor/worker principals and (for terminal-v3) publisher. Constructor and
+request admission recheck these bindings, including each coordinator's profile.
+Standalone artifact-v2 and subclasses remain refused. The underlying acceptance
+join also retains exact 056 `AcceptanceProjection`/`h1`; that acceptance-only
+projection cannot form this host. Old H1 qualifiers still reject expanded SQL;
+there is no schema/profile fallback. All acceptance, observation and startup
+qualification comparisons use the selected profile and full mixed-history pages.
+Inherited acceptance staging retains unchanged v1 frames in terminal-v3 chains.
 No queue wakeup, attempt, provider/search/tool call, output or memory extraction
 is installed. Accepted queued work is not dispatch authority. Answer/CSV delivery
 still requires authenticated Send/Stop/output composition, original attempt
 authority and restart fencing. Production observation-only startup, worker refusal,
 grants and deployment gates are unchanged. #477 stays open.
+
+Synthetic terminal-host tests use actual unchanged migration ancestry and
+synthetic restricted grants, original native test-only claims/HistoryEffects,
+and second-device reads of persisted partial/completed text before and after
+in-process host/pool reconstruction. The host itself installs no execution graph.
+This qualifies neither durable partial restore evidence nor cards, control-only
+terminal outcomes, output reconstruction, process restart or deployed phone use.
+Missing/extra facts remain negative evidence, never permission to repair or
+acknowledge an uncertain acceptance. Exact executed coverage and any unmet mixed
+page/fault cases belong to local receipts, not this source contract.
 
 ## Underlying source join
 

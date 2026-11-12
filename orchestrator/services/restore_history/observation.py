@@ -31,6 +31,7 @@ from .effects_projection import HistoryProjection
 from .model import MAX_RECORDS, AcceptPrepare, HistoryError, commitments
 from .projection import compare_projections
 from .store import _check_time
+from .terminal_projection import TerminalHistoryProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,27 +57,29 @@ class HistoryObservation:
         projection: HistoryProjection,
         key: bytes,
     ) -> None:
+        self._tasks, self._history, self._projection, self._key = tasks, history, projection, key
+        self._validate()
+
+    def _validate(self) -> None:
+        tasks, history, projection = self._tasks, self._history, self._projection
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection) is not HistoryProjection
+            or type(projection) not in (HistoryProjection, TerminalHistoryProjection)
+            or projection.profile
+            != ("terminal-v3" if type(projection) is TerminalHistoryProjection else "h1")
+            or history.profile != projection.profile
             or type(tasks._pool) is not asyncpg.Pool
             or tasks._pool is not tasks._memory._pool
             or history._expected != projection.expected
         ):
             raise HistoryError("observation_composition_refused")
-        projection.expected.verify_key(key)
-        self._tasks, self._history, self._projection, self._key = tasks, history, projection, key
+        projection.expected.verify_key(self._key)
 
     async def lookup(
         self, auth: AuthenticatedDevice, client_key: str, *, deadline: float
     ) -> HistoricalObservation:
-        if (
-            type(self._history) is not HistoryCoordinator
-            or type(self._tasks) is not TaskStore
-            or type(self._projection) is not HistoryProjection
-        ):
-            raise HistoryError("observation_composition_refused")
+        self._validate()
         self._history._bind()
         _check_time(deadline)
         self._projection.expected.verify_key(self._key)
@@ -174,7 +177,10 @@ class HistoryObservation:
                             break
                         cursor = page[-1].seq
                     report = compare_projections(
-                        self._projection.expected.history_id, state, tuple(facts)
+                        self._projection.expected.history_id,
+                        state,
+                        tuple(facts),
+                        profile=self._projection.profile,
                     )
                     parity = not (
                         report.missing
