@@ -50,9 +50,38 @@ const revisions = [
   created_at: '2026-11-13T09:00:00+00:00',
 }));
 
+const other = {
+  ...account,
+  id: 'runbook',
+  name: 'Runbook',
+  revision: 2,
+  content: 'B two',
+};
+
+const otherRevisions = [
+  { revision: 2, actor: 'user', content: 'B two' },
+  { revision: 1, actor: 'user', content: 'B one' },
+].map((entry) => ({
+  ...entry,
+  name: 'Runbook',
+  description: 'How to deploy',
+  created_at: '2026-11-13T09:00:00+00:00',
+}));
+
 let calls: Call[];
 let skills: (typeof account)[];
 let putStatus: number;
+// Paths whose response is held until the test releases it.
+let held: Map<string, { promise: Promise<void>; release: () => void }>;
+
+function hold(path: string) {
+  let release = () => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  held.set(path, { promise, release });
+  return release;
+}
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -65,6 +94,7 @@ beforeEach(() => {
   calls = [];
   skills = [account, shipped];
   putStatus = 200;
+  held = new Map();
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -73,8 +103,16 @@ beforeEach(() => {
       const body =
         typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
       calls.push({ path, method, body });
+      const gate = held.get(path);
+      if (gate) {
+        held.delete(path);
+        await gate.promise;
+      }
 
       if (path === '/skills') return json({ skills });
+      if (path === '/skills/runbook/revisions') {
+        return json({ revisions: otherRevisions });
+      }
       if (path.endsWith('/revisions')) return json({ revisions });
       if (path.endsWith('/revert')) {
         return json({ ...account, revision: 4, content: 'first body' });
@@ -180,5 +218,80 @@ describe('SkillsTab', () => {
       (screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
+  });
+
+  it("never shows or restores one skill's history under another", async () => {
+    skills = [account, other];
+    await renderLoaded();
+
+    // A's history is requested and held; the person moves to B meanwhile.
+    const releaseA = hold('/skills/deploy-checklist/revisions');
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    fireEvent.click(screen.getByText('Runbook'));
+    await waitFor(() => expect(screen.getByDisplayValue('B two')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    await waitFor(() => expect(screen.getByText('Revision 2')).toBeTruthy());
+
+    // A's response arrives last and must change nothing.
+    releaseA();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText('Revision 3')).toBeNull();
+    expect(screen.queryByText(/Daemon, autonomous edit/)).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'View' })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[1]);
+    expect(screen.getByText('B one')).toBeTruthy();
+    expect(screen.queryByText('first body')).toBeNull();
+
+    // Restore acts on B with B's own revision numbers.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    await waitFor(() =>
+      expect(calls.some((call) => call.path.endsWith('/revert'))).toBe(true),
+    );
+    expect(calls.filter((call) => call.path.endsWith('/revert'))).toEqual([
+      {
+        path: '/skills/runbook/revert',
+        method: 'POST',
+        body: { revision: 1, expected_revision: 2 },
+      },
+    ]);
+  });
+
+  it('drops a held history response when the other skill has no history open', async () => {
+    skills = [account, other];
+    await renderLoaded();
+
+    const releaseA = hold('/skills/deploy-checklist/revisions');
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    fireEvent.click(screen.getByText('Runbook'));
+    await waitFor(() => expect(screen.getByDisplayValue('B two')).toBeTruthy());
+    releaseA();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText(/^Revision /)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    await waitFor(() => expect(screen.getByText('Revision 2')).toBeTruthy());
+    expect(screen.queryByText('Revision 3')).toBeNull();
+  });
+
+  it("does not let a late restore response replace another skill's draft", async () => {
+    skills = [account, other];
+    await renderLoaded();
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    await waitFor(() => expect(screen.getByText('Revision 1')).toBeTruthy());
+
+    const releaseRevert = hold('/skills/deploy-checklist/revert');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    await waitFor(() =>
+      expect(calls.some((call) => call.path.endsWith('/revert'))).toBe(true),
+    );
+    fireEvent.click(screen.getByText('Runbook'));
+    await waitFor(() => expect(screen.getByDisplayValue('B two')).toBeTruthy());
+
+    releaseRevert();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByDisplayValue('B two')).toBeTruthy();
+    expect(screen.queryByDisplayValue('first body')).toBeNull();
+    expect(screen.queryByText('Restored revision 1.')).toBeNull();
+    expect(screen.queryByText(/^Revision /)).toBeNull();
   });
 });

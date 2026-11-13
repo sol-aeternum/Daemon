@@ -119,18 +119,30 @@ export default function SkillsTab() {
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [revisions, setRevisions] = useState<SkillRevision[]>([]);
+  // History is stored with the skill it belongs to and is only shown, or
+  // restored from, while that skill is the selected one.
+  const [history, setHistory] = useState<{
+    skillId: string;
+    revisions: SkillRevision[];
+  } | null>(null);
+  const historyRequest = useRef(0);
+  const selectedIdRef = useRef(selectedId);
   const [previewRevision, setPreviewRevision] = useState<number | null>(null);
   const [previousSelectedId, setPreviousSelectedId] = useState(selectedId);
   if (previousSelectedId !== selectedId) {
     setPreviousSelectedId(selectedId);
     setShowHistory(false);
-    setRevisions([]);
+    setHistory(null);
+    setIsLoadingHistory(false);
     setPreviewRevision(null);
     setIsLoadingList(true);
     if (selectedId) setIsLoadingDetail(true);
     else setDraft(EMPTY_DETAIL);
   }
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   const getAuthHeaders = useCallback(async (): Promise<HeadersInit> => {
     const header = await ensureAuthHeader();
@@ -251,7 +263,8 @@ export default function SkillsTab() {
             return;
           }
           const data = (await response.json()) as SkillDetail;
-          setDraft(data);
+          // A response for a skill that is no longer selected is dropped.
+          if (selectedIdRef.current === skillId) setDraft(data);
         })
         .catch((error: unknown) => {
           if (error instanceof DOMException && error.name === 'AbortError') {
@@ -310,6 +323,12 @@ export default function SkillsTab() {
 
   const loadRevisions = useCallback(
     async (skillId: string) => {
+      // Only the newest request for the still-selected skill may change what
+      // is shown: a slow response for another skill, or an older request, is
+      // discarded so one skill's history is never listed under another.
+      const request = ++historyRequest.current;
+      const isCurrent = () =>
+        request === historyRequest.current && selectedIdRef.current === skillId;
       setIsLoadingHistory(true);
       try {
         const response = await fetchWithTimeout(
@@ -319,21 +338,24 @@ export default function SkillsTab() {
           },
         );
         if (!response.ok) {
-          setRevisions([]);
-          setActionMessage(
-            'error',
-            (await getErrorDetail(response, 'Failed to load skill history.')) ||
-              'Failed to load skill history.',
+          const detail = await getErrorDetail(
+            response,
+            'Failed to load skill history.',
           );
+          if (!isCurrent()) return;
+          setHistory({ skillId, revisions: [] });
+          setActionMessage('error', detail || 'Failed to load skill history.');
           return;
         }
         const data = (await response.json()) as { revisions: SkillRevision[] };
-        setRevisions(data.revisions || []);
+        if (!isCurrent()) return;
+        setHistory({ skillId, revisions: data.revisions || [] });
       } catch {
-        setRevisions([]);
+        if (!isCurrent()) return;
+        setHistory({ skillId, revisions: [] });
         setActionMessage('error', 'Failed to load skill history.');
       } finally {
-        setIsLoadingHistory(false);
+        if (request === historyRequest.current) setIsLoadingHistory(false);
       }
     },
     [fetchWithTimeout, getAuthHeaders],
@@ -350,8 +372,10 @@ export default function SkillsTab() {
     await loadRevisions(selectedId);
   };
 
-  const handleRestore = async (revision: number) => {
-    if (!selectedId) return;
+  const handleRestore = async (skillId: string, revision: number) => {
+    // The revision number only means something for the skill whose history
+    // listed it, so the request names that skill, never "whatever is selected".
+    if (!selectedId || skillId !== selectedId || draft.id !== skillId) return;
 
     const confirmed = window.confirm(
       `Restore revision ${revision}? Its content is saved as a new revision; nothing is removed from the history.`,
@@ -360,7 +384,7 @@ export default function SkillsTab() {
 
     setActionMessage('loading', 'Restoring revision...');
     try {
-      const response = await fetchWithTimeout(`/skills/${selectedId}/revert`, {
+      const response = await fetchWithTimeout(`/skills/${skillId}/revert`, {
         method: 'POST',
         headers: await getJsonHeaders(),
         body: JSON.stringify({
@@ -374,17 +398,22 @@ export default function SkillsTab() {
           response,
           'Failed to restore revision.',
         );
+        if (selectedIdRef.current !== skillId) return;
         setActionMessage('error', detail || 'Failed to restore revision.');
         return;
       }
 
       const updated = (await response.json()) as SkillDetail;
+      await fetchSkills();
+      // The person moved to another skill while this was in flight: the
+      // restore happened, but its result must not replace what they see now.
+      if (selectedIdRef.current !== skillId) return;
       setDraft(updated);
       setPreviewRevision(null);
-      await fetchSkills();
-      await loadRevisions(selectedId);
+      await loadRevisions(skillId);
       setActionMessage('success', `Restored revision ${revision}.`);
     } catch (error) {
+      if (selectedIdRef.current !== skillId) return;
       if (error instanceof DOMException && error.name === 'AbortError') {
         setActionMessage('error', 'Restore request timed out. Please retry.');
       } else {
@@ -470,8 +499,9 @@ export default function SkillsTab() {
       }
 
       const updated = (await response.json()) as SkillDetail;
-      setDraft(updated);
       await fetchSkills();
+      if (selectedIdRef.current !== selectedId) return;
+      setDraft(updated);
       if (showHistory) await loadRevisions(selectedId);
       setActionMessage('success', 'Skill saved.');
     } catch (error) {
@@ -730,6 +760,9 @@ export default function SkillsTab() {
       </span>
     );
   };
+
+  const revisions =
+    history && history.skillId === selectedId ? history.revisions : [];
 
   // Shipped skills belong to the application: every write is refused, so the
   // editor shows them read-only instead of offering controls that fail.
@@ -1187,7 +1220,13 @@ export default function SkillsTab() {
                               </button>
                               {!isCurrent && (
                                 <button
-                                  onClick={() => handleRestore(entry.revision)}
+                                  onClick={() =>
+                                    history &&
+                                    handleRestore(
+                                      history.skillId,
+                                      entry.revision,
+                                    )
+                                  }
                                   disabled={status === 'loading'}
                                   className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-primary)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-secondary)] disabled:opacity-50"
                                 >
