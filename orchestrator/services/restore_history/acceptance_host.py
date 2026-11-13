@@ -617,7 +617,15 @@ class IsolatedAcceptanceHost:
                         first = error
         if self._execution is not None:
             # No H/pool close under an outstanding runner/native cleanup owner.
-            await self._execution.aclose(deadline=deadline)
+            try:
+                await self._execution.aclose(deadline=deadline)
+            except BaseException as error:
+                # aclose drains its physical child even when its logical deadline
+                # or a runner failure is reported. Other H owners still need close.
+                if first is None:
+                    first = error
+                else:
+                    first.add_note("Additional isolated execution cleanup: " + type(error).__name__)
         for owner in (self._reader._history, self._acceptance._history):
             try:
                 await owner.aclose(deadline=deadline)

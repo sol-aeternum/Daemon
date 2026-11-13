@@ -238,9 +238,9 @@ async def text_host(projection_db, tmp_path, monkeypatch):
                     assert host._shutdown_task is not None
                     assert host._shutdown_task.done() and execution._closed
                     assert all(child.done() for child in execution._jobs)
-                    await reader_history.aclose(deadline=deadline())
-                    await history.aclose(deadline=deadline())
-                await a.close()
+                    assert reader_history._closed and history._closed
+                finally:
+                    await a.close()
 
     state.make = make
     yield state

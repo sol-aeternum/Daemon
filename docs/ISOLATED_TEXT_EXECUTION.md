@@ -29,6 +29,9 @@ The composed worker uses its own original qualified store and memory objects on
 the borrowed W pool. It does not receive the acceptor store/pool or K1. The host's
 original acceptor and reader stores remain uncomposed. Exact pool, encryption,
 profile, identity, principal and ownership bindings must agree before admission.
+The borrowed W pool must allow at least two connections: Stop retains its auth
+connection while acquiring a separate native transaction. Smaller pools refuse
+before qualification; this minimum does not guarantee availability under contention.
 
 ## Text-only restriction
 
@@ -123,6 +126,9 @@ Shutdown closes admission and drains HTTP owners, original runner/heartbeat
 children and physical SQL/history cleanup before closing coordinators or borrowed
 pools. Unfinished or uncertain cleanup retains ownership; blocked owners are not
 automatically renewed.
+After physical execution cleanup drains, a reported execution-close error does
+not skip the remaining history-owner closes. The original error survives, and a
+repeated close observes the same failed shutdown rather than renewing owners.
 
 Qualification uses synthetic data, actual disposable PostgreSQL and a deterministic
 fake at the original provider transport boundary. It must cover account/device

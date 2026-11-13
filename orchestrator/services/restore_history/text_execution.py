@@ -37,6 +37,7 @@ class HistoryTextExecution:
     ):
         if (
             type(pool) is not asyncpg.Pool
+            or pool.get_max_size() < 2
             or type(history) is not HistoryCoordinator
             or type(projection) is not TerminalHistoryProjection
             or history.profile != "terminal-v3"
@@ -69,6 +70,10 @@ class HistoryTextExecution:
             raise HistoryError("text_execution_already_started")
         self._started = True
         try:
+            # Stop retains auth ownership while acquiring a separate native
+            # transaction. Capacity is a prerequisite, not an availability promise.
+            if self.pool.get_max_size() < 2:
+                raise HistoryError("text_execution_refused")
             await self.history.open(deadline=deadline)
             async with self.history.operation(deadline=deadline) as operation:
                 await qualify_read_history(operation, self.pool, self.projection, deadline=deadline)

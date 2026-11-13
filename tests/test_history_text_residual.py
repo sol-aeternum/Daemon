@@ -580,8 +580,65 @@ async def test_host_shutdown_deadline_retains_actual_native_reset_before_h_and_p
                 await asyncio.wait_for(close, 5)
             assert all(child.done() for child in s.execution._jobs)
             assert s.execution._closed and s.execution._blocked
+            assert s.host._reader._history._closed
+            assert s.host._acceptance._history._closed
+            assert not s.host._closed
+            assert available(s.path, "OP_LOCK")
             assert not s.w._closed and not s.calls
             assert s.db.sql("SELECT count(*) FROM task_attempts") == "1"
         finally:
             release.set()
             await asyncio.gather(close, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_text_execution_rejects_single_connection_before_history_open(text_host, monkeypatch):
+    s = text_host
+    async with s.make():
+        execution = s.execution
+        opened = AsyncMock(side_effect=AssertionError("history opened before capacity refusal"))
+        monkeypatch.setattr(execution.history, "open", opened)
+        async with s.db.pool(max_size=1) as pool:
+            with pytest.raises(HistoryError, match="text_execution_refused"):
+                HistoryTextExecution(
+                    pool,
+                    execution.encryption,
+                    execution.settings,
+                    execution.history,
+                    execution.projection,
+                )
+            opened.assert_not_called()
+            assert not pool._closed
+        assert not s.calls and s.execution.worker is not None
+
+
+@pytest.mark.asyncio
+async def test_host_failed_runner_still_closes_all_histories_without_retry(text_host):
+    s = text_host
+    original = RuntimeError("synthetic original runner failure")
+    with pytest.raises(RuntimeError) as repeated:
+        async with s.make():
+            assert s.w.get_max_size() == 2
+
+            async def failed():
+                raise original
+
+            child = asyncio.create_task(failed())
+            s.execution._jobs.add(child)
+            s.execution._job_tasks[child] = "synthetic-failed-owner"
+            child.add_done_callback(s.execution._finished)
+            await asyncio.sleep(0)
+            with pytest.raises(RuntimeError) as first:
+                await s.host.aclose(deadline=deadline())
+            assert first.value is original
+            shutdown = s.host._shutdown_task
+            assert shutdown.done() and child.done()
+            assert s.execution.history._closed
+            assert s.host._reader._history._closed
+            assert s.host._acceptance._history._closed
+            assert not s.host._closed and not s.w._closed
+            assert not s.host._acceptance._tasks._pool._closed
+            with pytest.raises(RuntimeError) as again:
+                await s.host.aclose(deadline=deadline())
+            assert again.value is original and s.host._shutdown_task is shutdown
+    assert repeated.value is original
