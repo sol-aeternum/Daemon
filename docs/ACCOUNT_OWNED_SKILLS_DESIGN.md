@@ -184,8 +184,9 @@ and is removed (§10 O1). An account that wants a modified copy saves one as its
 own skill. An account can switch a shipped skill off (§10 O2).
 
 As implemented (step 4): shipped skills live in
-`orchestrator/shipped_skills/<slug>/SKILL.md`, with the catalogue's version in
-`orchestrator/shipped_skills/VERSION`. The backend applies the directory at
+`orchestrator/shipped_skills/<slug>/SKILL.md`, with a manifest in
+`orchestrator/shipped_skills/catalogue.json` holding the catalogue's version
+and the SHA-256 of every skill file. The backend applies the directory at
 startup through `orchestrator/services/shipped_skills.py`.
 
 Instances of different releases run side by side during a deploy and after a
@@ -203,10 +204,17 @@ transaction. Consequences:
   skill is retired or reverted by shipping a higher version;
 - a catalogue is applied whole or not at all. If any skill cannot be read,
   nothing is applied and its directory name is logged, never its content;
-- a change made without raising `VERSION` is not applied and logs a warning;
+- a directory is applied only when it holds exactly the skills its manifest
+  names, each with the recorded digest. A package that lost some or all of its
+  skill directories, gained one, or holds an altered file is refused and the
+  version does not advance, so absence alone never deletes a shipped skill.
+  Removing every shipped skill takes a manifest with a version above zero and
+  an empty skill list;
+- a change made without raising the manifest's version is not applied and logs
+  a warning;
 - a failure here never stops startup.
 
-`VERSION` is `0`, meaning no catalogue: no shipped skill exists yet, and the
+The manifest's version is `0`, meaning no catalogue: no shipped skill exists yet, and the
 per-account switch (O2) is not built. A test keeps the directory empty until
 that switch is added with the first shipped skill.
 

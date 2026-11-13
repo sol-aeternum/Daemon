@@ -24,11 +24,26 @@ description: When and how to apply the house writing style.
 ...
 ```
 
-## Catalogue version
+## Manifest
 
-`VERSION` holds one whole number: the version of this directory's catalogue.
-**Increase it in the same change whenever anything under this directory
-changes**: a skill added, edited or removed.
+`catalogue.json` declares what this directory holds: the catalogue's version
+and, for every skill, the SHA-256 of its `SKILL.md`:
+
+```
+{
+  "version": 1,
+  "skills": {
+    "house-style": "<sha256sum of house-style/SKILL.md>"
+  }
+}
+```
+
+**In the same change whenever anything under this directory changes** (a skill
+added, edited or removed): increase `version`, and update `skills` so it names
+exactly the skill directories here with their current digests
+(`sha256sum orchestrator/shipped_skills/<slug>/SKILL.md`). The test
+`test_repository_shipped_skills_match_their_manifest` fails with the expected
+digests if they do not match.
 
 At backend startup the loader applies the directory to the database only when
 its version is higher than the one the database already holds. It then
@@ -44,13 +59,19 @@ nothing, so:
 - an older release can never delete or roll back a newer release's skills;
 - rolling the application back leaves the newer skills in place. To retire or
   revert a skill, ship a newer version without it or with the old content;
-- a change made without increasing `VERSION` is not applied, and the loader
+- a change made without increasing `version` is not applied, and the loader
   logs a warning.
 
-If any skill cannot be read, nothing is applied and its directory name is
-logged. Version `0` means there is no catalogue. This file and any other
-top-level file are ignored.
+The digests are what keep an incomplete package from deleting skills. The
+loader applies the directory only when it holds exactly the skills the
+manifest names, each with the recorded digest. If a skill directory is missing
+or unexpected, a file differs from its digest or cannot be read, nothing is
+applied, the version does not advance and the directory names are logged. To
+remove every shipped skill, ship a higher `version` with an empty `skills`.
 
-There are no shipped skills yet, and `VERSION` is `0`. Accounts cannot switch a
+Version `0` means there is no catalogue and must have an empty `skills`. This
+file and any other top-level file are ignored.
+
+There are no shipped skills yet, and `version` is `0`. Accounts cannot switch a
 shipped skill off until the per-account setting in owner decision O2 exists, so
 add that before adding the first one.

@@ -42,7 +42,12 @@ from orchestrator.services.skill_format import (
 from orchestrator.services.skill_index import build_skill_index
 from orchestrator.services.shipped_skills import (
     SHIPPED_SKILLS_DIR,
-    read_catalogue_version,
+    MANIFEST_FILE,
+    Manifest,
+    ManifestError,
+    read_catalogue,
+    read_manifest,
+    skill_file_digest,
     sync_shipped_skills,
 )
 from orchestrator.services.skills import EMBEDDING_DIMENSIONS, SkillError, SkillStore
@@ -651,16 +656,31 @@ def _release(root: Path, name: str, version: int, skills: dict[str, str]) -> Pat
     """One application image's shipped-skills directory."""
     directory = root / name
     directory.mkdir()
-    (directory / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     (directory / "README.md").write_text("not a skill", encoding="utf-8")
+    digests: dict[str, str] = {}
     for slug, body in skills.items():
         (directory / slug).mkdir()
         title = slug.replace("-", " ").title()
-        (directory / slug / "SKILL.md").write_text(
-            f"---\nname: {title}\ndescription: {title} description\n---\n{body}\n",
-            encoding="utf-8",
-        )
+        data = f"---\nname: {title}\ndescription: {title} description\n---\n{body}\n".encode()
+        (directory / slug / "SKILL.md").write_bytes(data)
+        digests[slug] = skill_file_digest(data)
+    _write_manifest(directory, version, digests)
     return directory
+
+
+def _write_manifest(directory: Path, version: Any, digests: Any) -> None:
+    (directory / MANIFEST_FILE).write_text(
+        json.dumps({"version": version, "skills": digests}), encoding="utf-8"
+    )
+
+
+def _redigest(directory: Path) -> dict[str, str]:
+    """Digests of whatever skill files the directory holds now."""
+    return {
+        entry.name: skill_file_digest((entry / "SKILL.md").read_bytes())
+        for entry in directory.iterdir()
+        if (entry / "SKILL.md").is_file()
+    }
 
 
 async def _shipped_state(store: SkillStore) -> dict[str, tuple[int, str]]:
@@ -819,21 +839,22 @@ async def test_a_catalogue_is_applied_whole_or_not_at_all(
     tables = ("skills", "skill_revisions", "shipped_skill_catalogue")
     before = await _dump(pool, tables)
 
-    # One unreadable skill, one invalid name, one empty directory and one
-    # oversized file in a newer release: nothing of that release is applied.
+    # A newer release whose manifest matches its files, but one skill does not
+    # parse, one directory has no file and one file is oversized: nothing of
+    # that release is applied.
     secret = "vortexplum body that must not be logged"
     broken = _release(tmp_path, "broken", 2, {"house-style": "shipped v2", "glossary": "terms"})
     (broken / "house-style" / "SKILL.md").write_text("no frontmatter, no title", "utf-8")
-    (broken / "Bad Name").mkdir()
     (broken / "empty-dir").mkdir()
     (broken / "oversized").mkdir()
     (broken / "oversized" / "SKILL.md").write_text(
         f"---\nname: Big\ndescription: d\n---\n{secret}" + "x" * MAX_SKILL_FILE_CHARS, "utf-8"
     )
+    _write_manifest(broken, 2, {**_redigest(broken), "empty-dir": "0" * 64})
     with caplog.at_level("INFO"):
         partial = await sync_shipped_skills(store, broken)
-    assert (partial.applied, partial.reason) == (False, "unreadable_skill")
-    assert partial.failed == ["Bad Name", "empty-dir", "house-style", "oversized"]
+    assert (partial.applied, partial.reason) == (False, "incomplete_catalogue")
+    assert partial.failed == ["empty-dir", "house-style", "oversized"]
     assert await _dump(pool, tables) == before
     assert "vortexplum" not in caplog.text
 
@@ -888,7 +909,9 @@ async def test_startup_publication_never_raises(
 
     # A database without migration 070 publishes nothing and does not raise.
     await pool.execute("ALTER TABLE shipped_skill_catalogue RENAME TO catalogue_away")
-    monkeypatch.setattr("orchestrator.services.shipped_skills.read_catalogue_version", lambda _: 1)
+    monkeypatch.setattr(
+        "orchestrator.services.shipped_skills.read_manifest", lambda _: Manifest(1, {})
+    )
     with caplog.at_level("WARNING"):
         await main._publish_shipped_skills(pool)
     await pool.execute("ALTER TABLE catalogue_away RENAME TO shipped_skill_catalogue")
@@ -911,7 +934,136 @@ def test_no_skill_ships_before_accounts_can_switch_one_off() -> None:
     assert shipped == [], "add the per-account disable setting (O2) with the first shipped skill"
     assert (SHIPPED_SKILLS_DIR / "README.md").is_file()
     # Version 0 means "no catalogue": it can never outrank a database.
-    assert read_catalogue_version(SHIPPED_SKILLS_DIR) == 0
+    assert read_manifest(SHIPPED_SKILLS_DIR) == Manifest(0, {})
+
+
+def test_repository_shipped_skills_match_their_manifest() -> None:
+    """The directory that ships must be one the loader would accept."""
+    manifest = read_manifest(SHIPPED_SKILLS_DIR)
+    assert manifest is not None, f"{MANIFEST_FILE} is missing"
+    expected = {
+        entry.name: skill_file_digest((entry / "SKILL.md").read_bytes())
+        for entry in SHIPPED_SKILLS_DIR.iterdir()
+        if entry.is_dir()
+    }
+    assert manifest.skills == expected, f"set 'skills' in {MANIFEST_FILE} to {expected}"
+    skills, incomplete, mismatched = read_catalogue(SHIPPED_SKILLS_DIR, manifest)
+    assert (incomplete, mismatched) == ([], [])
+    assert (manifest.version > 0) or not skills
+
+
+def test_manifest_is_strict(tmp_path: Path) -> None:
+    assert read_manifest(tmp_path) is None
+    good = "a" * 64
+    for text in (
+        "",
+        "3",
+        "[]",
+        '{"version": 1}',
+        '{"version": 1, "skills": {}, "extra": 1}',
+        '{"version": "1", "skills": {}}',
+        '{"version": true, "skills": {}}',
+        '{"version": -1, "skills": {}}',
+        '{"version": 1.0, "skills": {}}',
+        '{"version": 1, "skills": []}',
+        '{"version": 1, "skills": {"Bad Name": "%s"}}' % good,
+        '{"version": 1, "skills": {"a": "%s"}}' % good.upper(),
+        '{"version": 1, "skills": {"a": "abc"}}',
+        '{"version": 1, "skills": {"a": 5}}',
+        '{"version": 1, "skills": {"a": "%s", "a": "%s"}}' % (good, good),
+        '{"version": 1, "version": 2, "skills": {}}',
+        '{"version": 0, "skills": {"a": "%s"}}' % good,
+        '{"version": 1, "skills": {}}' + " " * 70000,
+    ):
+        (tmp_path / MANIFEST_FILE).write_text(text, encoding="utf-8")
+        with pytest.raises(ManifestError):
+            read_manifest(tmp_path)
+    (tmp_path / MANIFEST_FILE).write_bytes(b"\xff\xfe")
+    with pytest.raises(ManifestError):
+        read_manifest(tmp_path)
+    (tmp_path / MANIFEST_FILE).write_text('{"version": 4, "skills": {"a-b": "%s"}}' % good)
+    assert read_manifest(tmp_path) == Manifest(4, {"a-b": good})
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_package_cannot_remove_shipped_skills(
+    pool: asyncpg.Pool, store: SkillStore, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Absence is never read as removal: the manifest must say so."""
+    v1 = _release(tmp_path, "v1", 1, {"house-style": "shipped v1", "citations": "cite sources"})
+    await sync_shipped_skills(store, v1)
+    tables = ("skills", "skill_revisions", "shipped_skill_catalogue")
+    before = await _dump(pool, tables)
+    full = {"house-style": "shipped v2", "citations": "cite sources"}
+
+    def package(name: str) -> Path:
+        return _release(tmp_path, name, 2, full)
+
+    # A newer manifest whose skill directories were all left out of the image.
+    only_manifest = package("only-manifest")
+    for slug in full:
+        (only_manifest / slug / "SKILL.md").unlink()
+        (only_manifest / slug).rmdir()
+    # One directory left out; one file left out; one extra directory.
+    one_missing = package("one-missing")
+    (one_missing / "citations" / "SKILL.md").unlink()
+    (one_missing / "citations").rmdir()
+    file_missing = package("file-missing")
+    (file_missing / "citations" / "SKILL.md").unlink()
+    extra = package("extra")
+    (extra / "glossary").mkdir()
+    (extra / "glossary" / "SKILL.md").write_text("---\nname: G\ndescription: d\n---\nb\n")
+    # A truncated file, and an altered one of the same length.
+    truncated = package("truncated")
+    data = (truncated / "house-style" / "SKILL.md").read_bytes()
+    (truncated / "house-style" / "SKILL.md").write_bytes(data[:-4])
+    altered = package("altered")
+    (altered / "house-style" / "SKILL.md").write_bytes(data.replace(b"v2", b"v9"))
+    # The old format, a bumped manifest alone, and unusable manifests.
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "VERSION").write_text("2\n")
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    _write_manifest(bare, 2, full | {"house-style": "0" * 64, "citations": "1" * 64})
+    garbled = package("garbled")
+    (garbled / MANIFEST_FILE).write_text('{"version": 2', encoding="utf-8")
+    lying_zero = package("lying-zero")
+    _write_manifest(lying_zero, 0, _redigest(lying_zero))
+
+    expected = {
+        "only-manifest": ("incomplete_catalogue", ["citations", "house-style"]),
+        "one-missing": ("incomplete_catalogue", ["citations"]),
+        "file-missing": ("incomplete_catalogue", ["citations"]),
+        "extra": ("incomplete_catalogue", ["glossary"]),
+        "truncated": ("checksum_mismatch", ["house-style"]),
+        "altered": ("checksum_mismatch", ["house-style"]),
+        "legacy": ("no_catalogue", []),
+        "bare": ("incomplete_catalogue", ["citations", "house-style"]),
+        "garbled": ("invalid_manifest", []),
+        "lying-zero": ("invalid_manifest", []),
+    }
+    for name, (reason, failed) in expected.items():
+        caplog.clear()
+        with caplog.at_level("INFO"):
+            outcome = await sync_shipped_skills(store, tmp_path / name)
+        assert (outcome.applied, outcome.reason, outcome.failed) == (False, reason, failed), name
+        assert (outcome.published, outcome.removed) == ([], []), name
+        assert await _dump(pool, tables) == before, name
+        assert await store.shipped_catalogue_version() == 1, name
+        assert "shipped v" not in caplog.text and "cite sources" not in caplog.text, name
+
+    # The refused version was not consumed: the complete v2 still applies.
+    healed = await sync_shipped_skills(store, package("complete"))
+    assert (healed.applied, healed.published, healed.removed) == (True, ["house-style"], [])
+
+    # Removing every shipped skill is possible only by declaring it.
+    remove_all = _release(tmp_path, "remove-all", 3, {})
+    assert read_manifest(remove_all) == Manifest(3, {})
+    cleared = await sync_shipped_skills(store, remove_all)
+    assert (cleared.applied, cleared.removed) == (True, ["citations", "house-style"])
+    assert await _shipped_state(store) == {}
+    assert await store.shipped_catalogue_version() == 3
 
 
 # --------------------------------------------------------------------------
