@@ -17,8 +17,8 @@ const urls = ['https://example.invalid/conversations', '/conversations'];
 afterEach(() => vi.useRealTimers());
 
 describe('history request scopes', () => {
-  it.each([409, 503])(
-    'never falls back when a %s recovery body exceeds its timeout',
+  it.each([403, 404, 409, 503])(
+    'preserves a %s refusal when its body exceeds the timeout',
     async (status) => {
       vi.useFakeTimers();
       const scope = new HistoryScope(() => 1, 'a');
@@ -32,12 +32,16 @@ describe('history request scopes', () => {
           json: () => body.promise,
         } as Response)
         .mockResolvedValue(response({ unexpected: 'alternate origin' }));
-      const read = readScopedHistory(lease, urls, {
-        getAuthHeaders: auth,
-        fetch: fetcher,
-        readErrorBody: true,
-        timeoutMs: 10,
-      });
+      const read = readScopedHistory(
+        lease,
+        status === 404 ? urls.slice(0, 1) : urls,
+        {
+          getAuthHeaders: auth,
+          fetch: fetcher,
+          readErrorBody: true,
+          timeoutMs: 10,
+        },
+      );
       await vi.advanceTimersByTimeAsync(11);
       body.resolve({});
       try {
@@ -84,18 +88,22 @@ describe('history request scopes', () => {
       }
     },
   );
-  it.each([409, 503])(
-    'never falls back after a %s with malformed recovery JSON',
+  it.each([403, 404, 409, 503])(
+    'preserves a %s refusal with malformed error JSON',
     async (status) => {
       const scope = new HistoryScope(() => 1, 'a');
       const lease = scope.capture();
       const fetcher = vi.fn(async () => new Response('malformed', { status }));
       try {
-        const result = await readScopedHistory(lease, urls, {
-          getAuthHeaders: auth,
-          fetch: fetcher,
-          readErrorBody: true,
-        });
+        const result = await readScopedHistory(
+          lease,
+          status === 404 ? urls.slice(0, 1) : urls,
+          {
+            getAuthHeaders: auth,
+            fetch: fetcher,
+            readErrorBody: true,
+          },
+        );
         expect(result.status).toBe(status);
         expect(fetcher).toHaveBeenCalledTimes(1);
       } finally {

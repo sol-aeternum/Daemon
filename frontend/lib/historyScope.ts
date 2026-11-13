@@ -172,7 +172,7 @@ export async function readScopedHistory(
         signal: controller.signal,
       });
       lease.assertCurrent();
-      if (response.status === 409 || response.status === 503) {
+      if ([403, 404, 409, 503].includes(response.status)) {
         refusalStatus = response.status;
       }
       if (controller.signal.aborted) throw controller.signal.reason;
@@ -192,7 +192,7 @@ export async function readScopedHistory(
       return { status: response.status, data };
     } catch (error) {
       lease.assertCurrent();
-      // A timed-out body cannot erase a refusal already received. The lease
+      // An unreadable body cannot erase a permanent or recovery refusal. The lease
       // check above still forbids publishing after auth/selection cancellation.
       if (refusalStatus !== undefined) {
         return { status: refusalStatus, data: null };
