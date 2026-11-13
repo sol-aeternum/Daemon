@@ -1,11 +1,12 @@
 # Account-owned skills design
 
-**Status:** Design accepted by the owner. Steps 1 and 2 of §8 are implemented:
+**Status:** Design accepted by the owner. Steps 1 to 3 of §8 are implemented:
 the store (migration `068_account_owned_skills.sql`,
-`orchestrator/services/skills.py`) and the cutover of every reader and writer
-to it (migration `069_skill_consolidation_log_content_free.sql`). The running
+`orchestrator/services/skills.py`), the cutover of every reader and writer
+to it (migration `069_skill_consolidation_log_content_free.sql`), and the
+revision list and revert endpoints with the settings UI. The running
 application no longer reads or writes skill files or `skill_projections`.
-Steps 3 and 4 are not started. This document authorises no deployment; each
+Step 4 is not started. This document authorises no deployment; each
 remaining change it describes still needs approval under the Rules of
 Engagement in `AGENTS.md`.
 
@@ -214,8 +215,8 @@ own skill. An account can switch a shipped skill off (§10 O2).
   (`docs/ACCOUNT_DELETION_DESIGN.md`); until it does, per-skill download is the
   export. Erasure works today through the cascade.
 
-API changes. The owner approved all but the revision endpoints on 2026-11-13,
-and those rows shipped with step 2:
+API changes. The owner approved the step 2 rows and then the revision
+endpoints on 2026-11-13:
 
 | Change | Kind | Status |
 | --- | --- | --- |
@@ -226,7 +227,8 @@ and those rows shipped with step 2:
 | `POST /skills/{slug}/pending-update` and `POST /skills/admin/sync`. | Removed with the upgrade machinery (§10 O1). | Removed (step 2) |
 | `repo_version`, `local_version`, `pending_update`, `created_by`, `origin_url` stay in responses and are always `null`. | Kept so the settings UI needs no change before step 3. | Shipped (step 2) |
 | `GET /skills/admin/consolidation-audit` rows carry skill UUIDs and reason codes, and no skill name or description. | Follows §3.1. | Shipped (step 2) |
-| `GET /skills/{slug}/revisions` and `POST /skills/{slug}/revert`. | New endpoints. | Not approved yet (step 3) |
+| `GET /skills/{slug}/revisions` returns the caller's retained revisions, newest first, each with name, description, content, actor and time. | New endpoint. | Shipped (step 3) |
+| `POST /skills/{slug}/revert` takes `revision` and an optional `expected_revision`, and returns the skill at its new revision. | New endpoint. | Shipped (step 3) |
 
 Refusals keep a readable sentence in `detail`, because the settings UI shows it
 as it is; clients distinguish them by status (404 not found, 403 shipped, 409
@@ -269,7 +271,7 @@ Proposed sequence of small changes:
 | --- | --- | --- |
 | 1 | Migration, write service and store, PostgreSQL tests. **Implemented.** | No |
 | 2 | Cutover of all readers and writers; account scoping; catalogue update. **Implemented.** | Yes |
-| 3 | Revision list and revert endpoints, settings UI. | Yes |
+| 3 | Revision list and revert endpoints, settings UI. **Implemented.** | Yes |
 | 4 | Shipped-skill loader; removal of projection, sync and upgrade code. | Cleanup |
 
 ## 9. Reconciliation with #91

@@ -460,6 +460,65 @@ async def test_routes_refuse_every_write_to_a_shipped_skill(
 
 
 @pytest.mark.asyncio
+async def test_revision_list_and_revert_routes(pool: asyncpg.Pool, store: SkillStore) -> None:
+    """Step 3, T6 over HTTP: history is the owner's, and a revert is a new revision."""
+    alice, bob = await _user(pool), await _user(pool)
+    await store.publish_shipped("house-style", name="House Style", description="d", body="b")
+    async with _client(pool, alice) as a, _client(pool, bob) as b:
+        slug = (await _create(a))["id"]
+        await a.put(f"/skills/{slug}", json={"name": "Deploy v2", "content": "second"})
+        await store.set_autonomous_edit(alice, slug, True)
+        await store.patch(alice, slug, "second", "third", actor="autonomous")
+
+        listed = await a.get(f"/skills/{slug}/revisions")
+        assert listed.status_code == 200
+        revisions = listed.json()["revisions"]
+        assert [(r["revision"], r["actor"], r["name"], r["content"]) for r in revisions] == [
+            (3, "autonomous", "Deploy v2", "third"),
+            (2, "user", "Deploy v2", "second"),
+            (1, "user", "Deploy Checklist", "# Steps"),
+        ]
+        assert set(revisions[0]) == {
+            "revision", "name", "description", "content", "actor", "created_at"
+        }  # fmt: skip
+
+        # Another account, a guessed slug and a shipped skill have no history here.
+        assert (await b.get(f"/skills/{slug}/revisions")).status_code == 404
+        assert (await a.get("/skills/house-style/revisions")).status_code == 404
+        assert (await b.post(f"/skills/{slug}/revert", json={"revision": 1})).status_code == 404
+        shipped = await a.post("/skills/house-style/revert", json={"revision": 1})
+        assert shipped.status_code == 403
+
+        before = await _dump(pool)
+        stale = await a.post(f"/skills/{slug}/revert", json={"revision": 1, "expected_revision": 2})
+        assert stale.status_code == 409
+        missing = await a.post(f"/skills/{slug}/revert", json={"revision": 99})
+        assert missing.status_code == 404 and missing.json()["detail"] == "Revision not found"
+        assert (await a.post(f"/skills/{slug}/revert", json={"revision": 0})).status_code == 422
+        assert await _dump(pool) == before
+
+        reverted = await a.post(
+            f"/skills/{slug}/revert", json={"revision": 1, "expected_revision": 3}
+        )
+        assert reverted.status_code == 200
+        body = reverted.json()
+        # The old content comes back as a new revision; history only grows.
+        assert (body["revision"], body["name"], body["content"]) == (
+            4,
+            "Deploy Checklist",
+            "# Steps",
+        )
+        assert body["id"] == slug
+        after = (await a.get(f"/skills/{slug}/revisions")).json()["revisions"]
+        assert [(r["revision"], r["actor"]) for r in after] == [
+            (4, "user"),
+            (3, "autonomous"),
+            (2, "user"),
+            (1, "user"),
+        ]
+
+
+@pytest.mark.asyncio
 async def test_upgrade_endpoints_are_removed(pool: asyncpg.Pool) -> None:
     alice = await _user(pool)
     async with _client(pool, alice) as a:

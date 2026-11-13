@@ -151,7 +151,7 @@ Hybrid search combining:
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
 | **Conversations** | `/conversations/{conversation_id}` (GET/PATCH/DELETE; PATCH takes `{title?, pinned?, title_locked?, selected_model?}` and rejects unknown fields; `selected_model` is `auto` or a selectable model ID, stored in server-owned conversation metadata, returned by conversation reads, and never bypasses `/chat` admission) |
 | **Memories** | `/memories/{memory_id}` (GET/PATCH/DELETE; PATCH takes `{content ≤2,000 chars, category?}`, re-embeds or clears the vector, returns the memory), `/memories/export`, `/memories/import` (≤500 items of `{content ≤2,000 chars, category}`; server-controlled status/source; embedded and deduplicated like other writes; returns created/merged/superseded counts), `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
-| **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/{skill_id}/download`, `/skills/admin/consolidation-audit` |
+| **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/{skill_id}/download`, `/skills/{skill_id}/revisions`, `/skills/{skill_id}/revert`, `/skills/admin/consolidation-audit` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
 | **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |
 | **Retired Image API** | `/api/images/models`, `/api/images/generate`, `/api/images/upload-reference`, `/api/images/{image_id}`, `/api/images/{image_id}/metadata` (authenticated 410) |

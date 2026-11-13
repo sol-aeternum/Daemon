@@ -266,6 +266,16 @@ class TestSkillsRoutesAreProtected:
         response = await client.get("/skills/skill-123/download")
         assert response.status_code == 401
 
+    @pytest.mark.asyncio
+    async def test_revisions_returns_401(self, client):
+        response = await client.get("/skills/skill-123/revisions")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_revert_returns_401(self, client):
+        response = await client.post("/skills/skill-123/revert", json={"revision": 1})
+        assert response.status_code == 401
+
 
 class TestUsersRoutesAreProtected:
     @pytest.mark.asyncio

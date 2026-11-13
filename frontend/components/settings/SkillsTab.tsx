@@ -20,10 +20,10 @@ import {
   Search,
   Filter,
   Sparkles,
-  AlertTriangle,
   X,
-  Check,
   Bot,
+  History,
+  RotateCcw,
   Lock,
   Globe,
   User,
@@ -44,18 +44,31 @@ interface SkillSummary {
   updated_at: string;
   source_type?: SkillSourceType;
   allow_autonomous_edit?: boolean | null;
-  repo_version?: string | null;
-  local_version?: string | null;
-  pending_update?: Record<string, unknown> | null;
+  scope?: 'account' | 'shipped';
+  revision?: number;
   use_count?: number | null;
   last_used_at?: string | null;
 }
 
 interface SkillDetail extends SkillSummary {
   content: string;
-  created_by?: string | null;
-  origin_url?: string | null;
 }
+
+interface SkillRevision {
+  revision: number;
+  name: string;
+  description: string;
+  content: string;
+  actor: string;
+  created_at: string;
+}
+
+const REVISION_ACTOR_LABEL: Record<string, string> = {
+  user: 'You',
+  autonomous: 'Daemon, autonomous edit',
+  consolidation: 'Daemon, consolidation',
+  shipped: 'Shipped with Daemon',
+};
 
 const EMPTY_DETAIL: SkillDetail = {
   id: '',
@@ -104,13 +117,34 @@ export default function SkillsTab() {
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [showFilters, setShowFilters] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  // History is stored with the skill it belongs to and is only shown, or
+  // restored from, while that skill is the selected one.
+  const [history, setHistory] = useState<{
+    skillId: string;
+    revisions: SkillRevision[];
+  } | null>(null);
+  const historyRequest = useRef(0);
+  const detailRequest = useRef(0);
+  const actionSequence = useRef(0);
+  const selectedIdRef = useRef(selectedId);
+  const [previewRevision, setPreviewRevision] = useState<number | null>(null);
   const [previousSelectedId, setPreviousSelectedId] = useState(selectedId);
   if (previousSelectedId !== selectedId) {
     setPreviousSelectedId(selectedId);
+    setShowHistory(false);
+    setHistory(null);
+    setIsLoadingHistory(false);
+    setPreviewRevision(null);
     setIsLoadingList(true);
     if (selectedId) setIsLoadingDetail(true);
     else setDraft(EMPTY_DETAIL);
   }
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   const getAuthHeaders = useCallback(async (): Promise<HeadersInit> => {
     const header = await ensureAuthHeader();
@@ -156,9 +190,20 @@ export default function SkillsTab() {
     [],
   );
 
+  // Every change to the shared action state takes a new sequence number, so
+  // an operation can tell whether it is still the one the state describes.
   const setActionMessage = (nextStatus: ActionStatus, nextMessage: string) => {
+    actionSequence.current += 1;
     setStatus(nextStatus);
     setMessage(nextMessage);
+    return actionSequence.current;
+  };
+
+  // An operation whose skill is no longer selected reports nothing, but it
+  // must still end its own loading state, or every control stays disabled.
+  // If a newer action has taken over the state, it is left alone.
+  const settleAbandonedAction = (action: number) => {
+    if (action === actionSequence.current) setActionMessage('idle', '');
   };
 
   const getErrorDetail = async (response: Response, fallback: string) => {
@@ -219,6 +264,13 @@ export default function SkillsTab() {
 
   const loadSkillDetail = useCallback(
     (skillId: string) => {
+      // The whole request is fenced, not only its result: only the newest
+      // request for the still-selected skill may set the draft, report an
+      // error or end the loading state. An older request finishing must not
+      // unlock the editor while the selected skill's own detail is pending.
+      const request = ++detailRequest.current;
+      const isCurrent = () =>
+        request === detailRequest.current && selectedIdRef.current === skillId;
       return getAuthHeaders()
         .then((headers) => fetchWithTimeout(`/skills/${skillId}`, { headers }))
         .then(async (response) => {
@@ -227,13 +279,14 @@ export default function SkillsTab() {
               response,
               'Failed to load selected skill.',
             );
-            setActionMessage('error', detail);
+            if (isCurrent()) setActionMessage('error', detail);
             return;
           }
           const data = (await response.json()) as SkillDetail;
-          setDraft(data);
+          if (isCurrent()) setDraft(data);
         })
         .catch((error: unknown) => {
+          if (!isCurrent()) return;
           if (error instanceof DOMException && error.name === 'AbortError') {
             setActionMessage(
               'error',
@@ -244,7 +297,7 @@ export default function SkillsTab() {
           }
         })
         .finally(() => {
-          setIsLoadingDetail(false);
+          if (request === detailRequest.current) setIsLoadingDetail(false);
         });
     },
     [fetchWithTimeout, getAuthHeaders],
@@ -283,18 +336,120 @@ export default function SkillsTab() {
     });
   }, [skills, filterType, searchQuery]);
 
-  const pendingUpdateCount = useMemo(
-    () =>
-      skills.filter(
-        (s) => s.pending_update && Object.keys(s.pending_update).length > 0,
-      ).length,
-    [skills],
-  );
-
   const autonomousCount = useMemo(
     () => skills.filter((s) => s.source_type === 'autonomous').length,
     [skills],
   );
+
+  const loadRevisions = useCallback(
+    async (skillId: string) => {
+      // Only the newest request for the still-selected skill may change what
+      // is shown: a slow response for another skill, or an older request, is
+      // discarded so one skill's history is never listed under another.
+      const request = ++historyRequest.current;
+      const isCurrent = () =>
+        request === historyRequest.current && selectedIdRef.current === skillId;
+      setIsLoadingHistory(true);
+      try {
+        const response = await fetchWithTimeout(
+          `/skills/${skillId}/revisions`,
+          {
+            headers: await getAuthHeaders(),
+          },
+        );
+        if (!response.ok) {
+          const detail = await getErrorDetail(
+            response,
+            'Failed to load skill history.',
+          );
+          if (!isCurrent()) return;
+          setHistory({ skillId, revisions: [] });
+          setActionMessage('error', detail || 'Failed to load skill history.');
+          return;
+        }
+        const data = (await response.json()) as { revisions: SkillRevision[] };
+        if (!isCurrent()) return;
+        setHistory({ skillId, revisions: data.revisions || [] });
+      } catch {
+        if (!isCurrent()) return;
+        setHistory({ skillId, revisions: [] });
+        setActionMessage('error', 'Failed to load skill history.');
+      } finally {
+        if (request === historyRequest.current) setIsLoadingHistory(false);
+      }
+    },
+    [fetchWithTimeout, getAuthHeaders],
+  );
+
+  const handleToggleHistory = async () => {
+    if (!selectedId) return;
+    if (showHistory) {
+      setShowHistory(false);
+      setPreviewRevision(null);
+      return;
+    }
+    setShowHistory(true);
+    await loadRevisions(selectedId);
+  };
+
+  const handleRestore = async (skillId: string, revision: number) => {
+    // The revision number only means something for the skill whose history
+    // listed it, so the request names that skill, never "whatever is selected".
+    if (!selectedId || skillId !== selectedId || draft.id !== skillId) return;
+
+    const confirmed = window.confirm(
+      `Restore revision ${revision}? Its content is saved as a new revision; nothing is removed from the history.`,
+    );
+    if (!confirmed) return;
+
+    const action = setActionMessage('loading', 'Restoring revision...');
+    try {
+      const response = await fetchWithTimeout(`/skills/${skillId}/revert`, {
+        method: 'POST',
+        headers: await getJsonHeaders(),
+        body: JSON.stringify({
+          revision,
+          expected_revision: draft.revision,
+        }),
+      });
+
+      if (!response.ok) {
+        const detail = await getErrorDetail(
+          response,
+          'Failed to restore revision.',
+        );
+        if (selectedIdRef.current !== skillId) {
+          settleAbandonedAction(action);
+          return;
+        }
+        setActionMessage('error', detail || 'Failed to restore revision.');
+        return;
+      }
+
+      const updated = (await response.json()) as SkillDetail;
+      await fetchSkills();
+      // The person moved to another skill while this was in flight: the
+      // restore happened, but its result must not replace what they see now.
+      if (selectedIdRef.current !== skillId) {
+        settleAbandonedAction(action);
+        return;
+      }
+      setDraft(updated);
+      setPreviewRevision(null);
+      await loadRevisions(skillId);
+      setActionMessage('success', `Restored revision ${revision}.`);
+    } catch (error) {
+      if (selectedIdRef.current !== skillId) {
+        settleAbandonedAction(action);
+        return;
+      }
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setActionMessage('error', 'Restore request timed out. Please retry.');
+      } else {
+        setActionMessage('error', 'Failed to restore revision.');
+      }
+    }
+  };
 
   const handleCreateSkill = async () => {
     const existing = new Set(skills.map((skill) => skill.id));
@@ -345,9 +500,10 @@ export default function SkillsTab() {
   };
 
   const handleSave = async () => {
-    if (!selectedId) return;
+    // Never write a draft to a skill it was not loaded from.
+    if (!selectedId || draft.id !== selectedId) return;
 
-    setActionMessage('loading', 'Saving skill...');
+    const action = setActionMessage('loading', 'Saving skill...');
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}`, {
         method: 'PUT',
@@ -357,6 +513,9 @@ export default function SkillsTab() {
           description: draft.description,
           content: draft.content,
           enabled: draft.enabled,
+          // Refuse the save if the skill changed since it was loaded, so an
+          // edit made elsewhere (or by Daemon) is never silently overwritten.
+          expected_revision: draft.revision,
         }),
       });
 
@@ -370,8 +529,13 @@ export default function SkillsTab() {
       }
 
       const updated = (await response.json()) as SkillDetail;
-      setDraft(updated);
       await fetchSkills();
+      if (selectedIdRef.current !== selectedId) {
+        settleAbandonedAction(action);
+        return;
+      }
+      setDraft(updated);
+      if (showHistory) await loadRevisions(selectedId);
       setActionMessage('success', 'Skill saved.');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -386,7 +550,7 @@ export default function SkillsTab() {
   };
 
   const handleToggleEnabled = async (enabled: boolean) => {
-    if (!selectedId) return;
+    if (!selectedId || draft.id !== selectedId) return;
 
     setDraft((prev) => ({ ...prev, enabled }));
     setActionMessage(
@@ -429,7 +593,7 @@ export default function SkillsTab() {
   };
 
   const handleToggleAutonomousEdit = async (allow_autonomous_edit: boolean) => {
-    if (!selectedId) return;
+    if (!selectedId || draft.id !== selectedId) return;
 
     setActionMessage(
       'loading',
@@ -476,52 +640,8 @@ export default function SkillsTab() {
     }
   };
 
-  const handlePendingUpdateAction = async (action: 'apply' | 'dismiss') => {
-    if (!selectedId) return;
-
-    setActionMessage(
-      'loading',
-      action === 'apply' ? 'Applying update...' : 'Dismissing update...',
-    );
-    try {
-      const response = await fetchWithTimeout(
-        `/skills/${selectedId}/pending-update`,
-        {
-          method: 'POST',
-          headers: await getJsonHeaders(),
-          body: JSON.stringify({ action }),
-        },
-      );
-
-      if (!response.ok) {
-        const detail = await getErrorDetail(
-          response,
-          `Failed to ${action} pending update.`,
-        );
-        setActionMessage('error', detail);
-        return;
-      }
-
-      await fetchSkills();
-      await fetchSkillDetail(selectedId);
-      setActionMessage(
-        'success',
-        action === 'apply' ? 'Update applied.' : 'Update dismissed.',
-      );
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage(
-          'error',
-          'Pending update request timed out. Please retry.',
-        );
-      } else {
-        setActionMessage('error', `Failed to ${action} pending update.`);
-      }
-    }
-  };
-
   const handleDelete = async () => {
-    if (!selectedId) return;
+    if (!selectedId || draft.id !== selectedId) return;
 
     const confirmed = window.confirm(
       'Delete this skill? This action cannot be undone.',
@@ -674,11 +794,16 @@ export default function SkillsTab() {
     );
   };
 
-  const hasPendingUpdate =
-    selectedSummary?.pending_update &&
-    Object.keys(selectedSummary.pending_update).length > 0;
-  const pendingIsDeprecated =
-    hasPendingUpdate && selectedSummary?.pending_update?.deprecated === true;
+  const revisions =
+    history && history.skillId === selectedId ? history.revisions : [];
+
+  // The editor is usable only when the draft on screen is the selected
+  // skill's own, loaded detail.
+  const draftReady = !isLoadingDetail && draft.id === selectedId;
+
+  // Shipped skills belong to the application: every write is refused, so the
+  // editor shows them read-only instead of offering controls that fail.
+  const isShipped = (selectedSummary?.scope ?? draft.scope) === 'shipped';
 
   return (
     <div className="space-y-6">
@@ -694,11 +819,6 @@ export default function SkillsTab() {
           <span>{skills.length} total</span>
           {autonomousCount > 0 && (
             <span className="text-amber-400">{autonomousCount} autonomous</span>
-          )}
-          {pendingUpdateCount > 0 && (
-            <span className="text-blue-400">
-              {pendingUpdateCount} pending updates
-            </span>
           )}
         </div>
       </header>
@@ -819,9 +939,6 @@ export default function SkillsTab() {
 
             {filteredSkills.map((skill) => {
               const active = selectedId === skill.id;
-              const hasPending =
-                skill.pending_update &&
-                Object.keys(skill.pending_update).length > 0;
               return (
                 <button
                   key={skill.id}
@@ -839,14 +956,6 @@ export default function SkillsTab() {
                     <div className="flex items-center gap-1.5 shrink-0">
                       {skill.source_type &&
                         renderSourceBadge(skill.source_type)}
-                      {hasPending && (
-                        <span
-                          className="text-blue-400"
-                          title="Update available"
-                        >
-                          <AlertTriangle className="h-3 w-3" />
-                        </span>
-                      )}
                       {skill.allow_autonomous_edit && (
                         <span
                           className="text-amber-400"
@@ -908,9 +1017,7 @@ export default function SkillsTab() {
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {(selectedSummary?.source_type === 'system' ||
-                    selectedSummary?.source_type === 'imported' ||
-                    selectedSummary?.source_type === 'manual') && (
+                  {!isShipped && (
                     <label
                       className="inline-flex items-center gap-2 text-xs text-[var(--color-text-secondary)]"
                       title="Allow the system to autonomously modify this skill based on usage patterns"
@@ -918,6 +1025,7 @@ export default function SkillsTab() {
                       <input
                         type="checkbox"
                         checked={!!selectedSummary?.allow_autonomous_edit}
+                        disabled={!draftReady}
                         onChange={(event) =>
                           handleToggleAutonomousEdit(event.target.checked)
                         }
@@ -929,83 +1037,47 @@ export default function SkillsTab() {
                       </span>
                     </label>
                   )}
-                  <label className="inline-flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-                    <input
-                      type="checkbox"
-                      checked={draft.enabled}
-                      onChange={(event) =>
-                        handleToggleEnabled(event.target.checked)
-                      }
-                      className="h-4 w-4 accent-[var(--color-accent-primary)]"
-                    />
-                    Enabled
-                  </label>
+                  {!isShipped && (
+                    <label className="inline-flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                      <input
+                        type="checkbox"
+                        checked={draftReady && draft.enabled}
+                        disabled={!draftReady}
+                        onChange={(event) =>
+                          handleToggleEnabled(event.target.checked)
+                        }
+                        className="h-4 w-4 accent-[var(--color-accent-primary)]"
+                      />
+                      Enabled
+                    </label>
+                  )}
                 </div>
               </div>
 
-              {hasPendingUpdate && (
-                <div
-                  className={`rounded-md border px-4 py-3 text-sm ${
-                    pendingIsDeprecated
-                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-                      : 'border-blue-500/40 bg-blue-500/10 text-blue-300'
-                  }`}
-                >
-                  <div className="flex items-start gap-2">
-                    {pendingIsDeprecated ? (
-                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-                    ) : (
-                      <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />
-                    )}
-                    <div className="flex-1">
-                      <p className="font-medium">
-                        {pendingIsDeprecated
-                          ? 'Skill deprecated'
-                          : 'Update available'}
-                      </p>
-                      <p className="text-xs opacity-80 mt-1">
-                        {pendingIsDeprecated
-                          ? 'This skill has been removed from the repository. You may continue using it locally.'
-                          : `Repository version ${selectedSummary?.repo_version || 'newer'} is available.`}
-                      </p>
-                      {!pendingIsDeprecated && (
-                        <div className="mt-3 flex gap-2">
-                          <button
-                            onClick={() => handlePendingUpdateAction('apply')}
-                            disabled={status === 'loading'}
-                            className="inline-flex items-center gap-1 rounded-md bg-blue-500/20 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-500/30 disabled:opacity-50"
-                          >
-                            <Check className="h-3 w-3" />
-                            Apply update
-                          </button>
-                          <button
-                            onClick={() => handlePendingUpdateAction('dismiss')}
-                            disabled={status === 'loading'}
-                            className="inline-flex items-center gap-1 rounded-md border border-blue-500/40 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-500/10 disabled:opacity-50"
-                          >
-                            <X className="h-3 w-3" />
-                            Dismiss
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {selectedSummary?.source_type === 'autonomous' && (
-                <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-                  <Bot className="h-4 w-4 shrink-0" />
+              {isShipped && (
+                <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs text-blue-300">
+                  <Lock className="h-4 w-4 shrink-0" />
                   <p>
-                    Created autonomously by the system. Always editable based on
-                    usage patterns.
+                    Shipped with Daemon and read-only. To change it, download it
+                    and upload the file as a skill of your own.
                   </p>
                 </div>
               )}
 
-              {(selectedSummary?.source_type === 'system' ||
-                selectedSummary?.source_type === 'imported' ||
-                selectedSummary?.source_type === 'manual') &&
+              {!isShipped && selectedSummary?.source_type === 'autonomous' && (
+                <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                  <Bot className="h-4 w-4 shrink-0" />
+                  <p>
+                    Created by Daemon from one of your conversations.
+                    {selectedSummary?.allow_autonomous_edit
+                      ? ' Daemon may keep refining it; turn off autonomous edits to stop that.'
+                      : ' Autonomous edits are off, so only you can change it.'}
+                  </p>
+                </div>
+              )}
+
+              {!isShipped &&
+                selectedSummary?.source_type !== 'autonomous' &&
                 selectedSummary?.allow_autonomous_edit && (
                   <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
                     <Sparkles className="h-4 w-4 shrink-0" />
@@ -1020,6 +1092,11 @@ export default function SkillsTab() {
                 <div className="text-sm text-[var(--color-text-muted)]">
                   Loading skill details...
                 </div>
+              ) : !draftReady ? (
+                <div className="text-sm text-[var(--color-text-muted)]">
+                  Skill details are unavailable. Select the skill again to
+                  retry.
+                </div>
               ) : (
                 <>
                   <div>
@@ -1028,6 +1105,7 @@ export default function SkillsTab() {
                     </label>
                     <input
                       type="text"
+                      readOnly={isShipped}
                       value={draft.name}
                       onChange={(event) =>
                         setDraft((prev) => ({
@@ -1045,6 +1123,7 @@ export default function SkillsTab() {
                     </label>
                     <input
                       type="text"
+                      readOnly={isShipped}
                       value={draft.description}
                       onChange={(event) =>
                         setDraft((prev) => ({
@@ -1061,6 +1140,7 @@ export default function SkillsTab() {
                       Instructions (Markdown)
                     </label>
                     <textarea
+                      readOnly={isShipped}
                       value={draft.content}
                       onChange={(event) =>
                         setDraft((prev) => ({
@@ -1076,38 +1156,149 @@ export default function SkillsTab() {
               )}
 
               <div className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border-primary)] pt-3">
-                <button
-                  onClick={handleSave}
-                  disabled={status === 'loading' || isLoadingDetail}
-                  className="inline-flex items-center gap-2 rounded-md bg-[var(--color-accent-primary)] px-4 py-2 text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
-                >
-                  <Save className="h-4 w-4" />
-                  {status === 'loading' ? 'Saving...' : 'Save skill'}
-                </button>
+                {!isShipped && (
+                  <button
+                    onClick={handleSave}
+                    disabled={status === 'loading' || !draftReady}
+                    className="inline-flex items-center gap-2 rounded-md bg-[var(--color-accent-primary)] px-4 py-2 text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
+                  >
+                    <Save className="h-4 w-4" />
+                    {status === 'loading' ? 'Saving...' : 'Save skill'}
+                  </button>
+                )}
 
                 <button
                   onClick={handleDownload}
-                  disabled={status === 'loading' || isLoadingDetail}
+                  disabled={status === 'loading' || !draftReady}
                   className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border-primary)] px-4 py-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] disabled:opacity-50"
                 >
                   <Download className="h-4 w-4" />
                   Download
                 </button>
 
-                <button
-                  onClick={handleDelete}
-                  disabled={status === 'loading'}
-                  className="inline-flex items-center gap-2 rounded-md border border-red-500/50 px-4 py-2 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
-                </button>
+                {!isShipped && (
+                  <button
+                    onClick={handleToggleHistory}
+                    disabled={!draftReady}
+                    aria-expanded={showHistory}
+                    className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border-primary)] px-4 py-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] disabled:opacity-50"
+                  >
+                    <History className="h-4 w-4" />
+                    {showHistory ? 'Hide history' : 'History'}
+                  </button>
+                )}
+
+                {!isShipped && (
+                  <button
+                    onClick={handleDelete}
+                    disabled={status === 'loading' || !draftReady}
+                    className="inline-flex items-center gap-2 rounded-md border border-red-500/50 px-4 py-2 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </button>
+                )}
 
                 <div className="ml-auto inline-flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
                   <FileCode2 className="h-4 w-4" />
                   Agents can use enabled skills in prompt assembly.
                 </div>
               </div>
+
+              {showHistory && !isShipped && (
+                <div
+                  className="space-y-2 border-t border-[var(--color-border-primary)] pt-3"
+                  aria-label="Skill history"
+                >
+                  <h4 className="text-sm font-semibold text-[var(--color-text-secondary)]">
+                    History
+                  </h4>
+                  <p className="text-xs text-[var(--color-text-muted)]">
+                    Every save is kept as a revision, up to the last 20.
+                    Restoring one saves its content as a new revision.
+                  </p>
+                  {isLoadingHistory && (
+                    <div className="text-sm text-[var(--color-text-muted)]">
+                      Loading history...
+                    </div>
+                  )}
+                  {!isLoadingHistory && revisions.length === 0 && (
+                    <div className="text-sm text-[var(--color-text-muted)]">
+                      No history available.
+                    </div>
+                  )}
+                  <ul className="space-y-2">
+                    {revisions.map((entry) => {
+                      const isCurrent = entry.revision === draft.revision;
+                      const isOpen = previewRevision === entry.revision;
+                      return (
+                        <li
+                          key={entry.revision}
+                          className="rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm text-[var(--color-text-primary)]">
+                              Revision {entry.revision}
+                              {isCurrent && (
+                                <span className="ml-2 rounded bg-green-500/10 px-1.5 py-0.5 text-xs text-green-300">
+                                  Current
+                                </span>
+                              )}
+                              <span className="ml-2 text-xs text-[var(--color-text-muted)]">
+                                {REVISION_ACTOR_LABEL[entry.actor] ||
+                                  entry.actor}{' '}
+                                · {new Date(entry.created_at).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() =>
+                                  setPreviewRevision(
+                                    isOpen ? null : entry.revision,
+                                  )
+                                }
+                                aria-expanded={isOpen}
+                                className="rounded-md border border-[var(--color-border-primary)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-secondary)]"
+                              >
+                                {isOpen ? 'Hide' : 'View'}
+                              </button>
+                              {!isCurrent && (
+                                <button
+                                  onClick={() =>
+                                    history &&
+                                    handleRestore(
+                                      history.skillId,
+                                      entry.revision,
+                                    )
+                                  }
+                                  disabled={status === 'loading'}
+                                  className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-primary)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-secondary)] disabled:opacity-50"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  Restore
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {isOpen && (
+                            <div className="mt-2 space-y-1">
+                              <div className="text-xs text-[var(--color-text-secondary)]">
+                                {entry.name}
+                                {entry.description
+                                  ? `: ${entry.description}`
+                                  : ''}
+                              </div>
+                              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-[var(--color-bg-secondary)] p-2 font-mono text-xs text-[var(--color-text-primary)]">
+                                {entry.content}
+                              </pre>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </section>

@@ -11,6 +11,7 @@ import logging
 import uuid
 from typing import Any, Protocol
 
+from orchestrator.memory.encryption import EncryptionInitError
 from orchestrator.services.skills import SkillStore, create_skill_store
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,10 @@ async def build_skill_index(
         else:
             return ""
         skills = await skill_store.list(account, enabled=True)
+    except EncryptionInitError:
+        # A deployment with no content key stores no skills at all.
+        logger.warning("Skill index unavailable: no content encryption key")
+        return ""
     except Exception:
         logger.error("Skill index unavailable; continuing without skills", exc_info=True)
         return ""
