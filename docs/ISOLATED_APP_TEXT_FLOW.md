@@ -119,6 +119,9 @@ evidence from outstanding checks):
   uncertain acknowledgements without replacement or replay.
 - Recovery/unavailability responses retaining display and original blocked keys,
   without automatic resend, settlement or alternate-backend fallback.
+- Authentication refusals remain final even with empty, malformed or timed-out
+  error bodies; a second history origin cannot mask a received 401. Auth or
+  selection cancellation still prevents stale publication.
 - Wrong identity/generation/commitment, extra attached rows, unsupported metadata,
   scoped cursor negatives and uncertain commit/reset/history-release cleanup.
 - Actual fresh-process recovery distinguished from in-process reconstruction;
@@ -161,3 +164,40 @@ repaired and re-reviewed. The consolidated PostgreSQL/core/auth/process/inventor
 selection passed 306 tests; focused final refusal/retention tests passed 46 tests.
 Required project gates and current-head hosted checks are recorded separately in
 the associated PR; the browser result alone does not clear those gates.
+
+### PR #709 review follow-up
+
+The history transport preserves received 401 responses even when their bodies
+are empty, malformed or fail after the read deadline. It never masks those
+authentication refusals by trying another history origin. Focused regressions
+cover valid bodies, cooperative timeout rejection, late body resolution and
+selection/auth-generation cancellation; stale leases still reject publication.
+
+A matched default-browser comparison used fresh registered checkouts of base
+`6b8beb6bffe69f6f0040b2566acc301fc362e8b9` and the repaired candidate, identical
+locked dependencies, browser binary, configuration, fixtures, CI settings and
+four workers, with sequential server ownership. JSON reporting did not change
+tests, assertions or retries:
+
+| Scope | Base | Repaired candidate |
+|---|---|---|
+| Full default inventory, 56 tests | 31 passed / 24 failed / 1 flaky | 29 passed / 24 failed / 3 flaky |
+| Bounded navigation/scroll diagnostic, 16 instances | 12 passed / 3 failed / 1 flaky | 15 passed / 0 failed / 1 flaky |
+
+All 22 design-token CSP failures have matching error signatures on both
+revisions after removing only checkout paths, ANSI formatting and per-response
+nonces. The FPS threshold fails on both. In the bounded diagnostic, the settings
+shortcut fails both attempts on the base and is flaky on the candidate at the
+same profile-navigation assertion and observed URL. These are not newly cleared
+tests. The diagnostic repeats the selected cases twice and is
+not a substitute for the full inventory.
+
+Other navigation/scroll outcomes differ across runs. Both long-chat viewport
+cases pass on both revisions in the diagnostic, but mobile scrolling fails and
+desktop scrolling/navigation is flaky in the repaired full run. The mobile
+trace records an unrequested document navigation with Fast Refresh activity;
+that association does not establish the complete cause. Those differences
+remain unqualified under #490, not proven unrelated to this PR. No CSP,
+performance, timeout or assertion gate was weakened, and no merge clearance
+follows from this assessment. The associated PR retains detailed per-test
+evidence and the owner decision gate.

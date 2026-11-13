@@ -172,7 +172,7 @@ export async function readScopedHistory(
         signal: controller.signal,
       });
       lease.assertCurrent();
-      if ([403, 404, 409, 503].includes(response.status)) {
+      if ([401, 403, 404, 409, 503].includes(response.status)) {
         refusalStatus = response.status;
       }
       if (controller.signal.aborted) throw controller.signal.reason;
