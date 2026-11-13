@@ -4285,7 +4285,7 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.log_consolidation_nudge_action",
       "kind": "sql_inline",
-      "fingerprint": "14dbc02b04c3a866",
+      "fingerprint": "03cefa95d41262a9",
       "tables": [
         "skill_consolidation_log"
       ],
@@ -4444,32 +4444,6 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Role-bearing private INSERT under log_retrieval's original-capture mutation transaction; sub-query text/vector suppression precedes this call. No global account-fence coverage claimed."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.merge_autonomous_skills",
-      "kind": "sql_inline",
-      "fingerprint": "0cb082b9dcb4f124",
-      "tables": [
-        "skill_consolidation_log"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.memory.store",
-      "qualname": "MemoryStore.merge_autonomous_skills",
-      "kind": "sql_inline",
-      "fingerprint": "1aa9416f963d1fdc",
-      "tables": [
-        "skill_consolidation_log"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
       "owner_source": "orchestrator.memory.store",
@@ -6043,19 +6017,6 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
-      "qualname": "SkillStore.create",
-      "kind": "sql_inline",
-      "fingerprint": "2f2d863eb3d8ba25",
-      "tables": [
-        "skills"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.services.skills",
       "qualname": "SkillStore.delete",
       "kind": "sql_inline",
       "fingerprint": "82d452cc2ed220ac",
@@ -6183,6 +6144,84 @@
       "uncovered": true,
       "category": "shared_unowned",
       "rationale": "Key-binding row for the skill store; shared deployment state, no account content."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.patch",
+      "kind": "sql_inline",
+      "fingerprint": "7ae7c2f792830fd3",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.create",
+      "kind": "sql_inline",
+      "fingerprint": "db448596d62d255f",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.merge",
+      "kind": "sql_inline",
+      "fingerprint": "22f077c6a4848b29",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.merge",
+      "kind": "sql_inline",
+      "fingerprint": "a555fb831e6a4e3b",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.merge",
+      "kind": "sql_inline",
+      "fingerprint": "f60249b3695941d4",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.save",
+      "kind": "sql_inline",
+      "fingerprint": "0782f8d3b2b8daee",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
     },
     {
       "owner_source": "orchestrator.services.web_snapshots",
@@ -6364,28 +6403,6 @@
       "qualname": "write_setup_token_file",
       "kind": "filesystem_write",
       "fingerprint": "f29c97f4a186923a",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skill_evaluator",
-      "qualname": "SkillEvaluator._create_skill",
-      "kind": "sql_unresolvable",
-      "fingerprint": "39214a700f317036",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skill_evaluator",
-      "qualname": "SkillEvaluator._refine_or_skip_match",
-      "kind": "sql_unresolvable",
-      "fingerprint": "2faf429d9c470634",
       "tables": [],
       "unknown": true,
       "uncovered": true,
@@ -7703,17 +7720,6 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
-      "owner_source": "orchestrator.tools.skill_manage",
-      "qualname": "SkillManageTool._patch.mutate",
-      "kind": "filesystem_write",
-      "fingerprint": "9f787b1cedb67fe7",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
       "owner_source": "orchestrator.tools.spawn",
       "qualname": "_write_generated_media",
       "kind": "filesystem_write",
@@ -7934,6 +7940,17 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Unresolved candidate; no runtime guard."
+    },
+    {
+      "owner_source": "orchestrator.worker.jobs",
+      "qualname": "_apply_delete_action",
+      "kind": "store_write",
+      "fingerprint": "a4201d84c7389035",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner flags the call to SkillStore.delete, which deletes the calling account's own skill row inside the store's transaction; the SQL is inventoried under orchestrator.services.skills. No runtime account-fence coverage claimed."
     },
     {
       "owner_source": "orchestrator.services.restore_history.acceptance",
@@ -8632,6 +8649,28 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "String-only closed catalog replacement retained as a conservative unresolved scanner candidate, not filesystem mutation or account-fence qualification. Uncalled terminal-v3 source; uncovered."
+    },
+    {
+      "owner_source": "orchestrator.routes.skills",
+      "qualname": "delete_skill",
+      "kind": "store_write",
+      "fingerprint": "b17c11c017c96577",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner flags the call to SkillStore.delete, which deletes the calling account's own skill row inside the store's transaction; the SQL is inventoried under orchestrator.services.skills. No runtime account-fence coverage claimed."
+    },
+    {
+      "owner_source": "orchestrator.tools.skill_manage",
+      "qualname": "SkillManageTool.execute",
+      "kind": "store_write",
+      "fingerprint": "5a0bd70fd665ec79",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Bounded scanner flags the call to SkillStore.delete, which deletes the calling account's own skill row inside the store's transaction; the SQL is inventoried under orchestrator.services.skills. No runtime account-fence coverage claimed."
     }
   ]
 }

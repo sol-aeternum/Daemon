@@ -1868,10 +1868,17 @@ class ConsolidationNudgeAction(TypedDict):
     action_type: str
     skill_id: str | None
     target_skill_id: str | None
+    # One of the codes the audit table's check constraint allows; never free text.
     reason: str
     similarity: float | None
     status: str
     audit_id: NotRequired[uuid.UUID]
+
+
+def _similarity(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 class ConsolidationNudgeResults(TypedDict):
@@ -1978,49 +1985,59 @@ async def _process_user_consolidation_nudge(
     stale_days: int,
     min_skills: int,
     db_pool: Any,
+    skill_store: Any = None,
 ) -> dict[str, Any]:
     from orchestrator.consolidation_nudge_prompts import (
         build_consolidation_nudge_prompt,
     )
+    from orchestrator.services.skills import create_skill_store
 
     actions: list[ConsolidationNudgeAction] = []
     errors: list[str] = []
-    skills_reviewed = 0
     duplicates_found = 0
     duplicates_merged = 0
     stale_flagged = 0
+    empty = {
+        "skills_reviewed": 0,
+        "duplicates_found": 0,
+        "duplicates_merged": 0,
+        "stale_flagged": 0,
+        "actions": [],
+        "errors": [],
+    }
 
     conversation_delta = await store.get_user_conversation_count_since_last_nudge(user_id)
     if conversation_delta < interval:
-        return {
-            "skills_reviewed": 0,
-            "duplicates_found": 0,
-            "duplicates_merged": 0,
-            "stale_flagged": 0,
-            "actions": [],
-            "errors": [],
-        }
+        return empty
 
     total_conversations = await store.get_total_conversation_count(user_id)
 
-    autonomous_skills = await store.get_autonomous_skill_candidates(min_skills)
-    if not autonomous_skills:
+    if skill_store is None:
+        skill_store = create_skill_store(db_pool)
+    # Only this account's skills: consolidation never sees another account's.
+    candidates = await skill_store.list_autonomous_candidates(user_id, limit=min_skills * 3)
+    if not candidates:
         await store.record_consolidation_nudge_run(user_id, total_conversations)
-        return {
-            "skills_reviewed": 0,
-            "duplicates_found": 0,
-            "duplicates_merged": 0,
-            "stale_flagged": 0,
-            "actions": [],
-            "errors": [],
-        }
+        return empty
 
-    skills_reviewed = len(autonomous_skills)
-
+    by_slug = {candidate["slug"]: candidate for candidate in candidates}
+    # Slugs still present: a skill merged away or deleted earlier in this run
+    # is no longer a candidate for a later action.
+    live = set(by_slug)
     recent_memories = await store.get_recent_memories_for_user(user_id, limit=20)
 
     prompt = build_consolidation_nudge_prompt(
-        autonomous_skills=autonomous_skills,
+        autonomous_skills=[
+            {
+                "skill_id": candidate["slug"],
+                "name": candidate["name"],
+                "description": candidate["description"],
+                "use_count": candidate["use_count"],
+                "last_used_at": candidate["last_used_at"],
+                "content": candidate["body"],
+            }
+            for candidate in candidates
+        ],
         recent_memories=recent_memories,
         user_context=None,
     )
@@ -2035,171 +2052,124 @@ async def _process_user_consolidation_nudge(
     ):
         model_actions = await _call_consolidation_model(prompt)
 
-    autonomous_skill_ids = {s["skill_id"] for s in autonomous_skills}
+    run_id = uuid.uuid4()
 
-    for action in model_actions:
-        action_type = action.get("type", "")
-        skill_id = action.get("skill_id")
+    def record(
+        action_type: str,
+        skill_id: str,
+        target_skill_id: str | None,
+        reason: str,
+        status: str,
+        similarity: float | None = None,
+        audit_id: uuid.UUID | None = None,
+    ) -> None:
+        action = ConsolidationNudgeAction(
+            action_type=action_type,
+            skill_id=skill_id,
+            target_skill_id=target_skill_id,
+            reason=reason,
+            similarity=similarity,
+            status=status,
+        )
+        if audit_id is not None:
+            action["audit_id"] = audit_id
+        actions.append(action)
 
-        if not skill_id:
+    for model_action in model_actions:
+        action_type = model_action.get("type", "")
+        skill_id = model_action.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id:
             continue
+        similarity = _similarity(model_action.get("similarity"))
+        target_id = model_action.get("target_skill_id")
+        if not isinstance(target_id, str) or not target_id:
+            target_id = None
 
         if action_type == "merge":
             duplicates_found += 1
-
-        if action_type in {"merge", "delete"}:
-            if skill_id not in autonomous_skill_ids:
-                actions.append(
-                    ConsolidationNudgeAction(
-                        action_type=action_type,
-                        skill_id=skill_id,
-                        target_skill_id=action.get("target_skill_id"),
-                        reason=f"skip: {action.get('reason', 'skill is not autonomous')}",
-                        similarity=action.get("similarity"),
-                        status="skipped",
-                    )
-                )
-                continue
-
-        if action_type == "merge":
-            target_id = action.get("target_skill_id")
-            if target_id and target_id in autonomous_skill_ids:
-                merge_result = await _apply_merge_action(skill_id, target_id, store, user_id)
-                if merge_result["merged"]:
-                    duplicates_merged += 1
-                    actions.append(
-                        ConsolidationNudgeAction(
-                            action_type="merge",
-                            skill_id=skill_id,
-                            target_skill_id=target_id,
-                            reason=action.get("reason", "model-driven merge"),
-                            similarity=action.get("similarity"),
-                            status="applied",
-                        )
-                    )
-                    actions.append(
-                        ConsolidationNudgeAction(
-                            action_type="delete",
-                            skill_id=target_id,
-                            target_skill_id=None,
-                            reason=f"merged_into {skill_id}",
-                            similarity=None,
-                            status="applied",
-                        )
-                    )
-                else:
-                    actions.append(
-                        ConsolidationNudgeAction(
-                            action_type="merge",
-                            skill_id=skill_id,
-                            target_skill_id=target_id,
-                            reason=merge_result.get("reason", "merge failed"),
-                            similarity=action.get("similarity"),
-                            status="skipped",
-                        )
-                    )
+            if skill_id not in live:
+                record("merge", skill_id, target_id, "not_candidate", "skipped", similarity)
+            elif target_id is None or target_id not in live or target_id == skill_id:
+                record("merge", skill_id, target_id, "target_not_candidate", "skipped", similarity)
             else:
-                actions.append(
-                    ConsolidationNudgeAction(
-                        action_type="merge",
-                        skill_id=skill_id,
-                        target_skill_id=target_id,
-                        reason="skip: target not autonomous or not found",
-                        similarity=action.get("similarity"),
-                        status="skipped",
-                    )
+                # The store writes both audit rows in the merge's own
+                # transaction, so a crash after this call cannot leave a
+                # committed merge without its record.
+                outcome = await _apply_merge_action(
+                    skill_id, target_id, skill_store, user_id, run_id, similarity
                 )
+                refusal = outcome if isinstance(outcome, str) else None
+                if refusal is None:
+                    merge_audit_id, delete_audit_id = outcome
+                    duplicates_merged += 1
+                    record(
+                        "merge", skill_id, target_id, "model_merge", "applied", similarity,
+                        audit_id=merge_audit_id,
+                    )  # fmt: skip
+                    record(
+                        "delete", target_id, skill_id, "merged_into", "applied",
+                        audit_id=delete_audit_id,
+                    )  # fmt: skip
+                    live.discard(target_id)
+                else:
+                    record("merge", skill_id, target_id, refusal, "skipped", similarity)
 
         elif action_type == "delete":
-            if skill_id in autonomous_skill_ids:
-                delete_result = await _apply_delete_action(
-                    skill_id,
-                    store,
-                    user_id,
-                    reason=action.get("reason", "model-driven delete"),
-                )
-                audit_id: uuid.UUID | None = delete_result.get("audit_id")
-                if delete_result["deleted"]:
-                    actions.append(
-                        ConsolidationNudgeAction(
-                            action_type="delete",
-                            skill_id=skill_id,
-                            target_skill_id=None,
-                            reason=delete_result.get("reason")
-                            or action.get("reason", "model-driven delete"),
-                            similarity=None,
-                            status="applied",
-                            audit_id=audit_id,
-                        )
-                    )
-                else:
-                    actions.append(
-                        ConsolidationNudgeAction(
-                            action_type="delete",
-                            skill_id=skill_id,
-                            target_skill_id=None,
-                            reason=delete_result.get("reason", "delete failed"),
-                            similarity=None,
-                            status="skipped",
-                            audit_id=audit_id,
-                        )
-                    )
+            if skill_id not in live:
+                record("delete", skill_id, target_id, "not_candidate", "skipped", similarity)
+                continue
+            delete_result = await _apply_delete_action(
+                by_slug[skill_id], store, skill_store, user_id, run_id
+            )
+            record(
+                "delete",
+                skill_id,
+                None,
+                delete_result["reason"],
+                "applied" if delete_result["deleted"] else "skipped",
+                audit_id=delete_result.get("audit_id"),
+            )
+            if delete_result["deleted"]:
+                live.discard(skill_id)
 
-        elif action_type == "flag_stale":
-            if skill_id in autonomous_skill_ids:
-                stale_flagged += 1
-                actions.append(
-                    ConsolidationNudgeAction(
-                        action_type="flag_stale",
-                        skill_id=skill_id,
-                        target_skill_id=None,
-                        reason=action.get("reason", "stale by model assessment"),
-                        similarity=None,
-                        status="recorded",
-                    )
-                )
+        elif action_type == "flag_stale" and skill_id in live:
+            stale_flagged += 1
+            record("flag_stale", skill_id, None, "model_stale", "recorded")
 
-    run_id = uuid.uuid4()
     await store.record_consolidation_nudge_run(user_id, total_conversations)
 
     for action in actions:
-        skill_name = None
-        skill_desc = None
-        skill_use_count = None
-        skill_last_used = None
-        for s in autonomous_skills:
-            if s["skill_id"] == action["skill_id"]:
-                skill_name = s.get("name")
-                skill_desc = s.get("description")
-                skill_use_count = s.get("use_count")
-                skill_last_used = s.get("last_used_at")
-                break
-        existing_audit_id = action.get("audit_id")
-        if existing_audit_id is not None:
-            # _apply_delete_action pre-wrote the pending audit row and has
-            # already finalized its status (applied on success, failed with
-            # reason on failure). Re-touching the row here would either
-            # duplicate the work or overwrite the `failed` status with the
-            # outer loop's `skipped`. Skip persistence; the action is kept
-            # in the returned list for caller visibility.
+        if action.get("audit_id") is not None:
+            # Every action that changed a skill is already audited: a merge
+            # wrote its rows in its own transaction, and _apply_delete_action
+            # pre-wrote a pending row and finalized it (applied, or failed
+            # with a reason code). Writing again here would duplicate the row
+            # or overwrite `failed` with `skipped`. Only actions that changed
+            # nothing (skips and stale flags) are recorded below.
             continue
+        # The audit row references skills by internal id only. A slug the
+        # model invented has no id and is recorded without one.
+        subject = by_slug.get(action["skill_id"] or "")
+        target = by_slug.get(action.get("target_skill_id") or "")
         await store.log_consolidation_nudge_action(
             user_id=user_id,
             run_id=run_id,
             action_type=action["action_type"],
-            skill_id=action["skill_id"],
-            target_skill_id=action.get("target_skill_id"),
-            reason=action.get("reason", ""),
+            skill_id=uuid.UUID(subject["id"]) if subject else None,
+            target_skill_id=uuid.UUID(target["id"]) if target else None,
+            reason=action["reason"],
             similarity=action.get("similarity"),
             status=action["status"],
-            skill_name=skill_name,
-            skill_description=skill_desc,
-            skill_use_count=skill_use_count,
-            skill_last_used_at=skill_last_used,
+            skill_use_count=subject["use_count"] if subject else None,
+            skill_last_used_at=(
+                datetime.fromisoformat(subject["last_used_at"])
+                if subject and subject["last_used_at"]
+                else None
+            ),
         )
 
     return {
-        "skills_reviewed": skills_reviewed,
+        "skills_reviewed": len(candidates),
         "duplicates_found": duplicates_found,
         "duplicates_merged": duplicates_merged,
         "stale_flagged": stale_flagged,
@@ -2269,170 +2239,92 @@ def _extract_response_content(response: Any) -> str:
     return ""
 
 
+# Store refusals that mean the owner has closed a skill to unattended edits.
+_NOT_GRANTED_REFUSALS = frozenset({"autonomous_edit_not_granted", "shipped_read_only"})
+
+
 async def _apply_merge_action(
     skill_id: str,
     target_skill_id: str,
-    store: MemoryStore,
+    skill_store: Any,
     user_id: uuid.UUID,
-) -> dict[str, Any]:
+    run_id: uuid.UUID,
+    similarity: float | None = None,
+) -> str | tuple[uuid.UUID, uuid.UUID]:
+    """Merge ``target_skill_id`` into ``skill_id``, audited atomically.
+
+    Returns a refusal code, or the ids of the merge and delete audit rows the
+    store wrote in the merge's transaction.
+    """
+    from orchestrator.services.skill_index import embed_skill
+    from orchestrator.services.skills import SkillError
+
     try:
-        await store.merge_autonomous_skills(
-            kept_skill_id=skill_id,
-            absorbed_skill_ids=[target_skill_id],
-            user_id=user_id,
+        merged = await skill_store.merge(
+            user_id,
+            skill_id,
+            [target_skill_id],
+            actor="consolidation",
+            audit_run_id=run_id,
+            audit_similarity=similarity,
         )
-        return {"merged": True, "reason": "ok"}
-    except Exception as e:
-        return {"merged": False, "reason": str(e)}
+    except SkillError as exc:
+        return "not_granted" if exc.reason in _NOT_GRANTED_REFUSALS else "merge_failed"
+    except Exception:
+        logger.warning("Skill consolidation merge failed")
+        return "merge_failed"
+    await embed_skill(skill_store, merged)
+    merge_audit_id, delete_audit_id = merged["audit_ids"]
+    return merge_audit_id, delete_audit_id
 
 
 async def _apply_delete_action(
-    skill_id: str,
+    skill: dict[str, Any],
     store: MemoryStore,
+    skill_store: Any,
     user_id: uuid.UUID,
-    *,
-    reason: str = "model-driven delete",
+    run_id: uuid.UUID,
 ) -> dict[str, Any]:
-    run_id = uuid.uuid4()
+    """Delete one of the account's skills, auditing before the delete runs.
+
+    The pending audit row commits first, so a crash after the delete leaves a
+    durable record of the attempt (``pending``) rather than nothing.
+    """
+    from orchestrator.services.skills import SkillError
+
     try:
         audit_id = await store.log_consolidation_nudge_action(
             user_id=user_id,
             run_id=run_id,
             action_type="delete",
-            skill_id=skill_id,
+            skill_id=uuid.UUID(skill["id"]),
             target_skill_id=None,
-            reason=reason,
+            reason="model_delete",
             similarity=None,
             status="pending",
+            skill_use_count=skill["use_count"],
         )
-    except Exception as e:
-        return {"deleted": False, "reason": f"audit log failed before delete: {e}"}
+    except Exception:
+        logger.warning("Skill consolidation audit write failed; delete not attempted")
+        return {"deleted": False, "reason": "audit_failed"}
 
     try:
-        from orchestrator.skills_store import delete_skill
-
-        delete_skill(skill_id)
-        await store.delete_skill_projection(skill_id)
-        await store.update_consolidation_nudge_action_status(
-            audit_id,
-            status="applied",
+        await skill_store.delete(user_id, skill["slug"], actor="consolidation")
+    except Exception as exc:
+        reason = (
+            "not_granted"
+            if isinstance(exc, SkillError) and exc.reason in _NOT_GRANTED_REFUSALS
+            else "delete_failed"
         )
-        return {"deleted": True, "reason": "ok", "audit_id": audit_id}
-    except Exception as e:
         try:
             await store.update_consolidation_nudge_action_status(
-                audit_id,
-                status="failed",
-                reason=f"delete failed: {e}",
+                audit_id, status="failed", reason=reason
             )
         except Exception:
             logger.warning("Failed to mark consolidation delete audit row failed")
-        return {"deleted": False, "reason": str(e), "audit_id": audit_id}
-
-
-async def _find_duplicate_autonomous_skills(
-    skills: list[dict[str, Any]],
-    store: MemoryStore,
-) -> list[list[dict[str, Any]]]:
-    if len(skills) < 2:
-        return []
-
-    from orchestrator.memory.embedding import embed_query
-
-    groups: list[list[dict[str, Any]]] = []
-    processed: set[str] = set()
-
-    for i, skill in enumerate(skills):
-        if skill["skill_id"] in processed:
-            continue
-
-        group = [skill]
-        query_text = f"{skill['name']}\n{skill['description']}"
-        try:
-            query_emb = await embed_query(query_text)
-        except Exception:
-            continue
-
-        for j, other_skill in enumerate(skills[i + 1 :], start=i + 1):
-            if other_skill["skill_id"] in processed:
-                continue
-
-            if other_skill.get("embedding") is None:
-                continue
-
-            norm_a = sum(a * a for a in query_emb) ** 0.5
-            norm_b = sum(b * b for b in other_skill["embedding"]) ** 0.5
-            dot = sum(a * b for a, b in zip(query_emb, other_skill["embedding"]))
-            similarity = dot / (norm_a * norm_b + 1e-8)
-            cosine_distance = 1 - similarity  # noqa: F841
-
-            if similarity >= 0.90:
-                group.append(other_skill)
-                processed.add(other_skill["skill_id"])
-
-        if len(group) > 1:
-            groups.append(group)
-            processed.add(skill["skill_id"])
-
-    return groups
-
-
-async def _try_merge_duplicate_skills(
-    group: list[dict[str, Any]],
-    store: MemoryStore,
-    user_id: uuid.UUID,
-) -> dict[str, Any]:
-    if len(group) < 2:
-        return {
-            "merged": False,
-            "reason": "group has fewer than 2 skills",
-            "similarity": None,
-            "kept_skill_id": None,
-            "absorbed_skill_ids": [],
-        }
-
-    primary = max(group, key=lambda s: s.get("use_count") or 0)
-    absorbed = [s for s in group if s["skill_id"] != primary["skill_id"]]
-
+        return {"deleted": False, "reason": reason, "audit_id": audit_id}
     try:
-        await store.merge_autonomous_skills(
-            kept_skill_id=primary["skill_id"],
-            absorbed_skill_ids=[s["skill_id"] for s in absorbed],
-            user_id=user_id,
-        )
-        return {
-            "merged": True,
-            "reason": f"merged {len(absorbed)} duplicate(s)",
-            "similarity": 0.90,
-            "kept_skill_id": primary["skill_id"],
-            "absorbed_skill_ids": [s["skill_id"] for s in absorbed],
-        }
-    except Exception as e:
-        return {
-            "merged": False,
-            "reason": f"merge failed: {e}",
-            "similarity": 0.90,
-            "kept_skill_id": primary["skill_id"],
-            "absorbed_skill_ids": [],
-        }
-
-
-async def _find_stale_autonomous_skills(
-    skills: list[dict[str, Any]],
-    store: MemoryStore,
-    stale_days: int,
-) -> list[dict[str, Any]]:
-    stale: list[dict[str, Any]] = []
-    for skill in skills:
-        last_used = skill.get("last_used_at")
-        if last_used is None:
-            continue
-        try:
-            from datetime import timedelta
-
-            cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
-            if last_used < cutoff:
-                stale.append(skill)
-        except Exception:
-            continue
-    return stale
+        await store.update_consolidation_nudge_action_status(audit_id, status="applied")
+    except Exception:
+        logger.warning("Failed to mark consolidation delete audit row applied")
+    return {"deleted": True, "reason": "model_delete", "audit_id": audit_id}

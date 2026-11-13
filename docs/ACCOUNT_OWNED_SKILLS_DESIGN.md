@@ -1,11 +1,13 @@
 # Account-owned skills design
 
-**Status:** Design accepted by the owner. Step 1 of §8 (migration
-`068_account_owned_skills.sql`, `orchestrator/services/skills.py` and its
-PostgreSQL tests) is implemented and called by nothing; the running application
-still uses the file-backed store. This document changes no feature status and
-authorises no deployment or API change. Each change it
-describes still needs approval under the Rules of Engagement in `AGENTS.md`.
+**Status:** Design accepted by the owner. Steps 1 and 2 of §8 are implemented:
+the store (migration `068_account_owned_skills.sql`,
+`orchestrator/services/skills.py`) and the cutover of every reader and writer
+to it (migration `069_skill_consolidation_log_content_free.sql`). The running
+application no longer reads or writes skill files or `skill_projections`.
+Steps 3 and 4 are not started. This document authorises no deployment; each
+remaining change it describes still needs approval under the Rules of
+Engagement in `AGENTS.md`.
 
 **Supersedes:** §4 "Published skills and portable editing" of the earlier
 supporting-source design (#601 working draft), which bundled skills with
@@ -25,9 +27,10 @@ and erasure of learned skills).
 | S3 | **Save is publish, with revision history.** | One transaction per save. No drafts, separate publish step, export job or Git sidecar. |
 | S4 | #91's on-demand loading, path scoping and description cap stay a **separate change**. | This design reserves the fields and changes #91's storage criteria only. |
 
-## 2. Current state
+## 2. State before the cutover
 
-Evidence is from `main` at `5507abd5`.
+Evidence is from `main` at `5507abd5`, before step 2. It is kept as the record
+of what the cutover replaced.
 
 | Fact | Evidence |
 | --- | --- |
@@ -96,7 +99,7 @@ design touches.
 | Slug | Encrypted, with a keyed digest for lookup. | Derived from the name. The digest is HMAC-SHA-256 over the owner id and slug, under a key derived from the content-encryption key, so equal slugs in different accounts do not match and a guess cannot be confirmed without the key. |
 | Content hash | **Not stored.** | An unkeyed hash of private content lets anyone with database or backup access confirm a guessed body. Its only uses were drift detection against files, which no longer exists, and guarding the embedding write, which `embedding_revision` now does. Export computes a hash on the fly if a client wants one. |
 | `origin_url`, `created_by`, `source_file_path`, `pending_update` | Dropped. | No remaining use. `pending_update` carried skill content as JSONB. |
-| `skill_consolidation_log.skill_name`, `.skill_description`, `.reason` | Name and description columns dropped; the row references the skill id. `reason` becomes an enumerated code. | Existing plaintext copies of skill content in an account-owned audit table (`migrations/029_skill_consolidation_nudge.sql`). |
+| `skill_consolidation_log.skill_name`, `.skill_description`, `.skill_id`, `.target_skill_id`, `.reason` | Name and description columns dropped. `skill_id` and `target_skill_id` become the internal UUID, with no foreign key so the row survives the skill. `reason` becomes one of a fixed set of codes, enforced by a check constraint. Rows written before migration 069 keep action, status and times; their slugs become `NULL` and their reasons `legacy`. | Existing plaintext copies of skill content in an account-owned audit table (`migrations/029_skill_consolidation_nudge.sql`): the slug columns held slugs derived from names, and `reason` held text written by a model. |
 | `source_type`, `actor`, `enabled`, `allow_autonomous_edit`, `revision`, counts, timestamps | Plaintext. | Enumerations, flags, numbers and times; no free text. |
 
 **Key binding.** A third table, `skill_store_key`, holds one row: a keyed
@@ -148,6 +151,10 @@ A save is one transaction:
 5. Insert the new `skill_revisions` row, update the head row, and trim
    revisions beyond the retention count.
 
+The owner's enabled switch, when a create, import or save carries one, is part
+of that same transaction. A skill requested disabled is never visible enabled,
+and content and switch are never visible half-applied.
+
 The embedding is computed after commit and stored, with `embedding_revision`,
 only if the head revision is still the one it was computed from, so a slow embedding call never overwrites a newer save. A skill with no
 embedding stays usable; it is only excluded from similarity search.
@@ -184,30 +191,48 @@ own skill. An account can switch a shipped skill off (§10 O2).
 - Consolidation selects and merges candidates within one account. The current
   global candidate query gains an account filter, and the merge runs through
   the write service so it is recorded as a revision.
+- A change consolidation makes is never committed without its audit record.
+  A merge writes its `merge` and `delete` audit rows in the merge's own
+  transaction. A delete commits a `pending` audit row first and finalises it
+  afterwards, so a crash leaves a record of the attempt.
 
 ## 7. Import, export and API
 
-- **Format.** `SKILL.md`: YAML frontmatter (`name`, `description`, `version`,
-  and `paths` reserved for #91) followed by the Markdown body. Frontmatter is
-  parsed with `safe_load` and bounded before parsing.
+- **Format.** `SKILL.md`: frontmatter (`name`, `description`, `version`,
+  `enabled`, and `paths` reserved for #91) followed by the Markdown body. The
+  file and its frontmatter are bounded before parsing. As implemented, the
+  frontmatter is read with the existing line-based `key: value` parser, which
+  evaluates nothing; moving to YAML `safe_load` stays with #91 (§9), since it
+  needs PyYAML as a direct dependency.
 - **Import** creates a skill or a new revision of the caller's own skill. No
   path in the file or filename is used for storage.
 - **Export** renders the current revision on request. Nothing is written to
   disk at runtime, which removes the path-safety surface in `skills_store.py`.
 - **Account export and erasure.** Skills and their revisions join the full
   context export, and the writer catalogue entries change from "Uncovered" to
-  owned through `users`.
+  owned through `users`. The full context export does not exist yet
+  (`docs/ACCOUNT_DELETION_DESIGN.md`); until it does, per-skill download is the
+  export. Erasure works today through the cascade.
 
-API changes, each needing approval before implementation:
+API changes. The owner approved all but the revision endpoints on 2026-11-13,
+and those rows shipped with step 2:
 
-| Change | Kind |
-| --- | --- |
-| Existing routes keep their paths and address a skill by slug within the caller's account. | Behaviour: results are now per account. |
-| Responses add `scope` (`account` or `shipped`) and `revision`. | Additive. |
-| Writes to a shipped skill return 403. | New refusal. |
-| `PUT` accepts an optional expected revision and returns 409 on mismatch. | Additive. |
-| `GET /skills/{slug}/revisions` and `POST /skills/{slug}/revert`. | New endpoints. |
-| `POST /skills/{slug}/pending-update` and `POST /skills/admin/sync`. | Removed with the upgrade machinery (§10 O1). |
+| Change | Kind | Status |
+| --- | --- | --- |
+| Existing routes keep their paths and address a skill by slug within the caller's account. | Behaviour: results are now per account. | Shipped (step 2) |
+| Responses add `scope` (`account` or `shipped`) and `revision`. | Additive. | Shipped (step 2) |
+| Writes to a shipped skill return 403. | New refusal. | Shipped (step 2) |
+| `PUT` accepts an optional `expected_revision` and returns 409 on mismatch. | Additive. | Shipped (step 2) |
+| `POST /skills/{slug}/pending-update` and `POST /skills/admin/sync`. | Removed with the upgrade machinery (§10 O1). | Removed (step 2) |
+| `repo_version`, `local_version`, `pending_update`, `created_by`, `origin_url` stay in responses and are always `null`. | Kept so the settings UI needs no change before step 3. | Shipped (step 2) |
+| `GET /skills/admin/consolidation-audit` rows carry skill UUIDs and reason codes, and no skill name or description. | Follows §3.1. | Shipped (step 2) |
+| `GET /skills/{slug}/revisions` and `POST /skills/{slug}/revert`. | New endpoints. | Not approved yet (step 3) |
+
+Refusals keep a readable sentence in `detail`, because the settings UI shows it
+as it is; clients distinguish them by status (404 not found, 403 shipped, 409
+name taken or revision conflict, 400 for a limit or malformed input). Without
+a database or an encryption key the routes return 503; there is no file-backed
+fallback.
 
 No SSE event type changes. The Feature Matrix row "Skill Management (CRUD)" is
 updated when the cutover ships, not by this document.
@@ -232,12 +257,18 @@ inferred. Proposed handling, consistent with the reminders fix (#698):
 The tools do not refuse while unowned legacy files remain; the count is logged
 at startup (§10 O4).
 
+As implemented in step 2, the startup backfill of `skill_projections` from
+files and the shipped-skill upgrade sync no longer run. The modules behind
+them (`skills_store.py`, `skills_projection.py`, `skills_sync.py`,
+`skills_upgrade.py`) remain on disk, unused by the running application, until
+step 4.
+
 Proposed sequence of small changes:
 
 | Step | Content | Ships behaviour? |
 | --- | --- | --- |
 | 1 | Migration, write service and store, PostgreSQL tests. **Implemented.** | No |
-| 2 | Cutover of all readers and writers; account scoping; catalogue update. | Yes |
+| 2 | Cutover of all readers and writers; account scoping; catalogue update. **Implemented.** | Yes |
 | 3 | Revision list and revert endpoints, settings UI. | Yes |
 | 4 | Shipped-skill loader; removal of projection, sync and upgrade code. | Cleanup |
 

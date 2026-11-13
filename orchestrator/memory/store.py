@@ -3357,45 +3357,6 @@ class MemoryStore:
             conversation_count,
         )
 
-    async def get_autonomous_skill_candidates(self, min_skills: int) -> list[dict[str, Any]]:
-        rows = await self._pool.fetch(
-            """
-            SELECT
-                sp.skill_id,
-                sp.name,
-                sp.description,
-                sp.embedding,
-                sp.use_count,
-                sp.last_used_at,
-                sp.allow_autonomous_edit,
-                sp.source_type,
-                sp.enabled
-            FROM skill_projections sp
-            WHERE sp.source_type = 'autonomous'
-              AND sp.enabled = TRUE
-              AND sp.embedding IS NOT NULL
-            ORDER BY sp.use_count DESC
-            LIMIT $1
-            """,
-            min_skills * 3,
-        )
-        results = []
-        for row in rows:
-            results.append(
-                {
-                    "skill_id": row["skill_id"],
-                    "name": row["name"],
-                    "description": row["description"],
-                    "embedding": self._parse_vector(row["embedding"]),
-                    "use_count": row["use_count"],
-                    "last_used_at": row["last_used_at"],
-                    "allow_autonomous_edit": row["allow_autonomous_edit"],
-                    "source_type": row["source_type"],
-                    "enabled": row["enabled"],
-                }
-            )
-        return results
-
     async def list_users_with_eligible_l1_memories(self) -> list[uuid.UUID]:
         rows = await self._pool.fetch(
             """
@@ -3407,12 +3368,6 @@ class MemoryStore:
             """
         )
         return [row["user_id"] for row in rows]
-
-    async def delete_skill_projection(self, skill_id: str) -> bool:
-        from orchestrator.skills_projection import SkillProjectionStore
-
-        projection_store = SkillProjectionStore(self._pool)
-        return await projection_store.delete_projection(skill_id)
 
     async def get_recent_memories_for_user(
         self, user_id: uuid.UUID, limit: int = 20
@@ -3450,101 +3405,31 @@ class MemoryStore:
             return [float(x) for x in value]
         return None
 
-    async def merge_autonomous_skills(
-        self,
-        kept_skill_id: str,
-        absorbed_skill_ids: list[str],
-        user_id: uuid.UUID,
-    ) -> None:
-        from orchestrator.skills_store import delete_skill, get_skill, update_skill
-        from orchestrator.skills_projection import SkillProjectionStore
-
-        kept_skill = get_skill(kept_skill_id)
-        absorbed_content_parts = [kept_skill.get("content", "")]
-
-        for absorbed_id in absorbed_skill_ids:
-            try:
-                absorbed_skill = get_skill(absorbed_id)
-                absorbed_content_parts.append(
-                    f"\n\n-- Merged from {absorbed_skill.get('name', absorbed_id)} --\n"
-                    f"{absorbed_skill.get('content', '')}"
-                )
-                delete_skill(absorbed_id)
-
-                projection_store = SkillProjectionStore(self._pool)
-                await projection_store.delete_projection(absorbed_id)
-            except Exception:
-                pass
-
-        merged_content = "\n".join(absorbed_content_parts)
-        update_skill(
-            kept_skill_id,
-            name=None,
-            description=None,
-            content=merged_content,
-            enabled=None,
-        )
-
-        projection_store = SkillProjectionStore(self._pool)
-        await projection_store.upsert_projection(
-            skill_id=kept_skill_id,
-            name=kept_skill.get("name", ""),
-            description=kept_skill.get("description", ""),
-            source_file_path=kept_skill.get("source_file_path", ""),
-            source_hash="",
-            enabled=True,
-            source_type="autonomous",
-        )
-
-        run_id = uuid.uuid4()
-        for absorbed_id in absorbed_skill_ids:
-            await self._pool.execute(
-                """
-                INSERT INTO skill_consolidation_log
-                    (user_id, run_id, action_type, skill_id, target_skill_id, reason, status)
-                VALUES ($1, $2, 'delete', $3, $4, 'merged', 'applied')
-                """,
-                user_id,
-                run_id,
-                absorbed_id,
-                kept_skill_id,
-            )
-
-        await self._pool.execute(
-            """
-            INSERT INTO skill_consolidation_log
-                (user_id, run_id, action_type, skill_id, reason, status, skill_name, skill_description)
-            VALUES ($1, $2, 'merge', $3, $4, 'applied', $5, $6)
-            """,
-            user_id,
-            run_id,
-            kept_skill_id,
-            f"merged {len(absorbed_skill_ids)} skill(s)",
-            kept_skill.get("name", ""),
-            kept_skill.get("description", ""),
-        )
-
     async def log_consolidation_nudge_action(
         self,
         user_id: uuid.UUID,
         run_id: uuid.UUID,
         action_type: str,
-        skill_id: str | None,
-        target_skill_id: str | None,
+        skill_id: uuid.UUID | None,
+        target_skill_id: uuid.UUID | None,
         reason: str,
         similarity: float | None,
         status: str,
-        skill_name: str | None = None,
-        skill_description: str | None = None,
         skill_use_count: int | None = None,
         skill_last_used_at: Any = None,
     ) -> uuid.UUID:
+        """Record one consolidation action.
+
+        The row carries no skill content: skills are referenced by their
+        internal id and ``reason`` is one of a fixed set of codes, enforced by
+        the table's check constraint.
+        """
         row = await self._pool.fetchrow(
             """
             INSERT INTO skill_consolidation_log
                 (user_id, run_id, action_type, skill_id, target_skill_id, reason,
-                 similarity, status, skill_name, skill_description, skill_use_count, skill_last_used_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 similarity, status, skill_use_count, skill_last_used_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id
             """,
             user_id,
@@ -3555,8 +3440,6 @@ class MemoryStore:
             reason,
             similarity,
             status,
-            skill_name,
-            skill_description,
             skill_use_count,
             skill_last_used_at,
         )

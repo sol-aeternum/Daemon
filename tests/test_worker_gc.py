@@ -205,30 +205,3 @@ async def test_list_users_with_eligible_l1_memories_uses_store_pool() -> None:
     assert "status = 'active'" in sql
     assert "tier = 'l1'" in sql
     assert "embedding IS NOT NULL" in sql
-
-
-@pytest.mark.asyncio
-async def test_delete_skill_projection_uses_projection_store(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pool = AsyncMock()
-    store = _memory_store(pool)
-    calls: dict[str, Any] = {}
-
-    class FakeProjectionStore:
-        def __init__(self, db_pool: Any) -> None:
-            calls["pool"] = db_pool
-
-        async def delete_projection(self, skill_id: str) -> bool:
-            calls["skill_id"] = skill_id
-            return True
-
-    monkeypatch.setattr(
-        "orchestrator.skills_projection.SkillProjectionStore",
-        FakeProjectionStore,
-    )
-
-    result = await store.delete_skill_projection("skill-delete")
-
-    assert result is True
-    assert calls == {"pool": pool, "skill_id": "skill-delete"}

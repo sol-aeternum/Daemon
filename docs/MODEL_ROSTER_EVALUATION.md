@@ -203,8 +203,6 @@ must all be visible. The cap cannot rely on assumed cache hits or later refunds.
   production extraction/storage/dedup path. It loads environment configuration
   and resets benchmark state; run only with its isolated development-database
   safeguards. It is not a ready-made general orchestration comparison runner.
-- `tests/benchmark_skills.py` is deterministic mocked verification, useful for
-  workflow correctness but not evidence of live model quality.
 - `tests/benchmark/test_provider_pinning.py` tests explicit pins and fail-fast
   benchmark transport behavior. Preserve that behavior in any comparison runner;
   a fallback response cannot be attributed to the originally requested candidate.

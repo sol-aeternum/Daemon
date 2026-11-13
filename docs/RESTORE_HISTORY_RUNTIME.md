@@ -64,7 +64,7 @@ policy close 1008). Security/request-ID/CORS outer headers remain in place.
 FastAPI's effective route contexts account for included routers and prefixes;
 there is no GET or module-prefix admission rule.
 
-Backend Redis producer access, memory backfill, skill synchronization,
+Backend Redis producer access, memory backfill,
 attestation and session-cleanup jobs are not started in this configuration.
 Audited authentication bootstrap remains available after H qualification. The
 worker receives W and independent expected metadata, never A credentials/K1;
