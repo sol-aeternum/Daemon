@@ -112,7 +112,7 @@ PostgreSQL 16 with pgvector extension. Migration inventory is maintained in `mig
 - **`entities`**: Extracted named entities for cross-referencing.
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skills`**, **`skill_revisions`**, **`skill_store_key`**: Account-owned skills, encrypted at rest, with revision history; shipped skills have no owner. All skill readers and writers use them. [Design](ACCOUNT_OWNED_SKILLS_DESIGN.md).
-- **`skill_projections`**: Legacy index of the retired file-backed skill store. No longer read or written by the running application; removal is a later change.
+- **`skill_projections`**: Legacy index of the removed file-backed skill store. No code reads or writes it; it is dropped by a later migration, once the account-owned cutover has run in production.
 
 Account entitlement schema and usage ledgers are introduced by the commercial migration in `migrations/`; see `SUBSCRIPTION_ARCHITECTURE.md` for rollout requirements.
 ---

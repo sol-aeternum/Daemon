@@ -40,6 +40,7 @@ from orchestrator.services.skill_format import (
     render_skill_markdown,
 )
 from orchestrator.services.skill_index import build_skill_index
+from orchestrator.services.shipped_skills import SHIPPED_SKILLS_DIR, sync_shipped_skills
 from orchestrator.services.skills import EMBEDDING_DIMENSIONS, SkillError, SkillStore
 from orchestrator.skill_evaluator import SkillEvaluationRequest, SkillEvaluator
 from orchestrator.tools import skill_manage as skill_manage_module
@@ -241,10 +242,11 @@ async def test_route_response_contract(pool: asyncpg.Pool) -> None:
         assert created["source_type"] == "manual"
         assert created["allow_autonomous_edit"] is False
         assert created["enabled"] is True
-        # Retired fields stay in the response as null.
-        for retired in ("repo_version", "local_version", "pending_update"):
-            assert created[retired] is None
-        assert created["created_by"] is None and created["origin_url"] is None
+        # The exact response shape; the retired upgrade and provenance fields are gone.
+        assert set(created) == {
+            "id", "name", "description", "enabled", "updated_at", "scope", "revision",
+            "source_type", "allow_autonomous_edit", "use_count", "last_used_at", "content",
+        }  # fmt: skip
 
         listed = (await a.get("/skills")).json()["skills"][0]
         assert "content" not in listed
@@ -537,12 +539,9 @@ async def test_routes_fail_closed_without_a_database() -> None:
 
 @pytest.mark.asyncio
 async def test_import_ignores_authority_and_round_trips(
-    pool: asyncpg.Pool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pool: asyncpg.Pool,
 ) -> None:
     """T8: authority in a file is ignored; export then import keeps the content."""
-    from orchestrator import skills_store
-
-    monkeypatch.setattr(skills_store, "SKILLS_DIR", tmp_path)
     alice, bob = await _user(pool), await _user(pool)
     forged = (
         "---\n"
@@ -607,9 +606,6 @@ async def test_import_ignores_authority_and_round_trips(
             )
             assert response.status_code == 400, bad_name
 
-    # Nothing was written to the old skills directory.
-    assert list(tmp_path.iterdir()) == []
-
 
 def test_format_bounds_frontmatter_and_renders_one_line_fields() -> None:
     with pytest.raises(SkillError, match="frontmatter_too_long"):
@@ -639,6 +635,153 @@ def test_cutover_modules_touch_no_files() -> None:
         source = Path(str(module.__file__)).read_text()
         for needle in ("skills_store", "SKILLS_DIR", "read_text", "write_text", "open("):
             assert needle not in source, (module.__name__, needle)
+
+
+# --------------------------------------------------------------------------
+# Shipped-skill loader
+# --------------------------------------------------------------------------
+
+
+def _shipped(directory: Path, slug: str, name: str, body: str) -> None:
+    (directory / slug).mkdir(parents=True, exist_ok=True)
+    (directory / slug / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} description\n---\n{body}\n", encoding="utf-8"
+    )
+
+
+async def _shipped_state(store: SkillStore) -> dict[str, tuple[int, str]]:
+    return {s["slug"]: (s["revision"], s["body"]) for s in await store.list_shipped()}
+
+
+@pytest.mark.asyncio
+async def test_loader_publishes_updates_and_removes_shipped_skills(
+    pool: asyncpg.Pool, store: SkillStore, tmp_path: Path
+) -> None:
+    alice = await _user(pool)
+    mine = await store.create(alice, name="House Style", description="mine", body="my own")
+    _shipped(tmp_path, "house-style", "House Style", "shipped v1")
+    _shipped(tmp_path, "citations", "Citations", "cite sources")
+    (tmp_path / "README.md").write_text("not a skill", encoding="utf-8")
+
+    first = await sync_shipped_skills(store, tmp_path)
+    assert (first.published, first.unchanged, first.removed, first.failed) == (
+        ["citations", "house-style"],
+        [],
+        [],
+        [],
+    )
+    assert await _shipped_state(store) == {
+        "citations": (1, "cite sources"),
+        "house-style": (1, "shipped v1"),
+    }
+    shipped = await pool.fetch("SELECT source_type, user_id FROM skills WHERE user_id IS NULL")
+    assert {(row["source_type"], row["user_id"]) for row in shipped} == {("system", None)}
+    assert await pool.fetchval(
+        "SELECT array_agg(DISTINCT actor) FROM skill_revisions r JOIN skills s "
+        "ON s.id = r.skill_id WHERE s.user_id IS NULL"
+    ) == ["shipped"]
+    # Every account sees shipped skills; its own same-named skill shadows one.
+    index = await build_skill_index(pool, alice)
+    assert "- Citations: Citations description [system]" in index
+    assert "- House Style: mine [manual]" in index and "House Style description" not in index
+
+    # Unchanged files write nothing.
+    before = await _dump(pool)
+    again = await sync_shipped_skills(store, tmp_path)
+    assert (again.published, again.unchanged) == ([], ["citations", "house-style"])
+    assert await _dump(pool) == before
+
+    # A changed file is a new revision; a removed directory deletes the row.
+    _shipped(tmp_path, "house-style", "House Style", "shipped v2")
+    (tmp_path / "citations" / "SKILL.md").unlink()
+    (tmp_path / "citations").rmdir()
+    third = await sync_shipped_skills(store, tmp_path)
+    assert (third.published, third.unchanged, third.removed) == (
+        ["house-style"],
+        [],
+        ["citations"],
+    )
+    assert await _shipped_state(store) == {"house-style": (2, "shipped v2")}
+    # The account's own skill with the same slug is never touched.
+    assert (await store.get(alice, "house-style"))["body"] == "my own"
+    assert (await store.get(alice, "house-style"))["id"] == mine["id"]
+
+
+@pytest.mark.asyncio
+async def test_loader_never_deletes_on_a_missing_or_partly_unreadable_directory(
+    pool: asyncpg.Pool, store: SkillStore, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _shipped(tmp_path, "house-style", "House Style", "shipped v1")
+    _shipped(tmp_path, "citations", "Citations", "cite sources")
+    await sync_shipped_skills(store, tmp_path)
+    before = await _dump(pool)
+
+    # No directory at all (a misbuilt image): nothing is removed.
+    missing = await sync_shipped_skills(store, tmp_path / "absent")
+    assert (missing.published, missing.removed, missing.failed) == ([], [], [])
+    assert await _dump(pool) == before
+
+    # One broken skill, one invalid name and one directory removed: the broken
+    # ones are reported, their rows stay, and no removal happens this round.
+    (tmp_path / "house-style" / "SKILL.md").write_text("no frontmatter, no title", "utf-8")
+    (tmp_path / "Bad Name").mkdir()
+    (tmp_path / "empty-dir").mkdir()
+    (tmp_path / "citations" / "SKILL.md").unlink()
+    (tmp_path / "citations").rmdir()
+    secret = "vortexplum body that must not be logged"
+    (tmp_path / "oversized").mkdir()
+    (tmp_path / "oversized" / "SKILL.md").write_text(
+        f"---\nname: Big\ndescription: d\n---\n{secret}" + "x" * MAX_SKILL_FILE_CHARS, "utf-8"
+    )
+    with caplog.at_level("INFO"):
+        partial = await sync_shipped_skills(store, tmp_path)
+    assert partial.failed == ["Bad Name", "empty-dir", "house-style", "oversized"]
+    assert (partial.published, partial.removed) == ([], [])
+    assert await _dump(pool) == before
+    assert "vortexplum" not in caplog.text
+
+    # Once the directory is whole again, the removal goes through.
+    for name in ("Bad Name", "empty-dir"):
+        (tmp_path / name).rmdir()
+    (tmp_path / "oversized" / "SKILL.md").unlink()
+    (tmp_path / "oversized").rmdir()
+    _shipped(tmp_path, "house-style", "House Style", "shipped v1")
+    healed = await sync_shipped_skills(store, tmp_path)
+    assert (healed.unchanged, healed.removed, healed.failed) == (
+        ["house-style"],
+        ["citations"],
+        [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_publication_never_raises(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from orchestrator import main
+    from orchestrator.memory.encryption import EncryptionKeyMissing
+
+    # The repository's own directory: no shipped skill, so nothing is written
+    # and the store is not bound to a key by startup alone.
+    await main._publish_shipped_skills(pool)
+    assert await pool.fetchval("SELECT count(*) FROM skills") == 0
+    assert await pool.fetchval("SELECT count(*) FROM skill_store_key") == 0
+
+    def no_key(*_: Any, **__: Any) -> SkillStore:
+        raise EncryptionKeyMissing("DAEMON_ENCRYPTION_KEY is required")
+
+    monkeypatch.setattr("orchestrator.services.skills.create_skill_store", no_key)
+    with caplog.at_level("WARNING"):
+        await main._publish_shipped_skills(pool)
+        await main._publish_shipped_skills(None)
+    assert "no content encryption key" in caplog.text
+
+
+def test_no_skill_ships_before_accounts_can_switch_one_off() -> None:
+    """Owner decision O2: the per-account switch comes with the first shipped skill."""
+    shipped = [entry.name for entry in SHIPPED_SKILLS_DIR.iterdir() if entry.is_dir()]
+    assert shipped == [], "add the per-account disable setting (O2) with the first shipped skill"
+    assert (SHIPPED_SKILLS_DIR / "README.md").is_file()
 
 
 # --------------------------------------------------------------------------

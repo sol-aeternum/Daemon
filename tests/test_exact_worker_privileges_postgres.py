@@ -28,7 +28,6 @@ from orchestrator.services.identity.email_challenge import (
 )
 from orchestrator.services.identity.retention import sweep_identity_records
 from orchestrator.services.web_snapshots import WebSnapshotStore
-from orchestrator.skills_projection import SkillProjectionStore
 from orchestrator.worker.audit import WorkerJobFailure, persist_worker_job_failure
 from tests.exact_worker_privileges import MAP
 from tests.test_inference_recovery_postgres import db as db, metadata_cluster as metadata_cluster
@@ -315,13 +314,6 @@ async def test_actual_billing_credit_refund_projection_audit_and_retention(ordin
     spend_id = await seed_historical_spend(ordinary, uid)
     assert (await credits.refund_transaction(spend_id)).success
     assert await credits.get_balance(uid) == 10
-    projection = SkillProjectionStore(pool)
-    await projection.upsert_projection(
-        "fixture-skill", "Synthetic", "Fixture", "/synthetic/skill", "0" * 64
-    )
-    assert await projection.get_projection("fixture-skill") is not None
-    await projection.touch_usage("fixture-skill")
-    assert await projection.delete_projection("fixture-skill")
     await persist_worker_job_failure(
         {"db_pool": pool},
         WorkerJobFailure(

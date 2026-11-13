@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal, cast
@@ -37,7 +38,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from orchestrator.config import Settings, get_settings
 from orchestrator.memory.encryption import ContentEncryption, EncryptionKeyMissing
-from orchestrator.skills_store import normalize_skill_id, slugify_skill_name
 
 MAX_SKILLS_PER_ACCOUNT = 200
 MAX_NAME_CHARS = 200
@@ -69,6 +69,49 @@ _SELECT_HEADS = (
     "allow_autonomous_edit, enabled, embedding_revision, use_count, last_used_at, "
     "complexity_origin, created_at, updated_at FROM skills WHERE id = ANY($1::uuid[])"
 )
+
+
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+_UNSAFE_SLUG_CHAR_PATTERN = re.compile(r"[^a-z0-9_-]")
+_SAFE_SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+_PATH_SEPARATORS = frozenset({"/", "\\"})
+_SLUG_MAX_LENGTH = 64
+_INVALID_SLUG = "Skill id must contain only lowercase letters, numbers, underscores, or hyphens"
+
+
+def slugify_skill_name(name: str) -> str:
+    """Derive a skill's slug from its display name.
+
+    Punctuation and case are folded rather than rejected. A name that still
+    yields no usable slug (blank, a path separator, ``..``) raises
+    ``ValueError``.
+    """
+    if any(separator in name for separator in _PATH_SEPARATORS):
+        raise ValueError(_INVALID_SLUG)
+    candidate = _UNSAFE_SLUG_CHAR_PATTERN.sub(
+        "-", _WHITESPACE_PATTERN.sub("-", name.strip().lower())
+    )
+    candidate = re.sub(r"-+", "-", candidate).strip("-_")
+    if not candidate or ".." in candidate:
+        raise ValueError(_INVALID_SLUG)
+    candidate = candidate[:_SLUG_MAX_LENGTH].rstrip("-_")
+    if not candidate:
+        raise ValueError(_INVALID_SLUG)
+    return candidate
+
+
+def normalize_skill_id(name: str) -> str:
+    """Validate an already-formed slug, such as one from a URL path."""
+    candidate = name.strip()
+    if any(separator in candidate for separator in _PATH_SEPARATORS):
+        raise ValueError(_INVALID_SLUG)
+    if not _SAFE_SLUG_PATTERN.fullmatch(candidate) or ".." in candidate:
+        raise ValueError(_INVALID_SLUG)
+    if len(candidate) > _SLUG_MAX_LENGTH:
+        candidate = candidate[:_SLUG_MAX_LENGTH].rstrip("-_")
+        if not _SAFE_SLUG_PATTERN.fullmatch(candidate):
+            raise ValueError(_INVALID_SLUG)
+    return candidate
 
 
 class SkillError(Exception):
@@ -856,6 +899,16 @@ class SkillStore:
             for candidate in candidates
         }
         return [{**self._decode_head(row), "embedding": vectors[row["id"]]} for row in rows]
+
+    async def list_shipped(self) -> list[dict[str, Any]]:
+        """Every shipped skill, for the application's own loader."""
+        async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
+            ids = await conn.fetch(
+                "SELECT id FROM skills WHERE user_id IS NULL ORDER BY created_at, id"
+            )
+            rows = await self._heads(conn, [row["id"] for row in ids])
+        return [self._decode_head(row) for row in rows]
 
     async def list_revisions(self, user_id: uuid.UUID, slug: str) -> list[dict[str, Any]]:
         """Retained revisions of the caller's own skill, newest first."""

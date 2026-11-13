@@ -151,7 +151,9 @@ async def test_durable_acceptance_forwards_controls_and_existing_conflict(monkey
 async def test_worker_reconstructs_controls_from_accepted_input(monkeypatch, controls):
     from orchestrator.tasks.runner import _system_prompt
 
-    monkeypatch.setattr("orchestrator.skills_store.build_skill_index", AsyncMock(return_value=""))
+    monkeypatch.setattr(
+        "orchestrator.services.skill_index.build_skill_index", AsyncMock(return_value="")
+    )
     monkeypatch.setattr(
         "orchestrator.memory.injection.build_memory_context", AsyncMock(return_value="")
     )

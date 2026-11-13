@@ -316,6 +316,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 except Exception:
                     logger.warning("Failed to backfill memory content hashes")
             _log_legacy_skill_files()
+            asyncio.create_task(_publish_shipped_skills(state.db_pool))
             # Monitored inference routes are admitted from the ZDR attestation snapshot,
             # and this process runs its own ZDR checks so it enforces revocations itself.
             from orchestrator.entitlements import attestation
@@ -363,6 +364,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         finally:
             await close_app_state(state)
         logger.info("AppState shut down")
+
+
+async def _publish_shipped_skills(db_pool: Any) -> None:
+    """Publish the application's own skills. Startup never fails on this."""
+    from orchestrator.memory.encryption import EncryptionInitError
+    from orchestrator.services.shipped_skills import sync_shipped_skills
+    from orchestrator.services.skills import create_skill_store
+
+    try:
+        await sync_shipped_skills(create_skill_store(db_pool))
+    except EncryptionInitError:
+        logger.warning("Shipped skills not published: no content encryption key")
+    except Exception:
+        logger.warning("Shipped skills not published", exc_info=True)
 
 
 def _log_legacy_skill_files() -> None:
