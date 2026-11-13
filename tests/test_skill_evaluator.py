@@ -2,10 +2,9 @@ from __future__ import annotations
 
 # pyright: reportAny=false, reportExplicitAny=false, reportPrivateUsage=false
 
-import json
 import uuid
 from typing import Any, final
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -43,16 +42,70 @@ class StubStore:
 
 
 @final
-class StubProjectionStore:
+class StubSkillStore:
+    """The account-owned store calls the evaluator makes, recorded."""
+
     def __init__(self) -> None:
         self.search_by_embedding = AsyncMock(return_value=[])
-        self.update_autonomous_metadata = AsyncMock(return_value=True)
+        self.create = AsyncMock(
+            side_effect=lambda user_id, **fields: {
+                "id": str(uuid.uuid4()),
+                "slug": "debug-workflow",
+                "revision": 1,
+                "complexity_origin": fields["complexity_origin"],
+                **fields,
+            }
+        )
+        self.patch = AsyncMock(
+            side_effect=lambda user_id, slug, old_text, new_text, **fields: {
+                "id": str(uuid.uuid4()),
+                "slug": slug,
+                "revision": 2,
+                "name": "Debug Workflow",
+                "description": "",
+                "body": new_text,
+                "complexity_origin": fields["complexity_origin"],
+            }
+        )
+        self.store_embedding = AsyncMock(return_value=True)
 
 
-@final
-class StubSkillManageTool:
-    def __init__(self, response: str = "{}") -> None:
-        self.execute = AsyncMock(return_value=response)
+@pytest.fixture(autouse=True)
+def _no_embedding_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("orchestrator.skill_evaluator.embed_skill", AsyncMock(return_value=True))
+
+
+def _evaluator(
+    messages: list[dict[str, Any]],
+    skill_store: StubSkillStore | None,
+    query_embedder: AsyncMock | None = None,
+) -> SkillEvaluator:
+    return SkillEvaluator(
+        store=StubStore(messages),
+        db_pool=None,
+        skill_store=skill_store,  # type: ignore[arg-type]
+        query_embedder=query_embedder or AsyncMock(return_value=[0.1, 0.2]),
+    )
+
+
+def _draft(
+    name: str = "Debug Workflow", description: str = "Reusable debugging steps"
+) -> SkillDraft:
+    return SkillDraft(
+        name=name,
+        description=description,
+        trigger_conditions="Use when a bug requires repo tracing and verification.",
+        skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
+    )
+
+
+def _request(tool_call_count: int) -> SkillEvaluationRequest:
+    return SkillEvaluationRequest(
+        user_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        assistant_message_id=uuid.uuid4(),
+        tool_call_count=tool_call_count,
+    )
 
 
 def _build_messages(
@@ -85,214 +138,135 @@ def _build_messages(
 
 @pytest.mark.asyncio
 async def test_evaluator_skips_below_threshold() -> None:
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=uuid.uuid4(),
-        tool_call_count=4,
-    )
-    skill_manage_tool = StubSkillManageTool()
-    evaluator = SkillEvaluator(
-        store=StubStore([]),
-        db_pool=None,
-        projection_store=None,
-        skill_manage_tool=skill_manage_tool,
-    )
+    request = _request(4)
+    skill_store = StubSkillStore()
 
-    result = await evaluator.evaluate_completed_turn(request)
+    result = await _evaluator([], skill_store).evaluate_completed_turn(request)
 
     assert result.classification == "skipped_below_threshold"
     assert result.debounce_key == (
         f"skill_eval:{request.conversation_id}:{request.assistant_message_id}"
     )
+    skill_store.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evaluator_skips_without_a_skill_store() -> None:
+    request = _request(7)
+    result = await _evaluator([], None).evaluate_completed_turn(request)
+    assert result.classification == "skipped_projection_unavailable"
 
 
 @pytest.mark.asyncio
 async def test_evaluator_creates_novel_autonomous_skill() -> None:
-    assistant_message_id = uuid.uuid4()
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=assistant_message_id,
-        tool_call_count=7,
-    )
-    projection_store = StubProjectionStore()
-    projection_store.search_by_embedding.return_value = []
-    projection_store.update_autonomous_metadata.return_value = True
-    skill_manage_tool = StubSkillManageTool(
-        response=json.dumps(
-            {
-                "skill_id": "debug-workflow",
-                "name": "Debug Workflow",
-                "description": "A reusable debugging skill.",
-                "source_type": "autonomous",
-                "created": True,
-            }
-        )
-    )
-
-    evaluator = SkillEvaluator(
-        store=StubStore(_build_messages(assistant_message_id)),
-        db_pool=None,
-        projection_store=projection_store,
-        skill_manage_tool=skill_manage_tool,
-        query_embedder=AsyncMock(return_value=[0.1, 0.2]),
-    )
-    evaluator._generate_skill_draft = AsyncMock(
-        return_value=SkillDraft(
-            name="Debug Workflow",
-            description="Turn a successful debugging turn into a reusable flow.",
-            trigger_conditions="Use when a bug requires repo tracing and validation.",
-            skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-        )
-    )
+    request = _request(7)
+    skill_store = StubSkillStore()
+    evaluator = _evaluator(_build_messages(request.assistant_message_id), skill_store)
+    draft = _draft()
+    evaluator._generate_skill_draft = AsyncMock(return_value=draft)
 
     result = await evaluator.evaluate_completed_turn(request)
 
     assert result.classification == "created"
     assert result.created_skill_id == "debug-workflow"
-    skill_manage_tool.execute.assert_awaited_once_with(
-        action="create",
-        name="Debug Workflow",
-        description="Turn a successful debugging turn into a reusable flow.",
-        content="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-        source_type="autonomous",
-    )
-    projection_store.update_autonomous_metadata.assert_awaited_once_with(
-        "debug-workflow",
-        trigger_conditions="Use when a bug requires repo tracing and validation.",
+    # Created in the account of the evaluated turn, as an autonomous actor;
+    # trigger conditions and complexity are part of the same write.
+    skill_store.create.assert_awaited_once_with(
+        request.user_id,
+        name=draft.name,
+        description=draft.description,
+        body=draft.skill_markdown,
+        trigger_conditions=draft.trigger_conditions,
+        actor="autonomous",
         complexity_origin=7,
     )
+    skill_store.search_by_embedding.assert_awaited_once()
+    assert skill_store.search_by_embedding.call_args.args[0] == request.user_id
+
+
+@pytest.mark.asyncio
+async def test_create_refusal_is_reported_by_reason() -> None:
+    from orchestrator.services.skills import SkillError
+
+    request = _request(7)
+    skill_store = StubSkillStore()
+    skill_store.create = AsyncMock(side_effect=SkillError("slug_taken"))
+    evaluator = _evaluator(_build_messages(request.assistant_message_id), skill_store)
+    evaluator._generate_skill_draft = AsyncMock(return_value=_draft())
+
+    result = await evaluator.evaluate_completed_turn(request)
+
+    assert result.classification == "skipped_create_conflict"
+    assert result.reason == "slug_taken"
 
 
 @pytest.mark.asyncio
 async def test_denied_embedding_skips_semantic_matching_but_creates_skill() -> None:
-    assistant_message_id = uuid.uuid4()
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=assistant_message_id,
-        tool_call_count=7,
-    )
-    projection_store = StubProjectionStore()
-    skill_manage_tool = StubSkillManageTool(
-        response=json.dumps({"skill_id": "debug-workflow", "created": True})
-    )
+    request = _request(7)
+    skill_store = StubSkillStore()
     denied_embedder = AsyncMock(
         side_effect=EmbeddingConfigurationError("Approved embedding route unavailable")
     )
-    evaluator = SkillEvaluator(
-        store=StubStore(_build_messages(assistant_message_id)),
-        db_pool=None,
-        projection_store=projection_store,
-        skill_manage_tool=skill_manage_tool,
-        query_embedder=denied_embedder,
+    evaluator = _evaluator(
+        _build_messages(request.assistant_message_id), skill_store, denied_embedder
     )
-    evaluator._generate_skill_draft = AsyncMock(
-        return_value=SkillDraft(
-            name="Debug Workflow",
-            description="Reusable debugging steps",
-            trigger_conditions="For repository debugging",
-            skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-        )
-    )
+    evaluator._generate_skill_draft = AsyncMock(return_value=_draft())
 
     result = await evaluator.evaluate_completed_turn(request)
 
     assert result.classification == "created"
     assert result.created_skill_id == "debug-workflow"
     denied_embedder.assert_awaited_once()
-    projection_store.search_by_embedding.assert_not_awaited()
-    skill_manage_tool.execute.assert_awaited_once()
-    projection_store.update_autonomous_metadata.assert_awaited_once()
+    skill_store.search_by_embedding.assert_not_awaited()
+    skill_store.create.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_evaluator_skips_protected_overlap_without_duplicate_creation() -> None:
-    assistant_message_id = uuid.uuid4()
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=assistant_message_id,
-        tool_call_count=8,
-    )
-    projection_store = StubProjectionStore()
-    projection_store.search_by_embedding.return_value = [
+    request = _request(8)
+    skill_store = StubSkillStore()
+    skill_store.search_by_embedding.return_value = [
         {
-            "skill_id": "system-debug",
+            "slug": "manual-debug",
             "name": "Debug Workflow",
-            "source_type": "system",
+            "source_type": "manual",
             "allow_autonomous_edit": False,
             "similarity": 0.91,
             "complexity_origin": 6,
         }
     ]
-    skill_manage_tool = StubSkillManageTool()
-
-    evaluator = SkillEvaluator(
-        store=StubStore(_build_messages(assistant_message_id)),
-        db_pool=None,
-        projection_store=projection_store,
-        skill_manage_tool=skill_manage_tool,
-        query_embedder=AsyncMock(return_value=[0.2, 0.3]),
-    )
-    evaluator._generate_skill_draft = AsyncMock(
-        return_value=SkillDraft(
-            name="Debug Workflow",
-            description="Overlaps with the system debugging skill.",
-            trigger_conditions="Use for debugging system failures.",
-            skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-        )
-    )
+    evaluator = _evaluator(_build_messages(request.assistant_message_id), skill_store)
+    evaluator._generate_skill_draft = AsyncMock(return_value=_draft())
+    evaluator._generate_refinement = AsyncMock()
 
     result = await evaluator.evaluate_completed_turn(request)
 
     assert result.classification == "skipped_protected_match"
-    assert result.matched_skill_id == "system-debug"
+    assert result.matched_skill_id == "manual-debug"
     assert result.protected is True
-    skill_manage_tool.execute.assert_not_awaited()
+    evaluator._generate_refinement.assert_not_awaited()
+    skill_store.create.assert_not_awaited()
+    skill_store.patch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_evaluator_patches_overlapping_autonomous_skill() -> None:
-    assistant_message_id = uuid.uuid4()
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=assistant_message_id,
-        tool_call_count=8,
-    )
-    projection_store = StubProjectionStore()
-    projection_store.search_by_embedding.return_value = [
+    request = _request(8)
+    skill_store = StubSkillStore()
+    skill_store.search_by_embedding.return_value = [
         {
-            "skill_id": "debug-workflow",
+            "slug": "debug-workflow",
             "name": "debug workflow",
+            "description": "A reusable debugging skill.",
+            "body": "# Debug Workflow\n\n## Purpose\n\nOld section",
             "source_type": "autonomous",
-            "allow_autonomous_edit": False,
+            "allow_autonomous_edit": True,
             "similarity": 0.92,
             "complexity_origin": 6,
         }
     ]
-    projection_store.update_autonomous_metadata.return_value = True
-    skill_manage_tool = StubSkillManageTool(
-        response=json.dumps({"skill_id": "debug-workflow", "patched": True})
-    )
-
-    evaluator = SkillEvaluator(
-        store=StubStore(_build_messages(assistant_message_id)),
-        db_pool=None,
-        projection_store=projection_store,
-        skill_manage_tool=skill_manage_tool,
-        query_embedder=AsyncMock(return_value=[0.2, 0.3]),
-    )
-    evaluator._generate_skill_draft = AsyncMock(
-        return_value=SkillDraft(
-            name="Debug Workflow!!!",
-            description="Improve the debugging workflow skill.",
-            trigger_conditions="Use when a repo bug needs tracing and verification.",
-            skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-        )
-    )
+    evaluator = _evaluator(_build_messages(request.assistant_message_id), skill_store)
+    evaluator._generate_skill_draft = AsyncMock(return_value=_draft("Debug Workflow!!!"))
     evaluator._generate_refinement = AsyncMock(
         return_value=SkillRefinementDecision(
             decision="PATCH",
@@ -303,99 +277,95 @@ async def test_evaluator_patches_overlapping_autonomous_skill() -> None:
         )
     )
 
-    with patch(
-        "orchestrator.skill_evaluator.get_skill",
-        return_value={
-            "id": "debug-workflow",
-            "name": "Debug Workflow",
-            "description": "A reusable debugging skill.",
-            "content": "# Debug Workflow\n\n## Purpose\n\nOld section",
-        },
-    ):
-        result = await evaluator.evaluate_completed_turn(request)
+    result = await evaluator.evaluate_completed_turn(request)
 
     assert result.classification == "patched"
     assert result.patched_skill_id == "debug-workflow"
-    skill_manage_tool.execute.assert_awaited_once_with(
-        action="patch",
-        skill_id="debug-workflow",
-        old_text="## Purpose\n\nOld section",
-        new_text="## Purpose\n\nUpdated section",
+    assert result.complexity_origin == 8
+    # The existing skill offered to the refinement prompt is the match itself.
+    assert (
+        evaluator._generate_refinement.call_args.kwargs["existing_skill"]["body"]
+        == "# Debug Workflow\n\n## Purpose\n\nOld section"
     )
-    projection_store.update_autonomous_metadata.assert_awaited_once_with(
+    skill_store.patch.assert_awaited_once_with(
+        request.user_id,
         "debug-workflow",
+        "## Purpose\n\nOld section",
+        "## Purpose\n\nUpdated section",
+        actor="autonomous",
         trigger_conditions="Use when a repo bug needs tracing and post-fix verification.",
         complexity_origin=8,
     )
 
 
 @pytest.mark.asyncio
-async def test_evaluator_creates_new_skill_when_semantic_match_has_different_name() -> None:
-    assistant_message_id = uuid.uuid4()
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=assistant_message_id,
-        tool_call_count=7,
+@pytest.mark.parametrize(
+    ("refusal", "classification", "protected"),
+    [
+        ("autonomous_edit_not_granted", "skipped_protected_match", True),
+        ("shipped_read_only", "skipped_protected_match", True),
+        ("patch_text_not_found", "skipped_patch_conflict", False),
+    ],
+)
+async def test_patch_refusals_are_classified(
+    refusal: str, classification: str, protected: bool
+) -> None:
+    from orchestrator.services.skills import SkillError
+
+    request = _request(8)
+    skill_store = StubSkillStore()
+    skill_store.search_by_embedding.return_value = [
+        {"slug": "debug-workflow", "name": "Debug Workflow", "source_type": "autonomous",
+         "allow_autonomous_edit": True, "similarity": 0.92, "body": "x"}
+    ]  # fmt: skip
+    skill_store.patch = AsyncMock(side_effect=SkillError(refusal))
+    evaluator = _evaluator(_build_messages(request.assistant_message_id), skill_store)
+    evaluator._generate_skill_draft = AsyncMock(return_value=_draft())
+    evaluator._generate_refinement = AsyncMock(
+        return_value=SkillRefinementDecision("PATCH", "r", "", old_text="x", new_text="y")
     )
-    projection_store = StubProjectionStore()
-    projection_store.search_by_embedding.return_value = [
+
+    result = await evaluator.evaluate_completed_turn(request)
+
+    assert (result.classification, result.protected, result.reason) == (
+        classification,
+        protected,
+        refusal,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluator_creates_new_skill_when_semantic_match_has_different_name() -> None:
+    request = _request(7)
+    skill_store = StubSkillStore()
+    skill_store.search_by_embedding.return_value = [
         {
-            "skill_id": "worker-repair",
+            "slug": "worker-repair",
             "name": "Worker Repair",
             "source_type": "autonomous",
-            "allow_autonomous_edit": False,
+            "allow_autonomous_edit": True,
             "similarity": 0.97,
             "complexity_origin": 6,
         }
     ]
-    skill_manage_tool = StubSkillManageTool(
-        response=json.dumps(
-            {
-                "skill_id": "debug-workflow",
-                "name": "Debug Workflow",
-                "description": "A reusable debugging skill.",
-                "source_type": "autonomous",
-                "created": True,
-            }
-        )
-    )
-
     query_embedder = AsyncMock(return_value=[0.3, 0.4])
-    evaluator = SkillEvaluator(
-        store=StubStore(_build_messages(assistant_message_id)),
-        db_pool=None,
-        projection_store=projection_store,
-        skill_manage_tool=skill_manage_tool,
-        query_embedder=query_embedder,
+    evaluator = _evaluator(
+        _build_messages(request.assistant_message_id), skill_store, query_embedder
     )
-    evaluator._generate_skill_draft = AsyncMock(
-        return_value=SkillDraft(
-            name="Debug Workflow",
-            description="Investigate repo bugs using a repeatable workflow.",
-            trigger_conditions="Use when a bug requires repo tracing and verification.",
-            skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-        )
-    )
+    draft = _draft(description="Investigate repo bugs using a repeatable workflow.")
+    evaluator._generate_skill_draft = AsyncMock(return_value=draft)
 
     result = await evaluator.evaluate_completed_turn(request)
 
     assert result.classification == "created"
     assert result.created_skill_id == "debug-workflow"
-    skill_manage_tool.execute.assert_awaited_once()
-    query_embedder.assert_awaited_once_with(
-        "Debug Workflow\nInvestigate repo bugs using a repeatable workflow.\nUse when a bug requires repo tracing and verification."
-    )
+    skill_store.create.assert_awaited_once()
+    skill_store.patch.assert_not_awaited()
+    query_embedder.assert_awaited_once_with(_build_dedup_query_text(draft))
 
 
 def test_build_dedup_query_text_includes_name_and_trigger_conditions() -> None:
-    draft = SkillDraft(
-        name="Debug Workflow",
-        description="Investigate repo bugs using a repeatable workflow.",
-        trigger_conditions="Use when a bug requires repo tracing and verification.",
-        skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
-    )
-
+    draft = _draft(description="Investigate repo bugs using a repeatable workflow.")
     assert _build_dedup_query_text(draft) == (
         "Debug Workflow\n"
         "Investigate repo bugs using a repeatable workflow.\n"
@@ -405,25 +375,14 @@ def test_build_dedup_query_text_includes_name_and_trigger_conditions() -> None:
 
 @pytest.mark.asyncio
 async def test_evaluator_skips_failed_turns() -> None:
-    assistant_message_id = uuid.uuid4()
-    request = SkillEvaluationRequest(
-        user_id=uuid.uuid4(),
-        conversation_id=uuid.uuid4(),
-        assistant_message_id=assistant_message_id,
-        tool_call_count=6,
-    )
-    projection_store = StubProjectionStore()
-    skill_manage_tool = StubSkillManageTool()
-    evaluator = SkillEvaluator(
-        store=StubStore(
-            _build_messages(
-                assistant_message_id,
-                tool_results=[{"name": "read", "result": {"success": False, "error": "boom"}}],
-            )
+    request = _request(6)
+    skill_store = StubSkillStore()
+    evaluator = _evaluator(
+        _build_messages(
+            request.assistant_message_id,
+            tool_results=[{"name": "read", "result": {"success": False, "error": "boom"}}],
         ),
-        db_pool=None,
-        projection_store=projection_store,
-        skill_manage_tool=skill_manage_tool,
+        skill_store,
     )
     evaluator._generate_skill_draft = AsyncMock()
 
@@ -431,4 +390,4 @@ async def test_evaluator_skips_failed_turns() -> None:
 
     assert result.classification == "skipped_failed_turn"
     evaluator._generate_skill_draft.assert_not_awaited()
-    skill_manage_tool.execute.assert_not_awaited()
+    skill_store.create.assert_not_awaited()

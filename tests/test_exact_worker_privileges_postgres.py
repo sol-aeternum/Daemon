@@ -4,7 +4,6 @@ External proof/rate/notification/network boundaries alone are scripted. Schema,
 principals, persistence, encryption, auth/session and financial algorithms are real.
 """
 
-import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -155,22 +154,10 @@ async def ordinary(services, monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("DAEMON_AUTH_PEPPER", value.daemon_auth_pepper)
     get_settings.cache_clear()
     monkeypatch.setattr(main, "get_settings", lambda: value)
-    monkeypatch.setattr(main, "load_repo_contents", lambda: {})
     monkeypatch.setattr(auth_setup, "get_settings", lambda: value)
     monkeypatch.setattr(auth_setup, "get_rate_limiter", lambda _: None)
     monkeypatch.setattr(auth_setup, "enforce_rate_limit", AsyncMock())
     monkeypatch.setattr(auth_setup, "schedule_device_notification", lambda **_: None)
-    finished = [asyncio.Event(), asyncio.Event()]
-    for index, name in enumerate(("_backfill_skill_projections", "_sync_repo_skills")):
-        original = getattr(main, name)
-
-        async def tracked(pool, original=original, event=finished[index]):
-            try:
-                await original(pool)
-            finally:
-                event.set()
-
-        monkeypatch.setattr(main, name, tracked)
     app = FastAPI(lifespan=main.lifespan)
     for router in (
         auth_setup.router,
@@ -185,7 +172,6 @@ async def ordinary(services, monkeypatch, tmp_path, caplog):
     app.dependency_overrides[get_settings] = lambda: value
     try:
         async with app.router.lifespan_context(app):
-            await asyncio.wait_for(asyncio.gather(*(e.wait() for e in finished)), 3)
             assert not any(
                 "Failed to backfill" in r.message
                 or "backfill failed" in r.message

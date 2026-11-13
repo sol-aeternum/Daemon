@@ -138,6 +138,11 @@ def _slug_from_name(name: str) -> str:
         raise SkillError("slug_invalid") from exc
 
 
+def slug_for_name(name: str) -> str:
+    """The slug a skill created with ``name`` is addressed by."""
+    return _slug_from_name(name)
+
+
 def _format_vector(embedding: list[float]) -> str:
     return "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"
 
@@ -437,6 +442,107 @@ class SkillStore:
             # Decoded before commit: a failure rolls the write back.
             return self._decode_head(head)
 
+    async def patch(
+        self,
+        user_id: uuid.UUID,
+        slug: str,
+        old_text: str,
+        new_text: str,
+        *,
+        actor: Actor = "autonomous",
+        trigger_conditions: str | None = None,
+        complexity_origin: int | None = None,
+    ) -> dict[str, Any]:
+        """Replace the first occurrence of ``old_text`` in the body.
+
+        The body is read under the row lock, so concurrent patches cannot
+        interleave and a grant revoked before the lock stops the write.
+        """
+        slug = _slug_from_id(slug)
+        if not isinstance(old_text, str) or not old_text:
+            raise SkillError("patch_text_required")
+        if not isinstance(new_text, str):
+            raise SkillError("patch_text_invalid")
+        if trigger_conditions is not None:
+            trigger_conditions = _validated_text(
+                trigger_conditions, MAX_TRIGGER_CONDITIONS_CHARS, "trigger_conditions"
+            )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
+            row = await self._lock_account_skill(conn, user_id, slug)
+            self._require_grant(row, actor)
+            current = self._enc.decrypt(row["body_encrypted"])
+            if old_text not in current:
+                raise SkillError("patch_text_not_found")
+            before, _, after = current.partition(old_text)
+            body = _validated_text(f"{before}{new_text}{after}", MAX_BODY_CHARS, "body")
+            envelopes = (
+                row["name_encrypted"],
+                row["description_encrypted"],
+                self._enc.encrypt(body),
+                self._enc.encrypt(trigger_conditions)
+                if trigger_conditions is not None
+                else row["trigger_conditions_encrypted"],
+            )
+            revision = row["revision"] + 1
+            await self._append_revision(conn, row["id"], revision, envelopes, actor)
+            if complexity_origin is not None:
+                await conn.execute(
+                    "UPDATE skills SET complexity_origin = GREATEST(complexity_origin, $2) "
+                    "WHERE id = $1",
+                    row["id"],
+                    complexity_origin,
+                )
+            head = await self._move_head(conn, row["id"], revision, envelopes)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
+
+    async def merge(
+        self,
+        user_id: uuid.UUID,
+        kept_slug: str,
+        absorbed_slugs: list[str],
+        *,
+        actor: Actor = "consolidation",
+    ) -> dict[str, Any]:
+        """Fold the absorbed skills' bodies into the kept skill, then delete them.
+
+        One transaction: every skill involved is the caller's own and, for an
+        unattended actor, carries the grant, or nothing changes.
+        """
+        kept = _slug_from_id(kept_slug)
+        absorbed = [_slug_from_id(slug) for slug in absorbed_slugs]
+        if not absorbed or kept in absorbed or len(set(absorbed)) != len(absorbed):
+            raise SkillError("merge_invalid")
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._verify_key_for_write(conn)
+            # Lock in one order regardless of the caller's, so two merges
+            # over the same skills cannot deadlock.
+            rows: dict[str, asyncpg.Record] = {}
+            for slug in sorted([kept, *absorbed]):
+                rows[slug] = await self._lock_account_skill(conn, user_id, slug)
+                self._require_grant(rows[slug], actor)
+            parts = [self._enc.decrypt(rows[kept]["body_encrypted"])]
+            for slug in absorbed:
+                name = self._enc.decrypt(rows[slug]["name_encrypted"])
+                body = self._enc.decrypt(rows[slug]["body_encrypted"])
+                parts.append(f"\n\n-- Merged from {name} --\n{body}")
+            body = _validated_text("\n".join(parts), MAX_BODY_CHARS, "body")
+            row = rows[kept]
+            envelopes = (
+                row["name_encrypted"],
+                row["description_encrypted"],
+                self._enc.encrypt(body),
+                row["trigger_conditions_encrypted"],
+            )
+            revision = row["revision"] + 1
+            await self._append_revision(conn, row["id"], revision, envelopes, actor)
+            for slug in absorbed:
+                await conn.execute("DELETE FROM skills WHERE id = $1", rows[slug]["id"])
+            head = await self._move_head(conn, row["id"], revision, envelopes)
+            # Decoded before commit: a failure rolls the write back.
+            return self._decode_head(head)
+
     async def revert(
         self,
         user_id: uuid.UUID,
@@ -632,6 +738,63 @@ class SkillStore:
                 continue
             skills.append(skill)
         return skills
+
+    async def search_by_embedding(
+        self,
+        user_id: uuid.UUID,
+        embedding: list[float],
+        *,
+        limit: int = 5,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """The account's own enabled skills nearest to ``embedding``, most similar first.
+
+        Never returns shipped skills or another account's: a match is offered
+        for refinement, and only the account's own skills can be refined.
+        """
+        if len(embedding) != EMBEDDING_DIMENSIONS:
+            raise SkillError("embedding_invalid")
+        async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
+            matches = await conn.fetch(
+                "SELECT id, 1 - (embedding <=> $2::vector) AS similarity FROM skills "
+                "WHERE user_id = $1 AND enabled AND embedding IS NOT NULL "
+                "AND embedding_revision = revision "
+                "AND 1 - (embedding <=> $2::vector) >= $3 "
+                "ORDER BY embedding <=> $2::vector, id LIMIT $4",
+                user_id,
+                _format_vector(embedding),
+                min_similarity,
+                limit,
+            )
+            rows = await self._heads(conn, [match["id"] for match in matches])
+        similarity = {match["id"]: float(match["similarity"]) for match in matches}
+        return [{**self._decode_head(row), "similarity": similarity[row["id"]]} for row in rows]
+
+    async def list_autonomous_candidates(
+        self, user_id: uuid.UUID, *, limit: int
+    ) -> list[dict[str, Any]]:
+        """The account's enabled autonomous skills with a current embedding.
+
+        These are what consolidation may merge or retire; each carries its
+        embedding so near-duplicates can be grouped without another query.
+        """
+        async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
+            candidates = await conn.fetch(
+                "SELECT id, embedding::text AS embedding FROM skills "
+                "WHERE user_id = $1 AND source_type = 'autonomous' AND enabled "
+                "AND embedding IS NOT NULL AND embedding_revision = revision "
+                "ORDER BY use_count DESC, created_at, id LIMIT $2",
+                user_id,
+                limit,
+            )
+            rows = await self._heads(conn, [candidate["id"] for candidate in candidates])
+        vectors = {
+            candidate["id"]: [float(value) for value in candidate["embedding"][1:-1].split(",")]
+            for candidate in candidates
+        }
+        return [{**self._decode_head(row), "embedding": vectors[row["id"]]} for row in rows]
 
     async def list_revisions(self, user_id: uuid.UUID, slug: str) -> list[dict[str, Any]]:
         """Retained revisions of the caller's own skill, newest first."""

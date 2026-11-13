@@ -111,7 +111,8 @@ PostgreSQL 16 with pgvector extension. Migration inventory is maintained in `mig
 - **Multi-query memory (M1)**: default-off internal retrieval, with a separate unapproved decomposition pin and off-reasoning profile. Migration 063 adds nullable `query_role`; sub-query text/vectors are not stored. Enabled backend/worker startup requires the column regardless of logging settings; disabled startup adds no schema query. Baseline effects stay legacy; only rendered added rows receive extra effects. Original-query plaintext remains tracked in #663. [Design, settings and offline exposure entry](memory/multi_query_retrieval.md).
 - **`entities`**: Extracted named entities for cross-referencing.
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
-- **`skill_projections`**: Mapping of skills to conversation context.
+- **`skills`**, **`skill_revisions`**, **`skill_store_key`**: Account-owned skills, encrypted at rest, with revision history; shipped skills have no owner. All skill readers and writers use them. [Design](ACCOUNT_OWNED_SKILLS_DESIGN.md).
+- **`skill_projections`**: Legacy index of the retired file-backed skill store. No longer read or written by the running application; removal is a later change.
 
 Account entitlement schema and usage ledgers are introduced by the commercial migration in `migrations/`; see `SUBSCRIPTION_ARCHITECTURE.md` for rollout requirements.
 ---
@@ -150,7 +151,7 @@ Hybrid search combining:
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
 | **Conversations** | `/conversations/{conversation_id}` (GET/PATCH/DELETE; PATCH takes `{title?, pinned?, title_locked?, selected_model?}` and rejects unknown fields; `selected_model` is `auto` or a selectable model ID, stored in server-owned conversation metadata, returned by conversation reads, and never bypasses `/chat` admission) |
 | **Memories** | `/memories/{memory_id}` (GET/PATCH/DELETE; PATCH takes `{content ≤2,000 chars, category?}`, re-embeds or clears the vector, returns the memory), `/memories/export`, `/memories/import` (≤500 items of `{content ≤2,000 chars, category}`; server-controlled status/source; embedded and deduplicated like other writes; returns created/merged/superseded counts), `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
-| **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/admin/sync` |
+| **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/{skill_id}/download`, `/skills/admin/consolidation-audit` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
 | **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |
 | **Retired Image API** | `/api/images/models`, `/api/images/generate`, `/api/images/upload-reference`, `/api/images/{image_id}`, `/api/images/{image_id}/metadata` (authenticated 410) |

@@ -753,8 +753,19 @@ async def test_skill_consolidation_nudge_uses_reasoning_profile(
     store = MagicMock(spec=MemoryStore)
     store.get_user_conversation_count_since_last_nudge = AsyncMock(return_value=5)
     store.get_total_conversation_count = AsyncMock(return_value=5)
-    store.get_autonomous_skill_candidates = AsyncMock(
-        return_value=[{"skill_id": "skill-1", "name": "A Skill", "description": "does things"}]
+    skill_store = MagicMock()
+    skill_store.list_autonomous_candidates = AsyncMock(
+        return_value=[
+            {
+                "id": str(uuid.uuid4()),
+                "slug": "skill-1",
+                "name": "A Skill",
+                "description": "does things",
+                "body": "",
+                "use_count": 0,
+                "last_used_at": None,
+            }
+        ]
     )
     store.get_recent_memories_for_user = AsyncMock(return_value=[])
     store.record_consolidation_nudge_run = AsyncMock(return_value={})
@@ -769,10 +780,12 @@ async def test_skill_consolidation_nudge_uses_reasoning_profile(
             stale_days=30,
             min_skills=1,
             db_pool=object(),
+            skill_store=skill_store,
         )
 
     assert [entry["profile"] for entry in recorded] == ["reasoning"]
     call_model.assert_awaited_once()
+    skill_store.list_autonomous_candidates.assert_awaited_once_with(user_id, limit=3)
 
 
 @pytest.mark.asyncio

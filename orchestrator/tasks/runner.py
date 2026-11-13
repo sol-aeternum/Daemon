@@ -655,11 +655,11 @@ async def _system_prompt(memory: Any, db_pool: Any, claim: Claim) -> tuple[str, 
         format_preferences_block,
     )
     from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
-    from orchestrator.skills_store import build_skill_index
+    from orchestrator.services.skill_index import build_skill_index
     from orchestrator.timezones import extract_timezone_name
 
     try:
-        skills_block = await build_skill_index(db_pool=db_pool)
+        skills_block = await build_skill_index(db_pool, claim.user_id)
     except Exception:
         logger.warning("Skills injection failed, continuing without skills", exc_info=True)
         skills_block = ""

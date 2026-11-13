@@ -12,7 +12,6 @@ import sys
 import time
 import uuid
 
-import asyncpg
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
@@ -156,10 +155,7 @@ from orchestrator.model_router import (
     select_model_tier,
 )
 from orchestrator import routing_log
-from orchestrator.skills_store import build_skill_index
-from orchestrator.skills_projection import SkillProjectionStore
-from orchestrator.skills_sync import SkillSyncService
-from orchestrator.skills_upgrade import load_repo_contents, run_upgrade_sync
+from orchestrator.services.skill_index import build_skill_index
 
 
 from orchestrator.models import (
@@ -319,8 +315,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         logger.info("Backfilled content_hash for %s current memories", backfilled)
                 except Exception:
                     logger.warning("Failed to backfill memory content hashes")
-            asyncio.create_task(_backfill_skill_projections(state.db_pool))
-            asyncio.create_task(_sync_repo_skills(state.db_pool))
+            _log_legacy_skill_files()
             # Monitored inference routes are admitted from the ZDR attestation snapshot,
             # and this process runs its own ZDR checks so it enforces revocations itself.
             from orchestrator.entitlements import attestation
@@ -370,39 +365,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("AppState shut down")
 
 
-async def _backfill_skill_projections(db_pool: asyncpg.Pool) -> None:
-    try:
-        store = SkillProjectionStore(db_pool)
-        service = SkillSyncService(store)
-        results = await service.backfill_existing_skills()
-        successful = sum(1 for r in results if r.success)
-        logger.info(
-            "Skill projection backfill complete: %d/%d skills",
-            successful,
-            len(results),
-        )
-    except Exception:
-        logger.warning("Skill projection backfill failed")
+def _log_legacy_skill_files() -> None:
+    """Report unowned skill files left from the file-backed store.
 
-
-async def _sync_repo_skills(db_pool: asyncpg.Pool) -> None:
+    They have no owner and are never read or imported; an operator who wants
+    one kept uploads it into an account. Only the count is logged.
+    """
+    legacy_dir = Path(__file__).resolve().parent.parent / "data" / "skills"
     try:
-        repo_contents = load_repo_contents()
-        if not repo_contents:
-            logger.debug("No repo skills found, skipping sync")
-            return
-        result = await run_upgrade_sync(db_pool, repo_contents)
-        logger.info(
-            "Repo skill sync complete: %d unchanged, %d silent, %d pending, %d insert, %d deprecated, %d errors",
-            result.total_unchanged,
-            result.total_silent_updates,
-            result.total_pending_updates,
-            result.total_inserts,
-            result.total_deprecated,
-            result.total_errors,
-        )
-    except Exception:
-        logger.warning("Repo skill sync failed")
+        count = sum(1 for _ in legacy_dir.glob("*.md"))
+    except OSError:
+        return
+    if count:
+        logger.warning("Ignoring %d unowned legacy skill file(s) in data/skills", count)
 
 
 def _publish_setup_token(settings: Settings, token: str, *, recovery: bool = False) -> None:
@@ -1620,7 +1595,7 @@ async def openai_chat_completions(
     try:
         app_state = request.app.state.app_state
         db_pool = getattr(app_state, "db_pool", None)
-        skills_block = await build_skill_index(db_pool=db_pool)
+        skills_block = await build_skill_index(db_pool, auth.user_id)
     except Exception:
         logger.warning("Skills injection failed, continuing without skills")
         skills_block = ""
@@ -3000,7 +2975,7 @@ async def chat(
     user_timezone = None
     try:
         db_pool = getattr(app_state, "db_pool", None)
-        skills_block = await build_skill_index(db_pool=db_pool)
+        skills_block = await build_skill_index(db_pool, auth.user_id)
     except Exception:
         logger.warning("Skills injection failed, continuing without skills")
         skills_block = ""

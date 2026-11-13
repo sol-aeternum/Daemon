@@ -262,18 +262,8 @@ class TestSkillsRoutesAreProtected:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_pending_update_returns_401(self, client):
-        response = await client.post("/skills/skill-123/pending-update", json={"action": "dismiss"})
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
     async def test_download_returns_401(self, client):
         response = await client.get("/skills/skill-123/download")
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_admin_sync_returns_401(self, client):
-        response = await client.post("/skills/admin/sync")
         assert response.status_code == 401
 
 

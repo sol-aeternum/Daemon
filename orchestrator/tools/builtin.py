@@ -301,7 +301,21 @@ def create_default_registry(
     from orchestrator.tools.skill_manage import SkillManageTool
     from orchestrator.tools.document import GenerateDocumentTool
 
-    registry.register(SkillManageTool(db_pool=db_pool))
+    skill_store = None
+    skill_owner = None
+    if db_pool is not None and user_id is not None:
+        import uuid
+
+        from orchestrator.memory.encryption import EncryptionInitError
+        from orchestrator.services.skills import create_skill_store
+
+        try:
+            skill_store = create_skill_store(db_pool)
+            skill_owner = uuid.UUID(str(user_id))
+        except (EncryptionInitError, ValueError):
+            # No key or no valid owner: the tool refuses instead of falling back.
+            skill_store = None
+    registry.register(SkillManageTool(skill_store, skill_owner))
     registry.register(GenerateDocumentTool(user_id=user_id))
 
     if memory_store and user_id:

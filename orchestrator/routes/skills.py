@@ -24,68 +24,108 @@ from orchestrator.auth import (
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from orchestrator import skills_store
-from orchestrator.skills_projection import SkillProjectionStore
-from orchestrator.skills_sync import SkillSyncService
-from orchestrator.skills_upgrade import (
-    SkillUpgradeService,
-    load_repo_contents,
-    run_upgrade_sync,
-)
+from orchestrator.memory.encryption import EncryptionInitError
 from orchestrator.request_body_limit import REQUEST_BODY_TOO_LARGE_RESPONSES
+from orchestrator.services.skill_format import parse_skill_markdown, render_skill_markdown
+from orchestrator.services.skill_index import embed_skill
+from orchestrator.services.skills import (
+    SkillError,
+    SkillStore,
+    create_skill_store,
+    slug_for_name,
+)
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
-
-def _safe_isoformat(value: Any) -> str | None:
-    """Safely convert datetime or string to ISO format string."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
-
-
-def _attach_projection_metadata(
-    detail: skills_store.SkillDetail,
-    projection: dict[str, Any] | None,
-) -> skills_store.SkillDetail:
-    """Merge projection metadata into skill detail for API response."""
-    if projection:
-        detail["source_type"] = projection.get("source_type")
-        detail["allow_autonomous_edit"] = projection.get("allow_autonomous_edit")
-        detail["repo_version"] = projection.get("repo_version")
-        detail["local_version"] = projection.get("local_version")
-        detail["pending_update"] = projection.get("pending_update")
-        detail["use_count"] = projection.get("use_count")
-        detail["last_used_at"] = _safe_isoformat(projection.get("last_used_at"))
-        detail["created_by"] = projection.get("created_by")
-        detail["origin_url"] = projection.get("origin_url")
-    return detail
+# Refusals that are not a plain bad request. Every other reason is a 400.
+_REFUSAL_STATUS = {
+    "not_found": 404,
+    "revision_not_found": 404,
+    "shipped_read_only": 403,
+    "slug_taken": 409,
+    "revision_conflict": 409,
+    "account_unavailable": 503,
+    "encryption_key_mismatch": 503,
+}
 
 
-async def _get_projection(request: Request, skill_id: str) -> dict[str, Any] | None:
-    """Fetch projection metadata if db pool is available."""
-    if not hasattr(request.app.state, "app_state"):
-        return None
-    app_state = request.app.state.app_state
-    if not hasattr(app_state, "db_pool") or app_state.db_pool is None:
-        return None
-    store = SkillProjectionStore(app_state.db_pool)
-    return await store.get_projection(skill_id)
+# The settings UI shows ``detail`` to the person as it is, so it is a sentence.
+# Messages never include skill content.
+_REFUSAL_MESSAGE = {
+    "not_found": "Skill not found",
+    "revision_not_found": "Revision not found",
+    "shipped_read_only": "Shipped skills are read-only",
+    "slug_taken": "A skill with that name already exists",
+    "revision_conflict": "The skill was changed elsewhere. Reload it and try again",
+    "limit_reached": "This account has reached its skill limit",
+    "slug_invalid": (
+        "Skill id must contain only lowercase letters, numbers, underscores, or hyphens"
+    ),
+    "name_required": "A skill needs a name",
+    "name_too_long": "The skill name is too long",
+    "description_required": "Skill frontmatter must include a non-empty 'description' field",
+    "description_too_long": "The skill description is too long",
+    "body_required": "The skill file has no instructions",
+    "body_too_long": "The skill content is too long",
+    "file_too_long": "The skill file is too large",
+    "file_type_unsupported": "Only .md skill files are supported",
+    "format_invalid": (
+        "Invalid skill format. Provide frontmatter or markdown with a top-level '# Title' heading"
+    ),
+    "frontmatter_too_long": "The skill file's frontmatter is too long",
+    "enabled_invalid": "Field 'enabled' must be true or false",
+    "account_unavailable": "Account unavailable",
+    "encryption_key_mismatch": "Skill storage unavailable",
+}
 
 
-def _get_sync_service(request: Request) -> SkillSyncService | None:
-    """Get sync service if db pool is available."""
-    if not hasattr(request.app.state, "app_state"):
-        return None
-    app_state = request.app.state.app_state
-    if not hasattr(app_state, "db_pool") or app_state.db_pool is None:
-        return None
-    store = SkillProjectionStore(app_state.db_pool)
-    return SkillSyncService(store)
+def _refusal(exc: SkillError) -> HTTPException:
+    return HTTPException(
+        status_code=_REFUSAL_STATUS.get(exc.reason, 400),
+        detail=_REFUSAL_MESSAGE.get(exc.reason, "The skill request was refused"),
+    )
+
+
+def _store(request: Request) -> SkillStore:
+    """The skill store, or 503: there is no file-backed fallback."""
+    app_state = getattr(request.app.state, "app_state", None)
+    db_pool = getattr(app_state, "db_pool", None)
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        return create_skill_store(db_pool)
+    except EncryptionInitError as exc:
+        raise HTTPException(status_code=503, detail="Skill storage unavailable") from exc
+
+
+def _summary(skill: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": skill["slug"],
+        "name": skill["name"],
+        "description": skill["description"],
+        "enabled": skill["enabled"],
+        "updated_at": skill["updated_at"],
+        "scope": skill["scope"],
+        "revision": skill["revision"],
+        "source_type": skill["source_type"],
+        "allow_autonomous_edit": skill["allow_autonomous_edit"],
+        "use_count": skill["use_count"],
+        "last_used_at": skill["last_used_at"],
+        # Retired with the shipped-skill upgrade machinery; always null.
+        "repo_version": None,
+        "local_version": None,
+        "pending_update": None,
+    }
+
+
+def _detail(skill: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_summary(skill),
+        "content": skill["body"],
+        # Retired provenance fields; always null.
+        "created_by": None,
+        "origin_url": None,
+    }
 
 
 class SkillCreate(BaseModel):
@@ -100,6 +140,7 @@ class SkillUpdate(BaseModel):
     description: str | None = Field(default=None)
     content: str | None = None
     enabled: bool | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
 
 
 class SkillEnabledUpdate(BaseModel):
@@ -110,34 +151,18 @@ class SkillAutonomousEditUpdate(BaseModel):
     allow_autonomous_edit: bool
 
 
-class PendingUpdateAction(BaseModel):
-    action: str  # "apply" or "dismiss"
-
-
 @router.get("")
 async def list_skills(
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> dict[str, list[skills_store.SkillSummary]]:
-    skills = skills_store.list_skills()
-    if hasattr(request.app.state, "app_state"):
-        app_state = request.app.state.app_state
-        if hasattr(app_state, "db_pool") and app_state.db_pool is not None:
-            store = SkillProjectionStore(app_state.db_pool)
-            for skill in skills:
-                try:
-                    proj = await store.get_projection(skill["id"])
-                    if proj:
-                        skill["source_type"] = proj.get("source_type")
-                        skill["allow_autonomous_edit"] = proj.get("allow_autonomous_edit")
-                        skill["repo_version"] = proj.get("repo_version")
-                        skill["local_version"] = proj.get("local_version")
-                        skill["pending_update"] = proj.get("pending_update")
-                        skill["use_count"] = proj.get("use_count")
-                        skill["last_used_at"] = _safe_isoformat(proj.get("last_used_at"))
-                except Exception:
-                    continue
-    return {"skills": skills}
+) -> dict[str, list[dict[str, Any]]]:
+    store = _store(request)
+    try:
+        skills = await store.list(auth.user_id)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
+    skills.sort(key=lambda skill: skill["updated_at"], reverse=True)
+    return {"skills": [_summary(skill) for skill in skills]}
 
 
 @router.get("/{skill_id}")
@@ -145,18 +170,12 @@ async def get_skill(
     skill_id: str,
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> skills_store.SkillDetail:
+) -> dict[str, Any]:
+    store = _store(request)
     try:
-        detail = skills_store.get_skill(skill_id)
-        try:
-            projection = await _get_projection(request, skill_id)
-            return _attach_projection_metadata(detail, projection)
-        except Exception:
-            return detail
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _detail(await store.get(auth.user_id, skill_id))
+    except SkillError as exc:
+        raise _refusal(exc) from exc
 
 
 @router.post("", status_code=201)
@@ -164,22 +183,21 @@ async def create_skill(
     payload: SkillCreate,
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> skills_store.SkillDetail:
+) -> dict[str, Any]:
+    store = _store(request)
     try:
-        result = skills_store.create_skill(
+        skill = await store.create(
+            auth.user_id,
             name=payload.name,
             description=payload.description,
-            content=payload.content,
-            enabled=payload.enabled,
+            body=payload.content,
         )
-        sync = _get_sync_service(request)
-        if sync:
-            await sync.sync_skill(result["id"], source_type="manual")
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileExistsError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not payload.enabled:
+            skill = await store.set_enabled(auth.user_id, skill["slug"], False)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
+    await embed_skill(store, skill)
+    return _detail(skill)
 
 
 @router.post(
@@ -192,7 +210,7 @@ async def upload_skill(
     file: Annotated[UploadFile, File(...)],
     overwrite: Annotated[bool, Form()] = False,
     auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> skills_store.SkillDetail:
+) -> dict[str, Any]:
     filename = file.filename or ""
     if not filename:
         raise HTTPException(status_code=400, detail="Missing file name")
@@ -203,20 +221,35 @@ async def upload_skill(
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="Skill file must be UTF-8 markdown") from exc
 
+    store = _store(request)
     try:
-        result = skills_store.import_skill_markdown(
-            filename=filename,
-            markdown=markdown,
-            overwrite=overwrite,
-        )
-        sync = _get_sync_service(request)
-        if sync:
-            await sync.sync_skill(result["id"], source_type="imported")
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileExistsError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        parsed = parse_skill_markdown(filename, markdown)
+        try:
+            skill = await store.create(
+                auth.user_id,
+                name=parsed.name,
+                description=parsed.description,
+                body=parsed.body,
+                imported=True,
+            )
+        except SkillError as exc:
+            if exc.reason != "slug_taken" or not overwrite:
+                raise
+            # Overwrite is a new revision of the caller's own skill; its
+            # stored source type and grant are untouched.
+            skill = await store.save(
+                auth.user_id,
+                slug_for_name(parsed.name),
+                name=parsed.name,
+                description=parsed.description,
+                body=parsed.body,
+            )
+        if skill["enabled"] != parsed.enabled:
+            skill = await store.set_enabled(auth.user_id, skill["slug"], parsed.enabled)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
+    await embed_skill(store, skill)
+    return _detail(skill)
 
 
 @router.put("/{skill_id}")
@@ -225,23 +258,33 @@ async def update_skill(
     payload: SkillUpdate,
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> skills_store.SkillDetail:
+) -> dict[str, Any]:
+    store = _store(request)
+    content_changed = (
+        payload.name is not None or payload.description is not None or payload.content is not None
+    )
     try:
-        result = skills_store.update_skill(
-            skill_id,
-            name=payload.name,
-            description=payload.description,
-            content=payload.content,
-            enabled=payload.enabled,
-        )
-        sync = _get_sync_service(request)
-        if sync:
-            await sync.sync_skill(skill_id)
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if content_changed:
+            skill = await store.save(
+                auth.user_id,
+                skill_id,
+                name=payload.name,
+                description=payload.description,
+                body=payload.content,
+                expected_revision=payload.expected_revision,
+            )
+            if payload.enabled is not None and payload.enabled != skill["enabled"]:
+                skill = await store.set_enabled(auth.user_id, skill_id, payload.enabled)
+        elif payload.enabled is not None:
+            # The switch is not a content revision, so no revision is expected.
+            skill = await store.set_enabled(auth.user_id, skill_id, payload.enabled)
+        else:
+            skill = await store.get(auth.user_id, skill_id)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
+    if content_changed:
+        await embed_skill(store, skill)
+    return _detail(skill)
 
 
 @router.patch("/{skill_id}/enabled")
@@ -250,23 +293,12 @@ async def set_skill_enabled(
     payload: SkillEnabledUpdate,
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> skills_store.SkillDetail:
+) -> dict[str, Any]:
+    store = _store(request)
     try:
-        result = skills_store.update_skill(
-            skill_id,
-            name=None,
-            description=None,
-            content=None,
-            enabled=payload.enabled,
-        )
-        sync = _get_sync_service(request)
-        if sync:
-            await sync.sync_skill(skill_id)
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _detail(await store.set_enabled(auth.user_id, skill_id, payload.enabled))
+    except SkillError as exc:
+        raise _refusal(exc) from exc
 
 
 @router.delete("/{skill_id}")
@@ -275,15 +307,11 @@ async def delete_skill(
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, str]:
+    store = _store(request)
     try:
-        skills_store.delete_skill(skill_id)
-        sync = _get_sync_service(request)
-        if sync:
-            await sync.delete_skill_projection(skill_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await store.delete(auth.user_id, skill_id)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
     return {"status": "deleted"}
 
 
@@ -294,106 +322,37 @@ async def set_skill_autonomous_edit(
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    """Toggle allow_autonomous_edit flag for a skill."""
+    """Grant or revoke autonomous edits for the caller's own skill."""
+    store = _store(request)
     try:
-        skills_store.get_skill(skill_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    if hasattr(request.app.state, "app_state"):
-        app_state = request.app.state.app_state
-        if hasattr(app_state, "db_pool") and app_state.db_pool is not None:
-            store = SkillProjectionStore(app_state.db_pool)
-            await store.update_autonomous_edit(skill_id, payload.allow_autonomous_edit)
-
+        skill = await store.set_autonomous_edit(
+            auth.user_id, skill_id, payload.allow_autonomous_edit
+        )
+    except SkillError as exc:
+        raise _refusal(exc) from exc
     return {
-        "skill_id": skill_id,
-        "allow_autonomous_edit": payload.allow_autonomous_edit,
+        "skill_id": skill["slug"],
+        "allow_autonomous_edit": skill["allow_autonomous_edit"],
     }
-
-
-@router.post("/{skill_id}/pending-update")
-async def handle_pending_update(
-    skill_id: str,
-    payload: PendingUpdateAction,
-    request: Request,
-    auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> dict[str, Any]:
-    """Apply or dismiss a pending update for a skill via the upgrade service."""
-    if not hasattr(request.app.state, "app_state"):
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    app_state = request.app.state.app_state
-    if not hasattr(app_state, "db_pool") or app_state.db_pool is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    store = SkillProjectionStore(app_state.db_pool)
-    service = SkillUpgradeService(store)
-
-    if payload.action == "apply":
-        result = await service.apply_pending_update(skill_id)
-        if not result.success:
-            if "not found" in (result.error or "").lower():
-                raise HTTPException(status_code=404, detail=result.error)
-            raise HTTPException(status_code=400, detail=result.error)
-        return {
-            "skill_id": skill_id,
-            "action": "applied",
-            "message": "Pending update applied successfully",
-        }
-
-    elif payload.action == "dismiss":
-        result = await service.dismiss_pending_update(skill_id)
-        if not result.success:
-            if "not found" in (result.error or "").lower():
-                raise HTTPException(status_code=404, detail=result.error)
-            raise HTTPException(status_code=400, detail=result.error)
-        return {
-            "skill_id": skill_id,
-            "action": "dismissed",
-            "message": "Pending update dismissed",
-        }
-
-    else:
-        raise HTTPException(status_code=400, detail="Invalid action. Use 'apply' or 'dismiss'")
 
 
 @router.get("/{skill_id}/download")
 async def download_skill(
     skill_id: str,
+    request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> PlainTextResponse:
-    """Download skill as markdown file.
-
-    Returns the canonical markdown (frontmatter + body) suitable for
-    re-import via the upload endpoint.
-    """
+    """Download the current revision as a file the upload endpoint accepts."""
+    store = _store(request)
     try:
-        markdown = skills_store.export_skill_markdown(skill_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    filename = f"{skill_id}.md"
+        skill = await store.get(auth.user_id, skill_id)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
     headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Disposition": f'attachment; filename="{skill["slug"]}.md"',
         "Content-Type": "text/markdown; charset=utf-8",
     }
-    return PlainTextResponse(markdown, headers=headers)
-
-
-class AdminSyncResponse(BaseModel):
-    success: bool
-    total_unchanged: int
-    total_silent_updates: int
-    total_pending_updates: int
-    total_inserts: int
-    total_deprecated: int
-    total_errors: int
-    repo_skills_found: int
+    return PlainTextResponse(render_skill_markdown(skill), headers=headers)
 
 
 @router.get("/admin/consolidation-audit")
@@ -426,34 +385,3 @@ async def admin_list_consolidation_audit(
         limit=limit,
     )
     return {"actions": rows}
-
-
-@router.post("/admin/sync", response_model=AdminSyncResponse)
-async def admin_sync_repo_skills(
-    request: Request,
-    auth: AdminOrDeviceAuth = Depends(require_admin_or_device_auth),
-) -> AdminSyncResponse:
-
-    if not auth.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    if not hasattr(request.app.state, "app_state"):
-        raise HTTPException(status_code=503, detail="App state not available")
-
-    app_state = request.app.state.app_state
-    if not hasattr(app_state, "db_pool") or app_state.db_pool is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    repo_contents = load_repo_contents()
-    result = await run_upgrade_sync(app_state.db_pool, repo_contents)
-
-    return AdminSyncResponse(
-        success=result.total_errors == 0,
-        total_unchanged=result.total_unchanged,
-        total_silent_updates=result.total_silent_updates,
-        total_pending_updates=result.total_pending_updates,
-        total_inserts=result.total_inserts,
-        total_deprecated=result.total_deprecated,
-        total_errors=result.total_errors,
-        repo_skills_found=len(repo_contents),
-    )

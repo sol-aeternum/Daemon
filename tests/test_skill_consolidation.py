@@ -10,6 +10,7 @@ import pytest
 from orchestrator.config import Settings
 from orchestrator.memory.store import MemoryStore
 from orchestrator.redis_account import account_prefix
+from orchestrator.services.skills import SkillError
 from tests.qualified_compute import install_qualified_compute
 from orchestrator.worker.jobs import (
     ConsolidationNudgeAction,
@@ -172,9 +173,51 @@ async def test_job_skips_when_below_interval() -> None:
     assert result["skills_reviewed"] == 0
 
 
+class FakeSkillStore:
+    """The account-owned store calls consolidation makes, recorded."""
+
+    def __init__(self, candidates: list[dict[str, Any]] | None = None) -> None:
+        self.candidates = candidates or []
+        self.candidate_calls: list[tuple[uuid.UUID, int]] = []
+        self.merge = AsyncMock(
+            return_value={"id": str(uuid.uuid4()), "revision": 2, "name": "", "description": "",
+                          "body": ""}
+        )  # fmt: skip
+        self.delete = AsyncMock(return_value=None)
+
+    async def list_autonomous_candidates(
+        self, user_id: uuid.UUID, *, limit: int
+    ) -> list[dict[str, Any]]:
+        self.candidate_calls.append((user_id, limit))
+        return self.candidates
+
+
+def _candidate(slug: str, name: str) -> dict[str, Any]:
+    return {
+        "id": str(uuid.uuid4()),
+        "slug": slug,
+        "name": name,
+        "description": f"{name} description",
+        "body": "Content here",
+        "use_count": 5,
+        "last_used_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _use_skill_store(monkeypatch: pytest.MonkeyPatch, skill_store: FakeSkillStore) -> None:
+    monkeypatch.setattr(
+        "orchestrator.services.skills.create_skill_store", lambda *_, **__: skill_store
+    )
+    monkeypatch.setattr(
+        "orchestrator.services.skill_index.embed_skill", AsyncMock(return_value=True)
+    )
+
+
 @pytest.mark.asyncio
-async def test_job_finds_users_above_interval() -> None:
+async def test_job_finds_users_above_interval(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid.uuid4()
+    skill_store = FakeSkillStore()
+    _use_skill_store(monkeypatch, skill_store)
 
     class FakeMemoryStore(MemoryStore):
         def __init__(self) -> None:
@@ -188,9 +231,6 @@ async def test_job_finds_users_above_interval() -> None:
 
         async def get_total_conversation_count(self, uid: uuid.UUID) -> int:
             return 35
-
-        async def get_autonomous_skill_candidates(self, min_skills: int) -> list[dict[str, Any]]:
-            return []
 
         async def record_consolidation_nudge_run(self, uid: uuid.UUID, count: int) -> None:
             pass
@@ -214,6 +254,8 @@ async def test_job_finds_users_above_interval() -> None:
     result = await run_consolidation_nudge_job(ctx)
 
     assert result["status"] == "ok"
+    # Candidates are read for that account only, never across accounts.
+    assert skill_store.candidate_calls == [(user_id, 9)]
 
 
 class TestConsolidationPromptBuilding:
@@ -356,30 +398,61 @@ class TestProtectedSkillsExclusion:
 
 class TestApplyMergeAction:
     @pytest.mark.asyncio
-    async def test_merge_deletes_absorbed_skill(self) -> None:
+    async def test_merge_runs_through_the_skill_store_as_consolidation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         user_id = uuid.uuid4()
+        skill_store = FakeSkillStore()
+        _use_skill_store(monkeypatch, skill_store)
 
-        class FakeMemoryStore:
-            def __init__(self) -> None:
-                self._pool = MagicMock()
+        refusal = await _apply_merge_action("skill-keep", "skill-absorb", skill_store, user_id)
 
-            async def merge_autonomous_skills(
-                self,
-                kept_skill_id: str,
-                absorbed_skill_ids: list[str],
-                user_id: uuid.UUID,
-            ) -> None:
-                self.kept_skill_id = kept_skill_id
-                self.absorbed_skill_ids = absorbed_skill_ids
-
-        store = FakeMemoryStore()
-        result = await _apply_merge_action(
-            "skill-keep", "skill-absorb", cast(MemoryStore, store), user_id
+        assert refusal is None
+        skill_store.merge.assert_awaited_once_with(
+            user_id, "skill-keep", ["skill-absorb"], actor="consolidation"
         )
 
-        assert result["merged"] is True
-        assert store.kept_skill_id == "skill-keep"
-        assert store.absorbed_skill_ids == ["skill-absorb"]
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [
+            (SkillError("autonomous_edit_not_granted"), "not_granted"),
+            (SkillError("shipped_read_only"), "not_granted"),
+            (SkillError("not_found"), "merge_failed"),
+            (RuntimeError("database down: secret detail"), "merge_failed"),
+        ],
+    )
+    async def test_merge_failure_is_a_fixed_code(
+        self, monkeypatch: pytest.MonkeyPatch, error: Exception, code: str
+    ) -> None:
+        skill_store = FakeSkillStore()
+        skill_store.merge = AsyncMock(side_effect=error)
+        _use_skill_store(monkeypatch, skill_store)
+
+        assert await _apply_merge_action("a", "b", skill_store, uuid.uuid4()) == code
+
+
+class _AuditStore:
+    def __init__(self, audit_id: uuid.UUID, events: list[tuple[str, str]]) -> None:
+        self.audit_id = audit_id
+        self.events = events
+        self.logged_action: dict[str, Any] = {}
+        self.status_updates: list[dict[str, object]] = []
+
+    async def log_consolidation_nudge_action(self, **kwargs: Any) -> uuid.UUID:
+        self.events.append(("audit", kwargs["status"]))
+        self.logged_action = kwargs
+        return self.audit_id
+
+    async def update_consolidation_nudge_action_status(
+        self,
+        action_id: uuid.UUID,
+        *,
+        status: str,
+        reason: str | None = None,
+    ) -> None:
+        self.events.append(("audit_update", status))
+        self.status_updates.append({"action_id": action_id, "status": status, "reason": reason})
 
 
 class TestApplyDeleteAction:
@@ -388,135 +461,77 @@ class TestApplyDeleteAction:
         user_id = uuid.uuid4()
         audit_id = uuid.uuid4()
         events: list[tuple[str, str]] = []
+        skill = _candidate("skill-to-delete", "Skill To Delete")
+        skill_store = FakeSkillStore()
 
-        class FakeMemoryStore(MemoryStore):
-            def __init__(self) -> None:
-                self._pool = MagicMock()
-                self.deleted_projection: str | None = None
+        async def delete(owner: uuid.UUID, slug: str, *, actor: str) -> None:
+            assert (owner, actor) == (user_id, "consolidation")
+            events.append(("skill_delete", slug))
 
-            async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
-                events.append(("audit", kwargs["status"]))
-                self.logged_action = kwargs
-                return audit_id
+        skill_store.delete = AsyncMock(side_effect=delete)
+        store = _AuditStore(audit_id, events)
 
-            async def update_consolidation_nudge_action_status(
-                self,
-                action_id: uuid.UUID,
-                *,
-                status: str,
-                reason: str | None = None,
-            ) -> None:
-                events.append(("audit_update", status))
-                self.updated_action = {"action_id": action_id, "status": status, "reason": reason}
+        result = await _apply_delete_action(skill, cast(MemoryStore, store), skill_store, user_id)
 
-        class FakeProjectionStore:
-            def __init__(self, pool: object) -> None:
-                self.pool = pool
-
-            async def delete_projection(self, skill_id: str) -> bool:
-                events.append(("projection_delete", skill_id))
-                return True
-
-        def fake_delete_skill(skill_id: str) -> None:
-            events.append(("skill_delete", skill_id))
-
-        with patch("orchestrator.skills_store.delete_skill", side_effect=fake_delete_skill):
-            with patch("orchestrator.skills_projection.SkillProjectionStore") as mock_proj:
-                mock_proj.return_value = FakeProjectionStore(object())
-
-                store = FakeMemoryStore()
-                result = await _apply_delete_action(
-                    "skill-to-delete", cast(MemoryStore, store), user_id
-                )
-
-                assert result["deleted"] is True
-                assert result["reason"] == "ok"
-                assert result["audit_id"] == audit_id
-                assert events == [
-                    ("audit", "pending"),
-                    ("skill_delete", "skill-to-delete"),
-                    ("projection_delete", "skill-to-delete"),
-                    ("audit_update", "applied"),
-                ]
-                assert store.logged_action["status"] == "pending"
-                assert store.updated_action == {
-                    "action_id": audit_id,
-                    "status": "applied",
-                    "reason": None,
-                }
+        assert result == {"deleted": True, "reason": "model_delete", "audit_id": audit_id}
+        assert events == [
+            ("audit", "pending"),
+            ("skill_delete", "skill-to-delete"),
+            ("audit_update", "applied"),
+        ]
+        # The audit row names the skill by internal id and a reason code only.
+        assert store.logged_action["skill_id"] == uuid.UUID(skill["id"])
+        assert store.logged_action["reason"] == "model_delete"
+        assert "skill_name" not in store.logged_action
+        assert "skill_description" not in store.logged_action
+        assert store.status_updates == [
+            {"action_id": audit_id, "status": "applied", "reason": None}
+        ]
 
     @pytest.mark.asyncio
     async def test_delete_does_not_run_when_pending_audit_insert_fails(self) -> None:
-        user_id = uuid.uuid4()
-
-        class FakeMemoryStore:
-            def __init__(self) -> None:
-                self._pool = MagicMock()
-
-            async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
+        class FailingAuditStore:
+            async def log_consolidation_nudge_action(self, **kwargs: Any) -> uuid.UUID:
                 raise RuntimeError("audit insert failed")
 
-            async def delete_skill_projection(self, skill_id: str) -> bool:
-                self.deleted_projection = skill_id
-                return True
+        skill_store = FakeSkillStore()
+        result = await _apply_delete_action(
+            _candidate("skill-to-delete", "Skill To Delete"),
+            cast(MemoryStore, FailingAuditStore()),
+            skill_store,
+            uuid.uuid4(),
+        )
 
-        with patch("orchestrator.skills_store.delete_skill") as mock_delete:
-            with patch("orchestrator.skills_projection.SkillProjectionStore") as mock_proj:
-                result = await _apply_delete_action(
-                    "skill-to-delete", cast(MemoryStore, FakeMemoryStore()), user_id
-                )
-
-        assert result["deleted"] is False
-        assert result["reason"] == "audit log failed before delete: audit insert failed"
-        mock_delete.assert_not_called()
-        mock_proj.assert_not_called()
+        assert result == {"deleted": False, "reason": "audit_failed"}
+        skill_store.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_delete_marks_pending_audit_failed_when_projection_delete_fails(self) -> None:
-        user_id = uuid.uuid4()
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [
+            (SkillError("autonomous_edit_not_granted"), "not_granted"),
+            (RuntimeError("store unavailable for skill-to-delete"), "delete_failed"),
+        ],
+    )
+    async def test_delete_marks_pending_audit_failed_when_the_delete_fails(
+        self, error: Exception, code: str
+    ) -> None:
         audit_id = uuid.uuid4()
+        skill_store = FakeSkillStore()
+        skill_store.delete = AsyncMock(side_effect=error)
+        store = _AuditStore(audit_id, [])
 
-        class FakeMemoryStore:
-            def __init__(self) -> None:
-                self._pool = MagicMock()
-                self.status_updates: list[dict[str, object]] = []
+        result = await _apply_delete_action(
+            _candidate("skill-to-delete", "Skill To Delete"),
+            cast(MemoryStore, store),
+            skill_store,
+            uuid.uuid4(),
+        )
 
-            async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
-                self.logged_action = kwargs
-                return audit_id
-
-            async def update_consolidation_nudge_action_status(
-                self,
-                action_id: uuid.UUID,
-                *,
-                status: str,
-                reason: str | None = None,
-            ) -> None:
-                self.status_updates.append(
-                    {"action_id": action_id, "status": status, "reason": reason}
-                )
-
-            async def delete_skill_projection(self, skill_id: str) -> bool:
-                raise RuntimeError(f"projection unavailable for {skill_id}")
-
-        with patch("orchestrator.skills_store.delete_skill") as mock_delete:
-            store = FakeMemoryStore()
-            result = await _apply_delete_action(
-                "skill-to-delete", cast(MemoryStore, store), user_id
-            )
-
-        assert result["deleted"] is False
-        assert result["reason"] == "projection unavailable for skill-to-delete"
-        assert result["audit_id"] == audit_id
-        mock_delete.assert_called_once_with("skill-to-delete")
+        assert result == {"deleted": False, "reason": code, "audit_id": audit_id}
         assert store.logged_action["status"] == "pending"
-        assert store.status_updates == [
-            {
-                "action_id": audit_id,
-                "status": "failed",
-                "reason": "delete failed: projection unavailable for skill-to-delete",
-            }
-        ]
+        # The failure is recorded as a code, never the exception text.
+        assert store.status_updates == [{"action_id": audit_id, "status": "failed", "reason": code}]
 
     @pytest.mark.asyncio
     async def test_consolidation_log_query_filters_destructive_deletes(self) -> None:
@@ -567,6 +582,9 @@ class TestModelDrivenConsolidationFlow:
     async def test_model_called_with_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         user_id = uuid.uuid4()
         install_qualified_compute(monkeypatch)
+        candidate = _candidate("autonomous-1", "Autonomous One")
+        _use_skill_store(monkeypatch, FakeSkillStore([candidate]))
+        logged: list[dict[str, Any]] = []
 
         class FakeMemoryStore(MemoryStore):
             def __init__(self) -> None:
@@ -578,20 +596,6 @@ class TestModelDrivenConsolidationFlow:
             async def get_total_conversation_count(self, uid: uuid.UUID) -> int:
                 return 35
 
-            async def get_autonomous_skill_candidates(
-                self, min_skills: int
-            ) -> list[dict[str, Any]]:
-                return [
-                    {
-                        "skill_id": "autonomous-1",
-                        "name": "Autonomous One",
-                        "description": "First autonomous skill",
-                        "content": "Content here",
-                        "use_count": 5,
-                        "last_used_at": datetime.now(timezone.utc),
-                    }
-                ]
-
             async def get_recent_memories_for_user(
                 self, user_id: uuid.UUID, limit: int = 20
             ) -> list[dict[str, Any]]:
@@ -601,7 +605,7 @@ class TestModelDrivenConsolidationFlow:
                 pass
 
             async def log_consolidation_nudge_action(self, **kwargs) -> None:
-                pass
+                logged.append(kwargs)
 
         test_settings = Settings(
             consolidation_nudge_enabled=True,
@@ -625,12 +629,19 @@ class TestModelDrivenConsolidationFlow:
             "db_pool": object(),
         }
 
-        with patch(
-            "orchestrator.worker.jobs.guarded_completion", AsyncMock(return_value=mock_response)
-        ):
+        completion = AsyncMock(return_value=mock_response)
+        with patch("orchestrator.worker.jobs.guarded_completion", completion):
             result = await run_consolidation_nudge_job(ctx, str(user_id))
 
-            assert result["status"] == "ok"
+        assert result["status"] == "ok"
+        assert result["stale_flagged"] == 1
+        prompt = completion.call_args.kwargs["messages"][1]["content"]
+        assert "[autonomous-1] Autonomous One" in prompt
+        # The model's free-text reason is not stored; the row holds an id and a code.
+        assert [(row["skill_id"], row["reason"], row["status"]) for row in logged] == [
+            (uuid.UUID(candidate["id"]), "model_stale", "recorded")
+        ]
+        assert "low usage" not in repr(logged)
 
 
 class TestAuditLogRecording:

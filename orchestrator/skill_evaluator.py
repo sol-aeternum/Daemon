@@ -19,9 +19,9 @@ from orchestrator.skill_evaluator_prompts import (
     build_skill_creation_prompt,
     build_skill_refinement_prompt,
 )
-from orchestrator.skills_projection import SkillProjectionStore
-from orchestrator.skills_store import SkillDetail, get_skill
-from orchestrator.tools.skill_manage import SkillManageTool
+from orchestrator.memory.encryption import EncryptionInitError
+from orchestrator.services.skill_index import embed_skill
+from orchestrator.services.skills import SkillError, create_skill_store
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,8 @@ _CREATION_MAX_TOKENS = 2400
 _REFINEMENT_MAX_TOKENS = 1800
 _MAX_TOOL_VALUE_CHARS = 500
 _MAX_TOOL_TRACE_CHARS = 6000
-PROTECTED_SOURCE_TYPES = frozenset({"system", "imported", "manual"})
+# Store refusals that mean the matched skill is closed to autonomous edits.
+_PROTECTED_REFUSALS = frozenset({"autonomous_edit_not_granted", "shipped_read_only"})
 _REQUIRED_SKILL_SECTIONS = (
     "Purpose",
     "When To Use",
@@ -114,26 +115,50 @@ class ConversationStoreProtocol(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
-class SkillProjectionProtocol(Protocol):
+class SkillStoreProtocol(Protocol):
+    """The part of the account-owned skill store the evaluator uses.
+
+    Every call names the account of the evaluated turn; there is no call that
+    reads or writes another account's skills.
+    """
+
     async def search_by_embedding(
         self,
-        query_embedding: list[float],
+        user_id: uuid.UUID,
+        embedding: list[float],
         *,
-        limit: int = 10,
+        limit: int = 5,
         min_similarity: float = 0.0,
     ) -> list[dict[str, Any]]: ...
 
-    async def update_autonomous_metadata(
+    async def create(
         self,
-        skill_id: str,
+        user_id: uuid.UUID,
         *,
+        name: str,
+        description: str,
+        body: str,
+        trigger_conditions: str = "",
+        actor: Any = "user",
+        imported: bool = False,
+        complexity_origin: int = 0,
+    ) -> dict[str, Any]: ...
+
+    async def patch(
+        self,
+        user_id: uuid.UUID,
+        slug: str,
+        old_text: str,
+        new_text: str,
+        *,
+        actor: Any = "autonomous",
         trigger_conditions: str | None = None,
         complexity_origin: int | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def store_embedding(
+        self, skill_id: uuid.UUID, revision: int, embedding: list[float]
     ) -> bool: ...
-
-
-class SkillManageProtocol(Protocol):
-    async def execute(self, **kwargs: Any) -> str: ...
 
 
 def build_skill_evaluation_debounce_key(
@@ -431,19 +456,19 @@ class SkillEvaluator:
         store: ConversationStoreProtocol,
         db_pool: Any,
         *,
-        projection_store: SkillProjectionProtocol | None = None,
-        skill_manage_tool: SkillManageProtocol | None = None,
+        skill_store: SkillStoreProtocol | None = None,
         completion_callable: CompletionCallable = guarded_completion,
         query_embedder: EmbeddingCallable = embed_query,
         model: str | None = None,
     ) -> None:
         self._store: ConversationStoreProtocol = store
-        self._projection_store: SkillProjectionProtocol | None = projection_store or (
-            SkillProjectionStore(db_pool) if db_pool is not None else None
-        )
-        self._skill_manage_tool: SkillManageProtocol = skill_manage_tool or SkillManageTool(
-            db_pool=db_pool
-        )
+        if skill_store is None and db_pool is not None:
+            try:
+                skill_store = create_skill_store(db_pool)
+            except EncryptionInitError:
+                # No key: evaluation is skipped rather than stored unencrypted.
+                skill_store = None
+        self._skill_store: SkillStoreProtocol | None = skill_store
         self._completion_callable: CompletionCallable = completion_callable
         self._query_embedder: EmbeddingCallable = query_embedder
         # Test/benchmark injection point only. Production leaves this unset so
@@ -468,13 +493,13 @@ class SkillEvaluator:
                 reason="tool_call_count below autonomous skill threshold",
             )
 
-        if self._projection_store is None:
+        if self._skill_store is None:
             return SkillEvaluationResult(
                 debounce_key=debounce_key,
                 classification="skipped_projection_unavailable",
                 tool_call_count=request.tool_call_count,
                 complexity_origin=request.tool_call_count,
-                reason="skill projection store unavailable",
+                reason="skill store unavailable",
             )
 
         turn = await self._load_turn_context(request)
@@ -506,7 +531,7 @@ class SkillEvaluator:
                 reason="creation prompt did not return a valid reusable skill draft",
             )
 
-        best_match = await self._find_best_match(draft)
+        best_match = await self._find_best_match(request.user_id, draft)
         if best_match is None:
             return await self._create_skill(request, draft, debounce_key)
 
@@ -591,32 +616,33 @@ class SkillEvaluator:
             return None
         return _parse_skill_draft(payload)
 
-    async def _find_best_match(self, draft: SkillDraft) -> dict[str, Any] | None:
-        projection_store = self._projection_store
-        if projection_store is None:
+    async def _find_best_match(
+        self, user_id: uuid.UUID, draft: SkillDraft
+    ) -> dict[str, Any] | None:
+        """The closest skill of the same account, or None.
+
+        Only the account of the evaluated turn is searched: another account's
+        skills and shipped skills are never offered for refinement.
+        """
+        skill_store = self._skill_store
+        if skill_store is None:
             return None
         try:
             query_embedding = await self._query_embedder(_build_dedup_query_text(draft))
         except EmbeddingConfigurationError:
             # Without an approved embedding route, a semantic match cannot be
-            # proven. Creation can still persist a projection with no vector.
+            # proven. Creation can still store a skill with no vector.
             return None
-        matches = await projection_store.search_by_embedding(
+        matches = await skill_store.search_by_embedding(
+            user_id,
             query_embedding,
             limit=5,
             min_similarity=SKILL_EVALUATION_MATCH_THRESHOLD,
         )
-        if not matches:
-            return None
-
         named_matches = [
             match
             for match in matches
-            if _skill_name_match_rank(
-                draft.name,
-                str(match.get("name") or match.get("skill_id") or ""),
-            )
-            > 0
+            if _skill_name_match_rank(draft.name, str(match.get("name") or "")) > 0
         ]
         if not named_matches:
             return None
@@ -624,10 +650,7 @@ class SkillEvaluator:
         return max(
             named_matches,
             key=lambda match: (
-                _skill_name_match_rank(
-                    draft.name,
-                    str(match.get("name") or match.get("skill_id") or ""),
-                ),
+                _skill_name_match_rank(draft.name, str(match.get("name") or "")),
                 float(match.get("similarity") or 0.0),
             ),
         )
@@ -638,67 +661,42 @@ class SkillEvaluator:
         draft: SkillDraft,
         debounce_key: str,
     ) -> SkillEvaluationResult:
-        projection_store = self._projection_store
-        if projection_store is None:
+        skill_store = self._skill_store
+        if skill_store is None:
             return SkillEvaluationResult(
                 debounce_key=debounce_key,
                 classification="skipped_projection_unavailable",
                 tool_call_count=request.tool_call_count,
                 trigger_conditions=draft.trigger_conditions,
                 complexity_origin=request.tool_call_count,
-                reason="skill projection store unavailable",
+                reason="skill store unavailable",
             )
 
-        response = await self._skill_manage_tool.execute(
-            action="create",
-            name=draft.name,
-            description=draft.description,
-            content=draft.skill_markdown,
-            source_type="autonomous",
-        )
-        payload = _extract_json_object(response)
-        if payload is None:
+        try:
+            created = await skill_store.create(
+                request.user_id,
+                name=draft.name,
+                description=draft.description,
+                body=draft.skill_markdown,
+                trigger_conditions=draft.trigger_conditions,
+                actor="autonomous",
+                complexity_origin=request.tool_call_count,
+            )
+        except SkillError as exc:
             return SkillEvaluationResult(
                 debounce_key=debounce_key,
                 classification="skipped_create_conflict",
                 tool_call_count=request.tool_call_count,
                 trigger_conditions=draft.trigger_conditions,
                 complexity_origin=request.tool_call_count,
-                reason="skill_manage returned a non-JSON create response",
+                reason=exc.reason,
             )
-
-        error = payload.get("error")
-        if isinstance(error, str) and error.strip():
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_create_conflict",
-                tool_call_count=request.tool_call_count,
-                trigger_conditions=draft.trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason=error,
-            )
-
-        created_skill_id = payload.get("skill_id")
-        if not isinstance(created_skill_id, str) or not created_skill_id:
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_create_conflict",
-                tool_call_count=request.tool_call_count,
-                trigger_conditions=draft.trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason="skill_manage create response missing skill_id",
-            )
-
-        _ = await projection_store.update_autonomous_metadata(
-            created_skill_id,
-            trigger_conditions=draft.trigger_conditions,
-            complexity_origin=request.tool_call_count,
-        )
+        await embed_skill(skill_store, created)
         return SkillEvaluationResult(
             debounce_key=debounce_key,
             classification="created",
             tool_call_count=request.tool_call_count,
-            created_skill_id=created_skill_id,
+            created_skill_id=created["slug"],
             trigger_conditions=draft.trigger_conditions,
             complexity_origin=request.tool_call_count,
         )
@@ -712,101 +710,11 @@ class SkillEvaluator:
         draft: SkillDraft,
         match: dict[str, Any],
     ) -> SkillEvaluationResult:
-        matched_skill_id = str(match.get("skill_id") or "")
+        matched_skill_id = str(match.get("slug") or "")
         matched_source_type = str(match.get("source_type") or "") or None
         matched_similarity = float(match.get("similarity") or 0.0)
-        allow_autonomous_edit = bool(match.get("allow_autonomous_edit"))
 
-        if matched_source_type in PROTECTED_SOURCE_TYPES and not allow_autonomous_edit:
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_protected_match",
-                tool_call_count=request.tool_call_count,
-                matched_skill_id=matched_skill_id or None,
-                matched_similarity=matched_similarity,
-                matched_source_type=matched_source_type,
-                protected=True,
-                trigger_conditions=draft.trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason=(
-                    f"matched protected {matched_source_type} skill above similarity threshold"
-                ),
-            )
-
-        try:
-            existing_skill = get_skill(matched_skill_id)
-        except FileNotFoundError:
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_missing_turn",
-                tool_call_count=request.tool_call_count,
-                matched_skill_id=matched_skill_id or None,
-                matched_similarity=matched_similarity,
-                matched_source_type=matched_source_type,
-                trigger_conditions=draft.trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason="projection match exists but markdown skill file is missing",
-            )
-
-        refinement = await self._generate_refinement(
-            turn=turn,
-            draft=draft,
-            existing_skill=existing_skill,
-        )
-        if refinement is None:
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_no_change",
-                tool_call_count=request.tool_call_count,
-                matched_skill_id=matched_skill_id or None,
-                matched_similarity=matched_similarity,
-                matched_source_type=matched_source_type,
-                trigger_conditions=draft.trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason="refinement prompt did not return a valid decision",
-            )
-
-        trigger_conditions = refinement.trigger_conditions.strip() or draft.trigger_conditions
-
-        if refinement.decision == "NO_CHANGE":
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_no_change",
-                tool_call_count=request.tool_call_count,
-                matched_skill_id=matched_skill_id or None,
-                matched_similarity=matched_similarity,
-                matched_source_type=matched_source_type,
-                trigger_conditions=trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason=refinement.reason,
-            )
-
-        response = await self._skill_manage_tool.execute(
-            action="patch",
-            skill_id=matched_skill_id,
-            old_text=refinement.old_text,
-            new_text=refinement.new_text,
-        )
-        payload = _extract_json_object(response)
-        if payload is None:
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_patch_conflict",
-                tool_call_count=request.tool_call_count,
-                matched_skill_id=matched_skill_id or None,
-                matched_similarity=matched_similarity,
-                matched_source_type=matched_source_type,
-                trigger_conditions=trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason="skill_manage returned a non-JSON patch response",
-            )
-
-        error = payload.get("error")
-        if isinstance(error, str) and error.strip():
-            classification = "skipped_patch_conflict"
-            protected = "protected" in error.lower()
-            if protected:
-                classification = "skipped_protected_match"
+        def result(classification: str, **fields: Any) -> SkillEvaluationResult:
             return SkillEvaluationResult(
                 debounce_key=debounce_key,
                 classification=classification,
@@ -814,48 +722,72 @@ class SkillEvaluator:
                 matched_skill_id=matched_skill_id or None,
                 matched_similarity=matched_similarity,
                 matched_source_type=matched_source_type,
+                **{"complexity_origin": request.tool_call_count, **fields},
+            )
+
+        # The store enforces the grant under the row lock; this early check
+        # only avoids a model call for a skill that is closed to edits.
+        if match.get("allow_autonomous_edit") is not True:
+            return result(
+                "skipped_protected_match",
+                protected=True,
+                trigger_conditions=draft.trigger_conditions,
+                reason="matched skill does not allow autonomous edits",
+            )
+
+        skill_store = self._skill_store
+        if skill_store is None:
+            return result(
+                "skipped_projection_unavailable",
+                trigger_conditions=draft.trigger_conditions,
+                reason="skill store unavailable",
+            )
+
+        refinement = await self._generate_refinement(
+            turn=turn,
+            draft=draft,
+            existing_skill=match,
+        )
+        if refinement is None:
+            return result(
+                "skipped_no_change",
+                trigger_conditions=draft.trigger_conditions,
+                reason="refinement prompt did not return a valid decision",
+            )
+
+        trigger_conditions = refinement.trigger_conditions.strip() or draft.trigger_conditions
+
+        if refinement.decision == "NO_CHANGE":
+            return result(
+                "skipped_no_change",
+                trigger_conditions=trigger_conditions,
+                reason=refinement.reason,
+            )
+
+        try:
+            patched = await skill_store.patch(
+                request.user_id,
+                matched_skill_id,
+                refinement.old_text,
+                refinement.new_text,
+                actor="autonomous",
+                trigger_conditions=trigger_conditions,
+                complexity_origin=request.tool_call_count,
+            )
+        except SkillError as exc:
+            protected = exc.reason in _PROTECTED_REFUSALS
+            return result(
+                "skipped_protected_match" if protected else "skipped_patch_conflict",
                 protected=protected,
                 trigger_conditions=trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason=error,
+                reason=exc.reason,
             )
-
-        projection_store = self._projection_store
-        if projection_store is None:
-            return SkillEvaluationResult(
-                debounce_key=debounce_key,
-                classification="skipped_projection_unavailable",
-                tool_call_count=request.tool_call_count,
-                matched_skill_id=matched_skill_id or None,
-                matched_similarity=matched_similarity,
-                matched_source_type=matched_source_type,
-                trigger_conditions=trigger_conditions,
-                complexity_origin=request.tool_call_count,
-                reason="skill projection store unavailable",
-            )
-
-        existing_complexity = match.get("complexity_origin")
-        if isinstance(existing_complexity, bool):
-            existing_complexity = None
-        next_complexity = max(
-            int(existing_complexity or 0),
-            request.tool_call_count,
-        )
-        _ = await projection_store.update_autonomous_metadata(
-            matched_skill_id,
-            trigger_conditions=trigger_conditions,
-            complexity_origin=next_complexity,
-        )
-        return SkillEvaluationResult(
-            debounce_key=debounce_key,
-            classification="patched",
-            tool_call_count=request.tool_call_count,
+        await embed_skill(skill_store, patched)
+        return result(
+            "patched",
             patched_skill_id=matched_skill_id or None,
-            matched_skill_id=matched_skill_id or None,
-            matched_similarity=matched_similarity,
-            matched_source_type=matched_source_type,
             trigger_conditions=trigger_conditions,
-            complexity_origin=next_complexity,
+            complexity_origin=patched["complexity_origin"],
             reason=refinement.reason,
         )
 
@@ -864,7 +796,7 @@ class SkillEvaluator:
         *,
         turn: SkillTurnContext,
         draft: SkillDraft,
-        existing_skill: SkillDetail,
+        existing_skill: dict[str, Any],
     ) -> SkillRefinementDecision | None:
         prompt = build_skill_refinement_prompt(
             user_request=str(turn.user_message.get("content") or "").strip(),
@@ -872,7 +804,7 @@ class SkillEvaluator:
             tool_trace=turn.tool_trace,
             existing_skill_name=str(existing_skill.get("name") or "").strip(),
             existing_skill_description=str(existing_skill.get("description") or "").strip(),
-            existing_skill_markdown=str(existing_skill.get("content") or "").strip(),
+            existing_skill_markdown=str(existing_skill.get("body") or "").strip(),
             candidate_name=draft.name,
             candidate_description=draft.description,
             candidate_trigger_conditions=draft.trigger_conditions,
