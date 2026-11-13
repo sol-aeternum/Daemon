@@ -127,6 +127,7 @@ export default function SkillsTab() {
   } | null>(null);
   const historyRequest = useRef(0);
   const detailRequest = useRef(0);
+  const actionSequence = useRef(0);
   const selectedIdRef = useRef(selectedId);
   const [previewRevision, setPreviewRevision] = useState<number | null>(null);
   const [previousSelectedId, setPreviousSelectedId] = useState(selectedId);
@@ -189,9 +190,20 @@ export default function SkillsTab() {
     [],
   );
 
+  // Every change to the shared action state takes a new sequence number, so
+  // an operation can tell whether it is still the one the state describes.
   const setActionMessage = (nextStatus: ActionStatus, nextMessage: string) => {
+    actionSequence.current += 1;
     setStatus(nextStatus);
     setMessage(nextMessage);
+    return actionSequence.current;
+  };
+
+  // An operation whose skill is no longer selected reports nothing, but it
+  // must still end its own loading state, or every control stays disabled.
+  // If a newer action has taken over the state, it is left alone.
+  const settleAbandonedAction = (action: number) => {
+    if (action === actionSequence.current) setActionMessage('idle', '');
   };
 
   const getErrorDetail = async (response: Response, fallback: string) => {
@@ -390,7 +402,7 @@ export default function SkillsTab() {
     );
     if (!confirmed) return;
 
-    setActionMessage('loading', 'Restoring revision...');
+    const action = setActionMessage('loading', 'Restoring revision...');
     try {
       const response = await fetchWithTimeout(`/skills/${skillId}/revert`, {
         method: 'POST',
@@ -406,7 +418,10 @@ export default function SkillsTab() {
           response,
           'Failed to restore revision.',
         );
-        if (selectedIdRef.current !== skillId) return;
+        if (selectedIdRef.current !== skillId) {
+          settleAbandonedAction(action);
+          return;
+        }
         setActionMessage('error', detail || 'Failed to restore revision.');
         return;
       }
@@ -415,13 +430,19 @@ export default function SkillsTab() {
       await fetchSkills();
       // The person moved to another skill while this was in flight: the
       // restore happened, but its result must not replace what they see now.
-      if (selectedIdRef.current !== skillId) return;
+      if (selectedIdRef.current !== skillId) {
+        settleAbandonedAction(action);
+        return;
+      }
       setDraft(updated);
       setPreviewRevision(null);
       await loadRevisions(skillId);
       setActionMessage('success', `Restored revision ${revision}.`);
     } catch (error) {
-      if (selectedIdRef.current !== skillId) return;
+      if (selectedIdRef.current !== skillId) {
+        settleAbandonedAction(action);
+        return;
+      }
       if (error instanceof DOMException && error.name === 'AbortError') {
         setActionMessage('error', 'Restore request timed out. Please retry.');
       } else {
@@ -482,7 +503,7 @@ export default function SkillsTab() {
     // Never write a draft to a skill it was not loaded from.
     if (!selectedId || draft.id !== selectedId) return;
 
-    setActionMessage('loading', 'Saving skill...');
+    const action = setActionMessage('loading', 'Saving skill...');
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}`, {
         method: 'PUT',
@@ -509,7 +530,10 @@ export default function SkillsTab() {
 
       const updated = (await response.json()) as SkillDetail;
       await fetchSkills();
-      if (selectedIdRef.current !== selectedId) return;
+      if (selectedIdRef.current !== selectedId) {
+        settleAbandonedAction(action);
+        return;
+      }
       setDraft(updated);
       if (showHistory) await loadRevisions(selectedId);
       setActionMessage('success', 'Skill saved.');

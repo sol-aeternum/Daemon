@@ -118,6 +118,9 @@ beforeEach(() => {
       if (path === '/skills/runbook/revisions') {
         return json({ revisions: otherRevisions });
       }
+      if (path.endsWith('/enabled')) {
+        return json({ ...other, ...(body as object) });
+      }
       if (path.endsWith('/revisions')) return json({ revisions });
       if (path.endsWith('/revert')) {
         return json({ ...account, revision: 4, content: 'first body' });
@@ -298,6 +301,51 @@ describe('SkillsTab', () => {
     expect(screen.queryByDisplayValue('first body')).toBeNull();
     expect(screen.queryByText('Restored revision 1.')).toBeNull();
     expect(screen.queryByText(/^Revision /)).toBeNull();
+
+    // The abandoned restore ends its own loading state: the other skill's
+    // controls are usable and nothing still says an action is running.
+    expect(screen.queryByText(/Restoring|Saving\.\.\./)).toBeNull();
+    for (const name of ['Save skill', 'Delete', 'Download', 'History']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    await waitFor(() => expect(screen.getByText('Revision 2')).toBeTruthy());
+    const restore = screen.getByRole('button', {
+      name: 'Restore',
+    }) as HTMLButtonElement;
+    expect(restore.disabled).toBe(false);
+  });
+
+  it('does not let an abandoned restore clear a newer action on another skill', async () => {
+    skills = [account, other];
+    await renderLoaded();
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    await waitFor(() => expect(screen.getByText('Revision 1')).toBeTruthy());
+
+    const releaseRevert = hold('/skills/deploy-checklist/revert');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    await waitFor(() =>
+      expect(calls.some((call) => call.path.endsWith('/revert'))).toBe(true),
+    );
+    fireEvent.click(screen.getAllByText('Runbook')[0]);
+    await waitFor(() => expect(screen.getByDisplayValue('B two')).toBeTruthy());
+
+    // A newer action starts on the other skill and is still running.
+    const releaseToggle = hold('/skills/runbook/enabled');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enabled' }));
+    await waitFor(() =>
+      expect(calls.some((call) => call.method === 'PATCH')).toBe(true),
+    );
+    releaseRevert();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Still the newer action's loading state, not cleared by the old one.
+    expect(screen.getByRole('button', { name: 'Saving...' })).toBeTruthy();
+
+    releaseToggle();
+    await waitFor(() =>
+      expect(screen.getByText('Skill disabled.')).toBeTruthy(),
+    );
   });
 
   it("cannot save one skill's draft into another while its detail is pending", async () => {
