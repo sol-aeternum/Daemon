@@ -706,7 +706,9 @@ async def test_expiry_is_rechecked_after_a_real_session_row_lock_wait(isolated, 
 
     async with s.make() as v:
         monkeypatch.setattr(IsolatedAcceptanceHost, "_auth", auth)
-        async with s.db.connection() as control:
+        # Open/reap the Docker-backed observer outside the real 250ms lock wait.
+        # Its process startup/cleanup is not part of the expiry boundary tested.
+        async with s.db.connection() as control, s.db.connection("postgres") as admin:
             task = None
             try:
                 async with control.transaction():
@@ -718,8 +720,7 @@ async def test_expiry_is_rechecked_after_a_real_session_row_lock_wait(isolated, 
                     await asyncio.wait_for(entered.wait(), 5)
                     # Synthetic cluster owner only: ordinary md_owner cannot
                     # inspect another principal's pg_stat_activity wait fields.
-                    async with s.db.connection("postgres") as admin:
-                        await s.db.wait_lock(admin, pids[0])
+                    await s.db.wait_lock(admin, pids[0])
                     await asyncio.sleep(0.11)
                 with pytest.raises(HTTPException) as caught:
                     await task

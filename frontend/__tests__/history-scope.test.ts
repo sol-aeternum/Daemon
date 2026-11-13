@@ -17,6 +17,93 @@ const urls = ['https://example.invalid/conversations', '/conversations'];
 afterEach(() => vi.useRealTimers());
 
 describe('history request scopes', () => {
+  it.each([409, 503])(
+    'never falls back when a %s recovery body exceeds its timeout',
+    async (status) => {
+      vi.useFakeTimers();
+      const scope = new HistoryScope(() => 1, 'a');
+      const lease = scope.capture();
+      const body = deferred<unknown>();
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce({
+          ok: false,
+          status,
+          json: () => body.promise,
+        } as Response)
+        .mockResolvedValue(response({ unexpected: 'alternate origin' }));
+      const read = readScopedHistory(lease, urls, {
+        getAuthHeaders: auth,
+        fetch: fetcher,
+        readErrorBody: true,
+        timeoutMs: 10,
+      });
+      await vi.advanceTimersByTimeAsync(11);
+      body.resolve({});
+      try {
+        expect(await read).toEqual({ status, data: null });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
+  it.each([409, 503])(
+    'does not publish a %s refusal after selection cancellation',
+    async (status) => {
+      const scope = new HistoryScope(() => 1, 'a');
+      const lease = scope.capture();
+      const body = deferred<unknown>();
+      const reading = deferred<void>();
+      const fetcher = vi.fn(
+        async () =>
+          ({
+            ok: false,
+            status,
+            json: () => {
+              reading.resolve();
+              return body.promise;
+            },
+          }) as Response,
+      );
+      const read = readScopedHistory(lease, urls, {
+        getAuthHeaders: auth,
+        fetch: fetcher,
+        readErrorBody: true,
+      });
+      await reading.promise;
+      scope.commitSelection('b');
+      body.resolve({ code: 'history_unavailable' });
+      try {
+        await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
+  it.each([409, 503])(
+    'never falls back after a %s with malformed recovery JSON',
+    async (status) => {
+      const scope = new HistoryScope(() => 1, 'a');
+      const lease = scope.capture();
+      const fetcher = vi.fn(async () => new Response('malformed', { status }));
+      try {
+        const result = await readScopedHistory(lease, urls, {
+          getAuthHeaders: auth,
+          fetch: fetcher,
+          readErrorBody: true,
+        });
+        expect(result.status).toBe(status);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
   it('leaves same-generation readiness and same committed selection alone', () => {
     const scope = new HistoryScope(() => 1, 'a');
     const lease = scope.capture();

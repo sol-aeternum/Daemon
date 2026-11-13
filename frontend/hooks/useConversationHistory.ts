@@ -29,7 +29,11 @@ import {
   historyRecoveryCode,
   historyRecoveryMessage,
 } from '@/lib/historyRecovery';
-import { blockSubmission, clearSubmissionBlock } from '@/lib/pendingSubmission';
+import {
+  blockSubmission,
+  clearSubmissionBlock,
+  unresolvedSubmissions,
+} from '@/lib/pendingSubmission';
 import {
   compareConversationBoundary,
   parseConversationHistoryPage,
@@ -899,6 +903,37 @@ export function useConversationHistory() {
     [apiCandidates, getAuthHeaders],
   );
 
+  const retainHistoryRefusal = useCallback(
+    (
+      data: unknown,
+      status: number,
+      generation: number,
+      conversationId?: string,
+      taskId?: string,
+    ) => {
+      // An unreadable refusal body is still an unknown history outcome, not
+      // permission to release the original key or send it again.
+      const code =
+        historyRecoveryCode(data) ??
+        (status === 409 || status === 503 ? 'history_unavailable' : null);
+      if (!code || generation !== getAuthGeneration()) return;
+      for (const { key, entry } of unresolvedSubmissions()) {
+        if (
+          (conversationId !== undefined && entry.scope === conversationId) ||
+          (taskId !== undefined && entry.taskId === taskId)
+        ) {
+          blockSubmission(key, code);
+          setTaskRecoveryProblem({
+            generation,
+            key,
+            message: historyRecoveryMessage(code),
+          });
+        }
+      }
+    },
+    [],
+  );
+
   const [messageOwner] = useState(
     () =>
       new MessageHistory<Conversation>({
@@ -914,10 +949,18 @@ export function useConversationHistory() {
           const result = await readScopedHistory(
             lease,
             apiCandidates(`/conversations/${id}?${params}`),
-            { getAuthHeaders },
+            { getAuthHeaders, readErrorBody: true },
           );
           lease.assertCurrent();
-          if (result.status !== 200) return { status: result.status };
+          if (result.status !== 200) {
+            retainHistoryRefusal(
+              result.data,
+              result.status,
+              lease.generation,
+              id,
+            );
+            return { status: result.status };
+          }
           const parsed = parseMessageHistoryPage(
             result.data,
             id,
@@ -1070,10 +1113,19 @@ export function useConversationHistory() {
         const result = await readScopedHistory(
           lease,
           apiCandidates(`/tasks/${encodeURIComponent(taskId)}`),
-          { getAuthHeaders },
+          { getAuthHeaders, readErrorBody: true },
         );
         lease.assertCurrent();
-        if (result.status !== 200) return undefined;
+        if (result.status !== 200) {
+          retainHistoryRefusal(
+            result.data,
+            result.status,
+            lease.generation,
+            undefined,
+            taskId,
+          );
+          return undefined;
+        }
         const task = result.data as { status?: unknown };
         return typeof task.status === 'string' ? task.status : undefined;
       } catch {
@@ -1082,7 +1134,7 @@ export function useConversationHistory() {
         lease.release();
       }
     },
-    [apiCandidates, getAuthHeaders, messageOwner],
+    [apiCandidates, getAuthHeaders, messageOwner, retainHistoryRefusal],
   );
 
   /**

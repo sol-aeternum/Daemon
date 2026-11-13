@@ -7,6 +7,7 @@ import {
   clearPendingSubmissions,
   pendingSubmission,
   registerSubmission,
+  recordSubmissionTask,
 } from '../lib/pendingSubmission';
 
 const state = vi.hoisted(() => ({
@@ -108,6 +109,126 @@ const account = () =>
   });
 
 describe('selected history provider integration', () => {
+  it.each(
+    [409, 503].flatMap((status) =>
+      ['malformed', 'body-timeout'].flatMap((body) =>
+        ['detail', 'task'].map((read) => ({ status, body, read })),
+      ),
+    ),
+  )(
+    'blocks the original key on $status $body $read refusals without fallback',
+    async ({ status, body, read }) => {
+      registerSubmission('held', {
+        scope: A,
+        requestConversationId: null,
+        model: 'auto',
+        provider: null,
+      });
+      recordSubmissionTask('held', id(99));
+      let refuse = false;
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), 'http://test');
+        if (url.pathname === '/conversations') return list();
+        if (refuse) {
+          const response = new Response('malformed', { status });
+          if (body === 'body-timeout') {
+            response.json = async () => {
+              throw new DOMException('Body read timed out', 'TimeoutError');
+            };
+          }
+          return response;
+        }
+        return url.pathname.startsWith('/tasks/')
+          ? json({ id: id(99), status: 'completed' })
+          : json(detail(A, [1, 2]));
+      });
+      vi.stubGlobal('fetch', fetcher);
+      render(<Probe />);
+      await screen.findByText('display:2');
+      refuse = true;
+      const before = fetcher.mock.calls.length;
+      await act(async () => {
+        if (read === 'detail') {
+          expect(await latest.refreshCurrentConversation()).toBeNull();
+        } else {
+          expect(await latest.taskStatus(id(99))).toBeUndefined();
+        }
+      });
+      expect(fetcher.mock.calls).toHaveLength(before + 1);
+      expect(pendingSubmission('held')).toMatchObject({
+        historyBlocked: 'history_unavailable',
+        taskId: id(99),
+      });
+      expect(latest.taskRecoveryProblem).toMatch(/retained/);
+      expect(screen.getByText('display:2')).toBeTruthy();
+      refuse = false;
+      await act(async () => {
+        await latest.refreshCurrentConversation();
+      });
+      expect(pendingSubmission('held')?.historyBlocked).toBe(
+        'history_unavailable',
+      );
+      expect(
+        fetcher.mock.calls.some(([input]) => String(input).includes('/chat')),
+      ).toBe(false);
+    },
+  );
+  it.each([409, 503])(
+    'retains the original key and displayed rows across %s detail/status refusals and later snapshots',
+    async (status) => {
+      registerSubmission('held', {
+        scope: A,
+        requestConversationId: null,
+        model: 'auto',
+        provider: null,
+        answer_detail: 'balanced',
+        research_effort: 'auto',
+      });
+      recordSubmissionTask('held', id(99));
+      const code =
+        status === 409 ? 'restore_recovery_required' : 'history_unavailable';
+      let refuse = false;
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), 'http://test');
+        if (url.pathname === '/conversations') return list();
+        if (refuse)
+          return json(
+            { detail: { code, task_id: null, retry_safe: false } },
+            status,
+          );
+        return url.pathname.startsWith('/tasks/')
+          ? json({ id: id(99), status: 'completed' })
+          : json(detail(A, [1, 2]));
+      });
+      vi.stubGlobal('fetch', fetcher);
+      render(<Probe />);
+      await screen.findByText('display:2');
+      refuse = true;
+      await act(async () => {
+        expect(await latest.refreshCurrentConversation()).toBeNull();
+        expect(await latest.taskStatus(id(99))).toBeUndefined();
+      });
+      expect(pendingSubmission('held')).toMatchObject({
+        historyBlocked: code,
+        taskId: id(99),
+        model: 'auto',
+        answer_detail: 'balanced',
+        research_effort: 'auto',
+      });
+      expect(latest.taskRecoveryProblem).toMatch(/retained/);
+      expect(screen.getByText('display:2')).toBeTruthy();
+      refuse = false;
+      await act(async () => {
+        await latest.refreshCurrentConversation();
+      });
+      expect(pendingSubmission('held')?.historyBlocked).toBe(code);
+      expect(
+        fetcher.mock.calls.filter(([input]) =>
+          String(input).includes(`/tasks/${id(99)}`),
+        ),
+      ).toHaveLength(1);
+    },
+  );
   it.each([409, 503])(
     'keeps a %s lookup unknown, visible and scoped, without endpoint fallback',
     async (status) => {

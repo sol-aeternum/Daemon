@@ -132,6 +132,37 @@ async def main(packet, mode):
     patch.setattr(runtime.litellm, "acompletion", provider)
     try:
         await host.open(deadline=deadline())
+        if mode == "ui-reopen":
+            # Fresh exec-only read of the new bridge, not the old by-key runner
+            # recovery test and never a repeated claim or transport invocation.
+            task = await host.ui_read(
+                packet["authorization"], "task", UUID(packet["task"]), deadline=deadline()
+            )
+            conversation = await host.ui_read(
+                packet["authorization"],
+                "conversation",
+                task.conversation_id,
+                deadline=deadline(),
+                pagination="cursor",
+            )
+            listing = await host.ui_read(
+                packet["authorization"], "list", None, deadline=deadline(), pagination="cursor"
+            )
+            assert len(conversation.messages) == 2 and listing.total == 1
+            assert conversation.messages[-1].content == task.content
+            print(
+                json.dumps(
+                    {
+                        "task": str(task.id),
+                        "partial": task.content,
+                        "status": task.status,
+                        "calls": calls,
+                        "ui_bridge": True,
+                    }
+                ),
+                flush=True,
+            )
+            return
         if mode in ("start", "complete"):
             accepted = await host.submit(
                 packet["authorization"],
