@@ -80,6 +80,11 @@ from orchestrator.tasks.inference import (
     NOTICE as INFERENCE_NOTICE,
     InferenceRecovery,
 )
+from orchestrator.tasks._history_binding import (
+    ComputeHistoryBinding,
+    required_history,
+    text_only_execution,
+)
 
 logger = logging.getLogger(__name__)
 STREAM_CLOSE_TIMEOUT_S = 2.0
@@ -380,6 +385,9 @@ class ComputeScope:
     inference_identity: AttemptIdentity | None = None
     inference_recovery: InferenceRecovery | None = None
     inference_invocation: InferenceInvocation | None = None
+    history_requirement: Any = None
+    history_binding: ComputeHistoryBinding | None = None
+    cleanup_owners: set[asyncio.Task[Any]] = field(default_factory=set)
 
     async def close_stream(self, hold: ReservationHold) -> None:
         """Close acquired transport even when its iterator was never advanced."""
@@ -574,6 +582,8 @@ class ComputeScope:
                     unlock_once()
 
             hold.settlement = asyncio.create_task(settle_once())
+            if self.history_requirement is not None:
+                self.cleanup_owners.add(hold.settlement)
             if unlock_extended:
                 hold.settlement.add_done_callback(unlock_once)
         if start_only:
@@ -598,6 +608,26 @@ class ComputeScope:
         """Validate a covered binding without forbidding known-hold accounting."""
         state = self.inference_invocation
         current = invocation.get()
+        requirement = required_history.get()
+        if (
+            self.history_requirement is not None
+            or requirement is not None
+            or self.history_binding is not None
+        ):
+            binding = self.history_binding
+            if (
+                requirement is None
+                or self.history_requirement is not requirement
+                or type(binding) is not ComputeHistoryBinding
+                or binding.identity is not self.inference_identity
+                or binding.recovery is not self.inference_recovery
+                or binding.state is not state
+            ):
+                for known in (state, current):
+                    if known is not None:
+                        known.block("history_binding_unavailable")
+                raise ObservationBlocked("history_binding_unavailable")
+            binding.validate(requirement)
         covered = any(
             value is not None
             for value in (
@@ -955,6 +985,7 @@ async def account_compute(
     request_id: str | None = None,
     inference_identity: AttemptIdentity | None = None,
     inference_recovery: InferenceRecovery | None = None,
+    history_binding: ComputeHistoryBinding | None = None,
 ) -> AsyncIterator[ComputeScope]:
     """Account scope for one operation. ``background`` marks worker jobs: charged
     to the budget, but never counted against rate or concurrency ceilings."""
@@ -977,6 +1008,23 @@ async def account_compute(
     scope.request_id = request_id
     scope.profile = profile
     parent = _scope.get()
+    scope.history_requirement = required_history.get()
+    scope.history_binding = (
+        history_binding
+        if history_binding is not None
+        else (parent.history_binding if parent else None)
+    )
+    if parent is not None and (
+        parent.history_requirement is not scope.history_requirement
+        or (
+            parent.history_requirement is not None
+            and scope.history_binding is not parent.history_binding
+        )
+    ):
+        known = invocation.get()
+        if known is not None:
+            known.block("history_binding_unavailable")
+        raise ObservationBlocked("history_binding_unavailable")
     current = invocation.get()
     inherited = parent.inference_invocation if parent else None
     parent_covered = parent is not None and any(
@@ -1091,6 +1139,8 @@ async def account_compute(
                 if scope.inference_invocation is None
                 or scope.inference_invocation.uncertainty is None
             ]
+            if scope.history_requirement is not None:
+                scope.cleanup_owners.update(settlements)
             if settlements or stream_cleanup:
                 results = await asyncio.gather(
                     *(asyncio.shield(task) for task in [*settlements, *stream_cleanup]),
@@ -1397,6 +1447,8 @@ async def metered_tool_call(
     finish outside the work deadline and never dispatches provider work.
     """
     active = scope if scope is not None else current_scope()
+    if text_only_execution() or active.history_requirement is not None:
+        raise ComputeUnavailable("capability_unavailable", "Tools unavailable in text execution")
     active.require_inference()
     if type(dispatch_aware) is not bool:
         raise ValueError("Tool dispatch tracking must be explicitly boolean")
@@ -1677,6 +1729,10 @@ async def metered_embedding_call(
     The adapter rechecks its exact route/attestation after acquisition, before send.
     """
     active = scope if scope is not None else current_scope()
+    if text_only_execution() or active.history_requirement is not None:
+        raise ComputeUnavailable(
+            "capability_unavailable", "Embeddings unavailable in text execution"
+        )
     active.require_inference()
     if type(input_token_bound) is not int or not 0 < input_token_bound <= route.max_batch_tokens:
         raise ComputeUnavailable("embedding_unavailable", "Invalid embedding input bound")
@@ -2544,6 +2600,11 @@ async def guarded_completion(
     ``retryable`` classification a failed call raises.
     """
     scope = current_scope()
+    if (text_only_execution() or scope.history_requirement is not None) and any(
+        params.get(key) not in (None, [], "none")
+        for key in ("tools", "tool_choice", "functions", "function_call")
+    ):
+        raise ComputeUnavailable("capability_unavailable", "Tools unavailable in text execution")
     scope.require_inference()
     started = asyncio.get_running_loop().time()
     deadline = started + get_settings().request_timeout_s
@@ -2849,9 +2910,20 @@ async def guarded_completion(
             refuse_closed_stream()
             if scope.inference_invocation is not None:
                 assert scope.inference_identity is not None and scope.inference_recovery is not None
-                await scope.inference_recovery.mark(
-                    scope.inference_identity, _hold_key(reservation), scope.inference_invocation
-                )
+                if scope.history_requirement is not None:
+                    assert scope.history_binding is not None
+                    await scope.history_binding.effects.mark(
+                        scope.inference_identity,
+                        _hold_key(reservation),
+                        scope.inference_invocation,
+                        effect_kind="completion",
+                        deadline=time.monotonic()
+                        + min(2.0, max(0, dispatch_deadline - asyncio.get_running_loop().time())),
+                    )
+                else:
+                    await scope.inference_recovery.mark(
+                        scope.inference_identity, _hold_key(reservation), scope.inference_invocation
+                    )
                 refuse_closed_stream()
             remaining = dispatch_deadline - asyncio.get_running_loop().time()
             if remaining <= 0 or scope.closed:

@@ -89,6 +89,13 @@ class ToolExecutor:
         return (await self.execute_invocation(name, arguments)).result
 
     async def execute_invocation(self, name: str, arguments: str | dict[str, Any]) -> ToolExecution:
+        from orchestrator.tasks._history_binding import text_only_execution
+        from orchestrator.compute_runtime import ComputeUnavailable
+
+        if text_only_execution():
+            raise ComputeUnavailable(
+                "capability_unavailable", "Tools unavailable in text execution"
+            )
         from orchestrator.tasks.fence import FencedTool
 
         tool = self._registry.get(name)

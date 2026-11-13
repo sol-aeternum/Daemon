@@ -456,6 +456,11 @@ async def completion_with_tools(
     max_output_tokens: int | None = None,
     call_overrides: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
+    from orchestrator.tasks._history_binding import text_only_execution
+
+    restricted = text_only_execution()
+    if restricted and len(registry):
+        raise ComputeUnavailable("capability_unavailable", "Tools unavailable in text execution")
     # The evaluation adapter observes this exact loop and keeps its dispatches
     # inside the ordinary qualification/accounting runtime. Normal callers use
     # the same guarded completion as before; no provider request is reimplemented.
@@ -597,6 +602,10 @@ async def completion_with_tools(
                     # 3. Handle Tool Calls
                     tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get("tool_calls")
                     if tool_calls_chunk:
+                        if restricted:
+                            raise ComputeUnavailable(
+                                "capability_unavailable", "Provider requested unavailable tools"
+                            )
                         for tc in tool_calls_chunk:
                             idx = (
                                 getattr(tc, "index", 0)

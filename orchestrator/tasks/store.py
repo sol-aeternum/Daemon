@@ -10,6 +10,7 @@ exactly like a missing one.
 from __future__ import annotations
 
 import json
+import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -225,6 +226,42 @@ class ControlledClaim:
 
     status: TaskStatus
     inference_quarantine: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OriginalTaskExpectation:
+    account: uuid.UUID
+    generation: int
+    task: uuid.UUID
+    conversation: uuid.UUID
+    user_message: uuid.UUID
+    result_message: uuid.UUID
+    covered: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CancelAuthorizationExpectation:
+    """Only the retained backend H/auth owner may supply this comparison."""
+
+    account: uuid.UUID
+    device: uuid.UUID
+    session: uuid.UUID
+    token_hash: str
+    operation: Any
+    auth_connection: Any
+    owner_task: Any
+
+    def require_owned(self, pool: Any) -> None:
+        from orchestrator.services.restore_history.coordination import HistoryOperation
+
+        if (
+            type(self.operation) is not HistoryOperation
+            or self.owner_task is not asyncio.current_task()
+            or not self.auth_connection.is_in_transaction()
+            or self.auth_connection._holder._pool is not pool
+        ):
+            raise ObservationBlocked("cancel_authorization_unavailable")
+        self.operation._check()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1414,7 +1451,12 @@ class TaskStore:
         return result
 
     async def _claim(
-        self, task_id: uuid.UUID, *, worker_id: str, lease_s: float
+        self,
+        task_id: uuid.UUID,
+        *,
+        worker_id: str,
+        lease_s: float,
+        expected: OriginalTaskExpectation | None = None,
     ) -> Claim | ControlledClaim | None:
         """Claim a due task, taking over an expired lease if needed.
 
@@ -1435,6 +1477,28 @@ class TaskStore:
             if row["status"] not in {s.value for s in ACTIVE_STATUSES}:
                 raise ObservationBlocked("task_already_terminal")
             origin = self._origin(row)
+            if expected is not None and (
+                type(expected) is not OriginalTaskExpectation
+                or (
+                    row["user_id"],
+                    origin.generation,
+                    row["id"],
+                    row["conversation_id"],
+                    row["user_message_id"],
+                    row["result_message_id"],
+                    self._covered(row),
+                )
+                != (
+                    expected.account,
+                    expected.generation,
+                    expected.task,
+                    expected.conversation,
+                    expected.user_message,
+                    expected.result_message,
+                    expected.covered,
+                )
+            ):
+                raise ObservationBlocked("history_original_task_mismatch")
             refusal = self._refusal(account, state, origin)
             # Recompute due/expiry AFTER any lock wait, not against query snapshot.
             due = await conn.fetchval(
@@ -2286,7 +2350,12 @@ class TaskStore:
         return await self._request_cancel_with_stage(user_id, task_id, stage=None)
 
     async def _request_cancel_with_stage(
-        self, user_id: uuid.UUID, task_id: uuid.UUID, *, stage: Any
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        *,
+        stage: Any,
+        authorization: CancelAuthorizationExpectation | None = None,
     ) -> CancelOutcome:
         """Private H seam; original guards/mutations and one top-level COMMIT."""
         async with control_transaction(self._pool, refusals=(TaskNotFound,)) as conn:
@@ -2302,6 +2371,25 @@ class TaskStore:
             )
             if row is None:
                 raise TaskNotFound("task not found")
+            if authorization is not None:
+                if type(authorization) is not CancelAuthorizationExpectation:
+                    raise ObservationBlocked("cancel_authorization_unavailable")
+                authorization.require_owned(self._pool)
+                if (
+                    authorization.account != user_id
+                    or await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM public.sessions s JOIN public.devices d "
+                        "ON d.id=s.device_id WHERE s.id=$1 AND d.id=$2 AND s.user_id=$3 "
+                        "AND d.user_id=$3 AND s.access_token_hash=$4 AND s.revoked_at IS NULL "
+                        "AND d.revoked_at IS NULL AND s.access_expires_at>clock_timestamp())",
+                        authorization.session,
+                        authorization.device,
+                        authorization.account,
+                        authorization.token_hash,
+                    )
+                    is not True
+                ):
+                    raise ObservationBlocked("cancel_authorization_expired")
             status = TaskStatus(row["status"])
             if status is TaskStatus.QUEUED:
                 await self._references(conn, row)

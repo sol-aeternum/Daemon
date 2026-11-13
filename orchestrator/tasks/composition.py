@@ -319,6 +319,7 @@ class WorkerComposition:
     worker_role: str
     acceptor_role: str
     _admission: object
+    requires_history: bool = False
 
     def validate(self) -> None:
         if type(self.tasks) is not TaskStore or type(self.recovery) is not InferenceRecovery:
@@ -326,6 +327,7 @@ class WorkerComposition:
         w, r = self.tasks, self.recovery
         if (
             self._admission is not _ADMITTED
+            or type(self.requires_history) is not bool
             or w._pool is not self.pool
             or w._memory is not self.memory
             or w._enc is not self.encryption
@@ -434,6 +436,13 @@ def validate_worker_composition(ctx: dict[str, Any]) -> None:
         if type(bundle) is not WorkerComposition:
             raise ObservationBlocked("inference_composition_refused")
         bundle.validate_worker(ctx)
+        if bundle.requires_history:
+            from orchestrator.services.restore_history.text_execution import HistoryTextExecution
+
+            execution = ctx.get("history_text_execution")
+            if type(execution) is not HistoryTextExecution:
+                raise ObservationBlocked("history_execution_required")
+            execution.validate_worker(ctx, bundle)
         if invocation.get() is not None:
             raise ObservationBlocked("inherited_inference_invocation")
 
@@ -514,6 +523,7 @@ async def qualify_worker_composition(
     settings: Settings | None = None,
     acceptor_role: str | None = None,
     worker_role: str | None = None,
+    requires_history: bool = False,
 ) -> WorkerComposition | None:
     """Qualify a separate W-only host against an already bound journal.
 
@@ -526,6 +536,7 @@ async def qualify_worker_composition(
         return None
     if (
         enabled is not True
+        or type(requires_history) is not bool
         or not isinstance(worker_pool, asyncpg.Pool)
         or not isinstance(encryption, ContentEncryption)
         or not isinstance(settings, Settings)
@@ -570,6 +581,7 @@ async def qualify_worker_composition(
         worker_role,
         acceptor_role,
         _ADMITTED,
+        requires_history,
     )
     tasks._composition = worker
     tasks._memory._task_composition = worker

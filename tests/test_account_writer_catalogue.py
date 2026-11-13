@@ -193,6 +193,7 @@ def test_isolated_host_candidates_remain_exact_deferred_unknown_and_uncovered() 
     expected = {
         ("IsolatedAcceptanceHost._open", "9f2520cf52340db3"),
         ("IsolatedAcceptanceHost._open", "b5dece75bd26416e"),
+        ("IsolatedAcceptanceHost._open", "a4c1a02061d0a934"),
         ("IsolatedAcceptanceHost._submit", "48637c0d6167574f"),
     }
     assert len(candidates) == len(expected)

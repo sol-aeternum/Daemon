@@ -22,6 +22,7 @@ from orchestrator.redis_jobs import (
     enqueue_account_job,
 )
 from orchestrator.compute_runtime import compute_error
+from orchestrator.tasks._history_binding import text_only_execution
 from orchestrator.compute_runtime import selected_budget_fitted as active_budget_fitted
 from orchestrator.compute_runtime import selected_effort as active_compute_effort
 from orchestrator.compute_runtime import selected_model as active_compute_model
@@ -65,7 +66,15 @@ SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
 
 
 def create_chat_registry(**kwargs: Any) -> Any:
+    if text_only_execution():
+        from orchestrator.tools.registry import ToolRegistry
+
+        return ToolRegistry()
     return create_default_registry(**kwargs)
+
+
+def _success_followups_allowed(status: str) -> bool:
+    return status == "complete" and not text_only_execution()
 
 
 _RUNTIME_DATETIME_MARKER = "<runtime-datetime-context>"
@@ -1128,7 +1137,11 @@ async def stream_sse_chat(
                 # Apply implicit positive trust signal (boost previous turn's memories if no correction)
                 try:
                     ts_module = _lazy_import_trust_signals()
-                    if persisted_status == "complete" and ts_module and conversation_uuid:
+                    if (
+                        _success_followups_allowed(persisted_status)
+                        and ts_module
+                        and conversation_uuid
+                    ):
                         await ts_module.apply_implicit_positive_signal(
                             conversation_id=conversation_uuid,
                             store=memory_store,
@@ -1138,7 +1151,7 @@ async def stream_sse_chat(
                 except Exception:
                     logger.debug("Trust signal application skipped")
 
-                if persisted_status == "complete" and queue is not None:
+                if _success_followups_allowed(persisted_status) and queue is not None:
                     # Never capture here: a paused stream must keep its original
                     # upstream generation. All queued extraction persistence
                     # refuses absent/foreign capture rather than refreshing it.
@@ -1196,7 +1209,7 @@ async def stream_sse_chat(
 
                 tool_call_count = len(persisted_tool_calls)
                 if (
-                    persisted_status == "complete"
+                    _success_followups_allowed(persisted_status)
                     and queue is not None
                     and assistant_message_id is not None
                     and tool_call_count >= 5

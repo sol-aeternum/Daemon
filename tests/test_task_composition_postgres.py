@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import sys
 import traceback
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -108,6 +109,13 @@ def settings():
 
 @pytest_asyncio.fixture
 async def host(db):
+    # Local runner fixture only: original_capture consumes the unchanged 066 schema.
+    db.sql(
+        "BEGIN;"
+        + (Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql").read_text()
+        + "COMMIT;"
+    )
+    db.sql("GRANT SELECT ON memory_knowledge_clock TO md_app;")
     db.sql(
         "INSERT INTO public._migrations(filename) VALUES('049_attempt_lifecycle.sql'),"
         "('050_task_inference_recovery.sql')"

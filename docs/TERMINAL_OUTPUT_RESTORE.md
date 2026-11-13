@@ -1,6 +1,6 @@
 # Completed-text restore evidence
 
-This is an explicit, uninstalled `terminal-v3` source profile. It independently
+This is an explicit `terminal-v3` source profile, not selected by production startup. It independently
 records that a normal completed-text publication was prepared, so a later
 whole-SQL rollback cannot silently turn the original task into fresh work.
 It does not retain, reconstruct, replay or adopt lost text. Runtime startup
@@ -63,7 +63,7 @@ uses `TaskStore._worker` with its unchanged lifecycle and inference guards. The
 existing quarantine prelude runs before any completed-text prepare. Only the
 normal path appends the durable negative fact, runs the extracted fixed native
 `_stage_completed_body`, and stages the protected projection in that same SQL
-transaction. There is no generic callback, H import in TaskStore, autonomous
+transaction. The completed-text staging body adds no generic callback, autonomous
 COMMIT or post-stage readback.
 
 Success requires known top-level COMMIT, actual SQL/file cleanup, H release and
@@ -102,10 +102,13 @@ both H1 and terminal-v3. Mixed-page and mismatch probes use full history rather
 than filtering expanded facts. Test presence is not evidence of a passing run;
 executed results and unmet cases remain in the accompanying receipts. No
 executor/provider/queue graph is installed by this acceptance/observation slice.
+The optional original-runner text/Stop source candidate is documented separately
+in [ISOLATED_TEXT_EXECUTION.md](ISOLATED_TEXT_EXECUTION.md); it does not change
+production startup or qualify general restore integrity.
 
 This proves neither arbitrary privileged selective-tamper detection nor text
 integrity after a restore. Cards, durable partial checkpoints, all control-only
-terminal outcomes, controlled reconciliation, authenticated execution composition,
+terminal outcomes, controlled reconciliation, production-qualified authenticated execution,
 original ACL/key/account/file continuity and live restore qualification remain
 open. No real grant, migration, provisioning, deployment, recovery action or
 activation follows from source tests or matching metadata.

@@ -197,6 +197,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                     "_presentation_references",
                                     "_reserved_namespace",
                                     "_owned",
+                                    "required_history",
+                                    "ComputeHistoryBinding",
+                                    "CancelAuthorizationExpectation",
+                                    "OriginalTaskExpectation",
                                     "_accept_with_stage",
                                     "_accept_owned",
                                     "_mark_with_stage",
@@ -442,6 +446,13 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and [(item.name, item.asname) for item in node.names]
                     == [("InferenceRecovery", None)]
                 )
+                binding_recovery_type = (
+                    path == "orchestrator/tasks/_history_binding.py"
+                    and isinstance(node, ast.ImportFrom)
+                    and node.level == 0
+                    and node.module == "orchestrator.tasks.inference"
+                    and [(i.name, i.asname) for i in node.names] == [("InferenceRecovery", None)]
+                )
                 if isinstance(node, ast.ImportFrom) and node.level:
                     package = path.removesuffix(".py").split("/")[:-1]
                     prefix = ".".join(package[: len(package) - node.level + 1])
@@ -453,6 +464,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and not factory_import
                     and not history_helpers
                     and not history_effect_type
+                    and not binding_recovery_type
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved importer")
                 # H1 remains an uncalled source slice. Internal package imports
@@ -496,6 +508,31 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         == startup_imports.get((path, (node.module or "").rsplit(".", 1)[-1]))
                         and all(item.asname is None for item in node.names)
                     )
+                    text_types = {
+                        (
+                            "orchestrator/tasks/composition.py",
+                            "orchestrator.services.restore_history.text_execution",
+                        ): ["HistoryTextExecution"],
+                        (
+                            "orchestrator/tasks/runner.py",
+                            "orchestrator.services.restore_history.model",
+                        ): ["HistoryError"],
+                        (
+                            "orchestrator/tasks/store.py",
+                            "orchestrator.services.restore_history.coordination",
+                        ): ["HistoryOperation"],
+                        (
+                            "orchestrator/tasks/_history_binding.py",
+                            "orchestrator.services.restore_history.effects",
+                        ): ["HistoryEffects"],
+                    }
+                    text_type_import = (
+                        isinstance(node, ast.ImportFrom)
+                        and node.level == 0
+                        and [i.name for i in node.names]
+                        == text_types.get((path, node.module or ""))
+                        and all(i.asname is None for i in node.names)
+                    )
                     if isinstance(node, ast.ImportFrom):
                         module = modules[0]
                         imported = [module + "." + item.name for item in node.names]
@@ -504,6 +541,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     if (
                         not observation_reader
                         and not startup_read_only
+                        and not text_type_import
                         and any(
                             m == "orchestrator.services.restore_history"
                             or m.startswith("orchestrator.services.restore_history.")
@@ -521,6 +559,105 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
             if not isinstance(node, ast.Call):
                 continue
             target = name(node.func)
+            enclosing_nodes = [
+                f
+                for f in nodes
+                if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+            ]
+            enclosing_name = (
+                max(enclosing_nodes, key=lambda f: f.lineno).name if enclosing_nodes else ""
+            )
+            expression = ast.unparse(node.func)
+            arguments = [ast.unparse(arg) for arg in node.args]
+            call_keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+            if target.endswith(("required_history.set", "required_history.reset")):
+                action = target.rsplit(".", 1)[-1]
+                if not (
+                    path == "orchestrator/tasks/runner.py"
+                    and enclosing_name == "run_chat_task"
+                    and expression == "required_history." + action
+                    and not call_keywords
+                    and arguments == (["requirement"] if action == "set" else ["history_token"])
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved history requirement setter")
+            if target.endswith("OriginalTaskExpectation"):
+                if not (
+                    path == "orchestrator/services/restore_history/effects.py"
+                    and enclosing_name == "_claim"
+                    and expression == "OriginalTaskExpectation"
+                    and not call_keywords
+                    and arguments
+                    == [
+                        "accepted.account_id",
+                        "accepted.account_generation",
+                        "task",
+                        "accepted.conversation_id",
+                        "accepted.user_message_id",
+                        "accepted.result_message_id",
+                        "True",
+                    ]
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved original task expectation")
+            if target.endswith("CancelAuthorizationExpectation"):
+                if not (
+                    path == "orchestrator/services/restore_history/acceptance_host.py"
+                    and enclosing_name == "_cancel"
+                    and expression == "CancelAuthorizationExpectation"
+                    and not call_keywords
+                    and arguments
+                    == [
+                        "auth.user_id",
+                        "auth.device_id",
+                        "auth.session_id",
+                        "hash_token(token)",
+                        "operation",
+                        "conn",
+                        "asyncio.current_task()",
+                    ]
+                ):
+                    violations.append(
+                        f"{path}:{node.lineno}:unapproved cancel authorization expectation"
+                    )
+            if target.endswith("._claim") and "expected" in call_keywords:
+                if not (
+                    path == "orchestrator/services/restore_history/effects.py"
+                    and enclosing_name == "_claim"
+                    and expression == "self._tasks._claim"
+                    and arguments == ["task"]
+                    and call_keywords
+                    == {"worker_id": "worker_id", "lease_s": "lease_s", "expected": "expected"}
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved owned original claim")
+            if target.endswith("._cancel_owned"):
+                expected_cancel = {
+                    ("orchestrator/services/restore_history/effects.py", "_cancel"): (
+                        "self._cancel_owned",
+                        ["operation", "account", "task", "deadline"],
+                    ),
+                    ("orchestrator/services/restore_history/acceptance_host.py", "_cancel"): (
+                        "effects._cancel_owned",
+                        ["operation", "auth.user_id", "task", "deadline", "expected"],
+                    ),
+                }.get((path, enclosing_name))
+                if expected_cancel != (expression, arguments) or call_keywords:
+                    violations.append(f"{path}:{node.lineno}:unapproved owned cancel seam")
+            if target.endswith("ComputeHistoryBinding"):
+                if not (
+                    path == "orchestrator/tasks/runner.py"
+                    and enclosing_name == "_execute"
+                    and expression == "ComputeHistoryBinding"
+                    and not call_keywords
+                    and arguments
+                    == [
+                        "requirement",
+                        "ctx['history_text_execution'].effects",
+                        "store._inference",
+                        "identity",
+                        "shared",
+                    ]
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved compute history binding")
             if target.endswith(("._stage_completed_body", "._completion_control")) or (
                 target.endswith("._worker") and path != "orchestrator/tasks/store.py"
             ):
@@ -559,6 +696,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/acceptance_host.py", "_open"),
                         ("orchestrator/services/restore_history/acceptance_host.py", "_submit"),
                         ("orchestrator/services/restore_history/acceptance_host.py", "_lookup"),
+                        ("orchestrator/services/restore_history/acceptance_host.py", "_cancel"),
                         ("orchestrator/services/restore_history/observation.py", "_lookup"),
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
@@ -566,6 +704,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/effects.py", "_prepare_output"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
                         ("orchestrator/services/restore_history/effects.py", "_write_partial"),
+                        ("orchestrator/services/restore_history/effects.py", "_attempt_operation"),
+                        ("orchestrator/services/restore_history/effects.py", "_claim"),
+                        ("orchestrator/services/restore_history/effects.py", "_settle_old_holds"),
+                        ("orchestrator/services/restore_history/text_execution.py", "open"),
                         (
                             "orchestrator/services/restore_history/effects.py",
                             "_publish_reserved_output",
@@ -626,14 +768,19 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                 )
                 joined = (
                     path == "orchestrator/services/restore_history/effects.py"
-                    and enclosing == ("_mark" if method == "mark" else "_cancel")
+                    and enclosing == ("_mark" if method == "mark" else "_cancel_owned")
                     and ast.unparse(node.func)
                     == (
                         "recovery._mark_with_stage"
                         if method == "mark"
                         else "self._tasks._request_cancel_with_stage"
                     )
-                    and keywords == {"stage": "stage"}
+                    and keywords
+                    == (
+                        {"stage": "stage"}
+                        if method == "mark"
+                        else {"stage": "stage", "authorization": "authorization"}
+                    )
                     and args
                     == (
                         ["identity", "reservation", "invocation_state"]
@@ -846,6 +993,26 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and target.endswith(required_factory)
                     and not node.args
                     and keywords == expected
+                ) and not (
+                    path == "orchestrator/services/restore_history/text_execution.py"
+                    and ast.unparse(node.func) == "qualify_worker_composition"
+                    and not node.args
+                    and keywords
+                    == {
+                        "enabled": "True",
+                        "worker_pool": "self.pool",
+                        "encryption": "self.encryption",
+                        "settings": "self.settings",
+                        "acceptor_role": "self.projection.acceptor",
+                        "worker_role": "self.projection.worker",
+                        "requires_history": "True",
+                    }
+                    and any(
+                        isinstance(f, ast.AsyncFunctionDef)
+                        and f.name == "open"
+                        and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                        for f in nodes
+                    )
                 ):
                     violations.append(f"{path}:{node.lineno}:factory activation")
             if (
