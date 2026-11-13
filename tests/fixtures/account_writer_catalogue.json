@@ -411,6 +411,12 @@
       "ownership_path": "root:skill_store_key",
       "rationale": "Shared deployment state: one row binding the skill store to its encryption key. Holds a keyed check value, no account content. Uncovered."
     },
+    "shipped_skill_catalogue": {
+      "category": "shared_unowned",
+      "owner_source": "migrations/070_shipped_skill_catalogue.sql",
+      "ownership_path": "root:shipped_skill_catalogue",
+      "rationale": "Shared deployment state: one row holding the applied shipped-skill catalogue version. A number and a time, no account content. Uncovered."
+    },
     "memory_dependencies": {
       "category": "content",
       "owner_source": "migrations/066_memory_bitemporal.sql",
@@ -758,6 +764,7 @@
     "skills": "root:users <- skills",
     "skill_revisions": "root:users <- skills <- skill_revisions",
     "skill_store_key": "root:skill_store_key",
+    "shipped_skill_catalogue": "root:shipped_skill_catalogue",
     "memory_dependencies": "root:users <- memory_dependencies",
     "memory_erased_sources": "root:users <- memory_erased_sources",
     "memory_knowledge_clock": "root:users <- memory_knowledge_clock",
@@ -6066,7 +6073,7 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
-      "qualname": "SkillStore.publish_shipped",
+      "qualname": "SkillStore._publish_shipped",
       "kind": "sql_inline",
       "fingerprint": "5a044d417908c61d",
       "tables": [
@@ -6076,6 +6083,45 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.apply_shipped_catalogue",
+      "kind": "sql_inline",
+      "fingerprint": "15b040917a406e74",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.apply_shipped_catalogue",
+      "kind": "sql_inline",
+      "fingerprint": "23e33c21bc90c195",
+      "tables": [
+        "shipped_skill_catalogue"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Applied shipped-skill catalogue version; shared deployment state, no account content."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.apply_shipped_catalogue",
+      "kind": "sql_inline",
+      "fingerprint": "39f3032693c8339b",
+      "tables": [
+        "shipped_skill_catalogue"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Applied shipped-skill catalogue version; shared deployment state, no account content."
     },
     {
       "owner_source": "orchestrator.services.skills",

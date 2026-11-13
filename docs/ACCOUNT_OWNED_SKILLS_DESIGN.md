@@ -3,7 +3,9 @@
 **Status:** Design accepted by the owner. Steps 1 to 4 of §8 are implemented,
 with one part of step 4 held back: the `skill_projections` table is still in
 the schema and is dropped by a later migration, once the cutover has run in
-production (§8). The file-backed skill modules are removed. This document
+production (§8). The file-backed skill modules are removed, and migration
+`070_shipped_skill_catalogue.sql` fences the shipped-skill loader by version
+(§5). This document
 authorises no deployment; each remaining change it describes still needs
 approval under the Rules of Engagement in `AGENTS.md`.
 
@@ -182,14 +184,31 @@ and is removed (§10 O1). An account that wants a modified copy saves one as its
 own skill. An account can switch a shipped skill off (§10 O2).
 
 As implemented (step 4): shipped skills live in
-`orchestrator/shipped_skills/<slug>/SKILL.md`, and the backend publishes them
-at startup through `orchestrator/services/shipped_skills.py`. Unchanged files
-write nothing. A shipped skill is removed only when the directory is present
-and every skill in it was read, so a missing directory or one unparseable file
-never deletes anything; a file that fails is logged by name and its row is left
-as it is. A failure here never stops startup. No shipped skill exists yet, and
-the per-account switch (O2) is not built: a test keeps the directory empty
-until that switch is added with the first shipped skill.
+`orchestrator/shipped_skills/<slug>/SKILL.md`, with the catalogue's version in
+`orchestrator/shipped_skills/VERSION`. The backend applies the directory at
+startup through `orchestrator/services/shipped_skills.py`.
+
+Instances of different releases run side by side during a deploy and after a
+rollback, each with its own copy of the directory, so the directory alone
+cannot be the authority. Migration `070_shipped_skill_catalogue.sql` adds a
+one-row table holding the applied catalogue version. An instance applies its
+directory only when its version is higher, holding that row's lock; publishing
+every skill, removing those no longer present and recording the version are one
+transaction. Consequences:
+
+- an older release, or one with an empty or unversioned directory, changes
+  nothing: it can neither delete nor roll back a newer release's skills;
+- releases starting together are serialized and end on the highest version;
+- rolling the application back leaves the newer shipped skills in place. A
+  skill is retired or reverted by shipping a higher version;
+- a catalogue is applied whole or not at all. If any skill cannot be read,
+  nothing is applied and its directory name is logged, never its content;
+- a change made without raising `VERSION` is not applied and logs a warning;
+- a failure here never stops startup.
+
+`VERSION` is `0`, meaning no catalogue: no shipped skill exists yet, and the
+per-account switch (O2) is not built. A test keeps the directory empty until
+that switch is added with the first shipped skill.
 
 ## 6. Autonomous writers
 
