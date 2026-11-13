@@ -143,6 +143,11 @@ class SkillUpdate(BaseModel):
     expected_revision: int | None = Field(default=None, ge=1)
 
 
+class SkillRevert(BaseModel):
+    revision: int = Field(..., ge=1)
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
 class SkillEnabledUpdate(BaseModel):
     enabled: bool
 
@@ -332,6 +337,55 @@ async def set_skill_autonomous_edit(
         "skill_id": skill["slug"],
         "allow_autonomous_edit": skill["allow_autonomous_edit"],
     }
+
+
+@router.get("/{skill_id}/revisions")
+async def list_skill_revisions(
+    skill_id: str,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> dict[str, list[dict[str, Any]]]:
+    """Retained revisions of the caller's own skill, newest first, with content."""
+    store = _store(request)
+    try:
+        revisions = await store.list_revisions(auth.user_id, skill_id)
+    except SkillError as exc:
+        raise _refusal(exc) from exc
+    return {
+        "revisions": [
+            {
+                "revision": revision["revision"],
+                "name": revision["name"],
+                "description": revision["description"],
+                "content": revision["body"],
+                "actor": revision["actor"],
+                "created_at": revision["created_at"],
+            }
+            for revision in revisions
+        ]
+    }
+
+
+@router.post("/{skill_id}/revert")
+async def revert_skill(
+    skill_id: str,
+    payload: SkillRevert,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> dict[str, Any]:
+    """Write a retained revision's content as a new revision of the skill."""
+    store = _store(request)
+    try:
+        skill = await store.revert(
+            auth.user_id,
+            skill_id,
+            payload.revision,
+            expected_revision=payload.expected_revision,
+        )
+    except SkillError as exc:
+        raise _refusal(exc) from exc
+    await embed_skill(store, skill)
+    return _detail(skill)
 
 
 @router.get("/{skill_id}/download")
