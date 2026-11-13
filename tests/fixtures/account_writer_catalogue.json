@@ -6017,19 +6017,6 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
-      "qualname": "SkillStore.create",
-      "kind": "sql_inline",
-      "fingerprint": "2f2d863eb3d8ba25",
-      "tables": [
-        "skills"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "content",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.services.skills",
       "qualname": "SkillStore.delete",
       "kind": "sql_inline",
       "fingerprint": "82d452cc2ed220ac",
@@ -6160,9 +6147,9 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
-      "qualname": "SkillStore.merge",
+      "qualname": "SkillStore.patch",
       "kind": "sql_inline",
-      "fingerprint": "8ce21494e3b84bea",
+      "fingerprint": "7ae7c2f792830fd3",
       "tables": [
         "skills"
       ],
@@ -6173,9 +6160,61 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
-      "qualname": "SkillStore.patch",
+      "qualname": "SkillStore.create",
       "kind": "sql_inline",
-      "fingerprint": "7ae7c2f792830fd3",
+      "fingerprint": "db448596d62d255f",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.merge",
+      "kind": "sql_inline",
+      "fingerprint": "22f077c6a4848b29",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.merge",
+      "kind": "sql_inline",
+      "fingerprint": "a555fb831e6a4e3b",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.merge",
+      "kind": "sql_inline",
+      "fingerprint": "f60249b3695941d4",
+      "tables": [
+        "skill_consolidation_log"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.save",
+      "kind": "sql_inline",
+      "fingerprint": "0782f8d3b2b8daee",
       "tables": [
         "skills"
       ],

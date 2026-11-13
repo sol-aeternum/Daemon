@@ -179,10 +179,17 @@ class FakeSkillStore:
     def __init__(self, candidates: list[dict[str, Any]] | None = None) -> None:
         self.candidates = candidates or []
         self.candidate_calls: list[tuple[uuid.UUID, int]] = []
+        self.audit_ids = [uuid.uuid4(), uuid.uuid4()]
         self.merge = AsyncMock(
-            return_value={"id": str(uuid.uuid4()), "revision": 2, "name": "", "description": "",
-                          "body": ""}
-        )  # fmt: skip
+            return_value={
+                "id": str(uuid.uuid4()),
+                "revision": 2,
+                "name": "",
+                "description": "",
+                "body": "",
+                "audit_ids": self.audit_ids,
+            }
+        )
         self.delete = AsyncMock(return_value=None)
 
     async def list_autonomous_candidates(
@@ -405,11 +412,20 @@ class TestApplyMergeAction:
         skill_store = FakeSkillStore()
         _use_skill_store(monkeypatch, skill_store)
 
-        refusal = await _apply_merge_action("skill-keep", "skill-absorb", skill_store, user_id)
+        run_id = uuid.uuid4()
+        outcome = await _apply_merge_action(
+            "skill-keep", "skill-absorb", skill_store, user_id, run_id, 0.93
+        )
 
-        assert refusal is None
+        # The audit rows are the store's, written in the merge transaction.
+        assert outcome == tuple(skill_store.audit_ids)
         skill_store.merge.assert_awaited_once_with(
-            user_id, "skill-keep", ["skill-absorb"], actor="consolidation"
+            user_id,
+            "skill-keep",
+            ["skill-absorb"],
+            actor="consolidation",
+            audit_run_id=run_id,
+            audit_similarity=0.93,
         )
 
     @pytest.mark.asyncio
@@ -429,7 +445,7 @@ class TestApplyMergeAction:
         skill_store.merge = AsyncMock(side_effect=error)
         _use_skill_store(monkeypatch, skill_store)
 
-        assert await _apply_merge_action("a", "b", skill_store, uuid.uuid4()) == code
+        assert await _apply_merge_action("a", "b", skill_store, uuid.uuid4(), uuid.uuid4()) == code
 
 
 class _AuditStore:
@@ -471,7 +487,11 @@ class TestApplyDeleteAction:
         skill_store.delete = AsyncMock(side_effect=delete)
         store = _AuditStore(audit_id, events)
 
-        result = await _apply_delete_action(skill, cast(MemoryStore, store), skill_store, user_id)
+        run_id = uuid.uuid4()
+        result = await _apply_delete_action(
+            skill, cast(MemoryStore, store), skill_store, user_id, run_id
+        )
+        assert store.logged_action["run_id"] == run_id
 
         assert result == {"deleted": True, "reason": "model_delete", "audit_id": audit_id}
         assert events == [
@@ -500,6 +520,7 @@ class TestApplyDeleteAction:
             cast(MemoryStore, FailingAuditStore()),
             skill_store,
             uuid.uuid4(),
+            uuid.uuid4(),
         )
 
         assert result == {"deleted": False, "reason": "audit_failed"}
@@ -525,6 +546,7 @@ class TestApplyDeleteAction:
             _candidate("skill-to-delete", "Skill To Delete"),
             cast(MemoryStore, store),
             skill_store,
+            uuid.uuid4(),
             uuid.uuid4(),
         )
 

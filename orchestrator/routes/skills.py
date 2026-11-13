@@ -191,9 +191,8 @@ async def create_skill(
             name=payload.name,
             description=payload.description,
             body=payload.content,
+            enabled=payload.enabled,
         )
-        if not payload.enabled:
-            skill = await store.set_enabled(auth.user_id, skill["slug"], False)
     except SkillError as exc:
         raise _refusal(exc) from exc
     await embed_skill(store, skill)
@@ -231,6 +230,7 @@ async def upload_skill(
                 description=parsed.description,
                 body=parsed.body,
                 imported=True,
+                enabled=parsed.enabled,
             )
         except SkillError as exc:
             if exc.reason != "slug_taken" or not overwrite:
@@ -243,9 +243,8 @@ async def upload_skill(
                 name=parsed.name,
                 description=parsed.description,
                 body=parsed.body,
+                enabled=parsed.enabled,
             )
-        if skill["enabled"] != parsed.enabled:
-            skill = await store.set_enabled(auth.user_id, skill["slug"], parsed.enabled)
     except SkillError as exc:
         raise _refusal(exc) from exc
     await embed_skill(store, skill)
@@ -272,9 +271,8 @@ async def update_skill(
                 description=payload.description,
                 body=payload.content,
                 expected_revision=payload.expected_revision,
+                enabled=payload.enabled,
             )
-            if payload.enabled is not None and payload.enabled != skill["enabled"]:
-                skill = await store.set_enabled(auth.user_id, skill_id, payload.enabled)
         elif payload.enabled is not None:
             # The switch is not a content revision, so no revision is expected.
             skill = await store.set_enabled(auth.user_id, skill_id, payload.enabled)

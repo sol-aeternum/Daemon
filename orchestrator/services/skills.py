@@ -330,8 +330,12 @@ class SkillStore:
         actor: Actor = "user",
         imported: bool = False,
         complexity_origin: int = 0,
+        enabled: bool = True,
     ) -> dict[str, Any]:
         """Create a skill owned by ``user_id``.
+
+        ``enabled`` is part of the same insert: a skill requested disabled is
+        never visible enabled, not even briefly.
 
         Source type and the autonomous-edit grant are derived from ``actor``:
         a skill the evaluator creates starts open to autonomous edits (it may
@@ -340,6 +344,8 @@ class SkillStore:
         """
         if actor not in _ACCOUNT_ACTORS:
             raise SkillError("actor_invalid")
+        if not isinstance(enabled, bool):
+            raise SkillError("enabled_invalid")
         name = _validated_text(name, MAX_NAME_CHARS, "name", required=True)
         description = _validated_text(description, MAX_DESCRIPTION_CHARS, "description")
         body = _validated_text(body, MAX_BODY_CHARS, "body")
@@ -373,8 +379,9 @@ class SkillStore:
                     "INSERT INTO skills (id, user_id, slug_encrypted, slug_lookup, "
                     "name_encrypted, description_encrypted, body_encrypted, "
                     "trigger_conditions_encrypted, source_type, allow_autonomous_edit, "
-                    "complexity_origin) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::skill_source_type, $10, $11)",
+                    "complexity_origin, enabled) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::skill_source_type, $10, $11, "
+                    "$12)",
                     skill_id,
                     user_id,
                     slug_envelope,
@@ -383,6 +390,7 @@ class SkillStore:
                     source_type,
                     autonomous,
                     complexity_origin,
+                    enabled,
                 )
                 await self._append_revision(conn, skill_id, 1, envelopes, actor)
                 # Decode inside the transaction: a failure rolls the write back.
@@ -404,12 +412,17 @@ class SkillStore:
         trigger_conditions: str | None = None,
         actor: Actor = "user",
         expected_revision: int | None = None,
+        enabled: bool | None = None,
     ) -> dict[str, Any]:
         """Save new content as the next revision. ``None`` keeps a field.
 
         The slug is the skill's stable address and does not change on rename.
+        ``enabled`` is the owner's switch, applied in the same transaction as
+        the content so the two are never visible half-applied.
         """
         slug = _slug_from_id(slug)
+        if enabled is not None and (not isinstance(enabled, bool) or actor != "user"):
+            raise SkillError("enabled_invalid")
         if name is not None:
             name = _validated_text(name, MAX_NAME_CHARS, "name", required=True)
         if description is not None:
@@ -438,6 +451,10 @@ class SkillStore:
             )
             revision = row["revision"] + 1
             await self._append_revision(conn, row["id"], revision, envelopes, actor)
+            if enabled is not None:
+                await conn.execute(
+                    "UPDATE skills SET enabled = $2 WHERE id = $1", row["id"], enabled
+                )
             head = await self._move_head(conn, row["id"], revision, envelopes)
             # Decoded before commit: a failure rolls the write back.
             return self._decode_head(head)
@@ -504,11 +521,19 @@ class SkillStore:
         absorbed_slugs: list[str],
         *,
         actor: Actor = "consolidation",
+        audit_run_id: uuid.UUID | None = None,
+        audit_similarity: float | None = None,
     ) -> dict[str, Any]:
         """Fold the absorbed skills' bodies into the kept skill, then delete them.
 
         One transaction: every skill involved is the caller's own and, for an
         unattended actor, carries the grant, or nothing changes.
+
+        With ``audit_run_id`` the consolidation audit rows (one ``merge`` and
+        one ``delete`` per absorbed skill) are written in the same
+        transaction, so a merge never commits without its audit record and an
+        audit failure rolls the merge back. Their ids are returned as
+        ``audit_ids``, in that order.
         """
         kept = _slug_from_id(kept_slug)
         absorbed = [_slug_from_id(slug) for slug in absorbed_slugs]
@@ -537,11 +562,47 @@ class SkillStore:
             )
             revision = row["revision"] + 1
             await self._append_revision(conn, row["id"], revision, envelopes, actor)
+            audit_ids: list[uuid.UUID] = []
             for slug in absorbed:
-                await conn.execute("DELETE FROM skills WHERE id = $1", rows[slug]["id"])
+                gone = rows[slug]
+                await conn.execute("DELETE FROM skills WHERE id = $1", gone["id"])
+                if audit_run_id is None:
+                    continue
+                merge_id, delete_id = uuid.uuid4(), uuid.uuid4()
+                await conn.execute(
+                    "INSERT INTO skill_consolidation_log (id, user_id, run_id, action_type, "
+                    "skill_id, target_skill_id, reason, similarity, status, skill_use_count, "
+                    "skill_last_used_at) "
+                    "VALUES ($1, $2, $3, 'merge', $4, $5, 'model_merge', $6, 'applied', $7, $8)",
+                    merge_id,
+                    user_id,
+                    audit_run_id,
+                    row["id"],
+                    gone["id"],
+                    audit_similarity,
+                    row["use_count"],
+                    row["last_used_at"],
+                )
+                await conn.execute(
+                    "INSERT INTO skill_consolidation_log (id, user_id, run_id, action_type, "
+                    "skill_id, target_skill_id, reason, status, skill_use_count, "
+                    "skill_last_used_at) "
+                    "VALUES ($1, $2, $3, 'delete', $4, $5, 'merged_into', 'applied', $6, $7)",
+                    delete_id,
+                    user_id,
+                    audit_run_id,
+                    gone["id"],
+                    row["id"],
+                    gone["use_count"],
+                    gone["last_used_at"],
+                )
+                audit_ids += [merge_id, delete_id]
             head = await self._move_head(conn, row["id"], revision, envelopes)
             # Decoded before commit: a failure rolls the write back.
-            return self._decode_head(head)
+            merged = self._decode_head(head)
+            if audit_run_id is not None:
+                merged["audit_ids"] = audit_ids
+            return merged
 
     async def revert(
         self,

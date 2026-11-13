@@ -8,6 +8,7 @@ or ``ENTITLEMENTS_TEST_DATABASE_URL``), each test in its own schema.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -275,6 +276,158 @@ async def test_put_expected_revision_conflict_changes_nothing(pool: asyncpg.Pool
         # The enabled switch is not a revision.
         switched = await a.put(f"/skills/{slug}", json={"enabled": False})
         assert switched.json()["enabled"] is False and switched.json()["revision"] == 3
+
+
+async def _visible(pool: asyncpg.Pool, user_id: uuid.UUID) -> list[tuple[str, int, bool]]:
+    """What any other reader sees right now: committed state only."""
+    return [
+        (skill["body"], skill["revision"], skill["enabled"])
+        for skill in await SkillStore(pool, KEY).list(user_id)
+    ]
+
+
+async def _wait_for_lock_wait(pool: asyncpg.Pool) -> None:
+    """Return once some backend in this database is blocked on a lock."""
+    for _ in range(400):
+        if await pool.fetchval(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+        ):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("no backend reached a lock wait")
+
+
+@pytest.mark.asyncio
+async def test_disabled_create_is_never_visible_enabled(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skill requested disabled is one insert: no reader ever sees it enabled."""
+    alice = await _user(pool)
+
+    async def no_second_write(*_: Any, **__: Any) -> Any:
+        raise AssertionError("enabled must not be a second transaction")
+
+    monkeypatch.setattr(SkillStore, "set_enabled", no_second_write)
+    async with _client(pool, alice) as a:
+        # Hold the account row the create serializes on, so the create is
+        # in flight while a reader looks.
+        async with pool.acquire() as blocker:
+            transaction = blocker.transaction()
+            await transaction.start()
+            await blocker.execute("SELECT 1 FROM users WHERE id = $1 FOR UPDATE", alice)
+            pending = asyncio.create_task(
+                a.post(
+                    "/skills",
+                    json={"name": "Quiet", "description": "d", "content": "x", "enabled": False},
+                )
+            )
+            await _wait_for_lock_wait(pool)
+            assert await _visible(pool, alice) == []
+            assert await build_skill_index(pool, alice) == ""
+            await transaction.commit()
+        created = await pending
+        assert created.status_code == 201 and created.json()["enabled"] is False
+        assert await _visible(pool, alice) == [("x", 1, False)]
+        assert await build_skill_index(pool, alice) == ""
+
+        uploaded = await a.post(
+            "/skills/upload",
+            files={
+                "file": (
+                    "off.md",
+                    "---\nname: Off\ndescription: d\nenabled: false\n---\nbody\n",
+                    "text/markdown",
+                )
+            },
+        )
+        assert uploaded.status_code == 201 and uploaded.json()["enabled"] is False
+        # Overwriting with an enabled file flips content and switch together.
+        replaced = await a.post(
+            "/skills/upload",
+            files={
+                "file": ("off.md", "---\nname: Off\ndescription: d\n---\nnew\n", "text/markdown")
+            },
+            data={"overwrite": "true"},
+        )
+        assert (replaced.json()["enabled"], replaced.json()["content"]) == (True, "new")
+    assert "Off" in await build_skill_index(pool, alice)
+    assert "Quiet" not in await build_skill_index(pool, alice)
+
+
+@pytest.mark.asyncio
+async def test_failed_create_leaves_nothing_and_content_with_switch_is_atomic(
+    pool: asyncpg.Pool, store: SkillStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected failures and an interleaved reader never see half a write."""
+    alice = await _user(pool)
+    real_append = SkillStore._append_revision
+
+    async def failing_append(self: SkillStore, *args: Any, **kwargs: Any) -> None:
+        await real_append(self, *args, **kwargs)
+        raise RuntimeError("injected failure after the row is written")
+
+    async with _client(pool, alice) as a:
+        # A create that fails after inserting the row leaves no skill at all,
+        # enabled or otherwise.
+        monkeypatch.setattr(SkillStore, "_append_revision", failing_append)
+        with pytest.raises(RuntimeError, match="injected"):
+            await a.post(
+                "/skills",
+                json={"name": "Doomed", "description": "", "content": "x", "enabled": False},
+            )
+        assert await _visible(pool, alice) == []
+        monkeypatch.setattr(SkillStore, "_append_revision", real_append)
+
+        slug = (await _create(a))["id"]
+        before = await _dump(pool)
+
+        # A save that fails after the switch was applied rolls both back.
+        real_move = SkillStore._move_head
+
+        async def failing_move(self: SkillStore, *args: Any, **kwargs: Any) -> Any:
+            await real_move(self, *args, **kwargs)
+            raise RuntimeError("injected failure after content and switch")
+
+        monkeypatch.setattr(SkillStore, "_move_head", failing_move)
+        with pytest.raises(RuntimeError, match="injected"):
+            await a.put(f"/skills/{slug}", json={"content": "v2", "enabled": False})
+        assert await _dump(pool) == before
+        assert await _visible(pool, alice) == [("# Steps", 1, True)]
+        monkeypatch.setattr(SkillStore, "_move_head", real_move)
+
+        # A stale expected revision changes neither content nor the switch.
+        stale = await a.put(
+            f"/skills/{slug}", json={"content": "v2", "enabled": False, "expected_revision": 9}
+        )
+        assert stale.status_code == 409 and await _dump(pool) == before
+
+        # Interleave a reader while the save is in flight: it sees the old
+        # content and switch, then both new, never one without the other.
+        async def no_second_write(*_: Any, **__: Any) -> Any:
+            raise AssertionError("enabled must not be a second transaction")
+
+        monkeypatch.setattr(SkillStore, "set_enabled", no_second_write)
+        async with pool.acquire() as blocker:
+            transaction = blocker.transaction()
+            await transaction.start()
+            await blocker.execute("SELECT 1 FROM skills WHERE user_id = $1 FOR UPDATE", alice)
+            pending = asyncio.create_task(
+                a.put(f"/skills/{slug}", json={"content": "v2", "enabled": False})
+            )
+            await _wait_for_lock_wait(pool)
+            assert await _visible(pool, alice) == [("# Steps", 1, True)]
+            await transaction.commit()
+        saved = await pending
+        assert saved.status_code == 200
+        assert (saved.json()["content"], saved.json()["enabled"]) == ("v2", False)
+        assert await _visible(pool, alice) == [("v2", 2, False)]
+
+    # The switch is the owner's: an unattended actor cannot pass it.
+    with pytest.raises(SkillError, match="enabled_invalid"):
+        await store.save(alice, slug, body="x", actor="autonomous", enabled=True)
+    with pytest.raises(SkillError, match="enabled_invalid"):
+        await store.create(alice, name="N", description="", body="", enabled="no")  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -964,6 +1117,92 @@ async def test_consolidation_stays_inside_one_account(
     # Slugs that were not the account's candidates are recorded without an id.
     assert all(row["skill_id"] is None for row in rows if row["reason"] == "not_candidate")
     _assert_no_markers(await _dump(pool, ("skill_consolidation_log",)))
+
+
+@pytest.mark.asyncio
+async def test_a_committed_merge_always_has_its_audit_rows(
+    pool: asyncpg.Pool, store: SkillStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure right after the merge commits cannot lose the audit record."""
+    alice = await _user(pool)
+    kept = await _autonomous(store, alice, "Kept", "kept body")
+    absorbed = await _autonomous(store, alice, "Absorbed", "absorbed body")
+    actions = [
+        {"type": "merge", "skill_id": kept["slug"], "target_skill_id": absorbed["slug"],
+         "similarity": 0.91}
+    ]  # fmt: skip
+
+    # The job dies after the merge and before its audit loop.
+    async def crash(*_: Any, **__: Any) -> None:
+        raise RuntimeError("worker stopped after the merge")
+
+    monkeypatch.setattr(_NudgeStore, "record_consolidation_nudge_run", crash)
+    with pytest.raises(RuntimeError, match="worker stopped"):
+        await _consolidate(pool, monkeypatch, alice, actions)
+
+    assert {skill["slug"] for skill in await store.list(alice)} == {kept["slug"]}
+    rows = await pool.fetch(
+        "SELECT action_type, skill_id, target_skill_id, reason, status, similarity, run_id "
+        "FROM skill_consolidation_log ORDER BY action_type DESC"
+    )
+    assert [(r["action_type"], r["reason"], r["status"]) for r in rows] == [
+        ("merge", "model_merge", "applied"),
+        ("delete", "merged_into", "applied"),
+    ]
+    assert (rows[0]["skill_id"], rows[0]["target_skill_id"]) == (
+        uuid.UUID(kept["id"]),
+        uuid.UUID(absorbed["id"]),
+    )
+    assert (rows[1]["skill_id"], rows[1]["target_skill_id"]) == (
+        uuid.UUID(absorbed["id"]),
+        uuid.UUID(kept["id"]),
+    )
+    assert rows[0]["similarity"] == 0.91 and rows[0]["run_id"] == rows[1]["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_whose_audit_cannot_be_written_does_not_happen(
+    pool: asyncpg.Pool, store: SkillStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alice = await _user(pool)
+    kept = await _autonomous(store, alice, "Kept", "kept body")
+    absorbed = await _autonomous(store, alice, "Absorbed", "absorbed body")
+    before = await _dump(pool, ("skills", "skill_revisions"))
+
+    # The audit insert fails inside the merge transaction.
+    await pool.execute("ALTER TABLE skill_consolidation_log RENAME TO audit_log_away")
+    try:
+        result = await _consolidate(
+            pool,
+            monkeypatch,
+            alice,
+            [{"type": "merge", "skill_id": kept["slug"], "target_skill_id": absorbed["slug"]}],
+        )
+    except asyncpg.UndefinedTableError:
+        # The job's own later audit write for the skipped action also fails.
+        result = None
+    finally:
+        await pool.execute("ALTER TABLE audit_log_away RENAME TO skill_consolidation_log")
+
+    assert await _dump(pool, ("skills", "skill_revisions")) == before
+    assert await pool.fetchval("SELECT count(*) FROM skill_consolidation_log") == 0
+    if result is not None:
+        assert [(a["reason"], a["status"]) for a in result["actions"]] == [
+            ("merge_failed", "skipped")
+        ]
+
+    # Run to completion: the two rows exist exactly once, with no duplicates
+    # from the job's closing audit loop.
+    done = await _consolidate(
+        pool,
+        monkeypatch,
+        alice,
+        [{"type": "merge", "skill_id": kept["slug"], "target_skill_id": absorbed["slug"]}],
+    )
+    assert done["duplicates_merged"] == 1
+    assert await pool.fetchval("SELECT count(*) FROM skill_consolidation_log") == 2
+    logged = {row["id"] for row in await pool.fetch("SELECT id FROM skill_consolidation_log")}
+    assert {action["audit_id"] for action in done["actions"]} == logged
 
 
 @pytest.mark.asyncio

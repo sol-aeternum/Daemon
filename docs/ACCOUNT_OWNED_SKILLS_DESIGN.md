@@ -151,6 +151,10 @@ A save is one transaction:
 5. Insert the new `skill_revisions` row, update the head row, and trim
    revisions beyond the retention count.
 
+The owner's enabled switch, when a create, import or save carries one, is part
+of that same transaction. A skill requested disabled is never visible enabled,
+and content and switch are never visible half-applied.
+
 The embedding is computed after commit and stored, with `embedding_revision`,
 only if the head revision is still the one it was computed from, so a slow embedding call never overwrites a newer save. A skill with no
 embedding stays usable; it is only excluded from similarity search.
@@ -187,6 +191,10 @@ own skill. An account can switch a shipped skill off (§10 O2).
 - Consolidation selects and merges candidates within one account. The current
   global candidate query gains an account filter, and the merge runs through
   the write service so it is recorded as a revision.
+- A change consolidation makes is never committed without its audit record.
+  A merge writes its `merge` and `delete` audit rows in the merge's own
+  transaction. A delete commits a `pending` audit row first and finalises it
+  afterwards, so a crash leaves a record of the attempt.
 
 ## 7. Import, export and API
 

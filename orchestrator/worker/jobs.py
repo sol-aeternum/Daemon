@@ -2052,6 +2052,8 @@ async def _process_user_consolidation_nudge(
     ):
         model_actions = await _call_consolidation_model(prompt)
 
+    run_id = uuid.uuid4()
+
     def record(
         action_type: str,
         skill_id: str,
@@ -2090,11 +2092,24 @@ async def _process_user_consolidation_nudge(
             elif target_id is None or target_id not in live or target_id == skill_id:
                 record("merge", skill_id, target_id, "target_not_candidate", "skipped", similarity)
             else:
-                refusal = await _apply_merge_action(skill_id, target_id, skill_store, user_id)
+                # The store writes both audit rows in the merge's own
+                # transaction, so a crash after this call cannot leave a
+                # committed merge without its record.
+                outcome = await _apply_merge_action(
+                    skill_id, target_id, skill_store, user_id, run_id, similarity
+                )
+                refusal = outcome if isinstance(outcome, str) else None
                 if refusal is None:
+                    merge_audit_id, delete_audit_id = outcome
                     duplicates_merged += 1
-                    record("merge", skill_id, target_id, "model_merge", "applied", similarity)
-                    record("delete", target_id, skill_id, "merged_into", "applied")
+                    record(
+                        "merge", skill_id, target_id, "model_merge", "applied", similarity,
+                        audit_id=merge_audit_id,
+                    )  # fmt: skip
+                    record(
+                        "delete", target_id, skill_id, "merged_into", "applied",
+                        audit_id=delete_audit_id,
+                    )  # fmt: skip
                     live.discard(target_id)
                 else:
                     record("merge", skill_id, target_id, refusal, "skipped", similarity)
@@ -2104,7 +2119,7 @@ async def _process_user_consolidation_nudge(
                 record("delete", skill_id, target_id, "not_candidate", "skipped", similarity)
                 continue
             delete_result = await _apply_delete_action(
-                by_slug[skill_id], store, skill_store, user_id
+                by_slug[skill_id], store, skill_store, user_id, run_id
             )
             record(
                 "delete",
@@ -2121,17 +2136,16 @@ async def _process_user_consolidation_nudge(
             stale_flagged += 1
             record("flag_stale", skill_id, None, "model_stale", "recorded")
 
-    run_id = uuid.uuid4()
     await store.record_consolidation_nudge_run(user_id, total_conversations)
 
     for action in actions:
         if action.get("audit_id") is not None:
-            # _apply_delete_action pre-wrote the pending audit row and has
-            # already finalized its status (applied on success, failed with
-            # a reason code on failure). Re-touching the row here would either
-            # duplicate the work or overwrite the `failed` status with the
-            # outer loop's `skipped`. The action is kept in the returned list
-            # for caller visibility.
+            # Every action that changed a skill is already audited: a merge
+            # wrote its rows in its own transaction, and _apply_delete_action
+            # pre-wrote a pending row and finalized it (applied, or failed
+            # with a reason code). Writing again here would duplicate the row
+            # or overwrite `failed` with `skipped`. Only actions that changed
+            # nothing (skips and stale flags) are recorded below.
             continue
         # The audit row references skills by internal id only. A slug the
         # model invented has no id and is recorded without one.
@@ -2234,14 +2248,25 @@ async def _apply_merge_action(
     target_skill_id: str,
     skill_store: Any,
     user_id: uuid.UUID,
-) -> str | None:
-    """Merge ``target_skill_id`` into ``skill_id``. Returns a refusal code, or None."""
+    run_id: uuid.UUID,
+    similarity: float | None = None,
+) -> str | tuple[uuid.UUID, uuid.UUID]:
+    """Merge ``target_skill_id`` into ``skill_id``, audited atomically.
+
+    Returns a refusal code, or the ids of the merge and delete audit rows the
+    store wrote in the merge's transaction.
+    """
     from orchestrator.services.skill_index import embed_skill
     from orchestrator.services.skills import SkillError
 
     try:
         merged = await skill_store.merge(
-            user_id, skill_id, [target_skill_id], actor="consolidation"
+            user_id,
+            skill_id,
+            [target_skill_id],
+            actor="consolidation",
+            audit_run_id=run_id,
+            audit_similarity=similarity,
         )
     except SkillError as exc:
         return "not_granted" if exc.reason in _NOT_GRANTED_REFUSALS else "merge_failed"
@@ -2249,7 +2274,8 @@ async def _apply_merge_action(
         logger.warning("Skill consolidation merge failed")
         return "merge_failed"
     await embed_skill(skill_store, merged)
-    return None
+    merge_audit_id, delete_audit_id = merged["audit_ids"]
+    return merge_audit_id, delete_audit_id
 
 
 async def _apply_delete_action(
@@ -2257,14 +2283,19 @@ async def _apply_delete_action(
     store: MemoryStore,
     skill_store: Any,
     user_id: uuid.UUID,
+    run_id: uuid.UUID,
 ) -> dict[str, Any]:
-    """Delete one of the account's skills, auditing before the delete runs."""
+    """Delete one of the account's skills, auditing before the delete runs.
+
+    The pending audit row commits first, so a crash after the delete leaves a
+    durable record of the attempt (``pending``) rather than nothing.
+    """
     from orchestrator.services.skills import SkillError
 
     try:
         audit_id = await store.log_consolidation_nudge_action(
             user_id=user_id,
-            run_id=uuid.uuid4(),
+            run_id=run_id,
             action_type="delete",
             skill_id=uuid.UUID(skill["id"]),
             target_skill_id=None,
