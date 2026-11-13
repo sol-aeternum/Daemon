@@ -73,6 +73,8 @@ let skills: (typeof account)[];
 let putStatus: number;
 // Paths whose response is held until the test releases it.
 let held: Map<string, { promise: Promise<void>; release: () => void }>;
+// A skill that is listed but whose detail request fails.
+let brokenDetail: string | null;
 
 function hold(path: string) {
   let release = () => {};
@@ -95,6 +97,7 @@ beforeEach(() => {
   skills = [account, shipped];
   putStatus = 200;
   held = new Map();
+  brokenDetail = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -110,6 +113,8 @@ beforeEach(() => {
       }
 
       if (path === '/skills') return json({ skills });
+      if (path === brokenDetail)
+        return json({ detail: 'Skill not found' }, 404);
       if (path === '/skills/runbook/revisions') {
         return json({ revisions: otherRevisions });
       }
@@ -120,7 +125,7 @@ beforeEach(() => {
       const skill = skills.find((entry) => path === `/skills/${entry.id}`);
       if (skill && method === 'PUT') {
         return putStatus === 200
-          ? json({ ...skill, revision: 4 })
+          ? json({ ...skill, ...(body as object), revision: 4 })
           : json(
               {
                 detail:
@@ -293,5 +298,84 @@ describe('SkillsTab', () => {
     expect(screen.queryByDisplayValue('first body')).toBeNull();
     expect(screen.queryByText('Restored revision 1.')).toBeNull();
     expect(screen.queryByText(/^Revision /)).toBeNull();
+  });
+
+  it("cannot save one skill's draft into another while its detail is pending", async () => {
+    // Same revision as the first skill, so a revision check alone would not
+    // catch a draft written to the wrong skill.
+    const sameRevision = {
+      ...account,
+      id: 'third-skill',
+      name: 'Third Skill',
+      content: 'third skill body',
+    };
+    skills = [account, other, sameRevision];
+    await renderLoaded();
+
+    const releaseA = hold('/skills/runbook');
+    const releaseB = hold('/skills/third-skill');
+    fireEvent.click(screen.getAllByText('Runbook')[0]);
+    fireEvent.click(screen.getAllByText('Third Skill')[0]);
+
+    // The older request finishes first. It must not unlock the editor.
+    releaseA();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByDisplayValue('third')).toBeNull();
+    expect(screen.queryByDisplayValue('B two')).toBeNull();
+    expect(screen.getByText('Loading skill details...')).toBeTruthy();
+    const save = screen.getByRole('button', {
+      name: 'Save skill',
+    }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    for (const box of screen.getAllByRole('checkbox')) {
+      fireEvent.click(box);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      calls.filter((call) => call.method === 'PUT' || call.method === 'PATCH'),
+    ).toEqual([]);
+
+    // Once the selected skill's own detail arrives it can be saved, as itself.
+    releaseB();
+    await waitFor(() =>
+      expect(screen.getByDisplayValue('third skill body')).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save skill' }));
+    await waitFor(() =>
+      expect(calls.some((call) => call.method === 'PUT')).toBe(true),
+    );
+    expect(calls.filter((call) => call.method === 'PUT')).toEqual([
+      {
+        path: '/skills/third-skill',
+        method: 'PUT',
+        body: {
+          name: 'Third Skill',
+          description: 'How to deploy',
+          content: 'third skill body',
+          enabled: true,
+          expected_revision: 3,
+        },
+      },
+    ]);
+  });
+
+  it('keeps the editor locked when the selected skill fails to load', async () => {
+    skills = [account, { ...other, id: 'missing-skill', name: 'Missing' }];
+    brokenDetail = '/skills/missing-skill';
+    await renderLoaded();
+
+    fireEvent.click(screen.getAllByText('Missing')[0]);
+    await waitFor(() =>
+      expect(screen.getByText(/Skill details are unavailable/)).toBeTruthy(),
+    );
+    expect(screen.queryByDisplayValue('third')).toBeNull();
+    for (const name of ['Save skill', 'Delete']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.filter((call) => call.method !== 'GET')).toEqual([]);
   });
 });

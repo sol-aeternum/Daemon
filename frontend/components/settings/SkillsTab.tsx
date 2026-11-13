@@ -126,6 +126,7 @@ export default function SkillsTab() {
     revisions: SkillRevision[];
   } | null>(null);
   const historyRequest = useRef(0);
+  const detailRequest = useRef(0);
   const selectedIdRef = useRef(selectedId);
   const [previewRevision, setPreviewRevision] = useState<number | null>(null);
   const [previousSelectedId, setPreviousSelectedId] = useState(selectedId);
@@ -251,6 +252,13 @@ export default function SkillsTab() {
 
   const loadSkillDetail = useCallback(
     (skillId: string) => {
+      // The whole request is fenced, not only its result: only the newest
+      // request for the still-selected skill may set the draft, report an
+      // error or end the loading state. An older request finishing must not
+      // unlock the editor while the selected skill's own detail is pending.
+      const request = ++detailRequest.current;
+      const isCurrent = () =>
+        request === detailRequest.current && selectedIdRef.current === skillId;
       return getAuthHeaders()
         .then((headers) => fetchWithTimeout(`/skills/${skillId}`, { headers }))
         .then(async (response) => {
@@ -259,14 +267,14 @@ export default function SkillsTab() {
               response,
               'Failed to load selected skill.',
             );
-            setActionMessage('error', detail);
+            if (isCurrent()) setActionMessage('error', detail);
             return;
           }
           const data = (await response.json()) as SkillDetail;
-          // A response for a skill that is no longer selected is dropped.
-          if (selectedIdRef.current === skillId) setDraft(data);
+          if (isCurrent()) setDraft(data);
         })
         .catch((error: unknown) => {
+          if (!isCurrent()) return;
           if (error instanceof DOMException && error.name === 'AbortError') {
             setActionMessage(
               'error',
@@ -277,7 +285,7 @@ export default function SkillsTab() {
           }
         })
         .finally(() => {
-          setIsLoadingDetail(false);
+          if (request === detailRequest.current) setIsLoadingDetail(false);
         });
     },
     [fetchWithTimeout, getAuthHeaders],
@@ -471,7 +479,8 @@ export default function SkillsTab() {
   };
 
   const handleSave = async () => {
-    if (!selectedId) return;
+    // Never write a draft to a skill it was not loaded from.
+    if (!selectedId || draft.id !== selectedId) return;
 
     setActionMessage('loading', 'Saving skill...');
     try {
@@ -517,7 +526,7 @@ export default function SkillsTab() {
   };
 
   const handleToggleEnabled = async (enabled: boolean) => {
-    if (!selectedId) return;
+    if (!selectedId || draft.id !== selectedId) return;
 
     setDraft((prev) => ({ ...prev, enabled }));
     setActionMessage(
@@ -560,7 +569,7 @@ export default function SkillsTab() {
   };
 
   const handleToggleAutonomousEdit = async (allow_autonomous_edit: boolean) => {
-    if (!selectedId) return;
+    if (!selectedId || draft.id !== selectedId) return;
 
     setActionMessage(
       'loading',
@@ -608,7 +617,7 @@ export default function SkillsTab() {
   };
 
   const handleDelete = async () => {
-    if (!selectedId) return;
+    if (!selectedId || draft.id !== selectedId) return;
 
     const confirmed = window.confirm(
       'Delete this skill? This action cannot be undone.',
@@ -763,6 +772,10 @@ export default function SkillsTab() {
 
   const revisions =
     history && history.skillId === selectedId ? history.revisions : [];
+
+  // The editor is usable only when the draft on screen is the selected
+  // skill's own, loaded detail.
+  const draftReady = !isLoadingDetail && draft.id === selectedId;
 
   // Shipped skills belong to the application: every write is refused, so the
   // editor shows them read-only instead of offering controls that fail.
@@ -988,6 +1001,7 @@ export default function SkillsTab() {
                       <input
                         type="checkbox"
                         checked={!!selectedSummary?.allow_autonomous_edit}
+                        disabled={!draftReady}
                         onChange={(event) =>
                           handleToggleAutonomousEdit(event.target.checked)
                         }
@@ -1003,7 +1017,8 @@ export default function SkillsTab() {
                     <label className="inline-flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
                       <input
                         type="checkbox"
-                        checked={draft.enabled}
+                        checked={draftReady && draft.enabled}
+                        disabled={!draftReady}
                         onChange={(event) =>
                           handleToggleEnabled(event.target.checked)
                         }
@@ -1052,6 +1067,11 @@ export default function SkillsTab() {
               {isLoadingDetail ? (
                 <div className="text-sm text-[var(--color-text-muted)]">
                   Loading skill details...
+                </div>
+              ) : !draftReady ? (
+                <div className="text-sm text-[var(--color-text-muted)]">
+                  Skill details are unavailable. Select the skill again to
+                  retry.
                 </div>
               ) : (
                 <>
@@ -1115,7 +1135,7 @@ export default function SkillsTab() {
                 {!isShipped && (
                   <button
                     onClick={handleSave}
-                    disabled={status === 'loading' || isLoadingDetail}
+                    disabled={status === 'loading' || !draftReady}
                     className="inline-flex items-center gap-2 rounded-md bg-[var(--color-accent-primary)] px-4 py-2 text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
                   >
                     <Save className="h-4 w-4" />
@@ -1125,7 +1145,7 @@ export default function SkillsTab() {
 
                 <button
                   onClick={handleDownload}
-                  disabled={status === 'loading' || isLoadingDetail}
+                  disabled={status === 'loading' || !draftReady}
                   className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border-primary)] px-4 py-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] disabled:opacity-50"
                 >
                   <Download className="h-4 w-4" />
@@ -1135,7 +1155,7 @@ export default function SkillsTab() {
                 {!isShipped && (
                   <button
                     onClick={handleToggleHistory}
-                    disabled={isLoadingDetail}
+                    disabled={!draftReady}
                     aria-expanded={showHistory}
                     className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border-primary)] px-4 py-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] disabled:opacity-50"
                   >
@@ -1147,7 +1167,7 @@ export default function SkillsTab() {
                 {!isShipped && (
                   <button
                     onClick={handleDelete}
-                    disabled={status === 'loading'}
+                    disabled={status === 'loading' || !draftReady}
                     className="inline-flex items-center gap-2 rounded-md border border-red-500/50 px-4 py-2 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
                   >
                     <Trash2 className="h-4 w-4" />
