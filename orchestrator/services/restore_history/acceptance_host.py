@@ -1,9 +1,10 @@
 """Explicit isolated authenticated acceptance host, never selected by startup.
 
-Borrows actual A/W pools; owns two H coordinators and every admitted child.
-The caller closes borrowed pools only after aclose has settled. No queue,
-provider, native publication profile, worker, environment selector or recovery
-writer is installed here. The chat stream observes queued acceptance metadata,
+Borrows actual A/W pools; owns its H coordinators and every admitted child.
+The caller closes borrowed pools only after aclose has settled. The default
+construction accepts and observes only; an explicitly supplied text composition
+owns original runner jobs. Neither construction selects production startup,
+a queue or a recovery writer. The chat stream remains acceptance metadata,
 not an answer/progress/output pipeline.
 """
 
@@ -32,7 +33,12 @@ from orchestrator.auth_tokens import hash_token
 from orchestrator.daemon import new_request_id, stream_with_keepalives
 from orchestrator.models import ChatRequest
 from orchestrator.request_body_limit import RequestBodyLimitMiddleware
-from orchestrator.routes.tasks import IDEMPOTENCY_KEY_PATTERN, TaskOut, historical_task_out
+from orchestrator.routes.tasks import (
+    IDEMPOTENCY_KEY_PATTERN,
+    CancelOut,
+    TaskOut,
+    historical_task_out,
+)
 from orchestrator.services.account_control.guard import WriteGuardRefusal, capture_generation
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.session_cleanup import lock_session_cleanup
@@ -45,7 +51,10 @@ from orchestrator.tasks.store import (
     IdempotencyConflict,
     TaskNotFound,
     TaskStore,
+    CancelAuthorizationExpectation,
+    CancelOutcome,
 )
+from orchestrator.services.account_control.transaction import ObservationBlocked
 
 from .composition import HistoryAcceptance
 from .coordination import HistoryCoordinator
@@ -55,6 +64,8 @@ from .observation import HistoricalObservation, HistoryObservation
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import TerminalHistoryProjection
+from .text_execution import HistoryTextExecution
+from .model import AcceptPrepare
 
 T = TypeVar("T")
 HEADERS = {"Cache-Control": "no-store"}
@@ -90,6 +101,7 @@ class IsolatedAcceptanceHost:
         fingerprint_key: str,
         max_body_bytes: int,
         keepalive_s: float,
+        execution: HistoryTextExecution | None = None,
     ) -> None:
         if (
             type(acceptance) is not HistoryAcceptance
@@ -104,6 +116,7 @@ class IsolatedAcceptanceHost:
         ):
             raise HistoryError("isolated_host_refused")
         self._acceptance, self._reader = acceptance, observation
+        self._execution = execution
         self._fingerprint_key = fingerprint_key
         self._max_body_bytes, self._keepalive_s = max_body_bytes, keepalive_s
         self._pid = os.getpid()
@@ -162,6 +175,19 @@ class IsolatedAcceptanceHost:
         ):
             raise HistoryError("isolated_host_refused")
         self._acceptance._projection.expected.verify_key(self._acceptance._key)
+        execution = self._execution
+        if execution is not None and (
+            type(execution) is not HistoryTextExecution
+            or type(ap) is not TerminalHistoryProjection
+            or execution.pool is not w._pool
+            or execution.encryption is not w._enc
+            or execution.projection is not ap
+            or execution.history in (acceptance._history, observation._history)
+            or execution.history._path != acceptance._history._path
+            or execution.history._expected != ap.expected
+            or execution.history.profile != "terminal-v3"
+        ):
+            raise HistoryError("isolated_host_refused")
 
     def _bind(self) -> None:
         if os.getpid() != self._pid:
@@ -227,6 +253,8 @@ class IsolatedAcceptanceHost:
                     await self._acceptance._projection.qualify(
                         conn, writing=True, deadline=deadline
                     )
+        if self._execution is not None:
+            await self._execution.open(deadline=deadline)
 
     def _admit(self, deadline: float) -> None:
         self._bind()
@@ -311,6 +339,18 @@ class IsolatedAcceptanceHost:
                 422, {"code": "invalid_idempotency_key", "message": "Invalid key"}, headers=HEADERS
             )
         value = payload.model_copy(deep=True)
+        if self._execution is not None:
+            latest = next(
+                (m for m in reversed(value.messages or []) if m.get("role") == "user"), None
+            )
+            if (
+                value.model not in (None, "auto")
+                or value.provider is not None
+                or value.metadata
+                or value.research_effort == "research"
+                or (latest is not None and latest.get("model") not in (None, "", "auto"))
+            ):
+                raise _unavailable()
         if (
             value.attachments
             or value.suggestion_id is not None
@@ -327,6 +367,9 @@ class IsolatedAcceptanceHost:
         _check_time(deadline)
         if self._acceptance._blocked or self._acceptance._history._blocked:
             raise _unavailable()
+        if self._execution is not None and result.task.created:
+            # Only the original NEW receipt, after native/auth/reset/H cleanup.
+            self._execution.schedule(result.task.task_id)
         return result
 
     async def _submit(
@@ -388,6 +431,9 @@ class IsolatedAcceptanceHost:
                         "provider": payload.provider,
                         "disable_memory_write": bool(payload.disable_memory_write),
                     }
+                    if self._execution is not None:
+                        task_input["_history_text_only"] = True
+                        task_input["auto_route"] = True
                     for name in ("answer_detail", "research_effort"):
                         if getattr(payload, name) is not None:
                             task_input[name] = getattr(payload, name)
@@ -411,6 +457,78 @@ class IsolatedAcceptanceHost:
             # W auth transaction and A's actual reset have settled; outer scope
             # still owns W holder reset, filesystem work and H release.
         return _Submission(accepted, auth)
+
+    async def cancel(
+        self, authorization: str | None, task: UUID, *, deadline: float
+    ) -> CancelOutcome:
+        self._admit(deadline)
+        if self._execution is None:
+            raise _unavailable()
+        token = _extract_bearer_token(authorization)
+        if token is None:
+            raise HTTPException(401, "Missing or invalid authorization header", headers=HEADERS)
+        try:
+            result = await self._run(self._cancel(token, task, deadline), deadline, writing=True)
+        except BaseException:
+            self._execution.block()
+            raise
+        if isinstance(result, HTTPException):
+            raise result
+        return result
+
+    async def _cancel(self, token: str, task: UUID, deadline: float):
+        execution = self._execution
+        assert execution is not None and execution.effects is not None
+        effects = execution.effects
+        effects._admission_deadline(deadline)
+        effects._projection.expected.verify_key(self._acceptance._key)
+        async with (
+            effects._history.operation(deadline=deadline) as operation,
+            retain_pool_cleanup(),
+        ):
+            state = await effects._parity(operation, deadline)
+            async with pool_connection(execution.pool) as conn:
+                if conn.is_in_transaction():
+                    raise HistoryError("auth_transaction_owner_refused")
+                async with conn.transaction(isolation="read_committed"):
+                    auth = await self._auth(conn, token, deadline)
+                    if auth is None:
+                        return HTTPException(
+                            status_code=401,
+                            detail="Invalid or expired access token",
+                            headers=HEADERS,
+                        )
+                    if not any(
+                        type(e.command.data) is AcceptPrepare
+                        and e.command.data.task_id == task
+                        and e.command.data.account_id == auth.user_id
+                        for e in state.entries
+                    ):
+                        return HTTPException(404, "Task not found", headers=HEADERS)
+                    expected = CancelAuthorizationExpectation(
+                        auth.user_id,
+                        auth.device_id,
+                        auth.session_id,
+                        hash_token(token),
+                        operation,
+                        conn,
+                        asyncio.current_task(),
+                    )
+                    try:
+                        result = await effects._cancel_owned(
+                            operation, auth.user_id, task, deadline, expected
+                        )
+                    except ObservationBlocked as error:
+                        if error.code == "cancel_authorization_expired":
+                            return HTTPException(
+                                status_code=401,
+                                detail="Invalid or expired access token",
+                                headers=HEADERS,
+                            )
+                        raise
+            _check_time(deadline)
+        _check_time(deadline)
+        return result
 
     async def lookup(
         self, authorization: str | None, client_key: str, *, deadline: float
@@ -463,8 +581,8 @@ class IsolatedAcceptanceHost:
                 {"conversation_id": str(snapshot.conversation_id)},
                 evt_id="evt_conversation",
             )
-            # No execution graph is installed. Keep the existing accepted task
-            # stream open, but never manufacture tokens, progress or done frames.
+            # Keep the acceptance-only stream contract even when an explicit
+            # executor runs the task; never manufacture output or done frames.
             while not self._closing:
                 await asyncio.sleep(2)
                 observed = await self.lookup(
@@ -497,6 +615,9 @@ class IsolatedAcceptanceHost:
                 except BaseException as error:
                     if first is None:
                         first = error
+        if self._execution is not None:
+            # No H/pool close under an outstanding runner/native cleanup owner.
+            await self._execution.aclose(deadline=deadline)
         for owner in (self._reader._history, self._acceptance._history):
             try:
                 await owner.aclose(deadline=deadline)
@@ -616,5 +737,25 @@ def create_isolated_acceptance_app(host: IsolatedAcceptanceHost) -> FastAPI:
         except Exception:
             raise _unavailable() from None
         return historical_task_out(observed)
+
+    if host._execution is not None:
+
+        @app.post("/tasks/{task_id}/cancel", response_model=CancelOut)
+        async def cancel(task_id: UUID, request: Request) -> CancelOut:
+            try:
+                outcome = await host.cancel(
+                    request.headers.get("Authorization"), task_id, deadline=time.monotonic() + 5
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                raise _unavailable() from None
+            if not outcome.accepted:
+                raise HTTPException(409, {"code": "task_finished", "status": outcome.status.value})
+            return CancelOut(
+                id=task_id,
+                status=outcome.status.value,
+                cancel_requested=outcome.status.value == "running",
+            )
 
     return app

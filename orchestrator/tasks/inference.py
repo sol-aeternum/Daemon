@@ -342,6 +342,11 @@ class InferenceRecovery:
         self, identity: AttemptIdentity, reservation: UUID, state: InferenceInvocation
     ) -> None:
         """Fresh own committed binding only. No returned/cached bearer permit."""
+        from orchestrator.tasks._history_binding import text_only_execution
+
+        if text_only_execution():
+            state.block("history_mark_required")
+            state.require_effect()
         await self._mark_with_stage(identity, reservation, state, stage=None)
 
     async def _mark_with_stage(

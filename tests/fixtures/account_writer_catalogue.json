@@ -769,6 +769,42 @@
   },
   "writer_sites": [
     {
+      "owner_source": "orchestrator.services.restore_history.acceptance_host",
+      "qualname": "IsolatedAcceptanceHost._open",
+      "kind": "filesystem_write",
+      "line_hint": 257,
+      "fingerprint": "a4c1a02061d0a934",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit optional text-composition open delegates H/native qualification. RAM active/job ownership is not scanner coverage; no completed account fence or new guard contract is claimed. Conservative wrapper candidate, deferred and uncovered; production startup remains unselected."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.text_execution",
+      "qualname": "HistoryTextExecution.open",
+      "kind": "filesystem_write",
+      "line_hint": 72,
+      "fingerprint": "01fa74d5e4c9bcc5",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Explicit terminal-v3 history open and original W qualification; conservative filesystem wrapper candidate. Isolated synthetic qualification does not complete account deletion, retention or restore fencing."
+    },
+    {
+      "owner_source": "orchestrator.tasks.runner",
+      "qualname": "run_chat_task",
+      "kind": "store_write",
+      "line_hint": 1220,
+      "fingerprint": "73536733bd9e5167",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Scanner observes required_history.set: a private negative ContextVar requirement, not a database write or dispatch permit. Retained as an uncovered conservative candidate; no new account-fence claim."
+    },
+    {
       "owner_source": "orchestrator.memory.injection",
       "qualname": "gather_memory_context_inputs",
       "kind": "filesystem_write",

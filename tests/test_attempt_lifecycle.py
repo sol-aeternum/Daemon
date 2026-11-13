@@ -30,7 +30,7 @@ def imports_lifecycle(text):
     )
 
 
-def assert_history_identity_only(text, *, native_context=False):
+def assert_history_identity_only(text, *, native_context=False, recovery_registration=False):
     """Only H's exact data-type import; no lifecycle consumer or activation."""
     tree = ast.parse(text)
     imports = [
@@ -66,10 +66,133 @@ def assert_history_identity_only(text, *, native_context=False):
                 or context_field
             )
         if isinstance(node, ast.Call):
-            assert not (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"register", "close", "readback"}
+            lifecycle_consumer = isinstance(node.func, ast.Attribute) and node.func.attr in {
+                "register",
+                "close",
+                "readback",
+            }
+            if lifecycle_consumer:
+                # Only the reviewed H-owned wrapper may call the ORIGINAL native
+                # recovery registration. No direct lifecycle API or other consumer.
+                assert recovery_registration
+                assert ast.unparse(node) == "recovery.register(identity, shared)"
+                owner = parents.get(node)
+                assert isinstance(owner, ast.Await)
+                while owner is not None and not isinstance(owner, ast.AsyncWith):
+                    owner = parents.get(owner)
+                assert owner is not None and len(owner.items) == 1
+                assert (
+                    ast.unparse(owner.items[0].context_expr)
+                    == "self._attempt_operation(binding, deadline)"
+                )
+                function = parents.get(owner)
+                assert isinstance(function, ast.AsyncFunctionDef)
+                assert function.name == "_register_attempt"
+                assignments = [
+                    value
+                    for value in ast.walk(function)
+                    if isinstance(value, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name) and target.id == "recovery"
+                        for target in value.targets
+                    )
+                ]
+                assert len(assignments) == 1
+                assert ast.unparse(assignments[0]) == "recovery = self._tasks._inference"
+
+
+def assert_compute_binding_identity_only(text):
+    """One type-checking-only data field, never a lifecycle consumer."""
+    tree = ast.parse(text)
+    owners = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+    ]
+    assert len(owners) == 1
+    imports = [
+        node
+        for node in owners[0].body
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module == "orchestrator.attempt_lifecycle"
+        and [(item.name, item.asname) for item in node.names] == [("AttemptIdentity", None)]
+    ]
+    assert len(imports) == 1
+    owners[0].body.remove(imports[0])
+    if not owners[0].body:
+        owners[0].body.append(ast.Pass())
+    remaining = ast.unparse(tree)
+    assert not imports_lifecycle(remaining) and "attempt_lifecycle" not in remaining
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "AttemptIdentity":
+            parent = parents[node]
+            container = parents.get(parent)
+            assert (
+                isinstance(parent, ast.AnnAssign)
+                and parent.annotation is node
+                and isinstance(parent.target, ast.Name)
+                and parent.target.id == "identity"
+                and isinstance(container, ast.ClassDef)
+                and container.name == "ComputeHistoryBinding"
             )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            assert node.func.attr not in {"register", "close", "readback"}
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "AttemptIdentity(a,b,c,d,e,f,g,h)",
+        "Alias=AttemptIdentity",
+        "consumer.register(value)",
+        "consumer.close(value)",
+        "consumer.readback(value)",
+        "__import__('orchestrator.attempt_lifecycle')",
+        "class Other:\n identity: AttemptIdentity",
+        "class ComputeHistoryBinding:\n other: AttemptIdentity",
+        "from orchestrator.attempt_lifecycle import assert_open",
+    ],
+)
+def test_compute_binding_identity_exception_cannot_activate_lifecycle(extra):
+    good = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n from orchestrator.attempt_lifecycle import AttemptIdentity\n"
+        "class ComputeHistoryBinding:\n identity: AttemptIdentity\n"
+    )
+    assert_compute_binding_identity_only(good)
+    with pytest.raises(AssertionError):
+        assert_compute_binding_identity_only(good + extra)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ("recovery.register(identity, shared)", "other.register(identity, shared)"),
+        ("recovery.register(identity, shared)", "recovery.register(identity, replacement)"),
+        ("recovery.register(identity, shared)", "recovery.close(identity, shared)"),
+        ("self._tasks._inference", "other_recovery"),
+        ("_register_attempt", "other_owner"),
+        ("self._attempt_operation(binding, deadline)", "other_operation(binding, deadline)"),
+    ],
+)
+def test_history_registration_exception_is_exact_original_owned_call(change):
+    good = (
+        "from orchestrator.attempt_lifecycle import AttemptIdentity\n"
+        "class HistoryEffects:\n"
+        " async def _register_attempt(self,binding,identity: AttemptIdentity,shared,deadline):\n"
+        "  async with self._attempt_operation(binding, deadline):\n"
+        "   recovery = self._tasks._inference\n"
+        "   await recovery.register(identity, shared)\n"
+    )
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good)
+    assert_history_identity_only(good, recovery_registration=True)
+    with pytest.raises(AssertionError):
+        assert_history_identity_only(good.replace(*change), recovery_registration=True)
 
 
 @pytest.mark.parametrize(
@@ -274,7 +397,9 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                     for n in ast.walk(ast.parse(text))
                 )
                 continue
-            if path.relative_to(root).as_posix() in {
+            if path.relative_to(root).as_posix() == "orchestrator/tasks/_history_binding.py":
+                assert_compute_binding_identity_only(text)
+            elif path.relative_to(root).as_posix() in {
                 "orchestrator/services/restore_history/effects.py",
                 "orchestrator/services/restore_history/native_publication.py",
             }:
@@ -282,6 +407,8 @@ def test_no_importers_dynamic_callers_or_import_time_io(monkeypatch):
                     text,
                     native_context=path.relative_to(root).as_posix()
                     == "orchestrator/services/restore_history/native_publication.py",
+                    recovery_registration=path.relative_to(root).as_posix()
+                    == "orchestrator/services/restore_history/effects.py",
                 )
             else:
                 assert not imports_lifecycle(text), str(path)

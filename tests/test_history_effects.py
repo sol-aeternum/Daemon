@@ -57,7 +57,12 @@ def test_only_exact_type_import_is_permitted_without_consumer_admission():
     "method,owner,native,path",
     [
         ("_mark_with_stage", "_mark", "mark", "orchestrator/tasks/inference.py"),
-        ("_request_cancel_with_stage", "_cancel", "request_cancel", "orchestrator/tasks/store.py"),
+        (
+            "_request_cancel_with_stage",
+            "_cancel_owned",
+            "request_cancel",
+            "orchestrator/tasks/store.py",
+        ),
     ],
 )
 def test_effect_staging_seams_allow_only_default_none_and_exact_uncalled_join(
@@ -69,7 +74,10 @@ def test_effect_staging_seams_allow_only_default_none_and_exact_uncalled_join(
     assert composition_violations({path: ordinary.replace("stage=None", "stage=hook")})
     receiver = "recovery" if native == "mark" else "self._tasks"
     joined_args = "identity,reservation,invocation_state" if native == "mark" else "account,task"
-    joined = f"async def {owner}(self):\n await {receiver}.{method}({joined_args},stage=stage)"
+    extra = ",authorization=authorization" if native == "request_cancel" else ""
+    joined = (
+        f"async def {owner}(self):\n await {receiver}.{method}({joined_args},stage=stage{extra})"
+    )
     assert composition_violations({EFFECTS: joined}) == []
     for changed in (
         joined.replace("stage=stage", "stage=hook"),

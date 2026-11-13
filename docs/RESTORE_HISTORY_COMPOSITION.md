@@ -1,17 +1,21 @@
 # Acceptance composition — isolated source slice
 
-## Explicit isolated authenticated acceptance host
+## Default isolated authenticated acceptance host
 
 `IsolatedAcceptanceHost` / `create_isolated_acceptance_app` in
 `orchestrator/services/restore_history/acceptance_host.py` are explicitly
 constructed qualification adapters, never selected by startup. Constructors do
-no I/O. The host borrows distinct actual A/W stores/pools with the same encryption
+no I/O. This section describes the default, **acceptance-only** construction with
+no execution collaborator. The optional original-runner text composition is
+documented separately in [ISOLATED_TEXT_EXECUTION.md](ISOLATED_TEXT_EXECUTION.md);
+its qualification does not select production execution. The host borrows
+distinct actual A/W stores/pools with the same encryption
 and independent H identity/K1. It owns separate writer/read coordinators: open
 before requests, drain aclose before closing borrowed pools, reconstruct all
 owners/pools for in-process reconstruction. This does not prove process restart.
 No blocked writer/read owner is renewed automatically.
 
-Only isolated `POST /chat` and existing `GET /tasks/by-key/{key}` are installed.
+By default, only isolated `POST /chat` and existing `GET /tasks/by-key/{key}` are installed.
 POST uses ChatRequest, a mandatory existing-format stable key, the task-ID header
 and existing task/conversation SSE acceptance frames. It emits no tokens, progress
 or completion. The stream stays open while qualified by-key reads still show
@@ -65,7 +69,7 @@ there is no schema/profile fallback. All acceptance, observation and startup
 qualification comparisons use the selected profile and full mixed-history pages.
 Inherited acceptance staging retains unchanged v1 frames in terminal-v3 chains.
 No queue wakeup, attempt, provider/search/tool call, output or memory extraction
-is installed. Accepted queued work is not dispatch authority. Answer/CSV delivery
+is installed by this default construction. Accepted queued work is not dispatch authority. Answer/CSV delivery
 still requires authenticated Send/Stop/output composition, original attempt
 authority and restart fencing. Production observation-only startup, worker refusal,
 grants and deployment gates are unchanged. #477 stays open.

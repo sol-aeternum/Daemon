@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import time
 from collections.abc import Callable, Coroutine
+from contextlib import asynccontextmanager
 from typing import Any, Literal, TypeVar
 from uuid import UUID, uuid4
 
@@ -26,9 +27,20 @@ from orchestrator.attempt_lifecycle import AttemptIdentity
 from orchestrator.resource_csv import encode_csv
 from orchestrator.resource_store import ReservedOutputPublisher, Publication
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
-from orchestrator.tasks._invocation import InferenceInvocation, block
+from orchestrator.tasks._invocation import InferenceInvocation, block, invocation
 from orchestrator.tasks.inference import InferenceRecovery
-from orchestrator.tasks.store import CancelOutcome, Claim, TaskStore, TaskControlled
+from orchestrator.tasks.store import (
+    CancelOutcome,
+    Claim,
+    ControlledClaim,
+    OriginalTaskExpectation,
+    CancelAuthorizationExpectation,
+    TaskStore,
+    TaskControlled,
+    TaskQuarantined,
+    Heartbeat,
+)
+from orchestrator.tasks.states import RetryCause
 from orchestrator.tasks.states import TaskStatus
 
 from .coordination import HistoryCoordinator, HistoryOperation
@@ -186,6 +198,273 @@ class HistoryEffects:
             for e in state.entries
         ):
             raise HistoryError("historical_terminal", uncertain=True)
+
+    def _worker_history(self, state: Any, binding: Claim, *, negative: bool = False) -> None:
+        accepted = self._accepted(state, binding.user_id, binding.task_id)
+        if (
+            binding.origin.account_id,
+            binding.origin.generation,
+            binding.conversation_id,
+            binding.user_message_id,
+            binding.result_message_id,
+            binding.inference_covered,
+        ) != (
+            accepted.account_id,
+            accepted.account_generation,
+            accepted.conversation_id,
+            accepted.user_message_id,
+            accepted.result_message_id,
+            True,
+        ):
+            raise HistoryError("effects_origin_refused")
+        if not negative:
+            self._no_stop(state, binding.task_id)
+        elif any(
+            type(e.command.data) is TerminalOutputPrepare
+            and e.command.data.task_id == binding.task_id
+            for e in state.entries
+        ):
+            raise HistoryError("historical_terminal", uncertain=True)
+        shared = invocation.get()
+        if shared is None:
+            raise HistoryError("effects_invocation_required")
+        shared.require_effect()
+        owned = self._owned_sends.get(id(shared))
+        if any(
+            type(e.command.data) is SendPossible
+            and e.command.data.task_id == binding.task_id
+            and (owned is None or e.command.record_id not in owned[1])
+            for e in state.entries
+        ):
+            raise HistoryError("historical_send", uncertain=True)
+
+    @asynccontextmanager
+    async def _attempt_operation(self, binding: Claim, deadline: float, *, negative: bool = False):
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            self._worker_history(state, binding, negative=negative)
+            yield state
+            _check_time(deadline)
+        _check_time(deadline)
+
+    async def claim(self, task: UUID, *, worker_id: str, lease_s: float, deadline: float):
+        result = await self._run(
+            lambda limit: self._claim(task, worker_id, lease_s, limit), deadline
+        )
+        if isinstance(result, ControlledClaim):
+            if result.inference_quarantine:
+                raise TaskQuarantined(result.status)
+            raise TaskControlled(result.status)
+        return result
+
+    async def _claim(self, task: UUID, worker_id: str, lease_s: float, deadline: float):
+        shared = invocation.get()
+        if shared is None:
+            raise HistoryError("effects_invocation_required")
+        shared.require_effect()
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            matches = [
+                e.command.data
+                for e in state.entries
+                if type(e.command.data) is AcceptPrepare and e.command.data.task_id == task
+            ]
+            if len(matches) != 1:
+                raise HistoryError("effects_acceptance_refused")
+            accepted = matches[0]
+            self._no_stop(state, task)
+            if any(
+                type(e.command.data) is SendPossible and e.command.data.task_id == task
+                for e in state.entries
+            ):
+                raise HistoryError("historical_send", uncertain=True)
+            expected = OriginalTaskExpectation(
+                accepted.account_id,
+                accepted.account_generation,
+                task,
+                accepted.conversation_id,
+                accepted.user_message_id,
+                accepted.result_message_id,
+                True,
+            )
+            result = await self._tasks._claim(
+                task, worker_id=worker_id, lease_s=lease_s, expected=expected
+            )
+            _check_time(deadline)
+        _check_time(deadline)
+        return result
+
+    async def settle_old_holds(self, task: UUID, *, deadline: float) -> int:
+        return await self._run(lambda limit: self._settle_old_holds(task, limit), deadline)
+
+    async def _settle_old_holds(self, task: UUID, deadline: float) -> int:
+        from orchestrator.tasks.runner import settle_lost_attempt_holds
+
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            row = await self._tasks._pool.fetchrow("SELECT * FROM tasks WHERE id=$1", task)
+            if row is None:
+                raise HistoryError("effects_origin_refused")
+            origin = self._tasks._origin(row)
+            accepted = self._accepted(state, origin.account_id, task)
+            if (
+                origin.generation,
+                row["conversation_id"],
+                row["user_message_id"],
+                row["result_message_id"],
+                self._tasks._covered(row),
+            ) != (
+                accepted.account_generation,
+                accepted.conversation_id,
+                accepted.user_message_id,
+                accepted.result_message_id,
+                True,
+            ):
+                raise HistoryError("effects_origin_refused")
+            result = await settle_lost_attempt_holds(self._tasks, self._tasks._pool, task)
+            _check_time(deadline)
+        _check_time(deadline)
+        return result
+
+    async def register_attempt(
+        self,
+        binding: Claim,
+        identity: AttemptIdentity,
+        shared: InferenceInvocation,
+        *,
+        deadline: float,
+    ) -> None:
+        await self._run(
+            lambda limit: self._register_attempt(binding, identity, shared, limit), deadline
+        )
+
+    async def _register_attempt(
+        self,
+        binding: Claim,
+        identity: AttemptIdentity,
+        shared: InferenceInvocation,
+        deadline: float,
+    ) -> None:
+        async with self._attempt_operation(binding, deadline):
+            if (identity.account_id, identity.generation, identity.task_id, identity.epoch) != (
+                binding.user_id,
+                binding.origin.generation,
+                binding.task_id,
+                binding.epoch,
+            ) or shared is not invocation.get():
+                raise HistoryError("effects_origin_refused")
+            await self._tasks.record_compute_scope(
+                binding.task_id, binding.epoch, identity.financial_scope_id, binding=binding
+            )
+            recovery = self._tasks._inference
+            assert recovery is not None
+            await recovery.register(identity, shared)
+
+    async def begin_execution(
+        self, binding: Claim, scope: UUID, prompt_version: str, *, deadline: float
+    ) -> int:
+        return await self._run(
+            lambda limit: self._begin_execution(binding, scope, prompt_version, limit), deadline
+        )
+
+    async def _begin_execution(
+        self, binding: Claim, scope: UUID, version: str, deadline: float
+    ) -> int:
+        async with self._attempt_operation(binding, deadline):
+            return await self._tasks.begin_execution(
+                binding.task_id, binding.epoch, scope, prompt_version=version, binding=binding
+            )
+
+    async def heartbeat(self, binding: Claim, lease_s: float, *, deadline: float) -> Heartbeat:
+        return await self._run(lambda limit: self._heartbeat(binding, lease_s, limit), deadline)
+
+    async def _heartbeat(self, binding: Claim, lease_s: float, deadline: float) -> Heartbeat:
+        async with self._attempt_operation(binding, deadline, negative=True) as state:
+            if any(
+                type(e.command.data) is StopIntent and e.command.data.task_id == binding.task_id
+                for e in state.entries
+            ):
+                return await self._tasks.observe_attempt(binding)
+            return await self._tasks.heartbeat(
+                binding.task_id, binding.epoch, lease_s=lease_s, binding=binding
+            )
+
+    async def finish_refusal(self, binding: Claim, reason: str, *, deadline: float) -> TaskStatus:
+        return await self._run(lambda limit: self._finish_refusal(binding, reason, limit), deadline)
+
+    async def _finish_refusal(self, binding: Claim, reason: str, deadline: float) -> TaskStatus:
+        async with self._attempt_operation(binding, deadline, negative=True):
+            return await self._tasks.finish_refusal(
+                binding.task_id, binding.epoch, binding=binding, reason=reason
+            )
+
+    async def acknowledge_cancel(self, binding: Claim, *, deadline: float) -> TaskStatus:
+        return await self._run(lambda limit: self._acknowledge_cancel(binding, limit), deadline)
+
+    async def _acknowledge_cancel(self, binding: Claim, deadline: float) -> TaskStatus:
+        async with self._attempt_operation(binding, deadline, negative=True):
+            return await self._tasks.acknowledge_cancel(
+                binding.task_id, binding.epoch, binding=binding
+            )
+
+    async def defer_claim(self, binding: Claim, delay: float, reason: str, *, deadline: float):
+        return await self._run(
+            lambda limit: self._defer_claim(binding, delay, reason, limit), deadline
+        )
+
+    async def _defer_claim(self, binding: Claim, delay: float, reason: str, deadline: float):
+        async with self._attempt_operation(binding, deadline):
+            return await self._tasks.defer_claim(
+                binding.task_id, binding.epoch, delay_s=delay, reason=reason, binding=binding
+            )
+
+    async def defer_execution(
+        self,
+        binding: Claim,
+        delay: float,
+        reason: str,
+        max_wait: float,
+        before_dispatch: bool = False,
+        *,
+        deadline: float,
+    ):
+        return await self._run(
+            lambda limit: self._defer_execution(
+                binding, delay, reason, max_wait, before_dispatch, limit
+            ),
+            deadline,
+        )
+
+    async def _defer_execution(
+        self,
+        binding: Claim,
+        delay: float,
+        reason: str,
+        max_wait: float,
+        before_dispatch: bool,
+        deadline: float,
+    ):
+        async with self._attempt_operation(binding, deadline):
+            return await self._tasks.defer_execution(
+                binding.task_id,
+                binding.epoch,
+                delay_s=delay,
+                reason=reason,
+                max_wait_s=max_wait,
+                before_dispatch=before_dispatch,
+                binding=binding,
+            )
+
+    async def fail_attempt(self, binding: Claim, cause: RetryCause, code: str, *, deadline: float):
+        return await self._run(
+            lambda limit: self._fail_attempt(binding, cause, code, limit), deadline
+        )
+
+    async def _fail_attempt(self, binding: Claim, cause: RetryCause, code: str, deadline: float):
+        async with self._attempt_operation(binding, deadline):
+            return await self._tasks.fail_attempt(
+                binding.task_id, binding.epoch, cause=cause, error_code=code, binding=binding
+            )
 
     async def prepare_output(
         self,
@@ -538,33 +817,52 @@ class HistoryEffects:
 
     async def _cancel(self, account: UUID, task: UUID, deadline: float) -> CancelOutcome:
         async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
-            state = await self._parity(operation, deadline)
-            accepted = self._accepted(state, account, task)
-            self._no_stop(state, task, positive=False)
-
-            async def stage(conn: Any, row: Any, outcome: CancelOutcome) -> None:
-                origin = self._tasks._origin(row)
-                if (
-                    origin.account_id != accepted.account_id
-                    or origin.generation != accepted.account_generation
-                    or not outcome.accepted
-                ):
-                    raise HistoryError("effects_origin_refused")
-                prepared = await operation.append(
-                    Command(
-                        uuid4(), StopIntent(account, accepted.account_generation, task, "owner")
-                    )
-                )
-                if (
-                    not prepared.created
-                    or not (
-                        await self._projection.stage_effect(conn, prepared.entry, deadline=deadline)
-                    ).inserted
-                ):
-                    raise HistoryError("historical_stop", uncertain=True)
-
-            result = await self._tasks._request_cancel_with_stage(account, task, stage=stage)
+            result = await self._cancel_owned(operation, account, task, deadline)
             _check_time(deadline)
+        _check_time(deadline)
+        return result
+
+    async def _cancel_owned(
+        self,
+        operation: HistoryOperation,
+        account: UUID,
+        task: UUID,
+        deadline: float,
+        authorization: CancelAuthorizationExpectation | None = None,
+    ) -> CancelOutcome:
+        operation._check()
+        if operation._coordinator is not self._history:
+            raise HistoryError("invalid_operation")
+        if authorization is not None:
+            authorization.require_owned(self._tasks._pool)
+            if authorization.operation is not operation or authorization.account != account:
+                raise HistoryError("effects_origin_refused")
+        state = await self._parity(operation, deadline)
+        accepted = self._accepted(state, account, task)
+        self._no_stop(state, task, positive=False)
+
+        async def stage(conn: Any, row: Any, outcome: CancelOutcome) -> None:
+            origin = self._tasks._origin(row)
+            if (
+                origin.account_id != accepted.account_id
+                or origin.generation != accepted.account_generation
+                or not outcome.accepted
+            ):
+                raise HistoryError("effects_origin_refused")
+            prepared = await operation.append(
+                Command(uuid4(), StopIntent(account, accepted.account_generation, task, "owner"))
+            )
+            if (
+                not prepared.created
+                or not (
+                    await self._projection.stage_effect(conn, prepared.entry, deadline=deadline)
+                ).inserted
+            ):
+                raise HistoryError("historical_stop", uncertain=True)
+
+        result = await self._tasks._request_cancel_with_stage(
+            account, task, stage=stage, authorization=authorization
+        )
         _check_time(deadline)
         return result
 
@@ -647,6 +945,10 @@ class HistoryEffects:
     ) -> None:
         async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
             state = await self._parity(operation, deadline)
+            from orchestrator.tasks._history_binding import required_history
+
+            if required_history.get() is not None:
+                self._worker_history(state, binding)
             accepted = self._accepted(state, binding.origin.account_id, task)
             if accepted.account_generation != binding.origin.generation:
                 raise HistoryError("effects_origin_refused")
@@ -687,6 +989,10 @@ class HistoryEffects:
     ) -> TaskStatus:
         async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
             state = await self._parity(operation, deadline)
+            from orchestrator.tasks._history_binding import required_history
+
+            if required_history.get() is not None:
+                self._worker_history(state, binding)
             accepted = self._accepted(state, binding.origin.account_id, task)
             if accepted.account_generation != binding.origin.generation:
                 raise HistoryError("effects_origin_refused")
