@@ -710,10 +710,13 @@ TITLE_GUARD_IMPORTS = {
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
     },
     # Explicit isolated acceptance captures once on W; native A retains its
-    # original guard. No journal/request/phase APIs or default installation.
+    # original guard. Bounded UI reads retain the original-generation guard.
+    # No journal/request/phase APIs or default installation.
     "orchestrator/services/restore_history/acceptance_host.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
         ("orchestrator.services.account_control.guard", "capture_generation"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
         ("orchestrator.services.account_control.transaction", "ObservationBlocked"),
     },
     # Approved historical observation reuses the original-generation read
@@ -926,6 +929,26 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
 @pytest.mark.parametrize(
     "path,extra",
     [
+        (
+            "orchestrator/services/restore_history/acceptance_host.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/services/restore_history/acceptance_host.py",
+            "from orchestrator.services.account_control.transaction import control_transaction",
+        ),
+        (
+            "orchestrator/services/restore_history/acceptance_host.py",
+            "from orchestrator.services.account_control.guard import Connection",
+        ),
+        (
+            "orchestrator/services/restore_history/unapproved.py",
+            "from orchestrator.services.account_control.guard import CapturedGeneration",
+        ),
+        (
+            "orchestrator/services/restore_history/unapproved.py",
+            "from orchestrator.services.account_control.guard import guard_content_write",
+        ),
         (
             "orchestrator/services/restore_history/observation.py",
             "from orchestrator.services.account_control.guard import capture_generation",

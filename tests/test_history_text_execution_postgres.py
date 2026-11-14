@@ -52,7 +52,7 @@ from tests.test_restore_history_store import owned
 
 
 @pytest_asyncio.fixture
-async def text_host(projection_db, tmp_path, monkeypatch):
+async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     install(database)
     install_terminal(database)
@@ -66,7 +66,21 @@ async def text_host(projection_db, tmp_path, monkeypatch):
     journal_id = uuid4()
     initialize(journal, journal_id)
     async with database.connection() as conn:
-        account = await database.account(conn)
+        if getattr(request, "param", None) == "self-hosted-ui":
+            from orchestrator.routes.auth_setup import SINGLETON_USER_ID
+
+            # Initial disposable fixture data only, never runtime identity repair.
+            account = SINGLETON_USER_ID
+            await conn.execute(
+                "INSERT INTO users(id,username) VALUES($1,'synthetic-ui') ON CONFLICT(id) DO NOTHING",
+                account,
+            )
+            await conn.execute(
+                "INSERT INTO entitlement_accounts(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING",
+                account,
+            )
+        else:
+            account = await database.account(conn)
         await conn.execute("INSERT INTO deletion_journal_binding VALUES(true,$1)", journal_id)
     encryption_key = Fernet.generate_key().decode()
     enc = ContentEncryption(encryption_key)
@@ -101,6 +115,7 @@ async def text_host(projection_db, tmp_path, monkeypatch):
         encryption_key=encryption_key,
         journal=journal,
         journal_id=journal_id,
+        settings=settings,
     )
     from orchestrator import daemon
 
