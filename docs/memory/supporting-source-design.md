@@ -104,8 +104,30 @@ Missing/partial closure is unknown, never an empty independent closure.
 
 ## 4. Published skills and portable editing
 
-Split out to a separate design (see the scope table). Until that design lands,
-the skill index is an unversioned local input; §12 lists the decision this forces.
+Split out to `docs/ACCOUNT_OWNED_SKILLS_DESIGN.md`, which is implemented (PRs
+#701–#708). Two things must be kept apart:
+
+- **Landed.** Skills are database-authoritative and account-owned. Every skill
+  has an immutable id and a monotonically increasing `revision`, with one
+  immutable `skill_revisions` row per revision (`orchestrator/services/skills.py`).
+  Only the most recent `REVISION_RETENTION` revisions are kept, so a revision
+  number stays a valid identity after its content has been pruned.
+  Shipped skills are installation-published rows with no account.
+- **Not implemented.** The prompt's skill index is still an unversioned local
+  input in this design's terms. `orchestrator/services/skill_index.py:build_skill_index`
+  lists the account's enabled skills plus enabled shipped skills, orders them by
+  use count, update time and slug, and truncates to a token budget and an entry
+  cap. The rendered text carries only name, description and source type. No
+  record is kept of which skills and which revisions were selected for a given
+  dispatch, of the ones cut by the budget, or of the bytes sent, and there is no
+  supporting-source receipt.
+
+A skill's store revision therefore identifies its content, but does not by
+itself certify what a dispatch rendered: membership, ordering and truncation are
+decided at render time and can change without any revision changing (for
+example through `use_count`). Certifying the index needs a rendered-membership
+observation that names each selected skill id and revision (§§3 and 5). §12
+lists the decision this forces.
 
 ## 5. Settings and actual rendered context
 
@@ -355,12 +377,23 @@ with implementation, without claiming deployed status. No tests may weaken exist
 
 ## 12. Outstanding exact decisions
 
-- **Unversioned local inputs.** The skill index and accepted home copies reach the
-  prompt but have no source versions until their own designs land. Either they are
-  recorded as an explicit `unversioned local input` classification that does not
-  block publication (recommended for shadow mode), or every dispatch that includes
-  them is uncertifiable and memory writes refuse. Owner decision required; shadow
-  measurements (§10 step 3) should inform it.
+- **Unversioned local inputs.** Two inputs reach the prompt without a
+  supporting-source version:
+  - *The skill index.* Its sources are versioned (skill id and `revision`, landed
+    with the account-owned skills design, §4), but the rendered index is not: no
+    membership, selection or sent-bytes receipt exists.
+  - *Accepted home copies.* These have no source versions at all until the
+    contextual-home design lands.
+
+  Until each has a receipt, either it is recorded as an explicit `unversioned
+  local input` classification that does not block publication (recommended for
+  shadow mode), or every dispatch that includes it is uncertifiable and memory
+  writes refuse. Owner decision required. Evidence it needs: shadow measurements
+  (§10 step 3) of how many dispatches include each input, and of the refusal
+  rate the strict option would cause. For the skill index the alternative that
+  removes the question is to implement the rendered-membership observation over
+  the existing skill revisions (§4); that is implementation work this document
+  does not authorize.
 - Proposed receipt caps, the 16 MiB/account + 1 GiB installation quotas and the
   transaction budget values, each confirmed against shadow measurements.
 - Concrete API/CLI payloads and DDL are implementation-review artifacts; no new
