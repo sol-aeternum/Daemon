@@ -365,6 +365,43 @@ async def test_native_uses_original_capture_without_admission_fallback(api, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["before_commit", "after_commit"])
+async def test_native_storage_fault_degrades_without_persisting_a_reply(api, monkeypatch, fault):
+    """A storage fault is not a refusal: the turn runs unsaved and writes no reply.
+
+    ``after_commit`` is the uncertain-commit case: the admission committed but
+    the caller saw a failure. The admitted question stays, with no reply attached.
+    """
+    original = api.env.memory.insert_live_user_message
+
+    async def faulty(*args, **kwargs):
+        if kwargs.get("conn") is not None:
+            # The store re-enters itself inside its own transaction; fault only
+            # the caller's view, after that transaction has committed.
+            return await original(*args, **kwargs)
+        if fault == "after_commit":
+            await original(*args, **kwargs)
+        raise asyncpg.PostgresConnectionError("synthetic connection loss")
+
+    monkeypatch.setattr(api.env.memory, "insert_live_user_message", faulty)
+    response = await api.client.post(
+        "/chat", headers={"X-Daemon-Client-Features": ""}, json={"message": "Fictional live turn."}
+    )
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert not any(kind in ("error", "conversation") for kind, _ in events)
+    assert next(e for kind, e in events if kind == "done").get("ok") is not False
+    assert any(kind == "token" for kind, _ in events)
+    rows = await api.env.pool.fetch("SELECT id,role FROM messages")
+    if fault == "before_commit":
+        assert rows == []
+    else:
+        assert [row["role"] for row in rows] == ["user"]
+        assert await source(api.env, rows[0]["id"]) == (1, 0, 1)
+    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
+
+
+@pytest.mark.asyncio
 async def test_upgrade_leaves_existing_complete_and_null_status_rows_ineligible(env):
     schema = "tasks_test_" + uuid4().hex
     migrations = Path(__file__).resolve().parents[1] / "migrations"
