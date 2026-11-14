@@ -141,6 +141,7 @@ async def _generate_or_update_summary_result(
             conversation_id,
             captured_generation=captured_generation,
             limit=INLINE_SUMMARY_BATCH_LIMIT,
+            render_limit=500,
         )
     except Exception:
         # Optional summary failure never discards unrelated extraction work.
@@ -162,6 +163,7 @@ async def _generate_or_update_summary_result(
                     captured_generation=captured_generation,
                     expected_summary_updated_at=summary_updated_at,
                     expected_baseline=persisted_baseline,
+                    summary_snapshot=conversation["summary_snapshot"],
                 )
             except Exception:
                 return SummaryUpdateResult(summary=None, continuation_needed=False)
@@ -233,22 +235,26 @@ async def _generate_or_update_summary_result(
             conversation_id,
             captured_generation=captured_generation,
             expected_summary_updated_at=summary_updated_at,
+            summary_snapshot=conversation["summary_snapshot"],
         )
         if not valid:
             return SummaryUpdateResult(summary=None, continuation_needed=True)
 
-        with routing_context(SUMMARY_PROFILE, preferred_model=model):
-            response = await guarded_completion(**call_params)
-
-        # Extract content
-        content = _extract_content(response)
-        if not content or not content.strip():
+        frozen = conversation["summary_snapshot"]
+        checkpoint_only = not frozen.rendered and not frozen.reference.sources
+        if checkpoint_only:
+            content = ""
+        else:
+            with routing_context(SUMMARY_PROFILE, preferred_model=model):
+                response = await guarded_completion(**call_params)
+            content = _extract_content(response)
+        if not checkpoint_only and (not content or not content.strip()):
             return SummaryUpdateResult(
                 summary=None,
                 continuation_needed=pre_persist_continuation,
             )
 
-        summary = content.strip()
+        summary = (content or "").strip()
 
         # Validate length (should be <= 3 sentences)
         sentences = [s.strip() for s in summary.split(".") if s.strip()]
@@ -272,6 +278,7 @@ async def _generate_or_update_summary_result(
             summary_snapshot_at=iteration_snapshot,
             summary_continuation_pending=pre_persist_continuation or conversation["has_hole"],
             captured_generation=captured_generation,
+            summary_snapshot=conversation["summary_snapshot"],
         )
         if not updated:
             # Optimistic-concurrency conflict: another summary invocation

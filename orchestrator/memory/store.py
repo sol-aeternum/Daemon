@@ -8,7 +8,7 @@ import logging
 import uuid
 import hashlib
 import hmac
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, cast
 
 import asyncpg
@@ -45,6 +45,7 @@ from orchestrator.memory.revisions import (
     mutation,
 )
 from orchestrator.memory.temporal import EventScope, TemporalRefusal
+from orchestrator.memory import summary_provenance
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -355,7 +356,16 @@ class MemoryStore:
             """,
             conversation_id,
         )
-        return self._conversation_listing_row(row) if row else None
+        if row is None:
+            return None
+        return (await summary_provenance.materialize(self, [self._conversation_listing_row(row)]))[
+            0
+        ]
+
+    async def read_qualified_conversation_summary(
+        self, conversation_id: uuid.UUID, *, user_id: uuid.UUID, cloud: bool = True
+    ):
+        return await summary_provenance.read(self, user_id, conversation_id, cloud=cloud)
 
     @staticmethod
     def _conversation_listing_row(row: Any) -> dict[str, Any]:
@@ -446,7 +456,9 @@ class MemoryStore:
                 limit,
                 offset,
             )
-        return [self._conversation_listing_row(r) for r in rows]
+        return await summary_provenance.materialize(
+            self, [self._conversation_listing_row(r) for r in rows]
+        )
 
     async def list_conversations_page(
         self,
@@ -507,7 +519,7 @@ class MemoryStore:
                 conversation = dict(row)
                 conversation.pop("matching_total")
                 page.append(self._conversation_listing_row(conversation))
-        return page[:limit], total, len(page) > limit
+        return await summary_provenance.materialize(self, page[:limit]), total, len(page) > limit
 
     async def update_conversation(
         self,
@@ -524,6 +536,8 @@ class MemoryStore:
         touch_activity: bool = True,
     ) -> dict[str, Any] | None:
         """``touch_activity=False`` keeps a preference-only edit from reordering history."""
+        if summary is not None:
+            raise ValueError("Summary publication requires a frozen source snapshot")
         row = await self._pool.fetchrow(
             """
             UPDATE conversations
@@ -560,7 +574,7 @@ class MemoryStore:
             else None,
             touch_activity,
         )
-        return dict(row) if row else None
+        return (await summary_provenance.materialize(self, [dict(row)]))[0] if row else None
 
     async def read_conversation_title_inputs(
         self,
@@ -689,6 +703,7 @@ class MemoryStore:
             return False
         original = await capture(self, owner)
         async with mutation(self, original) as conn:
+            await summary_provenance.invalidate(conn, owner, conversation=conversation_id)
             result = await conn.execute(
                 "DELETE FROM conversations WHERE id = $1 AND user_id=$2", conversation_id, owner
             )
@@ -1259,6 +1274,7 @@ class MemoryStore:
         *,
         captured_generation: CapturedGeneration,
         limit: int,
+        render_limit: int | None = None,
     ) -> dict[str, Any] | None:
         """Guard/qualify a bounded summary snapshot before decrypting any inputs.
 
@@ -1267,91 +1283,9 @@ class MemoryStore:
         streaming status transition cannot change the claim between those reads.
         Neither lock survives into compute admission or provider work.
         """
-        from orchestrator.memory.summarization import validated_summary_baseline
-
-        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
-            async with guard_content_write(conn, captured_generation):
-                row = await conn.fetchrow(
-                    "SELECT c.*, (SELECT count(*) FROM messages m "
-                    "WHERE m.conversation_id=c.id AND m.user_id=c.user_id "
-                    "AND (m.status IS NULL OR m.status='complete')) AS current_message_count "
-                    "FROM conversations c WHERE c.id=$1 AND c.user_id=$2 FOR SHARE OF c",
-                    conversation_id,
-                    captured_generation.account_id,
-                )
-                if row is None:
-                    return None
-                result = dict(row)
-                baseline = validated_summary_baseline(result, int(row["current_message_count"]))
-                snapshot = datetime.now(timezone.utc)
-                batch = await conn.fetchrow(
-                    """
-                    WITH ranked AS (
-                        SELECT id, role, content, status, created_at,
-                               COUNT(*) FILTER (WHERE status IS NULL OR status='complete')
-                               OVER (ORDER BY created_at ASC, id ASC) AS summary_rn
-                        FROM messages WHERE conversation_id=$1 AND user_id=$2
-                          AND created_at <= $3
-                    ), stats AS (
-                        SELECT COALESCE(MAX(summary_rn),0) AS finalized_count,
-                               COALESCE(MIN(summary_rn) FILTER (
-                                   WHERE status IS NOT NULL
-                                     AND status NOT IN ('complete','error','cancelled')
-                               ), COALESCE(MAX(summary_rn),0)) AS contiguous_count,
-                               COUNT(*) FILTER (
-                                   WHERE status IS NOT NULL
-                                     AND status NOT IN ('complete','error','cancelled')
-                               ) > 0 AS has_hole
-                        FROM ranked
-                    ), batch AS (
-                        SELECT id, role, content, created_at FROM ranked
-                        WHERE (status IS NULL OR status='complete')
-                          AND summary_rn > $4
-                          AND summary_rn <= (SELECT contiguous_count FROM stats)
-                        ORDER BY created_at ASC, id ASC LIMIT $5
-                    )
-                    SELECT stats.*, COALESCE((SELECT jsonb_agg(batch ORDER BY created_at,id)
-                                              FROM batch), '[]'::jsonb) AS messages
-                    FROM stats
-                    """,
-                    conversation_id,
-                    captured_generation.account_id,
-                    snapshot,
-                    baseline,
-                    min(100, max(1, limit)),
-                )
-                assert batch is not None
-                result.update(dict(batch))
-                result["persisted_baseline"] = baseline
-                result["memory_erasure_epoch"] = int(
-                    await conn.fetchval(
-                        "SELECT erasure_epoch FROM memory_knowledge_clock WHERE user_id=$1",
-                        captured_generation.account_id,
-                    )
-                    or 0
-                )
-                result["snapshot_at"] = snapshot
-                raw_messages = batch["messages"]
-                messages = (
-                    json.loads(raw_messages) if isinstance(raw_messages, str) else raw_messages
-                )
-                erased_rows = await conn.fetch(
-                    "SELECT source_id FROM memory_erased_sources WHERE user_id=$1 AND source_kind='message' "
-                    "AND source_id=ANY($2::uuid[])",
-                    captured_generation.account_id,
-                    [uuid.UUID(str(m["id"])) for m in messages],
-                )
-                erased = {str(r["source_id"]) for r in erased_rows}
-                result["messages"] = [
-                    {
-                        **message,
-                        "content": ""
-                        if str(message["id"]) in erased
-                        else self._enc.decrypt(message["content"]),
-                    }
-                    for message in messages
-                ]
-                return result
+        return await summary_provenance.prepare(
+            self, conversation_id, captured_generation, limit=limit, render_limit=render_limit
+        )
 
     async def check_conversation_summary_generation(
         self,
@@ -1359,19 +1293,17 @@ class MemoryStore:
         *,
         captured_generation: CapturedGeneration,
         expected_summary_updated_at: datetime | None,
+        summary_snapshot: summary_provenance.SummarySnapshot | None = None,
     ) -> bool:
         """Recheck original account/owner/version after admission, before inference."""
-        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
-            async with guard_content_write(conn, captured_generation):
-                return bool(
-                    await conn.fetchval(
-                        "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2 "
-                        "AND summary_updated_at IS NOT DISTINCT FROM $3)",
-                        conversation_id,
-                        captured_generation.account_id,
-                        expected_summary_updated_at,
-                    )
-                )
+        if summary_snapshot is None:
+            raise ValueError("Summary checking requires its frozen source snapshot")
+        if (
+            summary_snapshot.capture.origin != captured_generation
+            or summary_snapshot.reference.conversation_id != conversation_id
+        ):
+            raise ValueError("Summary snapshot scope mismatch")
+        return await summary_provenance.check(self, summary_snapshot)
 
     async def read_summary_continuation_pending(
         self,
@@ -1402,10 +1334,27 @@ class MemoryStore:
         captured_generation: CapturedGeneration,
         expected_summary_updated_at: datetime | None,
         expected_baseline: int,
+        summary_snapshot: summary_provenance.SummarySnapshot | None = None,
     ) -> bool:
         """Clear only the observed, genuinely drained version; holes retain pending."""
+        if summary_snapshot is None:
+            raise ValueError("Summary continuation requires its frozen source snapshot")
+        if (
+            summary_snapshot.capture.origin != captured_generation
+            or summary_snapshot.reference.conversation_id != conversation_id
+        ):
+            raise ValueError("Summary snapshot scope mismatch")
         async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
             async with guard_content_write(conn, captured_generation):
+                from orchestrator.memory.revisions import enter
+
+                await enter(conn, summary_snapshot.capture, ordered=True)
+                try:
+                    await summary_provenance.validate_reference(
+                        conn, captured_generation.account_id, summary_snapshot.reference
+                    )
+                except TemporalRefusal:
+                    return False
                 row = await conn.fetchrow(
                     """
                     UPDATE conversations c
@@ -1413,6 +1362,8 @@ class MemoryStore:
                         || jsonb_build_object('summary_continuation_pending',false)
                     WHERE id=$1 AND user_id=$2
                       AND summary_updated_at IS NOT DISTINCT FROM $3
+                      AND summary_head_version_id IS NOT DISTINCT FROM $5
+                      AND summary_state_revision=$6
                       AND metadata->'last_summarized_msg_count' = to_jsonb($4::bigint)
                       AND metadata->'summary_continuation_pending' = 'true'::jsonb
                       AND NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id=c.id
@@ -1426,6 +1377,8 @@ class MemoryStore:
                     captured_generation.account_id,
                     expected_summary_updated_at,
                     expected_baseline,
+                    summary_snapshot.reference.head_id,
+                    summary_snapshot.reference.state_revision,
                 )
         return row is not None
 
@@ -1440,6 +1393,7 @@ class MemoryStore:
         summary_continuation_pending: bool = False,
         captured_generation: CapturedGeneration,
         expected_memory_erasure_epoch: int | None = None,
+        summary_snapshot: summary_provenance.SummarySnapshot | None = None,
     ) -> bool:
         """Atomically persist a summary and its finalized-message baseline.
 
@@ -1456,56 +1410,18 @@ class MemoryStore:
         can still recover and enqueue the forced-summary continuation
         (Codex P2 on PR #165, ``worker/jobs.py:295``).
         """
-        snapshot_iso: str | None = None
-        if summary_snapshot_at is not None:
-            snapshot_iso = summary_snapshot_at.isoformat()
-        async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
-            async with guard_content_write(conn, captured_generation):
-                from orchestrator.memory.revisions import Capture, enter
-
-                if expected_memory_erasure_epoch is None:
-                    raise ValueError(
-                        "Summary publication requires its original memory erasure epoch"
-                    )
-                await enter(
-                    conn, Capture(captured_generation, expected_memory_erasure_epoch), ordered=True
-                )
-                row = await conn.fetchrow(
-                    """
-            UPDATE conversations
-            SET summary = $2,
-                summary_updated_at = NOW(),
-                updated_at = NOW(),
-                last_activity_at = NOW(),
-                metadata = COALESCE(metadata, '{}'::jsonb)
-                    || jsonb_build_object(
-                        'last_summarized_msg_count',
-                        $4::bigint
-                    )
-                    || jsonb_build_object(
-                        'summary_continuation_pending',
-                        $6::boolean
-                    )
-                    || CASE
-                        WHEN $5::text IS NULL THEN '{}'::jsonb
-                        ELSE jsonb_build_object(
-                            'last_summarized_at_time', $5::text
-                        )
-                    END
-            WHERE id = $1
-              AND user_id = $7
-              AND summary_updated_at IS NOT DISTINCT FROM $3
-            RETURNING id
-            """,
-                    conversation_id,
-                    summary,
-                    expected_summary_updated_at,
-                    summarized_message_count,
-                    snapshot_iso,
-                    summary_continuation_pending,
-                    captured_generation.account_id,
-                )
-        return row is not None
+        if summary_snapshot is None:
+            raise ValueError("Summary publication requires its frozen source snapshot")
+        if (
+            summary_snapshot.capture.origin != captured_generation
+            or summary_snapshot.reference.conversation_id != conversation_id
+            or summary_snapshot.capture.erasure_epoch != expected_memory_erasure_epoch
+            or summary_snapshot.claimed != summarized_message_count
+        ):
+            raise ValueError("Summary snapshot scope mismatch")
+        return await summary_provenance.publish(
+            self, summary_snapshot, summary, continuation=summary_continuation_pending
+        )
 
     @trace_write
     async def update_message(

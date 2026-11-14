@@ -1108,6 +1108,7 @@ async def deduplicate_facts(
     locked_rows: dict[uuid.UUID, dict[str, Any]] | None = None,
     extraction_inputs: Any | None = None,
     committed_prefix: list[dict[str, Any]] | None = None,
+    summary_reference: Any | None = None,
 ) -> DedupResult:
     """Sequential PLAN -> revalidate/COMMIT. Only equivalent verdicts merge.
 
@@ -1236,7 +1237,39 @@ async def deduplicate_facts(
                 embedding_result=embedding_result,
                 excluded_memory_ids=excluded_memory_ids,
             )
-        if lock_conn is not None:
+        if summary_reference is not None:
+            from orchestrator.memory.revisions import capture_for, mutation
+            from orchestrator.memory.summary_provenance import validate_reference
+
+            if lock_conn is not None:
+                raise ValueError("Direct summary-qualified extraction owns its transaction")
+            async with mutation(store, await capture_for(store, user_id)) as conn:
+                await validate_reference(conn, user_id, summary_reference)
+                committed = await _commit_memory_plan(
+                    store,
+                    plan,
+                    conn=conn,
+                    embedding_result=embedding_result,
+                    excluded_memory_ids=excluded_memory_ids,
+                )
+                # The direct path has no chunk identities. Record the summary's
+                # messages and every message of the conversation so erasure
+                # suppresses both; partial rows would defeat lineage's
+                # whole-conversation fallback.
+                from orchestrator.memory.lineage import record_sources
+
+                source_ids = [source.message_id for source in summary_reference.sources]
+                source_ids += [
+                    row["id"]
+                    for row in await conn.fetch(
+                        "SELECT id FROM messages WHERE user_id=$1 AND conversation_id=$2",
+                        user_id,
+                        summary_reference.conversation_id,
+                    )
+                ]
+                for memory in (*committed.new, *committed.merged):
+                    await record_sources(conn, user_id, memory["id"], source_ids)
+        elif lock_conn is not None:
             committed = await _commit_memory_plan(
                 store,
                 plan,

@@ -505,3 +505,78 @@ high-severity Bandit, feature matrix and diff whitespace). Evidence is retained 
 `pr601-natural-fix/admission-foundation-results.md` under the registered task's
 external evidence directory. Independent final review and full project gates remain
 required; this is not correction completion or deployment clearance.
+
+### #601 versioned summary direct-source foundation — 11 November 2026
+
+Owner-approved option 2 adds source-only migration
+`072_summary_provenance.sql` and `memory/summary_provenance.py`. Rollback is
+`migrations/rollback/072_summary_provenance.down.sql`; it drops the versions,
+closures and payloads, and conversations whose summary had been published are
+left without one until it is regenerated. Its Scope A
+boundary is directly stored source-message bodies, not a complete
+assistant prompt manifest or certification of transitive memory copies inside
+assistant prose. It does not implement natural correction claims or change M2.
+Source selection retains the existing finalized-message role policy, including
+stored system/tool rows; it does not certify their upstream derivations. The
+primary adjudicated this as preserved behavior, not a new user/assistant-only
+filter. Ownership, locality, exact versions and suppression qualify every role.
+
+Legacy `conversations.summary` text is never a parent or fallback: without a
+qualified head, rebuilding starts from the original source prefix with baseline
+zero. Each immutable sealed version records the account generation, parent,
+checkpoint and rendered-message identities/revisions. Incremental publication
+flattens the parent's direct-source closure together with the newly rendered
+messages, rather than depending on retained parent plaintext. A wholly suppressed
+prefix can advance a checkpoint-only version without a payload or model call.
+
+`conversation_summary_versions` and `conversation_summary_sources` retain
+provenance metadata. New text lives only in the Fernet-encrypted
+`conversation_summary_payloads` table; publishing clears the legacy plaintext
+column and removes replaced payloads. This is a replaceable cache, not a summary
+history API or an indefinite ciphertext-retention promise. All three tables are
+account-owned, explicitly classified in the writer catalogue and included in
+synthetic reset/fingerprint accounting. These classifications do not complete the
+separate account-reset protocol.
+
+Qualification checks the current owner, account restrictions/generation, source
+existence/revision/status, current cloud locality where required, sealing,
+revocation and source suppression before decrypting a payload. Owner management
+reads can include local conversations; cloud readers cannot. Extraction retains
+and rechecks qualified references, holding every summary-source message lock
+through its publication transaction, including sources outside the current chunk.
+A fact committed with a summary in context records that summary's flattened
+message sources in `memory_sources` beside its chunk messages, so erasing the
+fact suppresses them too and a rebuilt summary or re-extraction cannot reintroduce
+it. This is conservative: every fact extracted beside a summary carries all of
+that summary's sources, whether or not the summary contributed. The direct
+(unqueued) path has no chunk identities and records the summary's sources plus
+every message of the conversation.
+Owner-approved skill generation omits conversation summaries until skill files
+and projections have guarded dependency publication and erasure integration; it
+does not fall back to legacy text. Inline and
+queued producers release input transactions before scripted/provider work and
+recheck their frozen inputs before dispatch and publication. Head/state-revision
+CAS, cursor/prefix membership, source revisions and the original erasure epoch
+reject stale publication, including ABA and source-row lock waits; failed COMMIT
+rolls back the version, closure, payload and head together.
+
+Scope A erasure conservatively revokes governed summary versions, purges their
+payloads and clears summary heads/cursors without rewriting original conversation
+bodies. Conversation deletion also invalidates closures; account cascade removes
+the retained metadata. Rebuilds respect erased-source suppression. This does not
+solve the backup-restore erasure restriction above or recall already disclosed
+provider/client context.
+
+Residual synthetic evidence is retained under the registered task's external
+`pr601-natural-fix/summary-provenance-results.md`: **555 distinct passed cases,
+20 explicit disposable-Redis opt-in skips**, with no unresolved test failures in
+this bounded set. This includes 138 summary/reset PostgreSQL cases, 142 passing
+extraction/account cases reconciled against the targeted repair, 40 resource and
+startup PostgreSQL cases, and 235 offline cases. Failed initial compatibility
+runs are preserved, not counted as passing gates; duplicate repair cases are not
+added twice. Narrow resource/startup fixtures execute their pinned prerequisite
+schemas plus the actual memory/admission/summary migrations, not a claim of a
+full production migration replay. Full Ruff/format, basedpyright, high-severity
+Bandit and feature-matrix checks passed after the final code edits. Full project
+gates, review-repair verification and release/restore
+restrictions remain primary-owned; no inference, deployment or production DB ran.

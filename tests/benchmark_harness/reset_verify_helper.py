@@ -63,6 +63,9 @@ ALL_RESET_COUNT_QUERIES = {
     ),
     "memory_dependencies": "SELECT COUNT(*) FROM memory_dependencies WHERE user_id = $1",
     "memory_sources": "SELECT COUNT(*) FROM memory_sources WHERE user_id = $1",
+    "conversation_summary_versions": "SELECT COUNT(*) FROM conversation_summary_versions WHERE user_id = $1",
+    "conversation_summary_sources": "SELECT COUNT(*) FROM conversation_summary_sources WHERE user_id = $1",
+    "conversation_summary_payloads": "SELECT COUNT(*) FROM conversation_summary_payloads WHERE user_id = $1",
 }
 ALL_RESET_TABLES = list(ALL_RESET_COUNT_QUERIES)
 

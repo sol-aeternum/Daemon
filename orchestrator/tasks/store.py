@@ -2467,6 +2467,9 @@ class TaskStore:
             return False, active["id"]
         if self._resource_inputs is not None:
             await self._resource_inputs._detach(conn, user_id, conversation_id)
+        from orchestrator.memory.summary_provenance import invalidate
+
+        await invalidate(conn, user_id, conversation=conversation_id)
         await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
         return True, None
 
