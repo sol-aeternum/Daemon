@@ -464,3 +464,44 @@ Offline runner/parity/catalogue compatibility passed **198 cases without skips**
 under the registered `memory-temporal-pr` task. Full-suite verification on the
 new head and fresh final review remain primary-owned, separate gates; no
 deployment or real benchmark inference is claimed.
+
+### #601 prospective correction admission — partial foundation
+
+Source-only migration 071 (`071_message_correction_admission.sql`) adds a managed
+`messages.source_revision`, immutable nullable `correction_origin_generation`,
+and the first complete `correction_source_revision`. Existing messages receive
+only a baseline source version, never eligibility. Generic/import/replayed rows,
+assistant/system/tool rows and contextual-home copied prompts remain ineligible.
+Native live-user insertion and the shared durable acceptance insertion use the
+explicit `MemoryStore.insert_live_user_message` entry point with the original
+server-captured account generation. The helper takes the account guard before
+insertion; durable acceptance retains its existing account-first outer transaction
+and revalidates on that same connection without opening a nested transaction.
+An admission refusal does not authorize native no-memory execution through its
+generic persistence-degradation path; the existing sanitized SSE error path is used.
+
+The ordinary-invoker database trigger validates admitted user/conversation owner
+matching and rejects origin/version/frozen-version changes. Identity, role, owner
+and conversation are immutable only for admitted rows. Every changed field is
+semantic by default except the closed token-counter allowlist; ciphertext,
+status, metadata, traces and future columns therefore advance the source version.
+No-op SQL and token maintenance do not. Only exact `complete` freezes the first
+version, including at insertion; NULL/`completed` legacy statuses do not. Later
+edits or status cycling cannot refresh the frozen version, including content ABA.
+An unequal frozen/current revision cannot qualify a future correction claim.
+Future claim consumers must enforce that equality; none is implemented here.
+
+This is the approved **trusted-backend** boundary, not authenticated SQL-callsite
+provenance: a same-database privileged writer can forge birth admission. No GUC,
+new credential, role, grant or privilege escalation purports to prevent that.
+Account checks stay in the account-first helper, not a late message trigger that
+could invert lock ordering. Matching schema/trigger startup qualification includes
+071. Rollback is `migrations/rollback/071_message_correction_admission.down.sql`;
+it drops the three columns and their data. No correction operation/receipt table, segment dependency, reader or erasure
+integration is implemented by this foundation. Focused synthetic qualification
+passed 148 real-PostgreSQL cases and 246 offline cases; one separately opt-in Redis
+wake-up case remains skipped. Final static checks passed (Ruff/format, full types,
+high-severity Bandit, feature matrix and diff whitespace). Evidence is retained in
+`pr601-natural-fix/admission-foundation-results.md` under the registered task's
+external evidence directory. Independent final review and full project gates remain
+required; this is not correction completion or deployment clearance.

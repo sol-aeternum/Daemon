@@ -4256,6 +4256,19 @@
     },
     {
       "owner_source": "orchestrator.memory.store",
+      "qualname": "MemoryStore.insert_live_user_message",
+      "kind": "sql_inline",
+      "fingerprint": "4a5a8f5252f65747",
+      "tables": [
+        "messages"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Prospective live-user admission uses original-generation account guard and DB source-version invariants; trusted-server callsite assertion, not a completed account fence."
+    },
+    {
+      "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.insert_message",
       "kind": "sql_inline",
       "fingerprint": "6c6e73b7b42cc0f5",

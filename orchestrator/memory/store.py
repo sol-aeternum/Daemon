@@ -29,7 +29,11 @@ from orchestrator.memory.embedding import (
     embed_query_with_metadata,
     get_selected_embedding_route_id,
 )
-from orchestrator.services.account_control.guard import CapturedGeneration, guard_content_write
+from orchestrator.services.account_control.guard import (
+    CapturedGeneration,
+    WriteGuardRefusal,
+    guard_content_write,
+)
 from orchestrator.memory.revisions import (
     Capture,
     current_read_scope,
@@ -707,6 +711,67 @@ class MemoryStore:
     # ------------------------------------------------------------------
     # Message operations
     # ------------------------------------------------------------------
+
+    async def insert_live_user_message(
+        self,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        *,
+        captured_generation: CapturedGeneration | None,
+        status: str = "complete",
+        conn: Any | None = None,
+    ) -> dict[str, Any]:
+        """Create a NEW live user source; never promote a persisted/replayed row.
+
+        This entry point is trusted-server provenance, not a SQL privilege boundary.
+        Generic/import/copied-prompt writers must keep using insert_message. Retain
+        the original capture; never refresh it to repair a refusal. A supplied
+        connection must already have its account guard before any content locks
+        (durable acceptance does); revalidation here opens no nested transaction.
+        """
+        if (
+            type(captured_generation) is not CapturedGeneration
+            or not isinstance(getattr(captured_generation, "account_id", None), uuid.UUID)
+            or getattr(captured_generation, "account_id", None) != user_id
+            or type(getattr(captured_generation, "generation", None)) is not int
+            or not 0 <= captured_generation.generation <= 2**63 - 1
+        ):
+            raise WriteGuardRefusal("invalid_capture")
+        if conn is None:
+            async with (
+                self._database_pool.acquire() as connection,
+                connection.transaction(isolation="read_committed"),
+            ):
+                return await self.insert_live_user_message(
+                    conversation_id,
+                    user_id,
+                    content,
+                    captured_generation=captured_generation,
+                    status=status,
+                    conn=connection,
+                )
+        async with guard_content_write(conn, captured_generation):
+            row = await conn.fetchrow(
+                """
+                INSERT INTO messages
+                    (conversation_id,user_id,role,content,status,tool_calls,tool_results,
+                     correction_origin_generation)
+                VALUES($1,$2,'user',$3,$4,$5::jsonb,$6::jsonb,$7)
+                RETURNING *
+                """,
+                conversation_id,
+                user_id,
+                self._enc.encrypt(content),
+                status,
+                self._encrypt_tool_trace([]),
+                self._encrypt_tool_trace([]),
+                captured_generation.generation,
+            )
+        result = dict(row)
+        result["content"] = self._enc.decrypt(result["content"])
+        self._decrypt_message_tool_traces(result)
+        return result
 
     @trace_write
     async def insert_message(

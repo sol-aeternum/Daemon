@@ -19,12 +19,13 @@ import uuid
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator import main as main_module
 from tests.qualified_compute import install_qualified_compute
 
@@ -57,6 +58,12 @@ class _RecordingStore:
         if kwargs.get("role") == "assistant":
             self.assistant_inserted.set()
         return {"id": uuid.uuid4(), **kwargs}
+
+    async def insert_live_user_message(
+        self, *, captured_generation: CapturedGeneration, **kwargs: Any
+    ) -> dict[str, Any]:
+        assert captured_generation == CapturedGeneration(USER_ID, 0)
+        return await self.insert_message(role="user", **kwargs)
 
 
 class _FailingAssistantStore(_RecordingStore):
@@ -150,6 +157,9 @@ async def client(
     app_state.db_pool = None  # type: ignore[assignment]
     app_state.memory_store = store  # type: ignore[assignment]
     install_qualified_compute(monkeypatch)
+    monkeypatch.setattr(
+        main_module, "capture_generation", AsyncMock(return_value=CapturedGeneration(USER_ID, 0))
+    )
 
     async def override_settings():
         return settings
@@ -177,7 +187,7 @@ async def client(
 
     try:
         async with app.router.lifespan_context(app):
-            app_state.db_pool = object()  # type: ignore[assignment]
+            app_state.db_pool = MagicMock()
             try:
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as http_client:

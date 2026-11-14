@@ -37,7 +37,11 @@ async def db(metadata_cluster):
     cluster = metadata_cluster
     name = "md_" + uuid4().hex
     cluster.prepare(name)
-    for migration in ("049_attempt_lifecycle.sql", "050_task_inference_recovery.sql"):
+    for migration in (
+        "049_attempt_lifecycle.sql",
+        "050_task_inference_recovery.sql",
+        "071_message_correction_admission.sql",
+    ):
         cluster.sql(
             "BEGIN;" + (ROOT / "migrations" / migration).read_text() + "COMMIT;",
             database=name,

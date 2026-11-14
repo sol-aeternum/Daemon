@@ -43,7 +43,11 @@ from orchestrator.speech.cache import audio_filename, cached_audio, run_cache_io
 from orchestrator.speech.contracts import SpeechError, SpeechRequest, canonical_voice
 from orchestrator.speech.service import get_speech_provider, synthesize as synthesize_speech
 from orchestrator.services.identity.rate_limiter import RateLimitUnavailableError
-from orchestrator.services.account_control.guard import CapturedGeneration, capture_generation
+from orchestrator.services.account_control.guard import (
+    CapturedGeneration,
+    WriteGuardRefusal,
+    capture_generation,
+)
 from orchestrator.redis_jobs import enqueue_account_job
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
@@ -2780,6 +2784,7 @@ async def chat(
     # it (issue #362).
     existing_draft_needs_title = False
     home_bound_conversation = suggestion_destination is not None
+    live_user_admission_failed = False
 
     # Create or get conversation if persistence is available
     if suggestion_destination is not None:
@@ -2835,14 +2840,19 @@ async def chat(
 
             # Insert user message
             if conversation_uuid:
-                inserted_user_message = await store.insert_message(
-                    conversation_id=conversation_uuid,
-                    user_id=user_id,
-                    role="user",
-                    content=user_message,
-                    model=None,
-                    status="complete",
-                )
+                try:
+                    inserted_user_message = await store.insert_live_user_message(
+                        conversation_id=conversation_uuid,
+                        user_id=user_id,
+                        content=user_message,
+                        captured_generation=title_generation,
+                        status="complete",
+                    )
+                except WriteGuardRefusal:
+                    # A refused live admission is not permission to dispatch via
+                    # the generic continue-without-persistence fallback below.
+                    live_user_admission_failed = True
+                    raise
 
                 if (
                     app_state.redis is not None
@@ -2871,9 +2881,10 @@ async def chat(
                 raise HTTPException(
                     status_code=503, detail="Bound conversation could not be saved"
                 ) from e
-            logger.warning(
-                "Conversation persistence failed, continuing without persistence"
-            )  # Graceful degradation - continue without persistence
+            if live_user_admission_failed:
+                logger.warning("Live user admission failed; refusing execution")
+            else:
+                logger.warning("Conversation persistence failed, continuing without persistence")
             # A refreshed client may have no history of its own. Preserve readable
             # prior turns, appending the unsaved question rather than replacing one.
             if conversation_exists and conversation_uuid and not incoming_messages:
@@ -3046,6 +3057,8 @@ async def chat(
 
     async def generator():
         try:
+            if live_user_admission_failed:
+                raise RuntimeError("live_user_admission_unavailable")
             if is_council_config_response:
                 if conversation_uuid:
                     yield sse(
