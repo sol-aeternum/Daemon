@@ -387,9 +387,12 @@ async def commit_fact(
                     event_scope=incoming.event_scope,
                 )
             assert result is not None
-            await record_sources(
-                conn, inputs.origin.account_id, result[0]["id"], [m.id for m in inputs.messages]
-            )
+            # A fact read with a summary in context depends on that summary's
+            # messages too; erasure suppresses exactly what is recorded here.
+            sources = [m.id for m in inputs.messages]
+            if inputs.summary is not None:
+                sources += [s.message_id for s in inputs.summary.sources]
+            await record_sources(conn, inputs.origin.account_id, result[0]["id"], sources)
     if result is None:
         raise RuntimeError("fact disposition unavailable")
     await observe_committed(store, inputs.origin.account_id)

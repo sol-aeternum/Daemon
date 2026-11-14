@@ -1252,6 +1252,23 @@ async def deduplicate_facts(
                     embedding_result=embedding_result,
                     excluded_memory_ids=excluded_memory_ids,
                 )
+                # The direct path has no chunk identities. Record the summary's
+                # messages and every message of the conversation so erasure
+                # suppresses both; partial rows would defeat lineage's
+                # whole-conversation fallback.
+                from orchestrator.memory.lineage import record_sources
+
+                source_ids = [source.message_id for source in summary_reference.sources]
+                source_ids += [
+                    row["id"]
+                    for row in await conn.fetch(
+                        "SELECT id FROM messages WHERE user_id=$1 AND conversation_id=$2",
+                        user_id,
+                        summary_reference.conversation_id,
+                    )
+                ]
+                for memory in (*committed.new, *committed.merged):
+                    await record_sources(conn, user_id, memory["id"], source_ids)
         elif lock_conn is not None:
             committed = await _commit_memory_plan(
                 store,

@@ -544,6 +544,13 @@ revocation and source suppression before decrypting a payload. Owner management
 reads can include local conversations; cloud readers cannot. Extraction retains
 and rechecks qualified references, holding every summary-source message lock
 through its publication transaction, including sources outside the current chunk.
+A fact committed with a summary in context records that summary's flattened
+message sources in `memory_sources` beside its chunk messages, so erasing the
+fact suppresses them too and a rebuilt summary or re-extraction cannot reintroduce
+it. This is conservative: every fact extracted beside a summary carries all of
+that summary's sources, whether or not the summary contributed. The direct
+(unqueued) path has no chunk identities and records the summary's sources plus
+every message of the conversation.
 Owner-approved skill generation omits conversation summaries until skill files
 and projections have guarded dependency publication and erasure integration; it
 does not fall back to legacy text. Inline and

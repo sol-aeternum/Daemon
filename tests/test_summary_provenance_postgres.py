@@ -514,3 +514,106 @@ async def test_source_row_lock_wait_rechecks_committed_version(env):
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+async def _erased(env, ids):
+    rows = await env.pool.fetch(
+        "SELECT source_id FROM memory_erased_sources WHERE user_id=$1 AND source_kind='message' "
+        "AND source_id=ANY($2::uuid[])",
+        env.alice,
+        ids,
+    )
+    return {row["source_id"] for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_erasing_a_summary_derived_fact_suppresses_the_summary_sources(env):
+    """The older message reaches the fact only through the summary."""
+    from orchestrator.memory import equivalence, extraction_fencing as fencing
+
+    origin = CapturedGeneration(env.alice, 0)
+    cid, messages = await seed(env, 1)
+    older = messages[0]["id"]
+    assert await publish(env, await prepare(env, cid))
+    newest = await env.memory.insert_message(
+        cid, env.alice, "user", "Still fictional there.", status="complete"
+    )
+    inputs, _ = await fencing.read_page(env.memory, origin, cid)
+    inputs, text = await fencing.with_summary(env.memory, inputs.subset({newest["id"]}))
+    assert text == "Synthetic summary."
+    incoming = equivalence.IncomingMemory(
+        env.alice, "User lives in a fictional city.", "fact", "extracted", cid, None
+    )
+    row, inserted = await fencing.commit_fact(
+        env.memory, inputs, equivalence.EquivalencePlan(incoming), None, {}, {}
+    )
+    assert inserted
+    recorded = await env.pool.fetch(
+        "SELECT source_id FROM memory_sources WHERE user_id=$1 AND memory_id=$2",
+        env.alice,
+        row["id"],
+    )
+    assert {r["source_id"] for r in recorded} == {older, newest["id"]}
+
+    assert await env.memory.delete_memory(row["id"], user_id=env.alice)
+    assert await _erased(env, [older, newest["id"]]) == {older, newest["id"]}
+
+    # Rebuilding the summary and re-reading the page never decrypt either source.
+    await env.pool.execute(
+        "UPDATE messages SET content='poison' WHERE id=ANY($1::uuid[])", [older, newest["id"]]
+    )
+    rebuilt = await prepare(env, cid)
+    assert [m["content"] for m in rebuilt["messages"]] == ["", ""]
+    assert rebuilt["summary"] is None and rebuilt["summary_snapshot"].rendered == ()
+    _, page = await fencing.read_page(env.memory, origin, cid)
+    assert [(m["content"], m["_extraction_skip"]) for m in page] == [("", True), ("", True)]
+
+
+@pytest.mark.asyncio
+async def test_direct_summary_extraction_records_summary_and_conversation_sources(env):
+    from orchestrator.memory import dedup, equivalence
+
+    cid, messages = await seed(env, 1)
+    older = messages[0]["id"]
+    assert await publish(env, await prepare(env, cid))
+    newest = await env.memory.insert_message(
+        cid, env.alice, "user", "Still fictional there.", status="complete"
+    )
+    reference, text = await env.memory.read_qualified_conversation_summary(cid, user_id=env.alice)
+    assert text == "Synthetic summary." and [s.message_id for s in reference.sources] == [older]
+    fact = SimpleNamespace(
+        content="User lives in a fictional city.",
+        category="fact",
+        confidence=0.9,
+        slot=None,
+        event_scope=None,
+    )
+    incoming = equivalence.IncomingMemory(
+        user_id=env.alice,
+        content=fact.content,
+        category=fact.category,
+        source_type="extracted",
+        conversation_id=cid,
+        slot=None,
+        confidence=0.9,
+        status="active",
+        local_only=False,
+        event_scope=None,
+    )
+    result = await dedup.deduplicate_facts(
+        env.memory,
+        env.alice,
+        [fact],
+        cid,
+        prepared_plans=[equivalence.EquivalencePlan(incoming)],
+        summary_reference=reference,
+    )
+    (memory,) = result.new
+    recorded = await env.pool.fetch(
+        "SELECT source_id FROM memory_sources WHERE user_id=$1 AND memory_id=$2",
+        env.alice,
+        memory["id"],
+    )
+    assert {r["source_id"] for r in recorded} == {older, newest["id"]}
+    assert await env.memory.delete_memory(memory["id"], user_id=env.alice)
+    assert await _erased(env, [older, newest["id"]]) == {older, newest["id"]}
