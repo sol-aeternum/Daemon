@@ -15,11 +15,21 @@ async def require_revision_schema(pool: Any) -> None:
         "SELECT to_regclass('memory_mutations') IS NOT NULL AND "
         "to_regclass('memory_revision_segments') IS NOT NULL AND "
         "EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('memories') "
-        "AND tgname='memory_revision_capture' AND tgenabled='O')"
+        "AND tgname='memory_revision_capture' AND tgenabled='O') AND "
+        "EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('messages') "
+        "AND tgname='message_source_revision_guard' AND tgenabled='O' AND tgtype=23 "
+        "AND tgfoid=to_regprocedure('memory_message_revision_guard()')) AND "
+        "(SELECT count(*)=3 AND bool_and(atttypid='bigint'::regtype "
+        "AND attnotnull=(attname='source_revision') "
+        "AND pg_get_expr(d.adbin,d.adrelid) IS NOT DISTINCT FROM "
+        "CASE WHEN attname='source_revision' THEN '1' END) "
+        "FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum "
+        "WHERE a.attrelid=to_regclass('messages') AND NOT a.attisdropped "
+        "AND a.attname IN ('source_revision','correction_origin_generation','correction_source_revision'))"
     )
     if present is not True:
         raise RuntimeError(
-            "Memory revisions require migration 066 and matching writer capture; do not bypass rollback guards"
+            "Memory revisions require migration 066 and admission 071 with matching writers; do not bypass rollback guards"
         )
 
 

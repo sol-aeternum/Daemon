@@ -82,6 +82,13 @@ async def test_real_atomic_acceptance_ordered_refs_and_pepper_replay(input_scena
     args = submission(expected)
     task = await inputs.accept(**args)
     assert task.created
+    async with db.connection() as owner:
+        admitted = await owner.fetchrow(
+            "SELECT source_revision,correction_origin_generation,correction_source_revision "
+            "FROM messages WHERE id=$1",
+            task.user_message_id,
+        )
+        assert tuple(admitted.values()) == (1, expected.generation, 1)
     assert db.sql("SELECT count(*) FROM resource_versions") == "3"
     assert db.sql("SELECT count(*) FROM resource_publications") == "2"
     assert (
@@ -116,6 +123,15 @@ async def test_real_atomic_acceptance_ordered_refs_and_pepper_replay(input_scena
             await inputs._store.repair(expected, row["resource_id"], row["version_id"])
     replay = await inputs.accept(**submission(expected, pepper="rotated-pepper"))
     assert replay.task_id == task.task_id and not replay.created
+    async with db.connection() as owner:
+        assert (
+            await owner.fetchrow(
+                "SELECT source_revision,correction_origin_generation,correction_source_revision "
+                "FROM messages WHERE id=$1",
+                task.user_message_id,
+            )
+            == admitted
+        )
     with pytest.raises(IdempotencyConflict):
         await inputs.accept(**submission(expected, message="different canonical"))
     assert db.sql("SELECT count(*) FROM resource_versions") == "3"

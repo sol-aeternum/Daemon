@@ -775,10 +775,14 @@ TITLE_GUARD_IMPORTS = {
     },
     "orchestrator/main.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        # #601 live-message admission handles the closed refusal explicitly.
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
         ("orchestrator.services.account_control.guard", "capture_generation"),
     },
     "orchestrator/memory/store.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        # #601 registered live-user writer refuses an invalid original capture.
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
         ("orchestrator.services.account_control.guard", "guard_content_write"),
     },
     # #601 preserves the same account-generation guard at its registered

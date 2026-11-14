@@ -1183,11 +1183,11 @@ class TaskStore:
             if owner != user_id:
                 raise TaskNotFound("conversation not found")
         assert conversation_id is not None
-        user_row = await self._memory.insert_message(
+        user_row = await self._memory.insert_live_user_message(
             conversation_id=conversation_id,
             user_id=user_id,
-            role="user",
             content=user_message,
+            captured_generation=CapturedGeneration(user_id, generation),
             status="complete",
             conn=conn,
         )

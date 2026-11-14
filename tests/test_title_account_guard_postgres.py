@@ -562,13 +562,15 @@ async def test_both_http_producers_capture_before_source_and_carry_original_gene
 
     monkeypatch.setattr(main, "capture_generation", capture)
     source_target = type(env.tasks) if durable else env.memory
-    source_name = "accept" if durable else "insert_message"
+    source_name = "accept" if durable else "insert_live_user_message"
     original_source = getattr(source_target, source_name)
 
     async def source(*args, **kwargs):
         assert captured == [CapturedGeneration(env.alice, 7)]
         result = await original_source(*args, **kwargs)
-        if fence_after_source:
+        # insert_live_user_message re-enters itself with its own connection;
+        # fence only once that outer transaction has committed.
+        if fence_after_source and kwargs.get("conn") is None:
             await env.pool.execute(
                 "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1", env.alice
             )

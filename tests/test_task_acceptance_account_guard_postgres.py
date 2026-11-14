@@ -716,10 +716,18 @@ async def test_durable_capable_council_stays_request_bound(
         )
     response = await api.client.post("/chat", json={"message": message})
     assert response.status_code == 200 and "X-Daemon-Task-Id" not in response.headers
-    assert len(calls) == 1 and calls[0]["user_message"] == message
+    if capture_failure:
+        assert calls == []
+        assert next(event["data"] for kind, event in _events(response.text) if kind == "done") == {
+            "ok": False
+        }
+    else:
+        assert len(calls) == 1 and calls[0]["user_message"] == message
     accept_spy.assert_not_called()
     assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
-    assert await api.env.pool.fetchval("SELECT count(*) FROM messages WHERE role='user'") == 1
+    assert await api.env.pool.fetchval("SELECT count(*) FROM messages WHERE role='user'") == int(
+        not capture_failure
+    )
     assert not any(name == "run_chat_task" for name, _, _ in api.redis.enqueued)
 
 
@@ -776,12 +784,16 @@ async def test_durable_capable_bound_home_followup_retains_request_bound_context
     response = await api.client.post(
         "/chat", json={"message": "hello", "conversation_id": str(conv["id"])}
     )
-    assert response.status_code == 200 and "X-Daemon-Task-Id" not in response.headers
-    assert len(calls) == 1
-    assert "Fictional copied context" in calls[0]["history_messages"][0]["content"]
-    assert calls[0]["history_messages"][-1]["content"] == "hello"
+    assert response.status_code == (503 if capture_failure else 200)
+    assert "X-Daemon-Task-Id" not in response.headers
+    if capture_failure:
+        assert calls == [] and response.json()["detail"] == "Bound conversation could not be saved"
+    else:
+        assert len(calls) == 1
+        assert "Fictional copied context" in calls[0]["history_messages"][0]["content"]
+        assert calls[0]["history_messages"][-1]["content"] == "hello"
     accept_spy.assert_not_called()
-    assert await counts(env) == (1, 3, 0, 0)
+    assert await counts(env) == (1, 1 if capture_failure else 3, 0, 0)
     assert not any(name == "run_chat_task" for name, _, _ in api.redis.enqueued)
 
 
@@ -819,12 +831,10 @@ async def test_missing_account_request_bound_chat_refuses_before_model_and_publi
     assert terminal[2][1] == {"ok": False}
     assert not any(kind in {"token", "tool_call", "tool_result", "task"} for kind, _ in events)
     provider.assert_not_called()
-    capture.assert_awaited_once()
-    assert capture.await_args is not None
-    assert capture.await_args.args[1] == api.env.alice
-    # The already-saved original user message remains; no assistant success,
+    capture.assert_not_awaited()  # Refusal happens at live insertion, before stream capture.
+    # No admitted original user message was saved; no assistant success,
     # derived payload, task or opportunistically provisioned account appears.
-    assert await counts(api.env) == (1, 1, 0, 0)
+    assert await counts(api.env) == (1, 0, 0, 0)
     assert await api.env.pool.fetchval("SELECT count(*) FROM messages WHERE role!='user'") == 0
     assert (
         await api.env.pool.fetchval("SELECT count(*) FROM conversations WHERE summary IS NOT NULL")
