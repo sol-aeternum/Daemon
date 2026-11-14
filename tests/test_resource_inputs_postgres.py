@@ -32,14 +32,9 @@ resource_key = outputs.resource_key
 @pytest_asyncio.fixture
 async def input_scenario(resource_scenario, resource_key):
     db, previous, ident, _, expected, root, _, _, _, journal, journal_id = resource_scenario
-    # Current conversation deletion consumes memory and summary provenance;
-    # retain the real guard rather than mocking its clock or erasure boundary.
-    for name in (
-        "054_resource_input_batches.sql",
-        "066_memory_bitemporal.sql",
-        "072_summary_provenance.sql",
-    ):
-        db.sql("BEGIN;" + (ROOT / "migrations" / name).read_text() + "COMMIT;")
+    # The lifecycle database already carries the memory and summary provenance
+    # that current conversation deletion consumes.
+    db.sql("BEGIN;" + (ROOT / "migrations/054_resource_input_batches.sql").read_text() + "COMMIT;")
     key = resource_key
     pool = previous._namespaces._pool
     memory = MemoryStore(pool, ContentEncryption(key.decode()))
