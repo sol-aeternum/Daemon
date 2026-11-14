@@ -411,6 +411,12 @@
       "ownership_path": "root:skill_store_key",
       "rationale": "Shared deployment state: one row binding the skill store to its encryption key. Holds a keyed check value, no account content. Uncovered."
     },
+    "shipped_skill_catalogue": {
+      "category": "shared_unowned",
+      "owner_source": "migrations/070_shipped_skill_catalogue.sql",
+      "ownership_path": "root:shipped_skill_catalogue",
+      "rationale": "Shared deployment state: one row holding the applied shipped-skill catalogue version. A number and a time, no account content. Uncovered."
+    },
     "memory_dependencies": {
       "category": "content",
       "owner_source": "migrations/066_memory_bitemporal.sql",
@@ -758,6 +764,7 @@
     "skills": "root:users <- skills",
     "skill_revisions": "root:users <- skills <- skill_revisions",
     "skill_store_key": "root:skill_store_key",
+    "shipped_skill_catalogue": "root:shipped_skill_catalogue",
     "memory_dependencies": "root:users <- memory_dependencies",
     "memory_erased_sources": "root:users <- memory_erased_sources",
     "memory_knowledge_clock": "root:users <- memory_knowledge_clock",
@@ -6066,7 +6073,7 @@
     },
     {
       "owner_source": "orchestrator.services.skills",
-      "qualname": "SkillStore.publish_shipped",
+      "qualname": "SkillStore._publish_shipped",
       "kind": "sql_inline",
       "fingerprint": "5a044d417908c61d",
       "tables": [
@@ -6076,6 +6083,45 @@
       "uncovered": true,
       "category": "content",
       "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.apply_shipped_catalogue",
+      "kind": "sql_inline",
+      "fingerprint": "15b040917a406e74",
+      "tables": [
+        "skills"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "content",
+      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.apply_shipped_catalogue",
+      "kind": "sql_inline",
+      "fingerprint": "23e33c21bc90c195",
+      "tables": [
+        "shipped_skill_catalogue"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Applied shipped-skill catalogue version; shared deployment state, no account content."
+    },
+    {
+      "owner_source": "orchestrator.services.skills",
+      "qualname": "SkillStore.apply_shipped_catalogue",
+      "kind": "sql_inline",
+      "fingerprint": "39f3032693c8339b",
+      "tables": [
+        "shipped_skill_catalogue"
+      ],
+      "unknown": false,
+      "uncovered": true,
+      "category": "shared_unowned",
+      "rationale": "Applied shipped-skill catalogue version; shared deployment state, no account content."
     },
     {
       "owner_source": "orchestrator.services.skills",
@@ -6439,275 +6485,6 @@
       "qualname": "write_setup_token_file",
       "kind": "filesystem_write",
       "fingerprint": "f29c97f4a186923a",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.clear_pending_update",
-      "kind": "sql_inline",
-      "fingerprint": "1aeb1c7c08df29f5",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.delete_projection",
-      "kind": "sql_inline",
-      "fingerprint": "cb14d3c19bafbcce",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.list_projections",
-      "kind": "sql_unresolvable",
-      "fingerprint": "416412d91c00bdda",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.search_by_embedding",
-      "kind": "sql_unresolvable",
-      "fingerprint": "416412d91c00bdda",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.set_pending_update",
-      "kind": "sql_inline",
-      "fingerprint": "896460650de48a58",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.touch_usage",
-      "kind": "sql_inline",
-      "fingerprint": "c7f2973005dad931",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.update_autonomous_edit",
-      "kind": "sql_inline",
-      "fingerprint": "9658b60f8c5fd264",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.update_autonomous_metadata",
-      "kind": "sql_unresolvable",
-      "fingerprint": "320928823f8ec27c",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.update_embedding",
-      "kind": "sql_inline",
-      "fingerprint": "58ea0f29e45682cf",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.update_versions",
-      "kind": "sql_unresolvable",
-      "fingerprint": "320928823f8ec27c",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.sync_file_projection",
-      "kind": "sql_inline",
-      "fingerprint": "cb746cb6098307e8",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_projection",
-      "qualname": "SkillProjectionStore.upsert_projection",
-      "kind": "sql_inline",
-      "fingerprint": "13767a0f4130d172",
-      "tables": [
-        "skill_projections"
-      ],
-      "unknown": false,
-      "uncovered": true,
-      "category": "shared_unowned",
-      "rationale": "Direct mutation candidate; no runtime guard. Path-specific content/control integration pending."
-    },
-    {
-      "owner_source": "orchestrator.skills_store",
-      "qualname": "create_skill",
-      "kind": "filesystem_write",
-      "fingerprint": "ee9e49098c7f6969",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_store",
-      "qualname": "delete_skill",
-      "kind": "filesystem_write",
-      "fingerprint": "88e0afdf6faa13bf",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_store",
-      "qualname": "ensure_skills_dir",
-      "kind": "filesystem_write",
-      "fingerprint": "c0d446acd41485f7",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_store",
-      "qualname": "import_skill_markdown",
-      "kind": "filesystem_write",
-      "fingerprint": "ee9e49098c7f6969",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_store",
-      "qualname": "update_skill",
-      "kind": "filesystem_write",
-      "fingerprint": "ee9e49098c7f6969",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_upgrade",
-      "qualname": "SkillUpgradeService.apply_pending_update",
-      "kind": "filesystem_write",
-      "fingerprint": "31f79f147700753a",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_upgrade",
-      "qualname": "_save_snapshot",
-      "kind": "filesystem_write",
-      "fingerprint": "2efabb88bfd0d42c",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_upgrade",
-      "qualname": "_save_snapshot",
-      "kind": "filesystem_write",
-      "fingerprint": "6a4333fe5c4893d6",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_upgrade",
-      "qualname": "_write_skill_file",
-      "kind": "filesystem_write",
-      "fingerprint": "00cf6a740f6f59a0",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_upgrade",
-      "qualname": "save_manifest",
-      "kind": "filesystem_write",
-      "fingerprint": "6f78314ba43eb22b",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.skills_upgrade",
-      "qualname": "save_manifest",
-      "kind": "filesystem_write",
-      "fingerprint": "f541a5a0307f3c7b",
       "tables": [],
       "unknown": true,
       "uncovered": true,

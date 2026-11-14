@@ -1500,33 +1500,6 @@ async def test_identical_lexical_memory_is_merged_without_new_embedding(
 
 
 @pytest.mark.asyncio
-async def test_skill_projection_remains_storable_without_embeddings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from orchestrator import skills_projection
-    from orchestrator.memory.embedding import EmbeddingConfigurationError
-
-    async def unavailable(texts: list[str]) -> list[list[float]]:
-        raise EmbeddingConfigurationError("No approved embedding route")
-
-    monkeypatch.setattr(skills_projection, "embed_documents", unavailable)
-    assert await skills_projection.embed_skill_content("name", "description", "content") is None
-    pool = SimpleNamespace(
-        fetchrow=AsyncMock(return_value={"skill_id": "local", "embedding": None})
-    )
-    store = skills_projection.SkillProjectionStore(cast(Any, pool))
-    await store.upsert_projection(
-        skill_id="local",
-        name="name",
-        description="description",
-        source_file_path="local.md",
-        source_hash="hash",
-        embedding=None,
-    )
-    assert pool.fetchrow.await_args.args[10] is None
-
-
-@pytest.mark.asyncio
 async def test_reembed_endpoint_fails_cleanly_without_approved_embedding_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

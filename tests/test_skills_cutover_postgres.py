@@ -40,6 +40,16 @@ from orchestrator.services.skill_format import (
     render_skill_markdown,
 )
 from orchestrator.services.skill_index import build_skill_index
+from orchestrator.services.shipped_skills import (
+    SHIPPED_SKILLS_DIR,
+    MANIFEST_FILE,
+    Manifest,
+    ManifestError,
+    read_catalogue,
+    read_manifest,
+    skill_file_digest,
+    sync_shipped_skills,
+)
 from orchestrator.services.skills import EMBEDDING_DIMENSIONS, SkillError, SkillStore
 from orchestrator.skill_evaluator import SkillEvaluationRequest, SkillEvaluator
 from orchestrator.tools import skill_manage as skill_manage_module
@@ -51,6 +61,7 @@ MIGRATIONS = [
     ROOT / "migrations/068_account_owned_skills.sql",
     ROOT / "migrations/029_skill_consolidation_nudge.sql",
     ROOT / "migrations/036_skill_consolidation_pending_status.sql",
+    ROOT / "migrations/070_shipped_skill_catalogue.sql",
 ]
 LOG_MIGRATION = ROOT / "migrations/069_skill_consolidation_log_content_free.sql"
 LOG_ROLLBACK = ROOT / "migrations/rollback/069_skill_consolidation_log_content_free.down.sql"
@@ -241,10 +252,11 @@ async def test_route_response_contract(pool: asyncpg.Pool) -> None:
         assert created["source_type"] == "manual"
         assert created["allow_autonomous_edit"] is False
         assert created["enabled"] is True
-        # Retired fields stay in the response as null.
-        for retired in ("repo_version", "local_version", "pending_update"):
-            assert created[retired] is None
-        assert created["created_by"] is None and created["origin_url"] is None
+        # The exact response shape; the retired upgrade and provenance fields are gone.
+        assert set(created) == {
+            "id", "name", "description", "enabled", "updated_at", "scope", "revision",
+            "source_type", "allow_autonomous_edit", "use_count", "last_used_at", "content",
+        }  # fmt: skip
 
         listed = (await a.get("/skills")).json()["skills"][0]
         assert "content" not in listed
@@ -537,12 +549,9 @@ async def test_routes_fail_closed_without_a_database() -> None:
 
 @pytest.mark.asyncio
 async def test_import_ignores_authority_and_round_trips(
-    pool: asyncpg.Pool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pool: asyncpg.Pool,
 ) -> None:
     """T8: authority in a file is ignored; export then import keeps the content."""
-    from orchestrator import skills_store
-
-    monkeypatch.setattr(skills_store, "SKILLS_DIR", tmp_path)
     alice, bob = await _user(pool), await _user(pool)
     forged = (
         "---\n"
@@ -607,9 +616,6 @@ async def test_import_ignores_authority_and_round_trips(
             )
             assert response.status_code == 400, bad_name
 
-    # Nothing was written to the old skills directory.
-    assert list(tmp_path.iterdir()) == []
-
 
 def test_format_bounds_frontmatter_and_renders_one_line_fields() -> None:
     with pytest.raises(SkillError, match="frontmatter_too_long"):
@@ -639,6 +645,425 @@ def test_cutover_modules_touch_no_files() -> None:
         source = Path(str(module.__file__)).read_text()
         for needle in ("skills_store", "SKILLS_DIR", "read_text", "write_text", "open("):
             assert needle not in source, (module.__name__, needle)
+
+
+# --------------------------------------------------------------------------
+# Shipped-skill loader
+# --------------------------------------------------------------------------
+
+
+def _release(root: Path, name: str, version: int, skills: dict[str, str]) -> Path:
+    """One application image's shipped-skills directory."""
+    directory = root / name
+    directory.mkdir()
+    (directory / "README.md").write_text("not a skill", encoding="utf-8")
+    digests: dict[str, str] = {}
+    for slug, body in skills.items():
+        (directory / slug).mkdir()
+        title = slug.replace("-", " ").title()
+        data = f"---\nname: {title}\ndescription: {title} description\n---\n{body}\n".encode()
+        (directory / slug / "SKILL.md").write_bytes(data)
+        digests[slug] = skill_file_digest(data)
+    _write_manifest(directory, version, digests)
+    return directory
+
+
+def _write_manifest(directory: Path, version: Any, digests: Any) -> None:
+    (directory / MANIFEST_FILE).write_text(
+        json.dumps({"version": version, "skills": digests}), encoding="utf-8"
+    )
+
+
+def _redigest(directory: Path) -> dict[str, str]:
+    """Digests of whatever skill files the directory holds now."""
+    return {
+        entry.name: skill_file_digest((entry / "SKILL.md").read_bytes())
+        for entry in directory.iterdir()
+        if (entry / "SKILL.md").is_file()
+    }
+
+
+async def _shipped_state(store: SkillStore) -> dict[str, tuple[int, str]]:
+    return {s["slug"]: (s["revision"], s["body"]) for s in await store.list_shipped()}
+
+
+@pytest.mark.asyncio
+async def test_loader_applies_a_newer_catalogue_whole(
+    pool: asyncpg.Pool, store: SkillStore, tmp_path: Path
+) -> None:
+    alice = await _user(pool)
+    mine = await store.create(alice, name="House Style", description="mine", body="my own")
+    v1 = _release(tmp_path, "v1", 1, {"house-style": "shipped v1", "citations": "cite sources"})
+
+    first = await sync_shipped_skills(store, v1)
+    assert (first.applied, first.version) == (True, 1)
+    assert (first.published, first.unchanged, first.removed) == (
+        ["citations", "house-style"],
+        [],
+        [],
+    )
+    assert await store.shipped_catalogue_version() == 1
+    assert await _shipped_state(store) == {
+        "citations": (1, "cite sources"),
+        "house-style": (1, "shipped v1"),
+    }
+    shipped = await pool.fetch("SELECT source_type, user_id FROM skills WHERE user_id IS NULL")
+    assert {(row["source_type"], row["user_id"]) for row in shipped} == {("system", None)}
+    # Every account sees shipped skills; its own same-named skill shadows one.
+    index = await build_skill_index(pool, alice)
+    assert "- Citations: Citations description [system]" in index
+    assert "- House Style: mine [manual]" in index and "House Style description" not in index
+
+    # The same release starting again writes nothing.
+    before = await _dump(pool)
+    again = await sync_shipped_skills(store, v1)
+    assert (again.applied, again.reason) == (False, "not_newer")
+    assert await _dump(pool) == before
+
+    # A newer release: one skill changed, one removed, one added, one kept.
+    v2 = _release(tmp_path, "v2", 2, {"house-style": "shipped v2", "glossary": "terms"})
+    second = await sync_shipped_skills(store, v2)
+    assert (second.applied, second.version) == (True, 2)
+    assert (second.published, second.unchanged, second.removed) == (
+        ["glossary", "house-style"],
+        [],
+        ["citations"],
+    )
+    assert await _shipped_state(store) == {
+        "glossary": (1, "terms"),
+        "house-style": (2, "shipped v2"),
+    }
+    # The account's own skill with the same slug is never touched.
+    assert (await store.get(alice, "house-style"))["body"] == "my own"
+    assert (await store.get(alice, "house-style"))["id"] == mine["id"]
+
+
+@pytest.mark.asyncio
+async def test_an_older_release_cannot_delete_or_roll_back_newer_shipped_skills(
+    pool: asyncpg.Pool, store: SkillStore, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deploy and a rollback: old instances start after the new release applied."""
+    empty_old = _release(tmp_path, "empty-old", 0, {})
+    v1 = _release(tmp_path, "v1", 1, {"house-style": "shipped v1", "citations": "cite sources"})
+    v2 = _release(tmp_path, "v2", 2, {"house-style": "shipped v2", "glossary": "terms"})
+    no_version = tmp_path / "unversioned"
+    (no_version / "stray").mkdir(parents=True)
+
+    await sync_shipped_skills(store, v2)
+    newest = await _dump(pool, ("skills", "skill_revisions", "shipped_skill_catalogue"))
+
+    # Every older or unversioned image, started or restarted in any order.
+    for directory in (empty_old, v1, no_version, tmp_path / "absent", v1, empty_old):
+        outcome = await sync_shipped_skills(store, directory)
+        assert outcome.applied is False
+        assert (outcome.published, outcome.removed) == ([], [])
+    assert await _dump(pool, ("skills", "skill_revisions", "shipped_skill_catalogue")) == newest
+    assert await store.shipped_catalogue_version() == 2
+
+    # The store refuses a stale version itself, not only the loader's pre-check.
+    stale = await store.apply_shipped_catalogue(
+        1, [{"slug": "house-style", "name": "N", "description": "d", "body": "old"}]
+    )
+    assert stale["applied"] is False and stale["version"] == 2
+    same = await store.apply_shipped_catalogue(2, [])
+    assert same["applied"] is False
+    assert await _dump(pool, ("skills", "skill_revisions", "shipped_skill_catalogue")) == newest
+
+    # Content changed without a new version is not applied, and says so.
+    forgot = _release(tmp_path, "forgot", 2, {"house-style": "edited in place"})
+    with caplog.at_level("WARNING"):
+        outcome = await sync_shipped_skills(store, forgot)
+    assert outcome.applied is False
+    assert "without a new catalogue version" in caplog.text
+    assert await _dump(pool, ("skills", "skill_revisions", "shipped_skill_catalogue")) == newest
+
+
+@pytest.mark.asyncio
+async def test_releases_starting_together_end_on_the_newest_catalogue(
+    pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    """Mixed-version startup in every interleaving ends the same way."""
+    old = _release(tmp_path, "old", 0, {})
+    v1 = _release(tmp_path, "v1", 1, {"house-style": "shipped v1", "citations": "cite sources"})
+    v2 = _release(tmp_path, "v2", 2, {"house-style": "shipped v2", "glossary": "terms"})
+
+    for round_number in range(4):
+        await pool.execute("DELETE FROM skills")
+        await pool.execute("DELETE FROM shipped_skill_catalogue")
+        instances = [old, v1, v2, v1, v2, old, v2, v1]
+        if round_number % 2:
+            instances.reverse()
+        outcomes = await asyncio.gather(
+            *(sync_shipped_skills(SkillStore(pool, KEY), directory) for directory in instances)
+        )
+        state = await _shipped_state(SkillStore(pool, KEY))
+        assert set(state) == {"house-style", "glossary"}, round_number
+        assert state["glossary"] == (1, "terms")
+        assert state["house-style"][1] == "shipped v2"
+        assert await pool.fetchval("SELECT version FROM shipped_skill_catalogue") == 2
+        assert await pool.fetchval("SELECT count(*) FROM shipped_skill_catalogue") == 1
+        # Exactly one v2 instance applied it; v1 applied at most once, before v2.
+        applied = [outcome.version for outcome in outcomes if outcome.applied]
+        assert applied.count(2) == 1 and applied.count(1) <= 1, applied
+        assert state["house-style"][0] == len(applied)
+
+    # Forced order with an observed lock wait: the older release holds the
+    # catalogue row while the newer one waits behind it, then both apply.
+    await pool.execute("DELETE FROM skills")
+    await pool.execute("DELETE FROM shipped_skill_catalogue")
+    store = SkillStore(pool, KEY)
+    async with pool.acquire() as blocker:
+        transaction = blocker.transaction()
+        await transaction.start()
+        await blocker.execute("INSERT INTO shipped_skill_catalogue (version) VALUES (0)")
+        newer = asyncio.create_task(sync_shipped_skills(store, v2))
+        await _wait_for_lock_wait(pool)
+        older = asyncio.create_task(sync_shipped_skills(store, v1))
+        await asyncio.sleep(0.05)
+        await transaction.commit()
+    await asyncio.gather(newer, older)
+    assert (await _shipped_state(store))["house-style"][1] == "shipped v2"
+    assert await store.shipped_catalogue_version() == 2
+
+
+@pytest.mark.asyncio
+async def test_a_catalogue_is_applied_whole_or_not_at_all(
+    pool: asyncpg.Pool,
+    store: SkillStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    v1 = _release(tmp_path, "v1", 1, {"house-style": "shipped v1", "citations": "cite sources"})
+    await sync_shipped_skills(store, v1)
+    tables = ("skills", "skill_revisions", "shipped_skill_catalogue")
+    before = await _dump(pool, tables)
+
+    # A newer release whose manifest matches its files, but one skill does not
+    # parse, one directory has no file and one file is oversized: nothing of
+    # that release is applied.
+    secret = "vortexplum body that must not be logged"
+    broken = _release(tmp_path, "broken", 2, {"house-style": "shipped v2", "glossary": "terms"})
+    (broken / "house-style" / "SKILL.md").write_text("no frontmatter, no title", "utf-8")
+    (broken / "empty-dir").mkdir()
+    (broken / "oversized").mkdir()
+    (broken / "oversized" / "SKILL.md").write_text(
+        f"---\nname: Big\ndescription: d\n---\n{secret}" + "x" * MAX_SKILL_FILE_CHARS, "utf-8"
+    )
+    _write_manifest(broken, 2, {**_redigest(broken), "empty-dir": "0" * 64})
+    with caplog.at_level("INFO"):
+        partial = await sync_shipped_skills(store, broken)
+    assert (partial.applied, partial.reason) == (False, "incomplete_catalogue")
+    assert partial.failed == ["empty-dir", "house-style", "oversized"]
+    assert await _dump(pool, tables) == before
+    assert "vortexplum" not in caplog.text
+
+    # A failure in the middle of applying a good release rolls all of it back,
+    # including the removal and the version.
+    v2 = _release(tmp_path, "v2", 2, {"house-style": "shipped v2", "glossary": "terms"})
+    real_append = SkillStore._append_revision
+    calls = 0
+
+    async def fail_on_second(self: SkillStore, *args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        await real_append(self, *args, **kwargs)
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected failure mid-catalogue")
+
+    monkeypatch.setattr(SkillStore, "_append_revision", fail_on_second)
+    with pytest.raises(RuntimeError, match="injected"):
+        await sync_shipped_skills(store, v2)
+    assert await _dump(pool, tables) == before
+    assert await store.shipped_catalogue_version() == 1
+    monkeypatch.setattr(SkillStore, "_append_revision", real_append)
+
+    # Invalid input never reaches the database.
+    for version, skills in (
+        (0, []),
+        (-1, []),
+        (True, []),
+        (3, [{"slug": "a", "name": "A", "description": "", "body": ""}] * 2),
+        (3, [{"slug": "Bad Slug", "name": "A", "description": "", "body": ""}]),
+    ):
+        with pytest.raises(SkillError):
+            await store.apply_shipped_catalogue(version, skills)  # type: ignore[arg-type]
+    assert await _dump(pool, tables) == before
+
+    healed = await sync_shipped_skills(store, v2)
+    assert (healed.applied, healed.removed) == (True, ["citations"])
+
+
+@pytest.mark.asyncio
+async def test_startup_publication_never_raises(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from orchestrator import main
+    from orchestrator.memory.encryption import EncryptionKeyMissing
+
+    # The repository's own directory is version 0 with no skill: startup
+    # writes nothing, records no catalogue and does not bind the store's key.
+    await main._publish_shipped_skills(pool)
+    for table in ("skills", "skill_store_key", "shipped_skill_catalogue"):
+        assert await pool.fetchval(f"SELECT count(*) FROM {table}") == 0, table
+
+    # A database without migration 070 publishes nothing and does not raise.
+    await pool.execute("ALTER TABLE shipped_skill_catalogue RENAME TO catalogue_away")
+    monkeypatch.setattr(
+        "orchestrator.services.shipped_skills.read_manifest", lambda _: Manifest(1, {})
+    )
+    with caplog.at_level("WARNING"):
+        await main._publish_shipped_skills(pool)
+    await pool.execute("ALTER TABLE catalogue_away RENAME TO shipped_skill_catalogue")
+    assert "Shipped skills not published" in caplog.text
+    assert await pool.fetchval("SELECT count(*) FROM skills") == 0
+
+    def no_key(*_: Any, **__: Any) -> SkillStore:
+        raise EncryptionKeyMissing("DAEMON_ENCRYPTION_KEY is required")
+
+    monkeypatch.setattr("orchestrator.services.skills.create_skill_store", no_key)
+    with caplog.at_level("WARNING"):
+        await main._publish_shipped_skills(pool)
+        await main._publish_shipped_skills(None)
+    assert "no content encryption key" in caplog.text
+
+
+def test_no_skill_ships_before_accounts_can_switch_one_off() -> None:
+    """Owner decision O2: the per-account switch comes with the first shipped skill."""
+    shipped = [entry.name for entry in SHIPPED_SKILLS_DIR.iterdir() if entry.is_dir()]
+    assert shipped == [], "add the per-account disable setting (O2) with the first shipped skill"
+    assert (SHIPPED_SKILLS_DIR / "README.md").is_file()
+    # Version 0 means "no catalogue": it can never outrank a database.
+    assert read_manifest(SHIPPED_SKILLS_DIR) == Manifest(0, {})
+
+
+def test_repository_shipped_skills_match_their_manifest() -> None:
+    """The directory that ships must be one the loader would accept."""
+    manifest = read_manifest(SHIPPED_SKILLS_DIR)
+    assert manifest is not None, f"{MANIFEST_FILE} is missing"
+    expected = {
+        entry.name: skill_file_digest((entry / "SKILL.md").read_bytes())
+        for entry in SHIPPED_SKILLS_DIR.iterdir()
+        if entry.is_dir()
+    }
+    assert manifest.skills == expected, f"set 'skills' in {MANIFEST_FILE} to {expected}"
+    skills, incomplete, mismatched = read_catalogue(SHIPPED_SKILLS_DIR, manifest)
+    assert (incomplete, mismatched) == ([], [])
+    assert (manifest.version > 0) or not skills
+
+
+def test_manifest_is_strict(tmp_path: Path) -> None:
+    assert read_manifest(tmp_path) is None
+    good = "a" * 64
+    for text in (
+        "",
+        "3",
+        "[]",
+        '{"version": 1}',
+        '{"version": 1, "skills": {}, "extra": 1}',
+        '{"version": "1", "skills": {}}',
+        '{"version": true, "skills": {}}',
+        '{"version": -1, "skills": {}}',
+        '{"version": 1.0, "skills": {}}',
+        '{"version": 1, "skills": []}',
+        '{"version": 1, "skills": {"Bad Name": "%s"}}' % good,
+        '{"version": 1, "skills": {"a": "%s"}}' % good.upper(),
+        '{"version": 1, "skills": {"a": "abc"}}',
+        '{"version": 1, "skills": {"a": 5}}',
+        '{"version": 1, "skills": {"a": "%s", "a": "%s"}}' % (good, good),
+        '{"version": 1, "version": 2, "skills": {}}',
+        '{"version": 0, "skills": {"a": "%s"}}' % good,
+        '{"version": 1, "skills": {}}' + " " * 70000,
+    ):
+        (tmp_path / MANIFEST_FILE).write_text(text, encoding="utf-8")
+        with pytest.raises(ManifestError):
+            read_manifest(tmp_path)
+    (tmp_path / MANIFEST_FILE).write_bytes(b"\xff\xfe")
+    with pytest.raises(ManifestError):
+        read_manifest(tmp_path)
+    (tmp_path / MANIFEST_FILE).write_text('{"version": 4, "skills": {"a-b": "%s"}}' % good)
+    assert read_manifest(tmp_path) == Manifest(4, {"a-b": good})
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_package_cannot_remove_shipped_skills(
+    pool: asyncpg.Pool, store: SkillStore, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Absence is never read as removal: the manifest must say so."""
+    v1 = _release(tmp_path, "v1", 1, {"house-style": "shipped v1", "citations": "cite sources"})
+    await sync_shipped_skills(store, v1)
+    tables = ("skills", "skill_revisions", "shipped_skill_catalogue")
+    before = await _dump(pool, tables)
+    full = {"house-style": "shipped v2", "citations": "cite sources"}
+
+    def package(name: str) -> Path:
+        return _release(tmp_path, name, 2, full)
+
+    # A newer manifest whose skill directories were all left out of the image.
+    only_manifest = package("only-manifest")
+    for slug in full:
+        (only_manifest / slug / "SKILL.md").unlink()
+        (only_manifest / slug).rmdir()
+    # One directory left out; one file left out; one extra directory.
+    one_missing = package("one-missing")
+    (one_missing / "citations" / "SKILL.md").unlink()
+    (one_missing / "citations").rmdir()
+    file_missing = package("file-missing")
+    (file_missing / "citations" / "SKILL.md").unlink()
+    extra = package("extra")
+    (extra / "glossary").mkdir()
+    (extra / "glossary" / "SKILL.md").write_text("---\nname: G\ndescription: d\n---\nb\n")
+    # A truncated file, and an altered one of the same length.
+    truncated = package("truncated")
+    data = (truncated / "house-style" / "SKILL.md").read_bytes()
+    (truncated / "house-style" / "SKILL.md").write_bytes(data[:-4])
+    altered = package("altered")
+    (altered / "house-style" / "SKILL.md").write_bytes(data.replace(b"v2", b"v9"))
+    # The old format, a bumped manifest alone, and unusable manifests.
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "VERSION").write_text("2\n")
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    _write_manifest(bare, 2, full | {"house-style": "0" * 64, "citations": "1" * 64})
+    garbled = package("garbled")
+    (garbled / MANIFEST_FILE).write_text('{"version": 2', encoding="utf-8")
+    lying_zero = package("lying-zero")
+    _write_manifest(lying_zero, 0, _redigest(lying_zero))
+
+    expected = {
+        "only-manifest": ("incomplete_catalogue", ["citations", "house-style"]),
+        "one-missing": ("incomplete_catalogue", ["citations"]),
+        "file-missing": ("incomplete_catalogue", ["citations"]),
+        "extra": ("incomplete_catalogue", ["glossary"]),
+        "truncated": ("checksum_mismatch", ["house-style"]),
+        "altered": ("checksum_mismatch", ["house-style"]),
+        "legacy": ("no_catalogue", []),
+        "bare": ("incomplete_catalogue", ["citations", "house-style"]),
+        "garbled": ("invalid_manifest", []),
+        "lying-zero": ("invalid_manifest", []),
+    }
+    for name, (reason, failed) in expected.items():
+        caplog.clear()
+        with caplog.at_level("INFO"):
+            outcome = await sync_shipped_skills(store, tmp_path / name)
+        assert (outcome.applied, outcome.reason, outcome.failed) == (False, reason, failed), name
+        assert (outcome.published, outcome.removed) == ([], []), name
+        assert await _dump(pool, tables) == before, name
+        assert await store.shipped_catalogue_version() == 1, name
+        assert "shipped v" not in caplog.text and "cite sources" not in caplog.text, name
+
+    # The refused version was not consumed: the complete v2 still applies.
+    healed = await sync_shipped_skills(store, package("complete"))
+    assert (healed.applied, healed.published, healed.removed) == (True, ["house-style"], [])
+
+    # Removing every shipped skill is possible only by declaring it.
+    remove_all = _release(tmp_path, "remove-all", 3, {})
+    assert read_manifest(remove_all) == Manifest(3, {})
+    cleared = await sync_shipped_skills(store, remove_all)
+    assert (cleared.applied, cleared.removed) == (True, ["citations", "house-style"])
+    assert await _shipped_state(store) == {}
+    assert await store.shipped_catalogue_version() == 3
 
 
 # --------------------------------------------------------------------------
