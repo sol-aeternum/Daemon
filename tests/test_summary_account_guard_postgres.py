@@ -102,6 +102,13 @@ async def metadata(env, conv):
     return json.loads(value) if isinstance(value, str) else value
 
 
+async def frozen(env, conv):
+    inputs = await env.memory.read_conversation_summary_inputs(
+        conv, captured_generation=CapturedGeneration(env.alice, 7), limit=100
+    )
+    return inputs["summary_snapshot"]
+
+
 def refused(result, family, reason):
     assert result == (
         summary.SummaryUpdateResult(None, False)
@@ -119,7 +126,8 @@ async def test_current_nonzero_origin_commits_summary_and_cursor(env, monkeypatc
         "Updated summary." if family == "inline" else "success"
     )
     saved = await row(env, conv)
-    assert saved["summary"] == "Updated summary." and saved["summary_updated_at"] is not None
+    assert saved["summary"] is None and saved["summary_updated_at"] is not None
+    assert (await env.memory.get_conversation(conv))["summary"] == "Updated summary."
     assert (await metadata(env, conv))["last_summarized_msg_count"] == 3
     assert (await metadata(env, conv))["summary_continuation_pending"] is False
     model.assert_awaited_once()
@@ -160,7 +168,7 @@ async def test_invalid_baseline_replays_from_zero_through_actual_guarded_reader(
     ]
     await run(env, "inline", conv)
     assert (await metadata(env, conv))["last_summarized_msg_count"] == 3
-    assert (await row(env, conv))["summary"] == "Updated summary."
+    assert (await env.memory.get_conversation(conv))["summary"] == "Updated summary."
 
 
 @pytest.mark.asyncio
@@ -357,6 +365,7 @@ async def test_inflight_compute_cannot_publish_stale_or_competing_result(
             assert await env.memory.update_conversation_summary(
                 conv,
                 "Winner",
+                summary_snapshot=await frozen(env, conv),
                 expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
@@ -441,6 +450,7 @@ async def test_failed_real_commit_preserves_every_summary_field(env, monkeypatch
 @pytest.mark.parametrize("cause_only", [False, True])
 async def test_fence_first_real_summary_writer_waits_then_refuses(env, monkeypatch, cause_only):
     conv, _ = await prepare(env, monkeypatch)
+    snapshot = await frozen(env, conv)
     before = await row(env, conv)
     async with env.pool.acquire() as writer, env.pool.acquire() as fence:
         tx = fence.transaction()
@@ -460,6 +470,7 @@ async def test_fence_first_real_summary_writer_waits_then_refuses(env, monkeypat
             bound_store(env, writer).update_conversation_summary(
                 conv,
                 "Stale",
+                summary_snapshot=snapshot,
                 expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
@@ -487,6 +498,7 @@ async def test_fence_first_real_summary_writer_waits_then_refuses(env, monkeypat
 @pytest.mark.asyncio
 async def test_writer_first_lock_is_account_before_conversation_through_commit(env, monkeypatch):
     conv, _ = await prepare(env, monkeypatch)
+    snapshot = await frozen(env, conv)
     async with (
         env.pool.acquire() as writer,
         env.pool.acquire() as editor,
@@ -499,6 +511,7 @@ async def test_writer_first_lock_is_account_before_conversation_through_commit(e
             bound_store(env, writer).update_conversation_summary(
                 conv,
                 "Winner",
+                summary_snapshot=snapshot,
                 expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
@@ -519,7 +532,12 @@ async def test_writer_first_lock_is_account_before_conversation_through_commit(e
                     saved = await fence.fetchrow(
                         "SELECT summary,metadata FROM conversations WHERE id=$1", conv
                     )
-                    assert saved["summary"] == "Winner"
+                    payload = await fence.fetchval(
+                        "SELECT p.ciphertext FROM conversation_summary_payloads p JOIN conversations c "
+                        "ON c.summary_head_version_id=p.version_id WHERE c.id=$1",
+                        conv,
+                    )
+                    assert env.memory.encryption.decrypt(payload) == "Winner"
                     assert json.loads(saved["metadata"])["summary_continuation_pending"] is True
                     await fence.execute(
                         "UPDATE entitlement_accounts SET content_generation=8 WHERE user_id=$1",
@@ -546,6 +564,7 @@ async def test_writer_first_lock_is_account_before_conversation_through_commit(e
 @pytest.mark.parametrize("phase", ["inputs", "write", "clear"])
 async def test_cancel_real_lock_wait_rolls_back_and_connection_reusable(env, monkeypatch, phase):
     conv, _ = await prepare(env, monkeypatch)
+    snapshot = await frozen(env, conv)
     before = await row(env, conv)
     async with env.pool.acquire() as writer, env.pool.acquire() as holder:
         tx = holder.transaction()
@@ -561,6 +580,7 @@ async def test_cancel_real_lock_wait_rolls_back_and_connection_reusable(env, mon
             else store.update_conversation_summary(
                 conv,
                 "X",
+                summary_snapshot=snapshot,
                 expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
@@ -572,6 +592,7 @@ async def test_cancel_real_lock_wait_rolls_back_and_connection_reusable(env, mon
                 captured_generation=capture,
                 expected_summary_updated_at=None,
                 expected_baseline=0,
+                summary_snapshot=snapshot,
             )
         )
         task = asyncio.create_task(operation)
@@ -595,6 +616,7 @@ async def test_cancel_during_actual_commit_rolls_back_summary_cursor_and_pending
     from orchestrator.memory.store import MemoryStore
 
     conv, _ = await prepare(env, monkeypatch)
+    snapshot = await frozen(env, conv)
     before = await row(env, conv)
     await env.pool.execute("""
         CREATE FUNCTION summary_commit_wait() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -620,6 +642,7 @@ async def test_cancel_during_actual_commit_rolls_back_summary_cursor_and_pending
             store.update_conversation_summary(
                 conv,
                 "Uncommitted",
+                summary_snapshot=snapshot,
                 expected_memory_erasure_epoch=0,
                 expected_summary_updated_at=None,
                 summarized_message_count=1,
@@ -714,9 +737,10 @@ async def test_legacy_and_refused_extraction_preserve_summary_without_fact_check
     await env.memory.update_conversation_summary(
         conv,
         "Existing",
+        summary_snapshot=await frozen(env, conv),
         expected_memory_erasure_epoch=0,
         expected_summary_updated_at=None,
-        summarized_message_count=0,
+        summarized_message_count=1,
         summary_continuation_pending=True,
         captured_generation=CapturedGeneration(env.alice, 7),
     )
@@ -771,6 +795,7 @@ async def test_noop_clear_cannot_erase_competing_summary_version(env, monkeypatc
     assert await env.memory.update_conversation_summary(
         conv,
         "First",
+        summary_snapshot=await frozen(env, conv),
         expected_memory_erasure_epoch=0,
         expected_summary_updated_at=None,
         summarized_message_count=1,
@@ -778,9 +803,11 @@ async def test_noop_clear_cannot_erase_competing_summary_version(env, monkeypatc
         captured_generation=capture,
     )
     observed = await row(env, conv)
+    snapshot = await frozen(env, conv)
     assert await env.memory.update_conversation_summary(
         conv,
         "Second",
+        summary_snapshot=await frozen(env, conv),
         expected_memory_erasure_epoch=0,
         expected_summary_updated_at=observed["summary_updated_at"],
         summarized_message_count=1,
@@ -793,6 +820,7 @@ async def test_noop_clear_cannot_erase_competing_summary_version(env, monkeypatc
         captured_generation=capture,
         expected_summary_updated_at=observed["summary_updated_at"],
         expected_baseline=1,
+        summary_snapshot=snapshot,
     )
     assert await row(env, conv) == before
     await run(env, "queued", conv)

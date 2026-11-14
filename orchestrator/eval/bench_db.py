@@ -50,6 +50,9 @@ FINGERPRINT_TABLES: tuple[tuple[str, str], ...] = (
     ("memory_mutations", "user_id"),
     ("memory_tombstones", "user_id"),
     ("memory_erased_sources", "user_id"),
+    ("conversation_summary_versions", "user_id"),
+    ("conversation_summary_sources", "user_id"),
+    ("conversation_summary_payloads", "user_id"),
 )
 # A synthetic content reset is NOT an account reset or a temporal-history rewind.
 RETAINED_PROTECTION_TABLES = frozenset(
@@ -62,6 +65,8 @@ _FINGERPRINT_KEYS = {
     "memory_mutations": "t.user_id,t.sequence",
     "memory_tombstones": "t.user_id,t.memory_id",
     "memory_erased_sources": "t.user_id,t.source_kind,t.source_id,t.memory_id",
+    "conversation_summary_sources": "t.version_id,t.message_id",
+    "conversation_summary_payloads": "t.version_id",
 }
 
 # Fixed content-only reset scope; arbitrary caller SQL cannot delete protections
@@ -75,6 +80,8 @@ BENCHMARK_RESET_STATEMENTS: tuple[tuple[str, str], ...] = tuple(
         "memories",
         "memory_dependencies",
         "memory_extraction_log",
+        "conversation_summary_payloads",
+        "conversation_summary_versions",
         "messages",
         "conversations",
     )
@@ -336,6 +343,10 @@ async def rollback_orphan_conversations(
         )
         before = await conn.fetchval("SELECT count(*) FROM memories WHERE user_id=$1", user_id)
         await _erase_synthetic_lineages(store, conn, user_id, [row["id"] for row in roots])
+        from orchestrator.memory.summary_provenance import invalidate
+
+        for conversation in sorted(ids):
+            await invalidate(conn, user_id, conversation=conversation)
         counts["memories"] = before - await conn.fetchval(
             "SELECT count(*) FROM memories WHERE user_id=$1", user_id
         )

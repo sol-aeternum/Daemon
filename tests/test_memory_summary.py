@@ -79,6 +79,10 @@ def _conversation_input(
         "messages": messages if messages is not None else [],
         "snapshot_at": SimpleNamespace(),
         "memory_erasure_epoch": 0,
+        "summary_snapshot": SimpleNamespace(
+            rendered=tuple(messages or ()),
+            reference=SimpleNamespace(sources=("prior",) if summary else ()),
+        ),
     }
     return payload
 
@@ -304,6 +308,7 @@ async def test_inline_summary_drained_noop_clears_pending_flag(
         captured_generation=capture,
         expected_summary_updated_at=summary_time,
         expected_baseline=20,
+        summary_snapshot=store.read_conversation_summary_inputs.return_value["summary_snapshot"],
     )
 
 

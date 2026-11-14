@@ -9,6 +9,24 @@
     "status": "Only the explicit generated-title SQL site records integration, with a real PostgreSQL contract suite. All other entries remain uncovered. False positives remain conservative deferred candidates. Classifications authorize no bypass, marker or readiness."
   },
   "tables": {
+    "conversation_summary_versions": {
+      "category": "content",
+      "owner_source": "migrations/072_summary_provenance.sql",
+      "ownership_path": "root:users <- conversation_summary_versions",
+      "rationale": "Account/reset direct-source summary identity, flattened closure count, rendered membership and checkpoint metadata. Revocation retained while future dependents need identity; no transitive assistant attribution or global account fence."
+    },
+    "conversation_summary_sources": {
+      "category": "content",
+      "owner_source": "migrations/072_summary_provenance.sql",
+      "ownership_path": "root:users <- conversation_summary_sources | root:users <- conversation_summary_versions <- conversation_summary_sources",
+      "rationale": "Account/reset immutable actual message UUID/version closure. No source FK cascade that could silently turn missing dependencies into independence."
+    },
+    "conversation_summary_payloads": {
+      "category": "content",
+      "owner_source": "migrations/072_summary_provenance.sql",
+      "ownership_path": "root:users <- conversation_summary_payloads | root:users <- conversation_summary_versions <- conversation_summary_payloads",
+      "rationale": "Account/reset encrypted new summary cache. Replacement retires old payload; Scope A/source erasure purges governed payloads. No new historical retention policy."
+    },
     "task_history_projection": {
       "category": "control",
       "owner_source": "migrations/057_restore_history_effects.sql",
@@ -467,6 +485,9 @@
     }
   },
   "fk_edges": {
+    "conversation_summary_versions": ["users"],
+    "conversation_summary_sources": ["conversation_summary_versions", "users"],
+    "conversation_summary_payloads": ["conversation_summary_versions", "users"],
     "task_history_projection": [
       "task_history_binding"
     ],
@@ -697,6 +718,9 @@
     ]
   },
   "ownership_paths": {
+    "conversation_summary_versions": "root:users <- conversation_summary_versions",
+    "conversation_summary_sources": "root:users <- conversation_summary_sources | root:users <- conversation_summary_versions <- conversation_summary_sources",
+    "conversation_summary_payloads": "root:users <- conversation_summary_payloads | root:users <- conversation_summary_versions <- conversation_summary_payloads",
     "task_history_projection": "root:task_history_binding <- task_history_projection",
     "resource_presentations": "root:users <- conversations <- messages <- resource_presentations | root:users <- messages <- resource_presentations | root:users <- resource_presentations",
     "resource_input_batches": "root:users <- conversations <- messages <- tasks <- resource_input_batches | root:users <- conversations <- tasks <- resource_input_batches | root:users <- messages <- tasks <- resource_input_batches | root:users <- resource_input_batches | root:users <- tasks <- resource_input_batches",
@@ -810,6 +834,56 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "Scanner observes required_history.set: a private negative ContextVar requirement, not a database write or dispatch permit. Retained as an uncovered conservative candidate; no new account-fence claim."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "_validate", "kind": "sql_unresolvable",
+      "fingerprint": "c84b7c1c367ef64c", "tables": [], "unknown": true, "uncovered": true,
+      "category": "deferred", "rationale": "Fixed-clause source row-lock query; scanner cannot resolve conditional FOR SHARE. No generic guard claim."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "invalidate", "kind": "sql_inline",
+      "fingerprint": "2f8e1a5177b70092", "tables": ["conversations"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Same-transaction caller-owned Scope A/source invalidation clears heads and cursors. No standalone deletion authority or global account fence."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "invalidate", "kind": "sql_inline",
+      "fingerprint": "9d67bef67f2f56e7", "tables": ["conversation_summary_versions"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Caller-owned revocation preserves immutable direct-source identity, not payload. No generic guard claim."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "invalidate", "kind": "sql_inline",
+      "fingerprint": "df588a86305fb2ac", "tables": ["conversation_summary_payloads"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Caller-owned governed payload purge. No global account fence."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "publish", "kind": "sql_inline",
+      "fingerprint": "32d783a384a54708", "tables": ["conversation_summary_versions"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Frozen direct-source summary version in original account/erasure transaction; bounded tests, not global fencing."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "publish", "kind": "sql_inline",
+      "fingerprint": "5512d3386ef7f2e2", "tables": ["conversation_summary_payloads"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Encrypted new-write payload published atomically with closure/head. No generic guard claim."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "publish", "kind": "sql_inline",
+      "fingerprint": "70716a968858101f", "tables": ["conversations"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Head/state CAS and cursor publication after source revalidation. No global account fence."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "publish", "kind": "sql_inline",
+      "fingerprint": "71bf7159bc0f367e", "tables": ["conversation_summary_payloads"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Replaceable-cache payload retirement in publication transaction; identity/dependencies retained."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "publish", "kind": "sql_inline",
+      "fingerprint": "98c4136809023b28", "tables": ["conversation_summary_sources"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Flattened typed direct message dependencies sealed before head publication. No inferred assistant derivation."
+    },
+    {
+      "owner_source": "orchestrator.memory.summary_provenance", "qualname": "publish", "kind": "sql_inline",
+      "fingerprint": "a1ed9e7d177860c1", "tables": ["conversation_summary_versions"], "unknown": false, "uncovered": true,
+      "category": "content", "rationale": "Seal validates immutable closure cardinality and payload presence. No global account fence."
     },
     {
       "owner_source": "orchestrator.memory.injection",
@@ -4183,7 +4257,7 @@
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.clear_finished_summary_continuation",
       "kind": "sql_inline",
-      "fingerprint": "40894a2d35e19c84",
+      "fingerprint": "4d5cb8da1e7c39c0",
       "tables": [
         "conversations"
       ],
@@ -4583,16 +4657,13 @@
     {
       "owner_source": "orchestrator.memory.store",
       "qualname": "MemoryStore.update_conversation_summary",
-      "kind": "sql_inline",
-      "fingerprint": "06b0260fcf78d08a",
-      "tables": [
-        "conversations"
-      ],
-      "unknown": false,
-      "uncovered": false,
-      "category": "content",
-      "rationale": "Generated summary text, cursor and pending flag commit together under the original account guard with owner-qualified optimistic concurrency.",
-      "guard_contract": "tests/test_summary_account_guard_postgres.py"
+      "kind": "store_write",
+      "fingerprint": "d52965bc611259e7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Typed snapshot adapter delegates to summary_provenance.publish; no inferred generic call-graph guard claim."
     },
     {
       "owner_source": "orchestrator.memory.store",

@@ -578,18 +578,12 @@ class SkillEvaluator:
         if user_message is None:
             return None
 
-        conversation = await self._store.get_conversation(request.conversation_id)
-        conversation_summary = None
-        if isinstance(conversation, dict):
-            summary_value = conversation.get("summary")
-            if isinstance(summary_value, str) and summary_value.strip():
-                conversation_summary = summary_value.strip()
-
+        # Skill files/projections have no atomic summary-dependency publication
+        # or erasure integration. Omit this derived context until they do.
         return SkillTurnContext(
             user_message=user_message,
             assistant_message=assistant_message,
             tool_trace=_summarize_tool_trace(assistant_message),
-            conversation_summary=conversation_summary,
         )
 
     async def _generate_skill_draft(
@@ -602,7 +596,7 @@ class SkillEvaluator:
             assistant_response=str(turn.assistant_message.get("content") or "").strip(),
             tool_trace=turn.tool_trace,
             tool_call_count=tool_call_count,
-            conversation_summary=turn.conversation_summary,
+            conversation_summary=None,
         )
         payload = await self._run_json_prompt(
             prompt=prompt,

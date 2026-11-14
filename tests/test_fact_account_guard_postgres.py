@@ -174,8 +174,13 @@ async def test_final_fact_checkpoint_serializes_with_erasure(env, monkeypatch, f
         if first == "erasure":
             assert await env.memory.delete_memory(root, user_id=env.alice)
             release.set()
-            with pytest.raises(Retry):
-                await asyncio.wait_for(writer, 10)
+            # Revoking even an empty summary advances its head state. The
+            # frozen reference now refuses before the epoch-guarded checkpoint,
+            # rather than reaching its formerly recoverable epoch mismatch.
+            assert await asyncio.wait_for(writer, 10) == {
+                "status": "skipped",
+                "reason": "source_changed",
+            }
             assert await env.pool.fetchval("SELECT count(*) FROM memory_extraction_log") == 0
         else:
             eraser = asyncio.create_task(env.memory.delete_memory(root, user_id=env.alice))
@@ -1339,15 +1344,28 @@ async def test_committed_summary_recovery_ignores_unrelated_message_snapshot_not
     env, monkeypatch, entity_queue, mutation
 ):
     conv, mid, extractor, _ = await prepare(env, monkeypatch)
+    origin = CapturedGeneration(env.alice, 7)
+    inputs = await env.memory.read_conversation_summary_inputs(
+        conv, captured_generation=origin, limit=20
+    )
+    assert inputs is not None
     assert await env.memory.update_conversation_summary(
         conv,
         "Already committed synthetic summary",
         expected_memory_erasure_epoch=0,
         expected_summary_updated_at=None,
-        summarized_message_count=0,
+        summarized_message_count=inputs["summary_snapshot"].claimed,
         summary_continuation_pending=True,
-        captured_generation=CapturedGeneration(env.alice, 7),
+        captured_generation=origin,
+        summary_snapshot=inputs["summary_snapshot"],
     )
+    # Recovery ignores an unrelated extraction source, not a changed direct
+    # source of the committed summary. Keep that distinction explicit.
+    mid = (
+        await env.memory.insert_message(
+            conv, env.alice, "user", "Unrelated fictional extraction source.", status="complete"
+        )
+    )["id"]
     original_read = env.memory.read_summary_continuation_pending
 
     async def mutate_after_guarded_state(*args, **kwargs):
@@ -1395,7 +1413,13 @@ async def test_committed_summary_recovery_ignores_unrelated_message_snapshot_not
     else:
         assert wires == []
     row = await env.pool.fetchrow("SELECT summary,metadata FROM conversations WHERE id=$1", conv)
-    assert row["summary"] == "Already committed synthetic summary"
+    assert row["summary"] is None
+    ciphertext = await env.pool.fetchval(
+        "SELECT p.ciphertext FROM conversation_summary_payloads p JOIN conversations c "
+        "ON c.summary_head_version_id=p.version_id WHERE c.id=$1",
+        conv,
+    )
+    assert env.memory.encryption.decrypt(ciphertext) == "Already committed synthetic summary"
     assert json.loads(row["metadata"])["summary_continuation_pending"] is True
     assert await counts(env) == (0, 0)
     extractor.assert_not_awaited()

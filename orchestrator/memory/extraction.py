@@ -802,6 +802,9 @@ async def process_extraction(
     from orchestrator.memory.dedup import deduplicate_facts
 
     from orchestrator.memory import extraction_fencing as fencing
+    from orchestrator.memory import summary_provenance
+
+    direct_summary_reference = None
 
     if extraction_inputs is not None:
         extraction_inputs, summary = await fencing.with_summary(store, extraction_inputs)
@@ -818,6 +821,16 @@ async def process_extraction(
     ):
         # No extraction or embedding of local/unknown source content through cloud.
         return False, [], False
+    if extraction_inputs is None and conversation:
+        # Qualify the source boundary before touching a derived summary. Direct
+        # offline callers without cloud authority never inherit a legacy cache.
+        qualified_summary = None
+        if conversation.get("pipeline") == "cloud" and conversation.get("user_id") == user_id:
+            (
+                direct_summary_reference,
+                qualified_summary,
+            ) = await store.read_qualified_conversation_summary(conversation_id, user_id=user_id)
+        conversation = {**conversation, "summary": qualified_summary}
     summary = None
     if conversation:
         summary = conversation.get("summary")
@@ -828,6 +841,11 @@ async def process_extraction(
     outcome = await extract_facts_from_text(text, model=model, summary=summary)
     if extraction_inputs is not None:
         await fencing.check(store, extraction_inputs)
+    elif direct_summary_reference is not None:
+        async with store._pool.acquire() as summary_conn:
+            await summary_provenance.validate_reference(
+                summary_conn, user_id, direct_summary_reference
+            )
     retry_used = False
 
     outcome_succeeded = bool(getattr(outcome, "succeeded", True))
@@ -852,6 +870,11 @@ async def process_extraction(
         )
         if extraction_inputs is not None:
             await fencing.check(store, extraction_inputs)
+        elif direct_summary_reference is not None:
+            async with store._pool.acquire() as summary_conn:
+                await summary_provenance.validate_reference(
+                    summary_conn, user_id, direct_summary_reference
+                )
         if bool(getattr(retry_outcome, "succeeded", True)):
             outcome = retry_outcome
             outcome_succeeded = True
@@ -905,6 +928,7 @@ async def process_extraction(
         status="active",
         extraction_inputs=extraction_inputs,
         committed_prefix=committed_prefix,
+        summary_reference=direct_summary_reference,
     )
 
     await log_writer(

@@ -20,6 +20,38 @@ from tests.durable_tasks_support import seed_entitlement
 env = benchmark_env_fixture()
 
 
+@pytest.mark.asyncio
+async def test_summary_version_payload_and_closure_participate_in_owned_reset(env):
+    from orchestrator.memory import summary_provenance as sp
+    from orchestrator.services.account_control.guard import CapturedGeneration
+
+    conv, _, _ = await seed(env)
+    generation = await env.pool.fetchval(
+        "SELECT content_generation FROM entitlement_accounts WHERE user_id=$1", env.alice
+    )
+    inputs = await sp.prepare(
+        env.memory,
+        conv["id"],
+        CapturedGeneration(env.alice, generation),
+        limit=20,
+        render_limit=500,
+    )
+    assert inputs is not None
+    assert await sp.publish(
+        env.memory, inputs["summary_snapshot"], "Synthetic reset summary.", continuation=False
+    )
+    before = await fingerprint(env)
+    assert before["tables"]["conversation_summary_payloads"]["rows"] == 1
+    await wipe(env)
+    after = await fingerprint(env)
+    for table in (
+        "conversation_summary_versions",
+        "conversation_summary_sources",
+        "conversation_summary_payloads",
+    ):
+        assert after["tables"][table]["rows"] == 0
+
+
 async def seed(env, owner=None):
     owner = owner or env.alice
     conv = await env.memory.create_conversation(owner, title="Synthetic source")
