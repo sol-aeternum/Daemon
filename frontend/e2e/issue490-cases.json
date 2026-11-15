@@ -1,0 +1,283 @@
+[
+  [
+    "online-ui-boundaries",
+    "online-ui-boundaries.spec.ts",
+    "non-PWA UI uses a real cache acknowledgement without a worker controller"
+  ],
+  [
+    "online-ui-boundaries",
+    "online-ui-boundaries.spec.ts",
+    "missing cache acknowledgement still blocks protected UI and generation"
+  ],
+  [
+    "csp-previews",
+    "csp-previews.spec.ts",
+    "DOCX preview attaches generated styles with the response nonce"
+  ],
+  [
+    "csp-previews",
+    "csp-previews.spec.ts",
+    "HTML preview runs inline scripts only inside the isolated frame policy"
+  ],
+  [
+    "csp-previews",
+    "csp-previews.spec.ts",
+    "application media-src admits supported data video URLs"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "a 100-message thread collapses long older messages and can expand them"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "browser find reveals text inside a collapsed message"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "long-chat reload keeps scrolling inside messages at 390px"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "long-chat reload keeps scrolling inside messages at 1440px"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "tool-log preference persists after reload at 375px"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "tool-log preference persists after reload at 1440px"
+  ],
+  [
+    "conversation-ergonomics",
+    "conversation-ergonomics.spec.ts",
+    "streaming preserves reading position and Jump to latest resumes following"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "the /council compatibility command opens the existing interview"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "ordinary turn submits balanced + auto independently"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "ordinary turn submits balanced + research independently"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "ordinary turn submits brief + auto independently"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "ordinary turn submits brief + research independently"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "ordinary turn submits detailed + auto independently"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "ordinary turn submits detailed + research independently"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "header settings shortcut preserves the conversation across sections and back to chat"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "navigation fits at 375px"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "navigation fits at 768px"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "navigation fits at 1440px"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "an unsent draft and its attachment survive a page reload in the same tab"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "sidebar search finds older conversations through the server and pages results"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "settings lets a person add a memory and export portable JSON"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "settings imports memories only after the person reviews the file"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "the memory browser shows the true total and loads every memory"
+  ],
+  [
+    "chat-discoverability",
+    "chat-discoverability.spec.ts",
+    "a memory edit saves through PATCH, survives reload and keeps the draft on failure"
+  ],
+  [
+    "chat-discoverability",
+    "tts-plasma.spec.ts",
+    "bottom player pauses, seeks and resumes one native audio without another request"
+  ],
+  [
+    "chat-discoverability",
+    "tts-plasma.spec.ts",
+    "native pause before the initial play promise settles retains resumable audio"
+  ],
+  [
+    "chat-discoverability",
+    "tts-plasma.spec.ts",
+    "plays with Plasma integration and cleans up on replacement, Stop and end"
+  ],
+  [
+    "chat-discoverability",
+    "tts-plasma.spec.ts",
+    "Stop before the native play event cannot resurrect a detached player"
+  ],
+  [
+    "design-tokens",
+    "design-tokens.spec.ts",
+    "artifact fixture qualifies the empty durable catalog without generation"
+  ],
+  [
+    "design-tokens",
+    "design-tokens.spec.ts",
+    "profile fixture qualifies the original top-of-main capture"
+  ],
+  [
+    "design-tokens",
+    "design-tokens.spec.ts",
+    "memory fixture qualifies the original top-of-main capture"
+  ],
+  [
+    "design-tokens",
+    "design-tokens.spec.ts",
+    "memory missing status never presents healthy embeddings"
+  ],
+  [
+    "design-tokens",
+    "design-tokens.spec.ts",
+    "memory error status never presents healthy embeddings"
+  ],
+  [
+    "design-tokens",
+    "design-tokens.spec.ts",
+    "memory eligible status never presents healthy embeddings"
+  ],
+  ["design-tokens", "design-tokens.spec.ts", "chat uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "landing uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "artifacts uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "studio uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "profile uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "appearance uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "memory uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "skills uses dark tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "chat uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "landing uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "artifacts uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "studio uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "profile uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "appearance uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "memory uses light tokens"],
+  ["design-tokens", "design-tokens.spec.ts", "skills uses light tokens"],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "dark 1440: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "dark 768: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "dark 390: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "dark 360: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "light 1440: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "light 768: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "light 390: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "light 360: selected output, focus, draft and settings"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "unavailable file is visible and does not regenerate or lose the draft"
+  ],
+  [
+    "midnight",
+    "midnight.spec.ts",
+    "Escape closes details before Stop and preserves a newer streaming draft"
+  ],
+  [
+    "contextual-home",
+    "contextual-home.spec.ts",
+    "quiet empty home and persistent Settings control without generation"
+  ],
+  [
+    "contextual-home",
+    "contextual-home.spec.ts",
+    "centred exact preview and immediate new chat at 375px"
+  ],
+  [
+    "contextual-home",
+    "contextual-home.spec.ts",
+    "centred exact preview and immediate new chat at 768px"
+  ],
+  [
+    "contextual-home",
+    "contextual-home.spec.ts",
+    "centred exact preview and immediate new chat at 1440px"
+  ]
+]

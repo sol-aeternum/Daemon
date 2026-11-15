@@ -6,6 +6,7 @@ import {
   historyFixtureList,
   historyFixtureDetail,
 } from './history-fixtures';
+import { recordScrollWindow } from './issue490-window';
 
 const conversation = {
   id: historyFixtureConversationId,
@@ -145,21 +146,24 @@ test('a 100-message thread collapses long older messages and can expand them', a
   await old.getByRole('button', { name: 'Show less' }).click();
   await expect(oldDetail).toBeHidden();
 
-  const fps = await messages.evaluate(
-    (element) =>
-      new Promise<number>((resolve) => {
-        let frames = 0;
-        const started = performance.now();
-        function step(now: number) {
-          frames += 1;
-          element.scrollTop =
-            ((now - started) / 1000) *
-            (element.scrollHeight - element.clientHeight);
-          if (now - started >= 1000) resolve((frames * 1000) / (now - started));
-          else requestAnimationFrame(step);
-        }
-        requestAnimationFrame(step);
-      }),
+  const fps = await recordScrollWindow(testInfo, () =>
+    messages.evaluate(
+      (element) =>
+        new Promise<number>((resolve) => {
+          let frames = 0;
+          const started = performance.now();
+          function step(now: number) {
+            frames += 1;
+            element.scrollTop =
+              ((now - started) / 1000) *
+              (element.scrollHeight - element.clientHeight);
+            if (now - started >= 1000)
+              resolve((frames * 1000) / (now - started));
+            else requestAnimationFrame(step);
+          }
+          requestAnimationFrame(step);
+        }),
+    ),
   );
   console.log(`100-message scroll: ${fps.toFixed(1)} FPS`);
   expect(fps).toBeGreaterThan(30);

@@ -201,10 +201,29 @@ def test_browser_inventory_job_stays_parallel_and_nonblocking() -> None:
         < steps.index("Browser regression inventory")
         < steps.index("Upload browser regression screenshots")
     )
-    assert by_name["Browser regression inventory"]["run"] == "npm run test:browser:qualification"
+    inventory = by_name["Browser regression inventory"]["run"]
+    # One nonblocking step, unchanged qualifier for ordinary PRs/main. The
+    # owner-approved branch dispatches the production-only observer instead.
+    assert inventory.splitlines() == [
+        "if [ '${{ github.head_ref == 'investigate/490-ci-fps-20261115' }}' = 'true' ]; then",
+        "  python3 e2e/issue490_ci_probe.py probe \\",
+        "    --expected-sha '${{ github.event.pull_request.head.sha }}' \\",
+        "    --run-id '${{ github.run_id }}' --attempt '${{ github.run_attempt }}'",
+        "else",
+        "  npm run test:browser:qualification",
+        "fi",
+    ]
     upload = by_name["Upload browser regression screenshots"]
-    assert upload["if"] == "always()"
+    assert upload["if"] == "always() && github.head_ref != 'investigate/490-ci-fps-20261115'"
     assert upload["with"]["name"] == "browser-regressions"
+    safe = by_name["Upload only finalized numeric investigation evidence"]
+    assert "always()" in safe["if"] and "complete" in safe["if"]
+    assert "github.head_ref == 'investigate/490-ci-fps-20261115'" in safe["if"]
+    assert safe["with"]["path"].splitlines() == [
+        "frontend/test-results/issue490-public/runner.json",
+        "frontend/test-results/issue490-public/results.json",
+        "frontend/test-results/issue490-public/host.jsonl",
+    ]
 
 
 def test_cross_language_vitest_has_locked_python_before_execution() -> None:
