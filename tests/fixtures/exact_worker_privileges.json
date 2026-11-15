@@ -1,7 +1,7 @@
 {
   "schema": "exact-worker-privileges/v1",
-  "baseline": "6485d4b1cc554f8e7c4cc572994448f7d6e22c22",
-  "proposal_sha256": "67b58ddfaf8954d5e36770857e5af4dbbe0648a61d93b32a72566b733188557c",
+  "baseline": "808744bb76883f3ef63526febc12b6f8e46a8ca7",
+  "proposal_sha256": "8f391798c1deb828cb649857735b56dd46db5001f013c537b5d4c4ea728f03de",
   "ordinary_tables": [
     {
       "table": "public.account_deletions",
@@ -26,6 +26,32 @@
       "table": "public.account_suspension_causes",
       "table_privileges": [
         "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.conversation_summary_payloads",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.conversation_summary_sources",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.conversation_summary_versions",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
       ],
       "update_columns": []
     },
@@ -194,10 +220,86 @@
       "update_columns": []
     },
     {
+      "table": "public.memory_current_assertions",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_dependencies",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "DELETE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_erased_sources",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
       "table": "public.memory_extraction_log",
       "table_privileges": [
         "SELECT",
         "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_knowledge_clock",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_mutations",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_revision_segments",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_revisions",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_sources",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
+      "table": "public.memory_tombstones",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
       ],
       "update_columns": []
     },
