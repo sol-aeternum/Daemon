@@ -101,6 +101,15 @@ The shared backend/worker W role includes ordinary auth, content and billing
 capabilities. The five extra column UPDATE grants are real mutation authority,
 including four row-lock requirements and the ownership interval trigger write;
 they must not be described as read-only access. No live grant is supplied here.
+The map covers the memory revision objects from migration 066 and the summary
+provenance tables from 072: the memory triggers run with the caller's rights, so
+W writes revision, mutation and clock rows directly. Its UPDATE on those
+tables is limited to the columns the code changes: clock `clock_regressed`,
+`erasure_epoch`, `last_clock_at` and `sequence` (the clock is also row-locked
+`FOR UPDATE`), mutation `observed_committed_by`, segment `content_tsv`,
+`embedding` and `embedding_model`, tombstone `hard`, and summary version
+`revoked_at` and `sealed`. `proposal_sha256` is the
+SHA-256 of the map without that field, serialized as sorted, compact JSON.
 
 The real-PostgreSQL tests cover the effective ACL map, ordinary lifespan/auth,
 owner isolation, budget settlement, seeded-spend refunds, projections, audit,
