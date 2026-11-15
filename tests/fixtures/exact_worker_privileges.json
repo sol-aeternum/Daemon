@@ -1,7 +1,7 @@
 {
   "schema": "exact-worker-privileges/v1",
   "baseline": "808744bb76883f3ef63526febc12b6f8e46a8ca7",
-  "proposal_sha256": "8f391798c1deb828cb649857735b56dd46db5001f013c537b5d4c4ea728f03de",
+  "proposal_sha256": "9837d7bc67e50e5730d624eaf9134a0e338e955d8304a1f024e8a5788ef500e5",
   "ordinary_tables": [
     {
       "table": "public.account_deletions",
@@ -50,10 +50,12 @@
       "table": "public.conversation_summary_versions",
       "table_privileges": [
         "SELECT",
-        "INSERT",
-        "UPDATE"
+        "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "revoked_at",
+        "sealed"
+      ]
     },
     {
       "table": "public.conversations",
@@ -255,28 +257,36 @@
       "table": "public.memory_knowledge_clock",
       "table_privileges": [
         "SELECT",
-        "INSERT",
-        "UPDATE"
+        "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "clock_regressed",
+        "erasure_epoch",
+        "last_clock_at",
+        "sequence"
+      ]
     },
     {
       "table": "public.memory_mutations",
       "table_privileges": [
         "SELECT",
-        "INSERT",
-        "UPDATE"
+        "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "observed_committed_by"
+      ]
     },
     {
       "table": "public.memory_revision_segments",
       "table_privileges": [
         "SELECT",
-        "INSERT",
-        "UPDATE"
+        "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "content_tsv",
+        "embedding",
+        "embedding_model"
+      ]
     },
     {
       "table": "public.memory_revisions",
@@ -298,10 +308,11 @@
       "table": "public.memory_tombstones",
       "table_privileges": [
         "SELECT",
-        "INSERT",
-        "UPDATE"
+        "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "hard"
+      ]
     },
     {
       "table": "public.messages",
