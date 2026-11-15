@@ -39,15 +39,19 @@ async def db(metadata_cluster):
     name = "md_" + uuid4().hex
     cluster.prepare(name)
     cluster.sql("BEGIN;" + SQL + "COMMIT;", database=name, role="md_owner")
-    # Actual current TaskStore acceptance also requires the message foundation;
-    # the rest of this lane stays pinned to its existing lifecycle boundary.
-    cluster.sql(
-        "BEGIN;"
-        + (ROOT / "migrations/071_message_correction_admission.sql").read_text()
-        + "COMMIT;",
-        database=name,
-        role="md_owner",
-    )
+    # Actual current TaskStore acceptance also requires the message foundation,
+    # and conversation deletion consumes memory and summary provenance; the
+    # rest of this lane stays pinned to its existing lifecycle boundary.
+    for migration in (
+        "066_memory_bitemporal.sql",
+        "071_message_correction_admission.sql",
+        "072_summary_provenance.sql",
+    ):
+        cluster.sql(
+            "BEGIN;" + (ROOT / "migrations" / migration).read_text() + "COMMIT;",
+            database=name,
+            role="md_owner",
+        )
     cluster.sql(
         ";".join(
             "GRANT EXECUTE ON FUNCTION public.attempt_lifecycle_" + s + " TO md_app"
