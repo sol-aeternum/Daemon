@@ -58,8 +58,12 @@ async def host(effects, tmp_path, monkeypatch, request):
     # The shared history fixture intentionally stops at 057. This startup lane
     # needs the real current memory prerequisite, not a mocked/relaxed guard.
     if revision != "missing":
-        migration = Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql"
-        s.db.sql("BEGIN;" + migration.read_text() + "COMMIT;")
+        migrations = Path(__file__).resolve().parents[1] / "migrations"
+        for name in (
+            "066_memory_bitemporal.sql",
+            "072_summary_provenance.sql",
+        ):
+            s.db.sql("BEGIN;" + (migrations / name).read_text() + "COMMIT;")
         if revision == "disabled":
             s.db.sql("ALTER TABLE memories DISABLE TRIGGER memory_revision_capture")
     value = settings()

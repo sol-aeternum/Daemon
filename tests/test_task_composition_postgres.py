@@ -109,12 +109,17 @@ def settings():
 
 @pytest_asyncio.fixture
 async def host(db):
-    # Local runner fixture only: original_capture consumes the unchanged 066 schema.
-    db.sql(
-        "BEGIN;"
-        + (Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql").read_text()
-        + "COMMIT;"
-    )
+    # Local runner fixture only: original_capture consumes the unchanged 066 schema,
+    # and worker startup also requires summary provenance 072 (071 is already present).
+    for name in (
+        "066_memory_bitemporal.sql",
+        "072_summary_provenance.sql",
+    ):
+        db.sql(
+            "BEGIN;"
+            + (Path(__file__).resolve().parents[1] / "migrations" / name).read_text()
+            + "COMMIT;"
+        )
     db.sql("GRANT SELECT ON memory_knowledge_clock TO md_app;")
     db.sql(
         "INSERT INTO public._migrations(filename) VALUES('049_attempt_lifecycle.sql'),"
