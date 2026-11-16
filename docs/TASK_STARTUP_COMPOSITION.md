@@ -127,3 +127,11 @@ independent H/W identity and parity checks before native recovery writes, and
 retains actual pool reset completion. Selected workers deliberately refuse
 startup after qualification: the observation-only backend is not execution
 readiness. Unselected services must prove H schema absence before recovery.
+
+The [H bootstrap qualification](RESTORE_HISTORY_RUNTIME.md#application-startup-and-bootstrap-boundary)
+uses the full application lifespan and a fresh supported-launcher process, with
+synthetic H file ownership/material and restricted SQL logins. Its H fixture adds
+separate history-function grants beyond the ordinary W map; the broader A fixture
+is not a deployment grant proposal. Expected bootstrap refusals remain intact.
+These tests neither activate execution nor establish complete application or
+physical-phone acceptance.

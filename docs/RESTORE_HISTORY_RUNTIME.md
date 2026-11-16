@@ -111,6 +111,61 @@ synthetic SQL tests supply synthetic material instead of provisioning two real
 OS identities/groups. They do not qualify production mounts, DAC, original ACLs,
 keys, account continuity, independent backup retention or the deployed topology.
 
+### Application startup and bootstrap boundary
+
+`tests/test_phone_startup_bootstrap_postgres.py` exercises the actual
+`orchestrator.main.app` and full lifespan against the owned SQL fixture. A
+fresh-interpreter case invokes the supported `orchestrator.runtime.main` backend
+launcher with real Uvicorn and lifespan, using Uvicorn's inherited-socket `fd`
+branch with a parent-owned loopback listener. The ordinary host/port bind branch
+and production networking are not qualified by that test. Synthetic settings explicitly
+disable dotenv loading; synthetic H material maps the single test UID to the
+fixture files. This does not qualify production UID/GID, key or mount separation.
+
+The database starts with the proposed ordinary W map, then existing H fixtures
+apply their separate `task_history_*` function grants. A retains the broader
+synthetic acceptor fixture. The startup checks therefore do **not** prove that
+the ordinary W map alone is an H privilege profile or supply a deployable A map.
+The exact ordinary-role ACL inventory remains separately tested in
+`tests/test_exact_worker_privileges_postgres.py`; no privilege map changes here.
+
+The bounded backend request matrix follows application callers in
+`frontend/components/AuthProvider.tsx`, `frontend/components/ModelSelector.tsx`,
+`frontend/hooks/useEntitlements.ts`, `frontend/hooks/useHomeSuggestions.ts` and
+the task input/presentation proxies under `frontend/app/api/tasks/`:
+
+| Request group | Selected H1 expectation |
+| --- | --- |
+| Health and public auth config | Success, no-store |
+| Anonymous refresh without a credential | Native missing-credential refusal, not an H availability refusal |
+| Authenticated conversation list and original task/by-key reads | Success, no-store |
+| Catalog/models, entitlement display, home suggestions, settings, task inputs/presentations | `503 history_unavailable`, no-store |
+| New chat, native Stop and unclassified resource routes | The same H refusal before execution |
+
+The lifecycle case prohibits attestation, shipped-skill publication, memory
+backfill and session-cleanup producers; the child prohibits outbound network
+connects and checks physical pool/history cleanup after graceful termination.
+H observation-only does **not** mean authentication storage is read-only:
+`main._check_first_boot_setup` still runs under W. The fresh-install case writes
+a setup-token verifier and private operator token file. With devices but no valid
+refresh session, startup revokes the existing devices/sessions and republishes
+setup material. Separate full-lifespan cases exercise both existing branches
+under W and assert the original task stays queued; token values are not exposed.
+This documents current startup behavior, not a new credential or grant decision.
+The existing worker startup tests still require `history_observation_only` before
+the job loop, including pool cleanup. No acceptance/Send/Stop/output collaborator
+is installed by these tests or by production H startup.
+
+This is **backend bootstrap-boundary qualification**, not successful complete
+application bootstrap: it seeds native device sessions, does not drive Next or
+a browser, and deliberately retains unavailable controls. Fresh setup/enrollment,
+cookie/CSRF/proxy behavior, model selection, SSE, a restarted browser and a
+physical phone remain separate acceptance. No live provider is called. A usable
+pilot needs an approved route-by-route bootstrap and executable composition,
+not blanket GET admission or removal of the worker barrier. Keep #477 and the
+applicable #704 privilege/runtime qualification open; no deployed grants, flag
+enablement, lost-output recovery, restore or phone acceptance follows here.
+
 Acceptance, Send, Stop and text/partial/terminal/artifact publication must next be
 connected to the authenticated runtime and qualified together before removing
 the barrier. Existing source adapters and receipts are not dispatch permits.
