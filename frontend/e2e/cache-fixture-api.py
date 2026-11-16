@@ -323,7 +323,8 @@ class SyntheticAuthUpstream:
             _event(route_key, behavior, "dropping-connection")
             # Malformed ASGI header -> h11 raises before any socket write ->
             # uvicorn force-closes the transport -> the proxy's Node fetch
-            # throws and the actual production retry list runs.
+            # throws. The pinned proxy must refuse without consuming a second
+            # planned response, and cookie coordination must stay uncertain.
             await send(
                 {"type": "http.response.start", "status": 200, "headers": [(b"bad\nheader", b"x")]}
             )
