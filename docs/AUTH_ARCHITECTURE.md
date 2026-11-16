@@ -26,6 +26,12 @@ The setup token is generated on startup, written to the local operator token fil
 ### Decision 5 — Setup token never goes in URLs
 The setup token is pasted into `/setup` as form/body data only. It must not appear in a URL, query string, Referer header, browser history, bookmark, proxy log, or server access log.
 
+The operator file is delivery material, not the setup authority: removing it
+after startup does not invalidate a token already held by the operator while its
+database verifier is still valid. Successful setup consumes that verifier; a
+repeat setup refuses. Missing identity/entitlement prerequisites are not repaired
+by setup. The B1 fixture exercises these distinctions only on disposable state.
+
 ### Decision 6 — Setup is transaction-locked
 Successful setup uses the shared auth-runtime advisory lock (`pg_advisory_xact_lock(hashtext('daemon:auth_runtime_state'))`), rechecks zero active devices inside the transaction, creates the first device/session, and deactivates setup.
 
@@ -306,6 +312,58 @@ design §8; no automatic recovery from abandoned uncertainty is promised.
 No deployment, cookie/backend API change or deletion/reset implementation is
 claimed by this coordinator integration.
 
+### B1 pinned browser-bootstrap proxies
+
+The auth catch-all and `/api/entitlements` share one backend selection through
+`frontend/app/api/_lib/bootstrapBackend.ts`: first nonempty, trimmed
+`DAEMON_INTERNAL_API_URL`, then `NEXT_PUBLIC_API_URL`, otherwise
+`http://backend:8000`. A selected invalid absolute HTTP(S) base, embedded
+credentials, query or fragment refuses; it does not authorize another candidate.
+Trailing slashes are removed and a configured path prefix is retained.
+There is no localhost transport fallback in these two proxies. Other proxy
+families' source is unchanged and is not qualified by this boundary, except the
+bounded chat-transport repair below. Compose now
+forwards the existing internal override with a `http://backend:8000` default,
+which changes the default upstream for its other frontend consumers too. Existing
+root overrides now take effect on redeploy; the public build/runtime URL values
+are unchanged. See `docs/ENV_SURFACE_MIGRATION.md` for the unset/empty versus
+whitespace-only limitation and deployment prerequisites.
+
+Both proxies bypass HTTP caching and reject upstream redirects, including
+307/308 body-preserving redirects. A transport/redirect failure returns an opaque
+no-store 502 without an exception or internal address; no automatic request
+replay follows. Cookie-writing requests may already have committed, so that 502
+is not a verified rejection or rollback. Separate `Set-Cookie` headers and native
+CSRF/origin checks remain intact. Existing cookie coordination keeps uncertain
+operations fail-closed; this change adds no automatic reconciliation protocol.
+
+The legacy `/api/chat` proxy adopts a narrower transport-only version of the
+same single-attempt rule (#725). It retains module-time first-truthy selection
+and the existing candidate list, but stops after its first fetch whether that
+fetch succeeds or throws: a rejected fetch has an unknown outcome, so the POST is
+never re-dispatched from the same handler, keyed or not. Its POST also sets
+`redirect: 'error'`, so a 307/308 cannot re-deliver the same logical request, and
+its no-response stream error is opaque and does not invite a blind retry. That
+deliberately removes unkeyed chat fallback. It adds no shared bootstrap URL
+validation, no candidate deduplication and no qualification of the other proxy
+families.
+
+Explicit server tests distinguish the checked-in unused-successor grace from
+consumed reuse revocation; they are not a new browser retry rule. The checked-in
+refresh handler currently implements a bounded 30-second unused-successor replay
+(`REFRESH_ROTATION_GRACE_SECONDS` in `orchestrator/routes/auth_setup.py`). That
+is observed implementation, not ratified architecture: locked Decisions 20 and
+21 say there is no grace window. The conflict is unresolved and requires an
+owner decision; this source change neither ratifies the grace nor removes it at
+runtime.
+
+The bounded self-hosted fixture uses one HTTPS origin and a nonempty backend
+prefix with real setup/enrollment, not preissued sessions. Legacy private Cache
+Storage entries require targeted fixed-worker activation cleanup as well as the
+separate HTTP-cache barrier. Old-controller replacement is an acceptance
+precondition, not a promise that all open old tabs are repaired. No deployed
+accounts, grants, caches, flags or credentials are changed by source qualification.
+
 Protected-media object URLs are also scoped to their auth lifetime. The image/
 audio URL hook cancels pending work, suppresses stale header/response/body
 completion and revokes its published object URL when that lifetime changes.
@@ -394,7 +452,16 @@ FastAPI
   -> if already consumed: revoke owning device + all sessions and clear cookie
 ```
 
-There is no refresh grace window. Consumed session rows remain until cleanup grace so reuse can be detected.
+There is no refresh grace window. Consumed session rows remain until cleanup grace
+so reuse can be detected.
+
+Implementation observation, not ratified architecture: the checked-in
+`refresh_endpoint` in `orchestrator/routes/auth_setup.py` currently inserts a
+`refresh_rotation_grace` row and returns the same unused successor for the same
+client kind within the 30-second `REFRESH_ROTATION_GRACE_SECONDS` window. That
+conflicts with locked Decisions 20 and 21 and is an unresolved
+implementation/policy conflict requiring an owner decision. This document does
+not ratify the grace, and this source slice does not remove it at runtime.
 
 ## Recovery
 

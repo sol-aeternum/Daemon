@@ -291,6 +291,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - DAEMON_INTERNAL_API_URL=${DAEMON_INTERNAL_API_URL:-http://backend:8000}
       - DAEMON_TRUSTED_PROXY_IPS=${DAEMON_TRUSTED_PROXY_IPS:-}
       - DAEMON_INTERNAL_PROXY_HMAC_SECRET=${DAEMON_INTERNAL_PROXY_HMAC_SECRET:-}
       # NEXT_PUBLIC_* vars are baked at build time (see `build.args` above).

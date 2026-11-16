@@ -185,7 +185,7 @@ test('held upstream A survives local exit, but cannot deliver cookies across B l
   expect((await state(page)).token).toBe('fictional-rotated-b');
 });
 
-test('actual proxy retries a dropped upstream once; qualified rejection retains A without an exactly-once claim', async ({
+test('actual proxy submits a dropped upstream once and fences A under uncertainty', async ({
   page,
   context,
   request,
@@ -193,15 +193,28 @@ test('actual proxy retries a dropped upstream once; qualified rejection retains 
   await open(page);
   await signIn(page, request, 'a');
   const before = await state(page);
+  await page.evaluate(() => history.replaceState(null, '', '/'));
+  const beforeEvents = (await upstream(request)).events.length;
   await plan(request, { 'email-complete': ['drop', 'reject'] });
   expect((await page.evaluate(() => window.__p02!.reject())).success).toBe(
     false,
   );
   expect(await state(page)).toMatchObject({
-    token: 'fictional-owner-a',
-    record: before.record,
+    token: null,
+    header: null,
+    record: {
+      version: 1,
+      epoch: (before.record as { epoch: string }).epoch,
+      status: 'uncertain',
+    },
   });
-  const events = (await upstream(request)).events as string[][];
+  await expect(page.getByTestId('protected-cache-probe')).toHaveCount(0);
+  const events = ((await upstream(request)).events as string[][]).slice(
+    beforeEvents,
+  );
+  expect(
+    events.filter((event) => event[2] === 'unplanned-arrival'),
+  ).toHaveLength(0);
   expect(
     events.filter(
       (event) => event[1] === 'drop' && event[2] === 'dropping-connection',
@@ -211,7 +224,14 @@ test('actual proxy retries a dropped upstream once; qualified rejection retains 
     events.filter(
       (event) => event[1] === 'reject' && event[2] === 'attempt-started',
     ),
-  ).toHaveLength(1);
+  ).toHaveLength(0);
+  // Ordinary cookie operations remain blocked, not an automatic reconciliation.
+  expect((await page.evaluate(() => window.__p02!.refresh())).success).toBe(
+    false,
+  );
+  expect((await upstream(request)).events).toHaveLength(
+    beforeEvents + events.length,
+  );
   expect(
     (await context.cookies()).find((cookie) => cookie.name === 'daemon_refresh')
       ?.value,

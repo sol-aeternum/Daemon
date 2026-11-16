@@ -19,6 +19,14 @@ AUDITED = frozenset(
     {
         ("orchestrator.main", "health", "/health", "GET"),
         ("orchestrator.routes.auth_config", "get_auth_config", "/v1/auth/config", "GET"),
+        ("orchestrator.main", "get_model_catalog", "/v1/catalog", "GET"),
+        (
+            "orchestrator.routes.entitlements",
+            "get_entitlements",
+            "/users/me/entitlements",
+            "GET",
+        ),
+        ("orchestrator.routes.users", "get_settings", "/users/me/settings", "GET"),
         *(
             ("orchestrator.routes.auth_setup", name, "/v1/auth/" + path, method)
             for name, path, method in (

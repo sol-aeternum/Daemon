@@ -7,6 +7,57 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### B1 browser-bootstrap proxy authority — 16 November 2026
+
+MIGRATION: no production keys are added, renamed or removed. The auth and
+entitlement Next proxies now select one backend from `DAEMON_INTERNAL_API_URL`,
+then `NEXT_PUBLIC_API_URL`, then `http://backend:8000`; they no longer fail over
+to another configured/default host after a transport error. Absent, empty or
+whitespace-only values continue selection; an invalid nonempty selected value
+refuses without fallback. A valid path prefix is retained. Redirects also refuse
+rather than replay credential-bearing requests. Other proxy families' source is
+unchanged except the bounded chat transport below.
+Before any separately approved deployment, explicitly verify the intended
+server-side backend authority and canonical routes. Do not drop either key if
+another consumer still uses it. No live environment or deployment change occurs
+in this source slice.
+
+Compose now forwards `DAEMON_INTERNAL_API_URL` into the frontend service as
+`${DAEMON_INTERNAL_API_URL:-http://backend:8000}`, so an override already in the
+root `.env` takes effect when the stack is redeployed. No key is added, renamed
+or removed by this forwarding. Unset or empty selects the backend service; a
+nonempty invalid value still refuses in auth/entitlement. A whitespace-only
+value is not defaulted by Compose (`:-` treats only an empty string as unset),
+is trimmed to empty by the selector, and falls through to the pinned runtime
+`NEXT_PUBLIC_API_URL` (`http://localhost:8000`); leave the key unset/empty or set
+a reachable URL. Other unchanged frontend proxy families also read the name, so
+this injection moves their default upstream to `http://backend:8000` even though
+their source is otherwise unchanged; only auth, entitlement and the bounded chat
+transport below gain the single-dispatch/redirect-refusal qualification.
+
+The legacy chat proxy (`frontend/app/api/chat/route.ts`) now makes a single
+authority attempt per submission (#725). It keeps the same candidate list and
+module-time first-truthy selection (`DAEMON_INTERNAL_API_URL`, then
+`NEXT_PUBLIC_API_URL`, then `http://backend:8000` and `http://localhost:8000`,
+without deduplication), but a rejected/thrown fetch stops there instead of
+advancing to the next candidate. That deliberately drops the previous unkeyed
+fallback, including apparent connection refusal, connection-like errors,
+malformed or whitespace-only selected values and standalone backend-name
+resolution failure: a generic fetch failure is not proof the POST was not
+accepted, so no automatic resend, retry policy, error-string classification or
+alternate authority is added. The same POST sets `redirect: 'error'`, so a
+307/308 is refused rather than following a `Location` that could deliver the
+same logical POST again; operators must supply the canonical reachable `/chat`
+authority/path. Valid keys, suggestion isolation and local pre-fetch validation
+are unchanged. This is a chat-transport guard only: it adds no shared bootstrap
+URL validation and does not qualify the other proxy families. The default-Compose
+tests derive their inputs from checked-in source and mock the transport; they
+do not run Compose. Separate tests exercise the actual route handler with native
+Node HTTP on owned loopback listeners: a synthetic backend consumes the POST,
+records acceptance and drops its response, while duplicate/distinct authority
+and redirect-target counters detect any redispatch. These are not a production
+Next.js server, a real Daemon backend, inference or deployment qualification.
+
 ### Separate durable task startup — 29 October 2026
 
 MIGRATION: selected backend and worker startup retain qualification independently
@@ -250,7 +301,7 @@ is what the audited path produces, not an observation of production.
 | `DAEMON_ALLOWED_ORIGINS` | Browser origins allowed to make cross-origin requests; Compose injects `http://localhost:3000` when the key is absent or empty. | Replace with the real browser origins. Denying all cross-origin use with an empty value requires an explicit service-environment override: an empty root dotenv value alone triggers the `:-` fallback. |
 | `DAEMON_PUBLIC_ORIGIN` | Origin used for CSRF validation on cookie auth; Compose injects `http://localhost:3000` when the key is absent. | Replace with the real HTTPS public origin. |
 | `NEXT_PUBLIC_API_URL` | Public backend URL baked into the browser bundle at image build time. | See "Frontend URLs". Set it before `docker compose build`. |
-| `DAEMON_INTERNAL_API_URL` | Optional server-only upstream for the Next.js route handlers. | See "Frontend URLs". Setting it in the root `.env` alone has no effect. |
+| `DAEMON_INTERNAL_API_URL` | Optional server-only upstream for the Next.js route handlers. | See "Frontend URLs". Compose forwards it to the frontend service, so an existing root override takes effect on redeploy. |
 | `POSTGRES_PASSWORD` | Compose refuses to start when it is missing or empty, and production rejects known-default passwords. | Mandatory. No rename, no new fallback. |
 | `DAEMON_ENCRYPTION_KEY` | Fernet key for memory content; memory startup fails without it. | Mandatory. Key presence says nothing about validity. |
 
@@ -329,11 +380,18 @@ distinct things are easy to conflate:
   value can disagree. Set the variable before building an image for a real
   deployment; changing it afterwards requires a rebuild.
 - `DAEMON_INTERNAL_API_URL` is **server-only runtime**, used by the Next.js
-  route handlers, which fall back through `NEXT_PUBLIC_API_URL` to a
-  handler-specific default (typically `http://backend:8000`). Compose does not forward
-  it into the frontend service, so declaring it in `.env.example` documents the
-  knob but does not wire it. Forwarding it, and reconciling the build/runtime
-  public-URL mismatch, are separate follow-ups below.
+  route handlers. Auth and entitlements pin one base as described in the B1
+  migration above; other unchanged proxy families also read the name, so the
+  same Compose injection moves their default upstream to `http://backend:8000`
+  even though their source is unchanged, but only auth and entitlement gain the
+  single-dispatch/redirect-refusal guarantees. Compose forwards it into the
+  frontend service as `${DAEMON_INTERNAL_API_URL:-http://backend:8000}`, so an
+  existing root override takes effect on redeploy; unset or empty selects the
+  backend service. A whitespace-only value is passed through by Compose (only an
+  empty value is defaulted), trimmed to empty by the selector, and falls through
+  to the pinned runtime `NEXT_PUBLIC_API_URL` (`http://localhost:8000`) — leave
+  the key unset/empty or set a reachable URL. Reconciling the build-time versus
+  runtime public API URL remains a separate follow-up below.
 
 ## Two different peppers
 
@@ -355,8 +413,9 @@ Deliberately deferred, each needing its own approval:
 - Repairing or removing the non-functional custom-provider resolver path ([#319](https://github.com/sol-aeternum/Daemon/issues/319)).
 - Converting credential settings fields to `SecretStr` so values stop appearing
   in reprs and logs.
-- Forwarding `DAEMON_INTERNAL_API_URL` into the frontend service and reconciling
-  the build-time versus runtime public API URL ([#320](https://github.com/sol-aeternum/Daemon/issues/320)).
+- Reconciling the build-time versus runtime public API URL ([#320](https://github.com/sol-aeternum/Daemon/issues/320)).
+  Forwarding `DAEMON_INTERNAL_API_URL` into the frontend service is part of the
+  B1 change above, not a remaining follow-up.
 - Repairing the retrieval-quality diagnostic script so it stops reading a
   separate key name ([#321](https://github.com/sol-aeternum/Daemon/issues/321)).
 - Removing the disconnected `SettingsPanel` component and the

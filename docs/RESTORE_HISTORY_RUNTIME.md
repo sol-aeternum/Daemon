@@ -139,7 +139,8 @@ the task input/presentation proxies under `frontend/app/api/tasks/`:
 | Health and public auth config | Success, no-store |
 | Anonymous refresh without a credential | Native missing-credential refusal, not an H availability refusal |
 | Authenticated conversation list and original task/by-key reads | Success, no-store |
-| Catalog/models, entitlement display, home suggestions, settings, task inputs/presentations | `503 history_unavailable`, no-store |
+| Public catalog (`GET /v1/catalog`), authenticated entitlement/settings reads | Success under their native checks, no-store |
+| Provider models (`GET /v1/models`), home suggestions, settings writes, task inputs/presentations | `503 history_unavailable`, no-store |
 | New chat, native Stop and unclassified resource routes | The same H refusal before execution |
 
 The lifecycle case prohibits attestation, shipped-skill publication, memory
@@ -165,6 +166,53 @@ pilot needs an approved route-by-route bootstrap and executable composition,
 not blanket GET admission or removal of the worker barrier. Keep #477 and the
 applicable #704 privilege/runtime qualification open; no deployed grants, flag
 enablement, lost-output recovery, restore or phone acceptance follows here.
+
+### B1 self-hosted browser bootstrap boundary
+
+The owner-approved B1 source slice adds only `GET /v1/catalog`,
+`GET /users/me/entitlements` and `GET /users/me/settings` to the exact audited
+ingress. The catalog remains public/local metadata; authenticated reads retain
+native device and owner checks. Authentication may update `devices.last_seen_at`;
+these are not database-read-only sessions. The proposed ordinary W map already
+covers these handlers; no SQL grants or live privileges change. Separate synthetic
+H function grants and the broader A fixture are not deployable role evidence.
+
+Browser qualification uses a single test-owned HTTPS origin with a nonempty
+backend prefix, actual Next proxies and full backend lifespan. Its positive
+identity/entitlement fixtures have empty own history and no unresolved accepted
+work. This is a test precondition, not a new runtime guard or general history
+recovery proof. Native conversation/task admissions are unchanged; they are not
+promoted to independent H-qualified recovery. Fresh setup still refuses a missing
+singleton or entitlement rather than provisioning or repairing it at runtime.
+
+The auth and entitlement proxies pin one selected backend, reject redirects and
+never try a second authority after transport uncertainty. See
+[the auth boundary](AUTH_ARCHITECTURE.md#b1-pinned-browser-bootstrap-proxies).
+Private-cache matching and targeted upgrade cleanup cover legacy root account
+reads as well as prefixed requests. A fixed worker must replace the prior
+controller and finish activation cleanup before upgraded-profile privacy
+acceptance; the HTTP-cache acknowledgement does not prove Cache Storage cleanup
+or repair already-open old tabs. No real browser profile is migrated here.
+
+Send, native Stop, selected-H worker execution, settings/model persistence,
+provider model discovery and resource composition remain refused. Home suggestions
+remain visibly unavailable on refusal, without automatic polling or fabricated
+disabled/success states. B1 is not deployment, physical-phone, live-provider or
+general restore acceptance; #477 and #704 remain open.
+
+The owned PostgreSQL browser fixture is
+`tests/test_b1_browser_bootstrap_postgres.py` (opt in with
+`--compute-metadata-postgres`, using the repository's installed browser and cached
+database image). It builds the actual production Next/Serwist worker for its
+reserved HTTPS `/daemon` origin. Real setup/enrollment issue both devices; the
+fixture never installs preissued browser sessions. Effective ACL checks execute
+under the selected H application pool, not just a standalone proposed-role test.
+Its prior controller is a synthetic reproduction of the old rule boundary, not
+a historical production worker artifact. Credential-lifetime isolation is for
+the same singleton identity and is not distinct-account sign-in qualification.
+Test-owned offline cache markers are inserted deliberately after activation to
+prove they cannot satisfy protected reads; their presence is not mistaken for
+failed activation cleanup. Unrelated entries must remain intact.
 
 Acceptance, Send, Stop and text/partial/terminal/artifact publication must next be
 connected to the authenticated runtime and qualified together before removing

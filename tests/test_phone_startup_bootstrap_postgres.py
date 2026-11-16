@@ -21,13 +21,17 @@ import signal
 import socket
 import stat
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from starlette.middleware.cors import CORSMiddleware
 
 from orchestrator import main
+from orchestrator import models_cache
+from orchestrator.services.restore_history.ingress import HistoryObservationOnlyMiddleware
 from orchestrator.entitlements import attestation
 from orchestrator.memory.store import MemoryStore
 from orchestrator.routes import auth_config, auth_setup
@@ -59,12 +63,12 @@ REFUSED = (
     ("POST", "/tasks/{task_id}/cancel"),
     ("GET", "/tasks/{task_id}/inputs"),
     ("GET", "/tasks/{task_id}/presentations"),
-    ("GET", "/users/me/entitlements"),
     ("GET", "/home-suggestions"),
     ("POST", "/home-suggestions/refresh"),
-    ("GET", "/users/me/settings"),
     ("PATCH", "/users/me/settings"),
-    ("GET", "/v1/catalog"),
+    ("GET", "/users/me/settings/presets"),
+    ("POST", "/v1/catalog"),
+    ("GET", "/v1/catalog/unknown"),
     ("GET", "/v1/models"),
     ("GET", "/resources"),
 )
@@ -95,6 +99,13 @@ def bootstrap_settings(host, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "cleanup_stale_sessions", aforbidden)
     monkeypatch.setattr(main, "start_session_cleanup_task", aforbidden)
     monkeypatch.setattr(MemoryStore, "backfill_memory_content_hashes", aforbidden)
+    # The B1 catalog read must not attempt provider discovery: a warm, empty
+    # module cache answers it in-process (a public catalog is not an approval).
+    monkeypatch.setattr(
+        models_cache,
+        "_models_cache",
+        {"data": [], "timestamp": time.time(), "ttl_seconds": 3600},
+    )
     return settings
 
 
@@ -182,8 +193,85 @@ async def test_full_lifespan_bootstrap_matrix_real_principals_and_cleanup(
                 assert by_key.json()["id"] == task_id
                 assert by_key.headers["cache-control"] == "no-store"
 
+                # B1: exactly three read paths are admitted, each as a real
+                # authenticated read with no-store (the catalog is public).
+                settings_read = await client.get("/users/me/settings", headers=headers)
+                assert settings_read.status_code == 200, settings_read.text
+                assert settings_read.headers["cache-control"] == "no-store"
+
+                entitlements = await client.get("/users/me/entitlements", headers=headers)
+                assert entitlements.status_code == 200, entitlements.text
+                assert entitlements.headers["cache-control"] == "no-store"
+
+                catalog = await client.get("/v1/catalog", headers=headers)
+                assert catalog.status_code == 200, catalog.text
+                assert catalog.headers["cache-control"] == "no-store"
+                assert "featured" in catalog.json()
+
                 for method, template in REFUSED:
                     await assert_refused(client, method, template.format(task_id=task_id), headers)
+
+                # HEAD is not an audited GET.
+                head_catalog = await client.head("/v1/catalog")
+                assert head_catalog.status_code == 503
+                assert head_catalog.headers["cache-control"] == "no-store"
+
+                # A preflight for an audited GET is handed to the existing CORS
+                # policy; one for an unaudited route stays an H refusal.
+                audited_preflight = await client.options(
+                    "/v1/catalog",
+                    headers={
+                        "Origin": "http://localhost:3000",
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+                assert "history_unavailable" not in audited_preflight.text
+                # The shared main app's CORS origins are import-time settings.
+                # Positively prove the configured native policy without making
+                # this test depend on (or loosen) the host's origin settings.
+                configured_cors = HistoryObservationOnlyMiddleware(
+                    CORSMiddleware(
+                        main.app.router,
+                        allow_origins=["http://localhost:3000"],
+                        allow_methods=["GET"],
+                        allow_headers=["Authorization"],
+                    ),
+                    application=main.app,
+                )
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=configured_cors),
+                    base_url="http://testserver",
+                ) as cors_client:
+                    allowed_preflight = await cors_client.options(
+                        "/v1/catalog",
+                        headers={
+                            "Origin": "http://localhost:3000",
+                            "Access-Control-Request-Method": "GET",
+                        },
+                    )
+                    assert allowed_preflight.status_code == 200
+                    assert allowed_preflight.headers["access-control-allow-origin"] == (
+                        "http://localhost:3000"
+                    )
+                    assert allowed_preflight.headers["cache-control"] == "no-store"
+                    mutation_preflight = await cors_client.options(
+                        "/users/me/settings",
+                        headers={
+                            "Origin": "http://localhost:3000",
+                            "Access-Control-Request-Method": "PATCH",
+                        },
+                    )
+                    assert mutation_preflight.status_code == 503
+                    assert mutation_preflight.json() == REFUSAL
+                refused_preflight = await client.options(
+                    "/v1/models",
+                    headers={
+                        "Origin": "http://localhost:3000",
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+                assert refused_preflight.status_code == 503
+                assert refused_preflight.json() == REFUSAL
 
             assert "First-boot setup check failed" not in caplog.text
 
@@ -463,8 +551,12 @@ async def test_supported_launcher_process_real_app_loopback_and_graceful_stop(ho
             assert task.status_code == 200 and task.json()["id"] == task_id
             by_key = await client.get("/tasks/by-key/stable-client-key", headers=headers)
             assert by_key.status_code == 200 and by_key.json()["id"] == task_id
-            # One representative H refusal over real loopback HTTP.
-            refused = await client.get("/users/me/entitlements", headers=headers)
+            settings_read = await client.get("/users/me/settings", headers=headers)
+            assert settings_read.status_code == 200
+            assert settings_read.headers["cache-control"] == "no-store"
+            # One representative H refusal over real loopback HTTP; the public
+            # catalog is admitted, provider discovery is not.
+            refused = await client.get("/v1/models", headers=headers)
             assert refused.status_code == 503
             assert refused.json() == REFUSAL
     finally:
