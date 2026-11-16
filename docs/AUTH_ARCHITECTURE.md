@@ -321,7 +321,8 @@ The auth catch-all and `/api/entitlements` share one backend selection through
 credentials, query or fragment refuses; it does not authorize another candidate.
 Trailing slashes are removed and a configured path prefix is retained.
 There is no localhost transport fallback in these two proxies. Other proxy
-families' source is unchanged and is not qualified by this boundary. Compose now
+families' source is unchanged and is not qualified by this boundary, except the
+bounded chat-transport repair below. Compose now
 forwards the existing internal override with a `http://backend:8000` default,
 which changes the default upstream for its other frontend consumers too. Existing
 root overrides now take effect on redeploy; the public build/runtime URL values
@@ -335,6 +336,17 @@ replay follows. Cookie-writing requests may already have committed, so that 502
 is not a verified rejection or rollback. Separate `Set-Cookie` headers and native
 CSRF/origin checks remain intact. Existing cookie coordination keeps uncertain
 operations fail-closed; this change adds no automatic reconciliation protocol.
+
+The legacy `/api/chat` proxy adopts a narrower transport-only version of the
+same single-attempt rule (#725). It retains module-time first-truthy selection
+and the existing candidate list, but stops after its first fetch whether that
+fetch succeeds or throws: a rejected fetch has an unknown outcome, so the POST is
+never re-dispatched from the same handler, keyed or not. Its POST also sets
+`redirect: 'error'`, so a 307/308 cannot re-deliver the same logical request, and
+its no-response stream error is opaque and does not invite a blind retry. That
+deliberately removes unkeyed chat fallback. It adds no shared bootstrap URL
+validation, no candidate deduplication and no qualification of the other proxy
+families.
 
 Explicit server tests distinguish the checked-in unused-successor grace from
 consumed reuse revocation; they are not a new browser retry rule. The checked-in

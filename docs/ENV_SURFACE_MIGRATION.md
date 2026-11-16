@@ -15,7 +15,8 @@ then `NEXT_PUBLIC_API_URL`, then `http://backend:8000`; they no longer fail over
 to another configured/default host after a transport error. Absent, empty or
 whitespace-only values continue selection; an invalid nonempty selected value
 refuses without fallback. A valid path prefix is retained. Redirects also refuse
-rather than replay credential-bearing requests. Other proxy families' source is unchanged.
+rather than replay credential-bearing requests. Other proxy families' source is
+unchanged except the bounded chat transport below.
 Before any separately approved deployment, explicitly verify the intended
 server-side backend authority and canonical routes. Do not drop either key if
 another consumer still uses it. No live environment or deployment change occurs
@@ -31,17 +32,31 @@ is trimmed to empty by the selector, and falls through to the pinned runtime
 `NEXT_PUBLIC_API_URL` (`http://localhost:8000`); leave the key unset/empty or set
 a reachable URL. Other unchanged frontend proxy families also read the name, so
 this injection moves their default upstream to `http://backend:8000` even though
-their source is unchanged; only auth and entitlement gain the
-single-dispatch/redirect-refusal qualification.
+their source is otherwise unchanged; only auth, entitlement and the bounded chat
+transport below gain the single-dispatch/redirect-refusal qualification.
 
-The unchanged legacy chat proxy does not deduplicate its candidate list:
-with these Compose defaults it can try `http://backend:8000` twice after
-transport failures for a POST without a valid idempotency key or suggestion ID
-(`frontend/app/api/chat/route.ts`). The current browser transport supplies a key
-for ordinary sends, and selected H ingress still refuses Send; neither fact
-qualifies legacy/unkeyed chat replay. This conditional risk remains outside B1
-qualification and needs a separately approved chat-proxy repair, not an implied
-single-dispatch guarantee for every consumer of the internal URL.
+The legacy chat proxy (`frontend/app/api/chat/route.ts`) now makes a single
+authority attempt per submission (#725). It keeps the same candidate list and
+module-time first-truthy selection (`DAEMON_INTERNAL_API_URL`, then
+`NEXT_PUBLIC_API_URL`, then `http://backend:8000` and `http://localhost:8000`,
+without deduplication), but a rejected/thrown fetch stops there instead of
+advancing to the next candidate. That deliberately drops the previous unkeyed
+fallback, including apparent connection refusal, connection-like errors,
+malformed or whitespace-only selected values and standalone backend-name
+resolution failure: a generic fetch failure is not proof the POST was not
+accepted, so no automatic resend, retry policy, error-string classification or
+alternate authority is added. The same POST sets `redirect: 'error'`, so a
+307/308 is refused rather than following a `Location` that could deliver the
+same logical POST again; operators must supply the canonical reachable `/chat`
+authority/path. Valid keys, suggestion isolation and local pre-fetch validation
+are unchanged. This is a chat-transport guard only: it adds no shared bootstrap
+URL validation and does not qualify the other proxy families. The default-Compose
+tests derive their inputs from checked-in source and mock the transport; they
+do not run Compose. Separate tests exercise the actual route handler with native
+Node HTTP on owned loopback listeners: a synthetic backend consumes the POST,
+records acceptance and drops its response, while duplicate/distinct authority
+and redirect-target counters detect any redispatch. These are not a production
+Next.js server, a real Daemon backend, inference or deployment qualification.
 
 ### Separate durable task startup — 29 October 2026
 

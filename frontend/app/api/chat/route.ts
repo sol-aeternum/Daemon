@@ -241,6 +241,10 @@ export async function POST(req: Request) {
         method: 'POST',
         headers: proxyHeaders,
         credentials: 'include',
+        // A redirect can deliver the same logical POST again inside one fetch
+        // call (307/308 preserve method and body). Refuse it instead: the
+        // canonical `/chat` authority/path is the operator's responsibility.
+        redirect: 'error',
         // Propagate the browser-side abort: when the user clicks Stop, the
         // Next.js request stream closes, `req.signal` fires, and the backend
         // SSE connection is torn down with it.
@@ -260,11 +264,13 @@ export async function POST(req: Request) {
       });
       break;
     } catch {
-      // A suggestion may already have been claimed and persisted. Never send
-      // it again to another backend after an uncertain transport failure.
-      if (suggestion_id || proxyHeaders.has('Idempotency-Key')) break;
-      // Try the next configured backend. A transport error can name internal
-      // hosts and ports, so nothing from it is surfaced to the browser.
+      // A rejected/thrown fetch has an unknown outcome: the POST may already
+      // have been accepted and durably recorded, even without an idempotency
+      // key (invalid-key filtering, connection-like errors and malformed or
+      // whitespace-only candidate values included). Never re-dispatch it to
+      // another candidate. The retained candidate array exists only for the
+      // single first-truthy selection; it is not permission to retry here.
+      break;
     }
   }
 
@@ -374,7 +380,8 @@ export async function POST(req: Request) {
 
       try {
         if (!backendRes) {
-          errorText = 'Could not reach the chat service. Please try again.';
+          errorText =
+            'The chat service did not return a usable response. The request outcome is unknown, so it was not resent automatically.';
           streamFailed = true;
           return;
         }

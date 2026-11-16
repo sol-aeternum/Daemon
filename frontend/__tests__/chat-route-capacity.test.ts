@@ -135,7 +135,7 @@ describe('chat bridge capacity and transport failures', () => {
     );
     const writes = await chunks();
     expect(writes.find((part) => part.type === 'error')?.errorText).toBe(
-      'Could not reach the chat service. Please try again.',
+      'The chat service did not return a usable response. The request outcome is unknown, so it was not resent automatically.',
     );
   });
 
