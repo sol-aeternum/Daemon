@@ -7,6 +7,20 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### B1 browser-bootstrap proxy authority — 16 November 2026
+
+MIGRATION: no production keys are added, renamed or removed. The auth and
+entitlement Next proxies now select one backend from `DAEMON_INTERNAL_API_URL`,
+then `NEXT_PUBLIC_API_URL`, then `http://backend:8000`; they no longer fail over
+to another configured/default host after a transport error. Absent, empty or
+whitespace-only values continue selection; an invalid nonempty selected value
+refuses without fallback. A valid path prefix is retained. Redirects also refuse
+rather than replay credential-bearing requests. Other proxy families are unchanged.
+Before any separately approved deployment, explicitly verify the intended
+server-side backend authority and canonical routes. Do not drop either key if
+another consumer still uses it. No live environment or deployment change occurs
+in this source slice.
+
 ### Separate durable task startup — 29 October 2026
 
 MIGRATION: selected backend and worker startup retain qualification independently
@@ -329,8 +343,9 @@ distinct things are easy to conflate:
   value can disagree. Set the variable before building an image for a real
   deployment; changing it afterwards requires a rebuild.
 - `DAEMON_INTERNAL_API_URL` is **server-only runtime**, used by the Next.js
-  route handlers, which fall back through `NEXT_PUBLIC_API_URL` to a
-  handler-specific default (typically `http://backend:8000`). Compose does not forward
+  route handlers. Auth and entitlements pin one base as described in the B1
+  migration above; other unchanged proxy families retain their existing
+  `NEXT_PUBLIC_API_URL`/handler-default fallback. Compose does not forward
   it into the frontend service, so declaring it in `.env.example` documents the
   knob but does not wire it. Forwarding it, and reconciling the build/runtime
   public-URL mismatch, are separate follow-ups below.

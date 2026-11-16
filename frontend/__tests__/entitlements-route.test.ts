@@ -172,19 +172,22 @@ describe('entitlements proxy transport failure', () => {
     }
   });
 
-  it('falls through to the next backend before giving up', async () => {
+  it('does not fall through to the next candidate after a failed selection', async () => {
     process.env.NEXT_PUBLIC_API_URL = BACKEND_HOSTS[1];
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
-      .mockRejectedValueOnce(new Error('first backend refused'))
-      .mockResolvedValueOnce(snapshotResponse());
+      .mockRejectedValueOnce(new Error('selected backend refused'));
 
     const GET = await loadGetHandler();
     const response = await GET(
       new Request('http://localhost:3000/api/entitlements', { method: 'GET' }),
     );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(response.status).toBe(200);
+    // One authority per request: the public base is never replayed.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      `${BACKEND_HOSTS[0]}/users/me/entitlements`,
+    );
+    expect(response.status).toBe(502);
   });
 });

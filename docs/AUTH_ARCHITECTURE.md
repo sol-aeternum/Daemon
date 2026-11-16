@@ -26,6 +26,12 @@ The setup token is generated on startup, written to the local operator token fil
 ### Decision 5 — Setup token never goes in URLs
 The setup token is pasted into `/setup` as form/body data only. It must not appear in a URL, query string, Referer header, browser history, bookmark, proxy log, or server access log.
 
+The operator file is delivery material, not the setup authority: removing it
+after startup does not invalidate a token already held by the operator while its
+database verifier is still valid. Successful setup consumes that verifier; a
+repeat setup refuses. Missing identity/entitlement prerequisites are not repaired
+by setup. The B1 fixture exercises these distinctions only on disposable state.
+
 ### Decision 6 — Setup is transaction-locked
 Successful setup uses the shared auth-runtime advisory lock (`pg_advisory_xact_lock(hashtext('daemon:auth_runtime_state'))`), rechecks zero active devices inside the transaction, creates the first device/session, and deactivates setup.
 
@@ -69,10 +75,10 @@ Cookie-backed setup, enrollment completion, and refresh endpoints enforce CSRF c
 Protected API routes never authenticate with refresh cookies. Refresh cookies are valid only on refresh/setup/enrollment cookie-setting endpoints.
 
 ### Decision 20 — Refresh reuse revokes the device
-Every refresh rotates to a new refresh token and atomically consumes the old session. Presenting an already-consumed refresh token is reuse and revokes the owning device plus all sessions.
+Every new refresh rotation atomically consumes the old session. Presenting an already-consumed refresh token revokes the owning device plus all sessions unless the bounded unused-successor grace below applies.
 
-### Decision 21 — There is no refresh grace window
-No leeway/grace window accepts a consumed refresh token. The owner-approved P0.2 source implementation serializes all cookie writers across participating tabs with one Web Lock and validated nonsecret shared metadata; BroadcastChannel carries epoch-scoped advisory notices only, never tokens or lock authority. Web Locks and usable shared storage are required, with no lease fallback (see below for qualification limits).
+### Decision 21 — Bounded rotation grace and serialized cookie ownership
+Consumed refresh reuse revokes the device and its sessions, except that the existing bounded rotation grace can return the same valid, unused successor (`auth_setup.py`, `refresh_endpoint`); it never issues a second successor for that predecessor. The owner-approved P0.2 source implementation serializes all cookie writers across participating tabs with one Web Lock and validated nonsecret shared metadata; BroadcastChannel carries epoch-scoped advisory notices only, never tokens or lock authority. Web Locks and usable shared storage are required, with no lease fallback (see below for qualification limits).
 
 Coordination readiness and sign-in lifetime notifications are separate. The auth provider observes both, closing protected exposure while an operation is pending or uncertain. Same-tab refresh readiness changes do not invalidate drafts or pending work; actual lifetime changes and scoped remote refresh notices still invalidate generation-bound state (`frontend/lib/auth.ts`, `frontend/components/AuthProvider.tsx`).
 
@@ -306,6 +312,34 @@ design §8; no automatic recovery from abandoned uncertainty is promised.
 No deployment, cookie/backend API change or deletion/reset implementation is
 claimed by this coordinator integration.
 
+### B1 pinned browser-bootstrap proxies
+
+The auth catch-all and `/api/entitlements` share one backend selection through
+`frontend/app/api/_lib/bootstrapBackend.ts`: first nonempty, trimmed
+`DAEMON_INTERNAL_API_URL`, then `NEXT_PUBLIC_API_URL`, otherwise
+`http://backend:8000`. A selected invalid absolute HTTP(S) base, embedded
+credentials, query or fragment refuses; it does not authorize another candidate.
+Trailing slashes are removed and a configured path prefix is retained.
+There is no localhost transport fallback. Other proxy families are unchanged and
+are not qualified by this browser-bootstrap boundary.
+
+Both proxies bypass HTTP caching and reject upstream redirects, including
+307/308 body-preserving redirects. A transport/redirect failure returns an opaque
+no-store 502 without an exception or internal address; no automatic request
+replay follows. Cookie-writing requests may already have committed, so that 502
+is not a verified rejection or rollback. Separate `Set-Cookie` headers and native
+CSRF/origin checks remain intact. Existing cookie coordination keeps uncertain
+operations fail-closed; this change adds no automatic reconciliation protocol.
+Explicit server tests distinguish existing unused-successor grace from consumed
+reuse revocation; they are not a new browser retry rule.
+
+The bounded self-hosted fixture uses one HTTPS origin and a nonempty backend
+prefix with real setup/enrollment, not preissued sessions. Legacy private Cache
+Storage entries require targeted fixed-worker activation cleanup as well as the
+separate HTTP-cache barrier. Old-controller replacement is an acceptance
+precondition, not a promise that all open old tabs are repaired. No deployed
+accounts, grants, caches, flags or credentials are changed by source qualification.
+
 Protected-media object URLs are also scoped to their auth lifetime. The image/
 audio URL hook cancels pending work, suppresses stale header/response/body
 completion and revokes its published object URL when that lifetime changes.
@@ -391,10 +425,13 @@ FastAPI
   -> atomic consume: UPDATE sessions ... WHERE refresh_consumed_at IS NULL RETURNING *
   -> if consumed: insert replacement session and return replacement tokens
   -> if zero rows: second lookup distinguishes bad/expired/revoked/consumed
-  -> if already consumed: revoke owning device + all sessions and clear cookie
+  -> if already consumed and within bounded grace with valid unused successor: return that successor unchanged
+  -> otherwise consumed reuse: revoke owning device + all sessions and clear cookie
 ```
 
-There is no refresh grace window. Consumed session rows remain until cleanup grace so reuse can be detected.
+The bounded unused-successor rotation grace is described in Decision 21; it is
+not general replay permission. Consumed session rows remain until cleanup grace
+so reuse outside that exception can be detected.
 
 ## Recovery
 

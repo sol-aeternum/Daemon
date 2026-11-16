@@ -73,6 +73,29 @@ describe('runtime caching order (#484 review)', () => {
     );
   });
 
+  it('uses uncached fetch for private paths on the app and backend origins', () => {
+    for (const origin of [app, 'https://backend.fixture']) {
+      for (const path of [
+        '/conversations',
+        '/conversations/abc',
+        '/users/me/settings',
+        '/users/me/entitlements',
+      ]) {
+        expect(selectedRule(`${origin}${path}`)?.handler, path).toBe(
+          fetchPrivateUncached,
+        );
+      }
+    }
+  });
+
+  it('keeps lookalike account paths on the ordinary runtime cache', () => {
+    for (const path of ['/conversations-old/1', '/users/me/settings/presets']) {
+      expect(selectedRule(`${app}${path}`)?.handler, path).not.toBe(
+        fetchPrivateUncached,
+      );
+    }
+  });
+
   it("still caches the app's own static assets", () => {
     for (const path of ['/icons/icon.png', '/_next/static/app.js']) {
       const handler = selectedRule(`${app}${path}`)?.handler;
