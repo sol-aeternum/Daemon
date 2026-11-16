@@ -75,10 +75,10 @@ Cookie-backed setup, enrollment completion, and refresh endpoints enforce CSRF c
 Protected API routes never authenticate with refresh cookies. Refresh cookies are valid only on refresh/setup/enrollment cookie-setting endpoints.
 
 ### Decision 20 — Refresh reuse revokes the device
-Every new refresh rotation atomically consumes the old session. Presenting an already-consumed refresh token revokes the owning device plus all sessions unless the bounded unused-successor grace below applies.
+Every refresh rotates to a new refresh token and atomically consumes the old session. Presenting an already-consumed refresh token is reuse and revokes the owning device plus all sessions.
 
-### Decision 21 — Bounded rotation grace and serialized cookie ownership
-Consumed refresh reuse revokes the device and its sessions, except that the existing bounded rotation grace can return the same valid, unused successor (`auth_setup.py`, `refresh_endpoint`); it never issues a second successor for that predecessor. The owner-approved P0.2 source implementation serializes all cookie writers across participating tabs with one Web Lock and validated nonsecret shared metadata; BroadcastChannel carries epoch-scoped advisory notices only, never tokens or lock authority. Web Locks and usable shared storage are required, with no lease fallback (see below for qualification limits).
+### Decision 21 — There is no refresh grace window
+No leeway/grace window accepts a consumed refresh token. The owner-approved P0.2 source implementation serializes all cookie writers across participating tabs with one Web Lock and validated nonsecret shared metadata; BroadcastChannel carries epoch-scoped advisory notices only, never tokens or lock authority. Web Locks and usable shared storage are required, with no lease fallback (see below for qualification limits).
 
 Coordination readiness and sign-in lifetime notifications are separate. The auth provider observes both, closing protected exposure while an operation is pending or uncertain. Same-tab refresh readiness changes do not invalidate drafts or pending work; actual lifetime changes and scoped remote refresh notices still invalidate generation-bound state (`frontend/lib/auth.ts`, `frontend/components/AuthProvider.tsx`).
 
@@ -320,8 +320,13 @@ The auth catch-all and `/api/entitlements` share one backend selection through
 `http://backend:8000`. A selected invalid absolute HTTP(S) base, embedded
 credentials, query or fragment refuses; it does not authorize another candidate.
 Trailing slashes are removed and a configured path prefix is retained.
-There is no localhost transport fallback. Other proxy families are unchanged and
-are not qualified by this browser-bootstrap boundary.
+There is no localhost transport fallback in these two proxies. Other proxy
+families' source is unchanged and is not qualified by this boundary. Compose now
+forwards the existing internal override with a `http://backend:8000` default,
+which changes the default upstream for its other frontend consumers too. Existing
+root overrides now take effect on redeploy; the public build/runtime URL values
+are unchanged. See `docs/ENV_SURFACE_MIGRATION.md` for the unset/empty versus
+whitespace-only limitation and deployment prerequisites.
 
 Both proxies bypass HTTP caching and reject upstream redirects, including
 307/308 body-preserving redirects. A transport/redirect failure returns an opaque
@@ -330,8 +335,15 @@ replay follows. Cookie-writing requests may already have committed, so that 502
 is not a verified rejection or rollback. Separate `Set-Cookie` headers and native
 CSRF/origin checks remain intact. Existing cookie coordination keeps uncertain
 operations fail-closed; this change adds no automatic reconciliation protocol.
-Explicit server tests distinguish existing unused-successor grace from consumed
-reuse revocation; they are not a new browser retry rule.
+
+Explicit server tests distinguish the checked-in unused-successor grace from
+consumed reuse revocation; they are not a new browser retry rule. The checked-in
+refresh handler currently implements a bounded 30-second unused-successor replay
+(`REFRESH_ROTATION_GRACE_SECONDS` in `orchestrator/routes/auth_setup.py`). That
+is observed implementation, not ratified architecture: locked Decisions 20 and
+21 say there is no grace window. The conflict is unresolved and requires an
+owner decision; this source change neither ratifies the grace nor removes it at
+runtime.
 
 The bounded self-hosted fixture uses one HTTPS origin and a nonempty backend
 prefix with real setup/enrollment, not preissued sessions. Legacy private Cache
@@ -425,13 +437,19 @@ FastAPI
   -> atomic consume: UPDATE sessions ... WHERE refresh_consumed_at IS NULL RETURNING *
   -> if consumed: insert replacement session and return replacement tokens
   -> if zero rows: second lookup distinguishes bad/expired/revoked/consumed
-  -> if already consumed and within bounded grace with valid unused successor: return that successor unchanged
-  -> otherwise consumed reuse: revoke owning device + all sessions and clear cookie
+  -> if already consumed: revoke owning device + all sessions and clear cookie
 ```
 
-The bounded unused-successor rotation grace is described in Decision 21; it is
-not general replay permission. Consumed session rows remain until cleanup grace
-so reuse outside that exception can be detected.
+There is no refresh grace window. Consumed session rows remain until cleanup grace
+so reuse can be detected.
+
+Implementation observation, not ratified architecture: the checked-in
+`refresh_endpoint` in `orchestrator/routes/auth_setup.py` currently inserts a
+`refresh_rotation_grace` row and returns the same unused successor for the same
+client kind within the 30-second `REFRESH_ROTATION_GRACE_SECONDS` window. That
+conflicts with locked Decisions 20 and 21 and is an unresolved
+implementation/policy conflict requiring an owner decision. This document does
+not ratify the grace, and this source slice does not remove it at runtime.
 
 ## Recovery
 

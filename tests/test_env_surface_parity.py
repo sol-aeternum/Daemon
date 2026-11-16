@@ -279,11 +279,15 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
     ),
     "DAEMON_INTERNAL_API_URL": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/app/api/chat/route.ts:6",),
+        sources=(
+            "frontend/app/api/_lib/bootstrapBackend.ts:36",
+            "frontend/app/api/chat/route.ts:6",
+        ),
         reason=(
-            "optional server-only upstream override for the Next route handlers; it falls back "
-            "through the public API URL. Compose does not inject it (separate deployment "
-            "follow-up), so the declaration documents the standalone/server-only case"
+            "optional server-only upstream override for the Next route handlers; the shared "
+            "auth/entitlement selector reads it directly and the unchanged chat and other proxy "
+            "families read it through their own candidate lists. Compose forwards it into the "
+            "frontend service with a backend-service default"
         ),
     ),
     "DAEMON_TRUSTED_PROXY_IPS": NonFieldConsumer(
@@ -1817,6 +1821,43 @@ def test_compose_parser_separates_container_keys_from_host_names() -> None:
     assert inventory.build_args["frontend"]["NEXT_PUBLIC_EMAIL_ENABLED"] == (
         "${NEXT_PUBLIC_EMAIL_ENABLED:-true}"
     )
+
+
+def test_frontend_internal_api_url_injection_is_exact_and_frontend_only() -> None:
+    """Compose must forward the server-only override without touching PUBLIC.
+
+    The Vitest proxy tests load the actual frontend handlers against these
+    interpolated values; this test pins the checked-in Compose source so a
+    change there cannot be masked by an unrelated expected default.
+    """
+    surface = real_surface()
+    inventory = surface.compose
+    frontend = inventory.service_environment["frontend"]
+
+    assert frontend["DAEMON_INTERNAL_API_URL"] == (
+        "${DAEMON_INTERNAL_API_URL:-http://backend:8000}"
+    )
+    assert effective_compose_default(
+        frontend["DAEMON_INTERNAL_API_URL"], "DAEMON_INTERNAL_API_URL"
+    ) == (True, "http://backend:8000")
+
+    # Public build-time and runtime values stay byte-identical.
+    assert frontend["NEXT_PUBLIC_API_URL"] == "http://localhost:8000"
+    assert inventory.build_args["frontend"]["NEXT_PUBLIC_API_URL"] == (
+        "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
+    )
+
+    # Server-only frontend input: no Python service gains the key.
+    for service in PYTHON_RUNTIME_SERVICES:
+        assert "DAEMON_INTERNAL_API_URL" not in inventory.service_environment[service]
+
+    assert {
+        source.rpartition(":")[0]
+        for source in NON_FIELD_CONSUMERS["DAEMON_INTERNAL_API_URL"].sources
+    } == {
+        "frontend/app/api/_lib/bootstrapBackend.ts",
+        "frontend/app/api/chat/route.ts",
+    }
 
 
 def test_compose_interpolation_forms_and_escapes() -> None:

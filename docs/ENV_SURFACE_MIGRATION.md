@@ -15,11 +15,33 @@ then `NEXT_PUBLIC_API_URL`, then `http://backend:8000`; they no longer fail over
 to another configured/default host after a transport error. Absent, empty or
 whitespace-only values continue selection; an invalid nonempty selected value
 refuses without fallback. A valid path prefix is retained. Redirects also refuse
-rather than replay credential-bearing requests. Other proxy families are unchanged.
+rather than replay credential-bearing requests. Other proxy families' source is unchanged.
 Before any separately approved deployment, explicitly verify the intended
 server-side backend authority and canonical routes. Do not drop either key if
 another consumer still uses it. No live environment or deployment change occurs
 in this source slice.
+
+Compose now forwards `DAEMON_INTERNAL_API_URL` into the frontend service as
+`${DAEMON_INTERNAL_API_URL:-http://backend:8000}`, so an override already in the
+root `.env` takes effect when the stack is redeployed. No key is added, renamed
+or removed by this forwarding. Unset or empty selects the backend service; a
+nonempty invalid value still refuses in auth/entitlement. A whitespace-only
+value is not defaulted by Compose (`:-` treats only an empty string as unset),
+is trimmed to empty by the selector, and falls through to the pinned runtime
+`NEXT_PUBLIC_API_URL` (`http://localhost:8000`); leave the key unset/empty or set
+a reachable URL. Other unchanged frontend proxy families also read the name, so
+this injection moves their default upstream to `http://backend:8000` even though
+their source is unchanged; only auth and entitlement gain the
+single-dispatch/redirect-refusal qualification.
+
+The unchanged legacy chat proxy does not deduplicate its candidate list:
+with these Compose defaults it can try `http://backend:8000` twice after
+transport failures for a POST without a valid idempotency key or suggestion ID
+(`frontend/app/api/chat/route.ts`). The current browser transport supplies a key
+for ordinary sends, and selected H ingress still refuses Send; neither fact
+qualifies legacy/unkeyed chat replay. This conditional risk remains outside B1
+qualification and needs a separately approved chat-proxy repair, not an implied
+single-dispatch guarantee for every consumer of the internal URL.
 
 ### Separate durable task startup — 29 October 2026
 
@@ -264,7 +286,7 @@ is what the audited path produces, not an observation of production.
 | `DAEMON_ALLOWED_ORIGINS` | Browser origins allowed to make cross-origin requests; Compose injects `http://localhost:3000` when the key is absent or empty. | Replace with the real browser origins. Denying all cross-origin use with an empty value requires an explicit service-environment override: an empty root dotenv value alone triggers the `:-` fallback. |
 | `DAEMON_PUBLIC_ORIGIN` | Origin used for CSRF validation on cookie auth; Compose injects `http://localhost:3000` when the key is absent. | Replace with the real HTTPS public origin. |
 | `NEXT_PUBLIC_API_URL` | Public backend URL baked into the browser bundle at image build time. | See "Frontend URLs". Set it before `docker compose build`. |
-| `DAEMON_INTERNAL_API_URL` | Optional server-only upstream for the Next.js route handlers. | See "Frontend URLs". Setting it in the root `.env` alone has no effect. |
+| `DAEMON_INTERNAL_API_URL` | Optional server-only upstream for the Next.js route handlers. | See "Frontend URLs". Compose forwards it to the frontend service, so an existing root override takes effect on redeploy. |
 | `POSTGRES_PASSWORD` | Compose refuses to start when it is missing or empty, and production rejects known-default passwords. | Mandatory. No rename, no new fallback. |
 | `DAEMON_ENCRYPTION_KEY` | Fernet key for memory content; memory startup fails without it. | Mandatory. Key presence says nothing about validity. |
 
@@ -344,11 +366,17 @@ distinct things are easy to conflate:
   deployment; changing it afterwards requires a rebuild.
 - `DAEMON_INTERNAL_API_URL` is **server-only runtime**, used by the Next.js
   route handlers. Auth and entitlements pin one base as described in the B1
-  migration above; other unchanged proxy families retain their existing
-  `NEXT_PUBLIC_API_URL`/handler-default fallback. Compose does not forward
-  it into the frontend service, so declaring it in `.env.example` documents the
-  knob but does not wire it. Forwarding it, and reconciling the build/runtime
-  public-URL mismatch, are separate follow-ups below.
+  migration above; other unchanged proxy families also read the name, so the
+  same Compose injection moves their default upstream to `http://backend:8000`
+  even though their source is unchanged, but only auth and entitlement gain the
+  single-dispatch/redirect-refusal guarantees. Compose forwards it into the
+  frontend service as `${DAEMON_INTERNAL_API_URL:-http://backend:8000}`, so an
+  existing root override takes effect on redeploy; unset or empty selects the
+  backend service. A whitespace-only value is passed through by Compose (only an
+  empty value is defaulted), trimmed to empty by the selector, and falls through
+  to the pinned runtime `NEXT_PUBLIC_API_URL` (`http://localhost:8000`) — leave
+  the key unset/empty or set a reachable URL. Reconciling the build-time versus
+  runtime public API URL remains a separate follow-up below.
 
 ## Two different peppers
 
@@ -370,8 +398,9 @@ Deliberately deferred, each needing its own approval:
 - Repairing or removing the non-functional custom-provider resolver path ([#319](https://github.com/sol-aeternum/Daemon/issues/319)).
 - Converting credential settings fields to `SecretStr` so values stop appearing
   in reprs and logs.
-- Forwarding `DAEMON_INTERNAL_API_URL` into the frontend service and reconciling
-  the build-time versus runtime public API URL ([#320](https://github.com/sol-aeternum/Daemon/issues/320)).
+- Reconciling the build-time versus runtime public API URL ([#320](https://github.com/sol-aeternum/Daemon/issues/320)).
+  Forwarding `DAEMON_INTERNAL_API_URL` into the frontend service is part of the
+  B1 change above, not a remaining follow-up.
 - Repairing the retrieval-quality diagnostic script so it stops reading a
   separate key name ([#321](https://github.com/sol-aeternum/Daemon/issues/321)).
 - Removing the disconnected `SettingsPanel` component and the
