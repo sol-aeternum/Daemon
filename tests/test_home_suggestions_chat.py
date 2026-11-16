@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -16,6 +16,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from orchestrator.services.account_control.guard import CapturedGeneration
 from tests.qualified_compute import install_qualified_compute
 from tests.test_home_suggestions import rig, produce
 from tests.redis_jobs_support import install_fake_enqueue
@@ -33,7 +34,7 @@ async def chat_client(rig, monkeypatch):
     install_fake_enqueue(monkeypatch, "orchestrator.home_suggestions.service.enqueue_account_job")
     settings = get_settings()
     state = AppState(settings=settings)
-    state.db_pool = object()  # type: ignore[assignment]
+    state.db_pool = MagicMock()
     state.redis = redis  # type: ignore[assignment]
     state.memory_store = store  # type: ignore[assignment]
     auth = AuthenticatedDevice(
@@ -46,6 +47,11 @@ async def chat_client(rig, monkeypatch):
     monkeypatch.setattr(main, "enforce_rate_limit", AsyncMock())
     monkeypatch.setattr(main, "get_rate_limiter", lambda request: None)
     monkeypatch.setattr(main, "build_skill_index", AsyncMock(return_value=""))
+
+    async def captured_origin(conn, owner):
+        return CapturedGeneration(owner, 0)
+
+    monkeypatch.setattr(main, "capture_generation", captured_origin)
     monkeypatch.setattr(main, "HomeSuggestions", lambda *args: service)
     captured: list[dict[str, Any]] = []
 
@@ -58,6 +64,7 @@ async def chat_client(rig, monkeypatch):
     store.get_recent_messages = AsyncMock(return_value=[])  # type: ignore[attr-defined]
     store.get_conversation = AsyncMock()  # type: ignore[attr-defined]
     store.insert_message = AsyncMock()  # type: ignore[attr-defined]
+    store.insert_live_user_message = AsyncMock(return_value={"id": uuid.uuid4()})  # type: ignore[attr-defined]
     store.get_home_suggestion_turn = AsyncMock()  # type: ignore[attr-defined]
 
     async def binding(conv_id, user_id):
@@ -122,6 +129,7 @@ async def test_suggestion_is_server_new_destination_ordinary_model_path_and_relo
     assert first.status_code == 200 and first.headers["cache-control"] == "no-store"
     assert len(store.bindings) == len(captured) == 1
     store.insert_message.assert_not_awaited()  # type: ignore[attr-defined]
+    store.insert_live_user_message.assert_not_awaited()  # type: ignore[attr-defined]
     request = captured[0]
     assert request["conversation_id"].startswith("conv_")
     assert request["reported_model"] == "openrouter/test/explicit-model"
@@ -150,6 +158,12 @@ async def test_suggestion_is_server_new_destination_ordinary_model_path_and_relo
         "/chat", json={"message": "Refine the plan.", "conversation_id": f"conv_{destination}"}
     )
     assert followup.status_code == 200 and len(captured) == 2
+    store.insert_live_user_message.assert_awaited_once()  # type: ignore[attr-defined]
+    assert store.insert_live_user_message.await_args.kwargs[
+        "captured_generation"
+    ] == CapturedGeneration(  # type: ignore[attr-defined]
+        store.user_id, 0
+    )
     history = captured[-1]["history_messages"]
     assert "fictional private launch notes" in history[0]["content"]
     assert history[-1]["content"] == "Refine the plan."

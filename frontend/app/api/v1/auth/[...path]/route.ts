@@ -1,12 +1,6 @@
 import { copyResponseHeaders } from '../../../_lib/cookies';
 import { appendDaemonClientIpHeaders } from '../../../_lib/clientIp';
-
-const API_URLS = [
-  process.env.DAEMON_INTERNAL_API_URL,
-  process.env.NEXT_PUBLIC_API_URL,
-  'http://backend:8000',
-  'http://localhost:8000',
-].filter((url): url is string => Boolean(url));
+import { selectBackendBase } from '../../../_lib/bootstrapBackend';
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
@@ -42,6 +36,20 @@ function buildProxyHeaders(req: Request): Headers {
   return headers;
 }
 
+/** Opaque: no exception text, internal host or port reaches the browser. */
+function unreachable(): Response {
+  return new Response(
+    JSON.stringify({ error: 'Could not reach the authentication service.' }),
+    {
+      status: 502,
+      headers: {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+      },
+    },
+  );
+}
+
 async function proxyRequest(
   req: Request,
   context: RouteContext,
@@ -66,36 +74,35 @@ async function proxyRequest(
     requestHeaders.set('Content-Type', contentType);
   }
 
-  let backendRes: Response | null = null;
-  let lastError: Error | null = null;
+  // One selected authority for this request: authentication must not be
+  // replayed against another candidate host. An invalid selection refuses
+  // instead of falling through, and a redirect is never followed because that
+  // would replay the credential-bearing request elsewhere.
+  const selection = selectBackendBase();
+  if (!selection.ok) {
+    return unreachable();
+  }
 
   const requestBody =
     method !== 'GET' && method !== 'HEAD' ? await req.arrayBuffer() : undefined;
 
-  for (const apiUrl of API_URLS) {
-    try {
-      backendRes = await fetch(`${apiUrl}/v1/auth/${normalizedPath}${search}`, {
+  let backendRes: Response;
+  try {
+    backendRes = await fetch(
+      `${selection.base}/v1/auth/${normalizedPath}${search}`,
+      {
         method,
         headers: requestHeaders,
         credentials: 'include',
         body: requestBody,
-      });
-      break;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-    }
-  }
-
-  if (!backendRes) {
-    return new Response(
-      JSON.stringify({
-        error: `Backend error (network): ${lastError?.message || 'unknown error'}`,
-      }),
-      {
-        status: 502,
-        headers: { 'content-type': 'application/json' },
+        cache: 'no-store',
+        redirect: 'error',
       },
     );
+  } catch {
+    // The transport error can name internal hosts and ports; nothing from it
+    // is relayed to the browser.
+    return unreachable();
   }
 
   const responseHeaders = new Headers();

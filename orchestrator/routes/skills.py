@@ -111,21 +111,11 @@ def _summary(skill: dict[str, Any]) -> dict[str, Any]:
         "allow_autonomous_edit": skill["allow_autonomous_edit"],
         "use_count": skill["use_count"],
         "last_used_at": skill["last_used_at"],
-        # Retired with the shipped-skill upgrade machinery; always null.
-        "repo_version": None,
-        "local_version": None,
-        "pending_update": None,
     }
 
 
 def _detail(skill: dict[str, Any]) -> dict[str, Any]:
-    return {
-        **_summary(skill),
-        "content": skill["body"],
-        # Retired provenance fields; always null.
-        "created_by": None,
-        "origin_url": None,
-    }
+    return {**_summary(skill), "content": skill["body"]}
 
 
 class SkillCreate(BaseModel):

@@ -1139,6 +1139,7 @@ async def generate_summary_job(
                 captured_generation=captured,
                 expected_summary_updated_at=last_summary_time,
                 expected_baseline=persisted_baseline,
+                summary_snapshot=conversation["summary_snapshot"],
             )
         except WriteGuardRefusal as exc:
             return {"status": "skipped", "reason": exc.code}
@@ -1155,14 +1156,21 @@ async def generate_summary_job(
     ):
         try:
             valid = await store.check_conversation_summary_generation(
-                conv_id, captured_generation=captured, expected_summary_updated_at=last_summary_time
+                conv_id,
+                captured_generation=captured,
+                expected_summary_updated_at=last_summary_time,
+                summary_snapshot=conversation["summary_snapshot"],
             )
         except WriteGuardRefusal as exc:
             return {"status": "skipped", "reason": exc.code}
         if not valid:
             raise Retry(defer=5)
-        summary = await generate_summary(messages, previous_summary, settings)
-    if not summary.strip():
+        frozen = conversation["summary_snapshot"]
+        checkpoint_only = not frozen.rendered and not frozen.reference.sources
+        summary = (
+            "" if checkpoint_only else await generate_summary(messages, previous_summary, settings)
+        )
+    if not checkpoint_only and not summary.strip():
         raise Retry(defer=5)
 
     # Advance the persisted baseline by ONLY the rows actually
@@ -1195,6 +1203,7 @@ async def generate_summary_job(
             summary_snapshot_at=iteration_snapshot,
             summary_continuation_pending=continuation_pending,
             captured_generation=captured,
+            summary_snapshot=conversation["summary_snapshot"],
         )
     except WriteGuardRefusal as exc:
         return {"status": "skipped", "reason": exc.code}

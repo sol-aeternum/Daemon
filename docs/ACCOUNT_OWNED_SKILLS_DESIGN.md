@@ -1,14 +1,13 @@
 # Account-owned skills design
 
-**Status:** Design accepted by the owner. Steps 1 to 3 of §8 are implemented:
-the store (migration `068_account_owned_skills.sql`,
-`orchestrator/services/skills.py`), the cutover of every reader and writer
-to it (migration `069_skill_consolidation_log_content_free.sql`), and the
-revision list and revert endpoints with the settings UI. The running
-application no longer reads or writes skill files or `skill_projections`.
-Step 4 is not started. This document authorises no deployment; each
-remaining change it describes still needs approval under the Rules of
-Engagement in `AGENTS.md`.
+**Status:** Design accepted by the owner. Steps 1 to 4 of §8 are implemented,
+with one part of step 4 held back: the `skill_projections` table is still in
+the schema and is dropped by a later migration, once the cutover has run in
+production (§8). The file-backed skill modules are removed, and migration
+`070_shipped_skill_catalogue.sql` fences the shipped-skill loader by version
+(§5). This document
+authorises no deployment; each remaining change it describes still needs
+approval under the Rules of Engagement in `AGENTS.md`.
 
 **Supersedes:** §4 "Published skills and portable editing" of the earlier
 supporting-source design (#601 working draft), which bundled skills with
@@ -184,6 +183,41 @@ pending-update machinery in `skills_upgrade.py` has nothing left to reconcile
 and is removed (§10 O1). An account that wants a modified copy saves one as its
 own skill. An account can switch a shipped skill off (§10 O2).
 
+As implemented (step 4): shipped skills live in
+`orchestrator/shipped_skills/<slug>/SKILL.md`, with a manifest in
+`orchestrator/shipped_skills/catalogue.json` holding the catalogue's version
+and the SHA-256 of every skill file. The backend applies the directory at
+startup through `orchestrator/services/shipped_skills.py`.
+
+Instances of different releases run side by side during a deploy and after a
+rollback, each with its own copy of the directory, so the directory alone
+cannot be the authority. Migration `070_shipped_skill_catalogue.sql` adds a
+one-row table holding the applied catalogue version. An instance applies its
+directory only when its version is higher, holding that row's lock; publishing
+every skill, removing those no longer present and recording the version are one
+transaction. Consequences:
+
+- an older release, or one with an empty or unversioned directory, changes
+  nothing: it can neither delete nor roll back a newer release's skills;
+- releases starting together are serialized and end on the highest version;
+- rolling the application back leaves the newer shipped skills in place. A
+  skill is retired or reverted by shipping a higher version;
+- a catalogue is applied whole or not at all. If any skill cannot be read,
+  nothing is applied and its directory name is logged, never its content;
+- a directory is applied only when it holds exactly the skills its manifest
+  names, each with the recorded digest. A package that lost some or all of its
+  skill directories, gained one, or holds an altered file is refused and the
+  version does not advance, so absence alone never deletes a shipped skill.
+  Removing every shipped skill takes a manifest with a version above zero and
+  an empty skill list;
+- a change made without raising the manifest's version is not applied and logs
+  a warning;
+- a failure here never stops startup.
+
+The manifest's version is `0`, meaning no catalogue: no shipped skill exists yet, and the
+per-account switch (O2) is not built. A test keeps the directory empty until
+that switch is added with the first shipped skill.
+
 ## 6. Autonomous writers
 
 - The evaluator creates skills in the account of the turn it evaluated. It may
@@ -225,7 +259,7 @@ endpoints on 2026-11-13:
 | Writes to a shipped skill return 403. | New refusal. | Shipped (step 2) |
 | `PUT` accepts an optional `expected_revision` and returns 409 on mismatch. | Additive. | Shipped (step 2) |
 | `POST /skills/{slug}/pending-update` and `POST /skills/admin/sync`. | Removed with the upgrade machinery (§10 O1). | Removed (step 2) |
-| `repo_version`, `local_version`, `pending_update`, `created_by`, `origin_url` stay in responses and are always `null`. | Kept so the settings UI needs no change before step 3. | Shipped (step 2) |
+| `repo_version`, `local_version`, `pending_update`, `created_by`, `origin_url` are no longer in responses. | Removed; they were kept as `null` from step 2 until the settings UI stopped reading them in step 3. | Removed (step 4) |
 | `GET /skills/admin/consolidation-audit` rows carry skill UUIDs and reason codes, and no skill name or description. | Follows §3.1. | Shipped (step 2) |
 | `GET /skills/{slug}/revisions` returns the caller's retained revisions, newest first, each with name, description, content, actor and time. | New endpoint. | Shipped (step 3) |
 | `POST /skills/{slug}/revert` takes `revision` and an optional `expected_revision`, and returns the skill at its new revision. | New endpoint. | Shipped (step 3) |
@@ -259,11 +293,13 @@ inferred. Proposed handling, consistent with the reminders fix (#698):
 The tools do not refuse while unowned legacy files remain; the count is logged
 at startup (§10 O4).
 
-As implemented in step 2, the startup backfill of `skill_projections` from
-files and the shipped-skill upgrade sync no longer run. The modules behind
-them (`skills_store.py`, `skills_projection.py`, `skills_sync.py`,
-`skills_upgrade.py`) remain on disk, unused by the running application, until
-step 4.
+As implemented: since step 2 the startup backfill of `skill_projections` from
+files and the shipped-skill upgrade sync no longer run. Step 4 removed the
+modules behind them (`skills_store.py`, `skills_projection.py`,
+`skills_sync.py`, `skills_upgrade.py` and the unused `skills_loader.py`) and
+their tests. The `skill_projections` table is deliberately still there: an
+older build redeployed during a rollback still finds it. Dropping it is one
+small migration to add after the cutover has run in production.
 
 Proposed sequence of small changes:
 
@@ -272,7 +308,7 @@ Proposed sequence of small changes:
 | 1 | Migration, write service and store, PostgreSQL tests. **Implemented.** | No |
 | 2 | Cutover of all readers and writers; account scoping; catalogue update. **Implemented.** | Yes |
 | 3 | Revision list and revert endpoints, settings UI. **Implemented.** | Yes |
-| 4 | Shipped-skill loader; removal of projection, sync and upgrade code. | Cleanup |
+| 4 | Shipped-skill loader; removal of projection, sync and upgrade code. **Implemented**, except dropping the `skill_projections` table. | Cleanup |
 
 ## 9. Reconciliation with #91
 

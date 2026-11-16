@@ -38,12 +38,12 @@ from tests.qualified_compute import install_qualified_compute
 from tests.redis_jobs_support import install_fake_enqueue
 from orchestrator.redis_jobs import account_job_id
 from orchestrator.models import ChatRequest
-from orchestrator.services.account_control.guard import CapturedGeneration
+from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_capture_failure_never_enqueues_or_breaks_chat_and_cancellation_propagates(
+async def test_capture_failure_refuses_live_admission_and_cancellation_propagates(
     client, monkeypatch, cancel
 ):
     owner, conversation = uuid.uuid4(), uuid.uuid4()
@@ -82,7 +82,7 @@ async def test_capture_failure_never_enqueues_or_breaks_chat_and_cancellation_pr
             store.insert_message.assert_not_awaited()
         else:
             assert (await post_chat(client, {"message": "Fictional message"})).status_code == 200
-            store.insert_message.assert_awaited_once()
+            store.insert_message.assert_not_awaited()
     capture.assert_awaited_once()
     assert title_attempts(queue) == []
 
@@ -177,6 +177,12 @@ async def client(monkeypatch):
 
 
 def create_mock_app_state(mock_store: AsyncMock, queue: FakeTitleQueue | None) -> MagicMock:
+    async def insert_live_user_message(*, captured_generation, **kwargs):
+        if not isinstance(captured_generation, CapturedGeneration):
+            raise WriteGuardRefusal("invalid_capture")
+        return await mock_store.insert_message(role="user", **kwargs)
+
+    mock_store.insert_live_user_message = AsyncMock(side_effect=insert_live_user_message)
     mock_store.get_user_settings = AsyncMock(return_value=None)
     for method in (
         "get_l0_memories",

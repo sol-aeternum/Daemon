@@ -14,11 +14,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, cast
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory import summary_provenance as sp
+from orchestrator.memory.revisions import Capture
 from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 
 
@@ -182,7 +184,7 @@ async def test_count_summary_messages_at_applies_snapshot_bound() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_conversation_summary_persists_baseline_atomically() -> None:
+async def test_update_conversation_summary_persists_baseline_atomically(monkeypatch) -> None:
     conversation_id = uuid4()
     summary_time = datetime.now(timezone.utc)
     conn = _SeamConn()
@@ -190,6 +192,9 @@ async def test_update_conversation_summary_persists_baseline_atomically() -> Non
     store = _bound_store(_SeamPool(conn))
 
     captured = CapturedGeneration(uuid4(), 7)
+    frozen = _snapshot(conversation_id, captured, claimed=42)
+    publication = AsyncMock(return_value=True)
+    monkeypatch.setattr(sp, "publish", publication)
     updated = await store.update_conversation_summary(
         conversation_id,
         summary="summary",
@@ -197,44 +202,27 @@ async def test_update_conversation_summary_persists_baseline_atomically() -> Non
         expected_summary_updated_at=summary_time,
         summarized_message_count=42,
         captured_generation=captured,
+        summary_snapshot=frozen,
     )
 
     assert updated is True
-    query, args = conn.calls["update"]
-    (
-        actual_id,
-        summary,
-        actual_time,
-        baseline,
-        snapshot,
-        continuation_pending,
-        owner,
-    ) = args
-    normalized_query = " ".join(query.split())
-    assert actual_id == conversation_id
-    assert summary == "summary"
-    assert actual_time == summary_time
-    assert baseline == 42
-    assert snapshot is None
-    assert continuation_pending is False
-    # The synthetic capture's origin is bound into the guarded UPDATE.
-    assert owner == captured.account_id
-    assert "summary_updated_at IS NOT DISTINCT FROM $3" in normalized_query
-    assert "updated_at = NOW()" in normalized_query
-    assert "last_activity_at = NOW()" in normalized_query
-    assert "last_summarized_msg_count" in normalized_query
-    assert "summary_continuation_pending" in normalized_query
-    assert "user_id = $7" in normalized_query
+    publication.assert_awaited_once_with(store, frozen, "summary", continuation=False)
+    # Real atomic closure/head/cursor/rollback assertions live in the owned-PG
+    # summary provenance and account-guard suites, not this adapter double.
 
 
 @pytest.mark.asyncio
-async def test_update_conversation_summary_persists_snapshot_timestamp() -> None:
+async def test_update_conversation_summary_persists_snapshot_timestamp(monkeypatch) -> None:
     conversation_id = uuid4()
     summary_time = datetime.now(timezone.utc)
     snapshot = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
     conn = _SeamConn()
     conn.update_row = {"id": conversation_id}
     store = _bound_store(_SeamPool(conn))
+    captured = CapturedGeneration(uuid4(), 7)
+    frozen = _snapshot(conversation_id, captured, claimed=42, at=snapshot)
+    publication = AsyncMock(return_value=True)
+    monkeypatch.setattr(sp, "publish", publication)
 
     updated = await store.update_conversation_summary(
         conversation_id,
@@ -243,22 +231,28 @@ async def test_update_conversation_summary_persists_snapshot_timestamp() -> None
         expected_summary_updated_at=summary_time,
         summarized_message_count=42,
         summary_snapshot_at=snapshot,
-        captured_generation=CapturedGeneration(uuid4(), 7),
+        captured_generation=captured,
+        summary_snapshot=frozen,
     )
 
     assert updated is True
-    query, args = conn.calls["update"]
-    (
-        _actual_id,
-        _summary,
-        _time,
-        _baseline,
-        snapshot_arg,
-        _continuation_pending,
-        _owner,
-    ) = args
-    assert snapshot_arg == "2026-08-08T12:00:00+00:00"
-    assert "last_summarized_at_time" in " ".join(query.split())
+    assert publication.await_args is not None
+    assert publication.await_args.args[1].snapshot_at == snapshot
+
+
+def _snapshot(conversation, origin, *, claimed=0, at=None):
+    return sp.SummarySnapshot(
+        Capture(origin, 0),
+        sp.SummaryReference(conversation, None, 0, ()),
+        None,
+        "{}",
+        (),
+        (),
+        0,
+        claimed,
+        at or datetime.now(timezone.utc),
+        None,
+    )
 
 
 @pytest.mark.asyncio
@@ -367,9 +361,19 @@ class _SeamConn:
         if "ACCOUNT_DELETIONS" in upper:
             self._record("fetchrow", "control_state", query, args)
             return dict(self.control_state)
-        if upper.startswith("SELECT C.*"):
+        if upper.startswith("SELECT C.*") or (
+            upper.startswith("SELECT ") and "FROM CONVERSATIONS" in upper
+        ):
             self._record("fetchrow", "conversation", query, args)
-            return self.conversation_row
+            return (
+                {
+                    "summary_head_version_id": None,
+                    "summary_state_revision": 0,
+                    **self.conversation_row,
+                }
+                if self.conversation_row
+                else None
+            )
         if upper.startswith("WITH RANKED"):
             self._record("fetchrow", "stats", query, args)
             return self.stats_row
@@ -391,9 +395,26 @@ class _SeamConn:
         return "SELECT 1"
 
     async def fetch(self, query: str, *args: Any) -> list:
-        assert "FROM memory_erased_sources" in query
-        self._record("fetch", "erased_sources", query, args)
-        return []
+        if "FROM memory_erased_sources" in query:
+            self._record("fetch", "erased_sources", query, args)
+            return []
+        if "FROM messages" in query:
+            self._record("fetch", "sources", query, args)
+            result = []
+            for message in (self.stats_row or {}).get("messages", []):
+                item = {
+                    "status": "complete",
+                    "source_revision": 1,
+                    "user_id": args[0],
+                    "conversation_id": args[1],
+                    **message,
+                }
+                item["id"] = UUID(str(item["id"]))
+                if isinstance(item["created_at"], str):
+                    item["created_at"] = datetime.fromisoformat(item["created_at"])
+                result.append(item)
+            return result
+        raise AssertionError(f"unexpected fetch: {query!r}")
 
     def _record(self, kind: str, label: str, query: str, args: tuple) -> None:
         event = (kind, label)
@@ -471,26 +492,18 @@ async def test_read_conversation_summary_inputs_decrypts_after_the_guard() -> No
     )
 
     assert result is not None
-    assert result["persisted_baseline"] == 2
-    assert result["current_message_count"] == 3
-    assert result["finalized_count"] == 3
-    assert result["contiguous_count"] == 3
+    assert result["persisted_baseline"] == 0  # Legacy text is not a qualified parent.
+    assert result["summary"] is None
+    assert result["current_message_count"] == 1
+    assert result["finalized_count"] == 1
+    assert result["contiguous_count"] == 1
     assert result["has_hole"] is False
     assert result["snapshot_at"].tzinfo is timezone.utc
-    assert result["messages"] == [
-        {
-            "id": conn.stats_row["messages"][0]["id"],
-            "role": "user",
-            "content": "ciphertext",
-            "created_at": "2000-01-01T00:00:00+00:00",
-        }
-    ]
-    _query, stats_args = conn.calls["stats"]
-    assert stats_args[0] == conversation_id
-    assert stats_args[1] == owner
-    assert stats_args[2] == result["snapshot_at"]
-    assert stats_args[3] == 2
-    assert stats_args[4] == 20
+    assert result["messages"][0]["content"] == "ciphertext"
+    assert result["summary_snapshot"].rendered[0].source_revision == 1
+    query, args = conn.calls["sources"]
+    assert args[:2] == (owner, conversation_id)
+    assert "source_revision" in query
     # Guard acquisition precedes both the conversation read and decryption.
     assert conn.events.index(("fetchrow", "account_for_share")) < conn.events.index(
         ("fetchrow", "conversation")
@@ -518,24 +531,34 @@ async def test_read_conversation_summary_inputs_clamps_the_requested_limit() -> 
             "finalized_count": 0,
             "contiguous_count": 0,
             "has_hole": False,
-            "messages": [],
+            "messages": [
+                {
+                    "id": str(uuid4()),
+                    "role": "user",
+                    "content": "fiction",
+                    "created_at": "2000-01-01T00:00:00+00:00",
+                }
+                for _ in range(101)
+            ],
         }
 
     conn = _SeamConn()
     _prepared(conn)
     store = _bound_store(_SeamPool(conn))
-    await store.read_conversation_summary_inputs(
+    result = await store.read_conversation_summary_inputs(
         conversation_id, captured_generation=capture, limit=1000
     )
-    assert conn.calls["stats"][1][4] == 100
+    assert result is not None
+    assert len(result["messages"]) == 100
 
     conn = _SeamConn()
     _prepared(conn)
     store = _bound_store(_SeamPool(conn))
-    await store.read_conversation_summary_inputs(
+    result = await store.read_conversation_summary_inputs(
         conversation_id, captured_generation=capture, limit=0
     )
-    assert conn.calls["stats"][1][4] == 1
+    assert result is not None
+    assert len(result["messages"]) == 1
 
 
 @pytest.mark.asyncio
@@ -574,31 +597,34 @@ async def test_read_conversation_summary_inputs_refuses_stale_capture_before_rea
 
 
 @pytest.mark.asyncio
-async def test_check_conversation_summary_generation_pins_owner_and_version() -> None:
+async def test_check_conversation_summary_generation_pins_owner_and_version(monkeypatch) -> None:
     conversation_id, owner = uuid4(), uuid4()
     expected_time = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
     conn = _SeamConn()
     conn.exists_result = True
     store = _bound_store(_SeamPool(conn))
+    capture = CapturedGeneration(owner, 7)
+    frozen = _snapshot(conversation_id, capture)
+    check = AsyncMock(return_value=True)
+    monkeypatch.setattr(sp, "check", check)
 
     valid = await store.check_conversation_summary_generation(
         conversation_id,
-        captured_generation=CapturedGeneration(owner, 7),
+        captured_generation=capture,
         expected_summary_updated_at=expected_time,
+        summary_snapshot=frozen,
     )
 
     assert valid is True
-    query, args = conn.calls["exists"]
-    normalized = " ".join(query.split())
-    assert args == (conversation_id, owner, expected_time)
-    assert "summary_updated_at IS NOT DISTINCT FROM $3" in normalized
+    check.assert_awaited_once_with(store, frozen)
 
-    conn.exists_result = None
+    check.return_value = False
     assert (
         await store.check_conversation_summary_generation(
             conversation_id,
             captured_generation=CapturedGeneration(owner, 7),
             expected_summary_updated_at=None,
+            summary_snapshot=frozen,
         )
         is False
     )
@@ -640,18 +666,22 @@ async def test_clear_finished_summary_continuation_guards_drained_state() -> Non
     conn = _SeamConn()
     conn.update_row = {"id": conversation_id}
     store = _bound_store(_SeamPool(conn))
+    conn.conversation_row = {"id": conversation_id}
+    frozen = _snapshot(conversation_id, capture)
 
     cleared = await store.clear_finished_summary_continuation(
         conversation_id,
         captured_generation=capture,
         expected_summary_updated_at=expected_time,
         expected_baseline=7,
+        summary_snapshot=frozen,
     )
 
     assert cleared is True
     query, args = conn.calls["update"]
     normalized = " ".join(query.split())
-    assert args == (conversation_id, owner, expected_time, 7)
+    assert args == (conversation_id, owner, expected_time, 7, None, 0)
+    assert "summary_state_revision=$6" in normalized
     assert "summary_updated_at IS NOT DISTINCT FROM $3" in normalized
     assert "metadata->'last_summarized_msg_count' = to_jsonb($4::bigint)" in normalized
     assert "metadata->'summary_continuation_pending' = 'true'::jsonb" in normalized
@@ -667,6 +697,7 @@ async def test_clear_finished_summary_continuation_guards_drained_state() -> Non
             captured_generation=capture,
             expected_summary_updated_at=expected_time,
             expected_baseline=7,
+            summary_snapshot=frozen,
         )
         is False
     )

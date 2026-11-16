@@ -14,6 +14,7 @@ from orchestrator.skill_evaluator import (
     SkillEvaluationRequest,
     SkillEvaluator,
     SkillRefinementDecision,
+    SkillTurnContext,
     _build_dedup_query_text,
 )
 
@@ -134,6 +135,50 @@ def _build_messages(
             "tool_results": tool_results or [],
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_missing_qualified_reader_never_uses_legacy_summary() -> None:
+    assistant_id = uuid.uuid4()
+    store = StubStore(_build_messages(assistant_id))
+    evaluator = SkillEvaluator(store, None)
+    turn = await evaluator._load_turn_context(
+        SkillEvaluationRequest(uuid.uuid4(), uuid.uuid4(), assistant_id, 7)
+    )
+    assert turn is not None
+    assert turn.conversation_summary is None
+    store.get_conversation_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_state", ["missing", "changed", "qualified"])
+async def test_skill_generation_omits_even_qualified_summary_context(
+    monkeypatch: pytest.MonkeyPatch, reader_state: str
+) -> None:
+    assistant_id = uuid.uuid4()
+    store = StubStore(_build_messages(assistant_id))
+    reader = AsyncMock(return_value=(None, "Qualified synthetic summary."))
+    if reader_state != "missing":
+        monkeypatch.setattr(store, "read_qualified_conversation_summary", reader, raising=False)
+    evaluator = SkillEvaluator(store, None)
+    loaded = await evaluator._load_turn_context(
+        SkillEvaluationRequest(uuid.uuid4(), uuid.uuid4(), assistant_id, 7)
+    )
+    assert loaded is not None and loaded.conversation_summary is None
+    store.get_conversation_mock.assert_not_awaited()
+    prompt = AsyncMock(return_value=None)
+    monkeypatch.setattr(evaluator, "_run_json_prompt", prompt)
+    turn = SkillTurnContext(
+        {"content": "Synthetic user request."},
+        {"content": "Synthetic assistant body."},
+        "",
+        "Qualified synthetic summary.",
+    )
+    assert await evaluator._generate_skill_draft(turn, 7) is None
+    reader.assert_not_awaited()
+    prompt.assert_awaited_once()
+    assert prompt.await_args is not None
+    assert "Qualified synthetic summary." not in prompt.await_args.kwargs["prompt"]
 
 
 @pytest.mark.asyncio

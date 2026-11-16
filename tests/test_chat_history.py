@@ -23,6 +23,7 @@ from orchestrator.config import get_settings
 from orchestrator.daemon import stream_sse_chat, with_runtime_datetime_context
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 from tests.qualified_compute import install_qualified_compute
 from tests.memory_capture_support import install_capture_pool
 
@@ -42,6 +43,11 @@ async def client(monkeypatch):
     settings = get_settings()
     initial_app_state = AppState(settings=settings)
     install_qualified_compute(monkeypatch)
+
+    async def captured_origin(conn, owner):
+        return CapturedGeneration(owner, 0)
+
+    monkeypatch.setattr("orchestrator.main.capture_generation", captured_origin)
 
     async def override_settings():
         return settings
@@ -85,6 +91,13 @@ async def client(monkeypatch):
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     """Create a mock AppState with optional memory store."""
     if mock_store is not None:
+
+        async def insert_live_user_message(*, captured_generation, **kwargs):
+            if not isinstance(captured_generation, CapturedGeneration):
+                raise WriteGuardRefusal("invalid_capture")
+            return await mock_store.insert_message(role="user", **kwargs)
+
+        mock_store.insert_live_user_message = AsyncMock(side_effect=insert_live_user_message)
         install_capture_pool(mock_store)
         mock_store.get_user_settings = AsyncMock(return_value=None)
         for method in ("get_l0_memories", "get_recent_summaries", "find_entities_by_alias"):
@@ -97,7 +110,7 @@ def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     app_state.settings = get_settings()
     app_state.memory_store = mock_store
     app_state.redis = None
-    app_state.db_pool = object()
+    app_state.db_pool = MagicMock()
     return app_state
 
 

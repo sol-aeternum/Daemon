@@ -13,6 +13,7 @@ from orchestrator.auth import AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
 from orchestrator.main import app
+from orchestrator.services.account_control.guard import capture_generation
 from tests.qualified_compute import install_qualified_compute
 
 
@@ -51,7 +52,13 @@ async def authenticated_app(monkeypatch):
     connection.transaction = transaction
     connection.execute = AsyncMock(return_value="UPDATE 0")
     connection.fetch = AsyncMock(return_value=[])
-    connection.fetchrow = AsyncMock(return_value={"candidate_count": 0, "total_count": 0})
+
+    async def fetchrow(query, *_args):
+        if "FROM entitlement_accounts" in query:
+            return {"status": "active", "content_generation": 7}
+        return {"candidate_count": 0, "total_count": 0}
+
+    connection.fetchrow = AsyncMock(side_effect=fetchrow)
     connection.fetchval = AsyncMock(side_effect=fetchval)
 
     @asynccontextmanager
@@ -221,7 +228,7 @@ async def test_chat_persistence_ignores_payload_user_id(authenticated_app, monke
             "updated_at": datetime.now(),
         }
     )
-    store.insert_message = AsyncMock(return_value={"id": uuid.uuid4()})
+    store.insert_live_user_message = AsyncMock(return_value={"id": uuid.uuid4()})
     store.get_conversation = AsyncMock(return_value=None)
     store.get_recent_messages = AsyncMock(return_value=[])
     store.get_user_settings = AsyncMock(return_value={})
@@ -232,8 +239,18 @@ async def test_chat_persistence_ignores_payload_user_id(authenticated_app, monke
         yield 'event: final\ndata: {"type":"final","data":{}}\n\n'
         yield 'event: done\ndata: {"type":"done","data":{"ok":true}}\n\n'
 
+    original_captures = []
+
+    async def record_capture(conn, owner):
+        original = await capture_generation(conn, owner)
+        original_captures.append(original)
+        return original
+
     transport = ASGITransport(app=app)
-    with patch("orchestrator.main.stream_sse_chat", fake_stream_sse_chat):
+    with (
+        patch("orchestrator.main.stream_sse_chat", fake_stream_sse_chat),
+        patch("orchestrator.main.capture_generation", record_capture),
+    ):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/chat",
@@ -250,4 +267,13 @@ async def test_chat_persistence_ignores_payload_user_id(authenticated_app, monke
 
     assert response.status_code == 200
     assert store.create_conversation.call_args.kwargs["user_id"] == auth_user_id
-    assert store.insert_message.call_args.kwargs["user_id"] == auth_user_id
+    store.insert_live_user_message.assert_awaited_once()
+    admitted = store.insert_live_user_message.await_args.kwargs
+    assert admitted["user_id"] == auth_user_id
+    assert admitted["conversation_id"] == conversation_id
+    assert admitted["content"] == "hello" and admitted["status"] == "complete"
+    assert len(original_captures) == 1
+    assert admitted["captured_generation"] is original_captures[0]
+    assert original_captures[0].account_id == auth_user_id
+    assert original_captures[0].generation == 7
+    store.insert_message.assert_not_awaited()

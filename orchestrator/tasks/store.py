@@ -1183,11 +1183,11 @@ class TaskStore:
             if owner != user_id:
                 raise TaskNotFound("conversation not found")
         assert conversation_id is not None
-        user_row = await self._memory.insert_message(
+        user_row = await self._memory.insert_live_user_message(
             conversation_id=conversation_id,
             user_id=user_id,
-            role="user",
             content=user_message,
+            captured_generation=CapturedGeneration(user_id, generation),
             status="complete",
             conn=conn,
         )
@@ -2467,6 +2467,9 @@ class TaskStore:
             return False, active["id"]
         if self._resource_inputs is not None:
             await self._resource_inputs._detach(conn, user_id, conversation_id)
+        from orchestrator.memory.summary_provenance import invalidate
+
+        await invalidate(conn, user_id, conversation=conversation_id)
         await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
         return True, None
 

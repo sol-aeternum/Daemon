@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from orchestrator.services.account_control.guard import CapturedGeneration
 from tests.qualified_compute import install_qualified_compute
 
 
@@ -71,7 +73,10 @@ async def client(monkeypatch):
         return settings
 
     async def override_app_state():
-        return app.state.app_state
+        state = app.state.app_state
+        if isinstance(state.memory_store, _FakeMemoryStore):
+            state.db_pool = state.memory_store._database_pool
+        return state
 
     async def override_auth():
         return AuthenticatedDevice(
@@ -106,9 +111,18 @@ class _FakeMemoryStore:
 
     def __init__(self, advisor_call_count: int = 0) -> None:
         # Synthetic account/erasure observations for the native producer capture.
-        self._database_pool = AsyncMock()
-        self._database_pool.fetchrow.return_value = {"status": "active", "content_generation": 0}
-        self._database_pool.fetchval.return_value = 0
+        self._database_pool = MagicMock()
+        self._database_pool.fetchrow = AsyncMock(
+            return_value={"status": "active", "content_generation": 0}
+        )
+        self._database_pool.fetchval = AsyncMock(return_value=0)
+
+        @asynccontextmanager
+        async def acquire():
+            # capture_generation is a read outside a content-write transaction.
+            yield self._database_pool
+
+        self._database_pool.acquire = acquire
         self._advisor_call_count = advisor_call_count
         self._increment_calls = 0
         self._inserted_messages: list[dict[str, Any]] = []
@@ -125,6 +139,22 @@ class _FakeMemoryStore:
         msg_id = uuid.uuid4()
         self._inserted_messages.append({"id": msg_id, **kwargs})
         return {"id": msg_id}
+
+    async def insert_live_user_message(
+        self, *, conversation_id, user_id, content, captured_generation, status
+    ) -> dict[str, Any]:
+        # Explicit native-admission fixture, not a fallback to an unfenced API.
+        assert isinstance(captured_generation, CapturedGeneration)
+        assert captured_generation.account_id == user_id
+        assert captured_generation.generation == 0
+        assert status == "complete"
+        return await self.insert_message(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            content=content,
+            role="user",
+            status=status,
+        )
 
     async def update_message(self, message_id: Any, **kwargs: Any) -> None:
         pass

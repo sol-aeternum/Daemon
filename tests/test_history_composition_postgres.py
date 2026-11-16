@@ -98,7 +98,8 @@ async def scenario(projection_db, tmp_path):
         min_size=0,
         max_size=2,
     )
-    enc = ContentEncryption(Fernet.generate_key().decode())
+    content_key = Fernet.generate_key().decode()
+    enc = ContentEncryption(content_key)
     tasks = TaskStore(pool, enc, MemoryStore(pool, enc), cover_new_inference=True)
     path = tmp_path / "h"
     identity, ownership = owned(path)
@@ -110,6 +111,7 @@ async def scenario(projection_db, tmp_path):
         account=account,
         pool=pool,
         tasks=tasks,
+        content_key=content_key,
         path=path,
         identity=identity,
         ownership=ownership,

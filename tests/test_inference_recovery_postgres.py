@@ -37,7 +37,11 @@ async def db(metadata_cluster):
     cluster = metadata_cluster
     name = "md_" + uuid4().hex
     cluster.prepare(name)
-    for migration in ("049_attempt_lifecycle.sql", "050_task_inference_recovery.sql"):
+    for migration in (
+        "049_attempt_lifecycle.sql",
+        "050_task_inference_recovery.sql",
+        "071_message_correction_admission.sql",
+    ):
         cluster.sql(
             "BEGIN;" + (ROOT / "migrations" / migration).read_text() + "COMMIT;",
             database=name,
@@ -67,6 +71,14 @@ async def db(metadata_cluster):
         database=name,
         role="md_owner",
     )
+    # The memory revision and summary provenance schema exists before W's map is
+    # granted, after A's grant above, so A's existing fixture privileges are unchanged.
+    for migration in ("066_memory_bitemporal.sql", "072_summary_provenance.sql"):
+        cluster.sql(
+            "BEGIN;" + (ROOT / "migrations" / migration).read_text() + "COMMIT;",
+            database=name,
+            role="md_owner",
+        )
     # Qualification lane: W receives only the preserved proposed exact map.
     # A remains the existing synthetic acceptor fixture; W has no A membership.
     from tests.exact_worker_privileges import grant_exact_worker

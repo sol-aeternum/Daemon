@@ -378,24 +378,6 @@
                 }
             }
         ],
-        "./orchestrator/skills_store.py": [
-            {
-                "code": "reportUnusedParameter",
-                "range": {
-                    "startColumn": 4,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./orchestrator/subagents/base.py": [
             {
                 "code": "reportArgumentType",
@@ -2066,42 +2048,6 @@
                 "range": {
                     "startColumn": 47,
                     "endColumn": 53,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_skill_projection_sync.py": [
-            {
-                "code": "reportUnusedParameter",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportDeprecated",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 28,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_skill_upgrade.py": [
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 16,
                     "lineCount": 1
                 }
             }

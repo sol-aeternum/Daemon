@@ -51,6 +51,64 @@ export function isPrivateArtifactRequest(
 }
 
 /**
+ * Ordinary private account reads (#B1): the conversation subtree and the two
+ * exact account settings/entitlement reads. They are authenticated,
+ * account-scoped responses and must never be stored by the service worker.
+ *
+ * The backend decodes the path before routing, so a single decode is applied
+ * here too: ``/%63onversations`` and ``/users/me/settings%2F`` still reach the
+ * private routes. A path that cannot be decoded is treated as private. No
+ * second decode is applied, so a doubly-encoded path is not broadened into a
+ * new private match; it is left to the ordinary lookalike rules below.
+ */
+const ORDINARY_PRIVATE_ACCOUNT_PATHS = new Set([
+  '/users/me/settings',
+  '/users/me/entitlements',
+]);
+
+function isOrdinaryPrivatePath(path: string): boolean {
+  if (/^\/conversations(?:\/|$)/.test(path)) return true;
+  // ``/users/me/settings/`` and the exact root path, nothing below it.
+  return ORDINARY_PRIVATE_ACCOUNT_PATHS.has(path.replace(/\/+$/, ''));
+}
+
+export function isPrivateAccountRequest(
+  url: URL,
+  appOrigin: string,
+  configured = configuredSnapshotApiBase(),
+): boolean {
+  // Root paths are ours only on the app origin. A foreign site's similarly
+  // named response is not an application account entry to erase on upgrade.
+  let base: URL | null = null;
+  try {
+    base = new URL(configured);
+  } catch {
+    // Relative/root requests can still be classified without an API base.
+  }
+  if (url.origin !== appOrigin && url.origin !== base?.origin) return false;
+  let path: string;
+  try {
+    path = decodeURIComponent(url.pathname);
+  } catch {
+    return true;
+  }
+  if (url.origin === appOrigin && isOrdinaryPrivatePath(path)) return true;
+  // Under a path-prefixed API base (``https://host/daemon``) too.
+  try {
+    if (!base) return false;
+    const prefix = base.pathname.replace(/\/+$/, '');
+    return (
+      url.origin === base.origin &&
+      prefix !== '' &&
+      path.startsWith(`${prefix}/`) &&
+      isOrdinaryPrivatePath(path.slice(prefix.length))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Durable task reads carry message content and live status for the signed-in
  * account, also when they go straight to the backend origin.
  */
@@ -107,6 +165,7 @@ export function shouldUseGeneralRuntimeCache(
   return (
     !isSameOriginApiRequest(url, sameOrigin) &&
     !/^\/home-suggestions(?:\/|$)/.test(url.pathname) &&
+    !isPrivateAccountRequest(url, appOrigin) &&
     !isPrivateSpeechRequest(url) &&
     !isPrivateArtifactRequest(url) &&
     !isPrivateTaskRequest(url) &&
@@ -124,9 +183,9 @@ const PRIVATE_ENTRY_CACHES = ['others', 'images', 'static-resources', 'fonts'];
 
 /**
  * Remove private responses an earlier service worker may have cached in any
- * of its runtime caches: task reads, generated artifacts and anything from
- * the backend (before they were network-only). Other entries, and the
- * precache, are left alone; nothing is created.
+ * of its runtime caches: ordinary private account reads, task reads, generated
+ * artifacts and anything from the backend (before they were network-only).
+ * Other entries, and the precache, are left alone; nothing is created.
  */
 export async function clearCachedPrivateEntries(
   storage: CacheStorage,
@@ -144,6 +203,7 @@ export async function clearCachedPrivateEntries(
             .filter((request) => {
               const url = new URL(request.url);
               return (
+                isPrivateAccountRequest(url, appOrigin, configured) ||
                 isPrivateTaskRequest(url, configured) ||
                 isPrivateArtifactRequest(url, configured) ||
                 isBackendApiRequest(url, appOrigin, configured)

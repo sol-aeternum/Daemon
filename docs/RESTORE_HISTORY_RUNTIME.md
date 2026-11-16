@@ -111,6 +111,109 @@ synthetic SQL tests supply synthetic material instead of provisioning two real
 OS identities/groups. They do not qualify production mounts, DAC, original ACLs,
 keys, account continuity, independent backup retention or the deployed topology.
 
+### Application startup and bootstrap boundary
+
+`tests/test_phone_startup_bootstrap_postgres.py` exercises the actual
+`orchestrator.main.app` and full lifespan against the owned SQL fixture. A
+fresh-interpreter case invokes the supported `orchestrator.runtime.main` backend
+launcher with real Uvicorn and lifespan, using Uvicorn's inherited-socket `fd`
+branch with a parent-owned loopback listener. The ordinary host/port bind branch
+and production networking are not qualified by that test. Synthetic settings explicitly
+disable dotenv loading; synthetic H material maps the single test UID to the
+fixture files. This does not qualify production UID/GID, key or mount separation.
+
+The database starts with the proposed ordinary W map, then existing H fixtures
+apply their separate `task_history_*` function grants. A retains the broader
+synthetic acceptor fixture. The startup checks therefore do **not** prove that
+the ordinary W map alone is an H privilege profile or supply a deployable A map.
+The exact ordinary-role ACL inventory remains separately tested in
+`tests/test_exact_worker_privileges_postgres.py`; no privilege map changes here.
+
+The bounded backend request matrix follows application callers in
+`frontend/components/AuthProvider.tsx`, `frontend/components/ModelSelector.tsx`,
+`frontend/hooks/useEntitlements.ts`, `frontend/hooks/useHomeSuggestions.ts` and
+the task input/presentation proxies under `frontend/app/api/tasks/`:
+
+| Request group | Selected H1 expectation |
+| --- | --- |
+| Health and public auth config | Success, no-store |
+| Anonymous refresh without a credential | Native missing-credential refusal, not an H availability refusal |
+| Authenticated conversation list and original task/by-key reads | Success, no-store |
+| Public catalog (`GET /v1/catalog`), authenticated entitlement/settings reads | Success under their native checks, no-store |
+| Provider models (`GET /v1/models`), home suggestions, settings writes, task inputs/presentations | `503 history_unavailable`, no-store |
+| New chat, native Stop and unclassified resource routes | The same H refusal before execution |
+
+The lifecycle case prohibits attestation, shipped-skill publication, memory
+backfill and session-cleanup producers; the child prohibits outbound network
+connects and checks physical pool/history cleanup after graceful termination.
+H observation-only does **not** mean authentication storage is read-only:
+`main._check_first_boot_setup` still runs under W. The fresh-install case writes
+a setup-token verifier and private operator token file. With devices but no valid
+refresh session, startup revokes the existing devices/sessions and republishes
+setup material. Separate full-lifespan cases exercise both existing branches
+under W and assert the original task stays queued; token values are not exposed.
+This documents current startup behavior, not a new credential or grant decision.
+The existing worker startup tests still require `history_observation_only` before
+the job loop, including pool cleanup. No acceptance/Send/Stop/output collaborator
+is installed by these tests or by production H startup.
+
+This is **backend bootstrap-boundary qualification**, not successful complete
+application bootstrap: it seeds native device sessions, does not drive Next or
+a browser, and deliberately retains unavailable controls. Fresh setup/enrollment,
+cookie/CSRF/proxy behavior, model selection, SSE, a restarted browser and a
+physical phone remain separate acceptance. No live provider is called. A usable
+pilot needs an approved route-by-route bootstrap and executable composition,
+not blanket GET admission or removal of the worker barrier. Keep #477 and the
+applicable #704 privilege/runtime qualification open; no deployed grants, flag
+enablement, lost-output recovery, restore or phone acceptance follows here.
+
+### B1 self-hosted browser bootstrap boundary
+
+The owner-approved B1 source slice adds only `GET /v1/catalog`,
+`GET /users/me/entitlements` and `GET /users/me/settings` to the exact audited
+ingress. The catalog remains public/local metadata; authenticated reads retain
+native device and owner checks. Authentication may update `devices.last_seen_at`;
+these are not database-read-only sessions. The proposed ordinary W map already
+covers these handlers; no SQL grants or live privileges change. Separate synthetic
+H function grants and the broader A fixture are not deployable role evidence.
+
+Browser qualification uses a single test-owned HTTPS origin with a nonempty
+backend prefix, actual Next proxies and full backend lifespan. Its positive
+identity/entitlement fixtures have empty own history and no unresolved accepted
+work. This is a test precondition, not a new runtime guard or general history
+recovery proof. Native conversation/task admissions are unchanged; they are not
+promoted to independent H-qualified recovery. Fresh setup still refuses a missing
+singleton or entitlement rather than provisioning or repairing it at runtime.
+
+The auth and entitlement proxies pin one selected backend, reject redirects and
+never try a second authority after transport uncertainty. See
+[the auth boundary](AUTH_ARCHITECTURE.md#b1-pinned-browser-bootstrap-proxies).
+Private-cache matching and targeted upgrade cleanup cover legacy root account
+reads as well as prefixed requests. A fixed worker must replace the prior
+controller and finish activation cleanup before upgraded-profile privacy
+acceptance; the HTTP-cache acknowledgement does not prove Cache Storage cleanup
+or repair already-open old tabs. No real browser profile is migrated here.
+
+Send, native Stop, selected-H worker execution, settings/model persistence,
+provider model discovery and resource composition remain refused. Home suggestions
+remain visibly unavailable on refusal, without automatic polling or fabricated
+disabled/success states. B1 is not deployment, physical-phone, live-provider or
+general restore acceptance; #477 and #704 remain open.
+
+The owned PostgreSQL browser fixture is
+`tests/test_b1_browser_bootstrap_postgres.py` (opt in with
+`--compute-metadata-postgres`, using the repository's installed browser and cached
+database image). It builds the actual production Next/Serwist worker for its
+reserved HTTPS `/daemon` origin. Real setup/enrollment issue both devices; the
+fixture never installs preissued browser sessions. Effective ACL checks execute
+under the selected H application pool, not just a standalone proposed-role test.
+Its prior controller is a synthetic reproduction of the old rule boundary, not
+a historical production worker artifact. Credential-lifetime isolation is for
+the same singleton identity and is not distinct-account sign-in qualification.
+Test-owned offline cache markers are inserted deliberately after activation to
+prove they cannot satisfy protected reads; their presence is not mistaken for
+failed activation cleanup. Unrelated entries must remain intact.
+
 Acceptance, Send, Stop and text/partial/terminal/artifact publication must next be
 connected to the authenticated runtime and qualified together before removing
 the barrier. Existing source adapters and receipts are not dispatch permits.

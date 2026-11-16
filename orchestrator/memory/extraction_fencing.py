@@ -14,6 +14,7 @@ from uuid import UUID
 from orchestrator.memory.entity_projection import RowSnapshot
 from orchestrator.memory.revisions import Capture, mutation, observe_committed
 from orchestrator.memory.lineage import record_sources
+from orchestrator.memory import summary_provenance
 from orchestrator.services.account_control.guard import (
     CapturedGeneration,
     Connection,
@@ -25,7 +26,7 @@ class ExtractionRefused(Exception):
     """Terminal unsafe source/plan; never cure by recapturing an account."""
 
 
-MESSAGE_FIELDS = "id,user_id,conversation_id,created_at,role,status,content,tool_calls,tool_results"
+MESSAGE_FIELDS = "id,user_id,conversation_id,source_revision,created_at,role,status,content,tool_calls,tool_results"
 CONVERSATION_FIELDS = "id,user_id,pipeline"
 ELIGIBLE = """
  m.user_id=$1 AND m.local_only=FALSE AND m.status='active' AND m.valid_to IS NULL
@@ -40,7 +41,7 @@ class ExtractionInputs:
     origin: CapturedGeneration
     conversation: RowSnapshot
     messages: tuple[RowSnapshot, ...]
-    summary: tuple[Any, ...] | None = None
+    summary: summary_provenance.SummaryReference | None = None
     erasure_epoch: int = 0
 
     def subset(self, ids: set[UUID]) -> ExtractionInputs:
@@ -226,12 +227,10 @@ async def validate(conn: Connection, inputs: ExtractionInputs):
     if {r["id"]: RowSnapshot.read(r) for r in rows} != {m.id: m for m in inputs.messages}:
         raise ExtractionRefused("source_changed")
     if inputs.summary is not None:
-        row = await conn.fetchrow(
-            "SELECT summary,summary_updated_at FROM conversations WHERE id=$1",
-            inputs.conversation.id,
-        )
-        if row is None or tuple(row.values()) != inputs.summary:
-            raise ExtractionRefused("source_changed")
+        try:
+            await summary_provenance.validate_reference(conn, origin.account_id, inputs.summary)
+        except ValueError as exc:
+            raise ExtractionRefused("source_changed") from exc
 
 
 async def check(store: Any, inputs: ExtractionInputs):
@@ -244,13 +243,9 @@ async def with_summary(store: Any, inputs: ExtractionInputs):
     async with store._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
         async with guard_content_write(conn, inputs.origin):
             await validate(conn, inputs)
-            row = await conn.fetchrow(
-                "SELECT summary,summary_updated_at FROM conversations WHERE id=$1",
-                inputs.conversation.id,
+            values, summary = await summary_provenance.read_on_connection(
+                store, conn, inputs.origin.account_id, inputs.conversation.id
             )
-            values = tuple(row.values())
-            # Conversation summaries retain their existing storage representation.
-            summary = row["summary"]
     return ExtractionInputs(
         inputs.origin, inputs.conversation, inputs.messages, values, inputs.erasure_epoch
     ), summary
@@ -392,9 +387,12 @@ async def commit_fact(
                     event_scope=incoming.event_scope,
                 )
             assert result is not None
-            await record_sources(
-                conn, inputs.origin.account_id, result[0]["id"], [m.id for m in inputs.messages]
-            )
+            # A fact read with a summary in context depends on that summary's
+            # messages too; erasure suppresses exactly what is recorded here.
+            sources = [m.id for m in inputs.messages]
+            if inputs.summary is not None:
+                sources += [s.message_id for s in inputs.summary.sources]
+            await record_sources(conn, inputs.origin.account_id, result[0]["id"], sources)
     if result is None:
         raise RuntimeError("fact disposition unavailable")
     await observe_committed(store, inputs.origin.account_id)

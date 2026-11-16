@@ -36,7 +36,8 @@ MANIFEST_PATH = Path(__file__).resolve().parent / "fixtures" / "account_writer_c
 TITLE_GUARDED_SITE = ("orchestrator.memory.store", "MemoryStore.save_generated_conversation_title")
 TITLE_GUARD_CONTRACT = "tests/test_title_account_guard_postgres.py"
 SUMMARY_GUARDED_SITES = {
-    ("orchestrator.memory.store", "MemoryStore.update_conversation_summary"),
+    # Publication moved behind a typed adapter. Its indirect store_write stays
+    # explicitly unknown; do not pretend this SQL scanner proves that call graph.
     ("orchestrator.memory.store", "MemoryStore.clear_finished_summary_continuation"),
 }
 SUMMARY_GUARD_CONTRACT = "tests/test_summary_account_guard_postgres.py"

@@ -55,13 +55,14 @@ async def host(effects, tmp_path, monkeypatch, request):
     s = effects
     revision = getattr(request, "param", "ready")
     assert revision in ("ready", "missing", "disabled")
-    # The shared history fixture intentionally stops at 057. This startup lane
-    # needs the real current memory prerequisite, not a mocked/relaxed guard.
-    if revision != "missing":
-        migration = Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql"
-        s.db.sql("BEGIN;" + migration.read_text() + "COMMIT;")
-        if revision == "disabled":
-            s.db.sql("ALTER TABLE memories DISABLE TRIGGER memory_revision_capture")
+    # The underlying database already carries the real memory prerequisite (066,
+    # 071, 072), not a mocked/relaxed guard. "missing" removes 072 with its real
+    # rollback; 066 has no rollback file.
+    if revision == "missing":
+        rollback = Path(__file__).resolve().parents[1] / "migrations/rollback"
+        s.db.sql("BEGIN;" + (rollback / "072_summary_provenance.down.sql").read_text() + "COMMIT;")
+    elif revision == "disabled":
+        s.db.sql("ALTER TABLE memories DISABLE TRIGGER memory_revision_capture")
     value = settings()
     value.database_url = dsn(s, "md_app")
     value.daemon_task_acceptor_database_url = dsn(s, "md_acceptor")

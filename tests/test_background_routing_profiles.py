@@ -41,9 +41,12 @@ from orchestrator.memory.extraction import (
     extract_facts_from_text,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.revisions import Capture
+from orchestrator.memory.summary_provenance import MessageSource, SummaryReference, SummarySnapshot
 from orchestrator.memory.summarization import generate_summary
 from orchestrator.memory.titles import generate_conversation_title
 from orchestrator.model_routing import RoutingState, current_routing
+from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator.worker import jobs
 
 # Selected routes stand in for approved routes; they are deliberately distinct
@@ -562,13 +565,28 @@ def _title_store() -> Any:
     return store
 
 
-def _summary_cursor_store() -> Any:
+def _summary_cursor_store(conversation_id: uuid.UUID) -> Any:
     """A store whose summary-cursor API satisfies the worker's scheduling path."""
     store = _title_store()
     store.count_summary_messages = AsyncMock(return_value=50)
     store.count_contiguous_finalized_messages_at = AsyncMock(return_value=50)
     store.get_summary_message_batch = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
     store.update_conversation_summary = AsyncMock(return_value=True)
+    snapshot_at = datetime.now(timezone.utc)
+    source = MessageSource(conversation_id, uuid.uuid4(), 1)
+    # Typed synthetic source closure, not SQL/transaction qualification evidence.
+    frozen = SummarySnapshot(
+        capture=Capture(CapturedGeneration(TEST_OWNER, 3), 0),
+        reference=SummaryReference(conversation_id, None, 0, ()),
+        parent_id=None,
+        expected_cursor="{}",
+        checkpoint=((str(source.message_id), 1, snapshot_at.isoformat(), "complete"),),
+        rendered=(source,),
+        baseline=0,
+        claimed=1,
+        snapshot_at=snapshot_at,
+        render_limit=None,
+    )
     store.read_conversation_summary_inputs = AsyncMock(
         return_value={
             "summary": None,
@@ -578,7 +596,8 @@ def _summary_cursor_store() -> Any:
             "current_message_count": 50,
             "contiguous_count": 50,
             "finalized_count": 50,
-            "snapshot_at": datetime.now(timezone.utc),
+            "snapshot_at": snapshot_at,
+            "summary_snapshot": frozen,
             "has_hole": False,
             "messages": [{"role": "user", "content": "hello"}],
         }
@@ -622,8 +641,9 @@ async def test_summary_job_opens_background_scoped_account(
     import orchestrator.memory.summarization as summarization_module
 
     recorded = _scope_recorder(monkeypatch)
+    conversation_id = uuid.uuid4()
     ctx: dict[str, Any] = {
-        "store": _summary_cursor_store(),
+        "store": _summary_cursor_store(conversation_id),
         "db_pool": object(),
         "settings": Settings(),
     }
@@ -641,12 +661,21 @@ async def test_summary_job_opens_background_scoped_account(
         ),
     ):
         result = await jobs.generate_summary_job(
-            ctx, str(uuid.uuid4()), origin_account_id=str(TEST_OWNER), origin_account_generation=3
+            ctx,
+            str(conversation_id),
+            origin_account_id=str(TEST_OWNER),
+            origin_account_generation=3,
         )
 
     assert result["status"] == "success"
     assert [entry["profile"] for entry in recorded] == ["background"]
     assert all(entry["background"] is True for entry in recorded)
+    frozen = ctx["store"].read_conversation_summary_inputs.return_value["summary_snapshot"]
+    assert (
+        ctx["store"].check_conversation_summary_generation.await_args.kwargs["summary_snapshot"]
+        is frozen
+    )
+    assert ctx["store"].update_conversation_summary.await_args.kwargs["summary_snapshot"] is frozen
 
 
 @pytest.mark.asyncio

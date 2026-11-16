@@ -67,6 +67,10 @@ def _summary_input(
         "messages": messages if messages is not None else [],
         "snapshot_at": SimpleNamespace(),
         "memory_erasure_epoch": memory_erasure_epoch,
+        "summary_snapshot": SimpleNamespace(
+            rendered=tuple(messages or ()),
+            reference=SimpleNamespace(sources=("prior",) if summary else ()),
+        ),
     }
 
 
@@ -130,6 +134,7 @@ async def test_generate_summary_job_passes_persisted_baseline(
         captured_generation=captured,
         expected_summary_updated_at=summary_time,
         expected_baseline=7,
+        summary_snapshot=store.read_conversation_summary_inputs.return_value["summary_snapshot"],
     )
 
 
@@ -214,6 +219,7 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
         conversation_id,
         captured_generation=captured,
         expected_summary_updated_at=None,
+        summary_snapshot=store.read_conversation_summary_inputs.return_value["summary_snapshot"],
     )
 
 

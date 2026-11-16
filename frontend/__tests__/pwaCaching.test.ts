@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isSameOriginApiRequest,
   isPrivateSpeechRequest,
+  isPrivateAccountRequest,
   isPrivateArtifactRequest,
   clearCachedPrivateEntries,
   isBackendApiRequest,
@@ -103,6 +104,133 @@ describe('PWA runtime cache boundaries', () => {
         false,
       ),
     ).toBe(true);
+  });
+});
+
+describe('ordinary private account reads (B1)', () => {
+  const app = 'https://daemon.test';
+
+  it('covers the conversation subtree and the exact account reads', () => {
+    for (const path of [
+      '/conversations',
+      '/conversations/abc',
+      '/conversations/abc/messages',
+      '/users/me/settings',
+      '/users/me/settings/',
+      '/users/me/entitlements',
+      '/users/me/entitlements/',
+    ]) {
+      expect(isPrivateAccountRequest(new URL(`${app}${path}`), app), path).toBe(
+        true,
+      );
+      expect(
+        shouldUseGeneralRuntimeCache(new URL(`${app}${path}`), true, app),
+        path,
+      ).toBe(false);
+    }
+  });
+
+  it('leaves lookalikes and child routes outside the exact reads alone', () => {
+    for (const path of [
+      '/conversationsx',
+      '/conversations-old/abc',
+      '/users/me',
+      '/users/me/settingsx',
+      '/users/me/settings/presets',
+      '/users/me/entitlements/extra',
+      '/',
+    ]) {
+      expect(isPrivateAccountRequest(new URL(`${app}${path}`), app), path).toBe(
+        false,
+      );
+      expect(
+        shouldUseGeneralRuntimeCache(new URL(`${app}${path}`), true, app),
+        path,
+      ).toBe(true);
+    }
+  });
+
+  it('applies one decode, matching the backend and failing closed', () => {
+    for (const path of [
+      '/%63onversations/abc',
+      '/conversations%2Fabc',
+      '/users%2Fme%2Fsettings',
+      '/users/me/settings%2F',
+    ]) {
+      expect(isPrivateAccountRequest(new URL(`${app}${path}`), app), path).toBe(
+        true,
+      );
+    }
+    // No second decode, so a doubly-encoded path is not broadened.
+    for (const path of ['/conversations%252Fabc', '/users/me/settings%252F']) {
+      expect(isPrivateAccountRequest(new URL(`${app}${path}`), app), path).toBe(
+        false,
+      );
+    }
+    // Undecodable: treated as private rather than cached.
+    expect(isPrivateAccountRequest(new URL(`${app}/%E0%A4%A`), app)).toBe(true);
+  });
+
+  it('is recognised under a path-prefixed API base', () => {
+    const base = `${app}/daemon`;
+    for (const path of [
+      '/daemon/conversations/1',
+      '/daemon/users/me/settings',
+      '/daemon/users/me/entitlements',
+    ]) {
+      expect(
+        isPrivateAccountRequest(new URL(`${app}${path}`), app, base),
+        path,
+      ).toBe(true);
+    }
+    expect(
+      isPrivateAccountRequest(
+        new URL(`${app}/daemon/users/me/settings/presets`),
+        app,
+        base,
+      ),
+    ).toBe(false);
+    expect(
+      isPrivateAccountRequest(
+        new URL(`https://elsewhere.fixture/conversations/1`),
+        app,
+        base,
+      ),
+    ).toBe(false);
+    expect(
+      isPrivateAccountRequest(
+        new URL(`${app}/other/users/me/settings`),
+        app,
+        base,
+      ),
+    ).toBe(false);
+  });
+
+  it('is purged from runtime caches, preserving lookalikes and precache', async () => {
+    const entries = new Map<string, true>([
+      [`${app}/conversations/abc`, true],
+      [`${app}/users/me/settings`, true],
+      [`${app}/users/me/entitlements`, true],
+      [`${app}/users/me/settings/presets`, true],
+      [`${app}/conversations-old/abc`, true],
+      [`${app}/icons/icon.png`, true],
+      ['https://elsewhere.fixture/conversations/abc', true],
+    ]);
+    const cache = {
+      keys: async () => [...entries.keys()].map((url) => new Request(url)),
+      delete: async (request: Request) => entries.delete(request.url),
+    };
+    const storage = {
+      keys: async () => ['others', 'serwist-precache-v2'],
+      open: async () => cache,
+    } as unknown as CacheStorage;
+    await clearCachedPrivateEntries(storage, app, app);
+    expect([...entries.keys()]).toEqual([
+      `${app}/users/me/settings/presets`,
+      `${app}/conversations-old/abc`,
+      `${app}/icons/icon.png`,
+      'https://elsewhere.fixture/conversations/abc',
+    ]);
   });
 });
 

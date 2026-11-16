@@ -13,6 +13,7 @@ import {
 
 import {
   isBackendApiRequest,
+  isPrivateAccountRequest,
   isPrivateArtifactRequest,
   isPrivateSpeechRequest,
   isPrivateTaskRequest,
@@ -92,6 +93,13 @@ export function createRuntimeCaching(
     {
       // Never cache authenticated responses from same-origin API routes.
       matcher: ({ url, sameOrigin }) => isSameOriginApiRequest(url, sameOrigin),
+      handler: fetchPrivateUncached,
+    },
+    {
+      // Ordinary private account reads (the conversation subtree and the
+      // exact settings/entitlements reads) are network-only on our app/API and
+      // ahead of every extension-based runtime cache below.
+      matcher: ({ url }) => isPrivateAccountRequest(url, appOrigin, configured),
       handler: fetchPrivateUncached,
     },
     {

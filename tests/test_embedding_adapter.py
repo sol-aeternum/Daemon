@@ -752,7 +752,7 @@ async def test_missing_scope_denies_without_send(monkeypatch, installed):
     installed.service.reserve.assert_not_awaited()
 
 
-@pytest.mark.parametrize("pipeline", [None, "unknown"])
+@pytest.mark.parametrize("pipeline", [None, "unknown", "local"])
 @pytest.mark.asyncio
 async def test_extraction_and_injection_guard_actual_source_before_cloud(
     monkeypatch, installed, pipeline
@@ -763,6 +763,9 @@ async def test_extraction_and_injection_guard_actual_source_before_cloud(
     store.get_conversation = AsyncMock(
         return_value={"user_id": installed.scope.user_id, "pipeline": pipeline}
     )
+    store.read_qualified_conversation_summary = AsyncMock(
+        side_effect=AssertionError("unqualified source must not reach the summary reader")
+    )
     extractor = AsyncMock(side_effect=AssertionError("no source processing"))
     query = AsyncMock(side_effect=AssertionError("no local query embedding"))
     monkeypatch.setattr(extraction, "extract_facts_from_text", extractor)
@@ -770,8 +773,12 @@ async def test_extraction_and_injection_guard_actual_source_before_cloud(
     assert await extraction.process_extraction(
         store, installed.scope.user_id, uuid.uuid4(), "fictional"
     ) == (False, [], False)
-    assert await injection.build_memory_context(store, uuid.uuid4()) == ""
+    if pipeline != "local":
+        # Local injection may read lexical memory; only unknown locality is empty.
+        # The dedicated local retrieval test below covers its no-embedding path.
+        assert await injection.build_memory_context(store, uuid.uuid4()) == ""
     extractor.assert_not_awaited()
+    store.read_qualified_conversation_summary.assert_not_awaited()
     query.assert_not_awaited()
 
 

@@ -216,14 +216,17 @@ async def test_forbidden_provider_dispatch_injected_into_actual_preparation(
     text_host, monkeypatch, kind
 ):
     from orchestrator.memory import injection
-    from orchestrator import skills_store, daemon
+    from orchestrator import daemon, main
+    from orchestrator.services import skill_index
 
     s = text_host
     _, headers = await device(s, s.account)
     memory = AsyncMock(side_effect=AssertionError("memory context in text preparation"))
     skills = AsyncMock(side_effect=AssertionError("skills index in text preparation"))
     monkeypatch.setattr(injection, "build_memory_context", memory)
-    monkeypatch.setattr(skills_store, "build_skill_index", skills)
+    # Both the request path and the task runner resolve the index here.
+    monkeypatch.setattr(skill_index, "build_skill_index", skills)
+    monkeypatch.setattr(main, "build_skill_index", skills)
     followup = AsyncMock(side_effect=AssertionError("background trust followup"))
     monkeypatch.setattr(
         daemon,
@@ -258,7 +261,8 @@ async def test_successful_original_text_path_never_calls_memory_skills_tools_or_
     text_host, monkeypatch
 ):
     from orchestrator.memory import injection
-    from orchestrator import skills_store, daemon
+    from orchestrator import daemon, main
+    from orchestrator.services import skill_index
 
     s = text_host
     _, headers = await device(s, s.account)
@@ -268,7 +272,9 @@ async def test_successful_original_text_path_never_calls_memory_skills_tools_or_
     ]
     registry = Mock(side_effect=AssertionError("default tools constructed"))
     monkeypatch.setattr(injection, "build_memory_context", memory)
-    monkeypatch.setattr(skills_store, "build_skill_index", skills)
+    # Both the request path and the task runner resolve the index here.
+    monkeypatch.setattr(skill_index, "build_skill_index", skills)
+    monkeypatch.setattr(main, "build_skill_index", skills)
     monkeypatch.setattr(daemon, "create_default_registry", registry)
     monkeypatch.setattr(
         daemon,

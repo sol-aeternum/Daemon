@@ -62,6 +62,8 @@ from orchestrator.memory.extraction import (
     extract_facts_from_text,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.revisions import Capture
+from orchestrator.memory.summary_provenance import MessageSource, SummaryReference, SummarySnapshot
 from orchestrator.services.account_control.guard import CapturedGeneration
 from orchestrator.memory.summary import (
     SUMMARY_TEMPERATURE,
@@ -129,7 +131,7 @@ def _record_routing(monkeypatch: pytest.MonkeyPatch, module_path: str) -> list[A
     return states
 
 
-def _summary_store() -> Any:
+def _summary_store(conversation_id: uuid.UUID, origin: CapturedGeneration) -> Any:
     """A store whose summary-cursor API satisfies the inline summary path."""
     store = MagicMock(spec=MemoryStore)
     store.get_conversation = AsyncMock(return_value={"summary": None, "summary_updated_at": None})
@@ -139,16 +141,33 @@ def _summary_store() -> Any:
         return_value=[{"role": "user", "content": "Tell me about the daemon project"}]
     )
     store.update_conversation_summary = AsyncMock(return_value=True)
+    snapshot_at = datetime.now(timezone.utc)
+    source = MessageSource(conversation_id, uuid.uuid4(), 1)
+    # Real immutable value types; only storage/ledger/provider I/O are doubled.
+    frozen = SummarySnapshot(
+        capture=Capture(origin, 0),
+        reference=SummaryReference(conversation_id, None, 0, ()),
+        parent_id=None,
+        expected_cursor="{}",
+        checkpoint=((str(source.message_id), 1, snapshot_at.isoformat(), "complete"),),
+        rendered=(source,),
+        baseline=0,
+        claimed=1,
+        snapshot_at=snapshot_at,
+        render_limit=500,
+    )
     store.read_conversation_summary_inputs = AsyncMock(
         return_value={
             "summary": None,
             "summary_updated_at": None,
+            "memory_erasure_epoch": 0,
+            "summary_snapshot": frozen,
             "persisted_baseline": 0,
             "current_message_count": 1,
             "finalized_count": 1,
             "contiguous_count": 1,
             "has_hole": False,
-            "snapshot_at": datetime.now(timezone.utc),
+            "snapshot_at": snapshot_at,
             "messages": [{"role": "user", "content": "Tell me about the daemon project"}],
         }
     )
@@ -176,8 +195,10 @@ def _summarization_call() -> Any:
 
 
 def _summary_call() -> Any:
+    conversation_id = uuid.uuid4()
+    origin = CapturedGeneration(uuid.uuid4(), 7)
     return generate_or_update_summary(
-        uuid.uuid4(), _summary_store(), captured_generation=CapturedGeneration(uuid.uuid4(), 7)
+        conversation_id, _summary_store(conversation_id, origin), captured_generation=origin
     )
 
 
@@ -391,11 +412,13 @@ def _summarization_with_model() -> Any:
 
 
 def _summary_with_model() -> Any:
+    conversation_id = uuid.uuid4()
+    origin = CapturedGeneration(uuid.uuid4(), 7)
     return generate_or_update_summary(
-        uuid.uuid4(),
-        _summary_store(),
+        conversation_id,
+        _summary_store(conversation_id, origin),
         model=REASONING_MODEL,
-        captured_generation=CapturedGeneration(uuid.uuid4(), 7),
+        captured_generation=origin,
     )
 
 

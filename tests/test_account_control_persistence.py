@@ -778,10 +778,14 @@ TITLE_GUARD_IMPORTS = {
     },
     "orchestrator/main.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        # #601 live-message admission handles the closed refusal explicitly.
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
         ("orchestrator.services.account_control.guard", "capture_generation"),
     },
     "orchestrator/memory/store.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        # #601 registered live-user writer refuses an invalid original capture.
+        ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
         ("orchestrator.services.account_control.guard", "guard_content_write"),
     },
     # #601 preserves the same account-generation guard at its registered
@@ -858,6 +862,12 @@ TITLE_GUARD_IMPORTS = {
     "orchestrator/memory/summary.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
         ("orchestrator.services.account_control.guard", "WriteGuardRefusal"),
+    },
+    # #601 summary provenance reuses the original capture/transaction guard;
+    # no capture refresh, request persistence, marker or phase API is admitted.
+    "orchestrator/memory/summary_provenance.py": {
+        ("orchestrator.services.account_control.guard", "CapturedGeneration"),
+        ("orchestrator.services.account_control.guard", "guard_content_write"),
     },
     "orchestrator/memory/entities.py": {
         ("orchestrator.services.account_control.guard", "CapturedGeneration"),
@@ -996,6 +1006,18 @@ def test_only_title_guard_runtime_imports_no_marker_status_or_phase_api():
         (
             "orchestrator/main.py",
             "from orchestrator.services.account_control.guard import guard_content_write",
+        ),
+        (
+            "orchestrator/memory/summary_provenance.py",
+            "from orchestrator.services.account_control.guard import capture_generation",
+        ),
+        (
+            "orchestrator/memory/summary_provenance.py",
+            "from orchestrator.services.account_control.store import record_request_facts",
+        ),
+        (
+            "orchestrator/memory/summary_provenance.py",
+            "from orchestrator.services.account_control.guard import *",
         ),
         (
             "orchestrator/memory/store.py",

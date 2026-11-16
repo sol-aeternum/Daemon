@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal, cast
@@ -37,7 +38,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from orchestrator.config import Settings, get_settings
 from orchestrator.memory.encryption import ContentEncryption, EncryptionKeyMissing
-from orchestrator.skills_store import normalize_skill_id, slugify_skill_name
 
 MAX_SKILLS_PER_ACCOUNT = 200
 MAX_NAME_CHARS = 200
@@ -69,6 +69,49 @@ _SELECT_HEADS = (
     "allow_autonomous_edit, enabled, embedding_revision, use_count, last_used_at, "
     "complexity_origin, created_at, updated_at FROM skills WHERE id = ANY($1::uuid[])"
 )
+
+
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+_UNSAFE_SLUG_CHAR_PATTERN = re.compile(r"[^a-z0-9_-]")
+_SAFE_SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+_PATH_SEPARATORS = frozenset({"/", "\\"})
+_SLUG_MAX_LENGTH = 64
+_INVALID_SLUG = "Skill id must contain only lowercase letters, numbers, underscores, or hyphens"
+
+
+def slugify_skill_name(name: str) -> str:
+    """Derive a skill's slug from its display name.
+
+    Punctuation and case are folded rather than rejected. A name that still
+    yields no usable slug (blank, a path separator, ``..``) raises
+    ``ValueError``.
+    """
+    if any(separator in name for separator in _PATH_SEPARATORS):
+        raise ValueError(_INVALID_SLUG)
+    candidate = _UNSAFE_SLUG_CHAR_PATTERN.sub(
+        "-", _WHITESPACE_PATTERN.sub("-", name.strip().lower())
+    )
+    candidate = re.sub(r"-+", "-", candidate).strip("-_")
+    if not candidate or ".." in candidate:
+        raise ValueError(_INVALID_SLUG)
+    candidate = candidate[:_SLUG_MAX_LENGTH].rstrip("-_")
+    if not candidate:
+        raise ValueError(_INVALID_SLUG)
+    return candidate
+
+
+def normalize_skill_id(name: str) -> str:
+    """Validate an already-formed slug, such as one from a URL path."""
+    candidate = name.strip()
+    if any(separator in candidate for separator in _PATH_SEPARATORS):
+        raise ValueError(_INVALID_SLUG)
+    if not _SAFE_SLUG_PATTERN.fullmatch(candidate) or ".." in candidate:
+        raise ValueError(_INVALID_SLUG)
+    if len(candidate) > _SLUG_MAX_LENGTH:
+        candidate = candidate[:_SLUG_MAX_LENGTH].rstrip("-_")
+        if not _SAFE_SLUG_PATTERN.fullmatch(candidate):
+            raise ValueError(_INVALID_SLUG)
+    return candidate
 
 
 class SkillError(Exception):
@@ -690,58 +733,149 @@ class SkillStore:
     # Shipped skills
     # ------------------------------------------------------------------
 
+    async def _publish_shipped(
+        self, conn: _Connection, slug: str, name: str, description: str, body: str
+    ) -> dict[str, Any]:
+        """Create or update one shipped skill inside the caller's transaction."""
+        envelopes = self._encrypt_content(name, description, body, "")
+        lookup = self._lookup(None, slug)
+        # Serialize publication of one slug across processes.
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lookup.hex())
+        existing = await conn.fetchval(
+            "SELECT id FROM skills WHERE user_id IS NULL AND slug_lookup = $1 FOR UPDATE",
+            lookup,
+        )
+        if existing is None:
+            skill_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO skills (id, user_id, slug_encrypted, slug_lookup, "
+                "name_encrypted, description_encrypted, body_encrypted, "
+                "trigger_conditions_encrypted, source_type) "
+                "VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'system')",
+                skill_id,
+                self._enc.encrypt(slug),
+                lookup,
+                *envelopes,
+            )
+            await self._append_revision(conn, skill_id, 1, envelopes, "shipped")
+            head = await self._head(conn, skill_id)
+        else:
+            row = await self._head(conn, existing)
+            current = self._decode_head(row)
+            if (current["name"], current["description"], current["body"]) == (
+                name,
+                description,
+                body,
+            ):
+                return current
+            revision = row["revision"] + 1
+            await self._append_revision(conn, row["id"], revision, envelopes, "shipped")
+            head = await self._move_head(conn, row["id"], revision, envelopes)
+        # Decoded before commit: a failure rolls the write back.
+        return self._decode_head(head)
+
+    @staticmethod
+    def _validated_shipped(
+        slug: str, name: str, description: str, body: str
+    ) -> tuple[str, str, str, str]:
+        return (
+            _slug_from_id(slug),
+            _validated_text(name, MAX_NAME_CHARS, "name", required=True),
+            _validated_text(description, MAX_DESCRIPTION_CHARS, "description"),
+            _validated_text(body, MAX_BODY_CHARS, "body"),
+        )
+
     async def publish_shipped(
         self, slug: str, *, name: str, description: str, body: str
     ) -> dict[str, Any]:
-        """Create or update a shipped skill from application content.
+        """Create or update one shipped skill. Unchanged content writes nothing.
 
-        Called only by the application's own loader, never with request data.
-        Unchanged content writes nothing.
+        A building block with no release fence of its own. The application
+        publishes its catalogue through :meth:`apply_shipped_catalogue`.
         """
-        slug = _slug_from_id(slug)
-        name = _validated_text(name, MAX_NAME_CHARS, "name", required=True)
-        description = _validated_text(description, MAX_DESCRIPTION_CHARS, "description")
-        body = _validated_text(body, MAX_BODY_CHARS, "body")
-        envelopes = self._encrypt_content(name, description, body, "")
-        lookup = self._lookup(None, slug)
+        content = self._validated_shipped(slug, name, description, body)
         async with self._pool.acquire() as conn, conn.transaction():
             await self._verify_key_for_write(conn)
-            # Serialize publication of one slug across processes.
+            return await self._publish_shipped(conn, *content)
+
+    async def shipped_catalogue_version(self) -> int:
+        """The catalogue version this database holds; 0 when none was applied."""
+        version = await self._pool.fetchval(
+            "SELECT version FROM shipped_skill_catalogue WHERE singleton"
+        )
+        return int(version) if version is not None else 0
+
+    async def apply_shipped_catalogue(
+        self, version: int, skills: list[dict[str, str]]
+    ) -> dict[str, Any]:
+        """Make the shipped skills exactly ``skills``, if ``version`` is newer.
+
+        ``skills`` holds ``slug``, ``name``, ``description`` and ``body`` per
+        skill. The stored catalogue version is locked first, so instances of
+        different releases starting together are serialized, and only a
+        version higher than the stored one changes anything: an older (or the
+        same) release can neither delete nor roll back what a newer one
+        published. Publishing, removing and recording the version are one
+        transaction; a failure leaves the previous catalogue whole.
+        """
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise SkillError("catalogue_version_invalid")
+        content = [
+            self._validated_shipped(
+                skill["slug"], skill["name"], skill["description"], skill["body"]
+            )
+            for skill in skills
+        ]
+        slugs = [entry[0] for entry in content]
+        if len(set(slugs)) != len(slugs):
+            raise SkillError("catalogue_invalid")
+        async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lookup.hex()
+                "INSERT INTO shipped_skill_catalogue (version) VALUES (0) "
+                "ON CONFLICT (singleton) DO NOTHING"
             )
-            existing = await conn.fetchval(
-                "SELECT id FROM skills WHERE user_id IS NULL AND slug_lookup = $1 FOR UPDATE",
-                lookup,
+            stored = await conn.fetchval(
+                "SELECT version FROM shipped_skill_catalogue WHERE singleton FOR UPDATE"
             )
-            if existing is None:
-                skill_id = uuid.uuid4()
-                await conn.execute(
-                    "INSERT INTO skills (id, user_id, slug_encrypted, slug_lookup, "
-                    "name_encrypted, description_encrypted, body_encrypted, "
-                    "trigger_conditions_encrypted, source_type) "
-                    "VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'system')",
-                    skill_id,
-                    self._enc.encrypt(slug),
-                    lookup,
-                    *envelopes,
+            if version <= stored:
+                return {
+                    "applied": False,
+                    "version": stored,
+                    "published": [],
+                    "unchanged": [],
+                    "removed": [],
+                }
+            await self._verify_key_for_write(conn)
+            before = {
+                self._enc.decrypt(row["slug_encrypted"]): (row["id"], row["revision"])
+                for row in await conn.fetch(
+                    "SELECT id, slug_encrypted, revision FROM skills WHERE user_id IS NULL"
                 )
-                await self._append_revision(conn, skill_id, 1, envelopes, "shipped")
-                head = await self._head(conn, skill_id)
-            else:
-                row = await self._head(conn, existing)
-                current = self._decode_head(row)
-                if (current["name"], current["description"], current["body"]) == (
-                    name,
-                    description,
-                    body,
-                ):
-                    return current
-                revision = row["revision"] + 1
-                await self._append_revision(conn, row["id"], revision, envelopes, "shipped")
-                head = await self._move_head(conn, row["id"], revision, envelopes)
-            # Decoded before commit: a failure rolls the write back.
-            return self._decode_head(head)
+            }
+            published: list[str] = []
+            unchanged: list[str] = []
+            for entry in content:
+                head = await self._publish_shipped(conn, *entry)
+                known = before.get(entry[0])
+                if known is not None and known[1] == head["revision"]:
+                    unchanged.append(entry[0])
+                else:
+                    published.append(entry[0])
+            removed = sorted(set(before) - set(slugs))
+            for slug in removed:
+                await conn.execute("DELETE FROM skills WHERE id = $1", before[slug][0])
+            await conn.execute(
+                "UPDATE shipped_skill_catalogue SET version = $1, applied_at = NOW() "
+                "WHERE singleton",
+                version,
+            )
+            return {
+                "applied": True,
+                "version": version,
+                "published": published,
+                "unchanged": unchanged,
+                "removed": removed,
+            }
 
     async def remove_shipped(self, slug: str) -> bool:
         slug = _slug_from_id(slug)
@@ -856,6 +990,16 @@ class SkillStore:
             for candidate in candidates
         }
         return [{**self._decode_head(row), "embedding": vectors[row["id"]]} for row in rows]
+
+    async def list_shipped(self) -> list[dict[str, Any]]:
+        """Every shipped skill, for the application's own loader."""
+        async with self._pool.acquire() as conn:
+            await self._verify_key_for_read(conn)
+            ids = await conn.fetch(
+                "SELECT id FROM skills WHERE user_id IS NULL ORDER BY created_at, id"
+            )
+            rows = await self._heads(conn, [row["id"] for row in ids])
+        return [self._decode_head(row) for row in rows]
 
     async def list_revisions(self, user_id: uuid.UUID, slug: str) -> list[dict[str, Any]]:
         """Retained revisions of the caller's own skill, newest first."""

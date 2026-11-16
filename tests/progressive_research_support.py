@@ -364,7 +364,7 @@ class Delivery:
                 "orchestrator.tasks.runner.current_scope": lambda: SimpleNamespace(
                     scope_id=uuid.UUID(int=6)
                 ),
-                "orchestrator.skills_store.build_skill_index": AsyncMock(return_value=""),
+                "orchestrator.services.skill_index.build_skill_index": AsyncMock(return_value=""),
                 "orchestrator.memory.injection.build_memory_context": AsyncMock(return_value=""),
                 "orchestrator.memory.injection.assemble_system_prompt": AsyncMock(
                     return_value=DAEMON_SYSTEM_PROMPT

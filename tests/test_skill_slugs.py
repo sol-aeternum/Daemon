@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from orchestrator import skills_store
+from orchestrator.services import skills as skills_store
 
 
 @pytest.mark.parametrize(
@@ -76,27 +74,3 @@ def test_slugify_skill_name_produces_safe_slug(
 def test_slugify_skill_name_rejects_path_traversal_inputs(raw_name: str) -> None:
     with pytest.raises(ValueError):
         skills_store.slugify_skill_name(raw_name)
-
-
-def test_skill_path_resolves_inside_skills_directory(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    skills_dir = tmp_path / "skills"
-    monkeypatch.setattr(skills_store, "SKILLS_DIR", skills_dir)
-
-    path = skills_store._skill_path("code-review-v2")
-
-    assert path == (skills_dir / "code-review-v2.md").resolve(strict=False)
-    assert path.relative_to(skills_dir.resolve())
-
-
-def test_skill_path_containment_guard_rejects_resolved_escape(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    skills_dir = tmp_path / "skills"
-    monkeypatch.setattr(skills_store, "SKILLS_DIR", skills_dir)
-
-    with pytest.raises(ValueError, match="escapes the skills directory"):
-        skills_store._assert_within_skills_dir(skills_dir / ".." / "escape.md")
