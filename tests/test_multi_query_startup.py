@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet
 from orchestrator.config import Settings
 from orchestrator.entitlements import attestation
 from orchestrator.memory.startup import require_multi_query_schema, require_revision_schema
+from tests.native_fence_support import install_fake_fence
 
 
 @pytest.mark.asyncio
@@ -61,6 +62,7 @@ async def test_startup_schema_guard_in_both_services(
         monkeypatch.setattr(worker, "apply_resolved_database_url", lambda _: None)
         monkeypatch.setattr(worker, "validate_database_credentials", lambda _: None)
         monkeypatch.setattr(worker.asyncpg, "create_pool", AsyncMock(return_value=pool))
+        install_fake_fence(monkeypatch)
         monkeypatch.setattr(startup, "require_legacy_task_schema", AsyncMock())
         monkeypatch.setattr(worker, "require_unselected_history", AsyncMock())
         monkeypatch.setattr(worker, "require_recovery_barrier", AsyncMock())

@@ -58,10 +58,25 @@ async def test_only_exact_true_is_compatible(value):
 
 
 @pytest.mark.asyncio
-async def test_predicate_binds_the_six_immutable_triggers():
+async def test_predicate_binds_the_six_immutable_triggers_and_the_fence_body():
     db = SimpleNamespace(fetchval=AsyncMock(return_value=True))
     assert await runtime.history_unselected_compatible(cast(Any, db)) is True
-    sql, triggers = db.fetchval.await_args.args
+    sql, triggers, fence = db.fetchval.await_args.args
     assert sql is runtime.UNSELECTED_HISTORY_SQL
     assert len(set(triggers)) == 6
+    assert fence == runtime.FENCE_BODY_SHA256
     assert all(f"pg_relation_size(h.{t},'main')=0" in sql for t in "bap")
+
+
+def test_pinned_fence_body_matches_migration_073_and_h_shape_check():
+    import hashlib
+    from pathlib import Path
+
+    from orchestrator.services.restore_history import acceptance, native_fence
+
+    sql = (Path(__file__).parents[1] / "migrations" / "073_history_native_fence.sql").read_text()
+    body = sql.split("$$")[1]
+    assert hashlib.sha256(body.encode()).hexdigest() == runtime.FENCE_BODY_SHA256
+    assert f"pg_try_advisory_xact_lock({native_fence.FENCE_KEY[0]}, 1)" in body
+    assert native_fence.FENCE_KEY == (1145588051, 1)
+    assert f"='{runtime.FENCE_BODY_SHA256}'" in acceptance.CATALOG

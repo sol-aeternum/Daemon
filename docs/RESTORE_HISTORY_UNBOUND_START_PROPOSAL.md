@@ -4,9 +4,11 @@
 pending the owner's confirmation on the PR, and implemented in
 `orchestrator/services/restore_history/runtime.py` (`UNSELECTED_HISTORY_SQL`).** This
 changes the selection rule in `RESTORE_HISTORY_RUNTIME.md` §Selection and the by-key
-fallback in `RESTORE_HISTORY_OBSERVATION.md`. It has no migration, grant,
-environment or deployment change. Nothing here enables H, durable chat or
-execution. The rollout tracker #477 is unaffected.
+fallback in `RESTORE_HISTORY_OBSERVATION.md`. **The native fence (§Native fence) was
+approved in the working session (2026-11-17, "Approve fence"), also pending the
+owner's confirmation on the PR.** It adds migration 073 (one trigger function and
+one trigger, no table, grant or environment change). Nothing here enables H, durable
+chat or execution, or deploys anything. The rollout tracker #477 is unaffected.
 
 ## Problem
 
@@ -136,10 +138,10 @@ independent H log on disk says otherwise. Only an independent authority closes
 that gap, and that work is out of scope for this proposal. Until H has a
 production initializer, no deployment can be in that state.
 
-An owner-role SQL session could insert a binding while unselected hosts are
-running. The by-key route notices on the next request. Worker startup and
-native recovery don't, until restart. The binding procedure, once written,
-must stop the stack first. No current procedure binds H.
+The A1 predicate alone is a point-in-time check: a binding could begin after it
+returns while unselected recovery or a by-key read continued. §Native fence
+closes that check-to-use race; an operator instruction to stop the stack is not
+relied on.
 
 ## Implementation (A1)
 
@@ -177,11 +179,73 @@ tables, and immutable triggers in `REPLICA` or disabled mode.
   - `TASK_STARTUP_COMPOSITION.md` (unselected recovery);
   - this file is the decision record.
 
+## Native fence
+
+Invariant: no H binding commits while any unselected process holds native
+recovery or by-key read authority, and no unselected process gains that
+authority once a binding exists or is in progress. One advisory key
+K = (1145588051, 1), two-int form, separate from the migration runner's bigint
+key. Every acquisition is a non-blocking try, so nothing waits or deadlocks.
+
+- **L1, process presence** (`orchestrator/services/restore_history/native_fence.py`):
+  backend and worker each open one dedicated, unpooled connection before any
+  other database work. It takes K shared (session scope), then runs the A1
+  predicate in a separate statement, so the proof's snapshot postdates the
+  lock. It is held for the process lifetime with TCP keepalives. If the server
+  ends it, the process exits (code 70) rather than continue unfenced.
+- **L2, per borrowed connection:** the asyncpg `setup` hook of every unselected
+  pool requires L1 alive, takes K shared on that connection, then re-runs the
+  predicate. asyncpg's release reset (`pg_advisory_unlock_all()`) drops it, and
+  a failing `setup` closes the connection. In-flight native work therefore
+  holds K for exactly as long as it holds a connection.
+- **L3, binder side (migration 073):** a statement-level `BEFORE INSERT`
+  trigger on `task_history_binding`, `ENABLE ALWAYS` so
+  `session_replication_role=replica` does not skip it. It takes K exclusively
+  for the inserting transaction and raises `history_native_hosts_active` while
+  any L1/L2 holder exists. Once it holds K, new L1/L2 tries fail
+  (`history_fence_unavailable`); after commit they see the row and refuse.
+- **Fail closed on the fence itself:** the A1 predicate also requires that exact
+  trigger (always-enabled, statement-level `BEFORE INSERT`, plpgsql, not
+  `SECURITY DEFINER`, owned by the binding owner, `search_path=pg_catalog`,
+  body SHA-256 pinned) and no other use of its function. A disabled,
+  origin-only, dropped or replaced fence refuses unselected startup and every
+  later acquire. H-selected qualification (`acceptance.CATALOG`) admits exactly
+  that trigger and treats any other shape as drift.
+
+Ownership, crashes and stale connections: session advisory locks belong to the
+server session. Process exit, crash or `SIGKILL` ends the session and releases
+K; there is no lease to expire or row to clean up. A stopped or hung process
+keeps K and so keeps binding refused (fail closed) until it ends; TCP
+keepalives bound how long a vanished client host can do so. Several backend and
+worker processes each hold K shared and the binder waits for all of them.
+Session-mode connections are required; a transaction-mode pooler would break L1
+and L2.
+
+Residual risk, documented and not claimed as enforced:
+- a live process all of whose sessions were cut (network partition or
+  privileged termination) may finish an external effect it had already
+  started, though it can't begin new database work (L2 refuses, and L1 loss
+  exits the process);
+- owner or superuser DDL can drop or alter 073 between checks. The next L2
+  acquire refuses, but a binder in that window is not fenced.
+
+Tests (`--compute-metadata-postgres`, real runner through 073, hosts as
+`md_app`): `tests/test_history_native_fence_postgres.py` covers a binding
+committed before qualification; an open binder transaction (rollback, commit);
+binding after qualification; L2 alone with a borrowed connection; by-key reads
+with the binding during the read and between the route check and the read;
+terminated presence; two subprocess hosts with one `SIGKILL`ed; a `SIGSTOP`ped
+host; a replica-mode binder; and five fence alterations. The H-side shape is in
+`tests/test_history_acceptance_postgres.py`
+(`test_h_catalog_admits_exactly_the_073_native_fence`).
+
 ## Owner decisions
 
 1. Rule change approved (unbound H schema on the unselected path).
 2. Proof: A1 (storage size, no schema change).
 3. Residual-risk statement accepted with A1.
+4. Native fence (L1/L2/L3, migration 073) approved as "Approve fence"; the
+   residual risks above are part of that design.
 
-All three were given in the working session as "Approve A1" and need the
-owner's own confirmation on the PR.
+Items 1–3 were given in the working session as "Approve A1", item 4 as "Approve
+fence". All need the owner's own confirmation on the PR.

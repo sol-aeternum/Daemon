@@ -68,6 +68,9 @@ async def physical_completion(call: Awaitable[T], *, deadline: float) -> T:
         raise
 
 
+# SHA-256 of migration 073's history_native_fence() body (pinned by a test).
+FENCE_BODY_SHA256 = "14d467446c9442255621f926a1093e317db491211253b25948046ff71069696c"
+
 _H_TRIGGERS = (
     "task_history_binding_immutable",
     "task_history_binding_no_truncate",
@@ -85,6 +88,9 @@ _H_TRIGGERS = (
 # and a legacy owner role read the same evidence. Inheritance children (rows in
 # a child are visible through the parent) and unlogged tables (crash truncation)
 # refuse, as do views, partitions, extra H relations and changed FKs/triggers.
+# With H present, migration 073's binder fence must also be exactly installed
+# (ALWAYS-enabled statement trigger, pinned body), or this refuses: the
+# point-in-time proof is only sound together with native_fence.NativeFence.
 # Decision record: docs/RESTORE_HISTORY_UNBOUND_START_PROPOSAL.md (#731).
 UNSELECTED_HISTORY_SQL = """WITH h AS (SELECT
   pg_catalog.to_regclass('public.task_history_binding') AS b,
@@ -119,6 +125,19 @@ SELECT CASE WHEN NOT present.any_h THEN true ELSE COALESCE(
     AND t.tgenabled IN ('O','A')
     AND t.tgfoid=pg_catalog.to_regprocedure('public.task_history_immutable()')
     AND t.tgname = ANY($1::text[]))=6
+  AND (SELECT count(*) FROM pg_catalog.pg_trigger t
+    WHERE t.tgrelid IN (h.b,h.a,h.p) AND NOT t.tgisinternal
+    AND t.tgfoid=pg_catalog.to_regprocedure('public.history_native_fence()'))=1
+  AND EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t
+    JOIN pg_catalog.pg_proc f ON f.oid=t.tgfoid
+    JOIN pg_catalog.pg_language l ON l.oid=f.prolang
+    JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+    WHERE t.tgrelid=h.b AND t.tgname='task_history_binding_native_fence'
+    AND NOT t.tgisinternal AND t.tgenabled='A' AND t.tgtype=6
+    AND f.oid=pg_catalog.to_regprocedure('public.history_native_fence()')
+    AND l.lanname='plpgsql' AND NOT f.prosecdef AND f.proowner=c.relowner
+    AND f.proconfig=ARRAY['search_path=pg_catalog']::text[]
+    AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(f.prosrc,'UTF8')),'hex')=$2)
   AND pg_catalog.pg_relation_size(h.b,'main')=0
   AND pg_catalog.pg_relation_size(h.a,'main')=0
   AND pg_catalog.pg_relation_size(h.p,'main')=0, false) END
@@ -127,7 +146,7 @@ FROM h, present"""
 
 async def history_unselected_compatible(db: asyncpg.Pool | asyncpg.Connection) -> bool:
     """Whether an unselected host may use native paths; any doubt is False."""
-    return await db.fetchval(UNSELECTED_HISTORY_SQL, list(_H_TRIGGERS)) is True
+    return await db.fetchval(UNSELECTED_HISTORY_SQL, list(_H_TRIGGERS), FENCE_BODY_SHA256) is True
 
 
 async def require_unselected_history(pool: asyncpg.Pool) -> None:

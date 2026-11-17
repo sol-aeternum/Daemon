@@ -481,6 +481,9 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     startup_imports = {
                         ("orchestrator/db.py", "configuration"): {"configured_history"},
                         ("orchestrator/db.py", "model"): {"HistoryError"},
+                        # #731 unselected-host fence (L1 presence, L2 pool guard).
+                        ("orchestrator/db.py", "native_fence"): {"NativeFence"},
+                        ("orchestrator/worker/worker.py", "native_fence"): {"NativeFence"},
                         ("orchestrator/db.py", "runtime"): {
                             "HistoryRuntime",
                             "physical_completion",

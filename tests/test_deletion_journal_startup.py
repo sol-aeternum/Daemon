@@ -20,6 +20,7 @@ from orchestrator.services.deletion_journal.barrier import (
     require_recovery_barrier,
 )
 from orchestrator.services.deletion_journal.errors import JournalError
+from tests.native_fence_support import install_fake_fence
 
 worker = importlib.import_module("orchestrator.worker.worker")
 
@@ -64,6 +65,7 @@ async def test_backend_and_worker_without_dsn_refuse_before_connecting(monkeypat
     monkeypatch.setattr(db, "resolve_database_url", lambda _: None)
     connect = AsyncMock()
     monkeypatch.setattr(db.asyncpg, "create_pool", connect)
+    install_fake_fence(monkeypatch)
     with pytest.raises(JournalError, match="database_required"):
         await db.init_app_state(value)
     monkeypatch.setattr(worker, "get_settings", lambda: value)
@@ -83,6 +85,7 @@ async def test_actual_lifespan_never_yields_after_failed_barrier(monkeypatch):
     monkeypatch.setattr(main, "_validate_startup_config", lambda _: None)
     monkeypatch.setattr(db, "validate_redis_account_key", lambda _: None)
     monkeypatch.setattr(db.asyncpg, "create_pool", AsyncMock(return_value=pool))
+    install_fake_fence(monkeypatch)
     monkeypatch.setattr(
         db, "require_recovery_barrier", AsyncMock(side_effect=JournalError("recovery_required"))
     )
@@ -106,6 +109,7 @@ async def test_backend_connection_failure_no_longer_degrades(monkeypatch, enable
     connect = AsyncMock(side_effect=OSError("fictional-sensitive-error"))
     redis = AsyncMock()
     monkeypatch.setattr(db.asyncpg, "create_pool", connect)
+    install_fake_fence(monkeypatch)
     monkeypatch.setattr(db, "arq_create_pool", redis)
     with pytest.raises(JournalError, match="database_required") as error:
         await db.init_app_state(value)
@@ -120,6 +124,7 @@ async def test_backend_barrier_failure_closes_pool_before_consumers(monkeypatch)
     pool.fetchval.return_value = True  # positive pre-050 catalog evidence
     monkeypatch.setattr(db, "validate_redis_account_key", lambda _: None)
     monkeypatch.setattr(db.asyncpg, "create_pool", AsyncMock(return_value=pool))
+    install_fake_fence(monkeypatch)
     guard = AsyncMock(side_effect=JournalError("recovery_required"))
     monkeypatch.setattr(db, "require_recovery_barrier", guard)
     store = AsyncMock()
@@ -140,6 +145,7 @@ async def test_worker_connection_failure_runs_no_pepper_or_job(monkeypatch, enab
         value.daemon_deletion_journal_id = str(uuid4())
     monkeypatch.setattr(worker, "get_settings", lambda: value)
     monkeypatch.setattr(worker.asyncpg, "create_pool", AsyncMock(side_effect=OSError("fictional")))
+    install_fake_fence(monkeypatch)
     pepper = AsyncMock()
     monkeypatch.setattr(worker, "initialize_development_pepper", pepper)
     with pytest.raises(JournalError, match="database_required"):
@@ -153,6 +159,7 @@ async def test_worker_failed_barrier_closes_pool_and_runs_no_sideeffects(monkeyp
     pool.fetchval.return_value = True  # positive pre-050 catalog evidence
     monkeypatch.setattr(worker, "get_settings", lambda: value)
     monkeypatch.setattr(worker.asyncpg, "create_pool", AsyncMock(return_value=pool))
+    install_fake_fence(monkeypatch)
     monkeypatch.setattr(
         worker, "require_recovery_barrier", AsyncMock(side_effect=JournalError("corrupt"))
     )

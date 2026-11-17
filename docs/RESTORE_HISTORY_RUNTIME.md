@@ -9,7 +9,10 @@ key, UID/GID, grant, migration, configuration or deployment is supplied here.
 Any nonempty `DAEMON_RESTORE_HISTORY_*` field selects H and requires the complete
 profile. All fields absent or empty preserve the pre-H host, provided catalog
 checks positively establish no H tables/functions, or (#731) the exact 056/057
-H tables with zero-byte main forks, so no binding can exist. See
+H tables with zero-byte main forks and migration 073's exact binder fence, so no
+binding can exist. Unselected hosts hold the native fence (advisory key shared on a
+presence connection and on every borrowed pool connection) for as long as they use
+that proof, and 073 refuses any binding while they do. See
 [`RESTORE_HISTORY_UNBOUND_START_PROPOSAL.md`](RESTORE_HISTORY_UNBOUND_START_PROPOSAL.md).
 Removing settings cannot silently downgrade a partially migrated, reshaped or
 possibly bound H schema. Selected H requires the

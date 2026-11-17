@@ -17,6 +17,7 @@ from orchestrator.config import Settings
 from orchestrator.entitlements import attestation
 from orchestrator.services.account_control.transaction import ObservationBlocked
 from orchestrator.services.deletion_journal.errors import JournalError
+from tests.native_fence_support import install_fake_fence
 
 worker = importlib.import_module("orchestrator.worker.worker")
 
@@ -36,6 +37,7 @@ def host(monkeypatch):
     connect = AsyncMock(return_value=pool)
     barrier = AsyncMock()
     monkeypatch.setattr(db.asyncpg, "create_pool", connect)
+    install_fake_fence(monkeypatch)
     monkeypatch.setattr(db, "resolve_database_url", lambda _: value.database_url)
     monkeypatch.setattr(db, "validate_redis_account_key", lambda _: None)
     monkeypatch.setattr(db, "require_recovery_barrier", barrier)
