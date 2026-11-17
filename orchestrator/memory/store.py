@@ -2883,6 +2883,7 @@ class MemoryStore:
         embedding_models: list[str] | tuple[str, ...] | None = None,
         include_l0: bool = True,
         match_any_term: bool = False,
+        term_coverage_space: str | None = None,
         conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search memories using BM25 full-text search.
@@ -2891,6 +2892,14 @@ class MemoryStore:
         natural language query parsing. plainto_tsquery requires every query
         term; ``match_any_term`` ORs the query's lexemes instead and lets
         ts_rank order the candidates, so a whole question can still match (#580).
+
+        ``term_coverage_space`` names a hybrid pass's vector space. Rows with a
+        vector in that space must still match every term, exactly as without
+        it. Rows the query vector cannot reach (no embedding, or one in another
+        space) may also match only some terms; they come after the all-terms
+        rows and carry ``bm25_full=False`` and ``bm25_coverage``, the share of
+        query lexemes they contain, which hybrid scoring applies after
+        normalising.
         """
         scope = current_read_scope()
         if scope is not None:
@@ -2905,6 +2914,7 @@ class MemoryStore:
                 slot=memory_slot,
                 source_ids=source_conversation_ids,
                 match_any_term=match_any_term,
+                term_coverage_space=term_coverage_space,
             )
         # By design, L0 memories remain directly searchable for explicit recall
         # queries. Dedup callers opt out so frozen memories cannot be mutated.
@@ -2915,13 +2925,24 @@ class MemoryStore:
             rows = await executor.fetch(
                 """
                 SELECT *,
-                       ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
+                       CASE WHEN $13::text IS NOT NULL AND content_tsv @@ bm25_query.plain
+                            THEN ts_rank(content_tsv, bm25_query.plain)
+                            ELSE ts_rank(content_tsv, bm25_query.tsq)
+                       END AS bm25_score,
+                       ($13::text IS NULL OR content_tsv @@ bm25_query.plain) AS bm25_full,
+                       CASE WHEN $13::text IS NULL OR content_tsv @@ bm25_query.plain THEN 1.0::float8
+                            ELSE (SELECT count(*) FROM unnest(bm25_query.qlex) AS lexeme
+                                  WHERE lexeme = ANY(tsvector_to_array(content_tsv)))::float8
+                                 / cardinality(bm25_query.qlex)
+                       END AS bm25_coverage
                 FROM memory_current_assertions,
-                     (SELECT CASE WHEN $12::bool
+                     (SELECT CASE WHEN $12::bool OR $13::text IS NOT NULL
                                   THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                                         FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
                                   ELSE plainto_tsquery('english', $2)
-                             END AS tsq) AS bm25_query
+                             END AS tsq,
+                             plainto_tsquery('english', $2) AS plain,
+                             tsvector_to_array(to_tsvector('english', $2)) AS qlex) AS bm25_query
                 WHERE user_id = $1
                   AND status != 'deleted'
                   AND ($3::bool OR valid_to IS NULL)
@@ -2932,9 +2953,11 @@ class MemoryStore:
                   AND ($11::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ bm25_query.tsq
+                  AND ($13::text IS NULL OR content_tsv @@ bm25_query.plain
+                       OR embedding IS NULL OR embedding_model IS DISTINCT FROM $13::text)
                   AND category = $5
                   AND ($7::text IS NULL OR memory_slot = $7)
-                ORDER BY bm25_score DESC
+                ORDER BY bm25_full DESC, bm25_score DESC
                 LIMIT $6
                 """,
                 user_id,
@@ -2949,18 +2972,30 @@ class MemoryStore:
                 effective_embedding_models,
                 include_l0,
                 match_any_term,
+                term_coverage_space,
             )
         else:
             rows = await executor.fetch(
                 """
                 SELECT *,
-                       ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
+                       CASE WHEN $12::text IS NOT NULL AND content_tsv @@ bm25_query.plain
+                            THEN ts_rank(content_tsv, bm25_query.plain)
+                            ELSE ts_rank(content_tsv, bm25_query.tsq)
+                       END AS bm25_score,
+                       ($12::text IS NULL OR content_tsv @@ bm25_query.plain) AS bm25_full,
+                       CASE WHEN $12::text IS NULL OR content_tsv @@ bm25_query.plain THEN 1.0::float8
+                            ELSE (SELECT count(*) FROM unnest(bm25_query.qlex) AS lexeme
+                                  WHERE lexeme = ANY(tsvector_to_array(content_tsv)))::float8
+                                 / cardinality(bm25_query.qlex)
+                       END AS bm25_coverage
                 FROM memory_current_assertions,
-                     (SELECT CASE WHEN $11::bool
+                     (SELECT CASE WHEN $11::bool OR $12::text IS NOT NULL
                                   THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                                         FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
                                   ELSE plainto_tsquery('english', $2)
-                             END AS tsq) AS bm25_query
+                             END AS tsq,
+                             plainto_tsquery('english', $2) AS plain,
+                             tsvector_to_array(to_tsvector('english', $2)) AS qlex) AS bm25_query
                 WHERE user_id = $1
                   AND status != 'deleted'
                   AND ($3::bool OR valid_to IS NULL)
@@ -2971,8 +3006,10 @@ class MemoryStore:
                   AND ($10::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ bm25_query.tsq
+                  AND ($12::text IS NULL OR content_tsv @@ bm25_query.plain
+                       OR embedding IS NULL OR embedding_model IS DISTINCT FROM $12::text)
                   AND ($5::text IS NULL OR memory_slot = $5)
-                ORDER BY bm25_score DESC
+                ORDER BY bm25_full DESC, bm25_score DESC
                 LIMIT $6
                 """,
                 user_id,
@@ -2986,6 +3023,7 @@ class MemoryStore:
                 effective_embedding_models,
                 include_l0,
                 match_any_term,
+                term_coverage_space,
             )
 
         results = []

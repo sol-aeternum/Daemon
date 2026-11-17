@@ -67,6 +67,30 @@ def test_normalize_bm25_scores_normalizes_correctly() -> None:
     assert candidates[2]["bm25_normalized"] == pytest.approx(0.25)
 
 
+def test_partial_matches_never_outrank_the_best_all_terms_match() -> None:
+    # A partial row with a higher raw score is capped at the best all-terms
+    # score, then discounted; all-terms rows normalise exactly as before (#580).
+    candidates: list[dict[str, object]] = [
+        {"id": "full", "bm25_score": 0.4, "bm25_full": True, "bm25_coverage": 1.0},
+        {"id": "weaker", "bm25_score": 0.2, "bm25_full": True, "bm25_coverage": 1.0},
+        {"id": "partial", "bm25_score": 0.9, "bm25_full": False, "bm25_coverage": 0.5},
+        {"id": "vector-only", "bm25_score": 0.0},
+    ]
+    _normalize_bm25_scores(candidates)
+    assert [c["bm25_normalized"] for c in candidates] == pytest.approx([1.0, 0.5, 0.5, 0.0])
+
+
+def test_a_lone_one_word_match_is_held_to_its_coverage() -> None:
+    # With no all-terms row, the best partial row would otherwise reach 1.0.
+    candidates: list[dict[str, object]] = [
+        {"id": "one-of-three", "bm25_score": 0.06, "bm25_full": False, "bm25_coverage": 1 / 3},
+        {"id": "two-of-three", "bm25_score": 0.03, "bm25_full": False, "bm25_coverage": 2 / 3},
+        {"id": "vector-only", "bm25_score": 0.0},
+    ]
+    _normalize_bm25_scores(candidates)
+    assert [c["bm25_normalized"] for c in candidates] == pytest.approx([1 / 3, 1 / 3, 0.0])
+
+
 def test_normalize_bm25_scores_all_zero() -> None:
     candidates: list[dict[str, object]] = [
         {"id": "1", "bm25_score": 0.0},
