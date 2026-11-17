@@ -77,10 +77,14 @@ or install it. The source inventory permits only the tasks route's exact static
 no-alias HistoryObservation import; ADMITTED is unchanged and constructor,
 binding, alternate-host and dynamic-import negatives remain enforced. Explicit
 owned fixtures supply the reader. A pre-H deployment keeps native observation
-only after positively observing H-schema absence. Existing H schema without a
+only after positively observing H-schema absence, or (#731) an exactly shaped
+H schema proven unbound by the shared predicate in
+[`RESTORE_HISTORY_UNBOUND_START_PROPOSAL.md`](RESTORE_HISTORY_UNBOUND_START_PROPOSAL.md),
+re-evaluated per request and on every pool acquire under the native fence, which
+blocks any binding while a read holds a connection. Possibly bound or reshaped H schema without a
 reader, or unavailable catalog evidence, returns 503 without SQL-only fallback.
 This compatibility check cannot independently detect an unconfigured runtime
-and database restored together to a pre-H state; authenticated runtime startup
+and database restored together to a pre-H or pre-binding state; authenticated runtime startup
 must independently retain/require its expected H identity before activation.
 
 ## Client key preservation

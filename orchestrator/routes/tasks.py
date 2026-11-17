@@ -31,6 +31,7 @@ from orchestrator.services.restore_history.observation import (
     HistoryObservation,
 )
 from orchestrator.services.restore_history.read_supervisor import HistoryReadSupervisor
+from orchestrator.services.restore_history.runtime import history_unselected_compatible
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -266,17 +267,11 @@ async def get_task_by_key(
         except Exception:
             raise unavailable() from None
         return historical_task_out(observed)
-    # Preserve pre-H deployments, but never manufacture SQL-only absence when
-    # protected H schema exists or that catalog evidence cannot be obtained.
-    # Startup does not initialize/install H in this source slice.
+    # Preserve pre-H and provably unbound-H deployments, but never manufacture
+    # SQL-only absence once H may be bound or that evidence cannot be obtained.
+    # Re-checked per request, so a later binding stops native answers at once.
     try:
-        if (
-            app_state.db_pool is None
-            or await app_state.db_pool.fetchval(
-                "SELECT to_regclass('public.task_history_binding') IS NOT NULL"
-            )
-            is not False
-        ):
+        if app_state.db_pool is None or not await history_unselected_compatible(app_state.db_pool):
             raise unavailable()
         snapshot = await task_store(app_state).task_for_key(auth.user_id, idempotency_key)
     except HTTPException as error:

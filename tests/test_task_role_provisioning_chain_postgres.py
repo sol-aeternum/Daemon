@@ -4,8 +4,8 @@ The database is migrated by scripts/migrate.py's own runner through the latest
 file, restore-history (H) included, so ``_migrations`` is exactly the runner's
 record. ``apply`` and ``verify`` run as a superuser the way the live deployment
 will, through the library calls and the actual CLI in a subprocess. H objects
-carry no A/W privilege and are not in the maps; startup on this schema is #731's
-concern, not exercised here.
+carry no A/W privilege and are not in the maps; actual host startup on this
+schema is in test_history_unbound_host_postgres.py (#731).
 """
 
 import asyncio
